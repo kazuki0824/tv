@@ -44,7 +44,7 @@ pub use boot::{
     FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
     FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome,
     OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome, ServiceBootOutcome,
-    TunerServiceRuntime,
+    ServiceFailureSnapshot, ServiceFailureState, TunerServiceRuntime,
 };
 pub use capability_profile::{
     configure_ip_cid_result, configure_monitor_event_result, failure_domain,
@@ -65,20 +65,22 @@ pub use diagnostics::{
     CallbackArtifactRuntimeSplitPhase, CallbackArtifactRuntimeSplitTarget,
     CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord,
     ChildOpenRollbackDiagnosticSnapshot, ChildOpenRollbackKind, ChildOpenRollbackOutcome,
-    ChildOpenRollbackPhase, DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticKind,
-    DemuxTransactionDiagnosticRecord, DemuxTransactionDiagnosticSnapshot,
-    DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
-    DescramblerDiagnosticSnapshot, DiagnosticSnapshot, DvrPostCommitNotificationDiagnosticRecord,
-    DvrPostCommitNotificationDiagnosticSnapshot, DvrPostCommitNotificationFailureKind,
-    DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
-    DvrStatusNotifierCleanupDiagnosticSnapshot, FilterCallbackDeliveryDiagnosticPhase,
-    FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
+    ChildOpenRollbackPhase, ClassifiedWorkerTerminalResult, DemuxTransactionDiagnosticId,
+    DemuxTransactionDiagnosticKind, DemuxTransactionDiagnosticRecord,
+    DemuxTransactionDiagnosticSnapshot, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
+    DescramblerDiagnosticRecord, DescramblerDiagnosticSnapshot, DiagnosticSnapshot,
+    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationDiagnosticSnapshot,
+    DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
+    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusNotifierCleanupDiagnosticSnapshot,
+    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
+    FilterCallbackDeliveryDiagnosticSnapshot, FrontendBackendDiagnosticSnapshot,
     FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
-    FrontendCallbackDeliveryDiagnosticSnapshot, QueueDescriptorQueryDiagnosticRecord,
-    QueueDescriptorQueryDiagnosticSnapshot, SharedCallbackArtifactRuntimeSplitDiagnostics,
-    SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
-    StartupDiagnosticKind, StartupDiagnosticPhase, StartupDiagnosticRecord,
-    StartupDiagnosticSnapshot,
+    FrontendCallbackDeliveryDiagnosticSnapshot, FrontendDiagnosticSnapshot, LnbBackendFailureClass,
+    LnbBackendFailureDiagnosticRecord, PacketPipelineDiagnosticRecord,
+    QueueDescriptorQueryDiagnosticRecord, QueueDescriptorQueryDiagnosticSnapshot,
+    SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
+    SharedDvrStatusNotifierCleanupDiagnostics, StartupDiagnosticKind, StartupDiagnosticPhase,
+    StartupDiagnosticRecord, StartupDiagnosticSnapshot, WorkerFailureCategory,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use frontend_ops::{
@@ -132,10 +134,13 @@ pub use root_method_txn::{
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
 };
 pub use root_object_ops::RootOpenTxn;
-pub use worker_failure_classifier::{ClassifiedWorkerTerminalResult, WorkerFailureCategory};
+pub use worker_failure_classifier::WorkerFailureClassifier;
 pub use worker_runtime::{
-    join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue,
-    WorkerRuntimeSupervisor, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
+    join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperPending,
+    WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction,
+    WorkerRuntimeSupervisorActiveEntry, WorkerRuntimeSupervisorReapingEntry,
+    WorkerRuntimeSupervisorStartDisposition, WorkerRuntimeSupervisorStartOperation,
+    WorkerRuntimeSupervisorStopDisposition, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
     CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
 };
 #[cfg(test)]
@@ -154,7 +159,6 @@ pub enum ServiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_binder_adapter::{AidlApi, AidlMethodCall};
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_demux::{
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PacketPid, PesSettings,
@@ -166,9 +170,10 @@ mod tests {
         DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
-        AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
-        DvrDataFormat, DvrOpenKind, FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest,
-        RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+        AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+        DvrConfigureKind, DvrConfigureRequest, DvrDataFormat, DvrOpenKind, FilterDelayHintKind,
+        FilterDelayHintRequest, OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName,
+        AIDL_TRANSACTION_TABLE,
     };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};

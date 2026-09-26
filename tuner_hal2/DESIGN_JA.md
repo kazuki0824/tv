@@ -10,7 +10,7 @@
 
 ## VTS device agentの実装責務境界
 
-`maleicacid_tuner_hal2_vts_agent`はhost側VTS profile CLIからだけ使用するtest-onlyのdevice-side bridgeとする。通常productのTuner HAL runtime責務へ組み込まず、公開`android.hardware.tv.tuner.ITuner/default`へ接続して一時的な`IFrontend` / `IDemux` / `IFilter`を所有し、1回のtuneで`DEMOD_LOCK`を確認した後、hostから要求されたPID / tableのTS `SECTION` filterを開き、FMQから完成済みsection payloadを取得してhostへ返すところまでを責務とする。
+`maleicacid_tuner_hal2_vts_agent`はhost側VTS profile CLIからだけ使用するtest-onlyのdevice-side bridgeとする。通常productのTuner HAL runtime責務へ組み込まず、公開`android.hardware.tv.tuner.ITuner/default`へ接続して一時的な`IFrontend` / `IDemux` / `IFilter`を所有する。起動時はfrontend callback登録後にdemuxを開いて`setFrontendDataSource()`を完了し、最初のsection要求でTS `SECTION` filterをopen/configure/startしてから1回だけtuneし、`DEMOD_LOCK`確認後にFMQから完成済みsection payloadを取得してhostへ返す。以後のsection要求は同じtune generationを維持する。
 
 1つのfrequency候補は1つのagent processかつ1つのtune generationで解決し、そのsessionを保持したままPAT、PATから選択されたPMT、SDT actualの各sectionをhostへ供給する。agentはPAT/PMT/SDTの意味解析、service選択、elementary PID選択、`VtsEnvironmentProfile`の解釈、HAL capabilityの変更を行ってはならない。
 
@@ -66,11 +66,54 @@ flowchart TD
 
 CAS側の更新・参照・失効と、Tuner再起動時の参照結合破棄の責任主体は`../cas_plugin/DESIGN_JA.md` §11.2を参照する。Tunerの参照cacheをCAS鍵状態の正本や復元元にせず、参照結合の喪失と鍵状態自体の喪失を区別する。
 
+### px4 ISDB-T 保留選局の取り込み開始接続
+
+PX4 ISDB-Tの`PTX_SET_CHANNEL EAGAIN`後の公開意味、終端期限、`LOCKED` / `NO_SIGNAL`、`PTX_START_STREAMING` / `PTX_STOP_STREAMING`の規範順序は`../TUNER_HAL_DESIGN_JA.md`の「px4_drv ロック 方針」を正とし、本節では再定義しない。
+
+実装では`device/src/runtime/backend_worker.rs::FrontendBackendTuneExecutor`が`Px4ChannelApplyResult::PendingUnlocked`を保持し、`BackendTuneOps::defer_streaming_start_until_lock()`を通じて`device/src/runtime/tune_txn.rs::BackendTuneTxn`内の通常の取り込み開始を延期する。延期された取り込みの開始済み状態は同じ機器オープン資源を所有する`FrontendBackendSession`に従属させ、別の永続所有者へ複製しない。
+
+保留セッションの取り込み開始入口は`FrontendBackendSession::start_streaming_after_lock()`とし、正規のフロントエンド選局・走査ワーカーが確定したロックを確認した後だけ同入口へ接続する。後片付け側は同セッションの開始済み状態を参照して既存の停止・閉鎖入口へ接続し、保留専用の第二ワーカー、第二トランザクション、第二期限、別の取り込み状態所有者を追加しない。
+
+PX4のlive選局はbound demuxが存在する場合だけ`service_runtime/src/frontend_worker_txn.rs`でlive readerを先に派生させ、`device/src/runtime/live_pump.rs::FrontendLivePumpOwner::prepare()`によりpump threadを開始待ちへ到達させる。bound demuxがない場合はprepared pumpを作らず正常なfrontend単独選局と`LOCKED`通知を維持し、`PTX_START_STREAMING`も実行しない。後からdemuxが結合された場合は同じfrontend workerがcurrent lockを確認したうえで同じprepare / START / activate入口を使用する。Linux DVBにはこの準備経路を適用しない。通常成功のPX4選局も`BackendTuneOps::defer_streaming_start_until_lock()`でSTARTをworkerへ延期し、prepared pumpが存在する場合だけ`PTX_START_STREAMING`を実行して`PreparedFrontendLivePump::activate()`でread loopを解放する。prepared pumpはTSを保持する第二queueではなく、既存reader/sinkを開始前に生成して待機させるだけとする。prepared pump準備後かつSTART直前にworker取消しを再確認し、取消し済みならSTARTせず既存worker cleanupへ渡す。prepared時にbound demuxのIDとstream generationをsnapshotする。START直前は`TunerServiceRuntime`のruntime lock内で同snapshotを再検証し、同じ排他区間で既存`RuntimeRegistry`のrelation ownerに従属するfrontend単位のSTART-in-flight guardを取得してからlockを解放する。外部`PTX_START_STREAMING`中はruntime lockを保持せず、guardだけを失敗不能な局所予約として保持する。START成功時は`PreparedFrontendLivePump::activate()`が完了して同じcurrent consumerのread loop解放が確定した後にguardを解放する。START失敗またはSTART成功後の取消しではprepared pumpの停止回収を完了し、activateしないことを確定してからRAIIでguardを解放する。relation mutation側は同じruntime lock内で変更前後のfrontendのguardを確認し、snapshot再検証・guard取得からSTART、activate完了または非activate確定と停止回収までの全区間でtyped pendingを即返す。公開`setFrontendDataSource()`は待機・polling・専用deadlineを持たず、このpendingを既存`HalError::Busy`へ写像して同期呼出しを終了する。Demux close/drop-leakも同じ判定を既存cleanup retryへ接続する。relation assignment自体は従来どおり`RuntimeRegistry`を正本とし、START専用のrelation epoch、mutation generation、rollback leaseを追加しない。START成功後かつactivate直前にも取消しを再確認し、この判定をactivate可否の線形化点とする。この判定で取消し済みならpumpをactivateせず、開始済みcaptureとprepared pumpを既存session / worker cleanupへ渡す。この判定より後に到着した取消しはactivate後の通常worker取消しとして同じ既存cleanupへ接続する。driver内部のwrite-ready成立条件は本HAL実装ownerの責務へ複製せず、HAL側は上記のSTART前consumer準備と、STARTからactivate完了または非activate確定・prepared pump停止回収までのrelation変更遮断だけを所有する。
+
 ### px4 TMCC TSID list device-adaptation境界
 
 px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirrorの実装anchorは `device/src/px4/abi.rs::PtxTmccTsidList` / `PTX_GET_TMCC_TSID_LIST`、raw resultのshape検証と `EAGAIN` のtyped pending化は `device/src/px4/tmcc_tsid.rs`、exclusive device-open resourceを再利用するread entryは `device/src/runtime/backend_worker.rs::FrontendBackendSession::observe_tmcc_tsid_list()` とする。公開値、readiness、scan callbackの規範意味は `../TUNER_HAL_DESIGN_JA.md` を正とし、本節で再定義しない。
 
 device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを直接変更しない。取得結果はtyped observationとしてservice_runtimeへ返すだけとし、persistent frontend generation/stateへ接続する場合は既存frontend ownerのtyped mutation pathを使う。driver readbackのために第二のdevice-open owner、固定BS TSID表、VTS/profile専用ioctl bypassを追加しない。
+
+### ロック汚染の実装境界
+
+`common/src/poison_lock.rs::PoisonTrackedMutex`は各既存所有者のロックと検出回数を一体で保持する従属部品とし、所有者の状態や後片付け義務は持たない。取得は`lock`、条件変数待機は`wait`へ集約する。`RuntimeLockKind`と`LockPoisonDiagnostic`を`HalError::LockPoisoned`へ接続し、従来のサービス状態・Filterゲート・汎用ワーカー結果ロック専用の分類は流用しない。失敗時の意味は`../TUNER_HAL_DESIGN_JA.md`の「ロック汚染の識別と伝達」を参照する。
+
+| 所有する場所 | 接続箇所 |
+|---|---|
+| `aidl_service/src/callback_store.rs`・`service_context.rs` | コールバック保管、死亡通知の同期・登録先、代替診断、破棄時診断。`AidlCallbackStoreError::into_hal_error`は汚染記録を保持する |
+| `aidl_service/src/cleanup_reaper.rs` | 回収処理の所有者格納ロック |
+| `control/src/lib.rs::WorkerRuntimeSupervisor` | 管理状態の変更は`start_supervised` / `request_supervised_stop` / `request_supervised_reset` / `take_supervisor_action`の型付き入口だけを使う。`start_supervised`は`starting`を正本所有したまま`WorkerRuntimeSupervisorStartOperation::start()`を実行する。開始中のstop/resetは`starting.cancellation`へ記録し、その取消し後に来た後続startは`starting.restart_requested`へ保持する。開始成功時だけactiveまたはreapingへ移し、開始失敗時は`starting`を回収する。開始中stopの返却は`StartPending`としてreaper所有と区別し、DVR通知側へ可変registry guardを公開しない |
+| `device/src/runtime/frontend_worker.rs` | 取消し理由の読取り・書込み・終了結果への接続 |
+| `service_runtime/src/diagnostics.rs` | DVR確定後通知・通知回収・コールバック整合性診断の記録・取得・消去 |
+| `demux/src/runtime/queue_runtime.rs::QueueEpochProtocol` | キュー世代の取得と待機、主処理・取消しの失敗保持。`DemuxRuntimeError::queue_runtime_error`と`service_runtime/src/boot/demux_error.rs`を通して伝達する。サービス境界ではDVR IDも保持する`HalError::QueueEpochLockPoisoned`へ写像する |
+
+### 機器診断の取得境界
+
+`aidl_service/src/tuner_service.rs::TunerAidlService`のBinder標準`dump`から、`service_context.rs::AidlServiceContext::diagnostic_snapshot()`へ接続する。取得対象と実装入口は次のとおり。
+
+| 対象 | 既存保持先からの取得入口 |
+|---|---|
+| 機器別の選局障害 | `TunerServiceRuntime::frontend_backend_diagnostic_snapshots()` → `FrontendRuntime::backend_failure_diagnostic_snapshot()` |
+| フロントエンド状態・受信処理の報告・終了事由・記録失敗 | `TunerServiceRuntime::frontend_diagnostic_snapshots()` → `FrontendRuntime::snapshot()` |
+| フィルターとフロントエンドのコールバック障害 | `AidlServiceContext::{filter_callback_delivery_diagnostic_snapshot, frontend_callback_delivery_diagnostic_snapshot}()`。既存の代替保持先と欠落情報も取得 |
+| フロントエンドワーカーの終了・後始末の障害 | `TunerServiceRuntime::frontend_worker_cleanup_diagnostics()` |
+| DVR確定後通知・通知回収・コールバック整合性診断 | `AidlServiceContext`が保持する既存の共有診断参照の`snapshot()` |
+| 破棄時の診断 | `AidlServiceContext::drop_leak_error_diagnostic_snapshot()`と記録失敗回数 |
+| demux配下の操作・取消しの障害 | `TunerServiceRuntime::demux_transaction_diagnostics()` |
+
+`FrontendBackendDiagnosticSnapshot`と`FrontendDiagnosticSnapshot`は取得時の写しであり、保持先・記録処理・状態変更権限は既存所有者に残す。`ServiceDiagnosticSnapshot`は各入口の型付き結果を集め、取得に失敗した対象のエラーと取得できた記録を同時に出力へ渡す。コールバックの取得入口を呼ぶ前にサービス状態ロックを解放し、出力I/Oも全ロックの解放後に行う。
+
+パケット処理の破棄・配送失敗は`boot/packet_ops.rs::record_packet_pipeline_diagnostics`が入力元共通の記録入口となる。`TunerServiceRuntime`の`BoundedDiagnosticStore<PacketPipelineDiagnosticRecord>`が分離器ID・世代・型付き診断を保持し、既存`DiagnosticSnapshot`を通して`ServiceDiagnosticSnapshot.packet_pipeline`へ渡す。鍵に関する診断の保持先は既存のデスクランブラ診断領域を使用する。
+
+受信報告の実装は`device/src/runtime/live_pump.rs::FrontendLivePumpReport`、既存の診断への転記は`frontend_runtime.rs::FrontendLivePumpDiagnostic::from_report()`に置く。飽和の有無と読み取り再試行回数も同じ診断へ転記する。診断の論理契約は`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」「診断counter飽和契約」、取得手順は`INTEGRATION.md`を参照する。
 
 ### TMCC TSID observation の frontend owner 接続
 
@@ -170,7 +213,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `DescramblerKeyTxn` | `service_runtime/src/boot/descrambler_txn.rs::DescramblerKeyTxn<'a>`。`service_runtime/src/descrambler_session.rs::DescramblerKeyTxn<'a, KeyTable>`と`service_runtime/src/descrambler_key_table.rs`はatomic primitiveとして従属させる | `TunerServiceRuntime::descrambler_key_txn()`から`DescramblerKeyTxn::set_key_token()`へ接続するtoken参照の結合・解除入口 | AIDL層またはデスクランブラ実装から鍵台帳を直接変更、CAS側のKs更新を同ownerへ統合、PID変更・セッション後片付けと同じ別名所有者だけを入口にする |
 | `DescramblerSessionCleanupTxn` | `service_runtime/src/boot/descrambler_txn.rs::DescramblerSessionCleanupTxn<'a>`。`service_runtime/src/descrambler_session.rs::DescramblerSessionCleanupTxn<'a, KeyTable>`と`service_runtime/src/descrambler_key_table.rs`はatomic primitiveとして従属させる | `TunerServiceRuntime::descrambler_session_cleanup_txn()`から`DescramblerSessionCleanupTxn::{unregister_runtime, cleanup_for_demux_owner_loss}`へ接続するclose / Demux無効化入口 | AIDL層またはデスクランブラ実装からPID・鍵・プール台帳を直接変更、通常のPID・鍵変更所有者へ後片付け責務を統合する |
 | `SourceBoundaryTxn` | `demux/src/runtime/source_boundary.rs::SourceBoundaryTxn` | `demux/src/runtime/source_boundary.rs::{apply_filter_source_boundary_change, connect_filter_source_boundary_change}`へ接続するFilter source use-case、source Filter close/unlink接続 | filter wrapper/cleanup callerによるgraph直接変更、demux/frontend ownerとの統合 |
-| `DemuxFrontendSourceTxn` | `service_runtime/src/boot/demux_filter_dvr_ops.rs::DemuxFrontendSourceTxn`。frontend bind前のStarted Playback DVR排他検査も同ownerで行う | `IDemux.setFrontendDataSource()` object use-case、Frontend/Demux close接続。逆向きのPlayback DVR start前検査は`service_runtime/src/boot/child_open_context.rs::transact_start_dvr_runtime()` | cleanup callerによるrelation直接編集、`SourceBoundaryTxn`への統合、frontend入力とPlayback入力の同時active化 |
+| `DemuxFrontendSourceTxn` | `service_runtime/src/boot/demux_filter_dvr_ops.rs::DemuxFrontendSourceTxn`。frontend bind前のStarted Playback DVR排他検査も同ownerで行う。`service_runtime/src/registry.rs::FrontendDemuxStartGuard`はPX4 START外部I/O中だけ保持する失敗不能な局所予約として同relation ownerへ従属し、独立contractまたはrelation state正本にしない。`service_runtime/src/registry.rs::PreparedDemuxFrontendBindingChange`は同relation ownerに従属する一回性prepared mutationで、`prepare_demux_frontend_binding_change()`だけが発行し、`commit_prepared_demux_frontend_binding_change()`だけがby-valueで消費する。独立A/B/Cとして数えない | `IDemux.setFrontendDataSource()` object use-case、Frontend/Demux close接続。逆向きのPlayback DVR start前検査は`service_runtime/src/boot/child_open_context.rs::transact_start_dvr_runtime()`。PX4 START guardはfrontend workerのsnapshot再検証と同じruntime lock区間でのみ取得する | cleanup callerによるrelation直接編集、`SourceBoundaryTxn`への統合、frontend入力とPlayback入力の同時active化、START専用relation epochまたは第二のrelation owner追加 |
 | `StreamBoundaryTxn` | `demux/src/runtime/generation_boundary.rs::StreamBoundaryTxn` | `service_runtime/src/boot/packet_ops.rs`の型付き境界処理入口 | 正規状態所有型の恒久別名または第二の正規所有者を残すこと、関係・キュー・A/V同期・PCR・コールバック・デスクランブラ各所有者の直接変更 |
 | `PacketPipeline` | `demux/src/parser/packet_pipeline.rs::PacketPipeline` | `service_runtime/src/boot/packet_ops.rs`の型付きパケット入力処理入口 | `StreamBoundaryTxn`への通常パケット処理吸収、AIDL・下位実装・Filterコールバックからの`PacketPipeline`直接変更、第二の正規パケット処理所有者または正規手順所有者の追加 |
 | `RecordDvrFilterRelationTxn` | `service_runtime/src/boot/demux_filter_dvr_ops.rs::RecordDvrFilterRelationTxn` | Record DVR `attachFilter()` / `detachFilter()`、Filter/DVR close、demux cleanup接続 | object側shadow relationの直接変更 |
@@ -179,7 +222,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `LnbControlTxn` | 正規B手順所有者・入口は`service_runtime/src/lnb_control_txn.rs::LnbControlTxn` | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` object use-case | API別制御手順所有者、呼出しを越える状態・世代・失敗状態・操作ロックの所有、`LnbRegistry`を迂回するbackend I/O、`sendDiseqcMessage()`の同手順への統合 |
 | `CallbackRegistrationUseCase` | 正規B手順所有者は`service_runtime/src/callback_registry.rs::CallbackRegistrationUseCase`。`RuntimeCallbackRegistry`は実行時登録簿の状態所有者、`aidl_service/src/callback_store.rs`はBinderコールバック生成物の保管主体であり、いずれも`CallbackRegistrationUseCase`へ統合または同名化しない | `IFrontend.setCallback()` / `ILnb.setCallback()`等のAIDLファサードからサービス実行時のコールバック登録入口 | AIDLファサード・ドメイン別処理による別の登録所有者、`RuntimeCallbackRegistry`またはコールバック生成物保管主体をBの共有進行状態として所有すること、コールバック生成物の別保管先 |
 | `PostCommitCallbackFailureTxn` | `service_runtime/src/post_commit_callback_failure_txn.rs::PostCommitCallbackFailureTxn` | domain commit後のcallback delivery failureを受けたcompletion use-caseからのtyped入口 | API別handler、classifierまたはdomain ownerの置換 |
-| `FilterProducerDrainGate` | `demux/src/runtime/queue_runtime.rs::FilterProducerDrainGate` | Filter/SharedFilter data path、`QueueCleanupUseCase`からのtyped入口 | 公開API/worker/`QueueCleanupUseCase`からのgate内部直接変更、DVR ownerとの統合 |
+| `FilterProducerDrainGate` | `demux/src/runtime/queue_runtime.rs::FilterProducerDrainGate`。局所取消し失敗の格納先は同ファイルの`GateInner::cleanup_failures`、記録・読取り入口は`GateInner::{record_cleanup_failure, record_cleanup_poison, check_cleanup}`。失敗時の意味は`../TUNER_HAL_DESIGN_JA.md`の0-S-3Bの同名契約、型への写像は`CODE_CONVENTION.md`の§7を参照する。 | Filter/SharedFilter data path、`QueueCleanupUseCase`からのtyped入口 | 公開API/worker/`QueueCleanupUseCase`からのgate内部直接変更、DVR ownerとの統合 |
 | `QueueEpochProtocol` | `demux/src/runtime/queue_runtime.rs::QueueEpochProtocol` | DVR data path、`QueueCleanupUseCase`からのtyped入口 | 公開API/worker/`QueueCleanupUseCase`からのprotocol内部直接変更、`PlaybackQueueBacking` ownerとの統合 |
 | `QueueCleanupUseCase` | `service_runtime/src/queue_cleanup_use_case.rs::QueueCleanupUseCase` | Filter/DVR `flush()` object use-case | 下位protocol内部への直接アクセス、API別orchestrator |
 | `PlaybackConsumeTxn` | `service_runtime/src/playback_consume_txn.rs::PlaybackConsumeTxn` | `PlaybackConsumeTxn::{prepare, begin_consume, consume, discard_for_boundary}`、保留パケットから`boot/packet_ops.rs::decide_descrambled_packet`への接続 | worker/FMQ/packet helperによる別consume owner |
@@ -187,9 +230,25 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `FrontendTuneScanTxn` | `service_runtime/src/frontend_ops.rs::FrontendTuneScanTxn`が、AIDL外形検証済みtyped requestを受けた後のcanonical preflight、固定給電準備、worker start/stop、rollback、operation event / terminal acceptanceを直接所有する。product-profile / backend availabilityの第二ownerをAIDL serviceまたはdevice mapperへ置かない | `FrontendTuneScanTxn`の有限正規入口集合 `begin_tune` / `begin_scan` / `stop_tune` / `stop_scan` / `accept_operation_event` / `accept_worker_terminal`。AIDL境界はAIDL外形検証・typed変換後に`begin_*` / `stop_*`だけを呼び、ワーカー・下位機器処理の完了通知橋渡しは`accept_*`だけを呼ぶ | AIDL serviceによるproduct-profile / backend availability判定、worker・機器層・callback層によるcanonical preflightの迂回、Demux所有者の吸収、第二の正規所有者化、有限正規入口集合外での選局・走査進行の再実装 |
 | `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | filter configure/unregister/close、demux closeからのtyped relation入口 | API/filter wrapper/`StreamBoundaryTxn`からのregistry直接変更、PCR ownerとの統合 |
 | `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測、stream boundary側のtyped invalidation入口 | APIまたは`StreamBoundaryTxn`からのstore内部直接変更、A/V sync ownerとの統合 |
-| `WorkerRuntime` | `control/src/lib.rs::{WorkerRuntime, WorkerHandle, WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor}` がgeneric worker生成・停止・wake・join/result-completionと、同ownerが発行するbounded reaper/pending/supervisor従属handleの唯一の物理canonical A state owner。`service_runtime/src/worker_runtime.rs`は同型のre-export、service failure-classification接続、product定数だけを持ちpersistent generic stateを所有しない。`WorkerHandle` / reaper / supervisorはconstructorを公開せず`WorkerRuntime`のtyped factoryからのみ発行し、独自generation/retry/reaper正本を持たない。domain固有stop ticketのpoll/wait、domain completion/deadline actionなど、1件のWorkerRuntime-managed job実行中だけ存在して外部呼出し越しの別registry/queue/retry正本を形成しないcall-local進行状態はdomain typed jobに保持してよい | 各domain worker ownerの`WorkerRuntime`正規入口。必要な場合に同ownerが発行・管理するopaque従属handleを使用する | 従属handleによる独立したgeneration / retry / reaper state所有、別generic lifecycle owner、domain start/stop ownerの吸収 |
+| `ServiceFailureState` | `service_runtime/src/boot.rs::TunerServiceRuntime`に従属する`ServiceFailureState`が、呼出し越しに`ServiceCritical`とサービス実行時ロック汚染回数を保持する唯一のA状態正本 | 読取りは`TunerServiceRuntime::failure_state`から取得する`ServiceFailureState::snapshot`、更新は`TunerServiceRuntime::{mark_service_critical, mark_shared_service_critical}`と`lock_shared`の汚染検出経路 | 別のservice-criticalフラグまたは汚染回数正本を作ること、再初期化で利用停止を解除すること、`ServiceFailureSnapshot`等の診断snapshot側から状態変更すること |
+| `WorkerRuntime` | `control/src/lib.rs::{WorkerRuntime, WorkerHandle, WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor, WorkerRuntimeCleanup, WorkerCleanupAuthority}` がgeneric worker生成・停止・wake・join/result-completionと、同ownerが発行するbounded reaper/pending/supervisor従属handleの唯一の物理canonical A state owner。`service_runtime/src/worker_runtime.rs`は同型のre-export、service failure-classification接続、product定数だけを持ちpersistent generic stateを所有しない。`WorkerHandle` / reaper / supervisorはconstructorを公開せず`WorkerRuntime`のtyped factoryからのみ発行し、独自generation/retry/reaper正本を持たない。回収待ち登録表と受信待ち行列は`PoisonTrackedMutex`を使用し、ロック識別・検出回数・飽和の正本は各ロック自身だけに置く。受信待ち行列の汚染後に回収器全体を利用不能とする`WorkerReaperFailureState`は`receiver_unavailable`ラッチだけを保持し、ロック汚染カウンターを所有しない。直接の汚染は`WorkerRuntimeReaperPending::lock_state`と`lock_reaper_receiver`から`LockPoisonDiagnostic`を保持した型付き失敗へ接続する。後片付け値の保管主体は`WorkerRuntimeCleanup`、実行権限は`WorkerCleanupAuthority`とする。発行入口は`WorkerRuntime::retain_cleanup`と`WorkerRuntimeCleanup::issue`、実行入口は`WorkerCleanupAuthority::execute`。機器要求の回収を含む保管値の帰属先は`device/src/runtime/frontend_worker.rs::FrontendWorkerRegistry`で、停止要求票と回収用処理項目は同保管値の実行権限を参照する。未完義務・再発行・隔離の意味は`../TUNER_HAL_DESIGN_JA.md`の0-S-3Bの同名契約、回収と起床の実装手順は`CODE_CONVENTION.md`の「ワーカー回収・起床の実装手順」を参照する。domain固有stop ticketのpoll/wait、domain completion/deadline actionなど、1件のWorkerRuntime-managed job実行中だけ存在して外部呼出し越しの別registry/queue/retry正本を形成しないcall-local進行状態はdomain typed jobに保持してよい | 各domain worker ownerの`WorkerRuntime`正規入口。必要な場合に同ownerが発行・管理するopaque従属handleを使用する | 従属handleによる独立したgeneration / retry / reaper state所有、別generic lifecycle owner、domain start/stop ownerの吸収 |
 | `WorkerFailureClassifier` | `service_runtime/src/worker_failure_classifier.rs::WorkerFailureClassifier` | `WorkerFailureClassifier::{classify_terminal, classify_callback}` | owner側の別classifier、classifierによるdomain ownerの置換 |
 | `FrontendWorkerTerminationUseCase` | `service_runtime/src/frontend_worker_termination_use_case.rs::FrontendWorkerTerminationUseCase`。`device/src/runtime/frontend_worker.rs::FrontendWorkerRegistry`はフロントエンドworker状態、`control/src/lib.rs::WorkerRuntime`は汎用寿命状態を所有する | `FrontendWorkerTerminationUseCase::{accept_worker_terminal, cleanup_after_close_begin}` | ワーカー・AIDL層による所有者登録解除、リース、終了待ち・回収処理、失敗分類器の直接代替、汎用寿命管理の所有責務の吸収、別のフロントエンド終了手順所有者 |
+
+##### 共通の失敗伝達とワーカー管理の実装位置
+
+機器要求の開始入口は`FrontendTxn::prepare_backend_submit`から`FrontendWorkerRegistry::prepare_backend_submit`へ接続し、既存の`WorkerRuntimeCleanup`に保管する。非同期のtune/scan開始では、このprepared submitの一回実行権限を、その権限と同一の`frontend_id / worker kind / generation`を開始するworkerへ型付きで移管する。同一prepared submitは移管先worker自身の開始阻止条件にしないが、別generation、別worker、または過去の未完cleanup obligationは従来どおり開始を阻止する。worker開始前に権限移管へ失敗した場合はprepared obligationを正本保管値へ残し、後続の正規cleanup入口から回収可能にする。worker開始後はworkerだけが同じ一回実行権限を消費してbackend submitを開始し、結果不明時は既存reaperへ移管する。同期補助経路で`FrontendWorkerStopTicket::submit_until`を使う場合も同じ保管値の実行権限を消費する。`backend_worker.rs::FrontendBackendSubmitTicket`はこの実行区間内の非公開実装値とし、crate外へ公開しない。
+
+ワーカー管理部の失敗から終端結果への接続は`control/src/lib.rs::WorkerRuntimeOwnerFailure::into_terminal_result`に置く。device adapterはその終端種別を保持して渡し、診断分類は既存の`WorkerFailureClassifier`へ接続する。
+
+論理契約は`../TUNER_HAL_DESIGN_JA.md`の「0-S-1. 設計原則」、0-S-3Bの`WorkerRuntime`および`WorkerFailureClassifier`、「診断可観測性の固定」を正とする。型付き情報の伝達、ロック操作、回収ワーカーの接続手順は`CODE_CONVENTION.md`の§1・§2・§12・§13を参照する。
+
+| 責務 | 実装所有者・対応箇所 |
+|---|---|
+| 能力選択とFMQ配送の共通エラー表現 | `common/src/lib.rs::{CapabilitySelectionError, CapabilityClosure, FmqFailureKind, HalError}`。能力選択側は`service_runtime/src/capability_selection.rs`と`capability_snapshot.rs`、配送側の変換は`service_runtime/src/boot.rs::demux_runtime_error_to_hal`、公開状態への変換は`binder_adapter/src/status.rs` |
+| 機器探索と探索段階の診断との接続 | `aidl_service/src/service_entry.rs`、`service_runtime/src/boot.rs::FrontendProbeOutcome::DeviceProbeFailed`、`service_runtime/src/diagnostics.rs::StartupDiagnosticRecord::DeviceProbeFailed` |
+| サービス異常時状態と診断参照 | 上表の`ServiceFailureState` A状態正本へ接続する。読取り結果は`ServiceFailureSnapshot`であり、状態変更権限を持たない。 |
+| DVR通知の回収ワーカーと汎用管理部との接続 | `aidl_service/src/dvr_callback_delivery.rs::start_dvr_status_notifier_reaper`から、上表の`WorkerRuntime`所有者に従属する`WorkerRuntimeSupervisor::{start_worker, notify_worker, worker_terminal_result}`へ接続。停止・待機の参照は同所有者の`WorkerContext`、終了結果の分類は上表の`WorkerFailureClassifier` |
 
 ##### 共通化対象のRust物理化追加要件
 
@@ -222,6 +281,7 @@ AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / 
 | `PlaybackConsumeTxn` | Playback消費処理とflush / close等の境界要求 | 消費処理状態の変更主体は一つとし、他経路は`QueueEpochProtocol`等の型付き境界から影響させる。消費処理状態を複数実行主体が直接変更しない |
 | `AvSyncRegistry` | 設定 / 登録解除、Filter close、demux後片付け | A/V同期関係変更を一つの正本で確定する |
 | `PcrClockAnchorStore` | PCR観測、ストリーム境界無効化 | 同一世代の観測と無効化の順序を一つの正本で確定する |
+| `ServiceFailureState` | service-critical確定、service runtimeロック汚染検出、診断snapshot読取り | 同一のfailure stateで不可逆な利用停止ラッチと飽和する汚染検出回数を原子的に確定し、snapshotは読取り専用とする。ロック汚染経路から通常のservice runtime mutex復旧へ戻さない |
 | `PacketPipeline` | パケット処理、ストリーム境界変更 | パケット状態の変更主体は一つとし、型付き世代柵・指示で境界競合を解消する |
 
 この表は `Send` / `Sync` を要求する表ではない。具体型のトレイト要件は、AIDL/Binder等の外部API・実行基盤が要求する型制約と、選択したRust物理形で実際に生じるスレッド間移送・共有参照の双方から別途決める。
@@ -230,7 +290,7 @@ AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / 
 |---:|---|:---:|---|---|---|
 | 1 | `ObjectCloseTxn` | A | public close / owner loss / Drop / shutdown / reaperによる同一object変更をowner内で直列化する | lifecycle generation + 一回性 `CloseCleanupAuthority` | — |
 | 2 | `SourceBoundaryTxn` | A | set / unlink / closeによるrelation変更をowner内で直列化する | relation generation + prepared relation mutation | — |
-| 3 | `DemuxFrontendSourceTxn` | B | B共有lockを持たず、relation ownerと`StreamBoundaryTxn`の正規同期入口を使う | 各Aが発行するprepared mutationを消費し、独自generationを発行しない | 通常制御 |
+| 3 | `DemuxFrontendSourceTxn` | B | B共有lockを持たず、relation ownerと`StreamBoundaryTxn`の正規同期入口を使う。PX4 START中の局所guardはrelation ownerの実装同期metadataとしてのみ使用する | 各Aが発行するprepared mutationを消費し、独自generationを発行しない | 通常制御 |
 | 4 | `StreamBoundaryTxn` | A | boundary prepare / commitとsteady-state ownerへのdispatchをowner内で整合させる | `stream_boundary_generation` + 一回性 `PreparedStreamBoundary` | — |
 | 5 | `CallbackRegistrationUseCase` | B | B共有lockを持たず、callback store / runtime registry / domain ownerのprepared入口を使う | prepared artifact / registry mutation / domain mutationを一回だけ消費し、独自generationを発行しない | 通常制御 |
 | 6 | `FrontendLnbRelationTxn` | A | `setLnb()` / closeによるassignment mutationをowner内で直列化する | object generation + prepared assignment lease mutation + transaction authority | — |
@@ -256,8 +316,9 @@ AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / 
 | 26 | `PacketPipeline` | A | demuxごとの単一packet mutation ownerを基本とし、boundaryとの競合はtyped generation fence / commandで同期する。packetごとの外側mutexを標準形にしない | typed `TsInputOrigin`のgenerationとstream boundary generationを使用し、第二の同義generation namespaceを持たない | — |
 | 27 | `WatermarkClassifier` | C | なし | なし | — |
 | 28 | `LnbRegistry` | A | 同一物理LNB・共有レールに対する永続状態変更と物理I/O権限をowner内で直列化する | LNB state generation + prepared control mutation + 物理I/O authority | — |
+| 29 | `ServiceFailureState` | A | `mark_service_critical` / `mark_shared_service_critical` / `lock_shared`のロック汚染検出とdiagnostic snapshot読取りを同一failure stateへ接続し、不可逆なservice-criticalラッチと汚染検出回数を原子的に更新する | 不可逆な`ServiceCritical`ラッチ + 飽和するruntime lock poison counter。独自generation・再有効化tokenは持たず、再初期化で失効を解除しない | — |
 
-A=13、B=13、C=2であり、`WorkerHandle`を第二のAまたは第二の論理契約として数えない。
+A=14、B=13、C=2であり、`WorkerHandle`を第二のAまたは第二の論理契約として数えない。
 
 ##### 所有者間排他制御の取得規則（有向非巡回図）
 

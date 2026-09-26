@@ -9,6 +9,7 @@
 - cleanup、rollback、stop、join、callback、unregister、close の失敗を `let _ =`、空分岐、ログだけ、`drop(result)` で捨てない。
 - primary failure 発生後の cleanup / rollback を `?` だけで呼び、cleanup failure で primary failure を無診断で上書きしない。
 - primary + cleanup failure を文字列 detail だけの generic internal error に潰さない。戻り値として片方の status を選ぶ場合でも、もう片方を typed composed failure または必須診断から消さない。
+- FMQ配送失敗後の取消しも失敗した場合は、`compose_primary_cleanup_failure`へ元の配送エラーと取消しエラーを渡す。診断として保持すべき内容は`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」を参照する。
 - `FirstErrorCollector` は同一 cleanup phase 内の first cleanup error 集約だけに使用し、primary + cleanup failure composition や per-step outcome 保存の代替にしない。
 - cleanup 系 top-level use-case は、全対象を試行した per-step outcome を bounded diagnostic store へ保存してから public failure を射影する。途中の `?` で後続 cleanup を飛ばさない。
 - object cleanup と frontend worker cleanup の domain-specific context を `Option` field bag や `String` detail へ丸めず、variant-specific typed context を保持する。
@@ -24,6 +25,12 @@
 - 失敗し得る後片付けが成功した場合だけ、型付き結果を正本所有者へ返して義務の完了を確定する。失敗・結果不明・失効済み権限は論理契約の未完・再試行・隔離の扱いへ接続し、一回実行権限の`Drop`がこの確定処理を代行しない。
 
 ## 2. AIDL / service_runtime 境界
+
+### サービス状態ロックの実装入口
+
+サービス状態ロックの汚染時処理は、`DESIGN_JA.md`の「共通の失敗伝達とワーカー管理の実装位置」に示す`lock_shared`と`mark_shared_service_critical`へ接続する。両入口では、`PoisonError::get_ref`から構築後不変の`ServiceFailureState`参照だけを取得し、ガードを解放してから同参照へ記録する。参照の複製は読取り専用とし、変更用メソッドを所有者の外へ公開しない。通常復旧の禁止を含む一般規則は`../GLOBAL_CODE_CONVENTION.md`の「mutex汚染復旧」、異常時状態の意味は`../TUNER_HAL_DESIGN_JA.md`の「0-S-1. 設計原則」を参照する。
+
+### AIDLからの呼出し規則
 
 - AIDL method body で lifecycle check、request planning、runtime lock、domain mutation を手組みしない。object_runtime façade または service_runtime の typed use-case を通す。
 - AIDL method body で fallible request 変換、callback retain、source relation validation、unsupported / unavailable mapping を、呼出対象 object の live / generation / kind 確認より先に実行しない。
@@ -109,6 +116,8 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 
 ## 7. query / packet / diagnostic 境界
 
+- `PoisonTrackedMutex`の利用側は`LockPoisonDiagnostic`を汎用エラー文字列へ変換せず、`HalError::LockPoisoned`またはキュー・コールバックの型付き中間エラーに保持する。ロック種別は取得箇所の文字列から推測せず、構築時に指定する。検出回数の更新を各呼出し側へ複製しない。実装箇所は`DESIGN_JA.md`の「ロック汚染の実装境界」、失敗時の意味は`../TUNER_HAL_DESIGN_JA.md`の「ロック汚染の識別と伝達」を参照する。
+
 - query façade は registry entry、runtime state、signal state、mutable handle を AIDL 側へ返さず、snapshot DTO だけを返す。
 - `ObjectMethodDispatchProof` 等の dispatch capability は owner module 内で即時消費し、AIDL closure や top-level façadeへ渡さない。
 - validated typed id の raw 値 accessor を routing / validation / mutation に使わない。raw 変換は AIDL DTO 変換や low-level parser 直前など、必要な境界だけに限定する。
@@ -118,6 +127,8 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - diagnostic record を kind + 多数の optional field から意味復元する field bag にしない。variant-specific typed context を使う。
 - public `HalError` detail と typed diagnostic record を併用する場合、typed record を正本として保存し、文字列だけを唯一の診断情報にしない。
 - 診断専用 counter は `../TUNER_HAL_DESIGN_JA.md` の診断 counter 飽和契約に従い、business API の成功/失敗判定や lifetime / generation 発行に使わない。
+- `FilterProducerDrainGate`の局所取消し失敗は、`GateInner::cleanup_failures`のアトミック値を`check_cleanup`で読み、`QueueRuntimeError`へ写像する。局所取消しの不整合は`record_cleanup_failure`、ロック汚染は`record_cleanup_poison`へ渡し、後者は`GateLockPoisoned`にロック識別情報・検出回数・飽和状態を保持する。状態の所有者と実装箇所は`DESIGN_JA.md`の同名行、失敗時の意味は`../TUNER_HAL_DESIGN_JA.md`の0-S-3Bの同名契約を参照する。
+- gate呼出し元は`DemuxRuntimeError::queue_runtime_error`で汚染情報を`QueueRuntimeFailureWithContext`へ引き継ぎ、既存の操作報告・配送診断へ渡す。サービス側は`demux_runtime_error_to_hal`で`HalError::FilterGateLockPoisoned`へ変換する。この型は`FilterProducerDrainGate.data`の汚染を表し、Filter識別子・検出回数・飽和状態・局所取消し種別を保持する。通常操作のロック取得は`GateInner::lock_data`、条件変数待ちの汚染変換は`data_lock_poison`へ集約する。
 
 ## 8. public nullable / close / frontend count の実装入口
 
@@ -157,6 +168,8 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 
 ## 12. runtime failure / capability inventory の実装境界
 
+- 能力選択では`CapabilitySelectionError`の失敗理由と資源返却順を`HalError::CapabilitySelectionFailed`へ保持する。機器探索ではファイル操作の失敗を`HalError::Io`で伝達し、操作、対象パス、取得できたOSエラー番号を落とさない。型の配置と診断への接続箇所は`DESIGN_JA.md`の「共通の失敗伝達とワーカー管理の実装位置」を参照する。
+
 - service publication前のstartup validationでは、AIDL service registration不能、VINTF instance不整合、必須profile / 静的設定の解析不能、stable AIDL / service名 / init設定の自己矛盾をtyped startup failureとして確定し、明示診断を残して未公開のまま終了させる。service publication後のruntime failureをこのfail-fast経路へ流用しない。公開可否・capability意味論は`../TUNER_HAL_DESIGN_JA.md`、product統合条件は`INTEGRATION.md`を正とする。
 - device node 不在、open不可、permission不足、probe不成立と、device存在下の runtime ioctl / read / pump failure を別の typed domain error として保持する。公開結果と状態遷移は `../TUNER_HAL_DESIGN_JA.md` を正とする。
 - product runtime の frontend / backend inventory は、正本 capability owner が probe 成功と必要情報の確定を確認した entry だけから構成する。実体のない degraded frontend entry、診断専用 phantom entry、成功扱いの代替entryを生成しない。
@@ -165,12 +178,23 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 
 ## 13. FMQ / callback / worker の失敗伝播
 
+- FMQ配送の利用側は`FmqFailureKind`を捨てず、`demux_runtime_error_to_hal`を経て`HalError::FmqDeliveryFailed`へ対象IDとともに渡す。ワーカー生成の`std::io::Error`はOSエラー番号を保持する`HalError::Io`で呼出し元へ返す。
+- DVR通知の回収処理は`WorkerRuntimeSupervisor::start_worker`を通し、起床通知と待機に同じ`WorkerContext`を使う。管理部を弱参照で取得し、待機前に強参照を解放する。終了結果の取得は`worker_terminal_result`、異常終了の分類は`WorkerFailureClassifier`へ接続する。所有者と入口の配置は`DESIGN_JA.md`、停止・回収・破棄時動作は`../TUNER_HAL_DESIGN_JA.md`の0-S-3Bの`WorkerRuntime`を参照する。
+
 - FMQのcurrent implementation boundaryは、write success、short write、overflow、native write failure、EventFlag wake failureを区別する typed result を返す。write failureを0 byte成功、空queue、overflow、normal wakeへ丸めない。
 - framework callback / Binder callback の戻り値を `let _ = ...`、`drop(result)`、ログだけで破棄しない。typed delivery failureを `WorkerFailureClassifier` / `PostCommitCallbackFailureTxn` の正本entryへ接続する。
 - worker bodyは通常停止、停止要求、runtime failure、panic/join failureを区別できる typed terminal resultをownerへ返し、無言停止しない。terminal meaning自体は `../TUNER_HAL_DESIGN_JA.md` を正とする。
 - worker runtime failureとpanic / join failureは別のtyped diagnostic categoryとして記録し、単一の「worker stopped」診断へ潰さない。counterを持つ場合もerror系とpanic/join系を別集計とし、診断名・counter値から公開状態を逆算しない。
 - workerの待機はstop/wakeで解除可能なprimitiveを使い、client指定intervalをそのまま `thread::sleep()` してclose / Drop / shutdownを妨げない。
 - generic worker生成・停止・wake・joinは `DESIGN_JA.md` の `WorkerRuntime` 規範アンカーへ接続する。`WorkerHandle`は同ownerに従属するopaque handle / authorityとしてのみ使用し、規範owner外から `std::thread::spawn`、独自`JoinHandle` lifecycle、silent joinを追加しない。
+
+### ワーカー回収・起床の実装手順
+
+所有者と許可入口は`DESIGN_JA.md`の`WorkerRuntime`行を正とする。未完義務の保管、実行権限の再発行・拒否、失敗・中断時の隔離、再実行可否は`../TUNER_HAL_DESIGN_JA.md`の0-S-3Bの同名契約を参照する。
+
+- `WorkerCleanupAuthority`は`Clone`を実装せず、呼出し側は`issue`で得た権限を`execute`へ渡す。試行識別子の照合と保管値の貸出しを呼出し側で手組みしない。照合は外部処理の直前と返却時に同補助処理内で行い、実行中の記録は排他区間内に残す。外部処理・終了待ちの間は保管値を一時的に貸し出し、排他制御を解放する。
+- 呼出し側は、失敗結果を保存した回収値を取り出して再実行せず、保管主体の正規入口へ接続する。機器要求の回収にも`WorkerRuntime::retain_cleanup`を使用する。
+- 起床要求はワーカーごとのアトミック値に保持し、起床先は同じワーカーのスレッドへ固定する。待機には`park`、通知には`unpark`を用い、通知側に汚染し得るミューテックスを置かない。
 
 ## 14. transaction / cleanup / 非破壊最適化の実装境界
 

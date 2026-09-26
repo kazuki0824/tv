@@ -381,3 +381,27 @@ m android.hardware.tv.tuner-update-api
 `tuner_hal2` は current V3 Rust binding を `android.hardware.tv.tuner-V3-rust` として参照し、VINTF fragment も Tuner version 3 を宣言する。採用 build configuration では `RELEASE_AIDL_USE_UNFROZEN=true` を実効値とする。`false` の構成では最新 unfrozen API を製品契約として使用できないため、この V3 統合の完了 build として扱わない。
 
 この統合は LineageOS 22.1 / Android 15 checkout を前提とする。LineageOS 21.0 / Android 14 checkout は本節の V3 current、FCM、Rust 生成物の契約を満たさないため、この統合の入力として使用しない。
+
+
+## 機器診断の取得
+
+サービス起動後、Binder標準の診断取得コマンドを使用する。
+
+```bash
+adb shell dumpsys android.hardware.tv.tuner.ITuner/default
+```
+
+出力は各所有者が保持する診断の写しであり、次の項目を含む。
+
+| 出力項目 | 確認する情報 |
+|---|---|
+| `frontend_backend` | 機器別の`frontend_id`、`backend`、`records`、`dropped_count`、`record_failure_count`。各記録の世代、選局段階、主障害、巻戻し障害、操作・パス・OSエラー番号 |
+| `frontend` | 対象機器と現在の世代、受信処理の報告、終了事由、最後の障害、診断記録の失敗と破棄数。報告内の破損バイト数・飽和情報・読み取り再試行回数 |
+| `filter_callback` / `frontend_callback` | 対象物のID・世代、通知段階、型付き障害、代替保持先の件数・破棄数・記録失敗数、通常保持先の取得欠落 |
+| `frontend_worker_cleanup` | 対象物・ワーカーの世代、終了・後始末の結果、主障害と後始末の障害、破棄数・記録失敗数。FMQ障害は既存記録の書込み失敗・短い書込み・起床失敗の分類を確認 |
+| `demux` | demux配下の操作・取消し結果と障害、診断識別子、破棄数 |
+| `packet_pipeline` | パケット・セクション・PESの破棄、キューやAV配送の失敗。分離器ID・世代・型付き理由と、保持上限による古い診断の破棄数 |
+
+再選局によって現在の世代が進んだ場合も、保持されている過去の世代の記録を取得する。標準エラー出力の転送設定はこの取得経路の前提ではない。取得は各所有者から順に行うため、全項目が同一時刻の状態であるとは扱わない。
+
+機器障害、受信読み取り障害、FMQ配送障害、コールバック障害の発生後にこのコマンドで記録が取得できることを実機確認する。一部の読取りに失敗した場合も取得できた記録と取得エラーを出力し、診断取得自体はエラーになる。取得エラーを空の診断と判定しない。Soongの`maleicacid_tuner_hal2_aidl_service_test`にはBinderの取得入口、FMQとコールバックの既存記録の取得、サービス状態ロックの汚染時に取得できる代替記録、出力失敗の試験を含む。ホストCIの成功だけでAndroid上のBinder接続・実機取得を確認済みとは扱わない。

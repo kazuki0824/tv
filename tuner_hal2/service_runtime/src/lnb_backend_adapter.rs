@@ -11,6 +11,7 @@ use maleicacid_tuner_hal2_lnb::{
 use crate::registry::{
     FrontendRuntimeId, LnbPhysicalIoPermit, LnbRegistryProfile, LnbRuntimeId, RuntimeRegistry,
 };
+use crate::{LnbBackendFailureClass, LnbBackendFailureDiagnosticRecord};
 
 #[derive(Debug)]
 struct LnbFrontendIoSnapshot {
@@ -102,6 +103,7 @@ impl ServiceRuntimeLnbBackendSnapshot {
 pub(crate) struct ServiceRuntimeLnbProfileAdapter<'permit, 'gate> {
     snapshot: ServiceRuntimeLnbBackendSnapshot,
     _permit: &'permit LnbPhysicalIoPermit<'gate>,
+    failure_diagnostic: Option<LnbBackendFailureDiagnosticRecord>,
 }
 
 impl<'permit, 'gate> ServiceRuntimeLnbProfileAdapter<'permit, 'gate> {
@@ -112,7 +114,12 @@ impl<'permit, 'gate> ServiceRuntimeLnbProfileAdapter<'permit, 'gate> {
         Self {
             snapshot,
             _permit: permit,
+            failure_diagnostic: None,
         }
+    }
+
+    pub(crate) fn take_failure_diagnostic(&mut self) -> Option<LnbBackendFailureDiagnosticRecord> {
+        self.failure_diagnostic.take()
     }
 }
 
@@ -141,10 +148,26 @@ impl LnbBackendOps for ServiceRuntimeLnbProfileAdapter<'_, '_> {
             );
             match apply_frontend_backend_lnb_voltage_classified(&plan) {
                 FrontendBackendLnbApplyOutcome::Applied => {}
-                FrontendBackendLnbApplyOutcome::Rejected(_) => {
+                FrontendBackendLnbApplyOutcome::Rejected(error) => {
+                    self.failure_diagnostic = Some(LnbBackendFailureDiagnosticRecord {
+                        lnb_id,
+                        frontend_id: frontend.frontend_id.0,
+                        backend: frontend.backend,
+                        device_path: frontend.device_path.clone(),
+                        class: LnbBackendFailureClass::Rejected,
+                        error,
+                    });
                     return LnbBackendApplyOutcome::Rejected(LnbFailureKind::BackendApplyFailed);
                 }
-                FrontendBackendLnbApplyOutcome::Indeterminate(_) => {
+                FrontendBackendLnbApplyOutcome::Indeterminate(error) => {
+                    self.failure_diagnostic = Some(LnbBackendFailureDiagnosticRecord {
+                        lnb_id,
+                        frontend_id: frontend.frontend_id.0,
+                        backend: frontend.backend,
+                        device_path: frontend.device_path.clone(),
+                        class: LnbBackendFailureClass::Indeterminate,
+                        error,
+                    });
                     return LnbBackendApplyOutcome::Indeterminate(
                         LnbFailureKind::BackendApplyFailed,
                     );

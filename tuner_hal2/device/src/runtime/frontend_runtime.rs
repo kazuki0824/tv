@@ -2,6 +2,8 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendTuneRequest, HalError, HalInternalKind,
 };
 
+use super::backend_worker::FrontendBackendSubmitFailure;
+use super::tune_txn::{BackendTuneRollbackFailure, BackendTuneStep};
 use super::{
     FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendScanSession,
     FrontendWorkerCancelReason, FrontendWorkerKind,
@@ -88,6 +90,9 @@ pub struct FrontendLivePumpDiagnostic {
     pub generation: u64,
     pub packets_delivered: u64,
     pub malformed_bytes: u64,
+    pub malformed_byte_counter_saturated: bool,
+    pub read_retries: u64,
+    pub read_retry_counter_saturated: bool,
     pub stopped_by_cancel: bool,
     pub reached_eof: bool,
     pub cancel_reason: Option<FrontendWorkerCancelReason>,
@@ -96,9 +101,50 @@ pub struct FrontendLivePumpDiagnostic {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FrontendDiagnosticWriteFailure {
+pub struct FrontendBackendFailureDiagnostic {
+    pub frontend_id: i32,
     pub generation: u64,
-    pub detail: String,
+    pub backend: FrontendBackendKind,
+    pub step: Option<BackendTuneStep>,
+    pub primary_error: HalError,
+    pub rollback_failure: Option<BackendTuneRollbackFailure>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendDiagnosticWriteFailure {
+    BackendFailureTargetMismatch {
+        frontend_id: i32,
+        requested_generation: u64,
+        runtime_generation: u64,
+        requested_backend: FrontendBackendKind,
+        runtime_backend: FrontendBackendKind,
+    },
+    LivePumpReportGenerationMismatch {
+        report_generation: u64,
+        runtime_generation: u64,
+    },
+}
+
+impl FrontendDiagnosticWriteFailure {
+    fn detail(self) -> String {
+        match self {
+            Self::BackendFailureTargetMismatch {
+                frontend_id,
+                requested_generation,
+                runtime_generation,
+                requested_backend,
+                runtime_backend,
+            } => format!(
+                "backend失敗診断の対象が不一致です: frontend={frontend_id} generation={requested_generation} runtime_generation={runtime_generation} backend={requested_backend:?} runtime_backend={runtime_backend:?}"
+            ),
+            Self::LivePumpReportGenerationMismatch {
+                report_generation,
+                runtime_generation,
+            } => format!(
+                "DiagnosticWriteFailed: live pump report世代が不一致です: report={report_generation} runtime={runtime_generation}"
+            ),
+        }
+    }
 }
 
 impl FrontendLivePumpDiagnostic {
@@ -118,6 +164,9 @@ impl FrontendLivePumpDiagnostic {
             generation,
             packets_delivered: report.packets_delivered,
             malformed_bytes: report.malformed_bytes,
+            malformed_byte_counter_saturated: report.malformed_byte_counter_saturated,
+            read_retries: report.read_retries,
+            read_retry_counter_saturated: report.read_retry_counter_saturated,
             stopped_by_cancel: report.stopped_by_cancel,
             reached_eof: report.reached_eof,
             cancel_reason,
@@ -162,10 +211,10 @@ pub struct FrontendRuntime {
     live_pump_reports_dropped_count: u64,
     diagnostic_write_failures: Vec<FrontendDiagnosticWriteFailure>,
     diagnostic_write_failures_dropped_count: u64,
-    px4_backend_failure_diagnostics: Vec<(u64, HalError)>,
+    px4_backend_failure_diagnostics: Vec<FrontendBackendFailureDiagnostic>,
     px4_backend_failure_diagnostics_dropped_count: u64,
     px4_backend_failure_diagnostic_record_failure_count: u64,
-    linux_dvb_backend_failure_diagnostics: Vec<(u64, HalError)>,
+    linux_dvb_backend_failure_diagnostics: Vec<FrontendBackendFailureDiagnostic>,
     linux_dvb_backend_failure_diagnostics_dropped_count: u64,
     linux_dvb_backend_failure_diagnostic_record_failure_count: u64,
     scan_session: Option<FrontendScanSession>,
@@ -277,7 +326,7 @@ impl FrontendRuntime {
     pub fn backend_failure_diagnostic_snapshot(
         &self,
         backend: FrontendBackendKind,
-    ) -> (Vec<(u64, HalError)>, u64, u64) {
+    ) -> (Vec<FrontendBackendFailureDiagnostic>, u64, u64) {
         match backend {
             FrontendBackendKind::Px4CharDevice => (
                 self.px4_backend_failure_diagnostics.clone(),
@@ -506,11 +555,25 @@ impl FrontendRuntime {
         backend: FrontendBackendKind,
         error: HalError,
     ) -> Result<(), HalError> {
+        self.record_backend_failure_diagnostic_context(generation, backend, None, error, None)
+    }
+
+    pub fn record_backend_failure_diagnostic_context(
+        &mut self,
+        generation: u64,
+        backend: FrontendBackendKind,
+        step: Option<BackendTuneStep>,
+        primary_error: HalError,
+        rollback_failure: Option<BackendTuneRollbackFailure>,
+    ) -> Result<(), HalError> {
         if generation != self.generation || backend != self.backend_kind {
-            let detail = format!(
-                "backend failure diagnostic target mismatch: frontend={} generation={} runtime_generation={} backend={backend:?} runtime_backend={:?}",
-                self.frontend_id, generation, self.generation, self.backend_kind
-            );
+            let failure = FrontendDiagnosticWriteFailure::BackendFailureTargetMismatch {
+                frontend_id: self.frontend_id,
+                requested_generation: generation,
+                runtime_generation: self.generation,
+                requested_backend: backend,
+                runtime_backend: self.backend_kind,
+            };
             match self.backend_kind {
                 FrontendBackendKind::Px4CharDevice => {
                     self.px4_backend_failure_diagnostic_record_failure_count = self
@@ -526,34 +589,74 @@ impl FrontendRuntime {
             push_bounded(
                 &mut self.diagnostic_write_failures,
                 &mut self.diagnostic_write_failures_dropped_count,
-                FrontendDiagnosticWriteFailure {
-                    generation,
-                    detail: detail.clone(),
-                },
+                failure,
             );
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                detail,
+                failure.detail(),
             ));
         }
 
-        match backend {
+        let record = FrontendBackendFailureDiagnostic {
+            frontend_id: self.frontend_id,
+            generation,
+            backend,
+            step,
+            primary_error,
+            rollback_failure,
+        };
+        self.store_backend_failure_diagnostic(record);
+        Ok(())
+    }
+
+    pub fn record_completed_backend_submit_failure(
+        &mut self,
+        failure: FrontendBackendSubmitFailure,
+    ) -> Result<(), HalError> {
+        if failure.generation > self.generation {
+            return self.record_backend_failure_diagnostic_context(
+                failure.generation,
+                self.backend_kind,
+                failure.step,
+                failure.error,
+                failure.rollback_failure,
+            );
+        }
+        // 回収が終わった旧試行の診断だけを保存し、現操作の世代・状態は変更しない。
+        self.store_backend_failure_diagnostic(FrontendBackendFailureDiagnostic {
+            frontend_id: self.frontend_id,
+            generation: failure.generation,
+            backend: self.backend_kind,
+            step: failure.step,
+            primary_error: failure.error,
+            rollback_failure: failure.rollback_failure,
+        });
+        Ok(())
+    }
+
+    fn store_backend_failure_diagnostic(&mut self, record: FrontendBackendFailureDiagnostic) {
+        match record.backend {
             FrontendBackendKind::Px4CharDevice => push_bounded(
                 &mut self.px4_backend_failure_diagnostics,
                 &mut self.px4_backend_failure_diagnostics_dropped_count,
-                (generation, error.clone()),
+                record.clone(),
             ),
             FrontendBackendKind::LinuxDvb => push_bounded(
                 &mut self.linux_dvb_backend_failure_diagnostics,
                 &mut self.linux_dvb_backend_failure_diagnostics_dropped_count,
-                (generation, error.clone()),
+                record.clone(),
             ),
         }
-        eprintln!(
-            "maleicacid-tuner-hal2-backend-diagnostic: backend={backend:?} frontend_id={} generation={} error={error:?}",
-            self.frontend_id, generation
+        #[cfg(target_os = "android")]
+        log::error!(
+            "frontend backend失敗: frontend_id={} generation={} backend={:?} step={:?} primary_error={:?} rollback_failure={:?}",
+            record.frontend_id,
+            record.generation,
+            record.backend,
+            record.step,
+            record.primary_error,
+            record.rollback_failure
         );
-        Ok(())
     }
 
     pub fn record_backend_request_failure_after_fence(
@@ -668,19 +771,16 @@ impl FrontendRuntime {
         cancel_reason: Option<FrontendWorkerCancelReason>,
     ) -> Result<(), HalError> {
         if generation != self.generation {
-            let detail = format!(
-                "DiagnosticWriteFailed: live pump report generation mismatch: report={} runtime={}",
-                generation, self.generation
-            );
+            let failure = FrontendDiagnosticWriteFailure::LivePumpReportGenerationMismatch {
+                report_generation: generation,
+                runtime_generation: self.generation,
+            };
             push_bounded(
                 &mut self.diagnostic_write_failures,
                 &mut self.diagnostic_write_failures_dropped_count,
-                FrontendDiagnosticWriteFailure {
-                    generation,
-                    detail: detail.clone(),
-                },
+                failure,
             );
-            let error = HalError::internal(HalInternalKind::InvariantViolation, detail);
+            let error = HalError::internal(HalInternalKind::InvariantViolation, failure.detail());
             self.last_error = Some(error.clone());
             return Err(error);
         }
@@ -1237,6 +1337,34 @@ mod tests {
     }
 
     #[test]
+    fn live_pump_diagnostic_retains_saturation_and_retry_counters() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        let before = runtime.snapshot();
+        runtime
+            .record_live_pump_report(
+                runtime.generation(),
+                FrontendLivePumpReport {
+                    malformed_bytes: u64::MAX,
+                    malformed_byte_counter_saturated: true,
+                    read_retries: u64::MAX,
+                    read_retry_counter_saturated: true,
+                    ..FrontendLivePumpReport::default()
+                },
+                None,
+            )
+            .unwrap();
+        let snapshot = runtime.snapshot();
+        let diagnostic = &snapshot.live_pump_reports[0];
+        assert_eq!(diagnostic.generation, before.generation);
+        assert_eq!(diagnostic.malformed_bytes, u64::MAX);
+        assert!(diagnostic.malformed_byte_counter_saturated);
+        assert_eq!(diagnostic.read_retries, u64::MAX);
+        assert!(diagnostic.read_retry_counter_saturated);
+        assert_eq!(snapshot.state, before.state);
+        assert_eq!(snapshot.last_error, before.last_error);
+    }
+
+    #[test]
     fn live_pump_report_is_recorded_as_frontend_diagnostic() {
         let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
         runtime.commit_generation(1).unwrap();
@@ -1247,6 +1375,7 @@ mod tests {
                 FrontendLivePumpReport {
                     packets_delivered: 3,
                     malformed_bytes: 2,
+                    malformed_byte_counter_saturated: false,
                     read_retries: 0,
                     read_retry_counter_saturated: false,
                     stopped_by_cancel: false,
@@ -1274,6 +1403,7 @@ mod tests {
                 FrontendLivePumpReport {
                     packets_delivered: 5,
                     malformed_bytes: 9,
+                    malformed_byte_counter_saturated: false,
                     read_retries: 0,
                     read_retry_counter_saturated: false,
                     stopped_by_cancel: true,
@@ -1305,6 +1435,7 @@ mod tests {
             FrontendLivePumpReport {
                 packets_delivered: 0,
                 malformed_bytes: 4,
+                malformed_byte_counter_saturated: false,
                 read_retries: 0,
                 read_retry_counter_saturated: false,
                 stopped_by_cancel: true,
@@ -1313,7 +1444,15 @@ mod tests {
             Some(FrontendWorkerCancelReason::StopRequested),
         );
         assert!(result.is_err());
-        assert_eq!(runtime.diagnostic_write_failures().len(), 1);
+        assert_eq!(
+            runtime.diagnostic_write_failures(),
+            &[
+                FrontendDiagnosticWriteFailure::LivePumpReportGenerationMismatch {
+                    report_generation: 1,
+                    runtime_generation: 2,
+                }
+            ]
+        );
         assert!(matches!(
             runtime.last_error(),
             Some(HalError::Internal { .. })
@@ -1332,6 +1471,7 @@ mod tests {
                     FrontendLivePumpReport {
                         packets_delivered: 1,
                         malformed_bytes: 0,
+                        malformed_byte_counter_saturated: false,
                         read_retries: 0,
                         read_retry_counter_saturated: false,
                         stopped_by_cancel: false,
@@ -1359,16 +1499,22 @@ mod tests {
             errno: 5,
         };
         runtime
-            .record_backend_failure_diagnostic(
-                1,
-                FrontendBackendKind::Px4CharDevice,
-                error.clone(),
-            )
+            .record_backend_failure_diagnostic(1, FrontendBackendKind::Px4CharDevice, error.clone())
             .unwrap();
 
         let (px4_records, px4_dropped, px4_record_failures) =
             runtime.backend_failure_diagnostic_snapshot(FrontendBackendKind::Px4CharDevice);
-        assert_eq!(px4_records, vec![(1, error)]);
+        assert_eq!(
+            px4_records,
+            vec![FrontendBackendFailureDiagnostic {
+                frontend_id: 7,
+                generation: 1,
+                backend: FrontendBackendKind::Px4CharDevice,
+                step: None,
+                primary_error: error,
+                rollback_failure: None,
+            }]
+        );
         assert_eq!(px4_dropped, 0);
         assert_eq!(px4_record_failures, 0);
 
@@ -1406,6 +1552,119 @@ mod tests {
     }
 
     #[test]
+    fn backend_failure_diagnostic_preserves_primary_and_rollback_context() {
+        for (frontend_id, backend, path, op) in [
+            (
+                7,
+                FrontendBackendKind::Px4CharDevice,
+                "/dev/px4video0",
+                "PTX_SET_CHANNEL",
+            ),
+            (
+                8,
+                FrontendBackendKind::LinuxDvb,
+                "/dev/dvb/adapter0/frontend0",
+                "FE_SET_PROPERTY",
+            ),
+        ] {
+            let mut runtime = FrontendRuntime::new(frontend_id, backend);
+            runtime.commit_generation(1).unwrap();
+            let primary_error = HalError::IoctlFailed {
+                backend: if backend == FrontendBackendKind::Px4CharDevice {
+                    "px4"
+                } else {
+                    "dvb"
+                },
+                path: Some(std::path::PathBuf::from(path)),
+                op,
+                errno: 5,
+            };
+            let rollback_failure = BackendTuneRollbackFailure {
+                step: crate::BackendTuneRollbackStep::RollbackRestorePreviousState,
+                error: HalError::IoctlFailed {
+                    backend: if backend == FrontendBackendKind::Px4CharDevice {
+                        "px4"
+                    } else {
+                        "dvb"
+                    },
+                    path: Some(std::path::PathBuf::from(path)),
+                    op: "rollback",
+                    errno: 16,
+                },
+            };
+            runtime
+                .record_backend_failure_diagnostic_context(
+                    1,
+                    backend,
+                    Some(BackendTuneStep::ApplyChannel),
+                    primary_error.clone(),
+                    Some(rollback_failure.clone()),
+                )
+                .unwrap();
+            let (records, _, _) = runtime.backend_failure_diagnostic_snapshot(backend);
+            assert_eq!(records[0].frontend_id, frontend_id);
+            assert_eq!(records[0].step, Some(BackendTuneStep::ApplyChannel));
+            assert_eq!(records[0].primary_error, primary_error);
+            assert_eq!(records[0].rollback_failure, Some(rollback_failure));
+        }
+    }
+
+    #[test]
+    fn delayed_submit_diagnostic_preserves_old_generation_without_changing_current_state() {
+        for backend in [
+            FrontendBackendKind::LinuxDvb,
+            FrontendBackendKind::Px4CharDevice,
+        ] {
+            let mut runtime = FrontendRuntime::new(7, backend);
+            runtime.commit_generation(2).unwrap();
+            let before = runtime.snapshot();
+            let failure = FrontendBackendSubmitFailure {
+                generation: 1,
+                error: HalError::cleanup_failed("submit", "primary"),
+                rollback_succeeded: false,
+                step: Some(BackendTuneStep::ApplyChannel),
+                rollback_failure: Some(BackendTuneRollbackFailure {
+                    step: crate::BackendTuneRollbackStep::RollbackRestorePreviousState,
+                    error: HalError::cleanup_failed("rollback", "secondary"),
+                }),
+            };
+            runtime
+                .record_completed_backend_submit_failure(failure.clone())
+                .unwrap();
+            let (records, dropped, record_failures) =
+                runtime.backend_failure_diagnostic_snapshot(backend);
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].generation, 1);
+            assert_eq!(records[0].step, failure.step);
+            assert_eq!(records[0].primary_error, failure.error);
+            assert_eq!(records[0].rollback_failure, failure.rollback_failure);
+            assert_eq!((dropped, record_failures), (0, 0));
+            assert_eq!(runtime.snapshot(), before);
+            assert!(runtime
+                .record_completed_backend_submit_failure(FrontendBackendSubmitFailure {
+                    generation: 3,
+                    ..failure
+                })
+                .is_err());
+            let (records, _, record_failures) =
+                runtime.backend_failure_diagnostic_snapshot(backend);
+            assert_eq!(records.len(), 1);
+            assert_eq!(record_failures, 1);
+            let mut expected = before;
+            expected.diagnostic_write_failures.push(
+                FrontendDiagnosticWriteFailure::BackendFailureTargetMismatch {
+                    frontend_id: 7,
+                    requested_generation: 3,
+                    runtime_generation: 2,
+                    requested_backend: backend,
+                    runtime_backend: backend,
+                },
+            );
+            assert_eq!(runtime.snapshot(), expected);
+        }
+    }
+
+    #[test]
     fn backend_failure_diagnostic_mismatch_does_not_cross_namespaces() {
         let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
         runtime.commit_generation(1).unwrap();
@@ -1431,6 +1690,16 @@ mod tests {
         assert_eq!(px4_record_failures, 1);
         assert_eq!(dvb_record_failures, 0);
         assert_eq!(runtime.diagnostic_write_failures().len(), 1);
+        assert_eq!(
+            runtime.diagnostic_write_failures()[0],
+            FrontendDiagnosticWriteFailure::BackendFailureTargetMismatch {
+                frontend_id: 7,
+                requested_generation: 1,
+                runtime_generation: 1,
+                requested_backend: FrontendBackendKind::LinuxDvb,
+                runtime_backend: FrontendBackendKind::Px4CharDevice,
+            }
+        );
     }
 
     #[test]

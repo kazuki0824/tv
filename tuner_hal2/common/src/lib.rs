@@ -1,4 +1,6 @@
 pub mod os_abi;
+mod poison_lock;
+pub use poison_lock::{LockPoisonDiagnostic, PoisonTrackedMutex, RuntimeLockKind};
 
 #[cfg(test)]
 mod failure_injection_tests;
@@ -6,7 +8,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub const TUNER_SERVICE_NAME: &str = "android.hardware.tv.tuner.ITuner/default";
 /// LineageOS 22.1 / Android 15 TRM resource handles preserve 8 bits of resource ID.
@@ -83,7 +85,7 @@ pub fn is_valid_arib_section_length(table_id: u8, section_length: usize) -> bool
     }
 }
 
-fn increment_atomic_counter_with_saturation(
+pub fn increment_atomic_counter_with_saturation(
     counter: &AtomicU64,
     saturated: Option<&AtomicBool>,
 ) -> u64 {
@@ -381,56 +383,6 @@ pub fn fail_after_cleanup<T>(
     ))
 }
 
-#[derive(Debug)]
-pub struct IdExhausted {
-    pub last_attempted: i32,
-}
-
-#[derive(Debug)]
-pub struct IdAllocator {
-    next: AtomicI32,
-    max: i32,
-}
-
-impl IdAllocator {
-    pub const fn new(start: i32) -> Self {
-        Self {
-            next: AtomicI32::new(start),
-            max: i32::MAX,
-        }
-    }
-
-    pub const fn new_bounded(start: i32, max: i32) -> Self {
-        Self {
-            next: AtomicI32::new(start),
-            max,
-        }
-    }
-
-    pub fn try_allocate(&self) -> Result<i32, IdExhausted> {
-        loop {
-            let current = self.next.load(Ordering::SeqCst);
-            if current > self.max {
-                return Err(IdExhausted {
-                    last_attempted: current,
-                });
-            }
-            let Some(next) = current.checked_add(1) else {
-                return Err(IdExhausted {
-                    last_attempted: current,
-                });
-            };
-            match self
-                .next
-                .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
-            {
-                Ok(_) => return Ok(current),
-                Err(_) => continue,
-            }
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendBackendKind {
     Px4CharDevice,
@@ -603,8 +555,54 @@ impl HalErrorDetail {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerLockKind {
+    Result,
+    Completion,
+    SupervisorWorker,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerCleanupFailureKind {
+    Quarantined,
+    Interrupted,
+    Executing,
+    StatePoisoned,
+    Completed,
+    Superseded,
+    AttemptExhausted,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HalError {
+    LockPoisoned(LockPoisonDiagnostic),
+    QueueEpochLockPoisoned {
+        dvr_id: Option<i32>,
+        poison: LockPoisonDiagnostic,
+    },
+    ServiceRuntimeLockPoisoned {
+        operation: &'static str,
+    },
+    FilterGateLockPoisoned {
+        filter_id: Option<i32>,
+        poison_count: u64,
+        counter_saturated: bool,
+        producer_release: bool,
+        drain_rollback: bool,
+    },
+    CapabilitySelectionFailed(CapabilitySelectionError),
+    FmqDeliveryFailed {
+        kind: FmqFailureKind,
+        object_id: Option<i32>,
+    },
+    WorkerCleanupFailed {
+        kind: WorkerCleanupFailureKind,
+    },
+    WorkerReaperUnavailable,
+    WorkerLockPoisoned {
+        owner: &'static str,
+        lock: WorkerLockKind,
+    },
     NotInitialized {
         resource: &'static str,
     },
@@ -794,33 +792,71 @@ pub fn errno_name(errno: i32) -> &'static str {
 fn display_path(path: &Option<PathBuf>) -> String {
     path.as_ref()
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "<unavailable>".to_string())
+        .unwrap_or_else(|| "<利用不可>".to_string())
 }
 
 impl fmt::Display for HalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            HalError::LockPoisoned(poison) => write!(f, "ロックが汚染されています: {poison:?}"),
+            HalError::QueueEpochLockPoisoned { dvr_id, poison } => write!(f, "DVRキューエポックのロックが汚染されています: DVR ID={dvr_id:?} {poison:?}"),
+            HalError::ServiceRuntimeLockPoisoned { operation } => {
+                write!(
+                    f,
+                    "TunerServiceRuntimeのロックが汚染されています: 操作={operation}"
+                )
+            }
+            HalError::CapabilitySelectionFailed(error) => write!(
+                f,
+                "能力選択に失敗しました: 理由={} 返却順={:?}",
+                error.reason, error.returned_in_order
+            ),
+            HalError::FmqDeliveryFailed { kind, object_id } => {
+                write!(
+                    f,
+                    "FMQ配送に失敗しました: 種別={kind:?} オブジェクトID={object_id:?}"
+                )
+            }
+            HalError::WorkerReaperUnavailable => {
+                write!(f, "ワーカー回収機構は受信待ち行列ロックの汚染後のため利用できません")
+            }
+            HalError::WorkerLockPoisoned { owner, lock } => {
+                write!(f, "ワーカーのロックが汚染されています: 所有者={owner} ロック={lock:?}")
+            }
+            HalError::FilterGateLockPoisoned {
+                filter_id,
+                poison_count,
+                counter_saturated,
+                producer_release,
+                drain_rollback,
+            } => write!(
+                f,
+                "filter gateのロックが汚染されています: ロック=FilterProducerDrainGate.data フィルターID={filter_id:?} 検出回数={poison_count} 飽和={counter_saturated} producer解放={producer_release} drain巻戻し={drain_rollback}"
+            ),
+            HalError::WorkerCleanupFailed { kind } => {
+                write!(f, "ワーカー後片付け権限で失敗しました: {kind:?}")
+            }
             HalError::NotInitialized { resource } => {
                 write!(f, "依存資源が未初期化です: {resource}")
             }
-            HalError::DeviceMissing(path) => write!(f, "device not found: {}", path.display()),
+            HalError::DeviceMissing(path) => write!(f, "デバイスが見つかりません: {}", path.display()),
             HalError::OpenFailed { path, detail } => write!(
                 f,
-                "open に失敗しました {}: {}",
+                "{}を開く処理に失敗しました: {}",
                 path.display(),
                 detail.detail
             ),
             HalError::PermissionDenied { path, detail } => write!(
                 f,
-                "permission denied opening {}: {}",
+                "{}を開く権限がありません: {}",
                 path.display(),
                 detail.detail
             ),
             HalError::Busy { path, detail } => {
                 if let Some(path) = path {
-                    write!(f, "device busy {}: {}", path.display(), detail.detail)
+                    write!(f, "デバイス{}は使用中です: {}", path.display(), detail.detail)
                 } else {
-                    write!(f, "device busy: {}", detail.detail)
+                    write!(f, "デバイスは使用中です: {}", detail.detail)
                 }
             }
             HalError::IoctlFailed {
@@ -830,7 +866,7 @@ impl fmt::Display for HalError {
                 errno,
             } => write!(
                 f,
-                "実行時ioctl失敗: backend={} operation={} device_path={} errno={} errno_name={}",
+                "実行時ioctl失敗: backend種別={} 操作={} デバイスパス={} errno={} errno名={}",
                 backend,
                 op,
                 display_path(path),
@@ -839,27 +875,27 @@ impl fmt::Display for HalError {
             ),
             HalError::CallbackFailed { callback, detail } => write!(
                 f,
-                "callback failed: callback={} detail={}",
+                "コールバックに失敗しました: callback={} 詳細={}",
                 callback, detail.detail
             ),
             HalError::FmqFailed { operation, detail } => write!(
                 f,
-                "FMQ failed: operation={} detail={}",
+                "FMQ操作に失敗しました: 操作={} 詳細={}",
                 operation, detail.detail
             ),
             HalError::EventFlagFailed { operation, detail } => write!(
                 f,
-                "EventFlag failed: operation={} detail={}",
+                "EventFlag操作に失敗しました: 操作={} 詳細={}",
                 operation, detail.detail
             ),
             HalError::CleanupFailed { resource, detail } => write!(
                 f,
-                "cleanup failed: resource={} detail={}",
+                "資源の後片付けに失敗しました: 資源={} 詳細={}",
                 resource, detail.detail
             ),
             HalError::OutOfMemory { resource, detail } => write!(
                 f,
-                "out of memory: resource={} detail={}",
+                "メモリを確保できません: 資源={} 詳細={}",
                 resource, detail.detail
             ),
             HalError::ComposedFailure {
@@ -868,16 +904,16 @@ impl fmt::Display for HalError {
                 cleanup,
             } => write!(
                 f,
-                "composed failure: context={} primary=({}) cleanup=({})",
+                "複合失敗: 文脈={} 主失敗=({}) 後片付け=({})",
                 context, primary, cleanup
             ),
             HalError::InvalidArgument { kind, detail } => write!(
                 f,
-                "invalid argument: kind={kind:?} detail={}",
+                "引数が不正です: 種別={kind:?} 詳細={}",
                 detail.detail
             ),
             HalError::InvalidState { kind, detail } => {
-                write!(f, "invalid state: kind={kind:?} detail={}", detail.detail)
+                write!(f, "状態が不正です: 種別={kind:?} 詳細={}", detail.detail)
             }
             HalError::Io {
                 backend,
@@ -887,11 +923,11 @@ impl fmt::Display for HalError {
                 detail,
             } => {
                 if let Some(errno) = errno {
-                    write!(f, "io failed: backend={} operation={} device_path={} errno={} errno_name={} detail={}", backend, operation, display_path(path), errno, errno_name(*errno), detail.detail)
+                    write!(f, "I/Oに失敗しました: backend種別={} 操作={} デバイスパス={} errno={} errno名={} 詳細={}", backend, operation, display_path(path), errno, errno_name(*errno), detail.detail)
                 } else {
                     write!(
                         f,
-                        "io failed: backend={} operation={} device_path={} detail={}",
+                        "I/Oに失敗しました: backend種別={} 操作={} デバイスパス={} 詳細={}",
                         backend,
                         operation,
                         display_path(path),
@@ -900,17 +936,44 @@ impl fmt::Display for HalError {
                 }
             }
             HalError::Internal { kind, detail } => {
-                write!(f, "internal error: kind={kind:?} detail={}", detail.detail)
+                write!(f, "内部エラー: 種別={kind:?} 詳細={}", detail.detail)
             }
-            HalError::Unsupported(feature) => write!(f, "unsupported feature: {feature}"),
+            HalError::Unsupported(feature) => write!(f, "未対応の機能: {feature}"),
             HalError::UnsupportedDetail { feature, detail } => {
-                write!(f, "unsupported feature: {feature}: {}", detail.detail)
+                write!(f, "未対応の機能: {feature}: {}", detail.detail)
             }
         }
     }
 }
 
 impl std::error::Error for HalError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FmqFailureKind {
+    WriteFailed,
+    ShortWrite,
+    EventFlagWakeFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum CapabilityClosure {
+    Frontend(i32),
+    DemuxBase,
+    TsFilter,
+    SectionFilter,
+    PcrFilter,
+    Pes,
+    AudioAv,
+    VideoAv,
+    PlaybackDvr,
+    RecordDvr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilitySelectionError {
+    pub reason: &'static str,
+    pub returned_in_order: Vec<CapabilityClosure>,
+}
 
 #[cfg(test)]
 mod tests {
@@ -1006,12 +1069,6 @@ mod tests {
         assert_eq!(drain.packets, vec![p]);
         assert_eq!(drain.malformed_bytes, 3);
         assert_eq!(buf.tail_len(), 0);
-    }
-
-    #[test]
-    fn id_allocator_reports_exhaustion_without_wrapping() {
-        let alloc = IdAllocator::new_bounded(i32::MAX, i32::MAX);
-        assert!(alloc.try_allocate().is_err());
     }
 }
 

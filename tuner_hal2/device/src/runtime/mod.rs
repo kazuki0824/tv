@@ -15,22 +15,24 @@ pub use backend_worker::{
     apply_frontend_backend_lnb_voltage, apply_frontend_backend_lnb_voltage_classified,
     run_frontend_backend_tune_worker, run_frontend_backend_tune_worker_with_previous,
     FrontendBackendLnbApplyOutcome, FrontendBackendLnbApplyPlan, FrontendBackendSession,
-    FrontendBackendSessionKind, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
-    FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLnbVoltage,
-    FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
+    FrontendBackendSessionKind, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
+    FrontendLnbVoltage, FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
+    Px4ChannelApplyResult,
 };
 pub use frontend_runtime::{
-    FrontendRuntime, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState,
-    FrontendTerminalEvent, FrontendTerminalEventKind, FrontendTerminalEventReason,
+    FrontendBackendFailureDiagnostic, FrontendDiagnosticWriteFailure, FrontendRuntime,
+    FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, FrontendTerminalEvent,
+    FrontendTerminalEventKind, FrontendTerminalEventReason,
 };
 pub use frontend_worker::{
-    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerDetachedJoin,
-    FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError,
-    FrontendWorkerStopOutcome, FrontendWorkerStopPoll, FrontendWorkerStopTicket,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerRegistry,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
+    FrontendWorkerStopTicket, FrontendWorkerSubmitWait,
 };
 pub use live_pump::{
     FrontendLivePacketSink, FrontendLivePumpJoinOutcome, FrontendLivePumpOwner,
-    FrontendLivePumpReport,
+    FrontendLivePumpReport, PreparedFrontendLivePump,
 };
 pub use reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 pub use scan_session::{FrontendScanPhase, FrontendScanSession, FrontendScanTerminalReason};
+pub use tune_txn::{BackendTuneRollbackFailure, BackendTuneRollbackStep, BackendTuneStep};

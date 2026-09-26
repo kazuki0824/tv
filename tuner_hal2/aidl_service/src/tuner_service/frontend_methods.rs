@@ -60,7 +60,7 @@ impl IFrontend for FrontendAidlObject {
         self.set_callback_transaction(callback)
     }
     fn tune(&self, settings: &FrontendSettings) -> BinderResult<()> {
-        execute_shared_object_runtime_use_case_with_request_builder(
+        let result = execute_shared_object_runtime_use_case_with_request_builder(
             &self.runtime(),
             self.handle(),
             || {
@@ -82,7 +82,11 @@ impl IFrontend for FrontendAidlObject {
                     dispatch_proof,
                 )
             },
-        )
+        );
+        if let Err(status) = &result {
+            log::error!("正規runtime処理後にIFrontend.tuneが失敗しました: status={status:?}");
+        }
+        result
     }
     fn stopTune(&self) -> BinderResult<()> {
         execute_shared_object_runtime_use_case(

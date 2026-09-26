@@ -66,6 +66,9 @@ jobs:
       fail-fast: false
       matrix:
         package: ${{ fromJson(needs.workspace-packages.outputs.packages) }}
+        exclude:
+          # #121のservice_runtime packageはproduction rustc parity用。Clippy policyは既存packageへ適用する。
+          - package: maleicacid-tuner-hal2-service-runtime-host-ci
     defaults:
       run:
         working-directory: tuner_hal2/host_ci
@@ -90,6 +93,21 @@ jobs:
       - name: Type-check production Rust libraries and host crates
         run: cargo check --workspace --lib --locked
 
+  service-runtime-production-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Type-check production service_runtime with AOSP warning policy
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo check -p maleicacid-tuner-hal2-service-runtime-host-ci --lib --locked
+
   unit-tests:
     name: Unit tests (${{ matrix.package }})
     needs: workspace-packages
@@ -99,6 +117,9 @@ jobs:
       fail-fast: false
       matrix:
         package: ${{ fromJson(needs.workspace-packages.outputs.packages) }}
+        exclude:
+          # production module graphの型検査を目的とし、service_runtimeのtest-only graphは対象にしない。
+          - package: maleicacid-tuner-hal2-service-runtime-host-ci
     defaults:
       run:
         working-directory: tuner_hal2/host_ci
@@ -108,6 +129,23 @@ jobs:
           persist-credentials: false
       - name: Packageのunit testsを実行
         run: cargo test -p "${{ matrix.package }}" --lib --locked
+
+  concurrency-loom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci/concurrency_loom
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 並行性契約のLoom試験
+        env:
+          RUSTFLAGS: "--cfg loom"
+        run: |
+          cargo generate-lockfile
+          cargo test --locked
 
   demux-record-fmq:
     runs-on: ubuntu-latest

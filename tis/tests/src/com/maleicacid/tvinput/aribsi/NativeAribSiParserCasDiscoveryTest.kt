@@ -10,6 +10,136 @@ import org.junit.Test
 // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
 @Suppress("LargeClass", "TooManyFunctions")
 class NativeAribSiParserCasDiscoveryTest {
+    @Test
+    fun patDerivedPmtPidIsAvailableBeforeServiceRegistrationAndPmtParsing() {
+        NativeAribSiParser().use { parser ->
+            check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
+            check(parser.pmtPidsForSectionFilters() == setOf(TsPid(PID_PMT)))
+            check(parser.casDiscoverySnapshot().pmtPids.isEmpty())
+        }
+    }
+
+    @Test
+    fun snapshotFailureKeepsItsReasonAndDoesNotBecomeEmptyFacts() {
+        NativeAribSiParser().use { parser ->
+            val method =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("nativeSnapshotBulkJson", Long::class.javaPrimitiveType)
+                    .apply { isAccessible = true }
+            val thrown = runCatching { method.invoke(parser, -1L) }.exceptionOrNull()
+            check(thrown is java.lang.reflect.InvocationTargetException)
+            val failure = thrown.cause
+            check(failure is NativeSiException && failure.reason == NativeSiFailureReason.INVALID_HANDLE)
+            check(parser.programStateSnapshot().events.isEmpty())
+        }
+    }
+
+    @Test
+    fun nativeByteInputFailuresDoNotBecomeEmptyValues() {
+        NativeAribSiParser().use { parser ->
+            for (name in listOf(
+                "nativeDecodeAribString",
+                "nativeDecodeAribStringDiagnosticSummary",
+                "nativeExtractProgramKeyResult",
+                "nativeDecodeChannelProviderData",
+            )) {
+                val method = NativeAribSiParser::class.java.getDeclaredMethod(name, ByteArray::class.java)
+                method.isAccessible = true
+                val thrown = runCatching { method.invoke(parser, null) }.exceptionOrNull()
+                check(thrown is java.lang.reflect.InvocationTargetException)
+                val failure = thrown.cause
+                check(failure is NativeSiException && failure.reason == NativeSiFailureReason.JNI_INPUT)
+            }
+            check(parser.decodeAribString(ByteArray(0)).isEmpty())
+            check(parser.extractProgramKeyResult(ByteArray(0)).isEmpty())
+            check(parser.decodeChannelProviderData(ByteArray(0)).isEmpty())
+        }
+    }
+
+    @Test
+    fun codecJniFailureDoesNotBecomeInvalidCodecData() {
+        val method =
+            NativeAribSiParser::class.java
+                .getDeclaredMethod(
+                    "nativeProbeAacConfiguration",
+                    ByteArray::class.java,
+                    ByteArray::class.java,
+                ).apply { isAccessible = true }
+        val thrown = runCatching { method.invoke(null, null, null) }.exceptionOrNull()
+        check(thrown is java.lang.reflect.InvocationTargetException)
+        val failure = thrown.cause
+        check(failure is NativeSiException && failure.reason == NativeSiFailureReason.JNI_INPUT)
+    }
+
+    @Test
+    fun providerJniInputFailureIsNotAnEmptyDomainValue() {
+        NativeAribSiParser().use { parser ->
+            for ((name, parameter) in listOf(
+                "nativeBuildChannelProviderData" to String::class.java,
+                "nativeBuildProgramProviderData" to String::class.java,
+                "nativeNormalizeProgramProviderData" to ByteArray::class.java,
+            )) {
+                val method = NativeAribSiParser::class.java.getDeclaredMethod(name, parameter)
+                method.isAccessible = true
+                val result = JSONObject(method.invoke(parser, null) as String)
+                check(!result.getBoolean("success"))
+                check(result.getString("bytes").isEmpty())
+                check(result.getString("errorCode") == "JNI_ERROR")
+                check(result.getString("errorMessage").isNotBlank())
+            }
+        }
+    }
+
+    @Test
+    fun snapshotRejectsMissingFieldsAndInvalidTypes() {
+        NativeAribSiParser().use { parser ->
+            val handleField = NativeAribSiParser::class.java.getDeclaredField("handle").apply { isAccessible = true }
+            val snapshotMethod =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("nativeSnapshotBulkJson", Long::class.javaPrimitiveType)
+                    .apply { isAccessible = true }
+            val parseMethod =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("parseNativeTransactionJson", String::class.java)
+                    .apply { isAccessible = true }
+            val valid = snapshotMethod.invoke(parser, handleField.getLong(parser)) as String
+            parseMethod.invoke(parser, valid)
+            val keys = JSONObject(valid).keys().asSequence().toList()
+            for (key in keys) {
+                val missing = JSONObject(valid).apply { remove(key) }
+                val failure = runCatching { parseMethod.invoke(parser, missing.toString()) }.exceptionOrNull()
+                check(failure is java.lang.reflect.InvocationTargetException && failure.cause is IllegalStateException)
+            }
+            for ((key, value) in listOf(
+                "ingestSequence" to "0",
+                "collectionGeneration" to -1,
+                "discoveryStage" to 3,
+                "broadcastClock" to false,
+                "events" to JSONObject(),
+                "serviceSemanticFacts" to org.json.JSONArray().put(1),
+            )) {
+                val invalid = JSONObject(valid).put(key, value)
+                check(runCatching { parseMethod.invoke(parser, invalid.toString()) }.isFailure)
+            }
+        }
+    }
+
+    @Test
+    fun failedDestroyKeepsHandleForOwnerRetry() {
+        NativeAribSiParser().use { parser ->
+            val handleField = NativeAribSiParser::class.java.getDeclaredField("handle").apply { isAccessible = true }
+            val original = handleField.getLong(parser)
+            try {
+                handleField.setLong(parser, -1L)
+                val failure = runCatching { parser.close() }.exceptionOrNull()
+                check(failure is NativeParserCleanupException && failure.status == SiStatus.INVALID_HANDLE)
+                check(handleField.getLong(parser) == -1L)
+            } finally {
+                handleField.setLong(parser, original)
+            }
+        }
+    }
+
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test

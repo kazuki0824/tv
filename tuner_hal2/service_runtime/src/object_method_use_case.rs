@@ -1,15 +1,14 @@
 use std::sync::{Arc, Mutex};
 
 use crate::registry::LnbRegistryProfile;
-use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendSystem, HalError, HalInternalKind, HalInvalidArgumentKind,
     HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_device::{FrontendRuntimeState, FrontendSignalState};
 use maleicacid_tuner_hal2_domain_request::{
-    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
-    RuntimeExecutableRequest,
+    AidlApi, AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+    CommandPlan, RuntimeExecutableRequest,
 };
 
 use crate::{
@@ -526,12 +525,10 @@ fn finish_queue_descriptor_export(
     let object_id = plan.object_id();
     let generation = plan.generation();
     let runtime_id = plan.runtime_id();
-    let mut guard = runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while exporting queue descriptor",
-        )
-    })?;
+    let mut guard = TunerServiceRuntime::lock_shared(
+        runtime.as_ref(),
+        "queue descriptor出力中にservice runtimeのロックが汚染されました",
+    )?;
     aidl_object_live(&guard, object_id, generation, object_kind)?;
     match plan.export_descriptor() {
         Ok(snapshot) => Ok(ObjectQueryResponse::QueueDescriptor(snapshot)),
@@ -658,7 +655,7 @@ fn plan_aidl_method_call(method: AidlMethodCall) -> Result<ObjectMethodUseCasePl
     let method_plan = AidlMethodAdapter::plan(method)?;
     Ok(build_plan(
         method_plan.command_plan,
-        method_plan.command.runtime_executable_request(),
+        method_plan.executable_request.clone(),
     ))
 }
 
@@ -670,12 +667,11 @@ fn build_aidl_method_plan_after_live_inner<T, E, F>(
 where
     F: FnOnce() -> Result<(AidlMethodCall, T), E>,
 {
-    let mut runtime = runtime.lock().map_err(|_| {
-        ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned",
-        ))
-    })?;
+    let mut runtime = TunerServiceRuntime::lock_shared(
+        runtime.as_ref(),
+        "service runtimeのロックが汚染されています",
+    )
+    .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
     aidl_object_live(
         &runtime,
         target.object_id(),
@@ -706,12 +702,10 @@ impl ObjectMethodUseCase {
     ) -> Result<ObjectQueryResponse, HalError> {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let execution = {
-            let mut runtime = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned",
-                )
-            })?;
+            let mut runtime = TunerServiceRuntime::lock_shared(
+                runtime.as_ref(),
+                "service runtimeのロックが汚染されています",
+            )?;
             aidl_object_live(
                 &runtime,
                 target.object_id(),
@@ -745,12 +739,11 @@ impl ObjectMethodUseCase {
     {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let execution = {
-            let mut runtime = runtime.lock().map_err(|_| {
-                ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned",
-                ))
-            })?;
+            let mut runtime = TunerServiceRuntime::lock_shared(
+                runtime.as_ref(),
+                "service runtimeのロックが汚染されています",
+            )
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             aidl_object_live(
                 &runtime,
                 target.object_id(),
@@ -790,12 +783,11 @@ impl ObjectMethodUseCase {
             FnOnce(&mut TunerServiceRuntime, ObjectMethodExecutionToken, B) -> Result<T, HalError>,
     {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
-        let mut runtime = runtime.lock().map_err(|_| {
-            ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            ))
-        })?;
+        let mut runtime = TunerServiceRuntime::lock_shared(
+            runtime.as_ref(),
+            "service runtimeのロックが汚染されています",
+        )
+        .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
         aidl_object_live(
             &runtime,
             target.object_id(),
@@ -834,12 +826,11 @@ impl ObjectMethodUseCase {
     {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let request = {
-            let mut runtime_guard = runtime.lock().map_err(|_| {
-                ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned",
-                ))
-            })?;
+            let mut runtime_guard = TunerServiceRuntime::lock_shared(
+                runtime.as_ref(),
+                "service runtimeのロックが汚染されています",
+            )
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             aidl_object_live(
                 &runtime_guard,
                 target.object_id(),

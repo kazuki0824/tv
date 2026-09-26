@@ -19,8 +19,14 @@ pub fn dispatch_target_for(
     transaction_spec_for(transaction).map(|spec| spec.dispatch_target)
 }
 
-pub fn adapter_transactions_are_covered() -> bool {
+pub fn missing_adapter_transactions() -> Vec<RuntimeTransactionName> {
     AIDL_TRANSACTION_TABLE
         .iter()
-        .all(|plan| dispatch_target_for(plan.transaction()).is_some())
+        .filter_map(|plan| {
+            let transaction = plan.transaction();
+            dispatch_target_for(transaction)
+                .is_none()
+                .then_some(transaction)
+        })
+        .collect()
 }

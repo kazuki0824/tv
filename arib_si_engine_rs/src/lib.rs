@@ -16,7 +16,7 @@ use descriptors::{
 };
 use discovery_requirements::DiscoveryProfile;
 use eit::{EitEvent, EitStableEventIdentity};
-use jni::objects::{JByteArray, JClass, JObject, JString};
+use jni::objects::{JByteArray, JClass, JObject, JString, JThrowable, JValue};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 use maleicacid_arib_si_engine_core::eit_instances::{EitInstanceState, EitInstances};
@@ -80,7 +80,35 @@ struct ParserState {
     eit_instances: EitInstances,
     sections_seen: u64,
     last_status: jint,
+    invalid_section_reason: Option<InvalidSectionReason>,
     latest_broadcast_clock: Option<BroadcastClockFact>,
+}
+
+#[derive(Clone, Copy)]
+enum InvalidSectionReason {
+    Header,
+    Length,
+    Clock,
+    Crc,
+}
+
+impl InvalidSectionReason {
+    fn diagnostic(self) -> ParserDiagnosticDto {
+        let (code, message) = match self {
+            Self::Header => (
+                "SECTION_HEADER_INVALID",
+                "section headerが不正または途中で切れています",
+            ),
+            Self::Length => ("SECTION_LENGTH_MISMATCH", "section長が入力長と一致しません"),
+            Self::Clock => ("BROADCAST_CLOCK_INVALID", "放送時刻sectionが不正です"),
+            Self::Crc => ("SECTION_CRC_MISMATCH", "section CRCが一致しません"),
+        };
+        ParserDiagnosticDto {
+            code,
+            message: message.to_string(),
+            severity: "error",
+        }
+    }
 }
 
 impl Default for ParserState {
@@ -95,6 +123,7 @@ impl Default for ParserState {
             collector: ServiceDiscoveryCollector::default(),
             sections_seen: 0,
             last_status: STATUS_OK,
+            invalid_section_reason: None,
             latest_broadcast_clock: None,
         }
     }
@@ -106,6 +135,7 @@ impl ParserState {
         self.eit_instances = EitInstances::default();
         self.collection_generation = self.collection_generation.saturating_add(1);
         self.latest_broadcast_clock = None;
+        self.invalid_section_reason = None;
     }
 
     fn expire_collection_at(&mut self, now: Instant) {
@@ -145,16 +175,19 @@ impl ParserState {
 
     fn ingest_section(&mut self, pid: u16, section: &[u8]) -> jint {
         self.expire_collection_at(Instant::now());
+        self.invalid_section_reason = None;
         if !self.admit_section(section.len()) {
             self.last_status = STATUS_COLLECTION_LIMIT_EXCEEDED;
             return self.last_status;
         }
         let Some(header) = parse_section_header(section) else {
             self.last_status = STATUS_INVALID_SECTION;
+            self.invalid_section_reason = Some(InvalidSectionReason::Header);
             return STATUS_INVALID_SECTION;
         };
         if header.total_length != section.len() {
             self.last_status = STATUS_INVALID_SECTION;
+            self.invalid_section_reason = Some(InvalidSectionReason::Length);
             return STATUS_INVALID_SECTION;
         }
 
@@ -166,6 +199,7 @@ impl ParserState {
         if pid == 0x0014 && matches!(table_id, 0x70 | 0x73) {
             let Some(clock) = parse_broadcast_clock(section, &header) else {
                 self.last_status = STATUS_INVALID_SECTION;
+                self.invalid_section_reason = Some(InvalidSectionReason::Clock);
                 return STATUS_INVALID_SECTION;
             };
             self.latest_broadcast_clock = Some(clock);
@@ -179,6 +213,7 @@ impl ParserState {
             }
             if header.syntax && !section_crc_valid_with_header(section, &header) {
                 self.last_status = STATUS_INVALID_SECTION;
+                self.invalid_section_reason = Some(InvalidSectionReason::Crc);
                 return STATUS_INVALID_SECTION;
             }
             let malformed_descriptor_loop = section_has_malformed_descriptor_loop(
@@ -1096,7 +1131,7 @@ impl From<BroadcastClockFact> for BroadcastClockFactDto {
     }
 }
 
-fn bulk_snapshot_json(state: &mut ParserState) -> String {
+fn bulk_snapshot_json(state: &mut ParserState) -> Result<String, serde_json::Error> {
     state.expire_collection_at(Instant::now());
     let ingest_sequence = state.sections_seen;
     let last_status = state.last_status;
@@ -1105,7 +1140,10 @@ fn bulk_snapshot_json(state: &mut ParserState) -> String {
     let table_requirements = &collection_state.table_requirements;
     let semantic_facts = &collection_state.semantic_facts_by_service;
     let snapshot = &collection_state.snapshot;
-    let parser_diagnostics = parser_diagnostics(ingest_sequence, last_status, snapshot);
+    let mut parser_diagnostics = parser_diagnostics(ingest_sequence, last_status, snapshot);
+    if let Some(reason) = state.invalid_section_reason {
+        parser_diagnostics.push(reason.diagnostic());
+    }
     let actual_transport_keys = state.sdt_actual_transport_keys();
     let cat_ca = &snapshot.cat_ca.descriptors;
     // 更新区間は排出型一括APIだけで公開する。
@@ -1156,7 +1194,6 @@ fn bulk_snapshot_json(state: &mut ParserState) -> String {
             .collect(),
         parser_diagnostics,
     })
-    .unwrap_or_default()
 }
 
 #[derive(Serialize)]
@@ -1318,10 +1355,73 @@ fn with_state_mut(
     result
 }
 
-fn java_string(env: &mut JNIEnv<'_>, value: Option<String>) -> jstring {
-    match env.new_string(value.unwrap_or_default()) {
+#[derive(Clone, Copy, Debug)]
+enum SiJniFailureReason {
+    ModuleAbnormal,
+    RegistryPoisoned,
+    ParserPoisoned,
+    InvalidHandle,
+    JniInput,
+    JsonEncoding,
+    JniOutput,
+}
+
+impl SiJniFailureReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::ModuleAbnormal => "MODULE_ABNORMAL",
+            Self::RegistryPoisoned => "REGISTRY_POISONED",
+            Self::ParserPoisoned => "PARSER_POISONED",
+            Self::InvalidHandle => "INVALID_HANDLE",
+            Self::JniInput => "JNI_INPUT",
+            Self::JsonEncoding => "JSON_ENCODING",
+            Self::JniOutput => "JNI_OUTPUT",
+        }
+    }
+
+    fn failure(self, detail: impl ToString) -> SiJniFailure {
+        SiJniFailure {
+            reason: self,
+            detail: detail.to_string(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SiJniFailure {
+    reason: SiJniFailureReason,
+    detail: String,
+}
+
+fn throw_si_failure(env: &mut JNIEnv<'_>, failure: SiJniFailure) -> jstring {
+    let thrown = (|| -> jni::errors::Result<()> {
+        if env.exception_check()? {
+            return Ok(());
+        }
+        let reason = JObject::from(env.new_string(failure.reason.code())?);
+        let detail = JObject::from(env.new_string(&failure.detail)?);
+        let exception = env.new_object(
+            "com/maleicacid/tvinput/aribsi/NativeSiException",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            &[JValue::Object(&reason), JValue::Object(&detail)],
+        )?;
+        env.throw(JThrowable::from(exception))
+    })();
+    if let Err(error) = thrown {
+        // VMの保留例外は消去しない。例外なしのnullもKotlinの受取入口が拒否する。
+        eprintln!("SI JNI failure={failure:?}; exception delivery failure={error}");
+    }
+    ptr::null_mut()
+}
+
+fn java_string(env: &mut JNIEnv<'_>, value: Result<String, SiJniFailure>) -> jstring {
+    let value = match value {
+        Ok(value) => value,
+        Err(failure) => return throw_si_failure(env, failure),
+    };
+    match env.new_string(value) {
         Ok(s) => s.into_raw(),
-        Err(_) => ptr::null_mut(),
+        Err(error) => throw_si_failure(env, SiJniFailureReason::JniOutput.failure(error)),
     }
 }
 
@@ -1339,50 +1439,91 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     handle: jlong,
 ) -> jstring {
+    java_string(&mut env, snapshot_bulk_json(handle))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotPmtPidsForSectionFiltersJson(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jstring {
+    java_string(&mut env, snapshot_pmt_pids_for_section_filters_json(handle))
+}
+
+fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, SiJniFailure> {
     if !si_module_is_healthy() {
-        return java_string(&mut env, Some("{}".to_string()));
+        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
     let parser = match registry().lock() {
         Ok(guard) => guard.get(handle),
         Err(_) => {
             record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
-            return java_string(&mut env, Some("{}".to_string()));
+            return Err(SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME));
         }
     };
     let Some(parser) = parser else {
-        return java_string(&mut env, Some("{}".to_string()));
+        return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
-    let json = match parser.lock() {
-        Ok(mut guard) => bulk_snapshot_json(&mut guard),
+    let result = match parser.lock() {
+        Ok(guard) => serde_json::to_string(&guard.collector.pmt_pids_for_section_filters())
+            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
-            "{}".to_string()
+            Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
         }
     };
-    java_string(&mut env, Some(json))
+    result
 }
 
-fn jstring_to_string(env: &mut JNIEnv<'_>, value: JString<'_>) -> Option<String> {
-    env.get_string(&value).ok().map(|s| s.into())
+fn snapshot_bulk_json(handle: jlong) -> Result<String, SiJniFailure> {
+    if !si_module_is_healthy() {
+        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
+    }
+    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return Err(SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME));
+        }
+    };
+    let Some(parser) = parser else {
+        return Err(SiJniFailureReason::InvalidHandle.failure(handle));
+    };
+    let json = match parser.lock() {
+        Ok(mut guard) => bulk_snapshot_json(&mut guard)
+            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
+        }
+    };
+    json
 }
 
-fn jbytearray_to_vec(env: &mut JNIEnv<'_>, value: JByteArray<'_>) -> Vec<u8> {
-    env.convert_byte_array(value).unwrap_or_default()
+fn jbytearray_to_vec(env: &JNIEnv<'_>, value: JByteArray<'_>) -> Result<Vec<u8>, SiJniFailure> {
+    env.convert_byte_array(value)
+        .map_err(|error| SiJniFailureReason::JniInput.failure(error))
+}
+
+enum CodecInputFailure {
+    TooLarge,
+    Jni(jni::errors::Error),
 }
 
 fn bounded_codec_bytes(
     env: &mut JNIEnv<'_>,
     value: &JByteArray<'_>,
     maximum: i32,
-) -> Result<Vec<u8>, &'static str> {
+) -> Result<Vec<u8>, CodecInputFailure> {
     let length = env
         .get_array_length(value)
-        .map_err(|_| "codec配列長を取得できません")?;
+        .map_err(CodecInputFailure::Jni)?;
     if length > maximum {
-        return Err("codec構成probeの入力上限を超過しました");
+        return Err(CodecInputFailure::TooLarge);
     }
     env.convert_byte_array(value)
-        .map_err(|_| "codec構成probeの入力を取得できません")
+        .map_err(CodecInputFailure::Jni)
 }
 
 #[no_mangle]
@@ -1403,12 +1544,20 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     };
     let result = match (input, config) {
         (Ok(input), Ok(config)) => probe_adts_configuration(&input, config.as_deref()),
-        (Err(reason), _) | (_, Err(reason)) => AacConfigurationProbe::Invalid { reason },
+        (Err(CodecInputFailure::Jni(error)), _) | (_, Err(CodecInputFailure::Jni(error))) => {
+            return java_string(&mut env, Err(SiJniFailureReason::JniInput.failure(error)));
+        }
+        (Err(CodecInputFailure::TooLarge), _) | (_, Err(CodecInputFailure::TooLarge)) => {
+            AacConfigurationProbe::Invalid {
+                reason: "codec構成probeの入力上限を超過しました",
+            }
+        }
     };
-    match serde_json::to_string(&result) {
-        Ok(json) => java_string(&mut env, Some(json)),
-        Err(_) => ptr::null_mut(),
-    }
+    java_string(
+        &mut env,
+        serde_json::to_string(&result)
+            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
+    )
 }
 
 fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String {
@@ -1422,6 +1571,18 @@ fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String
         json_string(&result.error_code),
         json_string(&result.error_message),
     )
+}
+
+fn provider_jni_failure(error: jni::errors::Error) -> provider_data_api::ProviderDataResult {
+    provider_data_api::ProviderDataResult {
+        success: false,
+        json: String::new(),
+        schema_version: 1,
+        truncated: false,
+        diagnostics_dropped_count: 0,
+        error_code: "JNI_ERROR".to_string(),
+        error_message: error.to_string(),
+    }
 }
 
 fn program_key_result_json(result: provider_data_api::ProgramKeyResult) -> String {
@@ -1441,9 +1602,11 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     request_json: JString<'_>,
 ) -> jstring {
-    let request = jstring_to_string(&mut env, request_json).unwrap_or_default();
-    let result = provider_data_api::build_channel_provider_data(&request);
-    java_string(&mut env, Some(provider_result_json(result)))
+    let result = match env.get_string(&request_json) {
+        Ok(request) => provider_data_api::build_channel_provider_data(&String::from(request)),
+        Err(error) => provider_jni_failure(error),
+    };
+    java_string(&mut env, Ok(provider_result_json(result)))
 }
 
 #[no_mangle]
@@ -1457,7 +1620,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 ) -> jstring {
     java_string(
         &mut env,
-        Some(provider_data_api::build_program_key(
+        Ok(provider_data_api::build_program_key(
             onid, tsid, sid, event_id,
         )),
     )
@@ -1469,9 +1632,11 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     request_json: JString<'_>,
 ) -> jstring {
-    let request = jstring_to_string(&mut env, request_json).unwrap_or_default();
-    let result = provider_data_api::build_program_provider_data(&request);
-    java_string(&mut env, Some(provider_result_json(result)))
+    let result = match env.get_string(&request_json) {
+        Ok(request) => provider_data_api::build_program_provider_data(&String::from(request)),
+        Err(error) => provider_jni_failure(error),
+    };
+    java_string(&mut env, Ok(provider_result_json(result)))
 }
 
 #[no_mangle]
@@ -1480,9 +1645,11 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     provider_data: JByteArray<'_>,
 ) -> jstring {
-    let data = jbytearray_to_vec(&mut env, provider_data);
-    let result = provider_data_api::normalize_program_provider_data(&data);
-    java_string(&mut env, Some(provider_result_json(result)))
+    let result = match env.convert_byte_array(provider_data) {
+        Ok(data) => provider_data_api::normalize_program_provider_data(&data),
+        Err(error) => provider_jni_failure(error),
+    };
+    java_string(&mut env, Ok(provider_result_json(result)))
 }
 
 #[no_mangle]
@@ -1491,8 +1658,12 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     provider_data: JByteArray<'_>,
 ) -> jstring {
-    let data = jbytearray_to_vec(&mut env, provider_data);
-    let json = provider_data_api::extract_program_key_result(&data).map(program_key_result_json);
+    let json = jbytearray_to_vec(&env, provider_data).map(|data| {
+        // キー不在は正常な欠落表現を使い、JNI失敗はResultとして伝達する。
+        provider_data_api::extract_program_key_result(&data)
+            .map(program_key_result_json)
+            .unwrap_or_default()
+    });
     java_string(&mut env, json)
 }
 
@@ -1502,13 +1673,9 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     provider_data: JByteArray<'_>,
 ) -> jstring {
-    let data = jbytearray_to_vec(&mut env, provider_data);
-    java_string(
-        &mut env,
-        Some(provider_data_api::decode_channel_provider_data(
-            data.as_slice(),
-        )),
-    )
+    let json = jbytearray_to_vec(&env, provider_data)
+        .map(|data| provider_data_api::decode_channel_provider_data(&data));
+    java_string(&mut env, json)
 }
 
 #[no_mangle]
@@ -1606,11 +1773,9 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     bytes: JByteArray<'_>,
 ) -> jstring {
-    let decoded = match env.convert_byte_array(bytes) {
-        Ok(v) => arib_string::decode_arib_string_lossy(&v).0,
-        Err(_) => String::new(),
-    };
-    java_string(&mut env, Some(decoded))
+    let decoded =
+        jbytearray_to_vec(&env, bytes).map(|bytes| arib_string::decode_arib_string_lossy(&bytes).0);
+    java_string(&mut env, decoded)
 }
 
 #[no_mangle]
@@ -1619,17 +1784,55 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     bytes: JByteArray<'_>,
 ) -> jstring {
-    let summary = match env.convert_byte_array(bytes) {
-        Ok(v) => arib_string::decode_arib_string_lossy(&v).1.summary(),
-        Err(_) => String::from("scope=mirakc_scope_non_caption_si_epg_only replacement_count=0 unsupported_escape_count=0 truncated_escape_count=0 truncated_graphic_count=0 entries=[]"),
-    };
-    java_string(&mut env, Some(summary))
+    let summary = jbytearray_to_vec(&env, bytes)
+        .map(|bytes| arib_string::decode_arib_string_lossy(&bytes).1.summary());
+    java_string(&mut env, summary)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sections::crc32_mpeg;
+
+    #[test]
+    fn invalid_section_reason_uses_existing_snapshot_diagnostics() {
+        let cases: &[(u16, &[u8], &str)] = &[
+            (0, &[0], "SECTION_HEADER_INVALID"),
+            (0x14, &[0x70, 0x70, 0, 0], "SECTION_LENGTH_MISMATCH"),
+            (
+                0x14,
+                &[0x70, 0x70, 5, 0xff, 0xff, 0xff, 0xff, 0xff],
+                "BROADCAST_CLOCK_INVALID",
+            ),
+            (
+                0,
+                &[0, 0xb0, 9, 0, 1, 0xc1, 0, 0, 0, 0, 0, 0],
+                "SECTION_CRC_MISMATCH",
+            ),
+        ];
+        for &(pid, bytes, code) in cases {
+            let mut state = ParserState::default();
+            assert_eq!(state.ingest_section(pid, bytes), STATUS_INVALID_SECTION);
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
+            assert!(snapshot["parserDiagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == code));
+            assert_eq!(
+                state.ingest_section(0x10, &[0x7f, 0x30, 0]),
+                STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE
+            );
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
+            assert!(!snapshot["parserDiagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == code));
+        }
+    }
 
     fn section_with_crc(mut body: Vec<u8>) -> Vec<u8> {
         let crc = crc32_mpeg(&body);
@@ -1819,7 +2022,7 @@ mod tests {
             STATUS_COLLECTION_LIMIT_EXCEEDED
         );
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
         assert!(snapshot["broadcastClock"].is_null());
         assert_eq!(snapshot["discoveryStage"], DISCOVERY_STAGE_INCOMPLETE);
         assert!(snapshot["parserDiagnostics"]
@@ -1881,7 +2084,7 @@ mod tests {
             })
         );
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
         assert_eq!(snapshot["broadcastClock"]["tableId"].as_u64(), Some(0x73));
         assert_eq!(snapshot["broadcastClock"]["mjd"].as_u64(), Some(0xea60));
     }
@@ -1906,7 +2109,7 @@ mod tests {
         ]);
         assert_eq!(state.ingest_section(0x0011, &sdt), STATUS_OK);
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
         let diagnostics = snapshot["parserDiagnostics"].as_array().unwrap();
         let text_diagnostic = diagnostics
             .iter()

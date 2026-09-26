@@ -10,7 +10,10 @@ use super::{
 use maleicacid_tuner_hal2_demux::{
     DemuxRuntimeRollbackCommitRequest, DemuxRuntimeRollbackRestoreRequest,
 };
-use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;
+use maleicacid_tuner_hal2_device::{
+    BackendTuneRollbackFailure, BackendTuneStep, FrontendBackendSubmitFailure,
+    FrontendWorkerStopTicket,
+};
 
 impl TunerServiceRuntime {
     pub(crate) fn mark_frontend_scan_session_callback_failed(
@@ -232,6 +235,63 @@ impl TunerServiceRuntime {
                 )
             })?;
         runtime.mark_scan_submit_rejected_after_boundary(generation, error)
+    }
+}
+
+impl FrontendTxn<'_> {
+    pub(crate) fn record_completed_frontend_backend_submit_failure(
+        &mut self,
+        frontend_id: i32,
+        failure: FrontendBackendSubmitFailure,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "遅延backend失敗の記録中にfrontend runtimeがありません",
+                )
+            })?
+            .record_completed_backend_submit_failure(failure)
+    }
+
+    pub(crate) fn record_frontend_backend_failure_diagnostic(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        step: Option<BackendTuneStep>,
+        primary_error: HalError,
+        rollback_failure: Option<BackendTuneRollbackFailure>,
+    ) -> Result<(), HalError> {
+        let frontend_key = crate::registry::FrontendRuntimeId(frontend_id);
+        let backend = self
+            .runtime
+            .registry
+            .frontend(frontend_key)
+            .map(|entry| entry.backend)
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "backend失敗診断の記録中にfrontend registry entryがありません",
+                )
+            })?;
+        self.runtime
+            .registry
+            .frontend_runtime_mut(frontend_key)
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "backend失敗診断の記録中にfrontend runtimeがありません",
+                )
+            })?
+            .record_backend_failure_diagnostic_context(
+                generation,
+                backend,
+                step,
+                primary_error,
+                rollback_failure,
+            )
     }
 }
 
@@ -649,59 +709,33 @@ impl<'a> FrontendTxn<'a> {
         runtime.commit_scan_after_fence(generation, reader, fingerprint, candidates)
     }
 
-    pub(crate) fn record_frontend_backend_request_failure_after_fence(
-        &mut self,
-        frontend_id: i32,
-        generation: u64,
-        error: HalError,
-        backend_stopped: bool,
-    ) -> Result<(), HalError> {
-        let frontend_key = crate::registry::FrontendRuntimeId(frontend_id);
-        let backend = self
-            .runtime
-            .registry
-            .frontend(frontend_key)
-            .map(|entry| entry.backend)
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend registry entry is missing while recording backend request failure",
-                )
-            })?;
-        let runtime = self
-            .runtime
-            .registry
-            .frontend_runtime_mut(frontend_key)
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing while recording backend request failure",
-                )
-            })?;
-        let diagnostic_result =
-            runtime.record_backend_failure_diagnostic(generation, backend, error.clone());
-        let state_result =
-            runtime.record_backend_request_failure_after_fence(generation, error, backend_stopped);
-        match (state_result, diagnostic_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(state_error), Ok(())) => Err(state_error),
-            (Ok(()), Err(diagnostic_error)) => Err(diagnostic_error),
-            (Err(state_error), Err(diagnostic_error)) => {
-                Err(super::compose_primary_cleanup_failure(
-                    "frontend backend request failure state and diagnostic record both failed",
-                    state_error,
-                    diagnostic_error,
-                ))
-            }
-        }
-    }
-
     pub(crate) fn record_frontend_backend_activation_failure_after_commit(
         &mut self,
         frontend_id: i32,
         generation: u64,
         error: HalError,
         backend_stopped: bool,
+    ) -> Result<(), HalError> {
+        self.record_frontend_backend_activation_failure_after_commit_context(
+            frontend_id,
+            generation,
+            error.clone(),
+            backend_stopped,
+            None,
+            error,
+            None,
+        )
+    }
+
+    pub(crate) fn record_frontend_backend_activation_failure_after_commit_context(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        error: HalError,
+        backend_stopped: bool,
+        step: Option<BackendTuneStep>,
+        diagnostic_primary_error: HalError,
+        rollback_failure: Option<BackendTuneRollbackFailure>,
     ) -> Result<(), HalError> {
         let frontend_key = crate::registry::FrontendRuntimeId(frontend_id);
         let backend = self
@@ -725,10 +759,18 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing while recording backend activation failure",
                 )
             })?;
-        let diagnostic_result =
-            runtime.record_backend_failure_diagnostic(generation, backend, error.clone());
-        let state_result =
-            runtime.record_backend_activation_failure_after_commit(generation, error, backend_stopped);
+        let diagnostic_result = runtime.record_backend_failure_diagnostic_context(
+            generation,
+            backend,
+            step,
+            diagnostic_primary_error,
+            rollback_failure,
+        );
+        let state_result = runtime.record_backend_activation_failure_after_commit(
+            generation,
+            error,
+            backend_stopped,
+        );
         match (state_result, diagnostic_result) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(state_error), Ok(())) => Err(state_error),
@@ -901,19 +943,19 @@ impl<'a> FrontendTxn<'a> {
         runtime.mark_scan_session_callback_failed(generation)
     }
 
-    pub(crate) fn start_worker<F>(
+    pub(crate) fn start_worker_with_prepared_submit<F>(
         &mut self,
-        frontend_id: i32,
-        kind: FrontendWorkerKind,
-        generation: u64,
+        ticket: FrontendWorkerStopTicket,
         job: F,
     ) -> Result<(), FrontendWorkerStartError>
     where
-        F: FnOnce(FrontendWorkerContext) -> Result<(), HalError> + Send + 'static,
+        F: FnOnce(FrontendWorkerContext, FrontendWorkerStopTicket) -> Result<(), HalError>
+            + Send
+            + 'static,
     {
         self.runtime
             .frontend_workers
-            .start(frontend_id, kind, generation, job)
+            .start_with_prepared_submit(ticket, job)
     }
 
     pub(crate) fn request_worker_stop_for_join(
@@ -925,5 +967,16 @@ impl<'a> FrontendTxn<'a> {
         self.runtime
             .frontend_workers
             .request_stop_for_join(frontend_id, kind, reason)
+    }
+
+    pub(crate) fn prepare_backend_submit(
+        &mut self,
+        kind: FrontendWorkerKind,
+        plan: maleicacid_tuner_hal2_device::FrontendBackendTunePlan,
+        previous_request: Option<maleicacid_tuner_hal2_common::FrontendTuneRequest>,
+    ) -> Result<FrontendWorkerStopTicket, HalError> {
+        self.runtime
+            .frontend_workers
+            .prepare_backend_submit(kind, plan, previous_request)
     }
 }

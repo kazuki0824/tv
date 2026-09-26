@@ -26,16 +26,20 @@ object SectionFilterPolicy {
     }
 
     // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
-    @Suppress("SpreadOperator")
+    @Suppress("SpreadOperator", "LongParameterList", "TooGenericExceptionCaught")
     fun replaceDynamicPids(
         current: MutableSet<com.maleicacid.tvinput.common.TsPid>,
         next: Set<com.maleicacid.tvinput.common.TsPid>,
         close: (com.maleicacid.tvinput.common.TsPid) -> Unit,
         open: (com.maleicacid.tvinput.common.TsPid) -> Boolean,
         isOpen: (com.maleicacid.tvinput.common.TsPid) -> Boolean,
+        failedWhileRequested: MutableSet<com.maleicacid.tvinput.common.TsPid> = linkedSetOf(),
     ) {
+        val noLongerRequested = failedWhileRequested - next
+        val cleanupTargets = (current - next) + noLongerRequested
+        failedWhileRequested.removeAll(noLongerRequested)
         completeCleanup(
-            *(current - next)
+            *cleanupTargets
                 .map { pid ->
                     {
                         close(pid)
@@ -44,7 +48,21 @@ object SectionFilterPolicy {
                     }
                 }.toTypedArray(),
         )
-        next.filter { it !in current || !isOpen(it) }.forEach { pid -> if (open(pid)) current += pid }
+        next
+            .filter { (it !in current || !isOpen(it)) && it !in failedWhileRequested }
+            .forEach { pid ->
+                try {
+                    if (open(pid)) {
+                        current += pid
+                        failedWhileRequested.remove(pid)
+                    } else {
+                        failedWhileRequested += pid
+                    }
+                } catch (error: RuntimeException) {
+                    failedWhileRequested += pid
+                    throw error
+                }
+            }
     }
 
     /** 他の解放を省略せず、最初の失敗に後続失敗を添えて返す。 */

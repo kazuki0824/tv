@@ -149,7 +149,7 @@ class ChannelScanController(
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
                 diagnostics += ScanDiagnostic(candidate, "選局に失敗しました result=${tune.resultCode} ${tune.message}")
-                return true
+                return shouldContinueInitialScanAfterSynchronousTuneResult(tune.success)
             }
             activateScanGeneration(tune.generation)
             try {
@@ -395,8 +395,7 @@ class ChannelScanController(
     fun refreshDynamicSectionFilters() {
         if (terminalResourceLostObserved) return
         val generation = tunerController.currentGeneration()
-        val transaction = engine.casDiscoverySnapshot()
-        val pmtPids = transaction.pmtPids.values.toSet()
+        val pmtPids = engine.pmtPidsForSectionFilters()
         tunerController.updateScanPmtFilters(pmtPids, generation)
     }
 
@@ -828,6 +827,8 @@ class ChannelScanController(
 
         fun validProgramKeysForUpdateForTest(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
             validProgramKeysForUpdate(update)
+
+        fun shouldContinueInitialScanAfterSynchronousTuneResult(success: Boolean): Boolean = success
 
         private fun validProgramKeysForUpdate(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
             update.validProgramStableIdentities.toSet()

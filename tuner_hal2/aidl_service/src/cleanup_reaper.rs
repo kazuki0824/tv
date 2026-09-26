@@ -1,8 +1,9 @@
-use std::sync::{Arc, Mutex, Weak};
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use maleicacid_tuner_hal2_binder_adapter::AidlMethodCall;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_domain_request::AidlMethodCall;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::CapabilitySnapshot;
 
@@ -62,7 +63,7 @@ struct CleanupJob {
 
 pub(crate) struct CleanupReaperQueue {
     policy: CleanupReaperPolicy,
-    runtime: Mutex<
+    runtime: PoisonTrackedMutex<
         Option<
             maleicacid_tuner_hal2_service_runtime::WorkerRuntimeReaperQueue<
                 CleanupJobKey,
@@ -85,7 +86,7 @@ impl CleanupReaperQueue {
     pub(crate) fn from_snapshot(snapshot: CapabilitySnapshot) -> Self {
         Self {
             policy: CleanupReaperPolicy::from_snapshot(snapshot),
-            runtime: Mutex::new(None),
+            runtime: PoisonTrackedMutex::new(None, RuntimeLockKind::CleanupReaperOwner),
         }
     }
 
@@ -97,16 +98,11 @@ impl CleanupReaperQueue {
             CleanupJob,
         >,
     ) -> Result<(), HalError> {
-        let mut slot = self.runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "cleanup reaper canonical owner slot lock poisoned",
-            )
-        })?;
+        let mut slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
         if slot.is_some() {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "cleanup reaper canonical owner installed twice",
+                "cleanup reaperの正規ownerが重複して設定されました",
             ));
         }
         *slot = Some(runtime);
@@ -119,16 +115,11 @@ impl CleanupReaperQueue {
         dependency: CleanupStep,
     ) -> Result<(), HalError> {
         let key = CleanupJobKey::from_handle(handle);
-        let slot = self.runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "cleanup reaper canonical owner slot lock poisoned while enqueueing",
-            )
-        })?;
+        let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
         let runtime = slot.as_ref().ok_or_else(|| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "cleanup reaper canonical owner is not installed",
+                "cleanup reaperの正規ownerが設定されていません",
             )
         })?;
         if runtime.pending_value(&key)?.is_some() {
@@ -154,39 +145,26 @@ fn close_method(kind: AidlObjectKind) -> Result<AidlMethodCall, HalError> {
         AidlObjectKind::Lnb => Ok(AidlMethodCall::LnbClose),
         AidlObjectKind::Tuner => Err(HalError::internal(
             HalInternalKind::InvariantViolation,
-            "root tuner object entered cleanup reaper queue",
+            "root tuner objectがcleanup reaper queueに入りました",
         )),
     }
 }
 
-fn clear_pending_cleanup_job(
-    pending: &Arc<Mutex<std::collections::BTreeMap<CleanupJobKey, CleanupStep>>>,
-    key: CleanupJobKey,
-) -> Result<(), HalError> {
-    pending
-        .lock()
-        .map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "cleanup reaper canonical pending registry lock poisoned",
-            )
-        })?
-        .remove(&key);
-    Ok(())
-}
-
 fn mark_cleanup_reaper_critical(context: &AidlServiceContext) {
     let shared_runtime = context.runtime();
-    if let Ok(mut runtime) = shared_runtime.lock() {
-        runtime.mark_service_critical();
-    };
+    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(
+        &shared_runtime,
+    );
 }
 
 fn run_cleanup_job(
     context: Weak<AidlServiceContext>,
     policy: CleanupReaperPolicy,
     job: CleanupJob,
-    pending: Arc<Mutex<std::collections::BTreeMap<CleanupJobKey, CleanupStep>>>,
+    pending: maleicacid_tuner_hal2_service_runtime::WorkerRuntimeReaperPending<
+        CleanupJobKey,
+        CleanupStep,
+    >,
     worker: maleicacid_tuner_hal2_service_runtime::WorkerContext,
 ) {
     let key = CleanupJobKey::from_handle(job.handle);
@@ -207,47 +185,26 @@ fn run_cleanup_job(
             if !terminal {
                 mark_cleanup_reaper_critical(&context);
             }
-            if clear_pending_cleanup_job(&pending, key).is_err() {
-                mark_cleanup_reaper_critical(&context);
-            }
             return;
         }
         let dependency = match context.cleanup_dependency_for_handle(job.handle) {
             Ok(dependency) => dependency,
             Err(_) if context.cleanup_is_terminal_for_handle(job.handle) == Ok(true) => {
-                if clear_pending_cleanup_job(&pending, key).is_err() {
-                    mark_cleanup_reaper_critical(&context);
-                }
                 return;
             }
             Err(_) => {
                 mark_cleanup_reaper_critical(&context);
-                if clear_pending_cleanup_job(&pending, key).is_err() {
-                    mark_cleanup_reaper_critical(&context);
-                }
                 return;
             }
         };
-        if let Ok(mut guard) = pending.lock() {
-            guard.insert(key, dependency);
-        } else {
+        if pending.update_value(&key, dependency).is_err() {
             mark_cleanup_reaper_critical(&context);
             return;
         }
         let result = close_method(job.handle.object_kind()).and_then(|method| {
-            crate::object_runtime::retry_cleanup_from_reaper(&context, job.handle, method).map_err(
-                |status| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        format!("cleanup reaper Binder retry failed: {status:?}"),
-                    )
-                },
-            )
+            crate::object_runtime::retry_cleanup_from_reaper(&context, job.handle, method)
         });
         if result.is_ok() {
-            if clear_pending_cleanup_job(&pending, key).is_err() {
-                mark_cleanup_reaper_critical(&context);
-            }
             return;
         }
         attempt = attempt.saturating_add(1);
@@ -260,11 +217,7 @@ fn run_cleanup_job(
             .terminal_deadline
             .saturating_sub(job.registered_at.elapsed());
         let deadline = Instant::now().checked_add(delay.min(remaining));
-        drop(context);
-        if let Err(error) = worker.wait_until(deadline) {
-            eprintln!("cleanup reaper wait failed: {error:?}");
-            return;
-        }
+        worker.wait_until(deadline);
     }
 }
 
@@ -287,6 +240,29 @@ pub(crate) fn start_cleanup_reaper(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn poisoned_owner_slot_rejects_enqueue_with_identity() {
+        let queue = CleanupReaperQueue::from_snapshot(
+            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::default()
+                .capability_snapshot(),
+        );
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = queue.runtime.lock().unwrap();
+            panic!("汚染を注入");
+        }));
+        // インストール状態に依存せず、汚染した所有者格納領域を読まない。
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(7),
+            AidlObjectGeneration(3),
+        );
+        let error = queue.enqueue(handle, CleanupStep::StopWorker).unwrap_err();
+        assert!(
+            matches!(error, HalError::LockPoisoned(poison) if poison.lock == RuntimeLockKind::CleanupReaperOwner && poison.poison_count == 1)
+        );
+    }
+
     use super::*;
     use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId};
 

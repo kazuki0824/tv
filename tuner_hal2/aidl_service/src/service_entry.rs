@@ -69,6 +69,7 @@ fn px4_frontend_systems(unit: i32, device_name: &str) -> Vec<FrontendSystem> {
         return match unit.rem_euclid(4) {
             0 | 1 => vec![FrontendSystem::IsdbS],
             2 | 3 => vec![FrontendSystem::IsdbT],
+            // 正の除数4によるユークリッド剰余は必ず0～3となり、上の分岐で全値を処理済み。
             _ => unreachable!("rem_euclid(4) must stay within 0..=3"),
         };
     }
@@ -348,21 +349,49 @@ fn dvb_exclusive_group_ids(
         .collect()
 }
 
-fn dvb_driver_basename(adapter: i32, frontend_index: i32) -> Option<String> {
+fn probe_io_error(
+    backend: &'static str,
+    operation: &'static str,
+    path: &std::path::Path,
+    error: std::io::Error,
+) -> HalError {
+    HalError::Io {
+        backend,
+        operation,
+        path: Some(path.to_path_buf()),
+        errno: error.raw_os_error(),
+        detail: HalErrorDetail::new(error.to_string()),
+    }
+}
+
+fn dvb_driver_basename(adapter: i32, frontend_index: i32) -> Result<String, HalError> {
     let link = PathBuf::from(format!(
         "/sys/class/dvb/dvb{adapter}.frontend{frontend_index}/device/driver"
     ));
-    std::fs::read_link(link).ok().and_then(|path| {
-        path.file_name()
-            .map(|name| name.to_string_lossy().to_string())
-    })
+    let target = std::fs::read_link(&link)
+        .map_err(|error| probe_io_error("dvb", "driver link読取り", &link, error))?;
+    target
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .ok_or_else(|| {
+            probe_io_error(
+                "dvb",
+                "driver link読取り",
+                &link,
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "driver linkにbasenameがありません",
+                ),
+            )
+        })
 }
 
-fn dvb_physical_device_identity(adapter: i32, frontend_index: i32) -> Option<PathBuf> {
-    std::fs::canonicalize(format!(
+fn dvb_physical_device_identity(adapter: i32, frontend_index: i32) -> Result<PathBuf, HalError> {
+    let path = PathBuf::from(format!(
         "/sys/class/dvb/dvb{adapter}.frontend{frontend_index}/device"
-    ))
-    .ok()
+    ));
+    std::fs::canonicalize(&path)
+        .map_err(|error| probe_io_error("dvb", "物理device解決", &path, error))
 }
 
 fn systems_from_dvb_delsys_buffer(buffer: DtvPropertyBuffer) -> Vec<FrontendSystem> {
@@ -395,12 +424,7 @@ fn probe_dvb_delivery_systems(
         .read(true)
         .write(true)
         .open(path)
-        .map_err(|error| HalError::OpenFailed {
-            path: path.clone(),
-            detail: HalErrorDetail::new(format!(
-                "open DVB frontend for delivery-system probe failed: {error}"
-            )),
-        })?;
+        .map_err(|error| probe_io_error("dvb", "probe用frontend open", path, error))?;
     let fd = file.as_raw_fd();
 
     let mut info = DvbFrontendInfo {
@@ -475,15 +499,22 @@ fn dvb_probe_variants(
 }
 
 fn collect_px4_probe_candidates(
-    mut path_exists: impl FnMut(&std::path::Path) -> bool,
+    mut path_exists: impl FnMut(&std::path::Path) -> std::io::Result<bool>,
+    outcomes: &mut Vec<FrontendProbeOutcome>,
 ) -> Vec<(i32, PathBuf, String)> {
     let mut candidates = Vec::new();
     for prefix in PX4_PROBE_PREFIXES {
         for unit in 0..=0x3fff_i32 {
             let name = format!("{prefix}{unit}");
             let path = PathBuf::from(format!("/dev/{name}"));
-            if path_exists(&path) {
-                candidates.push((unit, path, name));
+            match path_exists(&path) {
+                Ok(true) => candidates.push((unit, path, name)),
+                Ok(false) => {}
+                Err(error) => outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
+                    backend: FrontendBackendKind::Px4CharDevice,
+                    error: probe_io_error("px4", "deviceメタデータprobe", &path, error),
+                    path,
+                }),
             }
         }
     }
@@ -495,7 +526,7 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
     let mut outcomes = Vec::new();
     let mut frontend_ids = FrontendIdAllocator::default();
 
-    let px4_candidates = collect_px4_probe_candidates(std::path::Path::exists);
+    let px4_candidates = collect_px4_probe_candidates(std::path::Path::try_exists, &mut outcomes);
     for (unit, path, name) in px4_candidates {
         for system in px4_frontend_systems(unit, &name) {
             let Some(capability) = px4_capability(unit, &name, system) else {
@@ -538,10 +569,30 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
             let path = PathBuf::from(format!(
                 "/dev/dvb/adapter{adapter}/frontend{frontend_index}"
             ));
-            if !path.exists() {
-                continue;
+            match path.try_exists() {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
+                        backend: FrontendBackendKind::LinuxDvb,
+                        error: probe_io_error("dvb", "deviceメタデータprobe", &path, error),
+                        path,
+                    });
+                    continue;
+                }
             }
-            if dvb_driver_basename(adapter, frontend_index).as_deref() != Some("earth-pt1") {
+            let driver = match dvb_driver_basename(adapter, frontend_index) {
+                Ok(driver) => driver,
+                Err(error) => {
+                    outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
+                        backend: FrontendBackendKind::LinuxDvb,
+                        path,
+                        error,
+                    });
+                    continue;
+                }
+            };
+            if driver != "earth-pt1" {
                 outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
                     backend: FrontendBackendKind::LinuxDvb,
                     path,
@@ -549,11 +600,23 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                 });
                 continue;
             }
+            let physical_device_identity =
+                match dvb_physical_device_identity(adapter, frontend_index) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
+                            backend: FrontendBackendKind::LinuxDvb,
+                            path,
+                            error,
+                        });
+                        continue;
+                    }
+                };
             dvb_candidates.push(DvbProbeCandidate {
                 adapter,
                 frontend_index,
                 path,
-                physical_device_identity: dvb_physical_device_identity(adapter, frontend_index),
+                physical_device_identity: Some(physical_device_identity),
             });
         }
     }
@@ -637,21 +700,28 @@ pub fn run_service() {
     binder::ProcessState::start_thread_pool();
     let runtime = match TunerServiceRuntime::try_new() {
         Ok(runtime) => runtime,
-        Err(_) => std::process::exit(1),
+        Err(error) => {
+            log::error!("Tuner service startup failed: phase=runtime-create error={error:?}");
+            std::process::exit(1);
+        }
     };
     let context = crate::service_context::AidlServiceContext::shared(runtime);
-    if context
-        .reset_runtime_from_probe_results(probe_frontends())
-        .is_err()
-    {
+    if let Err(error) = context.reset_runtime_from_probe_results(probe_frontends()) {
+        log::error!("Tuner service startup failed: phase=probe-reset error={error:?}");
         std::process::exit(1);
     }
     let tuner = match TunerAidlService::from_context(context) {
         Ok(tuner) => tuner,
-        Err(_) => std::process::exit(1),
+        Err(error) => {
+            log::error!("Tuner service startup failed: phase=aidl-create error={error:?}");
+            std::process::exit(1);
+        }
     };
     let binder = BnTuner::new_binder(tuner, BinderFeatures::default());
-    if binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()).is_err() {
+    if let Err(error) = binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()) {
+        log::error!(
+            "Tuner serviceの起動に失敗しました: 段階=binder-register service={TUNER_SERVICE_NAME} エラー={error:?}"
+        );
         std::process::exit(1);
     }
     binder::ProcessState::join_thread_pool();
@@ -661,6 +731,29 @@ pub fn run_service() {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_device::dvb::DtvPropertyBuffer;
+
+    #[test]
+    fn px4_probe_access_error_is_not_a_missing_candidate() {
+        let mut outcomes = Vec::new();
+        let candidates = collect_px4_probe_candidates(
+            |path| {
+                if path == std::path::Path::new("/dev/px4video0") {
+                    Err(std::io::Error::from_raw_os_error(13))
+                } else {
+                    Ok(false)
+                }
+            },
+            &mut outcomes,
+        );
+        assert!(candidates.is_empty());
+        assert_eq!(outcomes.len(), 1);
+        assert!(
+            matches!(&outcomes[0], FrontendProbeOutcome::DeviceProbeFailed {
+            backend: FrontendBackendKind::Px4CharDevice,
+            error: HalError::Io { operation: "deviceメタデータprobe", errno: Some(13), path: Some(path), .. }, ..
+        } if path == std::path::Path::new("/dev/px4video0"))
+        );
+    }
 
     fn collect_prefixes_from_ueventd(text: &str) -> std::collections::BTreeSet<String> {
         text.lines()
@@ -738,7 +831,8 @@ mod tests {
             PathBuf::from("/dev/px4video3"),
             PathBuf::from("/dev/pxmlt8video7"),
         ]);
-        let candidates = collect_px4_probe_candidates(|path| present.contains(path));
+        let candidates =
+            collect_px4_probe_candidates(|path| Ok(present.contains(path)), &mut Vec::new());
 
         assert_eq!(
             candidates,
@@ -751,7 +845,7 @@ mod tests {
                 ),
             ]
         );
-        assert!(collect_px4_probe_candidates(|_| false).is_empty());
+        assert!(collect_px4_probe_candidates(|_| Ok(false), &mut Vec::new()).is_empty());
     }
 
     #[test]

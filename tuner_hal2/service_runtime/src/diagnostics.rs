@@ -1,17 +1,116 @@
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 
-use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError};
 use maleicacid_tuner_hal2_demux::{
     DvrConfigureReport, FilterConfigureReport, PacketPid, QueueRuntimeError, SourceBoundaryReport,
 };
 use maleicacid_tuner_hal2_descrambler::DescramblerPid;
-use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_device::{
+    FrontendBackendFailureDiagnostic, FrontendRuntime, FrontendRuntimeSnapshot,
+};
+use maleicacid_tuner_hal2_domain_request::{
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, RuntimeTransactionName,
+};
+
+/// 機器別の既存診断保持先から取得した、観測用の写し。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendBackendDiagnosticSnapshot {
+    pub frontend_id: i32,
+    pub backend: FrontendBackendKind,
+    pub records: Vec<FrontendBackendFailureDiagnostic>,
+    pub dropped_count: u64,
+    pub record_failure_count: u64,
+}
+
+impl FrontendBackendDiagnosticSnapshot {
+    pub(crate) fn from_frontend(runtime: &FrontendRuntime, backend: FrontendBackendKind) -> Self {
+        let (records, dropped_count, record_failure_count) =
+            runtime.backend_failure_diagnostic_snapshot(backend);
+        Self {
+            frontend_id: runtime.frontend_id(),
+            backend,
+            records,
+            dropped_count,
+            record_failure_count,
+        }
+    }
+}
+
+#[cfg(test)]
+mod poison_tests {
+    use super::*;
+
+    fn poison<T>(lock: &PoisonTrackedMutex<T>) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lock.lock().unwrap();
+            panic!("汚染を注入");
+        }));
+    }
+
+    #[test]
+    fn shared_diagnostic_poison_preserves_store_identity_on_snapshot_and_clear() {
+        let post = SharedDvrPostCommitNotificationDiagnostics::new(2);
+        let notifier = SharedDvrStatusNotifierCleanupDiagnostics::new(2);
+        let split = SharedCallbackArtifactRuntimeSplitDiagnostics::new();
+        poison(&post.records);
+        poison(&notifier.records);
+        poison(&split.records);
+        for (result, kind) in [
+            (
+                post.snapshot().map(|_| ()),
+                RuntimeLockKind::DvrPostCommitDiagnostics,
+            ),
+            (
+                notifier.snapshot().map(|_| ()),
+                RuntimeLockKind::DvrNotifierCleanupDiagnostics,
+            ),
+            (
+                split.snapshot().map(|_| ()),
+                RuntimeLockKind::CallbackRuntimeSplitDiagnostics,
+            ),
+        ] {
+            assert!(
+                matches!(result, Err(HalError::LockPoisoned(p)) if p.lock == kind && p.poison_count == 1)
+            );
+        }
+        for result in [post.clear(), notifier.clear(), split.clear()] {
+            assert!(matches!(result, Err(HalError::LockPoisoned(p)) if p.poison_count == 2));
+        }
+    }
+}
+
+/// フロントエンド所有者の既存状態・診断を、対象識別子とともに取得する写し。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendDiagnosticSnapshot {
+    pub frontend_id: i32,
+    pub backend: FrontendBackendKind,
+    pub runtime: FrontendRuntimeSnapshot,
+}
+
+impl FrontendDiagnosticSnapshot {
+    pub(crate) fn from_frontend(runtime: &FrontendRuntime) -> Self {
+        Self {
+            frontend_id: runtime.frontend_id(),
+            backend: runtime.backend_kind(),
+            runtime: runtime.snapshot(),
+        }
+    }
+}
 
 pub const DEFAULT_DIAGNOSTIC_STORE_LIMIT: usize = 128;
+
+/// パケット処理で破棄・配送失敗が起きた分離器と、その時点の世代。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PacketPipelineDiagnosticRecord {
+    pub demux_id: i32,
+    pub demux_generation: u64,
+    pub diagnostic: maleicacid_tuner_hal2_demux::PipelineDiagnostic,
+}
 
 fn saturating_increment_atomic_u64(counter: &AtomicU64, owner: &'static str) {
     let previous = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -118,6 +217,7 @@ impl<TRecord> DiagnosticSnapshot<TRecord> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StartupDiagnosticKind {
+    DeviceProbeFailed,
     DeviceMissing,
     DeviceOpenFailed,
     CapabilitySuppressed,
@@ -131,6 +231,7 @@ pub enum StartupDiagnosticKind {
     ObjectCleanupDiagnosticClearFailed,
     FrontendWorkerCleanupDiagnosticClearFailed,
     RuntimeDispatchMissing,
+    LnbBackendFailure,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,6 +242,60 @@ pub enum StartupDiagnosticPhase {
     RegistryCommit,
     DiagnosticReset,
     DispatchValidation,
+    RuntimeBackend,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LnbBackendFailureClass {
+    Rejected,
+    Indeterminate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerFailureCategory {
+    BackendControl,
+    Fmq,
+    EventFlag,
+    Cleanup,
+    LockPoison,
+    CallbackCommit,
+    CallbackArtifact,
+    CallbackPolicy,
+    CallbackConversion,
+    CallbackBinder,
+    CallbackNotifierTerminal,
+    CallbackCleanup,
+    Join,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClassifiedWorkerTerminalResult<T> {
+    Normal(T),
+    StopRequested,
+    Failure {
+        category: WorkerFailureCategory,
+        error: HalError,
+    },
+}
+
+impl<T> ClassifiedWorkerTerminalResult<T> {
+    pub fn into_failure(self) -> Option<(WorkerFailureCategory, HalError)> {
+        match self {
+            Self::Failure { category, error } => Some((category, error)),
+            Self::Normal(_) | Self::StopRequested => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LnbBackendFailureDiagnosticRecord {
+    pub lnb_id: i32,
+    pub frontend_id: i32,
+    pub backend: FrontendBackendKind,
+    pub device_path: PathBuf,
+    pub class: LnbBackendFailureClass,
+    pub error: HalError,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,6 +309,11 @@ pub enum CapabilitySuppressionReason {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StartupDiagnosticRecord {
+    DeviceProbeFailed {
+        backend: FrontendBackendKind,
+        path: PathBuf,
+        error: HalError,
+    },
     DeviceMissing {
         backend: FrontendBackendKind,
         path: PathBuf,
@@ -198,7 +358,12 @@ pub enum StartupDiagnosticRecord {
     FrontendWorkerCleanupDiagnosticClearFailed {
         error: HalError,
     },
-    RuntimeDispatchMissing,
+    RuntimeDispatchMissing {
+        transaction: RuntimeTransactionName,
+    },
+    LnbBackendFailure {
+        record: LnbBackendFailureDiagnosticRecord,
+    },
 }
 
 impl StartupDiagnosticRecord {
@@ -277,12 +442,17 @@ impl StartupDiagnosticRecord {
         Self::FrontendWorkerCleanupDiagnosticClearFailed { error }
     }
 
-    pub fn runtime_dispatch_missing() -> Self {
-        Self::RuntimeDispatchMissing
+    pub fn runtime_dispatch_missing(transaction: RuntimeTransactionName) -> Self {
+        Self::RuntimeDispatchMissing { transaction }
+    }
+
+    pub fn lnb_backend_failure(record: LnbBackendFailureDiagnosticRecord) -> Self {
+        Self::LnbBackendFailure { record }
     }
 
     pub const fn kind(&self) -> StartupDiagnosticKind {
         match self {
+            Self::DeviceProbeFailed { .. } => StartupDiagnosticKind::DeviceProbeFailed,
             Self::DeviceMissing { .. } => StartupDiagnosticKind::DeviceMissing,
             Self::DeviceOpenFailed { .. } => StartupDiagnosticKind::DeviceOpenFailed,
             Self::CapabilitySuppressed { .. } => StartupDiagnosticKind::CapabilitySuppressed,
@@ -309,12 +479,14 @@ impl StartupDiagnosticRecord {
             Self::FrontendWorkerCleanupDiagnosticClearFailed { .. } => {
                 StartupDiagnosticKind::FrontendWorkerCleanupDiagnosticClearFailed
             }
-            Self::RuntimeDispatchMissing => StartupDiagnosticKind::RuntimeDispatchMissing,
+            Self::RuntimeDispatchMissing { .. } => StartupDiagnosticKind::RuntimeDispatchMissing,
+            Self::LnbBackendFailure { .. } => StartupDiagnosticKind::LnbBackendFailure,
         }
     }
 
     pub const fn phase(&self) -> StartupDiagnosticPhase {
         match self {
+            Self::DeviceProbeFailed { .. } => StartupDiagnosticPhase::ProbeDevice,
             Self::DeviceMissing { .. } => StartupDiagnosticPhase::ProbeDevice,
             Self::DeviceOpenFailed { .. } => StartupDiagnosticPhase::OpenDevice,
             Self::CapabilitySuppressed { .. } => StartupDiagnosticPhase::CapabilityFilter,
@@ -330,7 +502,8 @@ impl StartupDiagnosticRecord {
             | Self::FrontendWorkerCleanupDiagnosticClearFailed { .. } => {
                 StartupDiagnosticPhase::DiagnosticReset
             }
-            Self::RuntimeDispatchMissing => StartupDiagnosticPhase::DispatchValidation,
+            Self::RuntimeDispatchMissing { .. } => StartupDiagnosticPhase::DispatchValidation,
+            Self::LnbBackendFailure { .. } => StartupDiagnosticPhase::RuntimeBackend,
         }
     }
 }
@@ -460,103 +633,49 @@ impl DvrPostCommitNotificationDiagnosticSnapshot {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DvrStatusNotifierCleanupDiagnosticKind {
-    ResetStoreRecoveredAfterPoison,
-    ResetNotifierCleanup,
-    WorkerTerminal,
-    SupersedeCleanup,
-    ReaperDeadline,
-    ReaperCompletion,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DvrStatusNotifierCleanupDiagnosticRecord {
-    pub kind: DvrStatusNotifierCleanupDiagnosticKind,
-    pub phase: DvrPostCommitNotificationPhase,
-    pub object_id: Option<AidlObjectId>,
-    pub generation: Option<AidlObjectGeneration>,
-    pub result: Result<(), HalError>,
+pub enum DvrStatusNotifierCleanupDiagnosticRecord {
+    ResetStoreRecoveredAfterPoison {
+        error: HalError,
+    },
+    ResetNotifierCleanup {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        terminal: ClassifiedWorkerTerminalResult<()>,
+    },
+    WorkerTerminal {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        terminal: ClassifiedWorkerTerminalResult<()>,
+    },
+    SupersedeCleanup {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        terminal: ClassifiedWorkerTerminalResult<()>,
+    },
+    ReaperCompletion {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        terminal: ClassifiedWorkerTerminalResult<()>,
+    },
+    ReaperDeadline {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        error: HalError,
+    },
 }
 
 impl DvrStatusNotifierCleanupDiagnosticRecord {
-    pub fn reset_store_recovered_after_poison(error: HalError) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::ResetStoreRecoveredAfterPoison,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: None,
-            generation: None,
-            result: Err(error),
-        }
-    }
-
-    pub fn reset_notifier_cleanup(
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        result: Result<(), HalError>,
-    ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::ResetNotifierCleanup,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: Some(object_id),
-            generation: Some(generation),
-            result,
-        }
-    }
-
-    pub fn worker_terminal(
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        result: Result<(), HalError>,
-    ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::WorkerTerminal,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
-            object_id: Some(object_id),
-            generation: Some(generation),
-            result,
-        }
-    }
-
-    pub fn supersede_cleanup(
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        result: Result<(), HalError>,
-    ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::SupersedeCleanup,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: Some(object_id),
-            generation: Some(generation),
-            result,
-        }
-    }
-
-    pub fn reaper_deadline(
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        result: Result<(), HalError>,
-    ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::ReaperDeadline,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: Some(object_id),
-            generation: Some(generation),
-            result,
-        }
-    }
-
-    pub fn reaper_completion(
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        result: Result<(), HalError>,
-    ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::ReaperCompletion,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: Some(object_id),
-            generation: Some(generation),
-            result,
+    pub const fn phase(&self) -> DvrPostCommitNotificationPhase {
+        match self {
+            Self::WorkerTerminal { .. } => {
+                DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure
+            }
+            Self::ResetStoreRecoveredAfterPoison { .. }
+            | Self::ResetNotifierCleanup { .. }
+            | Self::SupersedeCleanup { .. }
+            | Self::ReaperCompletion { .. }
+            | Self::ReaperDeadline { .. } => DvrPostCommitNotificationPhase::StatusNotifierStop,
         }
     }
 }
@@ -629,14 +748,18 @@ impl DvrPostCommitNotificationDiagnosticRecord {
 
 #[derive(Clone, Debug)]
 pub struct SharedDvrPostCommitNotificationDiagnostics {
-    records: Arc<Mutex<BoundedDiagnosticStore<DvrPostCommitNotificationDiagnosticRecord>>>,
+    records:
+        Arc<PoisonTrackedMutex<BoundedDiagnosticStore<DvrPostCommitNotificationDiagnosticRecord>>>,
     record_failure_count: Arc<AtomicU64>,
 }
 
 impl SharedDvrPostCommitNotificationDiagnostics {
     pub fn new(limit: usize) -> Self {
         Self {
-            records: Arc::new(Mutex::new(BoundedDiagnosticStore::new(limit))),
+            records: Arc::new(PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::new(limit),
+                RuntimeLockKind::DvrPostCommitDiagnostics,
+            )),
             record_failure_count: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -650,26 +773,18 @@ impl SharedDvrPostCommitNotificationDiagnostics {
                 records.push(record);
                 Ok(())
             }
-            Err(_) => {
+            Err(poison) => {
                 saturating_increment_atomic_u64(
                     &self.record_failure_count,
                     std::any::type_name::<Self>(),
                 );
-                Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "DVR post-commit notification diagnostic store lock poisoned",
-                ))
+                Err(HalError::LockPoisoned(poison))
             }
         }
     }
 
     pub fn snapshot(&self) -> Result<DvrPostCommitNotificationDiagnosticSnapshot, HalError> {
-        let records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR post-commit notification diagnostic store lock poisoned while snapshotting",
-            )
-        })?;
+        let records = self.records.lock().map_err(HalError::LockPoisoned)?;
         Ok(DvrPostCommitNotificationDiagnosticSnapshot {
             records: records.as_slice().to_vec(),
             dropped_count: records.dropped_count(),
@@ -678,12 +793,7 @@ impl SharedDvrPostCommitNotificationDiagnostics {
     }
 
     pub fn clear(&self) -> Result<(), HalError> {
-        let mut records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR post-commit notification diagnostic store lock poisoned while clearing",
-            )
-        })?;
+        let mut records = self.records.lock().map_err(HalError::LockPoisoned)?;
         records.clear();
         self.record_failure_count.store(0, Ordering::Relaxed);
         Ok(())
@@ -698,14 +808,18 @@ impl Default for SharedDvrPostCommitNotificationDiagnostics {
 
 #[derive(Clone, Debug)]
 pub struct SharedDvrStatusNotifierCleanupDiagnostics {
-    records: Arc<Mutex<BoundedDiagnosticStore<DvrStatusNotifierCleanupDiagnosticRecord>>>,
+    records:
+        Arc<PoisonTrackedMutex<BoundedDiagnosticStore<DvrStatusNotifierCleanupDiagnosticRecord>>>,
     record_failure_count: Arc<AtomicU64>,
 }
 
 impl SharedDvrStatusNotifierCleanupDiagnostics {
     pub fn new(limit: usize) -> Self {
         Self {
-            records: Arc::new(Mutex::new(BoundedDiagnosticStore::new(limit))),
+            records: Arc::new(PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::new(limit),
+                RuntimeLockKind::DvrNotifierCleanupDiagnostics,
+            )),
             record_failure_count: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -716,26 +830,18 @@ impl SharedDvrStatusNotifierCleanupDiagnostics {
                 records.push(record);
                 Ok(())
             }
-            Err(_) => {
+            Err(poison) => {
                 saturating_increment_atomic_u64(
                     &self.record_failure_count,
                     std::any::type_name::<Self>(),
                 );
-                Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "DVR status notifier cleanup diagnostic store lock poisoned",
-                ))
+                Err(HalError::LockPoisoned(poison))
             }
         }
     }
 
     pub fn snapshot(&self) -> Result<DvrStatusNotifierCleanupDiagnosticSnapshot, HalError> {
-        let records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier cleanup diagnostic store lock poisoned while snapshotting",
-            )
-        })?;
+        let records = self.records.lock().map_err(HalError::LockPoisoned)?;
         Ok(DvrStatusNotifierCleanupDiagnosticSnapshot {
             records: records.as_slice().to_vec(),
             dropped_count: records.dropped_count(),
@@ -744,12 +850,7 @@ impl SharedDvrStatusNotifierCleanupDiagnostics {
     }
 
     pub fn clear(&self) -> Result<(), HalError> {
-        let mut records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier cleanup diagnostic store lock poisoned while clearing",
-            )
-        })?;
+        let mut records = self.records.lock().map_err(HalError::LockPoisoned)?;
         records.clear();
         self.record_failure_count.store(0, Ordering::Relaxed);
         Ok(())
@@ -1030,13 +1131,18 @@ impl CallbackArtifactRuntimeSplitDiagnosticSnapshot {
 
 #[derive(Clone, Debug)]
 pub struct SharedCallbackArtifactRuntimeSplitDiagnostics {
-    records: Arc<Mutex<BoundedDiagnosticStore<CallbackArtifactRuntimeSplitDiagnosticRecord>>>,
+    records: Arc<
+        PoisonTrackedMutex<BoundedDiagnosticStore<CallbackArtifactRuntimeSplitDiagnosticRecord>>,
+    >,
 }
 
 impl SharedCallbackArtifactRuntimeSplitDiagnostics {
     pub fn new() -> Self {
         Self {
-            records: Arc::new(Mutex::new(BoundedDiagnosticStore::default())),
+            records: Arc::new(PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::default(),
+                RuntimeLockKind::CallbackRuntimeSplitDiagnostics,
+            )),
         }
     }
 
@@ -1044,23 +1150,13 @@ impl SharedCallbackArtifactRuntimeSplitDiagnostics {
         &self,
         record: CallbackArtifactRuntimeSplitDiagnosticRecord,
     ) -> Result<(), HalError> {
-        let mut records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "callback artifact runtime split diagnostic store lock poisoned",
-            )
-        })?;
+        let mut records = self.records.lock().map_err(HalError::LockPoisoned)?;
         records.push(record);
         Ok(())
     }
 
     pub fn snapshot(&self) -> Result<CallbackArtifactRuntimeSplitDiagnosticSnapshot, HalError> {
-        let records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "callback artifact runtime split diagnostic store lock poisoned while snapshotting",
-            )
-        })?;
+        let records = self.records.lock().map_err(HalError::LockPoisoned)?;
         Ok(CallbackArtifactRuntimeSplitDiagnosticSnapshot {
             records: records.as_slice().to_vec(),
             dropped_count: records.dropped_count(),
@@ -1068,12 +1164,7 @@ impl SharedCallbackArtifactRuntimeSplitDiagnostics {
     }
 
     pub fn clear(&self) -> Result<(), HalError> {
-        let mut records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "callback artifact runtime split diagnostic store lock poisoned while clearing",
-            )
-        })?;
+        let mut records = self.records.lock().map_err(HalError::LockPoisoned)?;
         records.clear();
         Ok(())
     }
@@ -1743,5 +1834,184 @@ mod counter_saturation_tests {
         saturating_increment_atomic_u64(&failures, "test_owner");
         saturating_increment_atomic_u64(&failures, "test_owner");
         assert_eq!(failures.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    #[test]
+    fn runtime_dispatch_diagnostic_preserves_transaction_identity() {
+        let transaction = RuntimeTransactionName::FrontendTuneTxnApply;
+        assert_eq!(
+            StartupDiagnosticRecord::runtime_dispatch_missing(transaction),
+            StartupDiagnosticRecord::RuntimeDispatchMissing { transaction }
+        );
+    }
+
+    #[test]
+    fn notifier_cleanup_snapshot_preserves_typed_terminal_and_target() {
+        let store = SharedDvrStatusNotifierCleanupDiagnostics::new(2);
+        let terminal = ClassifiedWorkerTerminalResult::Failure {
+            category: WorkerFailureCategory::Join,
+            error: HalError::cleanup_failed("worker", "終了待ち失敗"),
+        };
+        store
+            .record(DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
+                object_id: AidlObjectId(7),
+                generation: AidlObjectGeneration(2),
+                terminal: terminal.clone(),
+            })
+            .unwrap();
+        let snapshot = store.snapshot().unwrap();
+        assert_eq!(
+            snapshot.records(),
+            &[DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
+                object_id: AidlObjectId(7),
+                generation: AidlObjectGeneration(2),
+                terminal,
+            }]
+        );
+    }
+}
+
+#[cfg(test)]
+mod backend_observation_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_device::{
+        BackendTuneRollbackFailure, BackendTuneRollbackStep, BackendTuneStep,
+    };
+
+    #[test]
+    fn observation_retains_frontend_reports_io_failure_and_loss_counters() {
+        use maleicacid_tuner_hal2_common::{FrontendDevicePath, HalErrorDetail};
+        use maleicacid_tuner_hal2_device::{
+            FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendWorkerKind,
+        };
+        let mut frontend = FrontendRuntime::new(7, FrontendBackendKind::LinuxDvb);
+        frontend.fence_for_worker_replacement(1).unwrap();
+        frontend
+            .install_live_reader_for_fenced_worker_generation(
+                1,
+                FrontendLiveReaderDescriptor::dvb_dvr_device(
+                    7,
+                    FrontendDevicePath::new("/dev/dvb/adapter0/dvr0"),
+                ),
+                FrontendWorkerKind::Tune,
+            )
+            .unwrap();
+        let report = FrontendLivePumpReport {
+            packets_delivered: 8,
+            malformed_bytes: u64::MAX,
+            malformed_byte_counter_saturated: true,
+            read_retries: 3,
+            reached_eof: true,
+            ..FrontendLivePumpReport::default()
+        };
+        for _ in 0..70 {
+            frontend
+                .record_live_pump_report(1, report.clone(), None)
+                .unwrap();
+        }
+        assert!(frontend.record_live_pump_report(2, report, None).is_err());
+        let failure = HalError::Io {
+            backend: "dvb",
+            operation: "read",
+            path: Some(PathBuf::from("/dev/dvb/adapter0/dvr0")),
+            errno: Some(5),
+            detail: HalErrorDetail::new("読取り失敗"),
+        };
+        frontend
+            .mark_tune_worker_failed(1, failure.clone())
+            .unwrap();
+        let before = frontend.snapshot();
+        let observation = FrontendDiagnosticSnapshot::from_frontend(&frontend);
+        assert_eq!(observation.frontend_id, 7);
+        assert_eq!(observation.backend, FrontendBackendKind::LinuxDvb);
+        assert_eq!(observation.runtime, before);
+        assert_eq!(observation.runtime.last_error, Some(failure));
+        assert_eq!(observation.runtime.generation, 1);
+        assert_eq!(observation.runtime.terminal_events.len(), 1);
+        assert_eq!(
+            observation.runtime.live_pump_reports.len() as u64
+                + observation.runtime.live_pump_reports_dropped_count,
+            70
+        );
+        assert!(observation.runtime.live_pump_reports_dropped_count > 0);
+        assert_eq!(observation.runtime.diagnostic_write_failures.len(), 1);
+        for diagnostic in &observation.runtime.live_pump_reports {
+            assert_eq!(diagnostic.generation, 1);
+            assert_eq!(diagnostic.packets_delivered, 8);
+            assert_eq!(diagnostic.malformed_bytes, u64::MAX);
+            assert!(diagnostic.malformed_byte_counter_saturated);
+            assert_eq!(diagnostic.read_retries, 3);
+        }
+        assert_eq!(frontend.snapshot(), before);
+    }
+
+    #[test]
+    fn observation_retains_backend_failures_and_both_counters() {
+        for (backend, name, path) in [
+            (FrontendBackendKind::Px4CharDevice, "px4", "/dev/px4video0"),
+            (
+                FrontendBackendKind::LinuxDvb,
+                "dvb",
+                "/dev/dvb/adapter0/frontend0",
+            ),
+        ] {
+            let mut frontend = FrontendRuntime::new(7, backend);
+            let generation = frontend.generation();
+            let primary = HalError::IoctlFailed {
+                backend: name,
+                path: Some(PathBuf::from(path)),
+                op: "apply_channel",
+                errno: 5,
+            };
+            let rollback = BackendTuneRollbackFailure {
+                step: BackendTuneRollbackStep::RollbackStopStreaming,
+                error: HalError::IoctlFailed {
+                    backend: name,
+                    path: Some(PathBuf::from(path)),
+                    op: "stop_streaming",
+                    errno: 16,
+                },
+            };
+            for _ in 0..70 {
+                frontend
+                    .record_backend_failure_diagnostic_context(
+                        generation,
+                        backend,
+                        Some(BackendTuneStep::ApplyChannel),
+                        primary.clone(),
+                        Some(rollback.clone()),
+                    )
+                    .unwrap();
+            }
+            assert!(frontend
+                .record_backend_failure_diagnostic(generation + 1, backend, primary.clone(),)
+                .is_err());
+            let before = frontend.snapshot();
+            let observation = FrontendBackendDiagnosticSnapshot::from_frontend(&frontend, backend);
+            assert_eq!(observation.frontend_id, 7);
+            assert_eq!(observation.backend, backend);
+            assert!(observation.dropped_count > 0);
+            assert_eq!(
+                observation.records.len() as u64 + observation.dropped_count,
+                70
+            );
+            assert_eq!(observation.record_failure_count, 1);
+            for record in &observation.records {
+                assert_eq!(record.frontend_id, 7);
+                assert_eq!(record.generation, generation);
+                assert_eq!(record.backend, backend);
+                assert_eq!(record.step, Some(BackendTuneStep::ApplyChannel));
+                assert_eq!(record.primary_error, primary);
+                assert_eq!(record.rollback_failure, Some(rollback.clone()));
+            }
+            let other = match backend {
+                FrontendBackendKind::Px4CharDevice => FrontendBackendKind::LinuxDvb,
+                FrontendBackendKind::LinuxDvb => FrontendBackendKind::Px4CharDevice,
+            };
+            let empty = FrontendBackendDiagnosticSnapshot::from_frontend(&frontend, other);
+            assert!(empty.records.is_empty());
+            assert_eq!((empty.dropped_count, empty.record_failure_count), (0, 0));
+            assert_eq!(frontend.snapshot(), before);
+        }
     }
 }

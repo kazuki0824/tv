@@ -16,7 +16,7 @@ data class SectionIngestCounter(
     val tableId: Int,
     val status: Int,
     val acceptedCount: Int,
-    val crcMismatchCount: Int,
+    val invalidSectionCount: Int,
     val malformedCount: Int,
     val lastErrorTimeMillis: Long,
 )
@@ -26,7 +26,7 @@ class SectionIngestController(
 ) {
     private data class MutableCounter(
         var accepted: Int = 0,
-        var crcMismatch: Int = 0,
+        var invalidSection: Int = 0,
         var malformed: Int = 0,
         var lastErrorTimeMillis: Long = 0L,
     )
@@ -53,7 +53,7 @@ class SectionIngestController(
                 tableId = key.second,
                 status = key.third,
                 acceptedCount = value.accepted,
-                crcMismatchCount = value.crcMismatch,
+                invalidSectionCount = value.invalidSection,
                 malformedCount = value.malformed,
                 lastErrorTimeMillis = value.lastErrorTimeMillis,
             )
@@ -64,7 +64,7 @@ class SectionIngestController(
     fun diagnosticSummary(): String =
         diagnostics().joinToString("; ") { c ->
             "pid=${c.pid.value} table=${c.tableId} status=${c.status} ok=" +
-                "${c.acceptedCount} crc=${c.crcMismatchCount} malformed=${c.malformedCount} " +
+                "${c.acceptedCount} invalidSection=${c.invalidSectionCount} malformed=${c.malformedCount} " +
                 "lastError=${c.lastErrorTimeMillis}"
         }
 
@@ -80,8 +80,8 @@ class SectionIngestController(
                 counter.accepted++
             }
 
-            "crc" -> {
-                counter.crcMismatch++
+            "invalid_section" -> {
+                counter.invalidSection++
                 counter.lastErrorTimeMillis = System.currentTimeMillis()
             }
 
@@ -96,7 +96,7 @@ class SectionIngestController(
         fun statusBucketForTest(status: Int): String =
             when (status) {
                 SiStatus.OK -> "accepted"
-                SiStatus.INVALID_SECTION -> "crc"
+                SiStatus.INVALID_SECTION -> "invalid_section"
                 else -> "malformed"
             }
     }

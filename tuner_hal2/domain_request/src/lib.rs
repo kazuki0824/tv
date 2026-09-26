@@ -1,4 +1,6 @@
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
+use maleicacid_tuner_hal2_common::{
+    FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum AidlObjectKind {
@@ -549,6 +551,37 @@ pub enum DomainProfileSupport {
 use maleicacid_tuner_hal2_demux::config::{FilterConfig, OpenFilterRequest};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendRequestedSetting {
+    IsdbtBandwidthAuto,
+    IsdbtExplicitBandwidth { bandwidth_hz: u32 },
+    IsdbtModeAuto,
+    IsdbtExplicitMode { value: i32 },
+    IsdbtExplicitInversion { value: i32 },
+    IsdbtGuardIntervalAuto,
+    IsdbtExplicitGuardInterval { value: i32 },
+    IsdbtServiceAreaId { value: i32 },
+    IsdbtPartialReceptionAuto,
+    IsdbtLayerModulationAuto { layer_index: usize },
+    IsdbtLayerModulation { layer_index: usize, value: i32 },
+    IsdbtLayerCoderateAuto { layer_index: usize },
+    IsdbtLayerCoderate { layer_index: usize, value: i32 },
+    IsdbtLayerTimeInterleaveAuto { layer_index: usize },
+    IsdbtLayerTimeInterleave { layer_index: usize, value: i32 },
+    IsdbtExplicitSegmentCount { layer_index: usize, count: i32 },
+    IsdbsModulationAuto,
+    IsdbsExplicitModulation { value: i32 },
+    IsdbsCoderateAuto,
+    IsdbsExplicitCoderate { value: i32 },
+    IsdbsExplicitRolloff { value: i32 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendSettingsRequest {
+    pub request: FrontendTuneRequest,
+    pub requested_settings: Vec<FrontendRequestedSetting>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DemuxSetFrontendDataSourceRequest {
     pub frontend_id: i32,
 }
@@ -666,7 +699,271 @@ pub enum RuntimeExecutableRequest {
     LnbSetSatellitePosition(LnbSetSatellitePositionRequest),
 }
 
-pub type AidlDomainRequest = RuntimeExecutableRequest;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AidlMethodCall {
+    PublicApi {
+        object: AidlObjectKind,
+        api: AidlApi,
+    },
+    UnsupportedPublicApi {
+        object: AidlObjectKind,
+        api: AidlApi,
+    },
+    FrontendTune(FrontendTuneRequest),
+    FrontendSetLnb {
+        lnb_id: i32,
+    },
+    FrontendStopTune,
+    FrontendScan(FrontendTuneRequest),
+    FrontendStopScan,
+    FrontendClose,
+    FrontendSetCallback,
+    DemuxSetFrontendDataSource {
+        frontend_id: i32,
+    },
+    DemuxOpenFilter(RuntimeExecutableRequest),
+    DemuxOpenDvr(OpenDvrRequest),
+    DemuxClose,
+    FilterConfigure(RuntimeExecutableRequest),
+    FilterConfigureAvStreamType(FilterAvStreamTypeRequest),
+    FilterGetQueueDesc,
+    FilterGetId,
+    FilterGetId64Bit,
+    FilterGetAvSharedHandle,
+    FilterReleaseAvHandle(FilterReleaseAvHandleRequest),
+    FilterStart,
+    FilterStop,
+    FilterFlush,
+    FilterClose,
+    FilterSetDataSource(FilterSetDataSourceRequest),
+    FilterSetDataSourceToDemuxInput,
+    FilterSetDelayHint(FilterDelayHintRequest),
+    DvrGetQueueDesc,
+    DvrConfigure(DvrConfigureRequest),
+    DvrAttachFilter(DvrFilterLinkRequest),
+    DvrDetachFilter(DvrFilterLinkRequest),
+    DvrStart,
+    DvrStop,
+    DvrFlush,
+    DvrClose,
+    DvrSetStatusCheckIntervalHint(i64),
+    DescramblerSetDemuxSource(i32),
+    DescramblerSetKeyToken(Vec<u8>),
+    DescramblerAddPid(u16),
+    DescramblerRemovePid(u16),
+    DescramblerClose,
+    LnbSetCallback,
+    LnbSetVoltage(LnbVoltageRequest),
+    LnbSetTone(LnbToneRequest),
+    LnbSetSatellitePosition(LnbSetSatellitePositionRequest),
+    LnbSendDiseqc(Vec<u8>),
+    LnbClose,
+}
+
+impl AidlMethodCall {
+    pub const fn api(&self) -> AidlApi {
+        match self {
+            Self::PublicApi { api, .. } | Self::UnsupportedPublicApi { api, .. } => *api,
+            Self::FrontendTune(_) => AidlApi::FrontendTune,
+            Self::FrontendSetLnb { .. } => AidlApi::FrontendSetLnb,
+            Self::FrontendStopTune => AidlApi::FrontendStopTune,
+            Self::FrontendScan(_) => AidlApi::FrontendScan,
+            Self::FrontendStopScan => AidlApi::FrontendStopScan,
+            Self::FrontendClose => AidlApi::FrontendClose,
+            Self::FrontendSetCallback => AidlApi::FrontendSetCallback,
+            Self::DemuxSetFrontendDataSource { .. } => AidlApi::DemuxSetFrontendDataSource,
+            Self::DemuxOpenFilter(_) => AidlApi::DemuxOpenFilter,
+            Self::DemuxOpenDvr(_) => AidlApi::DemuxOpenDvr,
+            Self::DemuxClose => AidlApi::DemuxClose,
+            Self::FilterConfigure(_) => AidlApi::FilterConfigure,
+            Self::FilterConfigureAvStreamType(_) => AidlApi::FilterConfigureAvStreamType,
+            Self::FilterGetQueueDesc => AidlApi::FilterGetQueueDesc,
+            Self::FilterGetId => AidlApi::FilterGetId,
+            Self::FilterGetId64Bit => AidlApi::FilterGetId64Bit,
+            Self::FilterGetAvSharedHandle => AidlApi::FilterGetAvSharedHandle,
+            Self::FilterReleaseAvHandle(_) => AidlApi::FilterReleaseAvHandle,
+            Self::FilterStart => AidlApi::FilterStart,
+            Self::FilterStop => AidlApi::FilterStop,
+            Self::FilterFlush => AidlApi::FilterFlush,
+            Self::FilterClose => AidlApi::FilterClose,
+            Self::FilterSetDataSource(_) | Self::FilterSetDataSourceToDemuxInput => {
+                AidlApi::FilterSetDataSource
+            }
+            Self::FilterSetDelayHint(_) => AidlApi::FilterSetDelayHint,
+            Self::DvrGetQueueDesc => AidlApi::DvrGetQueueDesc,
+            Self::DvrConfigure(_) => AidlApi::DvrConfigure,
+            Self::DvrAttachFilter(_) => AidlApi::DvrAttachFilter,
+            Self::DvrDetachFilter(_) => AidlApi::DvrDetachFilter,
+            Self::DvrStart => AidlApi::DvrStart,
+            Self::DvrStop => AidlApi::DvrStop,
+            Self::DvrFlush => AidlApi::DvrFlush,
+            Self::DvrClose => AidlApi::DvrClose,
+            Self::DvrSetStatusCheckIntervalHint(_) => AidlApi::DvrSetStatusCheckIntervalHint,
+            Self::DescramblerSetDemuxSource(_) => AidlApi::DescramblerSetDemuxSource,
+            Self::DescramblerSetKeyToken(_) => AidlApi::DescramblerSetKeyToken,
+            Self::DescramblerAddPid(_) => AidlApi::DescramblerAddPid,
+            Self::DescramblerRemovePid(_) => AidlApi::DescramblerRemovePid,
+            Self::DescramblerClose => AidlApi::DescramblerClose,
+            Self::LnbSetCallback => AidlApi::LnbSetCallback,
+            Self::LnbSetVoltage(_) => AidlApi::LnbSetVoltage,
+            Self::LnbSetTone(_) => AidlApi::LnbSetTone,
+            Self::LnbSetSatellitePosition(_) => AidlApi::LnbSetSatellitePosition,
+            Self::LnbSendDiseqc(_) => AidlApi::LnbSendDiseqc,
+            Self::LnbClose => AidlApi::LnbClose,
+        }
+    }
+
+    pub const fn object_kind(&self) -> AidlObjectKind {
+        match self {
+            Self::PublicApi { object, .. } | Self::UnsupportedPublicApi { object, .. } => *object,
+            Self::FrontendTune(_)
+            | Self::FrontendSetLnb { .. }
+            | Self::FrontendStopTune
+            | Self::FrontendScan(_)
+            | Self::FrontendStopScan
+            | Self::FrontendClose
+            | Self::FrontendSetCallback => AidlObjectKind::Frontend,
+            Self::DemuxSetFrontendDataSource { .. }
+            | Self::DemuxOpenFilter(_)
+            | Self::DemuxOpenDvr(_)
+            | Self::DemuxClose => AidlObjectKind::Demux,
+            Self::FilterConfigure(_)
+            | Self::FilterConfigureAvStreamType(_)
+            | Self::FilterGetQueueDesc
+            | Self::FilterGetId
+            | Self::FilterGetId64Bit
+            | Self::FilterGetAvSharedHandle
+            | Self::FilterReleaseAvHandle(_)
+            | Self::FilterStart
+            | Self::FilterStop
+            | Self::FilterFlush
+            | Self::FilterClose
+            | Self::FilterSetDataSource(_)
+            | Self::FilterSetDataSourceToDemuxInput
+            | Self::FilterSetDelayHint(_) => AidlObjectKind::Filter,
+            Self::DvrGetQueueDesc
+            | Self::DvrConfigure(_)
+            | Self::DvrAttachFilter(_)
+            | Self::DvrDetachFilter(_)
+            | Self::DvrStart
+            | Self::DvrStop
+            | Self::DvrFlush
+            | Self::DvrClose
+            | Self::DvrSetStatusCheckIntervalHint(_) => AidlObjectKind::Dvr,
+            Self::DescramblerSetDemuxSource(_)
+            | Self::DescramblerSetKeyToken(_)
+            | Self::DescramblerAddPid(_)
+            | Self::DescramblerRemovePid(_)
+            | Self::DescramblerClose => AidlObjectKind::Descrambler,
+            Self::LnbSetCallback
+            | Self::LnbSetVoltage(_)
+            | Self::LnbSetTone(_)
+            | Self::LnbSetSatellitePosition(_)
+            | Self::LnbSendDiseqc(_)
+            | Self::LnbClose => AidlObjectKind::Lnb,
+        }
+    }
+
+    pub fn runtime_executable_request(&self) -> Option<RuntimeExecutableRequest> {
+        match self {
+            Self::DemuxSetFrontendDataSource { frontend_id } => {
+                Some(RuntimeExecutableRequest::DemuxSetFrontendDataSource(
+                    DemuxSetFrontendDataSourceRequest {
+                        frontend_id: *frontend_id,
+                    },
+                ))
+            }
+            Self::DemuxOpenFilter(request) | Self::FilterConfigure(request) => {
+                Some(request.clone())
+            }
+            Self::DemuxOpenDvr(request) => Some(RuntimeExecutableRequest::OpenDvr(*request)),
+            Self::FilterConfigureAvStreamType(request) => Some(
+                RuntimeExecutableRequest::FilterConfigureAvStreamType(*request),
+            ),
+            Self::FilterReleaseAvHandle(request) => {
+                Some(RuntimeExecutableRequest::FilterReleaseAvHandle(*request))
+            }
+            Self::FilterSetDataSource(request) => {
+                Some(RuntimeExecutableRequest::FilterSetDataSource(*request))
+            }
+            Self::FilterSetDataSourceToDemuxInput
+            | Self::FrontendSetCallback
+            | Self::LnbSetCallback => Some(RuntimeExecutableRequest::NoPayload),
+            Self::FilterSetDelayHint(request) => {
+                Some(RuntimeExecutableRequest::FilterDelayHint(*request))
+            }
+            Self::DvrConfigure(request) => Some(RuntimeExecutableRequest::DvrConfigure(*request)),
+            Self::DvrAttachFilter(request) => {
+                Some(RuntimeExecutableRequest::DvrAttachFilter(*request))
+            }
+            Self::DvrDetachFilter(request) => {
+                Some(RuntimeExecutableRequest::DvrDetachFilter(*request))
+            }
+            Self::LnbSetVoltage(request) => Some(RuntimeExecutableRequest::LnbSetVoltage(*request)),
+            Self::LnbSetTone(request) => Some(RuntimeExecutableRequest::LnbSetTone(*request)),
+            Self::LnbSetSatellitePosition(request) => {
+                Some(RuntimeExecutableRequest::LnbSetSatellitePosition(*request))
+            }
+            Self::PublicApi { .. }
+            | Self::UnsupportedPublicApi { .. }
+            | Self::FrontendTune(_)
+            | Self::FrontendSetLnb { .. }
+            | Self::FrontendStopTune
+            | Self::FrontendScan(_)
+            | Self::FrontendStopScan
+            | Self::FrontendClose
+            | Self::DemuxClose
+            | Self::FilterGetQueueDesc
+            | Self::FilterGetId
+            | Self::FilterGetId64Bit
+            | Self::FilterGetAvSharedHandle
+            | Self::FilterStart
+            | Self::FilterStop
+            | Self::FilterFlush
+            | Self::FilterClose
+            | Self::DvrGetQueueDesc
+            | Self::DvrStart
+            | Self::DvrStop
+            | Self::DvrFlush
+            | Self::DvrClose
+            | Self::DvrSetStatusCheckIntervalHint(_)
+            | Self::DescramblerSetDemuxSource(_)
+            | Self::DescramblerSetKeyToken(_)
+            | Self::DescramblerAddPid(_)
+            | Self::DescramblerRemovePid(_)
+            | Self::DescramblerClose
+            | Self::LnbSendDiseqc(_)
+            | Self::LnbClose => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AidlMethodPlan {
+    pub api: AidlApi,
+    pub command_plan: CommandPlan,
+    pub executable_request: Option<RuntimeExecutableRequest>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AidlMethodAdapter;
+
+impl AidlMethodAdapter {
+    pub fn plan(method: AidlMethodCall) -> Result<AidlMethodPlan, HalError> {
+        let api = method.api();
+        let command_plan = CommandPlan::for_api(method.object_kind(), api)?;
+        let executable_request = method.runtime_executable_request();
+        Ok(AidlMethodPlan {
+            api,
+            command_plan,
+            executable_request,
+        })
+    }
+
+    pub fn frontend_tune(request: FrontendTuneRequest) -> Result<AidlMethodPlan, HalError> {
+        Self::plan(AidlMethodCall::FrontendTune(request))
+    }
+}
 
 impl RuntimeExecutableRequest {
     pub fn profile_support(&self) -> DomainProfileSupport {
@@ -761,5 +1058,54 @@ impl RuntimeExecutableRequest {
             | Self::LnbSetVoltage(_)
             | Self::LnbSetTone(_) => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod method_contract_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_common::{
+        FrontendIsdbtPartialReceptionRequirement, FrontendSystem, FrontendTuneRequest,
+    };
+
+    fn tune_request() -> FrontendTuneRequest {
+        FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        }
+    }
+
+    #[test]
+    fn pure_method_planner_preserves_frontend_tune_contract() {
+        let plan = AidlMethodAdapter::frontend_tune(tune_request()).unwrap();
+        assert_eq!(plan.api, AidlApi::FrontendTune);
+        assert_eq!(plan.command_plan.object(), AidlObjectKind::Frontend);
+        assert_eq!(
+            plan.command_plan.transaction(),
+            RuntimeTransactionName::FrontendTuneTxnApply
+        );
+        assert_eq!(plan.executable_request, None);
+    }
+
+    #[test]
+    fn pure_method_planner_preserves_runtime_executable_payload() {
+        let request = FilterSetDataSourceRequest {
+            source_filter_id: 7,
+            source_filter_generation: 11,
+        };
+        let plan = AidlMethodAdapter::plan(AidlMethodCall::FilterSetDataSource(request)).unwrap();
+        assert_eq!(plan.api, AidlApi::FilterSetDataSource);
+        assert_eq!(plan.command_plan.object(), AidlObjectKind::Filter);
+        assert_eq!(
+            plan.executable_request,
+            Some(RuntimeExecutableRequest::FilterSetDataSource(request))
+        );
     }
 }

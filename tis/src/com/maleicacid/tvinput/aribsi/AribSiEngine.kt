@@ -43,6 +43,11 @@ class AribSiEngine(
             nativeParser.casDiscoverySnapshot()
         }
 
+    fun pmtPidsForSectionFilters(): Set<TsPid> =
+        synchronized(lock) {
+            nativeParser.pmtPidsForSectionFilters()
+        }
+
     fun livePlaybackSnapshot(): LivePlaybackSnapshot =
         synchronized(lock) {
             nativeParser.livePlaybackSnapshot()
