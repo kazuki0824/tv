@@ -23,11 +23,7 @@ class SectionFilterRetryPolicyTest {
                 isOpen = { it in current },
                 failedWhileRequested = failed,
             )
-            private companion object {
-        const val FIRST_DYNAMIC_PID = 0x1001
-        const val SECOND_DYNAMIC_PID = 0x1002
-    }
-}
+        }
 
         apply(setOf(pid))
         apply(setOf(pid))
@@ -76,5 +72,10 @@ class SectionFilterRetryPolicyTest {
         check(attempts == 1)
         check(current == setOf(pid))
         check(failed.isEmpty())
+    }
+
+    private companion object {
+        const val FIRST_DYNAMIC_PID = 0x1001
+        const val SECOND_DYNAMIC_PID = 0x1002
     }
 }
