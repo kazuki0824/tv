@@ -91,6 +91,59 @@ class SectionFilterRetryPolicyTest {
     }
 
     @Test
+    fun casRejectCleanupKeepsFailureMarkerForContinuouslyRequestedPid() {
+        val pid = TsPid(CAS_DYNAMIC_PID)
+        val current = linkedSetOf<TsPid>()
+        val failed = linkedSetOf<TsPid>()
+        var openAttempts = 0
+
+        fun apply(next: Set<TsPid>) {
+            SectionFilterPolicy.replaceDynamicPids(
+                current = current,
+                next = next,
+                close = { current.remove(it) },
+                open = {
+                    openAttempts++
+                    false
+                },
+                isOpen = { it in current },
+                failedWhileRequested = failed,
+            )
+        }
+
+        fun refreshSameMetadata() {
+            val requested = setOf(pid)
+            val retainAfterRollback = linkedSetOf<TsPid>()
+            runCatching {
+                SectionFilterPolicy.commitCasAndFilters(
+                    updateCas = { CasController.UpdateResult(emptyList(), requested, emptySet()) },
+                    commitFilters = { result ->
+                        try {
+                            apply(result.ecmPids)
+                            check(result.ecmPids.all { it in current }) { "CAS filter open failed" }
+                        } catch (failure: RuntimeException) {
+                            retainAfterRollback += failed.intersect(result.ecmPids)
+                            throw failure
+                        }
+                    },
+                    reject = {
+                        apply(emptySet())
+                        failed += retainAfterRollback
+                    },
+                )
+            }
+        }
+
+        refreshSameMetadata()
+        check(openAttempts == 1)
+        check(failed == setOf(pid))
+
+        refreshSameMetadata()
+        check(openAttempts == 1)
+        check(failed == setOf(pid))
+    }
+
+    @Test
     fun successfulDynamicOpenClearsFailedMarkerAndPublishesPid() {
         val pid = TsPid(SECOND_DYNAMIC_PID)
         val current = linkedSetOf<TsPid>()
@@ -128,5 +181,6 @@ class SectionFilterRetryPolicyTest {
         const val FIRST_DYNAMIC_PID = 0x1001
         const val SECOND_DYNAMIC_PID = 0x1002
         const val EXCEPTIONAL_DYNAMIC_PID = 0x1003
+        const val CAS_DYNAMIC_PID = 0x1004
     }
 }
