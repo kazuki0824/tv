@@ -6,7 +6,7 @@ import org.junit.Test
 class SectionFilterRetryPolicyTest {
     @Test
     fun failedDynamicOpenIsAttemptedOnceWhilePidRemainsRequested() {
-        val pid = TsPid(0x1001)
+        val pid = TsPid(FIRST_DYNAMIC_PID)
         val current = linkedSetOf<TsPid>()
         val failed = linkedSetOf<TsPid>()
         var attempts = 0
@@ -23,7 +23,11 @@ class SectionFilterRetryPolicyTest {
                 isOpen = { it in current },
                 failedWhileRequested = failed,
             )
-        }
+            private companion object {
+        const val FIRST_DYNAMIC_PID = 0x1001
+        const val SECOND_DYNAMIC_PID = 0x1002
+    }
+}
 
         apply(setOf(pid))
         apply(setOf(pid))
@@ -42,7 +46,7 @@ class SectionFilterRetryPolicyTest {
 
     @Test
     fun successfulDynamicOpenClearsFailedMarkerAndPublishesPid() {
-        val pid = TsPid(0x1002)
+        val pid = TsPid(SECOND_DYNAMIC_PID)
         val current = linkedSetOf<TsPid>()
         val failed = linkedSetOf(pid)
         var attempts = 0
