@@ -1212,6 +1212,8 @@ class TunerController(
         callOnController {
             val controller = casController ?: return@callOnController null
             updateCasIfCurrent(generation, tuneGeneration, tuneAccepted) {
+                val failedEcmRequestsToRetain = linkedSetOf<TsPid>()
+                val failedEmmRequestsToRetain = linkedSetOf<TsPid>()
                 SectionFilterPolicy.commitCasAndFilters(
                     updateCas = {
                         val acceptedMetadata = SectionFilterPolicy.metadataForCasDecision(casDecisionReady, metadata)
@@ -1227,16 +1229,26 @@ class TunerController(
                         )
                     },
                     commitFilters = { result ->
-                        updateDynamicSectionFiltersOnController(pmtPids, result.ecmPids, result.emmPids, generation)
-                        check((pmtPids + result.ecmPids + result.emmPids).all { sectionFilterHandles[it]?.isOpen == true }) {
-                            "CAS/SI filter集合を開始できません"
+                        try {
+                            updateDynamicSectionFiltersOnController(pmtPids, result.ecmPids, result.emmPids, generation)
+                            check((pmtPids + result.ecmPids + result.emmPids).all { sectionFilterHandles[it]?.isOpen == true }) {
+                                "CAS/SI filter集合を開始できません"
+                            }
+                            if (!casDecisionReady) playbackPipeline.stop()
+                        } catch (failure: RuntimeException) {
+                            failedEcmRequestsToRetain += failedDynamicEcmPids.intersect(result.ecmPids)
+                            failedEmmRequestsToRetain += failedDynamicEmmPids.intersect(result.emmPids)
+                            throw failure
                         }
-                        if (!casDecisionReady) playbackPipeline.stop()
                     },
                     reject = {
                         SectionFilterPolicy.completeCleanup(
                             { controller.clearForResourceLoss() },
                             { updateDynamicSectionFiltersOnController(pmtPids, emptySet(), emptySet(), generation) },
+                            {
+                                failedDynamicEcmPids += failedEcmRequestsToRetain
+                                failedDynamicEmmPids += failedEmmRequestsToRetain
+                            },
                             { playbackPipeline.stop() },
                         )
                     },
