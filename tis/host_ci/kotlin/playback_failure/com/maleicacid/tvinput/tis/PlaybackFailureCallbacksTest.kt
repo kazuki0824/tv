@@ -93,6 +93,68 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
+    @Suppress("LongMethod")
+    @Test
+    fun removedFailedPmtRetriesRetainedCleanupBeforeSingleReopen() {
+        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        try {
+            val fixture =
+                executor
+                    .submit<Fixture> { Fixture(false, false, failCleanup = false) }
+                    .get(5, TimeUnit.SECONDS)
+            val controller = fixture.allocate(TunerController::class.java)
+            val pid = TsPid(0x1004)
+            val retainedHandle = TestSectionHandle(pid, rejectClose = true)
+
+            fun set(
+                name: String,
+                value: Any,
+            ) {
+                TunerController::class.java
+                    .getDeclaredField(name)
+                    .apply { isAccessible = true }
+                    .set(controller, value)
+            }
+
+            val failedPmt = linkedSetOf(pid)
+            set("inputId", "test")
+            set("sectionExecutor", executor)
+            set("tuneAccepted", true)
+            set("tuneGeneration", 7L)
+            set("tuner", fixture.tuner)
+            set("playbackPipeline", fixture.pipeline)
+            set("dynamicPmtPids", linkedSetOf<TsPid>())
+            set("dynamicEcmPids", linkedSetOf<TsPid>())
+            set("dynamicEmmPids", linkedSetOf<TsPid>())
+            set("failedDynamicPmtPids", failedPmt)
+            set("failedDynamicEcmPids", linkedSetOf<TsPid>())
+            set("failedDynamicEmmPids", linkedSetOf<TsPid>())
+            set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>(pid to retainedHandle))
+            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+
+            check(runCatching { controller.updateScanPmtFilters(emptySet(), 7L) }.isFailure)
+            check(retainedHandle.closes == 1)
+            check(failedPmt.isEmpty())
+
+            retainedHandle.rejectClose = false
+            val replacement = fixture.allocate(Filter::class.java)
+            Tuner::class.java.getField("nextFilter").set(null, replacement)
+            Tuner::class.java.getField("openFilterCalls").setInt(null, 0)
+            Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
+
+            controller.updateScanPmtFilters(setOf(pid), 7L)
+
+            check(retainedHandle.closes == 2)
+            check(Tuner::class.java.getField("openFilterCalls").getInt(null) == 1)
+            check(failedPmt.isEmpty())
+
+            controller.closeSectionFilters()
+            Tuner::class.java.getField("nextFilter").set(null, null)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
     @Test fun invalidatedEcmAndEmmStopFiltersAndPlaybackAndNotifyOriginalGeneration() {
         checkCasInvalidation(failCleanup = false)
     }
