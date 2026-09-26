@@ -45,16 +45,11 @@ TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser �
 
 ### EIT時刻のTvProvider投影境界
 
-ARIB EIT の `start_time` は日本標準時（JST、UTC+09:00）のMJD + BCDとして解釈し、具体値を `TvProvider.Programs` へ投影するときだけUTCのUnix epoch millisecondへ変換する。端末の既定time zone、夏時間設定、現在のlocaleを変換規則へ混ぜない。
+EIT `start_time` / `duration` の構文、未定義sentinel、時刻状態、stable identityへの昇格可否は `arib_si_engine_rs/DESIGN_JA.md` の「EIT 時刻状態と event identity」を唯一の正本とする。本書では `DEFINED` / `UNDEFINED_TIME` / `BOTH_TIMING_UNDEFINED` / `MALFORMED_TIMING` の生成条件や相関規則を再定義しない。
 
-`start_time=0xFFFFFFFFFF` と `duration=0xFFFFFF` はARIB上の有効な未定義値であり、BCD不正や壊れたeventとして扱わない。ただし、両者の組合せで意味が異なる。
+TvProvider投影では、正本が具体時刻を確定したeventだけを `Programs` rowの開始・終了時刻へ反映する。時刻未定または不正なeventから0秒、固定番組長その他の架空値を生成せず、それらだけを理由に既存の正常な `Programs` rowを削除しない。具体時刻は正本がJSTのMJD + BCDから導出した値をUTCのUnix epoch millisecondへ変換して使用し、端末の既定time zone、夏時間設定、現在のlocaleを混ぜない。
 
-- `start_time` または `duration` の片方だけが all-1 の場合は時刻未定状態とする。event自体は確定しており `event_id` は有効である。未定の時刻を0秒、1ミリ秒、固定番組長などの架空値へ置換してはならず、後続EITで具体値が得られた場合は同じ `original_network_id / transport_stream_id / service_id / event_id` のeventとして相関してよい。
-- `start_time=0xFFFFFFFFFF` かつ `duration=0xFFFFFF` の場合も、ARIB規定として断定するのは両timing fieldが未定義値であることまでとし、raw `event_id` field自体の意味が失われるとは扱わない。本製品では、具体時刻を持つeventとの誤相関・既存Programの誤削除を避ける保守的ポリシーとして、この状態をpersistent stable event identityへ昇格させず、後続EITの具体eventとraw `event_id`だけで自動相関しない。
-
-通常の `TvProvider.Programs` row は具体的な開始時刻と終了時刻を必要とするため、時刻未定eventもevent未定状態も、未定状態のまま `Programs` rowを新規作成または時刻更新する対象にしない。これらの未定義値だけを理由に既存の正常な `Programs` rowを削除する根拠にも使わない。
-
-`ProgramProviderDataV1.timing.startUtcMillis / durationMillis` は、`TvProvider.Programs` へ実際に投影できる具体的な時刻が揃ったrowの保存表現であり、ARIB EITの全時刻状態を表す一般モデルではない。終了時刻はoverflow検査付きでこの2値から投影時に導出し、provider-dataへ重複保存しない。したがって同schemaの整数必須条件を緩めて未定値を格納するのではなく、未定eventはparser/TISの未投影状態に留める。
+provider-dataのtiming field集合、必須性、正規化は `arib_si_engine_rs/DESIGN_JA.md` のcanonical schemaを正とし、本書では再掲しない。
 
 ## 3. 設計として固定する投影
 
@@ -72,7 +67,7 @@ EDCBとEPGStationの参照から補完できたため、次を設計として固
 | コンテンツジャンル 大分類 / 中分類 | `arib_si_engine_rs` がARIB分類値とARIB表示名を出力し、TIS がその表示名を `Programs.COLUMN_BROADCAST_GENRE` へ `TvContract.Programs.Genres.encode(...)` 形式で格納する | 元ARIB分類、大分類、中分類、表示文字列を保持 | Android TvProvider には放送規格由来ジャンル用の `COLUMN_BROADCAST_GENRE` があり、ARIB分類を直接 canonical genre と混同しないため |
 | Android canonical genre | 本文「ARIB分類から Android canonical genre への明示写像表」に一致する分類だけを TIS が `Programs.COLUMN_CANONICAL_GENRE` へ `TvContract.Programs.Genres.encode(...)` 形式で格納する。写像不能分類は直接設定しない。 | provider-dataには写像元のARIB分類だけを保持する。TISが直接設定したcanonical genre、写像不能理由、TvProvider読み出し後の値はruntime投影・診断であり、`arib_si_engine_rs`のSI event DTOまたはprovider-dataへ保存しない。 | canonical genre は Android 定義済み値の列であるため、TIS が明示写像できる分類だけを設定し、推測写像と投影結果の二重保存を禁止するため |
 | コンテンツジャンルUI補足 | `Programs.COLUMN_LONG_DESCRIPTION` に `ジャンル: ...` として補足 | 元ARIB分類を保持 | 準正式案でUI向け補足として固定 |
-| event_group_descriptor | 現行仕様では標準列や一般 UI 本文へは出さず、JSON v1 `internal_provider_data.eventGroups` に descriptor 単位で構造化保存する。raw `groupType`、共通 `events[] { serviceId, eventId }`、`groupType=0x4/0x5` の `otherNetworkEvents[] { originalNetworkId, transportStreamId, serviceId, eventId }`、その他 group type の `privateDataHex` を保持し、派生 `kind` は重複保存しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | ARIB `event_group_descriptor` の構造を損失なく保持し、存在しないONID / TSIDを補完しない | Android標準列に自然対応しないARIB-native構造であり、parser構造を崩さず私的provider-dataへ保存するため |
+| event_group_descriptor | 標準列や一般 UI 本文へは出さず、完全構造は `arib_si_engine_rs/DESIGN_JA.md` のcanonical provider-data schemaへ保存する。本書ではJSON key、nested field、正規化規則を列挙しない。 | provider-data側の構造・補完禁止・canonical encodeは同設計正本を参照する | Android標準列に自然対応しないARIB-native構造であり、投影判断と保存schemaを分離するため |
 | parental_rating_descriptor | `TvContentRating` に変換できる範囲を `Programs.COLUMN_CONTENT_RATING` へ `TvContentRating.flattenToString()` 形式で格納する | country_code、レーティング値、未対応値、元記述子を保持 | Android TIF の視聴制限は `COLUMN_CONTENT_RATING` と `TvInputService.Session` の content block 通知に接続するため |
 | freeCA / isFree | AOSP契約に従い `free_CA_mode` を `Programs.COLUMN_SCRAMBLED` へ投影し、必要に応じて `Programs.COLUMN_LONG_DESCRIPTION` に `放送種別: 無料放送/有料放送` として補足する。ただしARIB上の `free_CA_mode` は無料/有料区分であり、TS component の実スクランブル状態そのものを示さない。 | free_ca_modeを保持 | ARIB TR-B14 / TR-B15 が SDT/EIT の `free_CA_mode` を無料/有料判定に用いるため。実スクランブル状態は `transport_scrambling_control` 等の別情報で判定し、この値と混同しない。 |
 | event_id | `Programs.COLUMN_EVENT_ID` | イベントキーとして保持する | Android標準列がある |
@@ -127,9 +122,9 @@ freeCA / isFree UI補足:
 | データ・判断 | 現行仕様の扱い | 境界を設ける理由 |
 |---|---|---|
 | series_descriptor series_name | JSON v1 `internal_provider_data` の series 構造に保存する。`COLUMN_TITLE` や `COLUMN_EPISODE_TITLE` へ機械的に入れない。 | EIT `event_name_char` の番組表表示名を壊さないため |
-| series episode/count / series id | 構文的に有効なseries記述子が1件だけの場合、その`series_id`を`COLUMN_SERIES_ID`へ出す。現行v1は単一series投影とし、複数記述子の場合は`COLUMN_SERIES_ID`・`COLUMN_MULTI_SERIES_ID`・話数列をnullにする。先頭を選んだり、別seriesの話数を組み合わせたりしない。複数分の構造化事実はRust生成の`diagnostics.rawProviderDataExtensions`の`seriesDescriptorFacts`へ保存する。この保守的な保存・投影規則は複数記述子のARIB上の合法性を断定するものではない。`episode_number=1..4095` は10進文字列として `COLUMN_EPISODE_DISPLAY_NUMBER` へ出し、`0` は話数未定義として列を設定しない。`last_episode_number` は通常の `Programs` に自然対応する標準列がないため標準列へ出さず、`0`（総話数未定）を含め JSON v1 `internal_provider_data` の series 構造に保持する。repeat_label、program_pattern、expire_date、series_name などの完全構造も同じ series 構造に保持する。 | ARIB の 0 sentinel を表示値へ誤投影せず、通常の `Programs` に存在しない `COLUMN_ITEM_COUNT` への投影を禁止するため |
-| linkage_descriptor | JSON v1 `internal_provider_data.linkage[]` に `transportStreamId / originalNetworkId / serviceId / linkageType / parseStatus` と、保存上限を守る診断用 `privateDataPrefixHex` を保持する。private data全量を保存したとは表現しない。現行仕様では標準列・一般 UI・予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | Android標準列に自然対応せず、ARIB-native identityとbounded diagnostic prefixを私的データとして明示的に分離するため |
-| event_group_descriptor | JSON v1 `internal_provider_data.eventGroups` にraw `groupType`、`events`、`otherNetworkEvents`、`privateDataHex`、`parseStatus`を構造化保存し、現行仕様では標準列・一般 UI・予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | Android標準列には自然対応しないが、予約追従に必要なARIB-native構造であるため |
+| series episode/count / series id | 構文的に有効なseries記述子が1件だけの場合、その`series_id`を`COLUMN_SERIES_ID`へ出す。複数の有効なseries記述子から複数の`series_id`が得られる場合は、重複を除きdescriptor順を維持してcomma-separatedで`COLUMN_MULTI_SERIES_ID`へ出し、`COLUMN_SERIES_ID`は設定しない。話数列は単一seriesの場合だけ投影し、複数seriesの異なるepisode値から代表値を選ばない。`episode_number=1..4095` は10進文字列として `COLUMN_EPISODE_DISPLAY_NUMBER` へ出し、`0` は話数未定義として列を設定しない。`last_episode_number` は通常の `Programs` に自然対応する標準列がないため標準列へ出さない。完全なseries事実の保存形式は `arib_si_engine_rs/DESIGN_JA.md` のcanonical provider-data schemaを正とする。 | AOSP `COLUMN_MULTI_SERIES_ID` が複数series ID用の標準列を提供しているため、複数IDを私的データだけへ退避せず標準列へ損失なく投影する。話数はseriesごとに異なり得るため複数series時に推測で単一値へ縮約しない。 |
+| linkage_descriptor | 標準列・一般 UI 本文へは投影しない。保存する完全構造、診断prefix、保存上限は `arib_si_engine_rs/DESIGN_JA.md` のcanonical provider-data schemaを正とし、本書ではfield集合を再掲しない。 | Android標準列に自然対応せず、投影判断とARIB-native保存schemaを分離するため |
+| event_group_descriptor | 標準列・一般 UI 本文へは投影しない。完全構造の保存形式は `arib_si_engine_rs/DESIGN_JA.md` のcanonical provider-data schemaを正とし、本書ではfield集合を再掲しない。 | Android標準列に自然対応しないARIB-native構造であるため |
 | multi-lingual event text の候補列 | `short_event_descriptor` はdescriptor順で最初に受理した言語を標準 `TITLE` / `SHORT_DESCRIPTION` の選択言語とし、同じ言語の `extended_event_descriptor` / extended itemだけを `LONG_DESCRIPTION` へ使う。short候補がない場合はextended候補、さらにない場合はextended itemの先頭言語を選択する。異なる言語を1文字列へ連結しない。候補列は `shortEvents[] / extendedTexts[] / extendedItems[]` として JSON v1 `internal_provider_data` に保存する。 | Android標準title/descriptionは単一表示値である一方、ARIBは異なる言語のshort/extended descriptorを複数許可するため |
 | 復号診断 | JSON v1 `diagnostics.parserDiagnostics` または `diagnostics.descriptorDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
 | 公開可否診断 | 現在のTIS実行中診断へ保持し、provider-data・標準列へ保存しない。 | 放送事実と現在の製品判断を分離するため |
@@ -255,7 +250,7 @@ Channels.COLUMN_TYPE:
 - 新規 provider-data 書き込みでは `arib_si_engine_rs` の `ProgramProviderDataV1` を provider-data 全体の唯一の schema とする。descriptor 診断情報 schema v1 は `diagnostics.descriptorDiagnostics[]` 配下の要素 schema であり、provider-data 全体の schema ではない。
 - extended-event item は `description/text` として書き込む。`key/value` と `itemDescription/itemText` の旧入力形式は受け付けない。
 - 不正な short / extended / content / audio_component / event_group descriptor は、通常の title、description、長形式イベント項目、genre、audio、event-group フィールドとして部分投影してはならない。
-- ARIBで定義された `start_time=0xFFFFFFFFFF` / `duration=0xFFFFFF` の未定義値は不正timingに含めない。片方だけall-1の場合と両方all-1の場合を区別するが、両方all-1でもraw `event_id` field自体をARIB上無意味とは断定しない。両方all-1をpersistent stable identity、deletion-authoritativeなvalid-event-set、後続具体eventとの自動相関へ使わないのは本製品の誤相関・誤削除防止ポリシーとする。それ以外の不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは 廃止行削除区間 を作らない。
+- EIT timingの未定義値・不正値・stable identity・valid-event-setの意味は `arib_si_engine_rs/DESIGN_JA.md` を正とする。本書では、その正本で投影可能とされた具体時刻だけを標準列へ反映し、投影不能なtimingを架空値や既存Program削除の根拠へ変換しない。
 
 
 ## ARIB分類から Android canonical genre への明示写像表
@@ -307,4 +302,4 @@ TIS は次の表に一致する分類だけを `Programs.COLUMN_CANONICAL_GENRE`
 | EIT `free_CA_mode` | TvProvider scrambled 判定、provider-data JSON | AOSP契約に従い `free_CA_mode` をそのまま投影する。`1` はARIB運用上の有料、`0` は無料を表し、TS component の実スクランブル状態とは別軸である。 |
 | 音声 ISO639 language | TvProvider audio language メタデータ、provider-data JSON | PMT / descriptor から取得可能な言語だけ設定し、取得不能時に推測しない。 |
 | 視聴年齢制限 | `COLUMN_CONTENT_RATING`、provider-data JSON、診断情報 | 既存レーティングドメイン と整合する値だけ設定し、reserved / malformed / domain不明は 診断情報に留める。 |
-| event_group_descriptor | provider-data JSON `eventGroups` | 現行仕様では保存・診断のみ。予約追従へ接続する場合は安全条件を設計正本へ固定する。 |
+| event_group_descriptor | canonical provider-data | 標準列・一般 UI 本文へは投影しない。保存schemaは `arib_si_engine_rs/DESIGN_JA.md` を正とする。 |

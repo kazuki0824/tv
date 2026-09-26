@@ -4,5 +4,5 @@
 
 現時点では TIS APK へ組み込まず、単体テストで予約方針の基本動作だけを確認する。
 
-現行 product では製品へ組み込まない。録画・予約のサービス、receiver、RecordingSession、TvRecordingClient 制御、rec test module は録画・予約作業で明示指定する範囲に限定する。
+製品release上の録画・予約の扱いは `../開発規則.md`、module固有設計は `DESIGN_JA.md`、productへの組込み条件は `../tis/INTEGRATION.md` を参照する。本READMEは現在の対応範囲や有効化条件を独自定義しない。
 

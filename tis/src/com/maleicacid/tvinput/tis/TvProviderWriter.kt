@@ -14,6 +14,7 @@ import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
 import java.security.MessageDigest
+import org.json.JSONArray
 
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
 @Suppress("TooManyFunctions")
@@ -591,14 +592,19 @@ class TvProviderWriter private constructor(
                 null -> if (clearAbsentOptionalColumns) putNull(COLUMN_SCRAMBLED)
                 else -> put(COLUMN_SCRAMBLED, if (scrambled) 1 else 0)
             }
-            val seriesId = program.descriptors.series?.seriesId
-            if (seriesId == null) {
-                if (clearAbsentOptionalColumns) putNull(COLUMN_SERIES_ID)
+            val candidateSeriesIds = seriesIdsFromCandidates(program.descriptors.seriesCandidatesCanonicalJson)
+            val singleSeriesId = program.descriptors.series?.seriesId ?: candidateSeriesIds.singleOrNull()
+            if (candidateSeriesIds.size > 1) {
+                putNull(COLUMN_SERIES_ID)
+                put(COLUMN_MULTI_SERIES_ID, candidateSeriesIds.joinToString(","))
             } else {
-                put(COLUMN_SERIES_ID, seriesId)
+                if (singleSeriesId == null) {
+                    if (clearAbsentOptionalColumns) putNull(COLUMN_SERIES_ID)
+                } else {
+                    put(COLUMN_SERIES_ID, singleSeriesId)
+                }
+                if (clearAbsentOptionalColumns) putNull(COLUMN_MULTI_SERIES_ID)
             }
-            // 投影契約は一意な単一series。複数記述子は根拠を保存し、ID・話数を選択しない。
-            if (clearAbsentOptionalColumns) putNull(COLUMN_MULTI_SERIES_ID)
             val episodeNumber = program.descriptors.series?.episodeNumber
             if (episodeNumber == null || episodeNumber <= 0) {
                 if (clearAbsentOptionalColumns) putNull(COLUMN_EPISODE_DISPLAY_NUMBER)
@@ -607,6 +613,22 @@ class TvProviderWriter private constructor(
             }
             put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, providerData)
         }
+
+    private fun seriesIdsFromCandidates(canonicalJson: String?): List<Int> {
+        if (canonicalJson.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val candidates = JSONArray(canonicalJson)
+            buildList {
+                for (index in 0 until candidates.length()) {
+                    val candidate = candidates.optJSONObject(index) ?: continue
+                    if (candidate.optString("parseStatus", "OK") != "OK") continue
+                    if (!candidate.has("seriesId") || candidate.isNull("seriesId")) continue
+                    val seriesId = candidate.optInt("seriesId", -1)
+                    if (seriesId >= 0 && seriesId !in this) add(seriesId)
+                }
+            }
+        }.getOrElse { emptyList() }
+    }
 
     private fun hasAuthoritativeOptionalColumnSnapshot(
         program: ProgramRecord,
