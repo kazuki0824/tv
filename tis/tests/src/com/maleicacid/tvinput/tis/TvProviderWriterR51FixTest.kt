@@ -130,6 +130,8 @@ class TvProviderWriterR51FixTest {
         check(values.get("item_count") == null)
     }
 
+    // 単一→複数／複数→単一の同一KEEP契約を一続きの時系列で検証する。
+    @Suppress("LongMethod")
     @Test
     fun partialSeriesShapeChangeKeepsOppositeSeriesColumn() {
         val store = MergeStore()
