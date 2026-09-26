@@ -33,6 +33,7 @@ object SectionFilterPolicy {
         close: (com.maleicacid.tvinput.common.TsPid) -> Unit,
         open: (com.maleicacid.tvinput.common.TsPid) -> Boolean,
         isOpen: (com.maleicacid.tvinput.common.TsPid) -> Boolean,
+        failedWhileRequested: MutableSet<com.maleicacid.tvinput.common.TsPid> = linkedSetOf(),
     ) {
         completeCleanup(
             *(current - next)
@@ -40,11 +41,22 @@ object SectionFilterPolicy {
                     {
                         close(pid)
                         current.remove(pid)
+                        failedWhileRequested.remove(pid)
                         Unit
                     }
                 }.toTypedArray(),
         )
-        next.filter { it !in current || !isOpen(it) }.forEach { pid -> if (open(pid)) current += pid }
+        failedWhileRequested.retainAll(next)
+        next
+            .filter { (it !in current || !isOpen(it)) && it !in failedWhileRequested }
+            .forEach { pid ->
+                if (open(pid)) {
+                    current += pid
+                    failedWhileRequested.remove(pid)
+                } else {
+                    failedWhileRequested += pid
+                }
+            }
     }
 
     /** 他の解放を省略せず、最初の失敗に後続失敗を添えて返す。 */
