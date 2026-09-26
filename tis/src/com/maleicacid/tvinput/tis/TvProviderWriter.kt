@@ -609,13 +609,13 @@ class TvProviderWriter private constructor(
         val singleSeriesId = program.descriptors.series?.seriesId ?: candidateSeriesIds.singleOrNull()
         when {
             candidateSeriesIds.size > 1 -> {
-                putNull(COLUMN_SERIES_ID)
+                if (clearAbsentOptionalColumns) putNull(COLUMN_SERIES_ID)
                 put(COLUMN_MULTI_SERIES_ID, candidateSeriesIds.joinToString(","))
             }
 
             singleSeriesId != null -> {
                 put(COLUMN_SERIES_ID, singleSeriesId)
-                putNull(COLUMN_MULTI_SERIES_ID)
+                if (clearAbsentOptionalColumns) putNull(COLUMN_MULTI_SERIES_ID)
             }
 
             clearAbsentOptionalColumns -> {
