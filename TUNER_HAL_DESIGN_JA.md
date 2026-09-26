@@ -92,7 +92,7 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 
 #### Section Filter 同時利用能力と製品資源閉包
 
-本製品の product-default `DemuxCapabilities.numSectionFilter` は **16** とする。この値は PID 数ではなく同時に Live にできる Section Filter object 数であり、同一 PID に対して table-id 条件の異なる Filter object を複数開く場合は各 object を1件として数える。TIS の TDT/TOT 取得は PID 0x0014 に table-id 0x70 / 0x73 の2 objectを使用するため、固定SIの PID 集合を単純な PID 件数で capacity 換算してはならない。
+本製品の product-default `DemuxCapabilities.numSectionFilter` は **16** とする。この値は PID 数ではなく同時に Live にできる Section Filter object 数であり、同一 PID に対して条件の異なる Filter object を複数開く場合は各 object を1件として数える。TIS が各用途で何個の Filter object を同時所有するかという具体的 runtime 構成は `tis/DESIGN_JA.md` を正とし、本書では再定義しない。
 
 product-default の能力閉包は、16件の Section Filter を公開したまま既存の非Section能力を縮退させないことを要件とする。そのため `CapabilitySnapshot` の共有資源候補は Section tracker 16件、FMQ runtime budget **288 MiB**、cleanup/reaper の基礎capacity **176** を一体で確保する。8 frontend を公開する構成では TS=32、SECTION=16、PCR=4、PES=4、AUDIO=1、VIDEO=1、Playback DVR=8、Record DVR=6 を同時に閉じる。frontend が少ない構成では解放された共有枠に応じて Record DVR は6を超えてよく、frontend 0件では Record DVR=8 を許容する。SECTION能力の拡張だけを理由に、同じfrontend構成で従来確保できていた非Section能力を追加で縮退させない。
 
