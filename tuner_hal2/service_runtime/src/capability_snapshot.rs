@@ -925,7 +925,7 @@ mod tests {
         let (snapshot, ids) = CapabilitySnapshot::compose_for_frontends(&[]).unwrap();
         assert!(ids.is_empty());
         assert_eq!((snapshot.num_playback, snapshot.num_record), (8, 8));
-        assert_eq!(snapshot.fmq_runtime_budget_bytes, 256 * MIB);
+        assert_eq!(snapshot.fmq_runtime_budget_bytes, 288 * MIB);
         snapshot.validate_dependency_closures().unwrap();
     }
 
