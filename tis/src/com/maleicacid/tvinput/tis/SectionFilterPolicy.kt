@@ -35,8 +35,9 @@ object SectionFilterPolicy {
         isOpen: (com.maleicacid.tvinput.common.TsPid) -> Boolean,
         failedWhileRequested: MutableSet<com.maleicacid.tvinput.common.TsPid> = linkedSetOf(),
     ) {
+        val cleanupTargets = (current - next) + (failedWhileRequested - next)
         completeCleanup(
-            *(current - next)
+            *cleanupTargets
                 .map { pid ->
                     {
                         close(pid)
@@ -46,15 +47,19 @@ object SectionFilterPolicy {
                     }
                 }.toTypedArray(),
         )
-        failedWhileRequested.retainAll(next)
         next
             .filter { (it !in current || !isOpen(it)) && it !in failedWhileRequested }
             .forEach { pid ->
-                if (open(pid)) {
-                    current += pid
-                    failedWhileRequested.remove(pid)
-                } else {
+                try {
+                    if (open(pid)) {
+                        current += pid
+                        failedWhileRequested.remove(pid)
+                    } else {
+                        failedWhileRequested += pid
+                    }
+                } catch (error: Exception) {
                     failedWhileRequested += pid
+                    throw error
                 }
             }
     }
