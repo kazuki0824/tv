@@ -1202,7 +1202,7 @@ class TunerController(
         )
     }
 
-    @Suppress("MaxLineLength")
+    @Suppress("MaxLineLength", "TooGenericExceptionCaught")
     fun updateCasMetadataAndFilters(
         metadata: List<CaMetadata>,
         pmtPids: Set<TsPid>,
