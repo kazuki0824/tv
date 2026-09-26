@@ -94,9 +94,9 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 
 本製品の product-default `DemuxCapabilities.numSectionFilter` は **16** とする。この値は PID 数ではなく同時に Live にできる Section Filter object 数であり、同一 PID に対して table-id 条件の異なる Filter object を複数開く場合は各 object を1件として数える。TIS の TDT/TOT 取得は PID 0x0014 に table-id 0x70 / 0x73 の2 objectを使用するため、固定SIの PID 集合を単純な PID 件数で capacity 換算してはならない。
 
-product-default の能力閉包は、16件の Section Filter を公開したまま既存の非Section能力を縮退させないことを要件とする。そのため `CapabilitySnapshot` の共有資源候補は Section tracker 16件、FMQ runtime budget **288 MiB**、cleanup/reaper の基礎capacity **176** を一体で確保し、公開結果として TS=32、SECTION=16、PCR=4、PES=4、AUDIO=1、VIDEO=1、Playback DVR=8、Record DVR=6 を同時に閉じる。selection後のsnapshotがこの組を満たさない場合は能力選択を成功扱いにしない。
+product-default の能力閉包は、16件の Section Filter を公開したまま既存の非Section能力を縮退させないことを要件とする。そのため `CapabilitySnapshot` の共有資源候補は Section tracker 16件、FMQ runtime budget **288 MiB**、cleanup/reaper の基礎capacity **176** を一体で確保する。8 frontend を公開する構成では TS=32、SECTION=16、PCR=4、PES=4、AUDIO=1、VIDEO=1、Playback DVR=8、Record DVR=6 を同時に閉じる。frontend が少ない構成では解放された共有枠に応じて Record DVR は6を超えてよく、frontend 0件では Record DVR=8 を許容する。SECTION能力の拡張だけを理由に、同じfrontend構成で従来確保できていた非Section能力を追加で縮退させない。
 
-Section Filter の使用数が公開 `numSectionFilter` に達した後の追加 `openFilter(TYPE_TS, SUBTYPE_SECTION, ...)` は `UNAVAILABLE` とし、既存filterを破壊せず過剰予約しない。TIS は動的 PMT / ECM / EMM filter の追加前に framework から取得した `DemuxCapabilities.numSectionFilter` と現在所有する実 Filter object 数を照合し、容量超過が確定している要求について framework `openFilter()` を呼ばない。B1 の製品契約は `開発規則.md` の ECM-only を正とし、B1用に EMM Filter を要求しない。
+Section Filter の使用数が公開 `numSectionFilter` に達した後の追加 `openFilter(TYPE_TS, SUBTYPE_SECTION, ...)` は `UNAVAILABLE` とし、既存filterを破壊せず過剰予約しない。TIS の dynamic filter preflight / retry は `tis/DESIGN_JA.md`、B1 の ECM-only 契約は `開発規則.md` を正とし、本書では再定義しない。
 
 #### `DemuxCapabilities.linkCaps` / `numBytesInSectionFilter` 固定契約
 
