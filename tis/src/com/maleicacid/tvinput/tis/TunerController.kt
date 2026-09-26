@@ -974,11 +974,9 @@ class TunerController(
         return SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) { createSectionFilter(pid, generation) }
     }
 
-    private fun currentSectionFilterObjectCount(): Int =
-        sectionFilterHandles.values.sumOf { it.filterObjectCount }
+    private fun currentSectionFilterObjectCount(): Int = sectionFilterHandles.values.sumOf { it.filterObjectCount }
 
-    private fun sectionFilterCapacity(tunerInstance: Tuner): Int =
-        tunerInstance.demuxCapabilities?.sectionFilterCount ?: 0
+    private fun sectionFilterCapacity(tunerInstance: Tuner): Int = tunerInstance.demuxCapabilities?.sectionFilterCount ?: 0
 
     @Suppress("ReturnCount", "TooGenericExceptionCaught", "MaxLineLength")
     private fun createSectionFilter(
