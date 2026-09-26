@@ -26,7 +26,7 @@ object SectionFilterPolicy {
     }
 
     // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
-    @Suppress("SpreadOperator")
+    @Suppress("SpreadOperator", "LongParameterList")
     fun replaceDynamicPids(
         current: MutableSet<com.maleicacid.tvinput.common.TsPid>,
         next: Set<com.maleicacid.tvinput.common.TsPid>,
