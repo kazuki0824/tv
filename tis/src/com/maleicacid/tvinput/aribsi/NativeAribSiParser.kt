@@ -920,17 +920,18 @@ class NativeAribSiParser : AutoCloseable {
         }
 
     private fun parseSeriesCandidates(descriptors: JSONObject): List<AribSeries> {
-        val canonicalJson = optStringOrNull(descriptors, "seriesCandidatesCanonicalJson")
-        val array = descriptors.optJSONArray("seriesCandidates")
-        if (array == null) {
-            if (canonicalJson != null) {
-                throw NativeSiException(
-                    "JSON_ENCODING",
-                    "SI snapshotのseriesCandidatesが欠落しています",
-                )
-            }
-            return emptyList()
+        if (!descriptors.has("seriesCandidates")) {
+            throw NativeSiException(
+                "JSON_ENCODING",
+                "SI snapshotのseriesCandidatesが欠落しています",
+            )
         }
+        val array =
+            descriptors.get("seriesCandidates") as? JSONArray
+                ?: throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのseriesCandidates型がarrayではありません",
+                )
         return (0 until array.length()).map { index ->
             val candidate =
                 array.optJSONObject(index)
@@ -965,40 +966,54 @@ class NativeAribSiParser : AutoCloseable {
             seriesCandidateMetadataValidationErrors(candidate)
 
     private fun seriesCandidateNumericValidationErrors(candidate: JSONObject): List<String> =
-        listOf(
-            "seriesId",
-            "repeatLabel",
-            "programPattern",
-            "episodeNumber",
-            "lastEpisodeNumber",
-        ).mapNotNull { key ->
-            if (!candidate.has(key) || candidate.isNull(key) || candidate.get(key) !is Number) {
-                "$key の型が不正です"
-            } else {
-                null
-            }
+        listOfNotNull(
+            integerFieldValidationError(candidate, "seriesId", 0L..65_535L),
+            integerFieldValidationError(candidate, "repeatLabel", 0L..15L),
+            integerFieldValidationError(candidate, "programPattern", 0L..7L),
+            integerFieldValidationError(candidate, "episodeNumber", 0L..4_095L),
+            integerFieldValidationError(candidate, "lastEpisodeNumber", 0L..4_095L),
+            expireDateValidationError(candidate),
+        )
+
+    private fun integerFieldValidationError(
+        candidate: JSONObject,
+        key: String,
+        range: LongRange,
+    ): String? {
+        if (!candidate.has(key) || candidate.isNull(key)) return "$key が欠落しています"
+        val number = candidate.get(key) as? Number ?: return "$key の型が数値ではありません"
+        val value = number.toDouble()
+        return if (!value.isFinite() || value % 1.0 != 0.0 || value < range.first || value > range.last) {
+            "$key が整数値域 ${range.first}..${range.last} の外です"
+        } else {
+            null
         }
+    }
+
+    private fun expireDateValidationError(candidate: JSONObject): String? {
+        if (!candidate.has("expireDateValid") || candidate.get("expireDateValid") !is Boolean) {
+            return "expireDateValid の型が不正です"
+        }
+        if (!candidate.has("expireDate")) return "expireDate が欠落しています"
+        val valid = candidate.getBoolean("expireDateValid")
+        if (!valid) {
+            return if (candidate.isNull("expireDate")) null else "expireDateValid=false なのにexpireDateが存在します"
+        }
+        if (candidate.isNull("expireDate")) return "expireDateValid=true なのにexpireDateがnullです"
+        return integerFieldValidationError(candidate, "expireDate", 0L..65_535L)
+    }
 
     private fun seriesCandidateMetadataValidationErrors(candidate: JSONObject): List<String> =
         buildList {
-            if (!candidate.has("expireDateValid") || candidate.get("expireDateValid") !is Boolean) {
-                add("expireDateValid の型が不正です")
-            }
-            if (!candidate.has("expireDate") ||
-                (!candidate.isNull("expireDate") && candidate.get("expireDate") !is Number)
-            ) {
-                add("expireDate の型が不正です")
-            }
             if (!candidate.has("name") ||
                 (!candidate.isNull("name") && candidate.get("name") !is String)
             ) {
                 add("name の型が不正です")
             }
-            if (!candidate.has("parseStatus") || candidate.get("parseStatus") !is String) {
-                add("parseStatus の型が不正です")
+            if (!candidate.has("parseStatus") || candidate.get("parseStatus") != "OK") {
+                add("parseStatus はOKでなければなりません")
             }
         }
-
     private fun seriesCandidateEncodingError(
         index: Int,
         detail: String,
