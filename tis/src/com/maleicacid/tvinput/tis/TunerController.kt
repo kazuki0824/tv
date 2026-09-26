@@ -976,6 +976,7 @@ class TunerController(
 
     private fun currentSectionFilterObjectCount(): Int = sectionFilterHandles.values.sumOf { it.filterObjectCount }
 
+    @Suppress("MaxLineLength")
     private fun sectionFilterCapacity(tunerInstance: Tuner): Int = tunerInstance.demuxCapabilities?.sectionFilterCount ?: 0
 
     @Suppress("ReturnCount", "TooGenericExceptionCaught", "MaxLineLength")
