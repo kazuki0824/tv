@@ -245,6 +245,26 @@ atest \
 
 `maleicacid_arib_si_engine_rs_test` は `arib_si_engine_rs/src/lib.rs` を試験用 crate として使う。`libmaleicacid_arib_caption_jni_test` は `tis/arib_caption_jni/src/lib.rs` を試験用 crate として使う。`MaleicacidTvInputAcceptanceTests` は `tis/tests/src/**/*.kt` と `tis/tests/assets` を確認対象とする。
 
+### 実TS結合試験のホストCI接続設計
+
+この節は`DESIGN_JA.md`の「実TSによるホスト結合試験」をCIへ接続する際の構成を定める。試験本体は`host_ci/robolectric/src/test/kotlin`、HAL実行器は`tuner_hal2/host_ci/demux/src/bin/real_ts_sections.rs`に配置する。実装の存在とCIでの成功は別に確認する。
+
+既存`.github/workflows/tis-robolectric-ci.yml`のホステッドランナーを使い、Android emulator、チューナー、特権container、self-hosted runnerを要求しない。既存3クラスの実行指定を維持したうえで、同じGradle実行に`com.maleicacid.tvinput.tis.RealTsHalSiIntegrationTest`を追加する。製品TISのAPKへ試験ファイル・試験専用実行器を含めない。
+
+| 接続箇所 | 接続内容 |
+|---|---|
+| `tuner_hal2/host_ci/demux` | 製品demuxをlinkする実TS実行器をhost専用bin targetとして追加する |
+| `arib_si_engine_rs/host_ci` | 既存のJNI `cdylib` targetをそのままbuildする。別のSI parserを追加しない |
+| `tis/host_ci/robolectric` | ホスト専用test source directoryを追加し、試験用実行器・fixture directoryの絶対pathをGradleのTest taskへsystem propertyとして渡す。JNI出力directoryをTest JVMの起動時`java.library.path`へ設定する |
+| `tis/tests/fixtures/real_ts` | `test.ts`と`expected.json`を直接参照する。既存の`main.assets`や製品Soongのasset/dataへ追加しない |
+| workflowの対象path | 既存`tis/**`に加え、`tuner_hal2/**`と`arib_si_engine_rs/**`をpull_request／push両方に追加し、HAL／SIだけの変更でも結合試験を実行する |
+| workflowの実行順 | checkout → Rust 1.81.0・JDK 17・Gradle 8.9の準備 → HAL実行器build → SI JNI build → 既存テストと実TS試験を実行 → JUnit XML・HTML・HAL診断を保存する |
+| workflowの失敗 | build／リンク失敗、時間切れ、試験0件、対象試験のskipは失敗とする。`continue-on-error`を指定しない。診断とJUnit結果は失敗時にも保存する |
+
+既存JNIのbuildコマンドは`cargo +1.81.0 build --manifest-path arib_si_engine_rs/host_ci/Cargo.toml --locked --lib`とする。HAL実行器にも同じtoolchainと`--locked`を使い、必要なCargo.lock変更は実装と同時にcommitする。試験クラスはホスト専用source setへ置き、`tis/tests/src`へ置いて未対応のhost subprocessを端末atestから呼ばせない。Robolectricの対象SDKは既存compileSdkと整合する35へ固定する。
+
+この結合試験の実装完了条件は、`DESIGN_JA.md`の全判定がGitHub-hosted runnerで1件のJUnit成功として出力され、同じ実行で既存3クラスも成功することとする。設計・fixtureだけのPRで既存CIが成功しても、この条件の達成には数えない。ホスト試験結果はSoong build、端末atest、CTS／VTS、実機視聴の結果と分けて報告する。
+
 ### 仕様カバレッジ
 
 ```text
