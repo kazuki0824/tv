@@ -57,7 +57,7 @@ object SectionFilterPolicy {
                     } else {
                         failedWhileRequested += pid
                     }
-                } catch (error: Exception) {
+                } catch (error: RuntimeException) {
                     failedWhileRequested += pid
                     throw error
                 }
