@@ -75,7 +75,7 @@ impl CapabilitySnapshot {
             num_record: 8,
             num_playback: 8,
             num_ts_filter: 32,
-            num_section_filter: 8,
+            num_section_filter: 16,
             // TS audio は producer 側の frame/sample 関連付けにより、PTS header が
             // 疎な PES でも event-associated timestamp を確定できる。
             num_audio_filter: 1,
@@ -84,7 +84,7 @@ impl CapabilitySnapshot {
             num_pes_filter: 4,
             num_pcr_filter: 4,
             filter_pending_event_capacity_per_filter: 64,
-            fmq_runtime_budget_bytes: 256 * MIB,
+            fmq_runtime_budget_bytes: 288 * MIB,
             pes_max_bytes_per_filter: MAX_PES_BUFFER_BYTES,
             // TsPesだけでなくTsAudio/TsVideoもper-filter PesAssemblerを持つため、
             // 4 PES + 1 AUDIO + 1 VIDEOの全6本を同時に閉じる。
@@ -94,7 +94,7 @@ impl CapabilitySnapshot {
             av_max_outstanding_events_per_filter: DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
             av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
             av_runtime_budget_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES * 2,
-            cleanup_reaper_capacity: 160,
+            cleanup_reaper_capacity: 176,
             cleanup_retry_schedule_ms: [0, 10, 100, 1_000],
             cleanup_terminal_deadline_ms: 30_000,
             worker_io_deadline_ms: 2_000,
@@ -905,7 +905,7 @@ mod tests {
         assert_eq!(ids, vec![1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(
             (snapshot.num_ts_filter, snapshot.num_section_filter),
-            (32, 8)
+            (32, 16)
         );
         assert_eq!(
             (
@@ -916,7 +916,7 @@ mod tests {
             (1, 1, 4)
         );
         assert_eq!((snapshot.num_playback, snapshot.num_record), (8, 6));
-        assert_eq!(snapshot.cleanup_reaper_capacity, 160);
+        assert_eq!(snapshot.cleanup_reaper_capacity, 176);
         snapshot.validate_dependency_closures().unwrap();
     }
 
