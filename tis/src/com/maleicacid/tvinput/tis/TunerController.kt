@@ -59,6 +59,7 @@ class TunerController(
     interface SectionFilterHandle : AutoCloseable {
         val pid: TsPid
         val isOpen: Boolean
+        val filterObjectCount: Int get() = if (isOpen) 1 else 0
     }
 
     data class ResolvedChannel(
@@ -124,6 +125,7 @@ class TunerController(
         private var closing = false
         val isClosed: Boolean get() = artifacts.isEmpty()
         override val isOpen: Boolean get() = !closing && artifacts.isNotEmpty() && artifacts.all { it.started }
+        override val filterObjectCount: Int get() = artifacts.size
 
         override fun close(): Unit =
             callOnController {
@@ -171,6 +173,7 @@ class TunerController(
         private val reason: String,
     ) : SectionFilterHandle {
         override val isOpen: Boolean get() = false
+        override val filterObjectCount: Int get() = 0
 
         override fun close() = Unit
 
@@ -232,6 +235,9 @@ class TunerController(
     private val dynamicPmtPids = linkedSetOf<TsPid>()
     private val dynamicEcmPids = linkedSetOf<TsPid>()
     private val dynamicEmmPids = linkedSetOf<TsPid>()
+    private val failedDynamicPmtPids = linkedSetOf<TsPid>()
+    private val failedDynamicEcmPids = linkedSetOf<TsPid>()
+    private val failedDynamicEmmPids = linkedSetOf<TsPid>()
     private val captionLanguagesByPid = ConcurrentHashMap<TsPid, List<NativeAribCaptionFactParser.Language>>()
     private val captionFactParsers = ConcurrentHashMap<TsPid, NativeAribCaptionFactParser>()
     private val superimposeTimingByPid = ConcurrentHashMap<TsPid, Int>()
@@ -857,6 +863,9 @@ class TunerController(
     private fun invalidateTuneOnController() {
         currentTune = null
         tuneAccepted = false
+        failedDynamicPmtPids.clear()
+        failedDynamicEcmPids.clear()
+        failedDynamicEmmPids.clear()
         captionLanguagesByPid.clear()
         superimposeTimingByPid.clear()
         latestBroadcastClockAuthority = null
@@ -965,12 +974,26 @@ class TunerController(
         return SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) { createSectionFilter(pid, generation) }
     }
 
+    private fun currentSectionFilterObjectCount(): Int = sectionFilterHandles.values.sumOf { it.filterObjectCount }
+
+    @Suppress("MaxLineLength")
+    private fun sectionFilterCapacity(tunerInstance: Tuner): Int = tunerInstance.demuxCapabilities?.sectionFilterCount ?: 0
+
     @Suppress("ReturnCount", "TooGenericExceptionCaught", "MaxLineLength")
     private fun createSectionFilter(
         pid: TsPid,
         generation: Long,
     ): SectionFilterHandle {
         val tunerInstance = tuner ?: return UnavailableSectionFilterHandle(pid, "Tuner利用不可")
+        val requestedObjects = sectionSettingsForPid(pid).size
+        val capacity = sectionFilterCapacity(tunerInstance)
+        val currentObjects = currentSectionFilterObjectCount()
+        if (capacity <= 0 || currentObjects > capacity - requestedObjects) {
+            val detail =
+                "section filter capacity不足 current=$currentObjects requested=$requestedObjects capacity=$capacity"
+            Log.w(LogTags.TIS, "$detail inputId=$inputId pid=$pid generation=$generation")
+            return UnavailableSectionFilterHandle(pid, detail)
+        }
         val callback =
             object : FilterCallback {
                 override fun onFilterEvent(
@@ -1173,13 +1196,13 @@ class TunerController(
     ) {
         if (!tuneAccepted || generation != tuneGeneration) return
         SectionFilterPolicy.completeCleanup(
-            { replaceDynamicPidSet(dynamicPmtPids, pmtPids) { openProgramMapFilter(it) } },
-            { replaceDynamicPidSet(dynamicEcmPids, ecmPids) { openEcmFilter(it) } },
-            { replaceDynamicPidSet(dynamicEmmPids, emmPids) { openEmmFilter(it) } },
+            { replaceDynamicPidSet(dynamicPmtPids, failedDynamicPmtPids, pmtPids) { openProgramMapFilter(it) } },
+            { replaceDynamicPidSet(dynamicEcmPids, failedDynamicEcmPids, ecmPids) { openEcmFilter(it) } },
+            { replaceDynamicPidSet(dynamicEmmPids, failedDynamicEmmPids, emmPids) { openEmmFilter(it) } },
         )
     }
 
-    @Suppress("MaxLineLength")
+    @Suppress("MaxLineLength", "TooGenericExceptionCaught")
     fun updateCasMetadataAndFilters(
         metadata: List<CaMetadata>,
         pmtPids: Set<TsPid>,
@@ -1189,6 +1212,8 @@ class TunerController(
         callOnController {
             val controller = casController ?: return@callOnController null
             updateCasIfCurrent(generation, tuneGeneration, tuneAccepted) {
+                val failedEcmRequestsToRetain = linkedSetOf<TsPid>()
+                val failedEmmRequestsToRetain = linkedSetOf<TsPid>()
                 SectionFilterPolicy.commitCasAndFilters(
                     updateCas = {
                         val acceptedMetadata = SectionFilterPolicy.metadataForCasDecision(casDecisionReady, metadata)
@@ -1204,16 +1229,26 @@ class TunerController(
                         )
                     },
                     commitFilters = { result ->
-                        updateDynamicSectionFiltersOnController(pmtPids, result.ecmPids, result.emmPids, generation)
-                        check((pmtPids + result.ecmPids + result.emmPids).all { sectionFilterHandles[it]?.isOpen == true }) {
-                            "CAS/SI filter集合を開始できません"
+                        try {
+                            updateDynamicSectionFiltersOnController(pmtPids, result.ecmPids, result.emmPids, generation)
+                            check((pmtPids + result.ecmPids + result.emmPids).all { sectionFilterHandles[it]?.isOpen == true }) {
+                                "CAS/SI filter集合を開始できません"
+                            }
+                            if (!casDecisionReady) playbackPipeline.stop()
+                        } catch (failure: RuntimeException) {
+                            failedEcmRequestsToRetain += failedDynamicEcmPids.intersect(result.ecmPids)
+                            failedEmmRequestsToRetain += failedDynamicEmmPids.intersect(result.emmPids)
+                            throw failure
                         }
-                        if (!casDecisionReady) playbackPipeline.stop()
                     },
                     reject = {
                         SectionFilterPolicy.completeCleanup(
                             { controller.clearForResourceLoss() },
                             { updateDynamicSectionFiltersOnController(pmtPids, emptySet(), emptySet(), generation) },
+                            {
+                                failedDynamicEcmPids += failedEcmRequestsToRetain
+                                failedDynamicEmmPids += failedEmmRequestsToRetain
+                            },
                             { playbackPipeline.stop() },
                         )
                     },
@@ -1242,6 +1277,7 @@ class TunerController(
 
     private fun replaceDynamicPidSet(
         current: MutableSet<TsPid>,
+        failedWhileRequested: MutableSet<TsPid>,
         next: Set<TsPid>,
         opener: (TsPid) -> SectionFilterHandle,
     ) {
@@ -1251,6 +1287,7 @@ class TunerController(
             close = { pid -> if (pid !in initialPids()) closeSectionFilter(pid) },
             open = { pid -> opener(pid).isOpen },
             isOpen = { pid -> sectionFilterHandles[pid]?.isOpen == true },
+            failedWhileRequested = failedWhileRequested,
         )
     }
 

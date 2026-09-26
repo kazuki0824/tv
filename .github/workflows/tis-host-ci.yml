@@ -185,6 +185,7 @@ jobs:
           echo "TIS_KOTLIN_TEST_DIR=$test_dir" >> "$GITHUB_ENV"
           # 本番/試験Kotlinの型照合後、ホスト実行時だけTuner/Filterへ失敗を注入する。
           javac -classpath "$TIS_ANDROID_ALL_JAR" -d "$test_dir" \
+            tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/DemuxCapabilities.java \
             tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/Tuner.java \
             tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/filter/Filter.java
 
@@ -209,8 +210,8 @@ jobs:
             esac
           done
           # 意図しない試験の削除・検出漏れを検知する固定値。クラス追加/削除時に除外一覧と併せて更新する。
-          test "${#discovered_classes[@]}" -eq 38
-          test "${#test_classes[@]}" -eq 35
+          test "${#discovered_classes[@]}" -eq 39
+          test "${#test_classes[@]}" -eq 36
           runtime_classpath="$TIS_KOTLIN_PRODUCTION_DIR:$TIS_KOTLIN_TEST_DIR:$TIS_ANDROID_ALL_JAR:$TIS_JUNIT_JAR:$TIS_HAMCREST_JAR:$TIS_KOTLIN_HOME/lib/kotlin-stdlib.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk7.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk8.jar:$TIS_KOTLIN_HOME/lib/kotlin-test.jar:$TIS_KOTLIN_HOME/lib/kotlin-test-junit.jar"
           java \
             -Xmx4g \
@@ -221,7 +222,7 @@ jobs:
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
           # JUnitの成功だけでは試験数の減少を検知できない。試験追加/削除時に差分を確認して同じcommitで更新する。
-          grep --fixed-strings --line-regexp "OK (292 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings --line-regexp "OK (298 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest
