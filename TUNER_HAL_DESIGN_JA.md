@@ -90,6 +90,14 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 | TS `RECORD` Filter FMQ | canonical RECORD data-flow profileは `useFMQ=false` とする。Filter FMQ descriptorを明示検査する `record-filter-fmq` probe variantだけ `useFMQ=true` を使用できる | `useFMQ=true` は `IFilter.getQueueDesc()` のdescriptor取得coverageだけを追加し、RECORD payloadの配送先をFilter FMQへ変更しない。実record payloadはRecord DVR FMQへ正確に1回だけ配送し、Filter FMQへ二重配送しない |
 
 
+#### Section Filter 同時利用能力と製品資源閉包
+
+本製品の product-default `DemuxCapabilities.numSectionFilter` は **16** とする。この値は PID 数ではなく同時に Live にできる Section Filter object 数であり、同一 PID に対して条件の異なる Filter object を複数開く場合は各 object を1件として数える。TIS が各用途で何個の Filter object を同時所有するかという具体的 runtime 構成は `tis/DESIGN_JA.md` を正とし、本書では再定義しない。
+
+product-default の能力閉包は、16件の Section Filter を公開したまま既存の非Section能力を縮退させないことを要件とする。そのため `CapabilitySnapshot` の共有資源候補は Section tracker 16件、FMQ runtime budget **288 MiB**、cleanup/reaper の基礎capacity **176** を一体で確保する。8 frontend を公開する構成では TS=32、SECTION=16、PCR=4、PES=4、AUDIO=1、VIDEO=1、Playback DVR=8、Record DVR=6 を同時に閉じる。frontend が少ない構成では解放された共有枠に応じて Record DVR は6を超えてよく、frontend 0件では Record DVR=8 を許容する。SECTION能力の拡張だけを理由に、同じfrontend構成で従来確保できていた非Section能力を追加で縮退させない。
+
+Section Filter の使用数が公開 `numSectionFilter` に達した後の追加 `openFilter(TYPE_TS, SUBTYPE_SECTION, ...)` は `UNAVAILABLE` とし、既存filterを破壊せず過剰予約しない。TIS の dynamic filter preflight / retry は `tis/DESIGN_JA.md`、B1 の ECM-only 契約は `開発規則.md` を正とし、本書では再定義しない。
+
 #### `DemuxCapabilities.linkCaps` / `numBytesInSectionFilter` 固定契約
 
 Android 14 AIDL V2 の `DemuxCapabilities.linkCaps` は `DemuxFilterMainType` の各bit位置をsource rowとし、各要素をsink main typeのbitmaskとして返す。本製品の `ProductProfile` はTS main typeだけを公開し、公開するmain-type linkageは **TS -> TS の1組だけ** とする。Android 14 V2で定義済みのmain type順 `TS, MMTP, IP, TLV, ALP` に対する具体値は `linkCaps = [0x01, 0, 0, 0, 0]` とし、`filterCaps`にもTS以外のmain type bitを立てない。`linkCaps` はmain type間の接続能力を表すものであり、TS内部の具体的subtype組み合わせを独自の第二capability matrixとして符号化しない。将来main typeが追加されても、現行profileで対応を証明していないrow / sink bitを推測して1にしない。
@@ -1644,7 +1652,7 @@ ARIB依存の規範主張は、**現行日本語版の版番号**と、**今回�
 |---|---|---:|---|---:|---|---|
 | LIVE_DEMUX | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
 | FILTER_TS | サービス全体 | 32 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
-| FILTER_SECTION | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | FMQ容量に加え、各公開filterについて1個のtarget metadataと256-bit（32 byte）の配送済みbitmapをSECTION閉包から予約する。section payloadは逐次配送し、table全体のpayload領域を別途予約しない。 |
+| FILTER_SECTION | サービス全体 | 16 | `CapabilitySnapshot`の値 | 0 | なし | FMQ容量に加え、各公開filterについて1個のtarget metadataと256-bit（32 byte）の配送済みbitmapをSECTION閉包から予約する。section payloadは逐次配送し、table全体のpayload領域を別途予約しない。 |
 | FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 通常Filter FMQは所有しない。実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当て、物理領域は起動時に先取りしない。 |
 | FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 通常Filter FMQは所有しない。実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当て、物理領域は起動時に先取りしない。 |
 | FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | 有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じPES capabilityで扱う。宣言長ありPESは宣言長+6 byteをPES実行時台帳からclaimし、映像`0xE0..0xEF`の長さ0 PESは`MAX_PES_BUFFER_BYTES`と同台帳の上限内で組み立てる。stream ID別の非公開capabilityを設けない。 |

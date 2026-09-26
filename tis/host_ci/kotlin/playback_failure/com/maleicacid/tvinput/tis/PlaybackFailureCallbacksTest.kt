@@ -23,6 +23,138 @@ import java.util.concurrent.atomic.AtomicBoolean
 // 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
 @Suppress("TooManyFunctions")
 class PlaybackFailureCallbacksTest {
+    @Suppress("LongMethod")
+    @Test
+    fun casFilterRejectRollbackKeepsProductionRetryMarker() {
+        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        try {
+            val fixture =
+                executor
+                    .submit<Fixture> { Fixture(false, false, failCleanup = false) }
+                    .get(5, TimeUnit.SECONDS)
+            val controller = fixture.allocate(TunerController::class.java)
+            val cas = CasController()
+            val emmPid = TsPid(0x120)
+
+            fun set(
+                name: String,
+                value: Any,
+            ) {
+                TunerController::class.java
+                    .getDeclaredField(name)
+                    .apply { isAccessible = true }
+                    .set(controller, value)
+            }
+
+            set("inputId", "test")
+            set("sectionExecutor", executor)
+            set("tuneAccepted", true)
+            set("tuneGeneration", 7L)
+            set("tuner", fixture.tuner)
+            set("playbackPipeline", fixture.pipeline)
+            set("dynamicPmtPids", linkedSetOf<TsPid>())
+            set("dynamicEcmPids", linkedSetOf<TsPid>())
+            set("dynamicEmmPids", linkedSetOf<TsPid>())
+            set("failedDynamicPmtPids", linkedSetOf<TsPid>())
+            set("failedDynamicEcmPids", linkedSetOf<TsPid>())
+            set("failedDynamicEmmPids", linkedSetOf<TsPid>())
+            set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
+            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+            controller.setCasController(cas)
+
+            val failingFilter = fixture.allocate(Filter::class.java)
+            Filter::class.java.getField("configureFailure").setInt(failingFilter, 1)
+            Tuner::class.java.getField("nextFilter").set(null, failingFilter)
+            Tuner::class.java.getField("openFilterCalls").setInt(null, 0)
+            Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
+
+            val metadata =
+                listOf(
+                    com.maleicacid.tvinput.aribsi.CaMetadata(
+                        null,
+                        CasController.SupportedCasSystemIds.ARIB_STD_B25,
+                        null,
+                        emmPid,
+                        null,
+                        source = com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT,
+                    ),
+                )
+
+            check(runCatching { controller.updateCasMetadataAndFilters(metadata, emptySet(), 7L, true) }.isFailure)
+            check(Tuner::class.java.getField("openFilterCalls").getInt(null) == 1)
+
+            check(runCatching { controller.updateCasMetadataAndFilters(metadata, emptySet(), 7L, true) }.isFailure)
+            check(Tuner::class.java.getField("openFilterCalls").getInt(null) == 1)
+
+            Tuner::class.java.getField("nextFilter").set(null, null)
+            cas.close()
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Suppress("LongMethod")
+    @Test
+    fun removedFailedPmtRetriesRetainedCleanupBeforeSingleReopen() {
+        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        try {
+            val fixture =
+                executor
+                    .submit<Fixture> { Fixture(false, false, failCleanup = false) }
+                    .get(5, TimeUnit.SECONDS)
+            val controller = fixture.allocate(TunerController::class.java)
+            val pid = TsPid(0x1004)
+            val retainedHandle = TestSectionHandle(pid, rejectClose = true)
+
+            fun set(
+                name: String,
+                value: Any,
+            ) {
+                TunerController::class.java
+                    .getDeclaredField(name)
+                    .apply { isAccessible = true }
+                    .set(controller, value)
+            }
+
+            val failedPmt = linkedSetOf(pid)
+            set("inputId", "test")
+            set("sectionExecutor", executor)
+            set("tuneAccepted", true)
+            set("tuneGeneration", 7L)
+            set("tuner", fixture.tuner)
+            set("playbackPipeline", fixture.pipeline)
+            set("dynamicPmtPids", linkedSetOf<TsPid>())
+            set("dynamicEcmPids", linkedSetOf<TsPid>())
+            set("dynamicEmmPids", linkedSetOf<TsPid>())
+            set("failedDynamicPmtPids", failedPmt)
+            set("failedDynamicEcmPids", linkedSetOf<TsPid>())
+            set("failedDynamicEmmPids", linkedSetOf<TsPid>())
+            set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>(pid to retainedHandle))
+            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+
+            check(runCatching { controller.updateScanPmtFilters(emptySet(), 7L) }.isFailure)
+            check(retainedHandle.closes == 1)
+            check(failedPmt.isEmpty())
+
+            retainedHandle.rejectClose = false
+            val replacement = fixture.allocate(Filter::class.java)
+            Tuner::class.java.getField("nextFilter").set(null, replacement)
+            Tuner::class.java.getField("openFilterCalls").setInt(null, 0)
+            Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
+
+            controller.updateScanPmtFilters(setOf(pid), 7L)
+
+            check(retainedHandle.closes == 2)
+            check(Tuner::class.java.getField("openFilterCalls").getInt(null) == 1)
+            check(failedPmt.isEmpty())
+
+            controller.closeSectionFilters()
+            Tuner::class.java.getField("nextFilter").set(null, null)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
     @Test fun invalidatedEcmAndEmmStopFiltersAndPlaybackAndNotifyOriginalGeneration() {
         checkCasInvalidation(failCleanup = false)
     }
@@ -100,6 +232,9 @@ class PlaybackFailureCallbacksTest {
                 set("dynamicPmtPids", linkedSetOf(pmt.pid))
                 set("dynamicEcmPids", linkedSetOf(ecm.pid))
                 set("dynamicEmmPids", linkedSetOf(emm.pid))
+                set("failedDynamicPmtPids", linkedSetOf<TsPid>())
+                set("failedDynamicEcmPids", linkedSetOf<TsPid>())
+                set("failedDynamicEmmPids", linkedSetOf<TsPid>())
                 set("sectionFilterHandles", linkedMapOf(ecm.pid to ecm, emm.pid to emm, pmt.pid to pmt, eit.pid to eit))
                 set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
                 controller.setCasController(cas)
@@ -192,6 +327,9 @@ class PlaybackFailureCallbacksTest {
                             set("dynamicPmtPids", pmtPids)
                             set("dynamicEcmPids", ecmPids)
                             set("dynamicEmmPids", emmPids)
+                            set("failedDynamicPmtPids", linkedSetOf<TsPid>())
+                            set("failedDynamicEcmPids", linkedSetOf<TsPid>())
+                            set("failedDynamicEmmPids", linkedSetOf<TsPid>())
                             set("sectionFilterHandles", linkedMapOf(pmt.pid to pmt, ecm.pid to ecm, emm.pid to emm))
                             set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
                             faults.invalidateAt = operation
