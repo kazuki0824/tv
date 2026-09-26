@@ -41,6 +41,56 @@ class SectionFilterRetryPolicyTest {
     }
 
     @Test
+    fun exceptionalOpenRetainsCleanupOwnershipUntilRequestRemoval() {
+        val pid = TsPid(EXCEPTIONAL_DYNAMIC_PID)
+        val current = linkedSetOf<TsPid>()
+        val failed = linkedSetOf<TsPid>()
+        var openAttempts = 0
+        var cleanupAttempts = 0
+        var firstOpen = true
+
+        fun apply(next: Set<TsPid>) {
+            SectionFilterPolicy.replaceDynamicPids(
+                current = current,
+                next = next,
+                close = {
+                    check(it == pid)
+                    cleanupAttempts++
+                },
+                open = {
+                    check(it == pid)
+                    openAttempts++
+                    if (firstOpen) {
+                        firstOpen = false
+                        throw IllegalStateException("open failed after retaining cleanup ownership")
+                    }
+                    true
+                },
+                isOpen = { it in current },
+                failedWhileRequested = failed,
+            )
+        }
+
+        check(runCatching { apply(setOf(pid)) }.isFailure)
+        check(openAttempts == 1)
+        check(failed == setOf(pid))
+        check(current.isEmpty())
+
+        apply(setOf(pid))
+        check(openAttempts == 1)
+        check(cleanupAttempts == 0)
+
+        apply(emptySet())
+        check(cleanupAttempts == 1)
+        check(failed.isEmpty())
+
+        apply(setOf(pid))
+        check(openAttempts == 2)
+        check(current == setOf(pid))
+        check(failed.isEmpty())
+    }
+
+    @Test
     fun successfulDynamicOpenClearsFailedMarkerAndPublishesPid() {
         val pid = TsPid(SECOND_DYNAMIC_PID)
         val current = linkedSetOf<TsPid>()
@@ -77,5 +127,6 @@ class SectionFilterRetryPolicyTest {
     private companion object {
         const val FIRST_DYNAMIC_PID = 0x1001
         const val SECOND_DYNAMIC_PID = 0x1002
+        const val EXCEPTIONAL_DYNAMIC_PID = 0x1003
     }
 }
