@@ -607,10 +607,12 @@ class TvProviderWriter private constructor(
                 putNull(COLUMN_SERIES_ID)
                 put(COLUMN_MULTI_SERIES_ID, candidateSeriesIds.joinToString(","))
             }
+
             singleSeriesId != null -> {
                 put(COLUMN_SERIES_ID, singleSeriesId)
                 putNull(COLUMN_MULTI_SERIES_ID)
             }
+
             clearAbsentOptionalColumns -> {
                 putNull(COLUMN_SERIES_ID)
                 putNull(COLUMN_MULTI_SERIES_ID)
