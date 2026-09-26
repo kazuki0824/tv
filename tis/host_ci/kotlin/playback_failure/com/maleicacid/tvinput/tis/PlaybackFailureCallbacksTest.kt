@@ -28,7 +28,10 @@ class PlaybackFailureCallbacksTest {
     fun casFilterRejectRollbackKeepsProductionRetryMarker() {
         val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
         try {
-            val fixture = executor.submit<Fixture> { Fixture(false, false, failCleanup = false) }.get(5, TimeUnit.SECONDS)
+            val fixture =
+                executor
+                    .submit<Fixture> { Fixture(false, false, failCleanup = false) }
+                    .get(5, TimeUnit.SECONDS)
             val controller = fixture.allocate(TunerController::class.java)
             val cas = CasController()
             val emmPid = TsPid(0x120)
