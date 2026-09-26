@@ -62,7 +62,7 @@ class SectionFilterRetryPolicyTest {
                     openAttempts++
                     if (firstOpen) {
                         firstOpen = false
-                        throw IllegalStateException("open failed after retaining cleanup ownership")
+                        error("open failed after retaining cleanup ownership")
                     }
                     true
                 },
