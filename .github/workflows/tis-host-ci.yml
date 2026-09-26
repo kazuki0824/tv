@@ -185,6 +185,7 @@ jobs:
           echo "TIS_KOTLIN_TEST_DIR=$test_dir" >> "$GITHUB_ENV"
           # 本番/試験Kotlinの型照合後、ホスト実行時だけTuner/Filterへ失敗を注入する。
           javac -classpath "$TIS_ANDROID_ALL_JAR" -d "$test_dir" \
+            tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/DemuxCapabilities.java \
             tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/Tuner.java \
             tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/filter/Filter.java
 
