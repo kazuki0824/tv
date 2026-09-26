@@ -591,22 +591,46 @@ class TvProviderWriter private constructor(
                 null -> if (clearAbsentOptionalColumns) putNull(COLUMN_SCRAMBLED)
                 else -> put(COLUMN_SCRAMBLED, if (scrambled) 1 else 0)
             }
-            val seriesId = program.descriptors.series?.seriesId
-            if (seriesId == null) {
-                if (clearAbsentOptionalColumns) putNull(COLUMN_SERIES_ID)
-            } else {
-                put(COLUMN_SERIES_ID, seriesId)
-            }
-            // 投影契約は一意な単一series。複数記述子は根拠を保存し、ID・話数を選択しない。
-            if (clearAbsentOptionalColumns) putNull(COLUMN_MULTI_SERIES_ID)
-            val episodeNumber = program.descriptors.series?.episodeNumber
-            if (episodeNumber == null || episodeNumber <= 0) {
-                if (clearAbsentOptionalColumns) putNull(COLUMN_EPISODE_DISPLAY_NUMBER)
-            } else {
-                put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
-            }
+            putSeriesColumns(program, clearAbsentOptionalColumns)
             put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, providerData)
         }
+
+    private fun ContentValues.putSeriesColumns(
+        program: ProgramRecord,
+        clearAbsentOptionalColumns: Boolean,
+    ) {
+        val candidateSeriesIds =
+            program.descriptors.seriesCandidates
+                .asSequence()
+                .filter { it.parseStatus == "OK" }
+                .mapNotNull { it.seriesId }
+                .distinct()
+                .toList()
+        val singleSeriesId = program.descriptors.series?.seriesId ?: candidateSeriesIds.singleOrNull()
+        when {
+            candidateSeriesIds.size > 1 -> {
+                if (clearAbsentOptionalColumns) putNull(COLUMN_SERIES_ID)
+                put(COLUMN_MULTI_SERIES_ID, candidateSeriesIds.joinToString(","))
+            }
+
+            singleSeriesId != null -> {
+                put(COLUMN_SERIES_ID, singleSeriesId)
+                if (clearAbsentOptionalColumns) putNull(COLUMN_MULTI_SERIES_ID)
+            }
+
+            clearAbsentOptionalColumns -> {
+                putNull(COLUMN_SERIES_ID)
+                putNull(COLUMN_MULTI_SERIES_ID)
+            }
+        }
+
+        val episodeNumber = program.descriptors.series?.episodeNumber
+        if (episodeNumber == null || episodeNumber <= 0) {
+            if (clearAbsentOptionalColumns) putNull(COLUMN_EPISODE_DISPLAY_NUMBER)
+        } else {
+            put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
+        }
+    }
 
     private fun hasAuthoritativeOptionalColumnSnapshot(
         program: ProgramRecord,

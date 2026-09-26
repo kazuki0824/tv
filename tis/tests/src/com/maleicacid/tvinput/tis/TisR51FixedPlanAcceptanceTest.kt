@@ -17,6 +17,7 @@ import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribEventDescriptors
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
+import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.EitInstanceState
 import com.maleicacid.tvinput.aribsi.EventModelMapper
@@ -1198,7 +1199,7 @@ class TisR51FixedPlanAcceptanceTest {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
-    fun ambiguousSeriesPreservesBothRecordsAndClearsStandardColumns() {
+    fun multipleSeriesPreservesBothRecordsAndUsesMultiSeriesColumn() {
         val candidates =
             """[{"seriesId":1,"repeatLabel":0,"programPattern":0,"expireDateValid":false,"""" +
                 """expireDate":null,"episodeNumber":1,"lastEpisodeNumber":2,"name":"系列A","pars""" +
@@ -1211,7 +1212,16 @@ class TisR51FixedPlanAcceptanceTest {
                 .toProgramRecords(
                     listOf(
                         event.copy(
-                            descriptors = event.descriptors.copy(series = null, seriesCandidatesCanonicalJson = candidates),
+                            descriptors =
+                                event.descriptors.copy(
+                                    series = null,
+                                    seriesCandidates =
+                                        listOf(
+                                            AribSeries(seriesId = 1, episodeNumber = 1, lastEpisodeNumber = 2, name = "系列A"),
+                                            AribSeries(seriesId = 2, episodeNumber = 3, lastEpisodeNumber = 4, name = "系列B"),
+                                        ),
+                                    seriesCandidatesCanonicalJson = candidates,
+                                ),
                         ),
                     ),
                     semanticFactsByServiceKey = mapOf(key to semanticFacts()),
@@ -1224,7 +1234,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(facts.getJSONArray("value").getJSONObject(1).getInt("episodeNumber") == 3)
         val values = TvProviderWriter("input.test", FakeStore(), testOnly = true).programValuesForTest(1L, record)
         check(values.getAsString(TvProviderWriter.COLUMN_SERIES_ID) == null)
-        check(values.getAsString(TvProviderWriter.COLUMN_MULTI_SERIES_ID) == null)
+        check(values.getAsString(TvProviderWriter.COLUMN_MULTI_SERIES_ID) == "1,2")
         check(values.getAsString(TvContract.Programs.COLUMN_EPISODE_DISPLAY_NUMBER) == null)
     }
 

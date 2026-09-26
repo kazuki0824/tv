@@ -130,6 +130,89 @@ class TvProviderWriterR51FixTest {
         check(values.get("item_count") == null)
     }
 
+    // 単一→複数／複数→単一の同一KEEP契約を一続きの時系列で検証する。
+    @Suppress("LongMethod")
+    @Test
+    fun partialSeriesShapeChangeKeepsOppositeSeriesColumn() {
+        val store = MergeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
+        )
+        val base =
+            ProgramRecord(
+                key,
+                1,
+                "p1",
+                1_700_000_000_000L,
+                1_800_000L,
+                "title",
+                "desc",
+                casFactsCanonicalJson =
+                    com.maleicacid.tvinput.tis
+                        .testCasFacts(false),
+            )
+        val nonAuthoritativeWindow =
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                serviceKey = key,
+                windowStartMs = base.startTimeMillis,
+                windowEndMs = base.startTimeMillis + base.durationMillis,
+                validProgramKeys = setOf(TvProviderWriter.programKeyForTest(base)),
+                deletionAuthoritative = false,
+            )
+        val single =
+            base.copy(
+                descriptors =
+                    ProgramDescriptors(
+                        series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12),
+                    ),
+            )
+        val multiple =
+            base.copy(
+                descriptors =
+                    ProgramDescriptors(
+                        seriesCandidates =
+                            listOf(
+                                AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12),
+                                AribSeries(seriesId = 200, episodeNumber = 4, lastEpisodeNumber = 13),
+                            ),
+                    ),
+            )
+
+        val singleValues =
+            writer
+                .prepareProgramPublication(listOf(single), listOf(nonAuthoritativeWindow))
+                .services
+                .single()
+                .programs
+                .single()
+                .second
+        check(singleValues.containsKey(TvProviderWriter.COLUMN_SERIES_ID))
+        check(!singleValues.containsKey(TvProviderWriter.COLUMN_MULTI_SERIES_ID))
+
+        val multiValues =
+            writer
+                .prepareProgramPublication(listOf(multiple), listOf(nonAuthoritativeWindow))
+                .services
+                .single()
+                .programs
+                .single()
+                .second
+        check(!multiValues.containsKey(TvProviderWriter.COLUMN_SERIES_ID))
+        check(multiValues.getAsString(TvProviderWriter.COLUMN_MULTI_SERIES_ID) == "100,200")
+    }
+
     @Test fun genreReadbackKeepsDirectProjectionSeparateFromProviderObservation() {
         val store = MergeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)

@@ -21,7 +21,7 @@ $(call inherit-product, vendor/maleicacid/tv/config/product_integration.mk)
 
 配置先は `/vendor/etc/maleicacid/bcas_keys` とする。`config/config.fs` によりimage作成時にroot所有・media group・0640を設定し、既存の `sepolicy/file_contexts` により `maleicacid_bcas_credential` を付与する。読取り専用vendor領域へ固定配置する。所有者・権限は製品設定とSELinuxで制御し、CASの初期化後に入力ファイルの変更を監視しない。製品側の別のfs-config入力に同じ配置先の定義を重複させない。
 
-固定credentialとは別に、EMMで確定したKw、更新番号、重複配送判定情報はCAS所有の可変状態として `/data/vendor/maleicacid/cas/yakisoba_state` へ保存する。`maleicacid_cas_data_init` がpost-fs-dataで親ディレクトリとCAS用ディレクトリをmedia所有で作成し、`maleicacid_cas_data_file` のSELinux labelを適用する。CAS向けpolicyはこのディレクトリ内での状態ファイルの作成・読取り・更新・置換を許可する。ECM由来のKs、契約期限、rights bitmapはこの永続状態へ保存しない。状態内容と失敗時契約は [DESIGN_JA.md](DESIGN_JA.md) §6を正とする。
+Yakisoba可変状態の保存先は `/data/vendor/maleicacid/cas/yakisoba_state` とする。`maleicacid_cas_data_init` がpost-fs-dataで親ディレクトリとCAS用ディレクトリをmedia所有で作成し、`maleicacid_cas_data_file` のSELinux labelを適用する。CAS向けpolicyはこのディレクトリ内での状態ファイルの作成・読取り・更新・置換を許可する。保存対象、所有者、更新・失効・破損時の意味は [DESIGN_JA.md](DESIGN_JA.md) §6を正とし、本書では再定義しない。
 
 `get_android_qcow2.sh`を使用するときは、取得manifestのtv revisionを検証対象のcommitへ合わせる。既定の `main` のままでは未マージのPRの実装は取得されない。`libyakisoba-cross`のSoong moduleが取得できることと、CAS package・credential・policyが製品へ入ることを個別に確認する。
 
@@ -50,13 +50,9 @@ CAS側では初回読込みのファイル種別・サイズ・読取り成否�
 
 `libmaleicacid_cas_key_client` はTuner HAL内部consumerへ静的リンクするC++ライブラリである。Tuner HALのRust descrambler libraryはSoongの`static_libs`でこのmoduleへ依存し、C ABIの結合操作でMediaCas session IDと同じtokenの共有参照を取得し、packetごとの読取りにはその参照を使う。plugin共有ライブラリをTuner HALへ直接リンクしない。
 
-結合時だけ既存のUnix domain socketで認可済みのCASへ接続し、読取り専用の共有領域とCAS所有者の終了通知用ファイル記述子を受け取る。共有領域にはCASの同じsession状態を置き、Tuner用の独立した更新台帳を作らない。共有領域の作成・更新はCAS側、Tuner側は読取りと参照の解放を行う。C++側の参照は同時読取り可能とし、Rust側は所有参照を最後の使用者まで保持する。
+製品統合では既存のUnix domain socket、read-only共有領域、所有者終了通知用fdを使用する構成を接続する。Linux実装は `memfd_create`、`F_SEAL_FUTURE_WRITE`、`pidfd_open` を利用するため、採用kernelで必要なAPIが利用可能であることをbuild/bring-up条件として確認する。
 
-この接続はLinuxの `memfd_create`、`F_SEAL_FUTURE_WRITE` と `pidfd_open` を使用する。製品kernelはこれらを備える構成（Linux 5.3以降）とする。CASが既に持つ書込みmappingを残して以後の書込みmappingを禁止し、Tunerへは読取り専用fdを渡す。所有者の終了確認は `pidfd` の非待機 `poll` で行い、各packetでCASへの要求を送信しない。CASが更新途中で終了した場合も読取りを無期限に待たせない。
-
-CASの共有領域には `maleicacid_cas_slot` を付け、Tunerには読取り・mappingとCASから渡されたfdの使用だけを許可する。共有領域への書込み権限をTunerへ与えない。新しいサービスや通知専用の実行単位は追加しない。
-
-token・参照寿命・失効時の契約は `DESIGN_JA.md`、TunerがCAS方式ごとに使用する製品固定parameterの配置は `../tuner_hal2/INTEGRATION.md` を参照する。
+共有領域には `maleicacid_cas_slot` を付け、Tuner側には読取り・mappingとCASから渡されたfdの利用だけをSELinuxで許可する。socket path、fd受渡し、label、library linkをproduct image上で成立させることだけを本節の責務とする。共有状態の所有者、更新権限、参照寿命、owner loss、失効、packet処理との整合性は `DESIGN_JA.md` §11〜§13を正とし、本書では再定義しない。TunerがCAS方式ごとに使用する製品固定parameterの配置は `../tuner_hal2/INTEGRATION.md` を参照する。
 
 ## 組込み確認
 

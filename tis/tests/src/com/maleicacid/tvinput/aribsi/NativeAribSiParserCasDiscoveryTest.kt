@@ -4,6 +4,7 @@
 package com.maleicacid.tvinput.aribsi
 
 import com.maleicacid.tvinput.common.TsPid
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Test
 
@@ -121,6 +122,68 @@ class NativeAribSiParserCasDiscoveryTest {
                 val invalid = JSONObject(valid).put(key, value)
                 check(runCatching { parseMethod.invoke(parser, invalid.toString()) }.isFailure)
             }
+        }
+    }
+
+    @Test
+    fun seriesCandidatesRejectMissingWrongTypeAndOutOfRangeValues() {
+        NativeAribSiParser().use { parser ->
+            val method =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("parseSeriesCandidates", JSONObject::class.java)
+                    .apply { isAccessible = true }
+
+            fun failureFor(descriptors: JSONObject): Throwable? =
+                runCatching { method.invoke(parser, descriptors) }
+                    .exceptionOrNull()
+                    ?.let { (it as? java.lang.reflect.InvocationTargetException)?.cause ?: it }
+
+            check(failureFor(JSONObject()) is NativeSiException)
+            check(
+                failureFor(JSONObject().put("seriesCandidates", JSONObject())) is NativeSiException,
+            )
+
+            val validCandidate =
+                JSONObject()
+                    .put("seriesId", 1)
+                    .put("repeatLabel", 0)
+                    .put("programPattern", 0)
+                    .put("expireDateValid", false)
+                    .put("expireDate", JSONObject.NULL)
+                    .put("episodeNumber", 1)
+                    .put("lastEpisodeNumber", 2)
+                    .put("name", "series")
+                    .put("parseStatus", "OK")
+
+            fun invalidCandidate(mutator: (JSONObject) -> Unit): JSONObject {
+                val candidate = JSONObject(validCandidate.toString())
+                mutator(candidate)
+                return JSONObject().put("seriesCandidates", JSONArray().put(candidate))
+            }
+
+            check(failureFor(invalidCandidate { it.put("seriesId", 1.5) }) is NativeSiException)
+            check(failureFor(invalidCandidate { it.put("seriesId", 65_536) }) is NativeSiException)
+            check(failureFor(invalidCandidate { it.put("repeatLabel", 16) }) is NativeSiException)
+            check(failureFor(invalidCandidate { it.put("programPattern", 8) }) is NativeSiException)
+            check(failureFor(invalidCandidate { it.put("episodeNumber", 4_096) }) is NativeSiException)
+            check(failureFor(invalidCandidate { it.put("lastEpisodeNumber", 4_096) }) is NativeSiException)
+            check(failureFor(invalidCandidate { it.put("expireDateValid", true) }) is NativeSiException)
+            check(
+                failureFor(
+                    invalidCandidate {
+                        it.put("expireDateValid", false)
+                        it.put("expireDate", 1)
+                    },
+                ) is NativeSiException,
+            )
+            check(failureFor(invalidCandidate { it.put("parseStatus", "INVALID") }) is NativeSiException)
+
+            val accepted =
+                method.invoke(
+                    parser,
+                    JSONObject().put("seriesCandidates", JSONArray().put(validCandidate)),
+                ) as List<*>
+            check((accepted.single() as AribSeries).seriesId == 1)
         }
     }
 

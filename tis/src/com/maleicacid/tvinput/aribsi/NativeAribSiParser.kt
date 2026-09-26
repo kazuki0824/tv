@@ -8,6 +8,11 @@ import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONArray
 import org.json.JSONObject
 
+private const val SERIES_U16_MAX = 65_535L
+private const val SERIES_REPEAT_LABEL_MAX = 15L
+private const val SERIES_PROGRAM_PATTERN_MAX = 7L
+private const val SERIES_EPISODE_MAX = 4_095L
+
 class NativeParserCleanupException(
     val status: Int,
 ) : IllegalStateException("ネイティブ解析器の解放に失敗しました status=$status")
@@ -679,6 +684,7 @@ class NativeAribSiParser : AutoCloseable {
                         scrambled = if (freeCaMode.isNull("scrambled")) null else freeCaMode.optBoolean("scrambled"),
                         freeCaMode = parseFreeCaMode(freeCaMode),
                         series = parseSeries(series),
+                        seriesCandidates = parseSeriesCandidates(descriptorsObj),
                         seriesCandidatesCanonicalJson = optStringOrNull(descriptorsObj, "seriesCandidatesCanonicalJson"),
                         parentalRatings = parseParentalRatings(descriptorsObj.optJSONArray("parentalRatings")),
                         components = parseComponents(descriptorsObj.optJSONObject("components")) ?: AribComponents(),
@@ -917,6 +923,143 @@ class NativeAribSiParser : AutoCloseable {
                 parseStatus = it.optString("parseStatus", "OK"),
             )
         }
+
+    private fun parseSeriesCandidates(descriptors: JSONObject): List<AribSeries> {
+        val array = requiredSeriesCandidatesArray(descriptors)
+        return (0 until array.length()).map { index ->
+            parseSeriesCandidate(requiredSeriesCandidateObject(array, index), index)
+        }
+    }
+
+    private fun requiredSeriesCandidatesArray(descriptors: JSONObject): JSONArray {
+        val value = if (descriptors.has("seriesCandidates")) descriptors.get("seriesCandidates") else null
+        return value as? JSONArray
+            ?: throw NativeSiException(
+                "JSON_ENCODING",
+                if (value == null) {
+                    "SI snapshotのseriesCandidatesが欠落しています"
+                } else {
+                    "SI snapshotのseriesCandidates型がarrayではありません"
+                },
+            )
+    }
+
+    private fun requiredSeriesCandidateObject(
+        array: JSONArray,
+        index: Int,
+    ): JSONObject =
+        array.optJSONObject(index)
+            ?: throw seriesCandidateEncodingError(index, "要素型がobjectではありません")
+
+    private fun parseSeriesCandidate(
+        candidate: JSONObject,
+        index: Int,
+    ): AribSeries {
+        val validationErrors = seriesCandidateValidationErrors(candidate)
+        if (validationErrors.isNotEmpty()) {
+            throw seriesCandidateEncodingError(index, validationErrors.joinToString(", "))
+        }
+        return AribSeries(
+            seriesId = candidate.getInt("seriesId"),
+            repeatLabel = candidate.getInt("repeatLabel"),
+            programPattern = candidate.getInt("programPattern"),
+            expireDateValid = candidate.getBoolean("expireDateValid"),
+            expireDate = if (candidate.isNull("expireDate")) null else candidate.getInt("expireDate"),
+            episodeNumber = candidate.getInt("episodeNumber"),
+            lastEpisodeNumber = candidate.getInt("lastEpisodeNumber"),
+            name = if (candidate.isNull("name")) null else candidate.getString("name"),
+            parseStatus = candidate.getString("parseStatus"),
+        )
+    }
+
+    private fun seriesCandidateValidationErrors(candidate: JSONObject): List<String> =
+        seriesCandidateNumericValidationErrors(candidate) +
+            seriesCandidateMetadataValidationErrors(candidate)
+
+    private fun seriesCandidateNumericValidationErrors(candidate: JSONObject): List<String> =
+        listOfNotNull(
+            integerFieldValidationError(candidate, "seriesId", 0L..SERIES_U16_MAX),
+            integerFieldValidationError(candidate, "repeatLabel", 0L..SERIES_REPEAT_LABEL_MAX),
+            integerFieldValidationError(candidate, "programPattern", 0L..SERIES_PROGRAM_PATTERN_MAX),
+            integerFieldValidationError(candidate, "episodeNumber", 0L..SERIES_EPISODE_MAX),
+            integerFieldValidationError(candidate, "lastEpisodeNumber", 0L..SERIES_EPISODE_MAX),
+            expireDateValidationError(candidate),
+        )
+
+    private fun integerFieldValidationError(
+        candidate: JSONObject,
+        key: String,
+        range: LongRange,
+    ): String? {
+        val missing = !candidate.has(key) || candidate.isNull(key)
+        val number = if (missing) null else candidate.get(key) as? Number
+        return when {
+            missing -> {
+                "$key が欠落しています"
+            }
+
+            number == null -> {
+                "$key の型が数値ではありません"
+            }
+
+            !isIntegralNumberInRange(number, range) -> {
+                "$key が整数値域 ${range.first}..${range.last} の外です"
+            }
+
+            else -> {
+                null
+            }
+        }
+    }
+
+    private fun isIntegralNumberInRange(
+        number: Number,
+        range: LongRange,
+    ): Boolean {
+        val value = number.toDouble()
+        val integral = value.isFinite() && value % 1.0 == 0.0
+        return integral && value >= range.first && value <= range.last
+    }
+
+    private fun expireDateValidationError(candidate: JSONObject): String? {
+        val validValue = if (candidate.has("expireDateValid")) candidate.get("expireDateValid") else null
+        val hasExpireDate = candidate.has("expireDate")
+        val expireDateIsNull = hasExpireDate && candidate.isNull("expireDate")
+        return when {
+            validValue !is Boolean -> "expireDateValid の型が不正です"
+            !hasExpireDate -> "expireDate が欠落しています"
+            validValue && expireDateIsNull -> "expireDateValid=true なのにexpireDateがnullです"
+            !validValue && !expireDateIsNull -> "expireDateValid=false なのにexpireDateが存在します"
+            validValue -> integerFieldValidationError(candidate, "expireDate", 0L..SERIES_U16_MAX)
+            else -> null
+        }
+    }
+
+    private fun seriesCandidateMetadataValidationErrors(candidate: JSONObject): List<String> =
+        buildList {
+            if (!isNullableStringField(candidate, "name")) {
+                add("name の型が不正です")
+            }
+            if (!candidate.has("parseStatus") || candidate.get("parseStatus") != "OK") {
+                add("parseStatus はOKでなければなりません")
+            }
+        }
+
+    private fun isNullableStringField(
+        candidate: JSONObject,
+        key: String,
+    ): Boolean =
+        candidate.has(key) &&
+            (candidate.isNull(key) || candidate.get(key) is String)
+
+    private fun seriesCandidateEncodingError(
+        index: Int,
+        detail: String,
+    ): NativeSiException =
+        NativeSiException(
+            "JSON_ENCODING",
+            "SI snapshotのseriesCandidates[$index]が不正です: $detail",
+        )
 
     private fun parseComponents(obj: JSONObject?): AribComponents? =
         obj?.let {
