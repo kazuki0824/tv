@@ -331,6 +331,7 @@ data class AribEventDescriptors(
     val scrambled: Boolean? = null,
     val freeCaMode: AribFreeCaMode? = null,
     val series: AribSeries? = null,
+    val seriesCandidates: List<AribSeries> = emptyList(),
     val seriesCandidatesCanonicalJson: String? = null,
     val parentalRatings: List<AribParentalRating> = emptyList(),
     val components: AribComponents = AribComponents(),
