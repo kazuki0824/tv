@@ -13,7 +13,6 @@ import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
-import org.json.JSONArray
 import java.security.MessageDigest
 
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
@@ -600,7 +599,13 @@ class TvProviderWriter private constructor(
         program: ProgramRecord,
         clearAbsentOptionalColumns: Boolean,
     ) {
-        val candidateSeriesIds = seriesIdsFromCandidates(program.descriptors.seriesCandidatesCanonicalJson)
+        val candidateSeriesIds =
+            program.descriptors.seriesCandidates
+                .asSequence()
+                .filter { it.parseStatus == "OK" }
+                .mapNotNull { it.seriesId }
+                .distinct()
+                .toList()
         val singleSeriesId = program.descriptors.series?.seriesId ?: candidateSeriesIds.singleOrNull()
         when {
             candidateSeriesIds.size > 1 -> {
@@ -625,22 +630,6 @@ class TvProviderWriter private constructor(
         } else {
             put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
         }
-    }
-
-    private fun seriesIdsFromCandidates(canonicalJson: String?): List<Int> {
-        if (canonicalJson.isNullOrBlank()) return emptyList()
-        return runCatching {
-            val candidates = JSONArray(canonicalJson)
-            (0 until candidates.length())
-                .mapNotNull { index ->
-                    candidates
-                        .optJSONObject(index)
-                        ?.takeIf { it.optString("parseStatus", "OK") == "OK" }
-                        ?.takeIf { it.has("seriesId") && !it.isNull("seriesId") }
-                        ?.optInt("seriesId", -1)
-                        ?.takeIf { it >= 0 }
-                }.distinct()
-        }.getOrElse { emptyList() }
     }
 
     private fun hasAuthoritativeOptionalColumnSnapshot(
