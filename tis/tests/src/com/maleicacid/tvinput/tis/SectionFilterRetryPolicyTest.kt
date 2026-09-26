@@ -90,6 +90,47 @@ class SectionFilterRetryPolicyTest {
         check(failed.isEmpty())
     }
 
+
+    @Test
+    fun removalClearsRetryMarkerBeforeCleanupSucceedsAndReaddRetriesOnce() {
+        val pid = TsPid(REMOVAL_RETRY_PID)
+        val current = linkedSetOf<TsPid>()
+        val failed = linkedSetOf(pid)
+        var cleanupAttempts = 0
+        var openAttempts = 0
+        var rejectCleanup = true
+
+        fun apply(next: Set<TsPid>) {
+            SectionFilterPolicy.replaceDynamicPids(
+                current = current,
+                next = next,
+                close = {
+                    check(it == pid)
+                    cleanupAttempts++
+                    check(!rejectCleanup) { "injected cleanup failure" }
+                },
+                open = {
+                    check(it == pid)
+                    openAttempts++
+                    true
+                },
+                isOpen = { it in current },
+                failedWhileRequested = failed,
+            )
+        }
+
+        check(runCatching { apply(emptySet()) }.isFailure)
+        check(cleanupAttempts == 1)
+        check(failed.isEmpty())
+
+        rejectCleanup = false
+        apply(setOf(pid))
+        check(cleanupAttempts == 2)
+        check(openAttempts == 1)
+        check(current == setOf(pid))
+        check(failed.isEmpty())
+    }
+
     @Test
     fun successfulDynamicOpenClearsFailedMarkerAndPublishesPid() {
         val pid = TsPid(SECOND_DYNAMIC_PID)
@@ -128,5 +169,6 @@ class SectionFilterRetryPolicyTest {
         const val FIRST_DYNAMIC_PID = 0x1001
         const val SECOND_DYNAMIC_PID = 0x1002
         const val EXCEPTIONAL_DYNAMIC_PID = 0x1003
+        const val REMOVAL_RETRY_PID = 0x1004
     }
 }
