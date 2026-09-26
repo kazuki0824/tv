@@ -18,6 +18,7 @@ import com.maleicacid.tvinput.aribsi.AribEventDescriptors
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
+import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.EitInstanceState
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.NativeAribSiParser
@@ -1211,7 +1212,16 @@ class TisR51FixedPlanAcceptanceTest {
                 .toProgramRecords(
                     listOf(
                         event.copy(
-                            descriptors = event.descriptors.copy(series = null, seriesCandidatesCanonicalJson = candidates),
+                            descriptors =
+                                event.descriptors.copy(
+                                    series = null,
+                                    seriesCandidates =
+                                        listOf(
+                                            AribSeries(seriesId = 1, episodeNumber = 1, lastEpisodeNumber = 2, name = "系列A"),
+                                            AribSeries(seriesId = 2, episodeNumber = 3, lastEpisodeNumber = 4, name = "系列B"),
+                                        ),
+                                    seriesCandidatesCanonicalJson = candidates,
+                                ),
                         ),
                     ),
                     semanticFactsByServiceKey = mapOf(key to semanticFacts()),
