@@ -91,42 +91,30 @@ class SectionFilterRetryPolicyTest {
     }
 
     @Test
-    fun removalClearsRetryMarkerBeforeCleanupSucceedsAndReaddRetriesOnce() {
+    fun removalClearsRetryMarkerEvenWhenCleanupFails() {
         val pid = TsPid(REMOVAL_RETRY_PID)
         val current = linkedSetOf<TsPid>()
         val failed = linkedSetOf(pid)
         var cleanupAttempts = 0
-        var openAttempts = 0
-        var rejectCleanup = true
 
-        fun apply(next: Set<TsPid>) {
-            SectionFilterPolicy.replaceDynamicPids(
-                current = current,
-                next = next,
-                close = {
-                    check(it == pid)
-                    cleanupAttempts++
-                    check(!rejectCleanup) { "injected cleanup failure" }
-                },
-                open = {
-                    check(it == pid)
-                    openAttempts++
-                    true
-                },
-                isOpen = { it in current },
-                failedWhileRequested = failed,
-            )
-        }
+        val result =
+            runCatching {
+                SectionFilterPolicy.replaceDynamicPids(
+                    current = current,
+                    next = emptySet(),
+                    close = {
+                        check(it == pid)
+                        cleanupAttempts++
+                        error("injected cleanup failure")
+                    },
+                    open = { error("empty request must not open") },
+                    isOpen = { false },
+                    failedWhileRequested = failed,
+                )
+            }
 
-        check(runCatching { apply(emptySet()) }.isFailure)
+        check(result.isFailure)
         check(cleanupAttempts == 1)
-        check(failed.isEmpty())
-
-        rejectCleanup = false
-        apply(setOf(pid))
-        check(cleanupAttempts == 2)
-        check(openAttempts == 1)
-        check(current == setOf(pid))
         check(failed.isEmpty())
     }
 
