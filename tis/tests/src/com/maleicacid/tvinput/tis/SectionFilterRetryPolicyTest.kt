@@ -90,7 +90,6 @@ class SectionFilterRetryPolicyTest {
         check(failed.isEmpty())
     }
 
-
     @Test
     fun removalClearsRetryMarkerBeforeCleanupSucceedsAndReaddRetriesOnce() {
         val pid = TsPid(REMOVAL_RETRY_PID)
