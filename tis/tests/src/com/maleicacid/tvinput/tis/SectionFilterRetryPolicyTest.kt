@@ -90,6 +90,7 @@ class SectionFilterRetryPolicyTest {
         check(failed.isEmpty())
     }
 
+    @Suppress("TooGenericExceptionCaught")
     @Test
     fun casRejectCleanupKeepsFailureMarkerForContinuouslyRequestedPid() {
         val pid = TsPid(CAS_DYNAMIC_PID)
