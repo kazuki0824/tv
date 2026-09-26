@@ -679,6 +679,7 @@ class NativeAribSiParser : AutoCloseable {
                         scrambled = if (freeCaMode.isNull("scrambled")) null else freeCaMode.optBoolean("scrambled"),
                         freeCaMode = parseFreeCaMode(freeCaMode),
                         series = parseSeries(series),
+                        seriesCandidates = parseSeriesCandidates(descriptorsObj),
                         seriesCandidatesCanonicalJson = optStringOrNull(descriptorsObj, "seriesCandidatesCanonicalJson"),
                         parentalRatings = parseParentalRatings(descriptorsObj.optJSONArray("parentalRatings")),
                         components = parseComponents(descriptorsObj.optJSONObject("components")) ?: AribComponents(),
@@ -917,6 +918,33 @@ class NativeAribSiParser : AutoCloseable {
                 parseStatus = it.optString("parseStatus", "OK"),
             )
         }
+
+    private fun parseSeriesCandidates(descriptors: JSONObject): List<AribSeries> {
+        val canonicalJson = optStringOrNull(descriptors, "seriesCandidatesCanonicalJson")
+        val array = descriptors.optJSONArray("seriesCandidates")
+        if (array == null) {
+            if (canonicalJson != null) {
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのseriesCandidatesが欠落しています",
+                )
+            }
+            return emptyList()
+        }
+        return (0 until array.length()).map { index ->
+            val candidate =
+                array.optJSONObject(index)
+                    ?: throw NativeSiException(
+                        "JSON_ENCODING",
+                        "SI snapshotのseriesCandidates[$index]型が不正です",
+                    )
+            parseSeries(candidate)
+                ?: throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのseriesCandidates[$index]が不正です",
+                )
+        }
+    }
 
     private fun parseComponents(obj: JSONObject?): AribComponents? =
         obj?.let {
