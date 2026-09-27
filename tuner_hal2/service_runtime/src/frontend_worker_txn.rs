@@ -2558,16 +2558,6 @@ fn frontend_lock_terminal_outcome(
     }
 }
 
-fn start_streaming_for_initial_lock(
-    outcome: FrontendLockWaitOutcome,
-    start_streaming: impl FnOnce() -> Result<(), HalError>,
-) -> Result<FrontendLockWaitOutcome, HalError> {
-    if outcome == FrontendLockWaitOutcome::Locked {
-        start_streaming()?;
-    }
-    Ok(outcome)
-}
-
 fn live_reader_descriptor_with_bound_demux_snapshot(
     runtime: &SharedRuntime,
     frontend_id: i32,
@@ -2890,61 +2880,6 @@ fn record_frontend_tune_no_signal(
 #[cfg(test)]
 mod frontend_readback_tests {
     use super::*;
-
-    #[test]
-    fn pending_deadline_reaches_no_signal_without_starting_streaming() {
-        let outcome =
-            frontend_lock_terminal_outcome(FrontendLockQualification::Unlocked, true).unwrap();
-        let mut starts = 0;
-        let outcome = start_streaming_for_initial_lock(outcome, || {
-            starts += 1;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(outcome, FrontendLockWaitOutcome::NoSignal);
-        assert_eq!(starts, 0);
-    }
-
-    #[test]
-    fn pending_lock_starts_streaming_once() {
-        let outcome =
-            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
-        let mut starts = 0;
-        let outcome = start_streaming_for_initial_lock(outcome, || {
-            starts += 1;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(outcome, FrontendLockWaitOutcome::Locked);
-        assert_eq!(starts, 1);
-    }
-
-    #[test]
-    fn streaming_start_failure_is_observed_only_after_lock() {
-        let no_signal =
-            frontend_lock_terminal_outcome(FrontendLockQualification::Unlocked, true).unwrap();
-        let mut starts = 0;
-        let outcome = start_streaming_for_initial_lock(no_signal, || {
-            starts += 1;
-            Err(HalError::Unsupported("capture start failure"))
-        })
-        .unwrap();
-        assert_eq!(outcome, FrontendLockWaitOutcome::NoSignal);
-        assert_eq!(starts, 0);
-
-        let locked =
-            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
-        let error = start_streaming_for_initial_lock(locked, || {
-            starts += 1;
-            Err(HalError::Unsupported("capture start failure"))
-        })
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            HalError::Unsupported("capture start failure")
-        ));
-        assert_eq!(starts, 1);
-    }
 
     #[test]
     fn unlocked_frontend_becomes_no_signal_only_at_terminal_deadline() {
