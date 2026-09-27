@@ -4309,9 +4309,7 @@ fn run_frontend_backend_scan_session_worker(
                 ctx.frontend_id(),
                 ctx.generation(),
             )?;
-            match start_streaming_for_initial_lock(lock_outcome, || {
-                session.start_streaming_after_lock()
-            })? {
+            match lock_outcome {
                 FrontendLockWaitOutcome::Locked => {
                     signal_state = FrontendSignalState::Locked;
                     locked_stream_ids = observe_and_record_frontend_stream_id_list_for_scan(
