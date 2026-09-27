@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 sealed class SmdSemanticStateDto {
 
     object SUPPORTED_BROADCAST : SmdSemanticStateDto() {
@@ -17,3 +18,4 @@ sealed class SmdSemanticStateDto {
     object UNDETERMINED_SMD : SmdSemanticStateDto() {
     }
 }
+
