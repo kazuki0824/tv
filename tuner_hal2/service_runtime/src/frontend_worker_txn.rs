@@ -5414,17 +5414,6 @@ fn close_frontend_live_data_and_unbind_after_worker_completion(
         .map(|_| ())
 }
 
-fn close_frontend_live_data_after_terminal_acceptance(
-    runtime: &SharedRuntime,
-    frontend_id: i32,
-    terminal_state_acceptance: &Result<(), HalError>,
-) -> Result<(), HalError> {
-    match terminal_state_acceptance {
-        Ok(()) => close_frontend_live_data_and_unbind_after_worker_completion(runtime, frontend_id),
-        Err(error) => Err(error.clone()),
-    }
-}
-
 fn close_frontend_workers_and_live_data_with_sink(
     runtime: SharedRuntime,
     frontend_id: i32,
@@ -5512,12 +5501,8 @@ fn close_frontend_workers_and_live_data_with_sink(
 
             let terminal_acceptance_result =
                 accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
-            let terminal_state_accepted = terminal_acceptance_result.is_ok();
-            let close_result = close_frontend_live_data_after_terminal_acceptance(
-                &runtime,
-                frontend_id,
-                &terminal_acceptance_result,
-            );
+            let close_result =
+                close_frontend_live_data_and_unbind_after_worker_completion(&runtime, frontend_id);
             let mut terminal_result = Ok(());
             for (_, outcome) in outcomes {
                 if let Some(error) = frontend_worker_stop_failure(&outcome) {
@@ -5547,18 +5532,14 @@ fn close_frontend_workers_and_live_data_with_sink(
                     crate::registry::FrontendRuntimeId(frontend_id),
                 );
 
-            let terminal_and_close_result = if terminal_state_accepted {
-                match (terminal_result, close_result) {
-                    (Ok(()), Ok(())) => Ok(()),
-                    (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                    (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                        "frontend worker termination and live-data cleanup both failed",
-                        primary,
-                        cleanup,
-                    )),
-                }
-            } else {
-                terminal_result
+            let terminal_and_close_result = match (terminal_result, close_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+                    "frontend worker termination and live-data cleanup both failed",
+                    primary,
+                    cleanup,
+                )),
             };
             let cleanup_result = match (terminal_and_close_result, fixed_power_result) {
                 (Ok(()), Ok(())) => Ok(()),
@@ -5602,12 +5583,8 @@ fn close_frontend_workers_and_live_data_with_sink(
                 completion_action: Box::new(move |runtime, outcomes, _deadline_elapsed| {
                     let terminal_acceptance_result =
                         accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
-                    let terminal_state_accepted = terminal_acceptance_result.is_ok();
-                    let close_result = close_frontend_live_data_after_terminal_acceptance(
-                        runtime,
-                        frontend_id,
-                        &terminal_acceptance_result,
-                    );
+                    let close_result =
+                        close_frontend_live_data_and_unbind_after_worker_completion(runtime, frontend_id);
                     let fixed_power_result =
                         FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
                             runtime,
@@ -5628,18 +5605,14 @@ fn close_frontend_workers_and_live_data_with_sink(
                             close_result.clone(),
                         ),
                     );
-                    let terminal_and_close_result = if terminal_state_accepted {
-                        match (terminal_acceptance_result, close_result) {
-                            (Ok(()), Ok(())) => Ok(()),
-                            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                            (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                                "frontend terminal acceptance and live-data cleanup both failed",
-                                primary,
-                                cleanup,
-                            )),
-                        }
-                    } else {
-                        terminal_acceptance_result
+                    let terminal_and_close_result = match (terminal_acceptance_result, close_result) {
+                        (Ok(()), Ok(())) => Ok(()),
+                        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                        (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+                            "frontend terminal acceptance and live-data cleanup both failed",
+                            primary,
+                            cleanup,
+                        )),
                     };
                     let finalizer_result = match (terminal_and_close_result, fixed_power_result) {
                         (Ok(()), Ok(())) => Ok(()),
@@ -5691,64 +5664,6 @@ mod scan_contract_tests {
         SatellitePowerTopology,
     };
     use std::collections::VecDeque;
-
-    #[test]
-    fn terminal_state_acceptance_failure_keeps_demux_relation_bound() {
-        let frontend_id = 1_000_099;
-        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
-        let demux_id = {
-            let mut service = runtime.lock().unwrap();
-            assert_eq!(
-                service.boot_from_probe_results([FrontendProbeOutcome::Available {
-                    id: FrontendRuntimeId(frontend_id),
-                    backend: FrontendBackendKind::Px4CharDevice,
-                    system: FrontendSystem::IsdbT,
-                    path: "/dev/px4video99".into(),
-                    lnb_profile: None,
-                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
-                    capability: FrontendCapabilitySnapshot {
-                        scalar: FrontendScalarCapability {
-                            min_frequency_hz: 110_642_857,
-                            max_frequency_hz: 767_642_857,
-                            min_symbol_rate: 0,
-                            max_symbol_rate: 0,
-                            acquire_range_hz: 0,
-                        },
-                        exclusive_group_id: 0x1000_0099,
-                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
-                            is_segment_auto: true,
-                            is_full_segment: true,
-                        }),
-                    },
-                }]),
-                ServiceBootOutcome::Ready,
-            );
-            let demux = service.allocate_demux_runtime().unwrap();
-            service
-                .set_demux_frontend_data_source(demux.id.0, frontend_id)
-                .unwrap();
-            demux.id
-        };
-
-        let acceptance_failure = Err(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "terminal state acceptance injection",
-        ));
-        assert!(close_frontend_live_data_after_terminal_acceptance(
-            &runtime,
-            frontend_id,
-            &acceptance_failure,
-        )
-        .is_err());
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .registry()
-                .frontend_bound_to_demux(demux_id),
-            Some(FrontendRuntimeId(frontend_id)),
-        );
-    }
 
     #[test]
     fn started_phase_holds_relation_guard_until_activate_finishes() {
