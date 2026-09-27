@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class ShortEventDto(
     val languageCode: String,
     val title: String,
@@ -7,3 +8,4 @@ data class ShortEventDto(
     val parseStatus: com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
 ) {
 }
+
