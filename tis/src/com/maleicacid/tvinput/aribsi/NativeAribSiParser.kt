@@ -961,18 +961,26 @@ class NativeAribSiParser : AutoCloseable {
     }
 
     private fun seriesCandidateValidationErrors(candidate: JSONObject): List<String> =
-        buildList {
-            listOf(
-                "seriesId",
-                "repeatLabel",
-                "programPattern",
-                "episodeNumber",
-                "lastEpisodeNumber",
-            ).forEach { key ->
-                if (!candidate.has(key) || candidate.isNull(key) || candidate.get(key) !is Number) {
-                    add("$key の型が不正です")
-                }
+        seriesCandidateNumericValidationErrors(candidate) +
+            seriesCandidateMetadataValidationErrors(candidate)
+
+    private fun seriesCandidateNumericValidationErrors(candidate: JSONObject): List<String> =
+        listOf(
+            "seriesId",
+            "repeatLabel",
+            "programPattern",
+            "episodeNumber",
+            "lastEpisodeNumber",
+        ).mapNotNull { key ->
+            if (!candidate.has(key) || candidate.isNull(key) || candidate.get(key) !is Number) {
+                "$key の型が不正です"
+            } else {
+                null
             }
+        }
+
+    private fun seriesCandidateMetadataValidationErrors(candidate: JSONObject): List<String> =
+        buildList {
             if (!candidate.has("expireDateValid") || candidate.get("expireDateValid") !is Boolean) {
                 add("expireDateValid の型が不正です")
             }
