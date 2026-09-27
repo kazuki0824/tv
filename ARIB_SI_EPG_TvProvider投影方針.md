@@ -195,10 +195,8 @@ Programs.COLUMN_LONG_DESCRIPTION のUI補足:
   イベントグループは LONG_DESCRIPTION に出さない
 
 Programs.COLUMN_INTERNAL_PROVIDER_DATA:
-  JSON v1 UTF-8 バイト列のみを新規書き込み正形式とする。
-  provider-data JSON v1 の最上位フィールド、必須性、nested構造は本書で列挙・再定義せず、`arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` / `ChannelProviderDataV1` と `arib_si_engine_rs/schema/*.schema.json` を唯一の正本とする。
-  provider-data JSON v1 のcanonical encode、正規化、安定キー抽出も同じ正本に従う。provider-data単体のdigestまたはsignatureは生成せず、同一process内の重複書き込み抑止にはprovider-data bytesを含むTvProvider行全体のpublish fingerprintだけを使用する。TvProvider row id に依存する現在番組選択の診断は provider-data へ永続化せず、TIS の process-local 診断に限定する。
-  長形式イベント項目リスト、component/audio/series/linkage/event_group/free_CA_mode等の完全構造、decode/記述子診断情報は JSON v1 内に保存する。音声言語は`components.audio[].language/secondLanguage`に保持し、top-level `audioLanguages`を設けない。publishabilityはcurrent TIS policyであり保存しない。
+  SI engine正本が生成したcanonical JSON v1 UTF-8 bytesを保存する。schema、nested key、canonical encode、正規化、安定キー抽出は `arib_si_engine_rs/DESIGN_JA.md` と `arib_si_engine_rs/schema/*.schema.json` を唯一の正本とし、本書では再定義しない。
+  TvProvider標準列への投影結果、TISのcurrent product policy、runtime診断をprovider-data schemaへ逆流させない。publish fingerprintやprocess-local cache等の書込み抑止・runtime診断方式は `tis/DESIGN_JA.md` を正とする。
 
 Channels.COLUMN_TYPE:
   channel insert時に正規化済みdelivery systemから `TYPE_ISDB_T` / `TYPE_ISDB_S` / 対応宣言済みの場合だけ `TYPE_ISDB_C` を設定する。

@@ -93,7 +93,7 @@ B25の各profileとB1は、採用構成の同時session容量を次のように�
 
 容量の正本は、採用product設定と実資源に基づいて受付を確定するsession/backend resource ownerが持つ。有限値は同じCA systemの全plugin instanceを通じて使用可能な同時session総数であり、個別pluginの空き数・現在使用数ではない。同じ物理資源を二重計上せず、各instanceが異なる上限でTRMを上書きしない。`prefer_smartcard_then_yakisoba`でもbackendごとの局所上限を独立に通知せず、選択可能な構成全体で成立するCA systemの有効上限を確定する。容量値と有限/無制限の判定をTISへ複製しない。
 
-B25/B1 pluginは、`setStatusCallback()`登録後に確定済みの現在値を初期通知し、その後は実資源の構成変更等で有効上限が変わった確定点の後に通知する。初期通知を最初のopenSessionやECM処理まで遅延しない。session open/closeで変わる残数を上限として再通知しない。通知は§3〜§4のcallback寿命・orderingに従い、未登録callbackを呼ばず、破棄済みinstanceから送らない。B25/B1とも通知経路は既存の`CasPluginStatusCallback` → AOSP listener → `MediaCas` → `updateCasInfo(caSystemId, maxSessionNum)`とする。TISは容量の有限/無制限を別途判定せず、同じ初期通知の処理完了を待ってからsessionを要求する。登録順序・非同期待機・期限・失効は`../tis/DESIGN_JA.md`を正とする。
+B25/B1 pluginは、`setStatusCallback()`登録後に確定済みの現在値を初期通知し、その後は実資源の構成変更等で有効上限が変わった確定点の後に通知する。初期通知を最初のopenSessionやECM処理まで遅延しない。session open/closeで変わる残数を上限として再通知しない。通知は§3〜§4のcallback寿命・orderingに従い、未登録callbackを呼ばず、破棄済みinstanceから送らない。B25/B1とも通知経路は既存の`CasPluginStatusCallback` → AOSP listener → `MediaCas` → `updateCasInfo(caSystemId, maxSessionNum)`とする。TIS側のsession要求開始順序、初期通知との同期、期限・失効は`../tis/DESIGN_JA.md`を正とし、本書では再定義しない。
 
 AOSP `StatusEvent`の既定はsession数を制限しない扱いであり、Android 15のTRMは未登録のCA systemを`Integer.MAX_VALUE`で管理する。`0`の通知はTRMの資源登録削除であって、恒久的な「受付上限0」の登録ではない。card喪失等の受付拒否・鍵失効をこの通知だけに任せず、§4・§7・§13のowner側処理を行う。有限上限の通知後はTRMのsession割当て・優先度回収を利用するが、上限減少の通知だけで既存sessionが直ちに回収されるとは仮定しない。
 
@@ -282,7 +282,7 @@ B1 `processEmm()` はunsupportedとし、stateを変更せずcannot-handle相当
 
 B1では、EMMに依存するactivation/control informationの取得、契約更新、権利更新もunsupportedとする。factoryでの公開は§2、容量通知は§3.1、鍵状態の更新・失効・closeは§9〜§13の共通契約に従う。
 
-TISはB1 sessionでEMM filterを起動せず、`MediaCas.processEmm()`を呼ばない。CATにEMM PIDがあってもB1復号開始条件・成功条件にしない。
+TIS側のB1 EMM filter / `MediaCas.processEmm()` routingと復号開始条件は`../tis/DESIGN_JA.md`を正とし、本書では再定義しない。CAS plugin側はB1 `processEmm()` がunsupportedでstateを変更しないという本節のcapability契約だけを所有する。
 
 B1の公開・移植可能な参照実装としては `libaribb1` 系の挙動を一次候補にする。コードを移植・リンクする場合はライセンス条件を実装前に確認する。
 
