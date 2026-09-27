@@ -46,5 +46,3 @@ breakfast virtio_x86_64_tv_grub
 - 完了判定、検索結果の扱い、未実施検証の記録は `タスク完了判定の実施方法.md` を正とする。
 
 
-## Git操作
-build/Rust unit testが通った場合は、その時点でgit commitをするようにお願いします。

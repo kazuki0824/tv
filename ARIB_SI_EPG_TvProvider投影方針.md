@@ -223,7 +223,7 @@ Channels.COLUMN_TYPE:
 11. `episode_number=1..4095` は `COLUMN_EPISODE_DISPLAY_NUMBER` へ出て、`0` は列を設定しない。`last_episode_number` は `0` を含め標準列へ出ず、JSON v1 internal_provider_data の series 構造に残る。
 12. `series_name` は `COLUMN_TITLE` / `COLUMN_EPISODE_TITLE` / `LONG_DESCRIPTION` へ機械的に出ず、JSON v1 internal_provider_data の series 構造に残る。
 13. 診断情報は標準列へ出ず、JSON v1 internal_provider_data の 診断情報 構造に残る。
-14. EIT `start_time` の具体値はJSTとして解釈してUTC epoch millisへ変換する。片方だけall-1の時刻未定eventは架空の開始・終了時刻で `Programs` へ投影せず、本製品のstable identity規則に従って後続EITと相関できる。`start_time=0xFFFFFFFFFF`かつ`duration=0xFFFFFF`ではraw `event_id` field自体をARIB上無意味とは断定せず、本製品の誤相関・誤削除防止ポリシーとしてpersistent stable identityへ昇格させず、後続の具体eventとraw `event_id`だけで自動相関しない。
+14. EIT timingの未定義値・不正値・stable identity・後続eventとの相関可否は `arib_si_engine_rs/DESIGN_JA.md` を正とする。本書では、同正本が投影可能とした具体時刻だけをUTC epoch millisとして標準列へ反映し、投影不能timingから架空の開始・終了時刻や既存Program削除根拠を作らない。
 15. ISDB-T、BS、CS110のchannel insertで`COLUMN_TYPE`がそれぞれ`TYPE_ISDB_T`、`TYPE_ISDB_S`、`TYPE_ISDB_S`となり、CATV帯という理由だけで`TYPE_ISDB_C`へ変わらない。delivery system不明時はchannel登録しない。
 ```
 
@@ -234,8 +234,8 @@ Channels.COLUMN_TYPE:
 ```text
 1. どの標準列へ入れるかを明記する。
 2. 一般ユーザー向けUIに表示させる理由を明記する。
-3. JSON v1 internal_provider_data に残す完全構造を明記し、Rust provider-data serde構造体、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json`、`tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` を更新する。2つの schema 整合確認データはバイト単位で同一な複製とし、片方だけを更新してはならない。
-4. 標準列と JSON v1 internal_provider_data の両方で投影結果を確認する。
+3. provider-dataの構造変更が必要な場合は、`arib_si_engine_rs/DESIGN_JA.md` と同crateのserde構造体・schema・正本testdataを更新し、本書では完全構造を再定義しない。TIS側にschema整合確認データがある場合はSI engine正本との一致を確認する。
+4. 標準列への投影結果を確認し、provider-data変更を伴う場合はSI engine正本側のschema・encode・testでも整合を確認する。
 5. この文書を更新し、開発規則.mdのリリース物ルールに反しないことを確認する。
 ```
 

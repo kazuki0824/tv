@@ -120,7 +120,7 @@ TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<
 
 ## ARIB exceptional ratingのLive TV App標準extension統合
 
-ARIB exceptional ratingのAndroid canonical mapping、`contentAgeHint`、stock Live TV presetとの関係、blocked-rating policy authorityは`DESIGN_JA.md`を正とする。本書はそのruntime意味を再定義せず、独立`AribContentRatings` APKをTIF標準rating providerとして発見可能にするproduct統合だけを所有する。
+ARIB raw ratingからAndroid canonical ratingへの写像は `../ARIB_SI_EPG_TvProvider投影方針.md`、`contentAgeHint`、stock Live TV preset / custom policy、blocking / temporary unblock等のruntime policyは`DESIGN_JA.md`をそれぞれ正とする。本書はそれらを再定義せず、独立`AribContentRatings` APKをTIF標準rating providerとして発見可能にするproduct統合だけを所有する。
 
 製品buildでは`AribContentRatings`とstock `LiveTv`を組み込み、rating-provider receiverとXML metadataが正本設計どおり発見できることを確認する。System TV App本体へのARIB専用source patch、第二policy APK、TV App private state readerを追加しない。
 
@@ -198,7 +198,7 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 
 ## 視聴年齢制限 / CAS の product 統合確認
 
-製品統合では、AOSP system-defined ISDB ratingに加え、`AribContentRatings` のTIF標準rating-provider package / receiver / XML metadataがstock TV Appから発見可能であることを確認する。exceptional ratingのcanonical名、raw ARIB値からの写像、`contentAgeHint`、preset / CUSTOM policy、PIN解除、`TvInputManager.isRatingBlocked()` とTIS通知のruntime意味は `DESIGN_JA.md` を唯一の正本とし、本書では再掲しない。
+製品統合では、AOSP system-defined ISDB ratingに加え、`AribContentRatings` のTIF標準rating-provider package / receiver / XML metadataがstock TV Appから発見可能であることを確認する。raw ARIB値からcanonical Android ratingへの写像は `../ARIB_SI_EPG_TvProvider投影方針.md`、`contentAgeHint`、preset / CUSTOM policy、PIN解除、`TvInputManager.isRatingBlocked()` とTIS通知のruntime意味は `DESIGN_JA.md` をそれぞれ正とし、本書では再掲しない。
 
 System TV App本体へARIB専用source patchを追加せず、独立rating providerをproduct imageへ組み込むこと、stock TV Appからproviderが発見できること、設計正本が要求するrating metadataが実機で列挙できることを統合確認対象とする。
 
