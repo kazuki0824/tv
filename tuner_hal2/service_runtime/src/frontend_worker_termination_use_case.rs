@@ -18,16 +18,44 @@ use crate::worker_failure_classifier::WorkerFailureClassifier;
 /// genericなstop、wake、join、reaping stateは`WorkerRuntime`が引き続き所有する。
 pub struct FrontendWorkerTerminationUseCase;
 
+pub(crate) struct FrontendWorkerTerminalAcceptanceReport {
+    state_result: Result<FrontendWorkerTerminalEventAcceptance, HalError>,
+    diagnostic_result: Result<(), HalError>,
+}
+
+impl FrontendWorkerTerminalAcceptanceReport {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Result<FrontendWorkerTerminalEventAcceptance, HalError>,
+        Result<(), HalError>,
+    ) {
+        (self.state_result, self.diagnostic_result)
+    }
+}
+
 impl FrontendWorkerTerminationUseCase {
-    pub(crate) fn accept_worker_terminal(
+    pub(crate) fn accept_worker_terminal_report(
         runtime: &mut TunerServiceRuntime,
         event: FrontendWorkerTerminalEvent,
-    ) -> Result<FrontendWorkerTerminalEventAcceptance, HalError> {
-        let snapshot = runtime
+    ) -> FrontendWorkerTerminalAcceptanceReport {
+        let snapshot = match runtime
             .query()
-            .frontend_runtime_snapshot(event.frontend_id())?;
+            .frontend_runtime_snapshot(event.frontend_id())
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return FrontendWorkerTerminalAcceptanceReport {
+                    state_result: Err(error),
+                    diagnostic_result: Ok(()),
+                }
+            }
+        };
         if snapshot.generation != event.owner_generation() {
-            return Ok(FrontendWorkerTerminalEventAcceptance::DiscardedStale);
+            return FrontendWorkerTerminalAcceptanceReport {
+                state_result: Ok(FrontendWorkerTerminalEventAcceptance::DiscardedStale),
+                diagnostic_result: Ok(()),
+            };
         }
 
         let frontend_id = event.frontend_id();
@@ -38,7 +66,7 @@ impl FrontendWorkerTerminationUseCase {
             "frontend worker panicked or could not be joined",
         )
         .into_failure();
-        let record_result = match terminal_failure.as_ref() {
+        let diagnostic_result = match terminal_failure.as_ref() {
             Some((category, error)) => record_frontend_worker_terminal_failure(
                 runtime,
                 frontend_id,
@@ -49,14 +77,16 @@ impl FrontendWorkerTerminationUseCase {
             ),
             None => Ok(()),
         };
-        // 診断記録に失敗しても、現世代の失敗状態への遷移を省略しない。
-        let mut transition_result = Ok(());
+
+        // 診断記録と正本状態へのterminal受理は別結果とする。
+        // closeの資源寿命はstate_resultだけを依存条件にし、診断storeの失敗では変更しない。
+        let mut state_result = Ok(());
         if matches!(
             snapshot.state,
             FrontendRuntimeState::Tuning { .. } | FrontendRuntimeState::Scanning { .. }
         ) {
             if let Some((_, error)) = terminal_failure {
-                transition_result = match worker_kind {
+                state_result = match worker_kind {
                     FrontendWorkerKind::Tune => runtime
                         .frontend_txn()
                         .mark_frontend_tune_worker_failed(frontend_id, owner_generation, error),
@@ -66,9 +96,23 @@ impl FrontendWorkerTerminationUseCase {
                 };
             }
         }
-        match (transition_result, record_result) {
-            (Ok(()), Ok(())) => Ok(FrontendWorkerTerminalEventAcceptance::Accepted),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+
+        FrontendWorkerTerminalAcceptanceReport {
+            state_result: state_result
+                .map(|_| FrontendWorkerTerminalEventAcceptance::Accepted),
+            diagnostic_result,
+        }
+    }
+
+    pub(crate) fn accept_worker_terminal(
+        runtime: &mut TunerServiceRuntime,
+        event: FrontendWorkerTerminalEvent,
+    ) -> Result<FrontendWorkerTerminalEventAcceptance, HalError> {
+        let (state_result, diagnostic_result) =
+            Self::accept_worker_terminal_report(runtime, event).into_parts();
+        match (state_result, diagnostic_result) {
+            (Ok(acceptance), Ok(())) => Ok(acceptance),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
             (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
                 "frontendワーカー終端遷移と診断がともに失敗しました",
                 primary,
