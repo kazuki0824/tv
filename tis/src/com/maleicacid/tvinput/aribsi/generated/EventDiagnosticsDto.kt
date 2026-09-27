@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class EventDiagnosticsDto(
     val summary: String,
     val descriptorDiagnostics: kotlin.collections.List<com.maleicacid.tvinput.aribsi.generated.DescriptorDiagnosticDto>,
@@ -9,3 +10,4 @@ data class EventDiagnosticsDto(
     val truncatedDescriptorLoop: com.maleicacid.tvinput.aribsi.generated.TruncatedDescriptorLoopDto?
 ) {
 }
+
