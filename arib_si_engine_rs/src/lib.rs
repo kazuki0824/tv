@@ -10,14 +10,14 @@ mod sections;
 mod service_discovery;
 
 use broadcast_clock::{parse_broadcast_clock, BroadcastClockFact};
-use ca_descriptor::{CaDescriptor, MalformedCaDescriptorDiagnostic};
+use ca_descriptor::MalformedCaDescriptorDiagnostic;
 use descriptors::json_escape;
 use discovery_requirements::DiscoveryProfile;
 use eit::EitEvent;
 use jni::objects::{JByteArray, JClass, JObject, JString, JThrowable, JValue};
 use jni::sys::{jint, jintArray, jlong, jobject, jstring};
 use jni::JNIEnv;
-use maleicacid_arib_si_engine_core::eit_instances::{EitInstanceState, EitInstances};
+use maleicacid_arib_si_engine_core::eit_instances::EitInstances;
 use maleicacid_arib_si_engine_core::runtime_snapshot_build;
 use maleicacid_arib_si_engine_core::runtime_snapshot_dto::{
     BroadcastClockDto, BulkSnapshotDto, MalformedCaDescriptorCountDto, ParserDiagnosticDto,
@@ -26,7 +26,6 @@ use provider_data as provider_data_api;
 use sections::{
     parse_section_header, section_crc_valid_with_header, section_has_malformed_descriptor_loop,
 };
-use serde::Serialize;
 use service_discovery::{DiscoveryPublishStage, ServiceDiscoveryCollector};
 use std::collections::BTreeMap;
 use std::ptr;
@@ -255,13 +254,6 @@ impl ParserState {
     }
 }
 
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
-}
 
 fn json_string(value: &str) -> String {
     format!("\"{}\"", json_escape(value))
