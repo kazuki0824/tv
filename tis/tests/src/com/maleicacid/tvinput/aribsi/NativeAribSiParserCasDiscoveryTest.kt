@@ -25,7 +25,7 @@ class NativeAribSiParserCasDiscoveryTest {
         NativeAribSiParser().use { parser ->
             val method =
                 NativeAribSiParser::class.java
-                    .getDeclaredMethod("nativeSnapshotBulkObject", Long::class.javaPrimitiveType)
+                    .getDeclaredMethod("nativeSnapshotBulkTyped", Long::class.javaPrimitiveType)
                     .apply { isAccessible = true }
             val thrown = runCatching { method.invoke(parser, -1L) }.exceptionOrNull()
             check(thrown is java.lang.reflect.InvocationTargetException)
