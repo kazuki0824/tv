@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 sealed class EitTimingStateDto {
 
     object DEFINED : EitTimingStateDto() {
@@ -14,3 +15,4 @@ sealed class EitTimingStateDto {
     object MALFORMED_TIMING : EitTimingStateDto() {
     }
 }
+
