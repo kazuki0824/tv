@@ -447,8 +447,7 @@ fn build_codec_facts<'local>(
         Some(value) => build_audio_header(env, value)?,
         None => JObject::null(),
     };
-    let raw_descriptors_hex =
-        optional_string_object(env, value.raw_descriptors_hex.as_deref())?;
+    let raw_descriptors_hex = optional_string_object(env, value.raw_descriptors_hex.as_deref())?;
     let profile_level = optional_string_object(env, value.profile_level.as_deref())?;
     let result = new_generated(
         env,
@@ -488,13 +487,10 @@ fn build_elementary_stream<'local>(
     let data_component_id = boxed_int(env, value.data_component_id)?;
     let caption_dmf = boxed_int(env, value.caption_dmf)?;
     let caption_timing = boxed_int(env, value.caption_timing)?;
-    let automatic_presentation =
-        boxed_bool(env, value.automatic_presentation_on_reception)?;
+    let automatic_presentation = boxed_bool(env, value.automatic_presentation_on_reception)?;
     let codec = optional_string_object(env, value.codec.as_deref())?;
     let codec_kind = match value.codec_kind.as_ref() {
-        Some(value) => {
-            generated_enum(env, "ElementaryStreamKindDto", stream_kind_variant(value))?
-        }
+        Some(value) => generated_enum(env, "ElementaryStreamKindDto", stream_kind_variant(value))?,
         None => JObject::null(),
     };
     let codec_facts = build_codec_facts(env, &value.codec_facts)?;
@@ -577,15 +573,16 @@ fn build_smd<'local>(
     let broadcasting_flag = boxed_int(env, value.broadcasting_flag)?;
     let broadcasting_identifier = boxed_int(env, value.broadcasting_identifier)?;
     let broadcast_system = match value.broadcast_system.as_ref() {
-        Some(value) => {
-            generated_enum(env, "BroadcastSystemDto", broadcast_system_variant(value))?
-        }
+        Some(value) => generated_enum(env, "BroadcastSystemDto", broadcast_system_variant(value))?,
         None => JObject::null(),
     };
     let additional_id = boxed_int(env, value.additional_broadcasting_identification)?;
     let additional_hex = string_object(env, &value.additional_identification_info_hex)?;
-    let semantic_state =
-        generated_enum(env, "SmdSemanticStateDto", smd_state_variant(&value.semantic_state))?;
+    let semantic_state = generated_enum(
+        env,
+        "SmdSemanticStateDto",
+        smd_state_variant(&value.semantic_state),
+    )?;
     let diagnostic = optional_string_object(env, value.diagnostic.as_deref())?;
     let result = new_generated(
         env,
@@ -636,8 +633,11 @@ fn build_service_semantic_facts<'local>(
     let provider_name = optional_string_object(env, value.provider_name.as_deref())?;
     let pmt_pid = boxed_int(env, value.pmt_pid)?;
     let pcr_pid = boxed_int(env, value.pcr_pid)?;
-    let descriptors =
-        object_list(env, &value.service_scoped_ca_descriptors, build_ca_descriptor)?;
+    let descriptors = object_list(
+        env,
+        &value.service_scoped_ca_descriptors,
+        build_ca_descriptor,
+    )?;
     let result = new_generated(
         env,
         "ServiceSemanticFactsDto",
@@ -750,8 +750,11 @@ fn build_short_event<'local>(
     let language = string_object(env, &value.language_code)?;
     let title = string_object(env, &value.title)?;
     let text = string_object(env, &value.text)?;
-    let status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "ShortEventDto",
@@ -775,8 +778,11 @@ fn build_extended_text<'local>(
 ) -> Result<JObject<'local>, SiJniFailure> {
     let language = string_object(env, &value.language_code)?;
     let text = string_object(env, &value.text)?;
-    let status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "ExtendedTextDto",
@@ -821,8 +827,11 @@ fn build_content_genre<'local>(
     value: &ContentGenreDto,
 ) -> Result<JObject<'local>, SiJniFailure> {
     let arib_name = string_object(env, &value.arib_name)?;
-    let status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "ContentGenreDto",
@@ -881,8 +890,11 @@ fn build_event_group<'local>(
         build_other_event_group_reference,
     )?;
     let private_data_hex = string_object(env, &value.private_data_hex)?;
-    let parse_status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let parse_status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "EventGroupDto",
@@ -921,8 +933,11 @@ fn build_component_group_descriptor<'local>(
     value: &ComponentGroupDescriptorDto,
 ) -> Result<JObject<'local>, SiJniFailure> {
     let groups = object_list(env, &value.groups, build_component_group)?;
-    let parse_status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let parse_status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "ComponentGroupDescriptorDto",
@@ -944,8 +959,11 @@ fn build_linkage<'local>(
     value: &LinkageDto,
 ) -> Result<JObject<'local>, SiJniFailure> {
     let private_data_prefix_hex = string_object(env, &value.private_data_prefix_hex)?;
-    let parse_status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let parse_status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "LinkageDto",
@@ -971,8 +989,11 @@ fn build_free_ca_mode<'local>(
 ) -> Result<JObject<'local>, SiJniFailure> {
     let raw = boxed_int(env, value.raw)?;
     let scrambled = boxed_bool(env, value.scrambled)?;
-    let parse_status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let parse_status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "FreeCaModeDto",
@@ -1000,8 +1021,11 @@ fn build_series<'local>(
     let episode_number = boxed_int(env, value.episode_number)?;
     let last_episode_number = boxed_int(env, value.last_episode_number)?;
     let name = optional_string_object(env, value.name.as_deref())?;
-    let parse_status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let parse_status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "SeriesDto",
@@ -1047,8 +1071,11 @@ fn build_video_component<'local>(
     let scan = optional_string_object(env, value.scan.as_deref())?;
     let aspect = optional_string_object(env, value.aspect.as_deref())?;
     let profile_level = optional_string_object(env, value.profile_level.as_deref())?;
-    let parse_status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let parse_status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "VideoComponentDto",
@@ -1107,8 +1134,11 @@ fn build_audio_component<'local>(
     let main = boxed_bool(env, value.main)?;
     let multi_lingual = boxed_bool(env, value.multi_lingual)?;
     let quality_indicator = boxed_int(env, value.quality_indicator)?;
-    let parse_status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let parse_status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let channel_count = boxed_int(env, value.channel_count)?;
     let sample_rate_hz = boxed_int(env, value.sample_rate_hz)?;
     let audio_description = boxed_bool(env, value.audio_description)?;
@@ -1195,8 +1225,11 @@ fn build_parental_rating<'local>(
     value: &ParentalRatingDto,
 ) -> Result<JObject<'local>, SiJniFailure> {
     let country_code = string_object(env, &value.country_code)?;
-    let parse_status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let parse_status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "ParentalRatingDto",
@@ -1218,8 +1251,11 @@ fn build_truncated_loop<'local>(
     value: &TruncatedDescriptorLoopDto,
 ) -> Result<JObject<'local>, SiJniFailure> {
     let raw_bytes_hex = string_object(env, &value.raw_bytes_hex)?;
-    let parse_status =
-        generated_enum(env, "SiParseStatusDto", parse_status_variant(&value.parse_status))?;
+    let parse_status = generated_enum(
+        env,
+        "SiParseStatusDto",
+        parse_status_variant(&value.parse_status),
+    )?;
     let result = new_generated(
         env,
         "TruncatedDescriptorLoopDto",
@@ -1347,8 +1383,11 @@ fn build_event_diagnostics<'local>(
     value: &EventDiagnosticsDto,
 ) -> Result<JObject<'local>, SiJniFailure> {
     let summary = string_object(env, &value.summary)?;
-    let descriptor_diagnostics =
-        object_list(env, &value.descriptor_diagnostics, build_descriptor_diagnostic)?;
+    let descriptor_diagnostics = object_list(
+        env,
+        &value.descriptor_diagnostics,
+        build_descriptor_diagnostic,
+    )?;
     let descriptor_diagnostics_canonical_json =
         string_object(env, &value.descriptor_diagnostics_canonical_json)?;
     let descriptor_facts_canonical_json =
@@ -1412,14 +1451,16 @@ fn build_event_descriptors<'local>(
     let extended_texts = object_list(env, &value.extended_texts, build_extended_text)?;
     let extended_items = object_list(env, &value.extended_items, build_extended_item)?;
     let component_text = optional_string_object(env, value.component_text.as_deref())?;
-    let audio_component_text =
-        optional_string_object(env, value.audio_component_text.as_deref())?;
+    let audio_component_text = optional_string_object(env, value.audio_component_text.as_deref())?;
     let content_genres = object_list(env, &value.content_genres, build_content_genre)?;
     let genre_supplement_text =
         optional_string_object(env, value.genre_supplement_text.as_deref())?;
     let event_groups = object_list(env, &value.event_groups, build_event_group)?;
-    let component_groups =
-        object_list(env, &value.component_groups, build_component_group_descriptor)?;
+    let component_groups = object_list(
+        env,
+        &value.component_groups,
+        build_component_group_descriptor,
+    )?;
     let linkage = object_list(env, &value.linkage, build_linkage)?;
     let free_ca_mode = match value.free_ca_mode.as_ref() {
         Some(value) => build_free_ca_mode(env, value)?,
@@ -1432,8 +1473,7 @@ fn build_event_descriptors<'local>(
     let series_candidates = object_list(env, &value.series_candidates, build_series)?;
     let series_candidates_canonical_json =
         optional_string_object(env, value.series_candidates_canonical_json.as_deref())?;
-    let parental_ratings =
-        object_list(env, &value.parental_ratings, build_parental_rating)?;
+    let parental_ratings = object_list(env, &value.parental_ratings, build_parental_rating)?;
     let components = build_components(env, &value.components)?;
     let diagnostics = build_event_diagnostics(env, &value.diagnostics)?;
     let result = new_generated(
@@ -1492,8 +1532,11 @@ fn build_event<'local>(
 ) -> Result<JObject<'local>, SiJniFailure> {
     let service_key = build_service_key(env, &value.service_key)?;
     let stable_identity = optional_string_object(env, value.stable_identity.as_deref())?;
-    let timing_state =
-        generated_enum(env, "EitTimingStateDto", timing_variant(&value.timing_state))?;
+    let timing_state = generated_enum(
+        env,
+        "EitTimingStateDto",
+        timing_variant(&value.timing_state),
+    )?;
     let raw_start_time_hex = string_object(env, &value.raw_start_time_hex)?;
     let raw_duration_hex = string_object(env, &value.raw_duration_hex)?;
     let title = string_object(env, &value.title)?;
