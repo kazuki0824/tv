@@ -1194,7 +1194,11 @@ mod tests {
         assert!(close_result.is_err());
         cancel_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(
-            runtime.lock().unwrap().registry().frontend_bound_to_demux(demux_id),
+            runtime
+                .lock()
+                .unwrap()
+                .registry()
+                .frontend_bound_to_demux(demux_id),
             Some(FrontendRuntimeId(1_000_000)),
         );
 

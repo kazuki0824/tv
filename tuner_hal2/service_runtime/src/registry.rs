@@ -2403,18 +2403,27 @@ mod single_use_contract_tests {
         let mut registry = RuntimeRegistry::default();
         register_frontend_for_relation_test(&mut registry, old);
         register_frontend_for_relation_test(&mut registry, new);
-        registry.register_demux(DemuxRegistryEntry { id: demux }).unwrap();
+        registry
+            .register_demux(DemuxRegistryEntry { id: demux })
+            .unwrap();
 
         let initial = registry
             .prepare_demux_frontend_binding_change(demux, Some(old))
             .unwrap();
-        registry.commit_prepared_demux_frontend_binding_change(initial).unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(initial)
+            .unwrap();
 
-        let guard = registry.try_begin_frontend_demux_start(old).unwrap().unwrap();
+        let guard = registry
+            .try_begin_frontend_demux_start(old)
+            .unwrap()
+            .unwrap();
         let prepared = registry
             .prepare_demux_frontend_binding_change(demux, Some(new))
             .unwrap();
-        registry.commit_prepared_demux_frontend_binding_change(prepared).unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(prepared)
+            .unwrap();
         assert_eq!(registry.frontend_bound_to_demux(demux), Some(new));
         guard.release();
     }
@@ -2427,18 +2436,27 @@ mod single_use_contract_tests {
         let mut registry = RuntimeRegistry::default();
         register_frontend_for_relation_test(&mut registry, old);
         register_frontend_for_relation_test(&mut registry, new);
-        registry.register_demux(DemuxRegistryEntry { id: demux }).unwrap();
+        registry
+            .register_demux(DemuxRegistryEntry { id: demux })
+            .unwrap();
 
         let initial = registry
             .prepare_demux_frontend_binding_change(demux, Some(old))
             .unwrap();
-        registry.commit_prepared_demux_frontend_binding_change(initial).unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(initial)
+            .unwrap();
 
-        let guard = registry.try_begin_frontend_demux_start(new).unwrap().unwrap();
+        let guard = registry
+            .try_begin_frontend_demux_start(new)
+            .unwrap()
+            .unwrap();
         let prepared = registry
             .prepare_demux_frontend_binding_change(demux, Some(new))
             .unwrap();
-        registry.commit_prepared_demux_frontend_binding_change(prepared).unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(prepared)
+            .unwrap();
         assert_eq!(registry.frontend_bound_to_demux(demux), Some(new));
         guard.release();
     }
