@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class MalformedCaDescriptorDiagnosticDto(
     val pid: Int,
     val tableId: Int,
@@ -14,3 +15,4 @@ data class MalformedCaDescriptorDiagnosticDto(
     val rawPrefixHex: String
 ) {
 }
+
