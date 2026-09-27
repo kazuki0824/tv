@@ -385,7 +385,7 @@ TS main typeの具体的linkageでは、実データを供給するsourceとし�
 
 canonical `frontend tune/scan` の非同期事象受理は、operation eventとworker terminalの双方でcurrent frontend operation generationを再検証する。旧generationに属する事象・終了結果はfrontend状態を変更せず、callback配送予約も作らず、そのままstale結果として破棄する。旧generationの結果をcurrent generationへ読み替えたり、current operationのworker failureまたはcallback結果として適用してはならない。stale事象の追加診断store記録は本契約の必須要件にしない。最低試験ではoperation eventとworker terminalの双方について、旧generation入力がcurrent状態・callback予約・worker failure結果へ影響しないことを確認する。
 
-`IFrontend.close()` は、scan / tune worker、live pump、frontend backend、callback registration、demux relation、frontend leaseを当該frontend固有のcleanup対象とする。公開`close()`の戻り値、再`close()`時の結果、論理閉鎖後に許可する操作は0-S-4の公開close契約を正とする。cleanup authority、全対象試行、retry / handoff、quarantineの内部semanticsは0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
+`IFrontend.close()` は、scan / tune worker、live pump、frontend backend、callback registration、demux relation、frontend leaseを当該frontend固有のcleanup対象とする。frontend workerは現在のlive demux relationを参照して終了処理を完了し得るため、closeはまず当該frontendのtune/scan generationをfenceしてworker停止を要求し、workerの物理終了とterminal result受理が確定した後にだけlive data停止とDemux-Frontend relationのunbindを行う。worker回収をreaperへ移管した場合も、reaper completionが同じ順序でterminal受理を終えてからunbindする。worker終了未確定中にrelationを先行解除せず、unbind失敗時もworkerを再開しない。公開`close()`の戻り値、再`close()`時の結果、論理閉鎖後に許可する操作は0-S-4の公開close契約を正とする。cleanup authority、全対象試行、retry / handoff、quarantineの内部semanticsは0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
 
 DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作である `stop_tune()` の責務とする。DVB backend の `close()` は reader stop と fd release を行うが、`DTV_CLEAR` の実行を close の必須条件とはしない。したがって、DVB `close()` が `DTV_CLEAR` を発行しないことを release blocker または bug と扱わない。
 

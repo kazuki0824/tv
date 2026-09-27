@@ -1132,6 +1132,89 @@ mod tests {
     }
 
     #[test]
+    fn frontend_close_keeps_demux_relation_until_worker_terminal_completion() {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let (cancel_seen_tx, cancel_seen_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let demux_id = {
+            let mut guard = runtime.lock().unwrap();
+            guard.boot_from_probe_results([available(
+                1_000_000,
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbT,
+                "/dev/px4video0",
+                None,
+            )]);
+            guard
+                .install_filter_event_dispatcher(Arc::new(NoopFilterEventDispatcher))
+                .unwrap();
+            let demux = guard.allocate_demux_runtime().unwrap();
+            guard
+                .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+                .unwrap();
+            let generation = guard
+                .frontend_txn()
+                .prepare_frontend_worker_generation(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                )
+                .unwrap();
+            guard
+                .frontend_txn()
+                .install_frontend_live_reader_descriptor_for_generation(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                    generation,
+                )
+                .unwrap();
+            guard
+                .frontend_txn()
+                .start_worker(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                    generation,
+                    move |ctx| {
+                        while !ctx.cancel_requested() {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        cancel_seen_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            demux.id
+        };
+
+        let close_result = crate::frontend_worker_txn::close_frontend_workers_and_live_data(
+            Arc::clone(&runtime),
+            1_000_000,
+            maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::FrontendClosing,
+        );
+        assert!(close_result.is_err());
+        cancel_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            runtime.lock().unwrap().registry().frontend_bound_to_demux(demux_id),
+            Some(FrontendRuntimeId(1_000_000)),
+        );
+
+        release_tx.send(()).unwrap();
+        for _ in 0..100 {
+            if runtime
+                .lock()
+                .unwrap()
+                .registry()
+                .frontend_bound_to_demux(demux_id)
+                .is_none()
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("worker terminal completion後にDemux-Frontend relationが解除されませんでした");
+    }
+
+    #[test]
     fn dvb_frontend_live_reader_descriptor_uses_adapter_dvr_path() {
         let mut runtime = TunerServiceRuntime::new();
         runtime.boot_from_probe_results([available(
