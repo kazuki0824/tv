@@ -934,17 +934,65 @@ class NativeAribSiParser : AutoCloseable {
         return (0 until array.length()).map { index ->
             val candidate =
                 array.optJSONObject(index)
-                    ?: throw NativeSiException(
-                        "JSON_ENCODING",
-                        "SI snapshotのseriesCandidates[$index]型が不正です",
-                    )
-            parseSeries(candidate)
-                ?: throw NativeSiException(
-                    "JSON_ENCODING",
-                    "SI snapshotのseriesCandidates[$index]が不正です",
-                )
+                    ?: throw seriesCandidateEncodingError(index, "要素型がobjectではありません")
+            parseSeriesCandidate(candidate, index)
         }
     }
+
+    private fun parseSeriesCandidate(
+        candidate: JSONObject,
+        index: Int,
+    ): AribSeries {
+        val requiredNumbers =
+            listOf(
+                "seriesId",
+                "repeatLabel",
+                "programPattern",
+                "episodeNumber",
+                "lastEpisodeNumber",
+            )
+        requiredNumbers.forEach { key ->
+            if (!candidate.has(key) || candidate.isNull(key) || candidate.get(key) !is Number) {
+                throw seriesCandidateEncodingError(index, "$key の型が不正です")
+            }
+        }
+        if (!candidate.has("expireDateValid") || candidate.get("expireDateValid") !is Boolean) {
+            throw seriesCandidateEncodingError(index, "expireDateValid の型が不正です")
+        }
+        if (!candidate.has("expireDate") ||
+            (!candidate.isNull("expireDate") && candidate.get("expireDate") !is Number)
+        ) {
+            throw seriesCandidateEncodingError(index, "expireDate の型が不正です")
+        }
+        if (!candidate.has("name") ||
+            (!candidate.isNull("name") && candidate.get("name") !is String)
+        ) {
+            throw seriesCandidateEncodingError(index, "name の型が不正です")
+        }
+        if (!candidate.has("parseStatus") || candidate.get("parseStatus") !is String) {
+            throw seriesCandidateEncodingError(index, "parseStatus の型が不正です")
+        }
+        return AribSeries(
+            seriesId = candidate.getInt("seriesId"),
+            repeatLabel = candidate.getInt("repeatLabel"),
+            programPattern = candidate.getInt("programPattern"),
+            expireDateValid = candidate.getBoolean("expireDateValid"),
+            expireDate = if (candidate.isNull("expireDate")) null else candidate.getInt("expireDate"),
+            episodeNumber = candidate.getInt("episodeNumber"),
+            lastEpisodeNumber = candidate.getInt("lastEpisodeNumber"),
+            name = if (candidate.isNull("name")) null else candidate.getString("name"),
+            parseStatus = candidate.getString("parseStatus"),
+        )
+    }
+
+    private fun seriesCandidateEncodingError(
+        index: Int,
+        detail: String,
+    ): NativeSiException =
+        NativeSiException(
+            "JSON_ENCODING",
+            "SI snapshotのseriesCandidates[$index]が不正です: $detail",
+        )
 
     private fun parseComponents(obj: JSONObject?): AribComponents? =
         obj?.let {
