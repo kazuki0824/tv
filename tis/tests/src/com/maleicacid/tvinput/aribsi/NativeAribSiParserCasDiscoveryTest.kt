@@ -92,7 +92,7 @@ class NativeAribSiParserCasDiscoveryTest {
     }
 
     @Test
-    fun snapshotCrossesJniAsObjectWithoutJsonWireParsing() {
+    fun snapshotCrossesJniAsTypedDtoWithoutDynamicJsonBoundary() {
         NativeAribSiParser().use { parser ->
             val handleField =
                 NativeAribSiParser::class.java
@@ -100,128 +100,13 @@ class NativeAribSiParserCasDiscoveryTest {
                     .apply { isAccessible = true }
             val snapshotMethod =
                 NativeAribSiParser::class.java
-                    .getDeclaredMethod("nativeSnapshotBulkObject", Long::class.javaPrimitiveType)
+                    .getDeclaredMethod("nativeSnapshotBulkTyped", Long::class.javaPrimitiveType)
                     .apply { isAccessible = true }
             val snapshot = snapshotMethod.invoke(parser, handleField.getLong(parser))
-            check(snapshot is JSONObject)
-            check(snapshot.has("collectionGeneration"))
-            check(snapshot.has("serviceSemanticFacts"))
+            check(snapshot is NativeSiSnapshot)
+            check(snapshot.collectionGeneration >= 0L)
+            check(snapshot.serviceSemanticFacts.isEmpty())
             check(parser.programStateSnapshot().events.isEmpty())
-        }
-    }
-
-    @Test
-    fun closedSiClassificationWireValuesRejectUnknown() {
-        NativeAribSiParser().use { parser ->
-            fun method(name: String) =
-                NativeAribSiParser::class.java
-                    .getDeclaredMethod(name, String::class.java)
-                    .apply { isAccessible = true }
-
-            for (name in listOf(
-                "parseSiParseStatus",
-                "parseEitTimingState",
-                "parseElementaryStreamKind",
-            )) {
-                val failure =
-                    runCatching {
-                        method(name).invoke(parser, "UNKNOWN")
-                    }.exceptionOrNull()
-                check(failure is java.lang.reflect.InvocationTargetException)
-                val cause = failure.cause
-                check(
-                    cause is NativeSiException &&
-                        cause.reason == NativeSiFailureReason.JSON_ENCODING,
-                )
-            }
-        }
-    }
-
-    @Test
-    fun broadcastSystemWireValueIsDecodedToClosedTypeAndUnknownIsRejected() {
-        NativeAribSiParser().use { parser ->
-            val method =
-                NativeAribSiParser::class.java
-                    .getDeclaredMethod("parseBroadcastSystem", JSONObject::class.java)
-                    .apply { isAccessible = true }
-
-            fun decode(value: Any): Any? =
-                method.invoke(
-                    parser,
-                    JSONObject().put("broadcastSystem", value),
-                )
-
-            check(decode("ISDB_T") == BroadcastSystem.ISDB_T)
-            check(decode("ISDB_S_BS") == BroadcastSystem.ISDB_S_BS)
-            check(decode("ISDB_S_110CS") == BroadcastSystem.ISDB_S_110CS)
-            check(decode(JSONObject.NULL) == null)
-
-            val failure = runCatching { decode("UNKNOWN") }.exceptionOrNull()
-            check(failure is java.lang.reflect.InvocationTargetException)
-            val cause = failure.cause
-            check(cause is NativeSiException && cause.reason == NativeSiFailureReason.JSON_ENCODING)
-        }
-    }
-
-    @Test
-    fun seriesCandidatesRejectMissingWrongTypeAndOutOfRangeValues() {
-        NativeAribSiParser().use { parser ->
-            val method =
-                NativeAribSiParser::class.java
-                    .getDeclaredMethod("parseSeriesCandidates", JSONObject::class.java)
-                    .apply { isAccessible = true }
-
-            fun failureFor(descriptors: JSONObject): Throwable? =
-                runCatching { method.invoke(parser, descriptors) }
-                    .exceptionOrNull()
-                    ?.let { (it as? java.lang.reflect.InvocationTargetException)?.cause ?: it }
-
-            check(failureFor(JSONObject()) is NativeSiException)
-            check(
-                failureFor(JSONObject().put("seriesCandidates", JSONObject())) is NativeSiException,
-            )
-
-            val validCandidate =
-                JSONObject()
-                    .put("seriesId", 1)
-                    .put("repeatLabel", 0)
-                    .put("programPattern", 0)
-                    .put("expireDateValid", false)
-                    .put("expireDate", JSONObject.NULL)
-                    .put("episodeNumber", 1)
-                    .put("lastEpisodeNumber", 2)
-                    .put("name", "series")
-                    .put("parseStatus", "OK")
-
-            fun invalidCandidate(mutator: (JSONObject) -> Unit): JSONObject {
-                val candidate = JSONObject(validCandidate.toString())
-                mutator(candidate)
-                return JSONObject().put("seriesCandidates", JSONArray().put(candidate))
-            }
-
-            check(failureFor(invalidCandidate { it.put("seriesId", 1.5) }) is NativeSiException)
-            check(failureFor(invalidCandidate { it.put("seriesId", 65_536) }) is NativeSiException)
-            check(failureFor(invalidCandidate { it.put("repeatLabel", 16) }) is NativeSiException)
-            check(failureFor(invalidCandidate { it.put("programPattern", 8) }) is NativeSiException)
-            check(failureFor(invalidCandidate { it.put("episodeNumber", 4_096) }) is NativeSiException)
-            check(failureFor(invalidCandidate { it.put("lastEpisodeNumber", 4_096) }) is NativeSiException)
-            check(failureFor(invalidCandidate { it.put("expireDateValid", true) }) is NativeSiException)
-            check(
-                failureFor(
-                    invalidCandidate {
-                        it.put("expireDateValid", false)
-                        it.put("expireDate", 1)
-                    },
-                ) is NativeSiException,
-            )
-            check(failureFor(invalidCandidate { it.put("parseStatus", "INVALID") }) is NativeSiException)
-
-            val accepted =
-                method.invoke(
-                    parser,
-                    JSONObject().put("seriesCandidates", JSONArray().put(validCandidate)),
-                ) as List<*>
-            check((accepted.single() as AribSeries).seriesId == 1)
         }
     }
 
