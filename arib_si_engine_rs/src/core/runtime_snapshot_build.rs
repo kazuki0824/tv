@@ -17,15 +17,11 @@ use crate::service_discovery::{
 };
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    crate::ca_descriptor::hex_prefix(bytes, bytes.len())
 }
 
 fn hex_prefix(bytes: &[u8], maximum: usize) -> String {
-    bytes
-        .iter()
-        .take(maximum)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::ca_descriptor::hex_prefix(bytes, maximum)
 }
 
 fn parse_status(status: DescriptorParseStatus) -> SiParseStatusDto {
@@ -542,7 +538,7 @@ fn video_component(value: &crate::descriptors::ComponentDescriptor) -> VideoComp
         (0x01, 0xd1..=0xd4) => (Some("240"), Some("progressive")),
         _ => (None, None),
     };
-    let aspect = resolution.and_then(|_| match value.component_type & 0x0f {
+    let aspect = resolution.and(match value.component_type & 0x0f {
         0x01 => Some("4:3"),
         0x02 | 0x03 => Some("16:9"),
         0x04 => Some(">16:9"),
