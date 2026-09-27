@@ -381,11 +381,6 @@ fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshotDto {
     }
 }
 
-#[cfg(test)]
-fn bulk_snapshot_json(state: &mut ParserState) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&build_bulk_snapshot(state))
-}
-
 fn parser_diagnostics(
     sections_seen: u64,
     last_status: jint,
@@ -1027,24 +1022,20 @@ mod tests {
         for &(pid, bytes, code) in cases {
             let mut state = ParserState::default();
             assert_eq!(state.ingest_section(pid, bytes), STATUS_INVALID_SECTION);
-            let snapshot: serde_json::Value =
-                serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
-            assert!(snapshot["parserDiagnostics"]
-                .as_array()
-                .unwrap()
+            let snapshot = build_bulk_snapshot(&mut state);
+            assert!(snapshot
+                .parser_diagnostics
                 .iter()
-                .any(|d| d["code"] == code));
+                .any(|diagnostic| diagnostic.code == code));
             assert_eq!(
                 state.ingest_section(0x10, &[0x7f, 0x30, 0]),
                 STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE
             );
-            let snapshot: serde_json::Value =
-                serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
-            assert!(!snapshot["parserDiagnostics"]
-                .as_array()
-                .unwrap()
+            let snapshot = build_bulk_snapshot(&mut state);
+            assert!(!snapshot
+                .parser_diagnostics
                 .iter()
-                .any(|d| d["code"] == code));
+                .any(|diagnostic| diagnostic.code == code));
         }
     }
 
@@ -1099,17 +1090,15 @@ mod tests {
         assert_eq!(dto.descriptors.series_candidates.len(), 2);
         assert_eq!(dto.descriptors.series_candidates[0].series_id, Some(1));
         assert_eq!(dto.descriptors.series_candidates[1].series_id, Some(2));
-        let canonical: serde_json::Value = serde_json::from_str(
-            dto.descriptors
-                .series_candidates_canonical_json
-                .as_deref()
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            canonical,
-            serde_json::to_value(&dto.descriptors.series_candidates).unwrap(),
-        );
+        let canonical: Vec<maleicacid_arib_si_engine_core::runtime_snapshot_dto::SeriesDto> =
+            serde_json::from_str(
+                dto.descriptors
+                    .series_candidates_canonical_json
+                    .as_deref()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(canonical, dto.descriptors.series_candidates);
         event.descriptors.series.pop();
         let dto = runtime_snapshot_build::event(&event, None);
         assert_eq!(dto.descriptors.series.as_ref().and_then(|series| series.series_id), Some(1));
@@ -1245,15 +1234,13 @@ mod tests {
             state.ingest_section(0x0014, &tot),
             STATUS_COLLECTION_LIMIT_EXCEEDED
         );
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
-        assert!(snapshot["broadcastClock"].is_null());
-        assert_eq!(snapshot["discoveryStage"], DISCOVERY_STAGE_INCOMPLETE);
-        assert!(snapshot["parserDiagnostics"]
-            .as_array()
-            .unwrap()
+        let snapshot = build_bulk_snapshot(&mut state);
+        assert!(snapshot.broadcast_clock.is_none());
+        assert_eq!(snapshot.discovery_stage, DISCOVERY_STAGE_INCOMPLETE);
+        assert!(snapshot
+            .parser_diagnostics
             .iter()
-            .any(|value| value["code"] == "COLLECTION_LIMIT_EXCEEDED"));
+            .any(|diagnostic| diagnostic.code == "COLLECTION_LIMIT_EXCEEDED"));
     }
 
     #[test]
@@ -1307,10 +1294,10 @@ mod tests {
                 millis_of_day: (12 * 3_600 + 34 * 60 + 56) * 1_000,
             })
         );
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
-        assert_eq!(snapshot["broadcastClock"]["tableId"].as_u64(), Some(0x73));
-        assert_eq!(snapshot["broadcastClock"]["mjd"].as_u64(), Some(0xea60));
+        let snapshot = build_bulk_snapshot(&mut state);
+        let clock = snapshot.broadcast_clock.expect("broadcast clock");
+        assert_eq!(clock.table_id, 0x73);
+        assert_eq!(clock.mjd, 0xea60);
     }
 
     #[test]
@@ -1332,14 +1319,13 @@ mod tests {
             0xe0, 0x08, 0x48, 0x06, 0x01, 0x00, 0x03, 0x1b, b'$', b'X',
         ]);
         assert_eq!(state.ingest_section(0x0011, &sdt), STATUS_OK);
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
-        let diagnostics = snapshot["parserDiagnostics"].as_array().unwrap();
-        let text_diagnostic = diagnostics
+        let snapshot = build_bulk_snapshot(&mut state);
+        let text_diagnostic = snapshot
+            .parser_diagnostics
             .iter()
-            .find(|diagnostic| diagnostic["code"] == "ARIB_SI_TEXT_REPLACED")
+            .find(|diagnostic| diagnostic.code == "ARIB_SI_TEXT_REPLACED")
             .expect("ARIB SI text diagnostic");
-        let message = text_diagnostic["message"].as_str().unwrap();
+        let message = text_diagnostic.message.as_str();
         assert!(message.contains("field=serviceName"), "{}", message);
         assert!(message.contains("input_prefix_hex:1b2458"), "{}", message);
     }
