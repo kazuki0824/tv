@@ -20,6 +20,7 @@ import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
+import com.maleicacid.tvinput.aribsi.SiParseStatus
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
@@ -470,11 +471,12 @@ class MaleicacidLiveSession(
                 defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey),
                 dualMonoPresentation = dualMonoPresentation,
             )
+        val currentAudioComponent =
+            currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)
         val selection =
             initialSelection.copy(
-                audioComponentType =
-                    currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)?.componentType
-                        ?: initialSelection.audio?.componentType,
+                audioChannelConfiguration = currentAudioComponent?.channelConfiguration,
+                audioDualMono = currentAudioComponent?.dualMono,
             )
         val audioOnly = PlaybackPolicy.isAudioOnlyService(service.serviceType)
         if (PlaybackPolicy.shouldRejectSelection(service.serviceType ?: -1, selection)) {
@@ -540,7 +542,14 @@ class MaleicacidLiveSession(
             audioPid = audio?.elementaryPid,
             audioStreamType = audio?.streamType,
             videoConfiguration = video?.let { DecoderConfigurationIdentity.from(it) },
-            audioConfiguration = audio?.let { DecoderConfigurationIdentity.from(it, selection.audioComponentType ?: it.componentType) },
+            audioConfiguration =
+                audio?.let {
+                    DecoderConfigurationIdentity.from(
+                        it,
+                        selection.audioChannelConfiguration,
+                        selection.audioDualMono,
+                    )
+                },
             subtitlePid = selection.subtitle?.elementaryPid,
             subtitleDataComponentId = selection.subtitle?.dataComponentId,
             subtitleLanguageId = selection.subtitleLanguageId,
@@ -617,11 +626,12 @@ class MaleicacidLiveSession(
                         defaultComponentGroupTags = defaultComponentGroupTags,
                         dualMonoPresentation = dualMonoPresentation,
                     )
+                val currentAudioComponent =
+                    currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)
                 val selection =
                     initialSelection.copy(
-                        audioComponentType =
-                            currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)?.componentType
-                                ?: initialSelection.audio?.componentType,
+                        audioChannelConfiguration = currentAudioComponent?.channelConfiguration,
+                        audioDualMono = currentAudioComponent?.dualMono,
                     )
                 val signature =
                     playbackSignatureFor(service, selection) ?: run {
@@ -714,7 +724,7 @@ class MaleicacidLiveSession(
         componentTag ?: return null
         val currentEvent = currentProgramEvent(serviceKey, nowMillis) ?: return null
         return currentEvent.descriptors.components.audio
-            .firstOrNull { component -> component.parseStatus.equals("OK", ignoreCase = true) && component.componentTag == componentTag }
+            .firstOrNull { component -> component.parseStatus == SiParseStatus.OK && component.componentTag == componentTag }
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -728,7 +738,7 @@ class MaleicacidLiveSession(
         componentTag ?: return null
         val currentEvent = currentProgramEvent(serviceKey, nowMillis) ?: return null
         return currentEvent.descriptors.components.video
-            .firstOrNull { component -> component.parseStatus.equals("OK", ignoreCase = true) && component.componentTag == componentTag }
+            .firstOrNull { component -> component.parseStatus == SiParseStatus.OK && component.componentTag == componentTag }
     }
 
     private fun currentDefaultComponentGroupTags(

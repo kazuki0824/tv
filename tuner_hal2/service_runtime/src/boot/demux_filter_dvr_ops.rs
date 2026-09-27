@@ -126,17 +126,9 @@ impl DemuxFrontendSourceTxn {
             }
         };
 
-        let prepared_binding_change = match runtime
+        let prepared_binding_change = runtime
             .registry
-            .prepare_demux_frontend_binding_change(self.demux_id, next_frontend_id)?
-        {
-            crate::registry::DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
-            crate::registry::DemuxFrontendBindingChangeAdmission::Pending => {
-                return Err(
-                    crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error(),
-                )
-            }
-        };
+            .prepare_demux_frontend_binding_change(self.demux_id, next_frontend_id)?;
 
         let prepared = runtime
             .registry

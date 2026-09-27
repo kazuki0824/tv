@@ -7,6 +7,7 @@ import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
+import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
@@ -437,7 +438,7 @@ class ChannelScanController(
                     hasInternalTuneKey =
                         candidate.streamSelector.value != null ||
                             candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE,
-                    expectedSmdBroadcastingIdentifier = expectedSmdBroadcastingIdentifier(candidate),
+                    expectedSmdBroadcastSystem = expectedSmdBroadcastSystem(candidate),
                 )
             }
         val registrationReadyServices =
@@ -540,7 +541,7 @@ class ChannelScanController(
                         ServicePolicyEvaluator
                             .evaluate(
                                 facts = transaction.semanticFactsByServiceKey[instance.serviceKey],
-                                expectedSmdBroadcastingIdentifier = currentCandidate?.let(::expectedSmdBroadcastingIdentifier),
+                                expectedSmdBroadcastSystem = currentCandidate?.let(::expectedSmdBroadcastSystem),
                             ).registrationReady
                 }.mapTo(linkedSetOf()) { it.serviceKey }
         val result =
@@ -556,8 +557,8 @@ class ChannelScanController(
         return result
     }
 
-    private fun expectedSmdBroadcastingIdentifier(candidate: ScanCandidate): Int =
-        requireNotNull(ServicePolicyEvaluator.expectedSmdBroadcastingIdentifier(discoveryProfile(candidate.kind)))
+    private fun expectedSmdBroadcastSystem(candidate: ScanCandidate): BroadcastSystem =
+        requireNotNull(ServicePolicyEvaluator.expectedSmdBroadcastSystem(discoveryProfile(candidate.kind)))
 
     private fun discoveryProfile(kind: ScanCandidateKind): Int =
         when (kind) {
@@ -571,13 +572,13 @@ class ChannelScanController(
         requirements: SiCollectionRequirements,
     ): ServiceCounts {
         val transaction = engine.serviceRegistrationSnapshot()
-        val expectedSmdIdentifier = expectedSmdBroadcastingIdentifier(candidate)
+        val expectedSmdSystem = expectedSmdBroadcastSystem(candidate)
         val completeness =
             transaction.services.map { service ->
                 ServiceListBuilder.completenessForModel(
                     service = service,
                     facts = transaction.semanticFactsByServiceKey[service.serviceKey],
-                    expectedSmdBroadcastingIdentifier = expectedSmdIdentifier,
+                    expectedSmdBroadcastSystem = expectedSmdSystem,
                 )
             }
         val summary = ServiceListBuilder.ServiceSnapshotSummary(completeness)

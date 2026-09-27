@@ -876,7 +876,133 @@ impl TunerServiceRuntime {
 #[cfg(test)]
 mod terminal_tests {
     use super::*;
+    use crate::registry::{
+        FrontendCapabilitySnapshot, FrontendRegistryEntry, FrontendRuntimeId,
+        FrontendScalarCapability,
+    };
+    use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
     use maleicacid_tuner_hal2_control_core::{WorkerFailureDomain, WorkerStopReason};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    fn runtime_with_frontend_generation(generation: u64) -> TunerServiceRuntime {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime
+            .registry_mut_for_test()
+            .register_frontend(FrontendRegistryEntry {
+                id: FrontendRuntimeId(1),
+                backend: FrontendBackendKind::LinuxDvb,
+                system: FrontendSystem::IsdbT,
+                device_path: "/dev/null".into(),
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 473_142_857,
+                        max_frequency_hz: 767_142_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 1,
+                    isdbt_segment: None,
+                },
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+            })
+            .unwrap();
+        let mut snapshot = runtime.query().frontend_runtime_snapshot(1).unwrap();
+        snapshot.generation = generation;
+        snapshot.state = FrontendRuntimeState::Tuning { generation };
+        runtime
+            .frontend_txn()
+            .restore_frontend_runtime_snapshot(1, snapshot)
+            .unwrap();
+        runtime
+    }
+
+    #[test]
+    fn stale_operation_event_does_not_change_current_state_or_invoke_callback() {
+        let runtime = runtime_with_frontend_generation(7);
+        let before = runtime.query().frontend_runtime_snapshot(1).unwrap();
+        let shared = Arc::new(std::sync::Mutex::new(runtime));
+        let delivered = Arc::new(AtomicBool::new(false));
+        let delivered_for_notifier = Arc::clone(&delivered);
+        let notifier: FrontendTuneNotifier = Arc::new(move |_, _, _| {
+            delivered_for_notifier.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+
+        let acceptance = FrontendTuneScanTxn::accept_operation_event(
+            &shared,
+            1,
+            6,
+            FrontendOperationEvent::Tune {
+                notifier,
+                notification: FrontendTuneNotification::Locked,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(acceptance, FrontendOperationEventAcceptance::DiscardedStale);
+        assert!(!delivered.load(Ordering::SeqCst));
+        let after = TunerServiceRuntime::lock_shared(
+            shared.as_ref(),
+            "test frontend runtime lock poisoned",
+        )
+        .unwrap()
+        .query()
+        .frontend_runtime_snapshot(1)
+        .unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn stale_worker_terminal_does_not_change_current_state_or_failure_diagnostics() {
+        let runtime = runtime_with_frontend_generation(7);
+        let before_state = runtime.query().frontend_runtime_snapshot(1).unwrap();
+        let before_diagnostics = runtime.frontend_worker_cleanup_diagnostics().unwrap();
+        let shared = Arc::new(std::sync::Mutex::new(runtime));
+
+        let acceptance = FrontendTuneScanTxn::accept_worker_terminal(
+            &shared,
+            FrontendWorkerTerminalEvent::new(
+                1,
+                6,
+                FrontendWorkerKind::Tune,
+                WorkerTerminalResult::RuntimeFailure(HalError::cleanup_failed(
+                    "worker",
+                    "stale failure",
+                )),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            acceptance,
+            FrontendWorkerTerminalEventAcceptance::DiscardedStale
+        );
+        let guard = TunerServiceRuntime::lock_shared(
+            shared.as_ref(),
+            "test frontend runtime lock poisoned",
+        )
+        .unwrap();
+        assert_eq!(
+            guard.query().frontend_runtime_snapshot(1).unwrap(),
+            before_state
+        );
+        let after_diagnostics = guard.frontend_worker_cleanup_diagnostics().unwrap();
+        assert_eq!(
+            after_diagnostics.records().len(),
+            before_diagnostics.records().len()
+        );
+        assert_eq!(
+            after_diagnostics.dropped_count(),
+            before_diagnostics.dropped_count()
+        );
+        assert_eq!(
+            after_diagnostics.record_failure_count(),
+            before_diagnostics.record_failure_count()
+        );
+    }
 
     #[test]
     fn completed_stop_outcome_keeps_terminal_classification() {

@@ -4,6 +4,7 @@ import android.media.MediaFormat
 import android.media.tv.TvTrackInfo
 import com.maleicacid.tvinput.aribsi.AribComponentEntry
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.SiParseStatus
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.StreamSelectorType
 
@@ -187,20 +188,19 @@ object AudioTrackMetadataPolicy {
         fallbackLanguage: String?,
         component: AribComponentEntry?,
     ): Projection {
-        val valid = component?.takeIf { it.parseStatus.equals("OK", ignoreCase = true) }
-        val componentType = valid?.componentType
+        val valid = component?.takeIf { it.parseStatus == SiParseStatus.OK }
         return Projection(
             language = valid?.language?.takeIf { it.isNotBlank() } ?: fallbackLanguage,
             encoding = encodingForPmtStreamType(pmtStreamType),
-            channelCount = componentType?.let(::channelCountForComponentType),
-            sampleRateHz = valid?.samplingRate?.let(::sampleRateHz),
+            channelCount = valid?.channelCount,
+            sampleRateHz = valid?.sampleRateHz,
             description = valid?.text?.takeIf { it.isNotBlank() },
-            audioDescription = componentType?.let(::isAudioDescription) == true,
-            hardOfHearing = componentType?.let(::isHardOfHearing) == true,
+            audioDescription = valid?.audioDescription == true,
+            hardOfHearing = valid?.hardOfHearing == true,
         )
     }
 
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    // PMT stream_typeからAndroid MIMEへの写像だけをTISが所有する。
     @Suppress("MagicNumber")
     fun encodingForPmtStreamType(streamType: Int): String? =
         when (streamType) {
@@ -208,41 +208,6 @@ object AudioTrackMetadataPolicy {
             0x0f -> MediaFormat.MIMETYPE_AUDIO_AAC
             else -> null
         }
-
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-    @Suppress("MagicNumber")
-    fun channelCountForComponentType(componentType: Int): Int? =
-        when (componentType and 0x1f) {
-            0x01 -> 1
-            0x02 -> 2
-            0x03 -> 2
-            0x04, 0x05 -> 3
-            0x06, 0x07 -> 4
-            0x08 -> 5
-            0x09 -> 6
-            else -> null
-        }
-
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-    @Suppress("MagicNumber")
-    fun sampleRateHz(rawSamplingRate: Int): Int? =
-        when (rawSamplingRate) {
-            0x01 -> 16_000
-            0x02 -> 22_050
-            0x03 -> 24_000
-            0x05 -> 32_000
-            0x06 -> 44_100
-            0x07 -> 48_000
-            else -> null
-        }
-
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-    @Suppress("MagicNumber")
-    fun isAudioDescription(componentType: Int): Boolean = ((componentType ushr 5) and 0x03) == 0x01
-
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-    @Suppress("MagicNumber")
-    fun isHardOfHearing(componentType: Int): Boolean = ((componentType ushr 5) and 0x03) == 0x02
 }
 
 /** EIT component_descriptorのうちTvTrackInfo videoへ直接表現できるfactだけを投影する。 */
@@ -257,7 +222,7 @@ object VideoTrackMetadataPolicy {
         component: AribComponentEntry?,
         exact: PlaybackPipeline.VideoFormatInfo? = null,
     ): Projection {
-        val valid = component?.takeIf { it.parseStatus.equals("OK", ignoreCase = true) }
+        val valid = component?.takeIf { it.parseStatus == SiParseStatus.OK }
         val geometry = exact?.takeIf { it.width > 0 && it.height > 0 }
         return Projection(
             description = valid?.text?.takeIf { it.isNotBlank() },

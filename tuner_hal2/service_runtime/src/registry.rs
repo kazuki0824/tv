@@ -84,12 +84,6 @@ pub(crate) struct PreparedDemuxFrontendBindingChange {
     next_frontend_id: Option<FrontendRuntimeId>,
 }
 
-#[derive(Debug)]
-pub(crate) enum DemuxFrontendBindingChangeAdmission {
-    Ready(PreparedDemuxFrontendBindingChange),
-    Pending,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendRegistryEntry {
     pub id: FrontendRuntimeId,
@@ -1025,12 +1019,7 @@ impl RuntimeRegistry {
         &mut self,
         id: DemuxRuntimeId,
     ) -> Result<Option<DemuxRegistryEntry>, HalError> {
-        let prepared = match self.prepare_demux_frontend_binding_change(id, None)? {
-            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
-            DemuxFrontendBindingChangeAdmission::Pending => {
-                return Err(Self::frontend_demux_relation_pending_error())
-            }
-        };
+        let prepared = self.prepare_demux_frontend_binding_change(id, None)?;
         self.commit_prepared_demux_frontend_binding_change(prepared)?;
         self.demux_runtimes.remove(&id);
         Ok(self.demuxes.remove(&id))
@@ -1067,50 +1056,11 @@ impl RuntimeRegistry {
         Ok(Some(FrontendDemuxStartGuard { active }))
     }
 
-    fn frontend_demux_start_active(
-        &self,
-        frontend_id: FrontendRuntimeId,
-    ) -> Result<bool, HalError> {
-        self.frontend_demux_start_in_flight
-            .get(&frontend_id)
-            .map(|active| active.load(Ordering::Acquire))
-            .ok_or_else(|| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "フロントエンドdemux関係の取り込み開始状態がありません",
-                )
-            })
-    }
-
-    fn demux_frontend_binding_change_is_pending(
-        &self,
-        demux_id: DemuxRuntimeId,
-        next_frontend_id: Option<FrontendRuntimeId>,
-    ) -> Result<bool, HalError> {
-        let previous_frontend_id = self.demux_frontend_bindings.get(&demux_id).copied();
-        if previous_frontend_id == next_frontend_id {
-            return Ok(false);
-        }
-        let affected = previous_frontend_id
-            .into_iter()
-            .chain(next_frontend_id)
-            .collect::<BTreeSet<_>>();
-        for frontend_id in affected {
-            if self.frontend_demux_start_active(frontend_id)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     pub(crate) fn validate_demux_frontend_binding_change(
         &self,
-        demux_id: DemuxRuntimeId,
-        next_frontend_id: Option<FrontendRuntimeId>,
+        _demux_id: DemuxRuntimeId,
+        _next_frontend_id: Option<FrontendRuntimeId>,
     ) -> Result<(), HalError> {
-        if self.demux_frontend_binding_change_is_pending(demux_id, next_frontend_id)? {
-            return Err(Self::frontend_demux_relation_pending_error());
-        }
         Ok(())
     }
 
@@ -1118,18 +1068,13 @@ impl RuntimeRegistry {
         &mut self,
         demux_id: DemuxRuntimeId,
         next_frontend_id: Option<FrontendRuntimeId>,
-    ) -> Result<DemuxFrontendBindingChangeAdmission, HalError> {
+    ) -> Result<PreparedDemuxFrontendBindingChange, HalError> {
         let previous_frontend_id = self.demux_frontend_bindings.get(&demux_id).copied();
-        if self.demux_frontend_binding_change_is_pending(demux_id, next_frontend_id)? {
-            return Ok(DemuxFrontendBindingChangeAdmission::Pending);
-        }
-        Ok(DemuxFrontendBindingChangeAdmission::Ready(
-            PreparedDemuxFrontendBindingChange {
-                demux_id,
-                previous_frontend_id,
-                next_frontend_id,
-            },
-        ))
+        Ok(PreparedDemuxFrontendBindingChange {
+            demux_id,
+            previous_frontend_id,
+            next_frontend_id,
+        })
     }
 
     pub(crate) fn commit_prepared_demux_frontend_binding_change(
@@ -1147,17 +1092,6 @@ impl RuntimeRegistry {
                 "Demux-Frontend関係が準備後に変更されました",
             ));
         }
-        if prepared.previous_frontend_id != prepared.next_frontend_id {
-            for frontend_id in prepared
-                .previous_frontend_id
-                .into_iter()
-                .chain(prepared.next_frontend_id)
-            {
-                if self.frontend_demux_start_active(frontend_id)? {
-                    return Err(Self::frontend_demux_relation_pending_error());
-                }
-            }
-        }
         match prepared.next_frontend_id {
             Some(frontend_id) => {
                 self.demux_frontend_bindings
@@ -1168,15 +1102,6 @@ impl RuntimeRegistry {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn frontend_demux_relation_pending_error() -> HalError {
-        HalError::Busy {
-            path: None,
-            detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
-                "フロントエンドdemux関係の変更は取り込み開始完了待ちです",
-            ),
-        }
     }
 
     pub fn frontend_bound_to_demux(&self, demux_id: DemuxRuntimeId) -> Option<FrontendRuntimeId> {
@@ -2471,7 +2396,7 @@ mod single_use_contract_tests {
     }
 
     #[test]
-    fn relation_switch_is_pending_when_previous_frontend_start_is_active() {
+    fn relation_switch_is_committable_while_previous_frontend_start_is_active() {
         let old = FrontendRuntimeId(10);
         let new = FrontendRuntimeId(11);
         let demux = DemuxRuntimeId(20);
@@ -2482,13 +2407,9 @@ mod single_use_contract_tests {
             .register_demux(DemuxRegistryEntry { id: demux })
             .unwrap();
 
-        let initial = match registry
+        let initial = registry
             .prepare_demux_frontend_binding_change(demux, Some(old))
-            .unwrap()
-        {
-            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
-            DemuxFrontendBindingChangeAdmission::Pending => panic!("initial bind was pending"),
-        };
+            .unwrap();
         registry
             .commit_prepared_demux_frontend_binding_change(initial)
             .unwrap();
@@ -2497,17 +2418,18 @@ mod single_use_contract_tests {
             .try_begin_frontend_demux_start(old)
             .unwrap()
             .unwrap();
-        assert!(matches!(
-            registry
-                .prepare_demux_frontend_binding_change(demux, Some(new))
-                .unwrap(),
-            DemuxFrontendBindingChangeAdmission::Pending
-        ));
+        let prepared = registry
+            .prepare_demux_frontend_binding_change(demux, Some(new))
+            .unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(prepared)
+            .unwrap();
+        assert_eq!(registry.frontend_bound_to_demux(demux), Some(new));
         guard.release();
     }
 
     #[test]
-    fn relation_switch_is_pending_when_next_frontend_start_is_active() {
+    fn relation_switch_is_committable_while_next_frontend_start_is_active() {
         let old = FrontendRuntimeId(12);
         let new = FrontendRuntimeId(13);
         let demux = DemuxRuntimeId(21);
@@ -2518,13 +2440,9 @@ mod single_use_contract_tests {
             .register_demux(DemuxRegistryEntry { id: demux })
             .unwrap();
 
-        let initial = match registry
+        let initial = registry
             .prepare_demux_frontend_binding_change(demux, Some(old))
-            .unwrap()
-        {
-            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
-            DemuxFrontendBindingChangeAdmission::Pending => panic!("initial bind was pending"),
-        };
+            .unwrap();
         registry
             .commit_prepared_demux_frontend_binding_change(initial)
             .unwrap();
@@ -2533,12 +2451,13 @@ mod single_use_contract_tests {
             .try_begin_frontend_demux_start(new)
             .unwrap()
             .unwrap();
-        assert!(matches!(
-            registry
-                .prepare_demux_frontend_binding_change(demux, Some(new))
-                .unwrap(),
-            DemuxFrontendBindingChangeAdmission::Pending
-        ));
+        let prepared = registry
+            .prepare_demux_frontend_binding_change(demux, Some(new))
+            .unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(prepared)
+            .unwrap();
+        assert_eq!(registry.frontend_bound_to_demux(demux), Some(new));
         guard.release();
     }
 
@@ -2552,13 +2471,9 @@ mod single_use_contract_tests {
             .register_demux(DemuxRegistryEntry { id: demux })
             .unwrap();
 
-        let initial = match registry
+        let initial = registry
             .prepare_demux_frontend_binding_change(demux, Some(frontend))
-            .unwrap()
-        {
-            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
-            DemuxFrontendBindingChangeAdmission::Pending => panic!("initial bind was pending"),
-        };
+            .unwrap();
         registry
             .commit_prepared_demux_frontend_binding_change(initial)
             .unwrap();
@@ -2567,12 +2482,12 @@ mod single_use_contract_tests {
             .try_begin_frontend_demux_start(frontend)
             .unwrap()
             .unwrap();
-        assert!(matches!(
-            registry
-                .prepare_demux_frontend_binding_change(demux, Some(frontend))
-                .unwrap(),
-            DemuxFrontendBindingChangeAdmission::Ready(_)
-        ));
+        let prepared = registry
+            .prepare_demux_frontend_binding_change(demux, Some(frontend))
+            .unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(prepared)
+            .unwrap();
         guard.release();
     }
 
@@ -2588,21 +2503,13 @@ mod single_use_contract_tests {
             .register_demux(DemuxRegistryEntry { id: demux })
             .unwrap();
 
-        let prepared = match registry
+        let prepared = registry
             .prepare_demux_frontend_binding_change(demux, Some(old))
-            .unwrap()
-        {
-            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
-            DemuxFrontendBindingChangeAdmission::Pending => panic!("prepare was pending"),
-        };
+            .unwrap();
 
-        let competing = match registry
+        let competing = registry
             .prepare_demux_frontend_binding_change(demux, Some(new))
-            .unwrap()
-        {
-            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
-            DemuxFrontendBindingChangeAdmission::Pending => panic!("competing prepare was pending"),
-        };
+            .unwrap();
         registry
             .commit_prepared_demux_frontend_binding_change(competing)
             .unwrap();

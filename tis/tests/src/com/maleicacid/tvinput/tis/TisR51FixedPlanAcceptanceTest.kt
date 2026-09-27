@@ -17,7 +17,9 @@ import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribEventDescriptors
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
+import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.AribService
+import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.EitInstanceState
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.NativeAribSiParser
@@ -27,6 +29,7 @@ import com.maleicacid.tvinput.aribsi.ServicePublishabilityDiagnostic
 import com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot
 import com.maleicacid.tvinput.aribsi.ServiceSemanticFacts
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
+import com.maleicacid.tvinput.aribsi.SiParseStatus
 import com.maleicacid.tvinput.aribsi.SiStatus
 import com.maleicacid.tvinput.aribsi.SmdSemanticFacts
 import com.maleicacid.tvinput.aribsi.TableRequirementStatus
@@ -335,7 +338,7 @@ class TisR51FixedPlanAcceptanceTest {
             for (timing in listOf(0L to event.durationMillis, event.startTimeMillis to 0L)) {
                 val present =
                     event.copy(
-                        timingState = "UNDEFINED_TIME",
+                        timingState = com.maleicacid.tvinput.aribsi.EitTimingState.UNDEFINED_TIME,
                         startTimeMillis = timing.first,
                         durationMillis = timing.second,
                         source = event.source.copy(tableId = 0x4e, version = 1, sectionNumber = 0),
@@ -397,11 +400,14 @@ class TisR51FixedPlanAcceptanceTest {
                 com.maleicacid.tvinput.aribsi
                     .CaMetadata(null, 5, null, emm, null),
             )
-        val valid = semanticFacts(requiresCas = true).let { it.copy(smd = it.smd.copy(broadcastingIdentifier = 3)) }
+        val valid =
+            semanticFacts(requiresCas = true).let {
+                it.copy(smd = it.smd.copy(broadcastSystem = BroadcastSystem.ISDB_T))
+            }
         val invalid =
             listOf(
                 valid.copy(caDescriptorsResolved = false),
-                valid.copy(smd = valid.smd.copy(broadcastingIdentifier = 2)),
+                valid.copy(smd = valid.smd.copy(broadcastSystem = BroadcastSystem.ISDB_S_BS)),
                 valid.copy(serviceType = 0xa1),
             )
         for (facts in invalid) {
@@ -414,7 +420,7 @@ class TisR51FixedPlanAcceptanceTest {
                 val decision =
                     com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(
                         nextFacts,
-                        expectedSmdBroadcastingIdentifier = 3,
+                        expectedSmdBroadcastSystem = BroadcastSystem.ISDB_T,
                     )
                 val accepted = SectionFilterPolicy.metadataForCasDecision(decision.casDecisionReady, metadata)
                 for ((current, next) in listOf(
@@ -510,7 +516,7 @@ class TisR51FixedPlanAcceptanceTest {
     fun livePolicyRejectsUnresolvedCaUnknownServiceAndDeliveryMismatch() {
         NativeAribSiParser().use { parser ->
             val initial = parser.livePlaybackSnapshot()
-            val clear = semanticFacts().let { it.copy(smd = it.smd.copy(broadcastingIdentifier = 3)) }
+            val clear = semanticFacts().let { it.copy(smd = it.smd.copy(broadcastSystem = BroadcastSystem.ISDB_T)) }
 
             fun snapshot(facts: ServiceSemanticFacts) =
                 initial.copy(
@@ -524,7 +530,15 @@ class TisR51FixedPlanAcceptanceTest {
             check("CA_DESCRIPTOR_UNRESOLVED" in unresolved.reasons)
             val scrambled = policy.evaluateLive(snapshot(clear.copy(requiresCas = true, freeCaMode = true)), key)
             check(scrambled.registrationReady && scrambled.casDecisionReady && !scrambled.clearLivePlaybackStaticallyEligible)
-            for (facts in listOf(clear.copy(serviceType = 0xa1), clear.copy(smd = clear.smd.copy(broadcastingIdentifier = 2)))) {
+            for (facts in listOf(
+                clear.copy(serviceType = 0xa1),
+                clear.copy(
+                    smd =
+                        clear.smd.copy(
+                            broadcastSystem = BroadcastSystem.ISDB_S_BS,
+                        ),
+                ),
+            )) {
                 val rejected = policy.evaluateLive(snapshot(facts), key)
                 check(!rejected.registrationReady && !rejected.clearLivePlaybackStaticallyEligible)
             }
@@ -787,7 +801,13 @@ class TisR51FixedPlanAcceptanceTest {
                 name = "HEVC service",
                 pcrPid = TsPid(0x100),
                 freeCaMode = false,
-                streams = listOf(es(TsPid(0x120), 0x24, componentTag = 1).copy(codec = "HEVC", codecKind = "VIDEO")),
+                streams =
+                    listOf(
+                        es(TsPid(0x120), 0x24, componentTag = 1).copy(
+                            codec = "HEVC",
+                            codecKind = com.maleicacid.tvinput.aribsi.ElementaryStreamKind.VIDEO,
+                        ),
+                    ),
             )
         val components = org.json.JSONObject(AribComponentProjectionPolicy.toComponentsObjectForService(service))
         val video = components.getJSONArray("video").getJSONObject(0)
@@ -835,7 +855,10 @@ class TisR51FixedPlanAcceptanceTest {
                 streams =
                     listOf(
                         es(TsPid(0x101), 0x1b),
-                        es(TsPid(0x111), 0x11, componentTag = 2, language = "jpn").copy(codec = "MPEG-4-AAC-LATM", codecKind = "AUDIO"),
+                        es(TsPid(0x111), 0x11, componentTag = 2, language = "jpn").copy(
+                            codec = "MPEG-4-AAC-LATM",
+                            codecKind = com.maleicacid.tvinput.aribsi.ElementaryStreamKind.AUDIO,
+                        ),
                     ),
             )
         val components = org.json.JSONObject(AribComponentProjectionPolicy.toComponentsObjectForService(service))
@@ -859,12 +882,23 @@ class TisR51FixedPlanAcceptanceTest {
         check(providerAudio.getString("codec") == "MPEG-4-AAC-LATM")
         check(!providerAudio.has("r51PlaybackSupported"))
         check(AudioTrackMetadataPolicy.encodingForPmtStreamType(0x0f) == android.media.MediaFormat.MIMETYPE_AUDIO_AAC)
-        check(AudioTrackMetadataPolicy.channelCountForComponentType(0x02) == 2)
-        check(AudioTrackMetadataPolicy.channelCountForComponentType(0x29) == 6)
-        check(AudioTrackMetadataPolicy.sampleRateHz(0x07) == 48_000)
-        check(AudioTrackMetadataPolicy.sampleRateHz(0x04) == null)
-        check(AudioTrackMetadataPolicy.isAudioDescription(0x20))
-        check(AudioTrackMetadataPolicy.isHardOfHearing(0x40))
+        val typedAudioMetadata =
+            AudioTrackMetadataPolicy.project(
+                0x0f,
+                null,
+                AribComponentEntry(
+                    esPid = null,
+                    channelCount = 6,
+                    sampleRateHz = 48_000,
+                    audioDescription = true,
+                    hardOfHearing = false,
+                    parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.OK,
+                ),
+            )
+        check(typedAudioMetadata.channelCount == 6)
+        check(typedAudioMetadata.sampleRateHz == 48_000)
+        check(typedAudioMetadata.audioDescription)
+        check(!typedAudioMetadata.hardOfHearing)
         check(TunerSelectionPolicy.selectVideo(service.streams)?.streamType == 0x1b)
         check(!PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x11))
     }
@@ -882,7 +916,7 @@ class TisR51FixedPlanAcceptanceTest {
                 componentType = 0xb3,
                 language = "jpn",
                 sourceDescriptor = "component_descriptor",
-                parseStatus = "OK",
+                parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.OK,
             )
         val audioComponent =
             AribComponentEntry(
@@ -891,7 +925,7 @@ class TisR51FixedPlanAcceptanceTest {
                 componentType = 0x03,
                 language = "jpn",
                 sourceDescriptor = "audio_component_descriptor",
-                parseStatus = "OK",
+                parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.OK,
             )
         val merged =
             AribComponentProjectionPolicy.mergeEventAndServiceComponents(
@@ -1067,12 +1101,26 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun malformedAndTruncatedParentalRatingAreNotProjectedToContentRating() {
         val malformed =
             aribEvent(
-                parentalRatings = listOf(AribParentalRating("JPN", 12, parseStatus = "MalformedLength")),
+                parentalRatings =
+                    listOf(
+                        AribParentalRating(
+                            "JPN",
+                            12,
+                            parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.MALFORMED_LENGTH,
+                        ),
+                    ),
                 descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson("MalformedLength", 0x55),
             )
         val truncated =
             aribEvent(
-                parentalRatings = listOf(AribParentalRating("JPN", 15, parseStatus = "TruncatedDescriptor")),
+                parentalRatings =
+                    listOf(
+                        AribParentalRating(
+                            "JPN",
+                            15,
+                            parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.TRUNCATED_DESCRIPTOR,
+                        ),
+                    ),
                 descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson("TruncatedDescriptor", 0x55),
             )
         val records =
@@ -1198,7 +1246,7 @@ class TisR51FixedPlanAcceptanceTest {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
-    fun ambiguousSeriesPreservesBothRecordsAndClearsStandardColumns() {
+    fun multipleSeriesPreservesBothRecordsAndUsesMultiSeriesColumn() {
         val candidates =
             """[{"seriesId":1,"repeatLabel":0,"programPattern":0,"expireDateValid":false,"""" +
                 """expireDate":null,"episodeNumber":1,"lastEpisodeNumber":2,"name":"系列A","pars""" +
@@ -1211,7 +1259,16 @@ class TisR51FixedPlanAcceptanceTest {
                 .toProgramRecords(
                     listOf(
                         event.copy(
-                            descriptors = event.descriptors.copy(series = null, seriesCandidatesCanonicalJson = candidates),
+                            descriptors =
+                                event.descriptors.copy(
+                                    series = null,
+                                    seriesCandidates =
+                                        listOf(
+                                            AribSeries(seriesId = 1, episodeNumber = 1, lastEpisodeNumber = 2, name = "系列A"),
+                                            AribSeries(seriesId = 2, episodeNumber = 3, lastEpisodeNumber = 4, name = "系列B"),
+                                        ),
+                                    seriesCandidatesCanonicalJson = candidates,
+                                ),
                         ),
                     ),
                     semanticFactsByServiceKey = mapOf(key to semanticFacts()),
@@ -1224,7 +1281,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(facts.getJSONArray("value").getJSONObject(1).getInt("episodeNumber") == 3)
         val values = TvProviderWriter("input.test", FakeStore(), testOnly = true).programValuesForTest(1L, record)
         check(values.getAsString(TvProviderWriter.COLUMN_SERIES_ID) == null)
-        check(values.getAsString(TvProviderWriter.COLUMN_MULTI_SERIES_ID) == null)
+        check(values.getAsString(TvProviderWriter.COLUMN_MULTI_SERIES_ID) == "1,2")
         check(values.getAsString(TvContract.Programs.COLUMN_EPISODE_DISPLAY_NUMBER) == null)
     }
 
@@ -1697,7 +1754,12 @@ class TisR51FixedPlanAcceptanceTest {
         val incomplete = complete.copy(version = 2, receivedSections = listOf(0), missingSections = listOf(1), complete = false)
         val pending = policy.project(SiDiscoveryProfile.ISDB_T, 1, emptyList(), listOf(incomplete))
         check(pending.windows.isEmpty() && pending.authoritativeProgramKeysByService.isEmpty())
-        val undefined = event.copy(timingState = "UNDEFINED_TIME", startTimeMillis = 0, source = event.source.copy(version = 2))
+        val undefined =
+            event.copy(
+                timingState = com.maleicacid.tvinput.aribsi.EitTimingState.UNDEFINED_TIME,
+                startTimeMillis = 0,
+                source = event.source.copy(version = 2),
+            )
         val current = policy.project(SiDiscoveryProfile.ISDB_T, 1, listOf(undefined), listOf(complete.copy(version = 2)))
         check(current.windows.single().deletionAuthoritative)
         check(
@@ -2128,9 +2190,10 @@ class TisR51FixedPlanAcceptanceTest {
                 systemManagementId = 0,
                 broadcastingFlag = 0,
                 broadcastingIdentifier = 0,
+                broadcastSystem = BroadcastSystem.ISDB_T,
                 additionalBroadcastingIdentification = 0,
                 additionalIdentificationInfoHex = "",
-                semanticState = "SUPPORTED_BROADCAST",
+                semanticState = com.maleicacid.tvinput.aribsi.SmdSemanticState.SUPPORTED_BROADCAST,
                 diagnostic = null,
             ),
         missingComponents = emptyList(),
@@ -2220,7 +2283,10 @@ class TisR51FixedPlanAcceptanceTest {
                             .optString(
                                 "captionServiceKind",
                             ).takeIf { !obj.isNull("captionServiceKind") && it.isNotBlank() },
-                    parseStatus = obj.optString("parseStatus", "OK"),
+                    parseStatus =
+                        SiParseStatus.entries.single {
+                            it.wireValue == obj.getString("parseStatus")
+                        },
                 )
             }
         }

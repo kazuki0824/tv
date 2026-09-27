@@ -499,7 +499,8 @@ class PlaybackPipeline(
                 AudioDecoderPipeline(
                     audioKind!!,
                     requireNotNull(audio),
-                    selection.audioComponentType ?: requireNotNull(audio).componentType,
+                    selection.audioChannelConfiguration,
+                    selection.audioDualMono == true,
                     selection.dualMonoPresentation,
                     streamVolume,
                     startGeneration,
@@ -1680,7 +1681,8 @@ class PlaybackPipeline(
     private inner class AudioDecoderPipeline(
         private val kind: AudioCodecKind,
         private val stream: AribElementaryStream,
-        private val componentType: Int?,
+        private val channelConfiguration: String?,
+        private val dualMono: Boolean,
         initialDualMonoPresentation: DualMonoPresentation,
         initialVolume: Float,
         override val generation: Long,
@@ -1688,7 +1690,7 @@ class PlaybackPipeline(
     ) : DecoderPipeline() {
         private var volume: Float = initialVolume
         private var dualMonoPresentation: DualMonoPresentation = initialDualMonoPresentation
-        private val isDualMonoStream: Boolean = isAribDualMonoComponentType(componentType)
+        private val isDualMonoStream: Boolean = dualMono
         private var outputSampleRate: Int = DEFAULT_AUDIO_SAMPLE_RATE
         private var outputChannels: Int = DEFAULT_AUDIO_CHANNEL_COUNT
         private var outputPcmFormat: OutputPcmFormat? = null
@@ -1758,12 +1760,12 @@ class PlaybackPipeline(
                 } else {
                     null
                 }
-            val channelMask = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, componentType)
+            val channelMask = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, channelConfiguration)
             if (channelMask == null) {
                 errorSink(
                     PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
                     "decoded PCM channel topology is inconsistent channelCount=$channelCount dec" +
-                        "oderMask=$decoderMask componentType=$componentType",
+                        "oderMask=$decoderMask channelConfiguration=$channelConfiguration",
                 )
                 return
             }
@@ -1866,7 +1868,7 @@ class PlaybackPipeline(
                 prepare = {
                     created.setVolume(volume)
                     check(!isDualMonoStream || created.setDualMonoMode(audioTrackDualMonoMode(dualMonoPresentation))) {
-                        "ARIB dual-mono presentationをAudioTrackへ設定できません componentType=$componentType"
+                        "ARIB dual-mono presentationをAudioTrackへ設定できません channelConfiguration=$channelConfiguration"
                     }
                     requireNotNull(mediaSync).setAudioTrack(created)
                     observeAudioRouting(created, generation)
@@ -2600,33 +2602,31 @@ class PlaybackPipeline(
         fun resolve(
             decoderMask: Int?,
             channelCount: Int,
-            componentType: Int?,
+            channelConfiguration: String?,
         ): Int? {
             if (channelCount <= 0) return null
             if (decoderMask != null) {
                 return decoderMask.takeIf { it != 0 && Integer.bitCount(it) == channelCount }
             }
-            val arib = fromAribComponentType(componentType)
+            val arib = fromChannelConfiguration(channelConfiguration)
             if (arib != null && Integer.bitCount(arib) == channelCount) return arib
             return canonicalForCount(channelCount)
         }
 
-        // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
-        fun fromAribComponentType(componentType: Int?): Int? =
-            when (componentType?.and(0x1f)) {
-                0x01 -> AudioFormat.CHANNEL_OUT_MONO
-                0x02, 0x03 -> AudioFormat.CHANNEL_OUT_STEREO
-                0x04 -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_BACK_CENTER
-                0x05 -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_FRONT_CENTER
-                0x06 -> AudioFormat.CHANNEL_OUT_QUAD
-                0x07 -> AudioFormat.CHANNEL_OUT_SURROUND
-                0x08 -> AudioFormat.CHANNEL_OUT_QUAD or AudioFormat.CHANNEL_OUT_FRONT_CENTER
-                0x09 -> AudioFormat.CHANNEL_OUT_5POINT1
+        fun fromChannelConfiguration(channelConfiguration: String?): Int? =
+            when (channelConfiguration) {
+                "1/0" -> AudioFormat.CHANNEL_OUT_MONO
+                "1/0+1/0", "2/0" -> AudioFormat.CHANNEL_OUT_STEREO
+                "2/1" -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_BACK_CENTER
+                "3/0" -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_FRONT_CENTER
+                "2/2" -> AudioFormat.CHANNEL_OUT_QUAD
+                "3/1" -> AudioFormat.CHANNEL_OUT_SURROUND
+                "3/2" -> AudioFormat.CHANNEL_OUT_QUAD or AudioFormat.CHANNEL_OUT_FRONT_CENTER
+                "3/2+LFE" -> AudioFormat.CHANNEL_OUT_5POINT1
                 else -> null
             }
 
-        // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         fun canonicalForCount(channelCount: Int): Int? =
             when (channelCount) {
@@ -2895,10 +2895,6 @@ class PlaybackPipeline(
             }
         }
 
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        private fun isAribDualMonoComponentType(componentType: Int?): Boolean = componentType != null && (componentType and 0x1f) == 0x02
-
         private fun audioTrackDualMonoMode(presentation: DualMonoPresentation): Int =
             when (presentation) {
                 DualMonoPresentation.MAIN -> AudioTrack.DUAL_MONO_MODE_LL
@@ -2906,9 +2902,7 @@ class PlaybackPipeline(
                 DualMonoPresentation.MAIN_SUB -> AudioTrack.DUAL_MONO_MODE_LR
             }
 
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun isAribDualMonoComponentTypeForTest(componentType: Int?): Boolean = isAribDualMonoComponentType(componentType)
+        fun isDualMonoSemanticForTest(dualMono: Boolean): Boolean = dualMono
 
         fun dualMonoModeForTest(presentation: DualMonoPresentation): Int = audioTrackDualMonoMode(presentation)
 
@@ -3024,15 +3018,14 @@ class PlaybackPipeline(
         @Suppress("MaxLineLength")
         fun channelMaskForPcmOutputForTest(channelCount: Int): Int? = PcmChannelMaskPolicy.canonicalForCount(channelCount)
 
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun aribChannelMaskForComponentTypeForTest(componentType: Int?): Int? = PcmChannelMaskPolicy.fromAribComponentType(componentType)
+        fun aribChannelMaskForConfigurationForTest(channelConfiguration: String?): Int? =
+            PcmChannelMaskPolicy.fromChannelConfiguration(channelConfiguration)
 
         fun resolvePcmChannelMaskForTest(
             decoderMask: Int?,
             channelCount: Int,
-            componentType: Int?,
-        ): Int? = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, componentType)
+            channelConfiguration: String?,
+        ): Int? = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, channelConfiguration)
 
         fun videoFormatInfoForTest(
             streamType: Int,

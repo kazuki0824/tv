@@ -40,7 +40,7 @@ object AribRatingMapper {
         profile: BroadcastProfile,
     ): TvContentRating? {
         if (rating.countryCode != "JPN") return null
-        if (rating.parseStatus != "OK") return null
+        if (rating.parseStatus != SiParseStatus.OK) return null
         if (profile == BroadcastProfile.UNRESOLVED) return null
         return when (val raw = rating.rawRatingByte) {
             0x00 -> {

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "collectionGeneration": 0,
+  "ingestSequence": 0,
+  "discoveryStage": 0,
+  "broadcastClock": null,
+  "tableRequirements": [],
+  "catCaMetadata": [],
+  "malformedCaDescriptorDiagnostics": [],
+  "malformedCaDescriptorCounts": [],
+  "transportSemanticFacts": [
+    {
+      "originalNetworkId": 4,
+      "transportStreamId": 16400,
+      "networkName": null,
+      "transportStreamName": null,
+      "remoteControlKeyId": null,
+      "sdtActual": true
+    }
+  ],
+  "events": [],
+  "eitInstances": [],
+  "serviceSemanticFacts": [
+    {
+      "originalNetworkId": 4,
+      "transportStreamId": 16400,
+      "serviceId": 101,
+      "serviceType": 1,
+      "pmtPidResolved": true,
+      "pmtParsed": true,
+      "pcrPidResolved": true,
+      "elementaryStreams": [],
+      "requiresCas": false,
+      "casFactsCanonicalJson": "{}",
+      "caDescriptorsResolved": true,
+      "freeCaMode": false,
+      "smd": {
+        "descriptorPresent": true,
+        "syntaxValid": true,
+        "systemManagementId": 768,
+        "broadcastingFlag": 0,
+        "broadcastingIdentifier": 3,
+        "broadcastSystem": "ISDB_T",
+        "additionalBroadcastingIdentification": 0,
+        "additionalIdentificationInfoHex": "",
+        "semanticState": "SUPPORTED_BROADCAST",
+        "diagnostic": null
+      },
+      "missingComponents": [],
+      "semanticDiagnostics": [],
+      "name": "service",
+      "providerName": null,
+      "pmtPid": 256,
+      "pcrPid": 257,
+      "serviceScopedCaDescriptors": []
+    }
+  ],
+  "parserDiagnostics": []
+}

@@ -119,7 +119,7 @@ fs-configとSELinuxはvendor image上の配置と通常の実行時アクセス�
 
 VTS / product config の公開契約、capability、`VtsEnvironmentProfile`の入力、状態、`VTS-STATE-BOUND` / `VTS-STATE-REJECTED`の意味は `../TUNER_HAL_DESIGN_JA.md` の`製品スコープ / AOSP capability / VTS profile 境界`、`CapabilitySnapshot`、`ProductProfile`、`VTS環境に関する設計保留`を正とする。本節は、それらをproduct buildと実機VTSへ接続する配置・生成・検証経路だけを所有し、profile入力の規範値、HAL capability、公開API戻り値、VTS状態を再定義しない。
 
-本製品は monitor event feature を製品能力として採用せず、静的VTS/product configでも同featureを要求・広告する構成にしない。monitor event の公開API戻り値とcapability契約は `../TUNER_HAL_DESIGN_JA.md` を正とし、本書では重複定義しない。本書のproduct integration設定を、未定義の将来profileでmonitor eventを有効化するための切替点として扱ってはならない。
+VTS/product configは `../TUNER_HAL_DESIGN_JA.md` の現行capabilityをそのまま試験構成へ反映し、同正本が広告しないfeatureを統合設定だけで有効化しない。monitor eventを含む個別featureの採否・公開API結果は同設計正本を参照し、本書へ現行能力表を複製しない。
 
 ### 6.1 単一VtsEnvironmentProfileファイルと依存方向
 
@@ -243,7 +243,7 @@ VTS用静的XMLは手編集正本にせず、単一`VtsEnvironmentProfile`ファ
 5. 選択したAOSP Tuner VTS schemaで生成XMLを検証する。
 6. `../TUNER_HAL_DESIGN_JA.md` のfilename解決契約に従い、選択したVTS loaderとvariant入力からinstall先を一意に解決する。
 
-r52のdescrambling profileを導入する際は、手順2で同正本の「r52のCAS試験profile境界」を照合し、必要な試験側修正を含むartifactのsource/tag/commitを固定する。現行のprofile生成器がr52のCAS試験経路を実装済みであるとは扱わない。ClearKeyへの置換やXMLの手編集だけで不一致を補完しない。
+`開発規則.md` のrelease scopeでdescrambling profileを有効化する際は、手順2で `TUNER_HAL_DESIGN_JA.md` の「CAS試験profile境界」を照合し、必要な試験側修正を含むartifactのsource/tag/commitを固定する。profile生成器の実装済み範囲は実装・検査結果から確認し、release名だけで成立済みと扱わない。ClearKeyへの置換やXMLの手編集だけで不一致を補完しない。
 
 いずれかが失敗した場合は、推測値、既定PID、既定周波数、sample XML値、別profileへのfallbackで補完せず、VTS config artifactを成立させない。生成済みXMLを直接修正してvalidatorを迂回してはならない。
 
@@ -251,9 +251,29 @@ r52のdescrambling profileを導入する際は、手順2で同正本の「r52�
 
 build-time compiler / validatorは、静的なHAL product contractとAOSP VTS契約の整合を検証する。起動時probeで初めて確定するfrontendの実在性、公開frontend ID、hardware info、実信号のLOCKED到達、PID上の実データ到来はbuild-timeに捏造しない。
 
-実機がある場合、`resolve-device`はprofileの未解決な受信候補とTS内識別値を具体化するためにpublic Tuner AIDLを使用する。具体値の解決後、VTS実行前には同じくpublic Tuner AIDLだけを使用するdevice preflightを行い、生成済みVTS構成が要求するfrontend種別、公開`FrontendInfo` / `DemuxCapabilities`、解決済み信号のLOCKED到達、対象PIDのdata pathが実機上で成立することを確認する。具体的な合否項目と実行手順は`タスク完了判定の実施方法.md`を正とし、本書では試験手順を二重定義しない。
+実機がある場合、`resolve-device`はprofileの未解決な受信候補とTS内識別値を具体化するためにpublic Tuner AIDLを使用する。具体値の解決後、VTS実行前には同じくpublic Tuner AIDLだけを使用するdevice preflightを行い、生成済みVTS構成が要求するfrontend種別、公開`FrontendInfo` / `DemuxCapabilities`、解決済み信号のLOCKED到達、対象PIDのdata pathが実機上で成立することを確認する。
 
-`resolve-device`とpreflightはHAL内部registry、private diagnostic、driver-private stateをVTS成功条件の正本にしない。解決済みprofileに対するpreflight不成立時は別frontend、別周波数、別PIDへ自動fallbackして同じprofileの解決結果を変更せず、そのprofileによるVTS実行を開始しない。preflight結果またはVTS実行結果をHAL runtime capabilityへフィードバックして次回起動時の公開能力を変更してはならない。
+実機反復は次の順序で行う。
+
+```text
+profile init / resolve-region
+  ↓
+必要な通常Android build / flash
+  ↓
+resolve-device
+  ↓
+compile / validate
+  ↓
+build graph反映またはinstall-device
+  ↓
+device preflight
+  ↓
+AOSP Tuner VTS
+```
+
+device preflightでは、同じ解決済みprofileと生成XMLを対象に、public Tuner AIDLからfrontend種別と公開capabilityがXML要求に一致すること、解決済みfrequency / selectorでLOCKEDへ到達すること、profileが要求するsection / PES / record / playback等の対象PID data pathが成立することを確認する。preflightでprofile値やXMLを修正せず、不成立ならそのprofileによるVTSを開始しない。別候補を採用する場合は`resolve-device`へ戻り、同じprofileを更新して再compileする。
+
+`resolve-device`とpreflightはHAL内部registry、private diagnostic、driver-private stateをVTS成功条件の正本にしない。解決済みprofileに対するpreflight不成立時は別frontend、別周波数、別PIDへ自動fallbackして同じprofileの解決結果を変更せず、そのprofileによるVTS実行を開始しない。preflight結果またはVTS実行結果をHAL runtime capabilityへフィードバックして次回起動時の公開能力を変更してはならない。実行結果・使用profile・生成物・反映方法の証跡化は`../タスク完了判定の実施方法.md`を正とする。
 
 #### VTS device agentの配置と実行
 
@@ -289,7 +309,7 @@ variantを使用する場合、variant propertyの値と生成XML filenameは同
 - 解決済みfilenameへのvendor image installがbuild graphに接続され、生成物が`tuner_hal2`のproduct integrationだけへ属する。
 - adb root/remount可能な試験端末では、同じ解決済みfilenameへcompile成果物を`install-device`で一時配置し、再build/reflashなしでVTS反復確認へ進める。root/remount不可またはvariant property不一致ならbuild graph経路を使用する。
 - VTS設定は`tuner_hal2`の試験設定にだけ使用され、HAL capability、frontend registry、backend probe結果または公開API成功範囲を書き換えない。
-- device preflightとTuner VTS実行手順が`タスク完了判定の実施方法.md`から一意に実行できる。
+- device preflightとTuner VTS実行手順が本節から一意に実行でき、実施証跡は`../タスク完了判定の実施方法.md`の形式で記録できる。
 
 これらが未接続の状態では、profileの値を手作業で複数箇所へ転記してVTS構成を成立させたことにしない。
 
@@ -360,7 +380,7 @@ git -C frameworks/av apply \
   "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tuner_hal2/platform_patches/lineage-22.1/android_frameworks_av_tuner_filter_null_data_source.patch"
 ```
 
-`frameworks/base` 用修正は `FilterClient::setDataSource(nullptr)` を参照外しせず内部 Tuner Filter へ伝える。`frameworks/av` 用修正は内部 `ITunerFilter.setDataSource()` の引数を null 許容として宣言し、`TunerFilter::setDataSource(nullptr)` を `INVALID_ARGUMENT` にせず Hardware HAL の `IFilter.setDataSource(nullptr)` へ伝える。これにより Java API の null 入力から Hardware HAL まで demux 入力元への復帰要求を保持する。
+`frameworks/base` / `frameworks/av` 用修正は、Java側からHardware HALまで `setDataSource(nullptr)` を欠落・置換せず透過するためのplatform統合差分とする。null入力の公開意味、受理条件、戻り値、source relation変更は `../TUNER_HAL_DESIGN_JA.md` の `IFilter.setDataSource()` / `SourceBoundaryTxn` 契約を正とし、本節では再定義しない。
 
 Descrambler の null source Filter は LineageOS 22.1 の既存 `frameworks/base` / `frameworks/av` が既に保持して HAL へ伝えるため、追加のフレームワーク修正を行わない。
 
@@ -391,17 +411,6 @@ m android.hardware.tv.tuner-update-api
 adb shell dumpsys android.hardware.tv.tuner.ITuner/default
 ```
 
-出力は各所有者が保持する診断の写しであり、次の項目を含む。
+出力項目、各領域が保持する情報、世代付き診断、領域別取得失敗と部分取得成功の意味は `../TUNER_HAL_DESIGN_JA.md` の「診断可観測性の固定」を正とする。本書は `dumpsys` からその診断snapshotを実機取得できることの確認手順だけを所有する。
 
-| 出力項目 | 確認する情報 |
-|---|---|
-| `frontend_backend` | 機器別の`frontend_id`、`backend`、`records`、`dropped_count`、`record_failure_count`。各記録の世代、選局段階、主障害、巻戻し障害、操作・パス・OSエラー番号 |
-| `frontend` | 対象機器と現在の世代、受信処理の報告、終了事由、最後の障害、診断記録の失敗と破棄数。報告内の破損バイト数・飽和情報・読み取り再試行回数 |
-| `filter_callback` / `frontend_callback` | 対象物のID・世代、通知段階、型付き障害、代替保持先の件数・破棄数・記録失敗数、通常保持先の取得欠落 |
-| `frontend_worker_cleanup` | 対象物・ワーカーの世代、終了・後始末の結果、主障害と後始末の障害、破棄数・記録失敗数。FMQ障害は既存記録の書込み失敗・短い書込み・起床失敗の分類を確認 |
-| `demux` | demux配下の操作・取消し結果と障害、診断識別子、破棄数 |
-| `packet_pipeline` | パケット・セクション・PESの破棄、キューやAV配送の失敗。分離器ID・世代・型付き理由と、保持上限による古い診断の破棄数 |
-
-再選局によって現在の世代が進んだ場合も、保持されている過去の世代の記録を取得する。標準エラー出力の転送設定はこの取得経路の前提ではない。取得は各所有者から順に行うため、全項目が同一時刻の状態であるとは扱わない。
-
-機器障害、受信読み取り障害、FMQ配送障害、コールバック障害の発生後にこのコマンドで記録が取得できることを実機確認する。一部の読取りに失敗した場合も取得できた記録と取得エラーを出力し、診断取得自体はエラーになる。取得エラーを空の診断と判定しない。Soongの`maleicacid_tuner_hal2_aidl_service_test`にはBinderの取得入口、FMQとコールバックの既存記録の取得、サービス状態ロックの汚染時に取得できる代替記録、出力失敗の試験を含む。ホストCIの成功だけでAndroid上のBinder接続・実機取得を確認済みとは扱わない。
+機器障害、受信読み取り障害、FMQ配送障害、コールバック障害等の正本設計が要求するケースについて、このコマンドで対応するtyped診断または取得失敗が観測できることを実機確認する。Soongの`maleicacid_tuner_hal2_aidl_service_test`はBinder取得入口と診断snapshot接続を検査するが、ホストCIの成功だけでAndroid上のBinder接続・実機取得を確認済みとは扱わない。

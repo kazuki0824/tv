@@ -54,60 +54,19 @@ dbg!()
 
 ### Result と エラー型
 
-各 Rust crate の 公開実行時APIは `Result<T, E>` を返す。エラー型は、少なくとも次を区別できること。
+各 Rust crate の公開実行時APIは、呼出元が失敗種別を文字列解析せず扱えるtyped resultを返す。必要な失敗分類と公開APIへの写像は各モジュールの`DESIGN_JA.md`を正とし、本書では列挙・再定義しない。
 
-```text
-- クライアントエラー
-- ライフサイクルエラー
-- 利用不可
-- I/O エラー
-- 内部エラー
-- 汚染済みロック
-```
-
-文字列だけに依存して上位層が分類する設計は禁止する。上位層で Binder状態、コールバック状態、診断情報へ写像できる enum または構造体を使う。
-
-例:
-
-```rust
-pub enum HalError {
-    InvalidArgument(String),
-    InvalidState(String),
-    Unavailable(String),
-    NoMemory(String),
-    Io(std::io::Error),
-    PoisonedLock(&'static str),
-    Internal(String),
-}
-```
+文字列だけに依存して上位層が分類する設計は禁止する。上位層が正本契約に従って公開結果、callback結果、診断へ写像できるenumまたは構造体を使う。
 
 ### Option扱い
 
-`Option::unwrap()` は禁止する。`None` の意味を設計上明確にし、適切なエラーへ変換する。
-
-```rust
-let value = option.ok_or_else(|| HalError::InvalidState("必要な状態が未設定です".into()))?;
-```
-
-| `None` の意味 | 返すエラー例 |
-|---|---|
-| クライアントが必須値を渡していない | `InvalidArgument` |
-| ライフサイクル上まだ設定されていない | `InvalidState` |
-| 任意 capability が存在しない | `Unavailable` |
-| 内部 registry 破損 | `Internal` |
+`Option::unwrap()` は禁止する。`None` の意味は所有モジュールの設計契約で確定し、同契約が指定するtyped failureへ変換する。共通規約側で`None`の意味から公開エラー種別を決めない。
 
 ### mutex汚染復旧
 
-mutex汚染復旧は、通常復旧ではなく各モジュールの異常時処理へ写像する。`PoisonError::into_inner()` で通常復旧して処理継続してはならない。
+mutex汚染は通常成功として読み替えず、各モジュールのtyped failure / diagnostic入口へ接続する。`PoisonError::into_inner()` で通常復旧して処理継続してはならない。
 
-汚染済みロックを検出した場合は、次を行う。
-
-```text
-- ロック名をログまたは診断情報に出す
-- 汚染回数を増やす
-- 対象モジュールの設計文書で定義された異常時状態へ遷移させる
-- 後続呼び出しのエラー種別は対象モジュールの設計文書を正とする
-```
+ロック識別、診断counter、状態遷移、後続呼出しの結果など、汚染検出後の論理semanticsは対象モジュールの`DESIGN_JA.md`を正とする。本書は汚染を無視・文字列化・通常復旧しないという実装規約だけを所有する。
 
 共通補助関数を使うこと。
 

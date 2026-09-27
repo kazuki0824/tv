@@ -93,7 +93,8 @@ class TunerController(
         val subtitle: AribElementaryStream? = null,
         val subtitleLanguageId: Int? = null,
         val superimpose: AribElementaryStream? = null,
-        val audioComponentType: Int? = null,
+        val audioChannelConfiguration: String? = null,
+        val audioDualMono: Boolean? = null,
         val dualMonoPresentation: PlaybackPipeline.DualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN,
     )
 
@@ -1457,7 +1458,8 @@ class TunerController(
             subtitle,
             selectedCaptionTrack?.captionLanguageId,
             superimpose,
-            audio?.componentType,
+            null,
+            null,
             dualMonoPresentation,
         )
     }

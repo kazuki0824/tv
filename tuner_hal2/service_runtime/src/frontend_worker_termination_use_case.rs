@@ -1,4 +1,4 @@
-use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError};
+use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_device::{
     FrontendRuntimeState, FrontendWorkerCancelReason, FrontendWorkerKind,
 };
@@ -38,43 +38,36 @@ impl FrontendWorkerTerminationUseCase {
             "frontend worker panicked or could not be joined",
         )
         .into_failure();
-        let record_result = match terminal_failure.as_ref() {
-            Some((category, error)) => record_frontend_worker_terminal_failure(
+
+        if let Some((category, error)) = terminal_failure.as_ref() {
+            // 診断store失敗はcounterへ残るが、正本state受理やcleanup資源寿命へ昇格させない。
+            let _diagnostic_result = record_frontend_worker_terminal_failure(
                 runtime,
                 frontend_id,
                 worker_kind,
                 owner_generation,
                 *category,
                 error.clone(),
-            ),
-            None => Ok(()),
-        };
-        // 診断記録に失敗しても、現世代の失敗状態への遷移を省略しない。
-        let mut transition_result = Ok(());
+            );
+        }
+
         if matches!(
             snapshot.state,
             FrontendRuntimeState::Tuning { .. } | FrontendRuntimeState::Scanning { .. }
         ) {
             if let Some((_, error)) = terminal_failure {
-                transition_result = match worker_kind {
+                match worker_kind {
                     FrontendWorkerKind::Tune => runtime
                         .frontend_txn()
-                        .mark_frontend_tune_worker_failed(frontend_id, owner_generation, error),
+                        .mark_frontend_tune_worker_failed(frontend_id, owner_generation, error)?,
                     FrontendWorkerKind::Scan => runtime
                         .frontend_txn()
-                        .mark_frontend_scan_session_backend_failed(frontend_id, owner_generation),
-                };
+                        .mark_frontend_scan_session_backend_failed(frontend_id, owner_generation)?,
+                }
             }
         }
-        match (transition_result, record_result) {
-            (Ok(()), Ok(())) => Ok(FrontendWorkerTerminalEventAcceptance::Accepted),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
-                "frontendワーカー終端遷移と診断がともに失敗しました",
-                primary,
-                cleanup,
-            )),
-        }
+
+        Ok(FrontendWorkerTerminalEventAcceptance::Accepted)
     }
 
     pub fn cleanup_after_close_begin(

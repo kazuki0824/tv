@@ -120,7 +120,7 @@ class PlaybackPtsAndBudgetContractTest {
                 null,
                 null,
                 codec = "MPEG-4-ALS",
-                codecKind = "AUDIO",
+                codecKind = com.maleicacid.tvinput.aribsi.ElementaryStreamKind.AUDIO,
             )
         check(TunerSelectionPolicy.selectAudio(listOf(stream)) == null)
         check(TunerSelectionPolicy.selectAudio(listOf(stream.copy(codec = "AAC-LC"))) != null)

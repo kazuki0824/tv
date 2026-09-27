@@ -2558,16 +2558,6 @@ fn frontend_lock_terminal_outcome(
     }
 }
 
-fn start_streaming_for_initial_lock(
-    outcome: FrontendLockWaitOutcome,
-    start_streaming: impl FnOnce() -> Result<(), HalError>,
-) -> Result<FrontendLockWaitOutcome, HalError> {
-    if outcome == FrontendLockWaitOutcome::Locked {
-        start_streaming()?;
-    }
-    Ok(outcome)
-}
-
 fn live_reader_descriptor_with_bound_demux_snapshot(
     runtime: &SharedRuntime,
     frontend_id: i32,
@@ -2688,7 +2678,9 @@ fn start_px4_live_pump_for_current_consumer(
         ));
     }
 
-    finish_started_px4_live_pump(ctx, prepared, start_guard, live_pump)
+    let outcome = finish_started_px4_live_pump(ctx, prepared, start_guard, live_pump)?;
+    reconcile_px4_live_pump_consumer(runtime, ctx, session, backend, frontend_id, live_pump)?;
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -2781,6 +2773,50 @@ fn finish_started_px4_live_pump(
     Ok(Some(FrontendLockWaitOutcome::Locked))
 }
 
+fn reconcile_px4_live_pump_consumer(
+    runtime: &SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    session: &FrontendBackendSession,
+    backend: FrontendBackendKind,
+    frontend_id: i32,
+    live_pump: &mut Option<FrontendLivePumpOwner>,
+) -> Result<(), HalError> {
+    if backend != FrontendBackendKind::Px4CharDevice || live_pump.is_none() {
+        return Ok(());
+    }
+    let has_consumer = {
+        let guard = lock_runtime(
+            runtime,
+            "live pump consumer再検証中にservice_runtimeのロックが汚染されました",
+        )?;
+        !current_bound_demux_generation_snapshot(&guard, frontend_id)?.is_empty()
+    };
+    if has_consumer {
+        return Ok(());
+    }
+
+    let Some(owner) = live_pump.take() else {
+        return Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "consumer再検証時にlive pump所有が消失しました",
+        ));
+    };
+    let report = owner.join_after_stop()?;
+    {
+        let mut guard = lock_runtime(
+            runtime,
+            "consumer消失後のlive pump停止結果記録中にservice_runtimeのロックが汚染されました",
+        )?;
+        guard.frontend_txn().record_live_pump_report(
+            frontend_id,
+            ctx.generation(),
+            report,
+            ctx.cancel_reason()?,
+        )?;
+    }
+    session.stop()
+}
+
 fn wait_for_frontend_qualified_lock(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -2844,61 +2880,6 @@ fn record_frontend_tune_no_signal(
 #[cfg(test)]
 mod frontend_readback_tests {
     use super::*;
-
-    #[test]
-    fn pending_deadline_reaches_no_signal_without_starting_streaming() {
-        let outcome =
-            frontend_lock_terminal_outcome(FrontendLockQualification::Unlocked, true).unwrap();
-        let mut starts = 0;
-        let outcome = start_streaming_for_initial_lock(outcome, || {
-            starts += 1;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(outcome, FrontendLockWaitOutcome::NoSignal);
-        assert_eq!(starts, 0);
-    }
-
-    #[test]
-    fn pending_lock_starts_streaming_once() {
-        let outcome =
-            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
-        let mut starts = 0;
-        let outcome = start_streaming_for_initial_lock(outcome, || {
-            starts += 1;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(outcome, FrontendLockWaitOutcome::Locked);
-        assert_eq!(starts, 1);
-    }
-
-    #[test]
-    fn streaming_start_failure_is_observed_only_after_lock() {
-        let no_signal =
-            frontend_lock_terminal_outcome(FrontendLockQualification::Unlocked, true).unwrap();
-        let mut starts = 0;
-        let outcome = start_streaming_for_initial_lock(no_signal, || {
-            starts += 1;
-            Err(HalError::Unsupported("capture start failure"))
-        })
-        .unwrap();
-        assert_eq!(outcome, FrontendLockWaitOutcome::NoSignal);
-        assert_eq!(starts, 0);
-
-        let locked =
-            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
-        let error = start_streaming_for_initial_lock(locked, || {
-            starts += 1;
-            Err(HalError::Unsupported("capture start failure"))
-        })
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            HalError::Unsupported("capture start failure")
-        ));
-        assert_eq!(starts, 1);
-    }
 
     #[test]
     fn unlocked_frontend_becomes_no_signal_only_at_terminal_deadline() {
@@ -3289,6 +3270,14 @@ fn run_frontend_backend_tune_session_worker(
                 }
                 FrontendLockTransition::None => {}
             }
+            reconcile_px4_live_pump_consumer(
+                &runtime,
+                ctx,
+                &session,
+                backend,
+                frontend_id,
+                &mut live_pump,
+            )?;
             if live_pump.is_none() {
                 if let Some(late_bind_outcome) = start_px4_live_pump_for_current_consumer(
                     &runtime,
@@ -3410,20 +3399,16 @@ fn accept_frontend_worker_terminal_outcomes(
             ..
         } = outcome
         {
-            failures.push_result(
-                lock_runtime(
-                    runtime,
-                    "service runtime lock poisoned while recording delayed backend failure",
-                )
-                .and_then(|mut guard| {
-                    guard
-                        .frontend_txn()
-                        .record_completed_frontend_backend_submit_failure(
-                            *frontend_id,
-                            failure.clone(),
-                        )
-                }),
-            );
+            // 遅延backend failureの保存は診断であり、失敗してもcloseの資源寿命を変更しない。
+            let _diagnostic_result = lock_runtime(
+                runtime,
+                "service runtime lock poisoned while recording delayed backend failure",
+            )
+            .and_then(|mut guard| {
+                guard
+                    .frontend_txn()
+                    .record_completed_frontend_backend_submit_failure(*frontend_id, failure.clone())
+            });
         }
         if let Some(event) = FrontendWorkerTerminalEvent::from_stop_outcome(outcome) {
             failures.push_result(
@@ -4309,9 +4294,7 @@ fn run_frontend_backend_scan_session_worker(
                 ctx.frontend_id(),
                 ctx.generation(),
             )?;
-            match start_streaming_for_initial_lock(lock_outcome, || {
-                session.start_streaming_after_lock()
-            })? {
+            match lock_outcome {
                 FrontendLockWaitOutcome::Locked => {
                     signal_state = FrontendSignalState::Locked;
                     locked_stream_ids = observe_and_record_frontend_stream_id_list_for_scan(
@@ -5506,6 +5489,8 @@ fn close_frontend_workers_and_live_data_with_sink(
 
             let terminal_acceptance_result =
                 accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
+            let close_result =
+                close_frontend_live_data_and_unbind_after_worker_completion(&runtime, frontend_id);
             let mut terminal_result = Ok(());
             for (_, outcome) in outcomes {
                 if let Some(error) = frontend_worker_stop_failure(&outcome) {
@@ -5523,8 +5508,6 @@ fn close_frontend_workers_and_live_data_with_sink(
                 )),
             };
 
-            let close_result =
-                close_frontend_live_data_and_unbind_after_worker_completion(&runtime, frontend_id);
             report.push(
                 FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
                     target,
@@ -5776,15 +5759,12 @@ mod scan_contract_tests {
             .unwrap();
 
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let close_while_activate_pending = runtime
+        assert!(runtime
             .lock()
             .unwrap()
             .unregister_demux_runtime(demux_id)
-            .unwrap_err();
-        assert!(matches!(
-            close_while_activate_pending,
-            HalError::Busy { .. }
-        ));
+            .unwrap()
+            .is_some());
 
         resume_tx.send(()).unwrap();
         assert_eq!(
@@ -5812,13 +5792,13 @@ mod scan_contract_tests {
         assert!(runtime
             .lock()
             .unwrap()
-            .unregister_demux_runtime(demux_id)
-            .unwrap()
-            .is_some());
+            .registry()
+            .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
+            .is_empty());
     }
 
     #[test]
-    fn cancel_after_start_holds_relation_guard_until_prepared_cleanup_finishes() {
+    fn cancel_after_start_allows_relation_change_while_prepared_cleanup_finishes() {
         struct NoopSink;
         impl maleicacid_tuner_hal2_device::FrontendLivePacketSink for NoopSink {
             fn deliver_ts_packet(
@@ -5914,12 +5894,12 @@ mod scan_contract_tests {
             ),
             FrontendWorkerStopOutcome::CancelRequested { .. }
         ));
-        let close_while_cleanup_pending = runtime
+        assert!(runtime
             .lock()
             .unwrap()
             .unregister_demux_runtime(demux_id)
-            .unwrap_err();
-        assert!(matches!(close_while_cleanup_pending, HalError::Busy { .. }));
+            .unwrap()
+            .is_some());
 
         resume_tx.send(()).unwrap();
         for _ in 0..100 {
@@ -5933,9 +5913,9 @@ mod scan_contract_tests {
                 assert!(runtime
                     .lock()
                     .unwrap()
-                    .unregister_demux_runtime(demux_id)
-                    .unwrap()
-                    .is_some());
+                    .registry()
+                    .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
+                    .is_empty());
                 return;
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -5944,7 +5924,7 @@ mod scan_contract_tests {
     }
 
     #[test]
-    fn start_failure_holds_relation_guard_until_prepared_cleanup_finishes() {
+    fn start_failure_allows_relation_change_while_prepared_cleanup_finishes() {
         struct NoopSink;
         impl maleicacid_tuner_hal2_device::FrontendLivePacketSink for NoopSink {
             fn deliver_ts_packet(
@@ -6037,12 +6017,12 @@ mod scan_contract_tests {
             .unwrap();
 
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let close_while_cleanup_pending = runtime
+        assert!(runtime
             .lock()
             .unwrap()
             .unregister_demux_runtime(demux_id)
-            .unwrap_err();
-        assert!(matches!(close_while_cleanup_pending, HalError::Busy { .. }));
+            .unwrap()
+            .is_some());
 
         resume_tx.send(()).unwrap();
         assert!(matches!(
@@ -6057,9 +6037,9 @@ mod scan_contract_tests {
                 assert!(runtime
                     .lock()
                     .unwrap()
-                    .unregister_demux_runtime(demux_id)
-                    .unwrap()
-                    .is_some());
+                    .registry()
+                    .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
+                    .is_empty());
                 return;
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -6068,7 +6048,7 @@ mod scan_contract_tests {
     }
 
     #[test]
-    fn frontend_demux_start_guard_blocks_relation_change_until_release() {
+    fn frontend_demux_start_guard_does_not_reject_relation_change() {
         let frontend_id = 1_000_000;
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         let demux_id = {
@@ -6112,20 +6092,13 @@ mod scan_contract_tests {
             .unwrap()
             .unwrap();
 
-        let close_result = runtime
-            .lock()
-            .unwrap()
-            .unregister_demux_runtime(demux_id)
-            .unwrap_err();
-        assert!(matches!(close_result, HalError::Busy { .. }));
-
-        start_guard.release();
         assert!(runtime
             .lock()
             .unwrap()
             .unregister_demux_runtime(demux_id)
             .unwrap()
             .is_some());
+        start_guard.release();
     }
 
     #[test]

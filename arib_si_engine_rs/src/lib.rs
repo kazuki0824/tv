@@ -562,11 +562,12 @@ fn series_value(series: &crate::descriptors::SeriesDescriptor) -> serde_json::Va
     })
 }
 
+fn series_candidates_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::Value::Array(event.descriptors.series.iter().map(series_value).collect())
+}
+
 fn series_candidates_canonical_json(event: &EitEvent) -> Option<String> {
-    (event.descriptors.series.len() > 1).then(|| {
-        serde_json::Value::Array(event.descriptors.series.iter().map(series_value).collect())
-            .to_string()
-    })
+    (event.descriptors.series.len() > 1).then(|| series_candidates_value(event).to_string())
 }
 
 fn event_groups_value(event: &EitEvent) -> serde_json::Value {
@@ -776,11 +777,12 @@ fn video_component_semantics(
     (resolution, scan, aspect)
 }
 
+fn audio_mode(stream_content: u8, component_type: u8) -> Option<u8> {
+    (stream_content == 0x02).then_some(component_type & 0x1f)
+}
+
 fn audio_channel_configuration(stream_content: u8, component_type: u8) -> Option<&'static str> {
-    if stream_content != 0x02 {
-        return None;
-    }
-    match component_type {
+    match audio_mode(stream_content, component_type)? {
         0x01 => Some("1/0"),
         0x02 => Some("1/0+1/0"),
         0x03 => Some("2/0"),
@@ -790,6 +792,18 @@ fn audio_channel_configuration(stream_content: u8, component_type: u8) -> Option
         0x07 => Some("3/1"),
         0x08 => Some("3/2"),
         0x09 => Some("3/2+LFE"),
+        _ => None,
+    }
+}
+
+fn audio_channel_count(stream_content: u8, component_type: u8) -> Option<u8> {
+    match audio_mode(stream_content, component_type)? {
+        0x01 => Some(1),
+        0x02 | 0x03 => Some(2),
+        0x04 | 0x05 => Some(3),
+        0x06 | 0x07 => Some(4),
+        0x08 => Some(5),
+        0x09 => Some(6),
         _ => None,
     }
 }
@@ -804,6 +818,27 @@ fn audio_sampling_info(sampling_rate: u8) -> Option<&'static str> {
         0x07 => Some("48kHz"),
         _ => None,
     }
+}
+
+fn audio_sample_rate_hz(sampling_rate: u8) -> Option<u32> {
+    match sampling_rate {
+        0x01 => Some(16_000),
+        0x02 => Some(22_050),
+        0x03 => Some(24_000),
+        0x05 => Some(32_000),
+        0x06 => Some(44_100),
+        0x07 => Some(48_000),
+        _ => None,
+    }
+}
+
+fn audio_accessibility(component_type: u8) -> (bool, bool) {
+    let kind = (component_type >> 5) & 0x03;
+    (kind == 0x01, kind == 0x02)
+}
+
+fn audio_dual_mono(stream_content: u8, component_type: u8) -> bool {
+    audio_mode(stream_content, component_type) == Some(0x02)
 }
 
 fn event_components_value(event: &EitEvent) -> serde_json::Value {
@@ -834,6 +869,8 @@ fn event_components_value(event: &EitEvent) -> serde_json::Value {
         .audio_components
         .iter()
         .map(|component| {
+            let (audio_description, hard_of_hearing) =
+                audio_accessibility(component.component_type);
             serde_json::json!({
                 "streamType": component.stream_type,
                 "streamContent": component.stream_content,
@@ -845,9 +882,14 @@ fn event_components_value(event: &EitEvent) -> serde_json::Value {
                     component.stream_content,
                     component.component_type,
                 ),
+                "channelCount": audio_channel_count(component.stream_content, component.component_type),
                 "simulcastGroupTag": component.simulcast_group_tag,
                 "samplingRate": component.sampling_rate,
                 "samplingInfo": audio_sampling_info(component.sampling_rate),
+                "sampleRateHz": audio_sample_rate_hz(component.sampling_rate),
+                "audioDescription": audio_description,
+                "hardOfHearing": hard_of_hearing,
+                "dualMono": audio_dual_mono(component.stream_content, component.component_type),
                 "text": component.text,
                 "sourceDescriptor": "audio_component_descriptor",
                 "main": component.main_component_flag,
@@ -957,6 +999,7 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
                 "parseStatus": "OK",
             },
             "series": event_primary_series_value(event),
+            "seriesCandidates": series_candidates_value(event),
             "seriesCandidatesCanonicalJson": series_candidates_canonical_json(event),
             "components": event_components_value(event),
             "diagnostics": {
@@ -983,6 +1026,7 @@ struct SystemManagementFactsDto {
     system_management_id: Option<u16>,
     broadcasting_flag: Option<u8>,
     broadcasting_identifier: Option<u8>,
+    broadcast_system: Option<&'static str>,
     additional_broadcasting_identification: Option<u8>,
     additional_identification_info_hex: String,
     semantic_state: &'static str,
@@ -1055,6 +1099,10 @@ impl From<&ServiceSemanticFacts> for ServiceSemanticFactsDto {
                 system_management_id: facts.system_management.system_management_id,
                 broadcasting_flag: facts.system_management.broadcasting_flag,
                 broadcasting_identifier: facts.system_management.broadcasting_identifier,
+                broadcast_system: facts
+                    .system_management
+                    .broadcast_system
+                    .map(|system| system.as_str()),
                 additional_broadcasting_identification: facts
                     .system_management
                     .additional_broadcasting_identification,
@@ -1150,7 +1198,7 @@ fn bulk_snapshot_json(state: &mut ParserState) -> Result<String, serde_json::Err
     // 非排出型一括snapshotはEPG更新区間を返さない。これにより本番呼び出し側が
     // 同じ廃止削除区間を誤って再公開することを防ぐ。
     serde_json::to_string(&BulkSnapshot {
-        schema_version: 1,
+        schema_version: 2,
         ingest_sequence,
         discovery_stage: discovery_stage_to_jint(discovery_stage),
         broadcast_clock: state
@@ -1881,11 +1929,13 @@ mod tests {
         ];
         event.descriptors = crate::descriptors::parse_event_descriptors(&bytes);
         assert!(event_primary_series_value(&event).is_null());
-        let candidates: serde_json::Value =
-            serde_json::from_str(&series_candidates_canonical_json(&event).unwrap()).unwrap();
+        let candidates = series_candidates_value(&event);
         assert_eq!(candidates.as_array().unwrap().len(), 2);
         assert_eq!(candidates[0]["seriesId"], 1);
         assert_eq!(candidates[1]["seriesId"], 2);
+        let canonical: serde_json::Value =
+            serde_json::from_str(&series_candidates_canonical_json(&event).unwrap()).unwrap();
+        assert_eq!(canonical, candidates);
         event.descriptors.series.pop();
         assert_eq!(event_primary_series_value(&event)["seriesId"], 1);
         assert!(series_candidates_canonical_json(&event).is_none());
@@ -1939,7 +1989,14 @@ mod tests {
             "component_descriptor"
         );
         assert_eq!(components["audio"][0]["channelConfiguration"], "1/0+1/0");
+        assert_eq!(components["audio"][0]["channelCount"], 2);
         assert_eq!(components["audio"][0]["samplingInfo"], "48kHz");
+        assert_eq!(components["audio"][0]["sampleRateHz"], 48_000);
+        assert_eq!(components["audio"][0]["audioDescription"], false);
+        assert_eq!(components["audio"][0]["hardOfHearing"], false);
+        assert_eq!(components["audio"][0]["dualMono"], true);
+        assert_eq!(audio_accessibility(0x22), (true, false));
+        assert_eq!(audio_accessibility(0x42), (false, true));
         assert_eq!(
             components["audio"][0]["sourceDescriptor"],
             "audio_component_descriptor"

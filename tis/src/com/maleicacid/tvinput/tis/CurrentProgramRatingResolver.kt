@@ -6,6 +6,7 @@ import android.media.tv.TvContract
 import android.net.Uri
 import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
+import com.maleicacid.tvinput.aribsi.EitTimingState
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.ServiceKey
 
@@ -168,7 +169,7 @@ class CurrentProgramRatingResolver internal constructor(
         // 診断専用eventや複数presentから現在番組を推測しないが、欠測にも戻さない。
         return EitAuthority.PresentObserved(
             events.singleOrNull()?.takeIf {
-                !excluded && (it.timingState == "DEFINED" || it.timingState == "UNDEFINED_TIME")
+                !excluded && (it.timingState == EitTimingState.DEFINED || it.timingState == EitTimingState.UNDEFINED_TIME)
             },
         )
     }
@@ -358,7 +359,7 @@ class CurrentProgramRatingResolver internal constructor(
         val selected =
             latestEvents
                 .mapNotNull { event ->
-                    if (event.timingState != "DEFINED") return@mapNotNull null
+                    if (event.timingState != EitTimingState.DEFINED) return@mapNotNull null
                     val end =
                         runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
                             ?: return@mapNotNull null
@@ -379,7 +380,7 @@ class CurrentProgramRatingResolver internal constructor(
         ratingProfile: AribRatingMapper.BroadcastProfile,
     ): CurrentProgramRatingSet {
         val end =
-            if (event.timingState == "DEFINED" && event.durationMillis > 0L) {
+            if (event.timingState == EitTimingState.DEFINED && event.durationMillis > 0L) {
                 runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
             } else {
                 null

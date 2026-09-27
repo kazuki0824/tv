@@ -1,0 +1,2387 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maleicacid.example/schema/si_snapshot_v2.schema.json",
+  "title": "ARIB SI bulk snapshot v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "collectionGeneration",
+    "ingestSequence",
+    "discoveryStage",
+    "broadcastClock",
+    "tableRequirements",
+    "catCaMetadata",
+    "malformedCaDescriptorDiagnostics",
+    "malformedCaDescriptorCounts",
+    "transportSemanticFacts",
+    "events",
+    "eitInstances",
+    "serviceSemanticFacts",
+    "parserDiagnostics"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "collectionGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ingestSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "discoveryStage": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2
+    },
+    "broadcastClock": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/broadcastClock"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tableRequirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/tableRequirement"
+      }
+    },
+    "catCaMetadata": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/caMetadata"
+      }
+    },
+    "malformedCaDescriptorDiagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/malformedCaDescriptorDiagnostic"
+      }
+    },
+    "malformedCaDescriptorCounts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/malformedCaDescriptorCount"
+      }
+    },
+    "transportSemanticFacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/transportSemanticFacts"
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    },
+    "eitInstances": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/eitInstance"
+      }
+    },
+    "serviceSemanticFacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/serviceSemanticFacts"
+      }
+    },
+    "parserDiagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/parserDiagnostic"
+      }
+    }
+  },
+  "$defs": {
+    "serviceKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId"
+      ],
+      "properties": {
+        "originalNetworkId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "transportStreamId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "broadcastClock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tableId",
+        "mjd",
+        "millisOfDay"
+      ],
+      "properties": {
+        "tableId": {
+          "type": "integer",
+          "enum": [
+            112,
+            115
+          ]
+        },
+        "mjd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "millisOfDay": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86399999
+        }
+      }
+    },
+    "tableRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component",
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId",
+        "required",
+        "complete"
+      ],
+      "properties": {
+        "component": {
+          "type": "string",
+          "enum": [
+            "BAT",
+            "NIT",
+            "NIT-other",
+            "PAT",
+            "PMT",
+            "SDT",
+            "SDT-other"
+          ]
+        },
+        "originalNetworkId": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transportStreamId": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "serviceId": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "caMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "serviceKey",
+        "caSystemId",
+        "ecmPid",
+        "emmPid",
+        "elementaryPid",
+        "privateDataHex",
+        "source"
+      ],
+      "properties": {
+        "serviceKey": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/serviceKey"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "caSystemId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "ecmPid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8191
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "emmPid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8191
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "elementaryPid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8191
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "privateDataHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "CAT",
+            "PROGRAM",
+            "ES"
+          ]
+        }
+      }
+    },
+    "malformedCaDescriptorDiagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "tableId",
+        "tableIdExtension",
+        "serviceId",
+        "elementaryPid",
+        "scope",
+        "offset",
+        "declaredLength",
+        "actualRemainingLength",
+        "reason",
+        "rawPrefixHex"
+      ],
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8191
+        },
+        "tableId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "tableIdExtension": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "serviceId": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "elementaryPid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8191
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "declaredLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "actualRemainingLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string"
+        },
+        "rawPrefixHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        }
+      }
+    },
+    "malformedCaDescriptorCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "serviceId",
+        "count"
+      ],
+      "properties": {
+        "serviceId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "transportSemanticFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "originalNetworkId",
+        "transportStreamId",
+        "networkName",
+        "transportStreamName",
+        "remoteControlKeyId",
+        "sdtActual"
+      ],
+      "properties": {
+        "originalNetworkId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "transportStreamId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "networkName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transportStreamName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remoteControlKeyId": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sdtActual": {
+          "type": "boolean"
+        }
+      }
+    },
+    "avc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profileIdc",
+        "constraintFlags",
+        "levelIdc"
+      ],
+      "properties": {
+        "profileIdc": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "constraintFlags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "levelIdc": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
+      }
+    },
+    "audioHeader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "audioObjectType",
+        "samplingFrequency",
+        "channelConfiguration",
+        "extensionSamplingFrequency",
+        "coreAudioObjectType",
+        "channelCount"
+      ],
+      "properties": {
+        "audioObjectType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "samplingFrequency": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "channelConfiguration": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "extensionSamplingFrequency": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coreAudioObjectType": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channelCount": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "audioExtension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profileLevelIndications",
+        "audioSpecificConfigHex",
+        "header"
+      ],
+      "properties": {
+        "profileLevelIndications": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        },
+        "audioSpecificConfigHex": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{2})*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "header": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/audioHeader"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "codecFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "avc",
+        "mpeg4AudioProfileAndLevel",
+        "audioExtension",
+        "malformed",
+        "rawDescriptorsHex"
+      ],
+      "properties": {
+        "avc": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/avc"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mpeg4AudioProfileAndLevel": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "audioExtension": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/audioExtension"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "malformed": {
+          "type": "boolean"
+        },
+        "rawDescriptorsHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        }
+      }
+    },
+    "elementaryStream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "codecFacts",
+        "codecProfileLevel",
+        "codecSignalingResolved",
+        "codec",
+        "codecKind",
+        "elementaryPid",
+        "streamType",
+        "componentTag",
+        "componentType",
+        "streamContent",
+        "languageCodes",
+        "dataComponentId",
+        "captionDmf",
+        "captionTiming",
+        "automaticPresentationOnReception",
+        "isCaption",
+        "isSuperimpose"
+      ],
+      "properties": {
+        "codecFacts": {
+          "$ref": "#/$defs/codecFacts"
+        },
+        "codecProfileLevel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "codecSignalingResolved": {
+          "type": "boolean"
+        },
+        "codec": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "codecKind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "VIDEO",
+            "AUDIO",
+            null
+          ]
+        },
+        "elementaryPid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8191
+        },
+        "streamType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "componentTag": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "componentType": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "streamContent": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 15
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "languageCodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dataComponentId": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "captionDmf": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 15
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "captionTiming": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "automaticPresentationOnReception": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "isCaption": {
+          "type": "boolean"
+        },
+        "isSuperimpose": {
+          "type": "boolean"
+        }
+      }
+    },
+    "serviceCaDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caSystemId",
+        "caPid",
+        "scope",
+        "esPid",
+        "rawDescriptorHex",
+        "privateDataHex"
+      ],
+      "properties": {
+        "caSystemId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "caPid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8191
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "PROGRAM",
+            "ES"
+          ]
+        },
+        "esPid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8191
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rawDescriptorHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        },
+        "privateDataHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        }
+      }
+    },
+    "smd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "descriptorPresent",
+        "syntaxValid",
+        "systemManagementId",
+        "broadcastingFlag",
+        "broadcastingIdentifier",
+        "broadcastSystem",
+        "additionalBroadcastingIdentification",
+        "additionalIdentificationInfoHex",
+        "semanticState",
+        "diagnostic"
+      ],
+      "properties": {
+        "descriptorPresent": {
+          "type": "boolean"
+        },
+        "syntaxValid": {
+          "type": "boolean"
+        },
+        "systemManagementId": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "broadcastingFlag": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "broadcastingIdentifier": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "broadcastSystem": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "ISDB_T",
+            "ISDB_S_BS",
+            "ISDB_S_110CS",
+            null
+          ]
+        },
+        "additionalBroadcastingIdentification": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "additionalIdentificationInfoHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        },
+        "semanticState": {
+          "type": "string",
+          "enum": [
+            "SUPPORTED_BROADCAST",
+            "NON_BROADCAST",
+            "UNDEFINED_BROADCAST_CLASS",
+            "UNSUPPORTED_BROADCAST_SYSTEM",
+            "UNDETERMINED_SMD"
+          ]
+        },
+        "diagnostic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "serviceSemanticFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId",
+        "serviceType",
+        "pmtPidResolved",
+        "pmtParsed",
+        "pcrPidResolved",
+        "elementaryStreams",
+        "requiresCas",
+        "casFactsCanonicalJson",
+        "caDescriptorsResolved",
+        "freeCaMode",
+        "smd",
+        "missingComponents",
+        "semanticDiagnostics",
+        "name",
+        "providerName",
+        "pmtPid",
+        "pcrPid",
+        "serviceScopedCaDescriptors"
+      ],
+      "properties": {
+        "originalNetworkId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "transportStreamId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceType": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pmtPidResolved": {
+          "type": "boolean"
+        },
+        "pmtParsed": {
+          "type": "boolean"
+        },
+        "pcrPidResolved": {
+          "type": "boolean"
+        },
+        "elementaryStreams": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/elementaryStream"
+          }
+        },
+        "requiresCas": {
+          "type": "boolean"
+        },
+        "casFactsCanonicalJson": {
+          "type": "string"
+        },
+        "caDescriptorsResolved": {
+          "type": "boolean"
+        },
+        "freeCaMode": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "smd": {
+          "$ref": "#/$defs/smd"
+        },
+        "missingComponents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "semanticDiagnostics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "providerName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pmtPid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8191
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pcrPid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8191
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "serviceScopedCaDescriptors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/serviceCaDescriptor"
+          }
+        }
+      }
+    },
+    "eitInstance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tableId",
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId",
+        "version",
+        "currentNextIndicator",
+        "lastSectionNumber",
+        "receivedSections",
+        "missingSections",
+        "safeSections",
+        "complete",
+        "inconsistent"
+      ],
+      "properties": {
+        "tableId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "originalNetworkId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "transportStreamId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31
+        },
+        "currentNextIndicator": {
+          "type": "boolean"
+        },
+        "lastSectionNumber": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "receivedSections": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        },
+        "missingSections": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        },
+        "safeSections": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "inconsistent": {
+          "type": "boolean"
+        }
+      }
+    },
+    "parserDiagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "severity"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        }
+      }
+    },
+    "programKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId",
+        "eventId"
+      ],
+      "properties": {
+        "kind": {
+          "const": "arib-event-v1"
+        },
+        "originalNetworkId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "transportStreamId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "eventId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "rawStartTimeHex",
+        "rawDurationHex",
+        "startUtcMillis",
+        "endUtcMillis",
+        "durationMillis"
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "DEFINED",
+            "UNDEFINED_TIME",
+            "BOTH_TIMING_UNDEFINED",
+            "MALFORMED_TIMING"
+          ]
+        },
+        "rawStartTimeHex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{10}$"
+        },
+        "rawDurationHex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{6}$"
+        },
+        "startUtcMillis": {
+          "type": "integer"
+        },
+        "endUtcMillis": {
+          "type": "integer"
+        },
+        "durationMillis": {
+          "type": "integer"
+        }
+      }
+    },
+    "programSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "tableId",
+        "version",
+        "sectionNumber",
+        "lastSectionNumber"
+      ],
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8191
+        },
+        "tableId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31
+        },
+        "sectionNumber": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "lastSectionNumber": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
+      }
+    },
+    "shortEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "languageCode",
+        "title",
+        "text",
+        "parseStatus"
+      ],
+      "properties": {
+        "languageCode": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{3}$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      }
+    },
+    "extendedText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "languageCode",
+        "text",
+        "parseStatus"
+      ],
+      "properties": {
+        "languageCode": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{3}$"
+        },
+        "text": {
+          "type": "string"
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      }
+    },
+    "extendedItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "languageCode",
+        "description",
+        "text"
+      ],
+      "properties": {
+        "languageCode": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{3}$"
+        },
+        "description": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "genre": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level1",
+        "level2",
+        "userNibble",
+        "aribName",
+        "parseStatus"
+      ],
+      "properties": {
+        "level1": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "level2": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "userNibble": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "aribName": {
+          "type": "string"
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      }
+    },
+    "eventGroupRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "serviceId",
+        "eventId"
+      ],
+      "properties": {
+        "serviceId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "eventId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "otherEventGroupRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId",
+        "eventId"
+      ],
+      "properties": {
+        "originalNetworkId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "transportStreamId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "eventId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "eventGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "groupType",
+        "events",
+        "otherNetworkEvents",
+        "privateDataHex",
+        "parseStatus"
+      ],
+      "properties": {
+        "groupType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/eventGroupRef"
+          }
+        },
+        "otherNetworkEvents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/otherEventGroupRef"
+          }
+        },
+        "privateDataHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "groupType": {
+                "enum": [
+                  4,
+                  5
+                ]
+              }
+            },
+            "required": [
+              "groupType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "privateDataHex": {
+                "const": ""
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "otherNetworkEvents": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "componentGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "componentGroupId",
+        "componentTags"
+      ],
+      "properties": {
+        "componentGroupId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "componentTags": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        }
+      }
+    },
+    "componentGroupDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "componentGroupType",
+        "groups",
+        "parseStatus"
+      ],
+      "properties": {
+        "componentGroupType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/componentGroup"
+          }
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      }
+    },
+    "linkage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transportStreamId",
+        "originalNetworkId",
+        "serviceId",
+        "linkageType",
+        "privateDataPrefixHex",
+        "parseStatus"
+      ],
+      "properties": {
+        "transportStreamId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "originalNetworkId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "linkageType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "privateDataPrefixHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      }
+    },
+    "freeCaMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw",
+        "scrambled",
+        "parseStatus"
+      ],
+      "properties": {
+        "raw": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "scrambled": {
+          "type": "boolean"
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      }
+    },
+    "series": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seriesId",
+        "repeatLabel",
+        "programPattern",
+        "expireDateValid",
+        "expireDate",
+        "episodeNumber",
+        "lastEpisodeNumber",
+        "name",
+        "parseStatus"
+      ],
+      "properties": {
+        "seriesId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "repeatLabel": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "programPattern": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "expireDateValid": {
+          "type": "boolean"
+        },
+        "expireDate": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "episodeNumber": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "lastEpisodeNumber": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "expireDateValid": {
+                "const": true
+              }
+            },
+            "required": [
+              "expireDateValid"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expireDate": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65535
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "expireDate": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "eventVideoComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "streamContent",
+        "componentTag",
+        "componentType",
+        "language",
+        "text",
+        "resolution",
+        "scan",
+        "aspect",
+        "profileLevel",
+        "sourceDescriptor",
+        "parseStatus"
+      ],
+      "properties": {
+        "streamContent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "componentTag": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "componentType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "language": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scan": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aspect": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profileLevel": {
+          "type": "null"
+        },
+        "sourceDescriptor": {
+          "const": "component_descriptor"
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      }
+    },
+    "eventAudioComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "streamContent",
+        "componentTag",
+        "componentType",
+        "streamType",
+        "language",
+        "secondLanguage",
+        "channelConfiguration",
+        "channelCount",
+        "simulcastGroupTag",
+        "samplingRate",
+        "samplingInfo",
+        "sampleRateHz",
+        "audioDescription",
+        "hardOfHearing",
+        "dualMono",
+        "text",
+        "sourceDescriptor",
+        "main",
+        "multiLingual",
+        "qualityIndicator",
+        "parseStatus"
+      ],
+      "properties": {
+        "streamContent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "componentTag": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "componentType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "streamType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "language": {
+          "type": "string"
+        },
+        "secondLanguage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channelConfiguration": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channelCount": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "simulcastGroupTag": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "samplingRate": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "samplingInfo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sampleRateHz": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "audioDescription": {
+          "type": "boolean"
+        },
+        "hardOfHearing": {
+          "type": "boolean"
+        },
+        "dualMono": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        },
+        "sourceDescriptor": {
+          "const": "audio_component_descriptor"
+        },
+        "main": {
+          "type": "boolean"
+        },
+        "multiLingual": {
+          "type": "boolean"
+        },
+        "qualityIndicator": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "video",
+        "audio",
+        "subtitle",
+        "data"
+      ],
+      "properties": {
+        "video": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/eventVideoComponent"
+          }
+        },
+        "audio": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/eventAudioComponent"
+          }
+        },
+        "subtitle": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "data": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    },
+    "truncatedDescriptorLoop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "declaredLength",
+        "rawBytesHex",
+        "parseStatus"
+      ],
+      "properties": {
+        "declaredLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rawBytesHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        },
+        "parseStatus": {
+          "const": "TruncatedDescriptor"
+        }
+      }
+    },
+    "descriptorDiagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "truncatedDescriptorLoop",
+        "summary",
+        "descriptorDiagnostics",
+        "descriptorDiagnosticsCanonicalJson",
+        "descriptorFactsCanonicalJson"
+      ],
+      "properties": {
+        "truncatedDescriptorLoop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/truncatedDescriptorLoop"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "descriptorDiagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "https://maleicacid.local/schema/descriptor_diagnostic_v1.schema.json"
+          }
+        },
+        "descriptorDiagnosticsCanonicalJson": {
+          "type": "string"
+        },
+        "descriptorFactsCanonicalJson": {
+          "type": "string"
+        }
+      }
+    },
+    "parentalRating": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "countryCode",
+        "rawRatingByte",
+        "parseStatus"
+      ],
+      "properties": {
+        "countryCode": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 3
+        },
+        "rawRatingByte": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "parseStatus": {
+          "const": "OK"
+        }
+      }
+    },
+    "eventDescriptors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shortEvents",
+        "extendedTexts",
+        "extendedItems",
+        "component",
+        "audio",
+        "genres",
+        "eventGroups",
+        "componentGroups",
+        "linkage",
+        "freeCaMode",
+        "series",
+        "seriesCandidates",
+        "seriesCandidatesCanonicalJson",
+        "components",
+        "diagnostics",
+        "parentalRatings"
+      ],
+      "properties": {
+        "shortEvents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/shortEvent"
+          }
+        },
+        "extendedTexts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/extendedText"
+          }
+        },
+        "extendedItems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/extendedItem"
+          }
+        },
+        "component": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "text"
+          ],
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        "audio": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "componentText",
+            "language"
+          ],
+          "properties": {
+            "componentText": {
+              "type": "string"
+            },
+            "language": {
+              "type": "string"
+            }
+          }
+        },
+        "genres": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "content",
+            "genreSupplementText"
+          ],
+          "properties": {
+            "content": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/genre"
+              }
+            },
+            "genreSupplementText": {
+              "type": "string"
+            }
+          }
+        },
+        "eventGroups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/eventGroup"
+          }
+        },
+        "componentGroups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/componentGroupDescriptor"
+          }
+        },
+        "linkage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/linkage"
+          }
+        },
+        "freeCaMode": {
+          "$ref": "#/$defs/freeCaMode"
+        },
+        "series": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/series"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seriesCandidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/series"
+          }
+        },
+        "seriesCandidatesCanonicalJson": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "components": {
+          "$ref": "#/$defs/components"
+        },
+        "diagnostics": {
+          "$ref": "#/$defs/descriptorDiagnostics"
+        },
+        "parentalRatings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/parentalRating"
+          }
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "programKey",
+        "eventId",
+        "serviceKey",
+        "stableIdentity",
+        "timing",
+        "title",
+        "description",
+        "extendedDescription",
+        "eventScope",
+        "source",
+        "descriptors"
+      ],
+      "properties": {
+        "programKey": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/programKey"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eventId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceKey": {
+          "$ref": "#/$defs/serviceKey"
+        },
+        "stableIdentity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timing": {
+          "$ref": "#/$defs/timing"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "extendedDescription": {
+          "type": "string"
+        },
+        "eventScope": {
+          "type": "string",
+          "enum": [
+            "present_following_actual",
+            "present_following_other",
+            "schedule_actual",
+            "schedule_other",
+            "unknown"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/programSource"
+        },
+        "descriptors": {
+          "$ref": "#/$defs/eventDescriptors"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "timing": {
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "DEFINED",
+                      "UNDEFINED_TIME"
+                    ]
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              }
+            },
+            "required": [
+              "timing"
+            ]
+          },
+          "then": {
+            "properties": {
+              "programKey": {
+                "$ref": "#/$defs/programKey"
+              },
+              "stableIdentity": {
+                "type": "string"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "programKey": {
+                "type": "null"
+              },
+              "stableIdentity": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

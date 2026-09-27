@@ -8,6 +8,41 @@ import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONArray
 import org.json.JSONObject
 
+private const val SERIES_U16_MAX = 65_535L
+private const val SERIES_REPEAT_LABEL_MAX = 15L
+private const val SERIES_PROGRAM_PATTERN_MAX = 7L
+private const val SERIES_EPISODE_MAX = 4_095L
+private const val WIRE_NIBBLE_MAX = 15L
+private const val COMPONENT_GROUP_TYPE_MAX = 7L
+private const val AUDIO_QUALITY_INDICATOR_MAX = 3L
+private const val AUDIO_SAMPLING_RATE_MAX = 7L
+private const val CAPTION_TIMING_MAX = 3L
+private const val DESCRIPTOR_DECLARED_LENGTH_MAX = 4_095L
+private const val WIRE_U8_MAX = 255L
+private const val WIRE_U16_MAX = 65_535L
+private const val WIRE_PID_MAX = 8_191L
+private const val WIRE_U32_MAX = 4_294_967_295L
+private const val MPEG_VERSION_MAX = 31L
+private const val SMD_BROADCASTING_FLAG_MAX = 3L
+private const val SMD_BROADCASTING_IDENTIFIER_MAX = 63L
+private const val DAY_MILLIS_MAX = 86_399_999L
+private const val BROADCAST_CLOCK_TDT_TABLE_ID = 0x70L
+private const val BROADCAST_CLOCK_TOT_TABLE_ID = 0x73L
+private const val ISO_639_CODE_LENGTH = 3
+private const val HEX_PAIR_WIDTH = 2
+private const val HEX_RADIX = 16
+
+private val TABLE_REQUIREMENT_COMPONENTS =
+    setOf(
+        "BAT",
+        "NIT",
+        "NIT-other",
+        "PAT",
+        "PMT",
+        "SDT",
+        "SDT-other",
+    )
+
 class NativeParserCleanupException(
     val status: Int,
 ) : IllegalStateException("ネイティブ解析器の解放に失敗しました status=$status")
@@ -251,20 +286,19 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun descriptorDiagnosticsFromEvents(events: List<AribEvent>): List<DescriptorDiagnostic> =
         events.flatMap { event ->
-            parseDescriptorDiagnostics(event.descriptors.diagnostics.descriptorDiagnosticsCanonicalJson)
+            event.descriptors.diagnostics.descriptorDiagnostics
         }
 
-    private fun parseDescriptorDiagnostics(raw: String): List<DescriptorDiagnostic> {
-        val array = runCatching { JSONArray(raw.ifBlank { "[]" }) }.getOrNull() ?: return emptyList()
-        return (0 until array.length()).mapNotNull { index ->
-            val obj = array.optJSONObject(index) ?: return@mapNotNull null
-            val scope = obj.optJSONObject("scope") ?: JSONObject()
-            val descriptor = obj.optJSONObject("descriptor") ?: JSONObject()
+    private fun parseDescriptorDiagnostics(array: JSONArray): List<DescriptorDiagnostic> =
+        (0 until array.length()).map { index ->
+            val obj = array.getJSONObject(index)
+            val scope = obj.getJSONObject("scope")
+            val descriptor = obj.getJSONObject("descriptor")
             DescriptorDiagnostic(
-                schema = obj.optString("schema"),
-                schemaVersion = obj.optInt("schemaVersion", 0),
-                severity = obj.optString("severity"),
-                code = obj.optString("code"),
+                schema = obj.getString("schema"),
+                schemaVersion = obj.getInt("schemaVersion"),
+                severity = obj.getString("severity"),
+                code = obj.getString("code"),
                 scope =
                     DescriptorDiagnosticScope(
                         pid = TsPid.fromOrNull(optIntOrNull(scope, "pid")),
@@ -279,19 +313,17 @@ class NativeAribSiParser : AutoCloseable {
                     ),
                 descriptor =
                     DescriptorDiagnosticDescriptor(
-                        tag = descriptor.optInt("tag", -1),
+                        tag = descriptor.getInt("tag"),
                         name = optStringOrNull(descriptor, "name"),
-                        offset = descriptor.optInt("offset", -1),
-                        declaredLength = descriptor.optInt("declaredLength", -1),
-                        actualRemainingLength = descriptor.optInt("actualRemainingLength", -1),
-                        parseStatus = descriptor.optString("parseStatus"),
-                        rawPrefixHex = descriptor.optString("rawPrefixHex"),
+                        offset = descriptor.getInt("offset"),
+                        declaredLength = descriptor.getInt("declaredLength"),
+                        actualRemainingLength = descriptor.getInt("actualRemainingLength"),
+                        parseStatus = descriptor.getString("parseStatus"),
+                        rawPrefixHex = descriptor.getString("rawPrefixHex"),
                     ),
-                message = obj.optString("message"),
-                rawJson = obj.toString(),
+                message = obj.getString("message"),
             )
         }
-    }
 
     private fun readNativeTransaction(): NativeTransaction {
         check(handle != 0L) { "ネイティブ解析器は終了済みです" }
@@ -300,13 +332,19 @@ class NativeAribSiParser : AutoCloseable {
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MagicNumber", "MaxLineLength")
+    // JSON decoder例外をwire failureへ正規化する境界なので、元例外をdomainへ漏らさない。
+    @Suppress("MagicNumber", "MaxLineLength", "SwallowedException")
     private fun parseNativeTransactionJson(raw: String): NativeTransaction {
-        val root = JSONObject(raw)
+        val root =
+            try {
+                JSONObject(raw)
+            } catch (error: org.json.JSONException) {
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのJSONが不正です: ${error.message.orEmpty()}",
+                )
+            }
         validateNativeTransaction(root)
-        check(root.getInt("schemaVersion") == SI_SNAPSHOT_SCHEMA_VERSION) {
-            "未対応のSI snapshot schemaVersion=${root.getInt("schemaVersion")}"
-        }
         val serviceFacts = parseServiceSemanticFacts(root.optJSONArray("serviceSemanticFacts"))
         return NativeTransaction(
             collectionGeneration = root.getLong("collectionGeneration"),
@@ -335,45 +373,1500 @@ class NativeAribSiParser : AutoCloseable {
         )
     }
 
-    private fun validateNativeTransaction(root: JSONObject) {
-        val arrays =
-            listOf(
-                "tableRequirements",
-                "catCaMetadata",
-                "malformedCaDescriptorDiagnostics",
-                "malformedCaDescriptorCounts",
-                "transportSemanticFacts",
-                "events",
-                "eitInstances",
-                "serviceSemanticFacts",
-                "parserDiagnostics",
+    private fun jsonEncodingError(detail: String): Nothing =
+        throw NativeSiException(
+            "JSON_ENCODING",
+            detail,
+        )
+
+    private fun requireExactFields(
+        obj: JSONObject,
+        context: String,
+        vararg expected: String,
+    ) {
+        val actual = obj.keys().asSequence().toSet()
+        val required = expected.toSet()
+        if (actual != required) {
+            jsonEncodingError(
+                "$context の項目集合が不正です missing=${required - actual} extra=${actual - required}",
             )
-        val fields =
-            arrays +
-                listOf("schemaVersion", "collectionGeneration", "ingestSequence", "discoveryStage", "broadcastClock")
-        check(root.keys().asSequence().toSet() == fields.toSet()) { "SI snapshotの必須項目または項目集合が不正です" }
-        requireSnapshotInteger(root, "schemaVersion", SI_SNAPSHOT_SCHEMA_VERSION.toLong())
-        requireSnapshotInteger(root, "collectionGeneration", Long.MAX_VALUE)
-        requireSnapshotInteger(root, "ingestSequence", Long.MAX_VALUE)
-        requireSnapshotInteger(root, "discoveryStage", SiDiscoveryStage.COMPLETE.toLong())
-        val clock = root.get("broadcastClock")
-        check(clock == JSONObject.NULL || clock is JSONObject) { "SI snapshotのbroadcastClock型が不正です" }
-        for (key in arrays) {
-            val array = root.getJSONArray(key)
-            for (index in 0 until array.length()) {
-                check(array.get(index) is JSONObject) { "SI snapshotの$key[$index]型が不正です" }
+        }
+    }
+
+    private fun requireAllowedFields(
+        obj: JSONObject,
+        context: String,
+        vararg fields: String,
+    ) {
+        val allowed = fields.toSet()
+        val extra = obj.keys().asSequence().toSet() - allowed
+        if (extra.isNotEmpty()) {
+            jsonEncodingError("$context に未定義項目があります extra=$extra")
+        }
+    }
+
+    private fun validateOptionalNullableInteger(
+        obj: JSONObject,
+        key: String,
+        context: String,
+        range: LongRange,
+    ) {
+        if (!obj.has(key) || obj.isNull(key)) return
+        requireInteger(obj, key, context, range)
+    }
+
+    private fun validateOptionalNullableString(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ) {
+        if (!obj.has(key) || obj.isNull(key)) return
+        requireString(obj, key, context)
+    }
+
+    private fun requireObject(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): JSONObject {
+        if (!obj.has(key) || obj.isNull(key)) {
+            jsonEncodingError("$context.$key が欠落しています")
+        }
+        return obj.get(key) as? JSONObject
+            ?: jsonEncodingError("$context.$key の型がobjectではありません")
+    }
+
+    private fun requireNullableObject(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): JSONObject? {
+        if (!obj.has(key)) jsonEncodingError("$context.$key が欠落しています")
+        if (obj.isNull(key)) return null
+        return obj.get(key) as? JSONObject
+            ?: jsonEncodingError("$context.$key の型がobjectまたはnullではありません")
+    }
+
+    private fun requireArray(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): JSONArray {
+        if (!obj.has(key) || obj.isNull(key)) {
+            jsonEncodingError("$context.$key が欠落しています")
+        }
+        return obj.get(key) as? JSONArray
+            ?: jsonEncodingError("$context.$key の型がarrayではありません")
+    }
+
+    private fun requireString(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): String {
+        if (!obj.has(key) || obj.isNull(key)) {
+            jsonEncodingError("$context.$key が欠落しています")
+        }
+        return obj.get(key) as? String
+            ?: jsonEncodingError("$context.$key の型がstringではありません")
+    }
+
+    private fun requireNullableString(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): String? {
+        if (!obj.has(key)) jsonEncodingError("$context.$key が欠落しています")
+        if (obj.isNull(key)) return null
+        return obj.get(key) as? String
+            ?: jsonEncodingError("$context.$key の型がstringまたはnullではありません")
+    }
+
+    private fun requireBoolean(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): Boolean {
+        if (!obj.has(key) || obj.isNull(key)) {
+            jsonEncodingError("$context.$key が欠落しています")
+        }
+        return obj.get(key) as? Boolean
+            ?: jsonEncodingError("$context.$key の型がbooleanではありません")
+    }
+
+    private fun requireNullableBoolean(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): Boolean? {
+        if (!obj.has(key)) jsonEncodingError("$context.$key が欠落しています")
+        if (obj.isNull(key)) return null
+        return obj.get(key) as? Boolean
+            ?: jsonEncodingError("$context.$key の型がbooleanまたはnullではありません")
+    }
+
+    private fun requireInteger(
+        obj: JSONObject,
+        key: String,
+        context: String,
+        range: LongRange,
+    ): Long {
+        if (!obj.has(key) || obj.isNull(key)) {
+            jsonEncodingError("$context.$key が欠落しています")
+        }
+        val value = obj.get(key)
+        if (value !is Int && value !is Long) {
+            jsonEncodingError("$context.$key の型がintegerではありません")
+        }
+        val number = (value as Number).toLong()
+        if (number !in range) {
+            jsonEncodingError("$context.$key が範囲外です value=$number")
+        }
+        return number
+    }
+
+    private fun requireNullableInteger(
+        obj: JSONObject,
+        key: String,
+        context: String,
+        range: LongRange,
+    ): Long? {
+        if (!obj.has(key)) jsonEncodingError("$context.$key が欠落しています")
+        if (obj.isNull(key)) return null
+        return requireInteger(obj, key, context, range)
+    }
+
+    private fun requireStringValue(
+        obj: JSONObject,
+        key: String,
+        context: String,
+        allowed: Set<String>,
+    ): String {
+        val value = requireString(obj, key, context)
+        if (value !in allowed) {
+            jsonEncodingError("$context.$key が未定義値です value=$value")
+        }
+        return value
+    }
+
+    private fun requireLanguageCode(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ) {
+        val value = requireString(obj, key, context)
+        val asciiAlphabetic =
+            value.all { char ->
+                char in 'A'..'Z' || char in 'a'..'z'
+            }
+        if (value.length != ISO_639_CODE_LENGTH || !asciiAlphabetic) {
+            jsonEncodingError("$context.$key は3文字ASCII alphabeticでなければなりません")
+        }
+    }
+
+    private fun requireNullableStringValue(
+        obj: JSONObject,
+        key: String,
+        context: String,
+        allowed: Set<String>,
+    ): String? {
+        val value = requireNullableString(obj, key, context) ?: return null
+        if (value !in allowed) {
+            jsonEncodingError("$context.$key が未定義値です value=$value")
+        }
+        return value
+    }
+
+    private fun requireHex(
+        value: String,
+        context: String,
+    ) {
+        if (value.length % HEX_PAIR_WIDTH != 0 || value.any { it.digitToIntOrNull(HEX_RADIX) == null }) {
+            jsonEncodingError("$context が偶数長hexではありません")
+        }
+    }
+
+    private fun validateStringArray(
+        array: JSONArray,
+        context: String,
+    ) {
+        for (index in 0 until array.length()) {
+            if (array.get(index) !is String) {
+                jsonEncodingError("$context[$index] の型がstringではありません")
             }
         }
     }
 
-    private fun requireSnapshotInteger(
-        root: JSONObject,
-        key: String,
-        maximum: Long,
+    private fun validateIntegerArray(
+        array: JSONArray,
+        context: String,
+        range: LongRange,
     ) {
-        val value = root.get(key)
-        check(value is Int || value is Long) { "SI snapshotの${key}は整数である必要があります" }
-        check((value as Number).toLong() in 0..maximum) { "SI snapshotの${key}が範囲外です" }
+        for (index in 0 until array.length()) {
+            val value = array.get(index)
+            if (value !is Int && value !is Long) {
+                jsonEncodingError("$context[$index] の型がintegerではありません")
+            }
+            if ((value as Number).toLong() !in range) {
+                jsonEncodingError("$context[$index] が範囲外です")
+            }
+        }
+    }
+
+    private fun validateObjectArray(
+        array: JSONArray,
+        context: String,
+        validator: (JSONObject, String) -> Unit,
+    ) {
+        for (index in 0 until array.length()) {
+            val item =
+                array.get(index) as? JSONObject
+                    ?: jsonEncodingError("$context[$index] の型がobjectではありません")
+            validator(item, "$context[$index]")
+        }
+    }
+
+    private fun validateServiceKey(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+        )
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+    }
+
+    private fun validateBroadcastClock(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "tableId", "mjd", "millisOfDay")
+        val tableId = requireInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        if (tableId != BROADCAST_CLOCK_TDT_TABLE_ID && tableId != BROADCAST_CLOCK_TOT_TABLE_ID) {
+            jsonEncodingError("$context.tableId はTDT/TOTでなければなりません value=$tableId")
+        }
+        requireInteger(obj, "mjd", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "millisOfDay", context, 0L..DAY_MILLIS_MAX)
+    }
+
+    private fun validateTableRequirement(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "component",
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "required",
+            "complete",
+        )
+        requireStringValue(obj, "component", context, TABLE_REQUIREMENT_COMPONENTS)
+        requireNullableInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireBoolean(obj, "required", context)
+        requireBoolean(obj, "complete", context)
+    }
+
+    private fun validateCaMetadata(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "serviceKey",
+            "caSystemId",
+            "ecmPid",
+            "emmPid",
+            "elementaryPid",
+            "privateDataHex",
+            "source",
+        )
+        requireNullableObject(obj, "serviceKey", context)?.let {
+            validateServiceKey(it, "$context.serviceKey")
+        }
+        requireInteger(obj, "caSystemId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "ecmPid", context, 0L..WIRE_PID_MAX)
+        requireNullableInteger(obj, "emmPid", context, 0L..WIRE_PID_MAX)
+        requireNullableInteger(obj, "elementaryPid", context, 0L..WIRE_PID_MAX)
+        requireHex(requireString(obj, "privateDataHex", context), "$context.privateDataHex")
+        requireStringValue(
+            obj,
+            "source",
+            context,
+            setOf("CAT", "PROGRAM", "ES"),
+        )
+    }
+
+    private fun validateMalformedCaDescriptor(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "pid",
+            "tableId",
+            "tableIdExtension",
+            "serviceId",
+            "elementaryPid",
+            "scope",
+            "offset",
+            "declaredLength",
+            "actualRemainingLength",
+            "reason",
+            "rawPrefixHex",
+        )
+        requireInteger(obj, "pid", context, 0L..WIRE_PID_MAX)
+        requireInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "tableIdExtension", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "elementaryPid", context, 0L..WIRE_PID_MAX)
+        requireString(obj, "scope", context)
+        requireInteger(obj, "offset", context, 0L..Long.MAX_VALUE)
+        requireInteger(obj, "declaredLength", context, 0L..Long.MAX_VALUE)
+        requireInteger(obj, "actualRemainingLength", context, 0L..Long.MAX_VALUE)
+        requireString(obj, "reason", context)
+        requireHex(requireString(obj, "rawPrefixHex", context), "$context.rawPrefixHex")
+    }
+
+    private fun validateMalformedCaCount(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "serviceId", "count")
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "count", context, 1L..Long.MAX_VALUE)
+    }
+
+    private fun validateTransport(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "originalNetworkId",
+            "transportStreamId",
+            "networkName",
+            "transportStreamName",
+            "remoteControlKeyId",
+            "sdtActual",
+        )
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireNullableString(obj, "networkName", context)
+        requireNullableString(obj, "transportStreamName", context)
+        requireNullableInteger(obj, "remoteControlKeyId", context, 0L..WIRE_U8_MAX)
+        requireBoolean(obj, "sdtActual", context)
+    }
+
+    private fun validateAvc(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "profileIdc", "constraintFlags", "levelIdc")
+        requireInteger(obj, "profileIdc", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "constraintFlags", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "levelIdc", context, 0L..WIRE_U8_MAX)
+    }
+
+    private fun validateAudioHeader(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "audioObjectType",
+            "samplingFrequency",
+            "channelConfiguration",
+            "extensionSamplingFrequency",
+            "coreAudioObjectType",
+            "channelCount",
+        )
+        requireInteger(obj, "audioObjectType", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "samplingFrequency", context, 0L..WIRE_U32_MAX)
+        requireInteger(obj, "channelConfiguration", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(
+            obj,
+            "extensionSamplingFrequency",
+            context,
+            0L..WIRE_U32_MAX,
+        )
+        requireNullableInteger(obj, "coreAudioObjectType", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "channelCount", context, 0L..WIRE_U8_MAX)
+    }
+
+    private fun validateAudioExtension(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "profileLevelIndications",
+            "audioSpecificConfigHex",
+            "header",
+        )
+        validateIntegerArray(
+            requireArray(obj, "profileLevelIndications", context),
+            "$context.profileLevelIndications",
+            0L..WIRE_U8_MAX,
+        )
+        requireNullableString(obj, "audioSpecificConfigHex", context)?.let {
+            requireHex(it, "$context.audioSpecificConfigHex")
+        }
+        requireNullableObject(obj, "header", context)?.let {
+            validateAudioHeader(it, "$context.header")
+        }
+    }
+
+    private fun validateCodecFacts(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "avc",
+            "mpeg4AudioProfileAndLevel",
+            "audioExtension",
+            "malformed",
+            "rawDescriptorsHex",
+        )
+        requireNullableObject(obj, "avc", context)?.let {
+            validateAvc(it, "$context.avc")
+        }
+        requireNullableInteger(
+            obj,
+            "mpeg4AudioProfileAndLevel",
+            context,
+            0L..WIRE_U8_MAX,
+        )
+        requireNullableObject(obj, "audioExtension", context)?.let {
+            validateAudioExtension(it, "$context.audioExtension")
+        }
+        requireBoolean(obj, "malformed", context)
+        requireHex(
+            requireString(obj, "rawDescriptorsHex", context),
+            "$context.rawDescriptorsHex",
+        )
+    }
+
+    private fun validateElementaryStream(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "codecFacts",
+            "codecProfileLevel",
+            "codecSignalingResolved",
+            "codec",
+            "codecKind",
+            "elementaryPid",
+            "streamType",
+            "componentTag",
+            "componentType",
+            "streamContent",
+            "languageCodes",
+            "dataComponentId",
+            "captionDmf",
+            "captionTiming",
+            "automaticPresentationOnReception",
+            "isCaption",
+            "isSuperimpose",
+        )
+        validateCodecFacts(requireObject(obj, "codecFacts", context), "$context.codecFacts")
+        requireNullableString(obj, "codecProfileLevel", context)
+        requireBoolean(obj, "codecSignalingResolved", context)
+        requireNullableString(obj, "codec", context)
+        requireNullableStringValue(
+            obj,
+            "codecKind",
+            context,
+            setOf("VIDEO", "AUDIO"),
+        )
+        requireInteger(obj, "elementaryPid", context, 0L..WIRE_PID_MAX)
+        requireInteger(obj, "streamType", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "componentTag", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "componentType", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "streamContent", context, 0L..WIRE_NIBBLE_MAX)
+        validateStringArray(
+            requireArray(obj, "languageCodes", context),
+            "$context.languageCodes",
+        )
+        requireNullableInteger(obj, "dataComponentId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "captionDmf", context, 0L..WIRE_NIBBLE_MAX)
+        requireNullableInteger(obj, "captionTiming", context, 0L..CAPTION_TIMING_MAX)
+        requireNullableBoolean(obj, "automaticPresentationOnReception", context)
+        requireBoolean(obj, "isCaption", context)
+        requireBoolean(obj, "isSuperimpose", context)
+    }
+
+    private fun validateServiceCaDescriptor(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "caSystemId",
+            "caPid",
+            "scope",
+            "esPid",
+            "rawDescriptorHex",
+            "privateDataHex",
+        )
+        requireInteger(obj, "caSystemId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "caPid", context, 0L..WIRE_PID_MAX)
+        requireStringValue(obj, "scope", context, setOf("PROGRAM", "ES"))
+        requireNullableInteger(obj, "esPid", context, 0L..WIRE_PID_MAX)
+        requireHex(
+            requireString(obj, "rawDescriptorHex", context),
+            "$context.rawDescriptorHex",
+        )
+        requireHex(
+            requireString(obj, "privateDataHex", context),
+            "$context.privateDataHex",
+        )
+    }
+
+    private fun validateSmd(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "descriptorPresent",
+            "syntaxValid",
+            "systemManagementId",
+            "broadcastingFlag",
+            "broadcastingIdentifier",
+            "broadcastSystem",
+            "additionalBroadcastingIdentification",
+            "additionalIdentificationInfoHex",
+            "semanticState",
+            "diagnostic",
+        )
+        requireBoolean(obj, "descriptorPresent", context)
+        requireBoolean(obj, "syntaxValid", context)
+        requireNullableInteger(obj, "systemManagementId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "broadcastingFlag", context, 0L..SMD_BROADCASTING_FLAG_MAX)
+        requireNullableInteger(obj, "broadcastingIdentifier", context, 0L..SMD_BROADCASTING_IDENTIFIER_MAX)
+        requireNullableStringValue(
+            obj,
+            "broadcastSystem",
+            context,
+            setOf("ISDB_T", "ISDB_S_BS", "ISDB_S_110CS"),
+        )
+        requireNullableInteger(
+            obj,
+            "additionalBroadcastingIdentification",
+            context,
+            0L..WIRE_U8_MAX,
+        )
+        requireHex(
+            requireString(obj, "additionalIdentificationInfoHex", context),
+            "$context.additionalIdentificationInfoHex",
+        )
+        requireStringValue(
+            obj,
+            "semanticState",
+            context,
+            setOf(
+                "SUPPORTED_BROADCAST",
+                "NON_BROADCAST",
+                "UNDEFINED_BROADCAST_CLASS",
+                "UNSUPPORTED_BROADCAST_SYSTEM",
+                "UNDETERMINED_SMD",
+            ),
+        )
+        requireNullableString(obj, "diagnostic", context)
+    }
+
+    // 同一wire objectの必須項目を一括照合するため、分割して検証漏れを作らない。
+    @Suppress("LongMethod")
+    private fun validateServiceSemanticFacts(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "serviceType",
+            "pmtPidResolved",
+            "pmtParsed",
+            "pcrPidResolved",
+            "elementaryStreams",
+            "requiresCas",
+            "casFactsCanonicalJson",
+            "caDescriptorsResolved",
+            "freeCaMode",
+            "smd",
+            "missingComponents",
+            "semanticDiagnostics",
+            "name",
+            "providerName",
+            "pmtPid",
+            "pcrPid",
+            "serviceScopedCaDescriptors",
+        )
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "serviceType", context, 0L..WIRE_U8_MAX)
+        requireBoolean(obj, "pmtPidResolved", context)
+        requireBoolean(obj, "pmtParsed", context)
+        requireBoolean(obj, "pcrPidResolved", context)
+        validateObjectArray(
+            requireArray(obj, "elementaryStreams", context),
+            "$context.elementaryStreams",
+            ::validateElementaryStream,
+        )
+        requireBoolean(obj, "requiresCas", context)
+        requireString(obj, "casFactsCanonicalJson", context)
+        requireBoolean(obj, "caDescriptorsResolved", context)
+        requireNullableBoolean(obj, "freeCaMode", context)
+        validateSmd(requireObject(obj, "smd", context), "$context.smd")
+        validateStringArray(
+            requireArray(obj, "missingComponents", context),
+            "$context.missingComponents",
+        )
+        validateStringArray(
+            requireArray(obj, "semanticDiagnostics", context),
+            "$context.semanticDiagnostics",
+        )
+        requireNullableString(obj, "name", context)
+        requireNullableString(obj, "providerName", context)
+        requireNullableInteger(obj, "pmtPid", context, 0L..WIRE_PID_MAX)
+        requireNullableInteger(obj, "pcrPid", context, 0L..WIRE_PID_MAX)
+        validateObjectArray(
+            requireArray(obj, "serviceScopedCaDescriptors", context),
+            "$context.serviceScopedCaDescriptors",
+            ::validateServiceCaDescriptor,
+        )
+    }
+
+    private fun validateEitInstance(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "tableId",
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "version",
+            "currentNextIndicator",
+            "lastSectionNumber",
+            "receivedSections",
+            "missingSections",
+            "safeSections",
+            "complete",
+            "inconsistent",
+        )
+        requireInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "version", context, 0L..MPEG_VERSION_MAX)
+        requireBoolean(obj, "currentNextIndicator", context)
+        requireInteger(obj, "lastSectionNumber", context, 0L..WIRE_U8_MAX)
+        validateIntegerArray(
+            requireArray(obj, "receivedSections", context),
+            "$context.receivedSections",
+            0L..WIRE_U8_MAX,
+        )
+        validateIntegerArray(
+            requireArray(obj, "missingSections", context),
+            "$context.missingSections",
+            0L..WIRE_U8_MAX,
+        )
+        validateIntegerArray(
+            requireArray(obj, "safeSections", context),
+            "$context.safeSections",
+            0L..WIRE_U8_MAX,
+        )
+        requireBoolean(obj, "complete", context)
+        requireBoolean(obj, "inconsistent", context)
+    }
+
+    private fun validateParserDiagnostic(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "code", "message", "severity")
+        requireString(obj, "code", context)
+        requireString(obj, "message", context)
+        requireString(obj, "severity", context)
+    }
+
+    private fun validateProgramKey(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "kind",
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "eventId",
+        )
+        requireStringValue(obj, "kind", context, setOf("arib-event-v1"))
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "eventId", context, 0L..WIRE_U16_MAX)
+    }
+
+    private fun validateTiming(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "state",
+            "rawStartTimeHex",
+            "rawDurationHex",
+            "startUtcMillis",
+            "endUtcMillis",
+            "durationMillis",
+        )
+        requireStringValue(
+            obj,
+            "state",
+            context,
+            setOf(
+                "DEFINED",
+                "UNDEFINED_TIME",
+                "BOTH_TIMING_UNDEFINED",
+                "MALFORMED_TIMING",
+            ),
+        )
+        requireHex(requireString(obj, "rawStartTimeHex", context), "$context.rawStartTimeHex")
+        requireHex(requireString(obj, "rawDurationHex", context), "$context.rawDurationHex")
+        requireInteger(obj, "startUtcMillis", context, Long.MIN_VALUE..Long.MAX_VALUE)
+        requireInteger(obj, "endUtcMillis", context, Long.MIN_VALUE..Long.MAX_VALUE)
+        requireInteger(obj, "durationMillis", context, Long.MIN_VALUE..Long.MAX_VALUE)
+    }
+
+    private fun validateProgramSource(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "pid",
+            "tableId",
+            "version",
+            "sectionNumber",
+            "lastSectionNumber",
+        )
+        requireInteger(obj, "pid", context, 0L..WIRE_PID_MAX)
+        requireInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "version", context, 0L..MPEG_VERSION_MAX)
+        requireInteger(obj, "sectionNumber", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "lastSectionNumber", context, 0L..WIRE_U8_MAX)
+    }
+
+    private fun validateSeries(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "seriesId",
+            "repeatLabel",
+            "programPattern",
+            "expireDateValid",
+            "expireDate",
+            "episodeNumber",
+            "lastEpisodeNumber",
+            "name",
+            "parseStatus",
+        )
+        requireInteger(obj, "seriesId", context, 0L..SERIES_U16_MAX)
+        requireInteger(obj, "repeatLabel", context, 0L..SERIES_REPEAT_LABEL_MAX)
+        requireInteger(obj, "programPattern", context, 0L..SERIES_PROGRAM_PATTERN_MAX)
+        val expireDateValid = requireBoolean(obj, "expireDateValid", context)
+        val expireDate = requireNullableInteger(obj, "expireDate", context, 0L..SERIES_U16_MAX)
+        if (expireDateValid != (expireDate != null)) {
+            jsonEncodingError("$context.expireDateValid と expireDate が不整合です")
+        }
+        requireInteger(obj, "episodeNumber", context, 0L..SERIES_EPISODE_MAX)
+        requireInteger(obj, "lastEpisodeNumber", context, 0L..SERIES_EPISODE_MAX)
+        requireNullableString(obj, "name", context)
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateComponentEntries(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "video", "audio", "subtitle", "data")
+        val video = requireArray(obj, "video", context)
+        val audio = requireArray(obj, "audio", context)
+        val subtitle = requireArray(obj, "subtitle", context)
+        val data = requireArray(obj, "data", context)
+        validateObjectArray(video, "$context.video", ::validateVideoComponent)
+        validateObjectArray(audio, "$context.audio", ::validateAudioComponent)
+        if (subtitle.length() != 0 || data.length() != 0) {
+            jsonEncodingError("$context のsubtitle/data wire値は空でなければなりません")
+        }
+    }
+
+    private fun validateVideoComponent(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "streamContent",
+            "componentTag",
+            "componentType",
+            "language",
+            "text",
+            "resolution",
+            "scan",
+            "aspect",
+            "profileLevel",
+            "sourceDescriptor",
+            "parseStatus",
+        )
+        requireInteger(obj, "streamContent", context, 0L..WIRE_NIBBLE_MAX)
+        requireInteger(obj, "componentTag", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "componentType", context, 0L..WIRE_U8_MAX)
+        requireString(obj, "language", context)
+        requireString(obj, "text", context)
+        requireNullableString(obj, "resolution", context)
+        requireNullableString(obj, "scan", context)
+        requireNullableString(obj, "aspect", context)
+        if (!obj.isNull("profileLevel")) {
+            jsonEncodingError("$context.profileLevel はnullでなければなりません")
+        }
+        requireStringValue(obj, "sourceDescriptor", context, setOf("component_descriptor"))
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateAudioComponent(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "streamContent",
+            "componentTag",
+            "componentType",
+            "streamType",
+            "language",
+            "secondLanguage",
+            "channelConfiguration",
+            "channelCount",
+            "simulcastGroupTag",
+            "samplingRate",
+            "samplingInfo",
+            "sampleRateHz",
+            "audioDescription",
+            "hardOfHearing",
+            "dualMono",
+            "text",
+            "sourceDescriptor",
+            "main",
+            "multiLingual",
+            "qualityIndicator",
+            "parseStatus",
+        )
+        requireInteger(obj, "streamContent", context, 0L..WIRE_NIBBLE_MAX)
+        requireInteger(obj, "componentTag", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "componentType", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "streamType", context, 0L..WIRE_U8_MAX)
+        requireString(obj, "language", context)
+        requireNullableString(obj, "secondLanguage", context)
+        requireNullableString(obj, "channelConfiguration", context)
+        requireNullableInteger(obj, "channelCount", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "simulcastGroupTag", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "samplingRate", context, 0L..AUDIO_SAMPLING_RATE_MAX)
+        requireNullableString(obj, "samplingInfo", context)
+        requireNullableInteger(obj, "sampleRateHz", context, 0L..WIRE_U32_MAX)
+        requireBoolean(obj, "audioDescription", context)
+        requireBoolean(obj, "hardOfHearing", context)
+        requireBoolean(obj, "dualMono", context)
+        requireString(obj, "text", context)
+        requireStringValue(obj, "sourceDescriptor", context, setOf("audio_component_descriptor"))
+        requireBoolean(obj, "main", context)
+        requireBoolean(obj, "multiLingual", context)
+        requireInteger(obj, "qualityIndicator", context, 0L..AUDIO_QUALITY_INDICATOR_MAX)
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    // event descriptor objectのfield集合を一か所で照合するため、分割して第二契約を作らない。
+    @Suppress("LongMethod")
+    private fun validateEventDescriptors(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "shortEvents",
+            "extendedTexts",
+            "extendedItems",
+            "component",
+            "audio",
+            "genres",
+            "eventGroups",
+            "componentGroups",
+            "linkage",
+            "freeCaMode",
+            "series",
+            "seriesCandidates",
+            "seriesCandidatesCanonicalJson",
+            "components",
+            "diagnostics",
+            "parentalRatings",
+        )
+        validateObjectArray(
+            requireArray(obj, "shortEvents", context),
+            "$context.shortEvents",
+        ) { item, itemContext ->
+            requireExactFields(item, itemContext, "languageCode", "title", "text", "parseStatus")
+            requireLanguageCode(item, "languageCode", itemContext)
+            requireString(item, "title", itemContext)
+            requireString(item, "text", itemContext)
+            requireStringValue(item, "parseStatus", itemContext, setOf("OK"))
+        }
+        validateObjectArray(
+            requireArray(obj, "extendedTexts", context),
+            "$context.extendedTexts",
+        ) { item, itemContext ->
+            requireExactFields(item, itemContext, "languageCode", "text", "parseStatus")
+            requireLanguageCode(item, "languageCode", itemContext)
+            requireString(item, "text", itemContext)
+            requireStringValue(item, "parseStatus", itemContext, setOf("OK"))
+        }
+        validateObjectArray(
+            requireArray(obj, "extendedItems", context),
+            "$context.extendedItems",
+        ) { item, itemContext ->
+            requireExactFields(item, itemContext, "languageCode", "description", "text")
+            requireLanguageCode(item, "languageCode", itemContext)
+            requireString(item, "description", itemContext)
+            requireString(item, "text", itemContext)
+        }
+        validateSingleTextObject(requireObject(obj, "component", context), "$context.component", "text")
+        val audio = requireObject(obj, "audio", context)
+        requireExactFields(audio, "$context.audio", "componentText", "language")
+        requireString(audio, "componentText", "$context.audio")
+        requireString(audio, "language", "$context.audio")
+        validateGenres(requireObject(obj, "genres", context), "$context.genres")
+        validateObjectArray(
+            requireArray(obj, "eventGroups", context),
+            "$context.eventGroups",
+            ::validateEventGroup,
+        )
+        validateObjectArray(
+            requireArray(obj, "componentGroups", context),
+            "$context.componentGroups",
+            ::validateComponentGroupDescriptor,
+        )
+        validateObjectArray(
+            requireArray(obj, "linkage", context),
+            "$context.linkage",
+            ::validateLinkage,
+        )
+        validateFreeCaMode(requireObject(obj, "freeCaMode", context), "$context.freeCaMode")
+        requireNullableObject(obj, "series", context)?.let {
+            validateSeries(it, "$context.series")
+        }
+        validateObjectArray(
+            requireArray(obj, "seriesCandidates", context),
+            "$context.seriesCandidates",
+            ::validateSeries,
+        )
+        requireNullableString(obj, "seriesCandidatesCanonicalJson", context)
+        validateComponentEntries(requireObject(obj, "components", context), "$context.components")
+        validateEventDiagnostics(requireObject(obj, "diagnostics", context), "$context.diagnostics")
+        validateObjectArray(
+            requireArray(obj, "parentalRatings", context),
+            "$context.parentalRatings",
+            ::validateParentalRating,
+        )
+    }
+
+    private fun validateSingleTextObject(
+        obj: JSONObject,
+        context: String,
+        key: String,
+    ) {
+        requireExactFields(obj, context, key)
+        requireString(obj, key, context)
+    }
+
+    private fun validateGenres(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "content", "genreSupplementText")
+        validateObjectArray(requireArray(obj, "content", context), "$context.content") { item, itemContext ->
+            requireExactFields(item, itemContext, "level1", "level2", "userNibble", "aribName", "parseStatus")
+            requireInteger(item, "level1", itemContext, 0L..WIRE_NIBBLE_MAX)
+            requireInteger(item, "level2", itemContext, 0L..WIRE_NIBBLE_MAX)
+            requireInteger(item, "userNibble", itemContext, 0L..WIRE_U8_MAX)
+            requireString(item, "aribName", itemContext)
+            requireStringValue(item, "parseStatus", itemContext, setOf("OK"))
+        }
+        requireString(obj, "genreSupplementText", context)
+    }
+
+    // ARIB bit幅とgroup type相関をwire入口で固定し、後段のsilent dropへ到達させない。
+    @Suppress("MagicNumber")
+    private fun validateEventGroup(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "groupType", "events", "otherNetworkEvents", "privateDataHex", "parseStatus")
+        val groupType = requireInteger(obj, "groupType", context, 0L..WIRE_NIBBLE_MAX)
+        validateObjectArray(requireArray(obj, "events", context), "$context.events") { item, itemContext ->
+            requireExactFields(item, itemContext, "serviceId", "eventId")
+            requireInteger(item, "serviceId", itemContext, 0L..WIRE_U16_MAX)
+            requireInteger(item, "eventId", itemContext, 0L..WIRE_U16_MAX)
+        }
+        val otherNetworkEvents = requireArray(obj, "otherNetworkEvents", context)
+        validateObjectArray(otherNetworkEvents, "$context.otherNetworkEvents") { item, itemContext ->
+            requireExactFields(item, itemContext, "originalNetworkId", "transportStreamId", "serviceId", "eventId")
+            requireInteger(item, "originalNetworkId", itemContext, 0L..WIRE_U16_MAX)
+            requireInteger(item, "transportStreamId", itemContext, 0L..WIRE_U16_MAX)
+            requireInteger(item, "serviceId", itemContext, 0L..WIRE_U16_MAX)
+            requireInteger(item, "eventId", itemContext, 0L..WIRE_U16_MAX)
+        }
+        val privateDataHex = requireString(obj, "privateDataHex", context)
+        requireHex(privateDataHex, "$context.privateDataHex")
+        if (groupType == 4L || groupType == 5L) {
+            if (privateDataHex.isNotEmpty()) {
+                jsonEncodingError("$context.privateDataHex は groupType=4/5 では空でなければなりません")
+            }
+        } else if (otherNetworkEvents.length() != 0) {
+            jsonEncodingError("$context.otherNetworkEvents は groupType=4/5 以外では空でなければなりません")
+        }
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateComponentGroupDescriptor(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "componentGroupType", "groups", "parseStatus")
+        requireInteger(obj, "componentGroupType", context, 0L..COMPONENT_GROUP_TYPE_MAX)
+        validateObjectArray(
+            requireArray(obj, "groups", context),
+            "$context.groups",
+        ) { item, itemContext ->
+            requireExactFields(item, itemContext, "componentGroupId", "componentTags")
+            requireInteger(item, "componentGroupId", itemContext, 0L..WIRE_NIBBLE_MAX)
+            validateIntegerArray(
+                requireArray(item, "componentTags", itemContext),
+                "$itemContext.componentTags",
+                0L..WIRE_U8_MAX,
+            )
+        }
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateLinkage(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "transportStreamId",
+            "originalNetworkId",
+            "serviceId",
+            "linkageType",
+            "privateDataPrefixHex",
+            "parseStatus",
+        )
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "linkageType", context, 0L..WIRE_U8_MAX)
+        requireHex(
+            requireString(obj, "privateDataPrefixHex", context),
+            "$context.privateDataPrefixHex",
+        )
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateFreeCaMode(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "raw", "scrambled", "parseStatus")
+        requireInteger(obj, "raw", context, 0L..1L)
+        requireBoolean(obj, "scrambled", context)
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateEventDiagnostics(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "truncatedDescriptorLoop",
+            "summary",
+            "descriptorDiagnostics",
+            "descriptorDiagnosticsCanonicalJson",
+            "descriptorFactsCanonicalJson",
+        )
+        requireNullableObject(obj, "truncatedDescriptorLoop", context)?.let { loop ->
+            requireExactFields(
+                loop,
+                "$context.truncatedDescriptorLoop",
+                "declaredLength",
+                "rawBytesHex",
+                "parseStatus",
+            )
+            requireInteger(
+                loop,
+                "declaredLength",
+                "$context.truncatedDescriptorLoop",
+                0L..DESCRIPTOR_DECLARED_LENGTH_MAX,
+            )
+            requireHex(
+                requireString(loop, "rawBytesHex", "$context.truncatedDescriptorLoop"),
+                "$context.truncatedDescriptorLoop.rawBytesHex",
+            )
+            requireStringValue(
+                loop,
+                "parseStatus",
+                "$context.truncatedDescriptorLoop",
+                setOf("TruncatedDescriptor"),
+            )
+        }
+        requireString(obj, "summary", context)
+        validateObjectArray(
+            requireArray(obj, "descriptorDiagnostics", context),
+            "$context.descriptorDiagnostics",
+            ::validateDescriptorDiagnostic,
+        )
+        requireString(obj, "descriptorDiagnosticsCanonicalJson", context)
+        requireString(obj, "descriptorFactsCanonicalJson", context)
+    }
+
+    // descriptor_diagnostic_v1.schema.json の参照契約をruntime入口でも同じ形で検証する。
+    @Suppress("MagicNumber")
+    private fun validateDescriptorDiagnostic(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "schema",
+            "schemaVersion",
+            "severity",
+            "code",
+            "scope",
+            "descriptor",
+            "message",
+        )
+        requireStringValue(obj, "schema", context, setOf("maleicacid.tv.descriptorDiagnostic"))
+        requireInteger(obj, "schemaVersion", context, 1L..1L)
+        if (requireString(obj, "severity", context).isEmpty()) {
+            jsonEncodingError("$context.severity は空文字列にできません")
+        }
+        if (requireString(obj, "code", context).isEmpty()) {
+            jsonEncodingError("$context.code は空文字列にできません")
+        }
+        validateDescriptorDiagnosticScope(requireObject(obj, "scope", context), "$context.scope")
+        validateDescriptorDiagnosticDescriptor(requireObject(obj, "descriptor", context), "$context.descriptor")
+        val message = requireString(obj, "message", context)
+        if (message.codePointCount(0, message.length) > 256) {
+            jsonEncodingError("$context.message は256文字以下でなければなりません")
+        }
+    }
+
+    private fun validateDescriptorDiagnosticScope(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireAllowedFields(
+            obj,
+            context,
+            "pid",
+            "tableId",
+            "tableIdExtension",
+            "version",
+            "sectionNumber",
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "eventId",
+        )
+        validateOptionalNullableInteger(obj, "pid", context, 0L..WIRE_PID_MAX)
+        validateOptionalNullableInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        validateOptionalNullableInteger(obj, "tableIdExtension", context, 0L..WIRE_U16_MAX)
+        validateOptionalNullableInteger(obj, "version", context, 0L..MPEG_VERSION_MAX)
+        validateOptionalNullableInteger(obj, "sectionNumber", context, 0L..WIRE_U8_MAX)
+        validateOptionalNullableInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        validateOptionalNullableInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        validateOptionalNullableInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        validateOptionalNullableInteger(obj, "eventId", context, 0L..WIRE_U16_MAX)
+    }
+
+    @Suppress("MagicNumber")
+    private fun validateDescriptorDiagnosticDescriptor(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireAllowedFields(
+            obj,
+            context,
+            "tag",
+            "name",
+            "offset",
+            "declaredLength",
+            "actualRemainingLength",
+            "parseStatus",
+            "rawPrefixHex",
+        )
+        requireInteger(obj, "tag", context, 0L..WIRE_U8_MAX)
+        validateOptionalNullableString(obj, "name", context)
+        requireInteger(obj, "offset", context, 0L..Long.MAX_VALUE)
+        requireInteger(obj, "declaredLength", context, 0L..DESCRIPTOR_DECLARED_LENGTH_MAX)
+        requireInteger(obj, "actualRemainingLength", context, 0L..Long.MAX_VALUE)
+        if (requireString(obj, "parseStatus", context).isEmpty()) {
+            jsonEncodingError("$context.parseStatus は空文字列にできません")
+        }
+        val rawPrefixHex = requireString(obj, "rawPrefixHex", context)
+        requireHex(rawPrefixHex, "$context.rawPrefixHex")
+        if (rawPrefixHex.length > 128) {
+            jsonEncodingError("$context.rawPrefixHex は128文字以下でなければなりません")
+        }
+    }
+
+    private fun validateParentalRating(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "countryCode", "rawRatingByte", "parseStatus")
+        val country = requireString(obj, "countryCode", context)
+        if (country.length != ISO_639_CODE_LENGTH) jsonEncodingError("$context.countryCode は3文字でなければなりません")
+        requireInteger(obj, "rawRatingByte", context, 0L..WIRE_U8_MAX)
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateEvent(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "programKey",
+            "eventId",
+            "serviceKey",
+            "stableIdentity",
+            "timing",
+            "title",
+            "description",
+            "extendedDescription",
+            "eventScope",
+            "source",
+            "descriptors",
+        )
+        val programKey = requireNullableObject(obj, "programKey", context)
+        programKey?.let {
+            validateProgramKey(it, "$context.programKey")
+        }
+        val eventId = requireInteger(obj, "eventId", context, 0L..WIRE_U16_MAX)
+        val serviceKey = requireObject(obj, "serviceKey", context)
+        validateServiceKey(serviceKey, "$context.serviceKey")
+        val stableIdentity = requireNullableString(obj, "stableIdentity", context)
+        val timing = requireObject(obj, "timing", context)
+        validateTiming(timing, "$context.timing")
+        validateEventIdentity(obj, context)
+        requireString(obj, "title", context)
+        requireString(obj, "description", context)
+        requireString(obj, "extendedDescription", context)
+        requireStringValue(
+            obj,
+            "eventScope",
+            context,
+            setOf(
+                "present_following_actual",
+                "present_following_other",
+                "schedule_actual",
+                "schedule_other",
+                "unknown",
+            ),
+        )
+        validateProgramSource(requireObject(obj, "source", context), "$context.source")
+        validateEventDescriptors(
+            requireObject(obj, "descriptors", context),
+            "$context.descriptors",
+        )
+    }
+
+    private fun validateEventIdentity(
+        obj: JSONObject,
+        context: String,
+    ) {
+        val programKey = requireNullableObject(obj, "programKey", context)
+        val stableIdentity = requireNullableString(obj, "stableIdentity", context)
+        val serviceKey = requireObject(obj, "serviceKey", context)
+        val eventId = obj.getLong("eventId")
+        val timingState = requireObject(obj, "timing", context).getString("state")
+        val identityRequired = timingState == "DEFINED" || timingState == "UNDEFINED_TIME"
+
+        if (identityRequired != (programKey != null && stableIdentity != null)) {
+            jsonEncodingError(
+                "$context のtiming stateとprogramKey/stableIdentityの有無が不整合です",
+            )
+        }
+        if (!identityRequired) return
+
+        val key = requireNotNull(programKey)
+        val stable =
+            try {
+                JSONObject(requireNotNull(stableIdentity))
+            } catch (error: org.json.JSONException) {
+                jsonEncodingError(
+                    "$context.stableIdentity がProgramKey JSONではありません: " +
+                        error.message.orEmpty(),
+                )
+            }
+        validateProgramKey(stable, "$context.stableIdentity")
+
+        val expectedOriginalNetworkId = serviceKey.getLong("originalNetworkId")
+        val expectedTransportStreamId = serviceKey.getLong("transportStreamId")
+        val expectedServiceId = serviceKey.getLong("serviceId")
+        for ((field, expected) in listOf(
+            "originalNetworkId" to expectedOriginalNetworkId,
+            "transportStreamId" to expectedTransportStreamId,
+            "serviceId" to expectedServiceId,
+            "eventId" to eventId,
+        )) {
+            if (key.getLong(field) != expected || stable.getLong(field) != expected) {
+                jsonEncodingError("$context のidentity.$field がserviceKey/eventIdと不一致です")
+            }
+        }
+        if (key.getString("kind") != stable.getString("kind")) {
+            jsonEncodingError("$context のprogramKeyとstableIdentityのkindが不一致です")
+        }
+    }
+
+    // snapshot全体の必須arrayを一度に照合し、部分受理を防ぐため長さを許容する。
+    @Suppress("LongMethod")
+    private fun validateNativeTransaction(root: JSONObject) {
+        requireExactFields(
+            root,
+            "SI snapshot",
+            "schemaVersion",
+            "collectionGeneration",
+            "ingestSequence",
+            "discoveryStage",
+            "broadcastClock",
+            "tableRequirements",
+            "catCaMetadata",
+            "malformedCaDescriptorDiagnostics",
+            "malformedCaDescriptorCounts",
+            "transportSemanticFacts",
+            "events",
+            "eitInstances",
+            "serviceSemanticFacts",
+            "parserDiagnostics",
+        )
+        requireInteger(
+            root,
+            "schemaVersion",
+            "SI snapshot",
+            SI_SNAPSHOT_SCHEMA_VERSION.toLong()..SI_SNAPSHOT_SCHEMA_VERSION.toLong(),
+        )
+        requireInteger(root, "collectionGeneration", "SI snapshot", 0L..Long.MAX_VALUE)
+        requireInteger(root, "ingestSequence", "SI snapshot", 0L..Long.MAX_VALUE)
+        requireInteger(
+            root,
+            "discoveryStage",
+            "SI snapshot",
+            0L..SiDiscoveryStage.COMPLETE.toLong(),
+        )
+        requireNullableObject(root, "broadcastClock", "SI snapshot")?.let {
+            validateBroadcastClock(it, "SI snapshot.broadcastClock")
+        }
+        validateObjectArray(
+            requireArray(root, "tableRequirements", "SI snapshot"),
+            "SI snapshot.tableRequirements",
+            ::validateTableRequirement,
+        )
+        validateObjectArray(
+            requireArray(root, "catCaMetadata", "SI snapshot"),
+            "SI snapshot.catCaMetadata",
+            ::validateCaMetadata,
+        )
+        validateObjectArray(
+            requireArray(root, "malformedCaDescriptorDiagnostics", "SI snapshot"),
+            "SI snapshot.malformedCaDescriptorDiagnostics",
+            ::validateMalformedCaDescriptor,
+        )
+        validateObjectArray(
+            requireArray(root, "malformedCaDescriptorCounts", "SI snapshot"),
+            "SI snapshot.malformedCaDescriptorCounts",
+            ::validateMalformedCaCount,
+        )
+        validateObjectArray(
+            requireArray(root, "transportSemanticFacts", "SI snapshot"),
+            "SI snapshot.transportSemanticFacts",
+            ::validateTransport,
+        )
+        validateObjectArray(
+            requireArray(root, "events", "SI snapshot"),
+            "SI snapshot.events",
+            ::validateEvent,
+        )
+        validateObjectArray(
+            requireArray(root, "eitInstances", "SI snapshot"),
+            "SI snapshot.eitInstances",
+            ::validateEitInstance,
+        )
+        validateObjectArray(
+            requireArray(root, "serviceSemanticFacts", "SI snapshot"),
+            "SI snapshot.serviceSemanticFacts",
+            ::validateServiceSemanticFacts,
+        )
+        validateObjectArray(
+            requireArray(root, "parserDiagnostics", "SI snapshot"),
+            "SI snapshot.parserDiagnostics",
+            ::validateParserDiagnostic,
+        )
     }
 
     private fun parseStringArray(array: JSONArray?): List<String> =
@@ -398,6 +1891,149 @@ class NativeAribSiParser : AutoCloseable {
                 complete = obj.optBoolean("complete"),
             )
         }
+
+    private fun parseSmdSemanticState(smd: JSONObject): SmdSemanticState =
+        when (val value = smd.getString("semanticState")) {
+            "SUPPORTED_BROADCAST" -> {
+                SmdSemanticState.SUPPORTED_BROADCAST
+            }
+
+            "NON_BROADCAST" -> {
+                SmdSemanticState.NON_BROADCAST
+            }
+
+            "UNDEFINED_BROADCAST_CLASS" -> {
+                SmdSemanticState.UNDEFINED_BROADCAST_CLASS
+            }
+
+            "UNSUPPORTED_BROADCAST_SYSTEM" -> {
+                SmdSemanticState.UNSUPPORTED_BROADCAST_SYSTEM
+            }
+
+            "UNDETERMINED_SMD" -> {
+                SmdSemanticState.UNDETERMINED_SMD
+            }
+
+            else -> {
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのsemanticStateが未知です: $value",
+                )
+            }
+        }
+
+    private fun parseSiParseStatus(value: String): SiParseStatus =
+        when (value) {
+            "OK" -> {
+                SiParseStatus.OK
+            }
+
+            "MalformedLength" -> {
+                SiParseStatus.MALFORMED_LENGTH
+            }
+
+            "TruncatedDescriptor" -> {
+                SiParseStatus.TRUNCATED_DESCRIPTOR
+            }
+
+            "UnsupportedValue" -> {
+                SiParseStatus.UNSUPPORTED_VALUE
+            }
+
+            "InvalidSequence" -> {
+                SiParseStatus.INVALID_SEQUENCE
+            }
+
+            "UNRESOLVED" -> {
+                SiParseStatus.UNRESOLVED
+            }
+
+            else -> {
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのparseStatusが未知です: $value",
+                )
+            }
+        }
+
+    private fun parseEitTimingState(value: String): EitTimingState =
+        when (value) {
+            "DEFINED" -> {
+                EitTimingState.DEFINED
+            }
+
+            "UNDEFINED_TIME" -> {
+                EitTimingState.UNDEFINED_TIME
+            }
+
+            "BOTH_TIMING_UNDEFINED" -> {
+                EitTimingState.BOTH_TIMING_UNDEFINED
+            }
+
+            "MALFORMED_TIMING" -> {
+                EitTimingState.MALFORMED_TIMING
+            }
+
+            else -> {
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのtiming stateが未知です: $value",
+                )
+            }
+        }
+
+    private fun parseElementaryStreamKind(value: String?): ElementaryStreamKind? =
+        when (value) {
+            null -> {
+                null
+            }
+
+            "VIDEO" -> {
+                ElementaryStreamKind.VIDEO
+            }
+
+            "AUDIO" -> {
+                ElementaryStreamKind.AUDIO
+            }
+
+            else -> {
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのcodecKindが未知です: $value",
+                )
+            }
+        }
+
+    private fun parseBroadcastSystem(smd: JSONObject): BroadcastSystem? {
+        if (smd.isNull("broadcastSystem")) return null
+        val value = smd.get("broadcastSystem")
+        if (value !is String) {
+            throw NativeSiException(
+                "JSON_ENCODING",
+                "SI snapshotのbroadcastSystem型が不正です",
+            )
+        }
+        return when (value) {
+            "ISDB_T" -> {
+                BroadcastSystem.ISDB_T
+            }
+
+            "ISDB_S_BS" -> {
+                BroadcastSystem.ISDB_S_BS
+            }
+
+            "ISDB_S_110CS" -> {
+                BroadcastSystem.ISDB_S_110CS
+            }
+
+            else -> {
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのbroadcastSystemが未知です: $value",
+                )
+            }
+        }
+    }
 
     private fun optIntOrNull(
         obj: JSONObject,
@@ -451,7 +2087,7 @@ class NativeAribSiParser : AutoCloseable {
                     isCaption = obj.optBoolean("isCaption"),
                     isSuperimpose = obj.optBoolean("isSuperimpose"),
                     codec = optStringOrNull(obj, "codec"),
-                    codecKind = optStringOrNull(obj, "codecKind"),
+                    codecKind = parseElementaryStreamKind(optStringOrNull(obj, "codecKind")),
                     codecFacts = parseCodecFacts(obj),
                 )
             }
@@ -640,7 +2276,7 @@ class NativeAribSiParser : AutoCloseable {
                 serviceKey = key,
                 stableIdentity = optStringOrNull(obj, "stableIdentity"),
                 eventId = eventId,
-                timingState = timingObj.optString("state", "MALFORMED_TIMING"),
+                timingState = parseEitTimingState(timingObj.getString("state")),
                 rawStartTimeHex = timingObj.optString("rawStartTimeHex"),
                 rawDurationHex = timingObj.optString("rawDurationHex"),
                 startTimeMillis = start,
@@ -679,12 +2315,17 @@ class NativeAribSiParser : AutoCloseable {
                         scrambled = if (freeCaMode.isNull("scrambled")) null else freeCaMode.optBoolean("scrambled"),
                         freeCaMode = parseFreeCaMode(freeCaMode),
                         series = parseSeries(series),
+                        seriesCandidates = parseSeriesCandidates(descriptorsObj),
                         seriesCandidatesCanonicalJson = optStringOrNull(descriptorsObj, "seriesCandidatesCanonicalJson"),
                         parentalRatings = parseParentalRatings(descriptorsObj.optJSONArray("parentalRatings")),
                         components = parseComponents(descriptorsObj.optJSONObject("components")) ?: AribComponents(),
                         diagnostics =
                             AribEventDiagnostics(
                                 summary = diagnostics.optString("summary"),
+                                descriptorDiagnostics =
+                                    parseDescriptorDiagnostics(
+                                        diagnostics.getJSONArray("descriptorDiagnostics"),
+                                    ),
                                 descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson,
                                 descriptorFactsCanonicalJson = optStringOrNull(diagnostics, "descriptorFactsCanonicalJson"),
                                 textDiagnostics = parseTextDiagnosticSummary(diagnostics.optString("summary")),
@@ -693,7 +2334,7 @@ class NativeAribSiParser : AutoCloseable {
                                         AribTruncatedDescriptorLoop(
                                             loop.getInt("declaredLength"),
                                             loop.getString("rawBytesHex"),
-                                            loop.getString("parseStatus"),
+                                            parseSiParseStatus(loop.getString("parseStatus")),
                                         )
                                     },
                             ),
@@ -715,10 +2356,10 @@ class NativeAribSiParser : AutoCloseable {
                         languageCode = languageCode,
                         title = obj.optString("title"),
                         text = obj.optString("text"),
-                        parseStatus = obj.optString("parseStatus", "OK"),
+                        parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
                     )
                 }
-            }.filter { it.parseStatus.equals("OK", ignoreCase = true) }
+            }.filter { it.parseStatus == SiParseStatus.OK }
             .distinctBy { it.languageCode }
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -734,10 +2375,10 @@ class NativeAribSiParser : AutoCloseable {
                     AribExtendedEventText(
                         languageCode = languageCode,
                         text = obj.optString("text"),
-                        parseStatus = obj.optString("parseStatus", "OK"),
+                        parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
                     )
                 }
-            }.filter { it.parseStatus.equals("OK", ignoreCase = true) }
+            }.filter { it.parseStatus == SiParseStatus.OK }
             .distinctBy { it.languageCode }
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -768,7 +2409,7 @@ class NativeAribSiParser : AutoCloseable {
                 AribParentalRating(
                     countryCode = country,
                     rawRatingByte = raw,
-                    parseStatus = obj.optString("parseStatus", "OK"),
+                    parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
                 )
             }
         }
@@ -786,7 +2427,7 @@ class NativeAribSiParser : AutoCloseable {
                     level2 = level2,
                     userNibble = obj.optInt("userNibble", 0),
                     aribName = obj.optString("aribName"),
-                    parseStatus = obj.optString("parseStatus", "OK"),
+                    parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
                 )
             }
         }
@@ -812,7 +2453,7 @@ class NativeAribSiParser : AutoCloseable {
                 events = events,
                 otherNetworkEvents = otherNetworkEvents,
                 privateDataHex = privateDataHex,
-                parseStatus = obj.optString("parseStatus", "OK"),
+                parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
             )
         }
 
@@ -839,7 +2480,7 @@ class NativeAribSiParser : AutoCloseable {
             AribComponentGroupDescriptor(
                 componentGroupType = type,
                 groups = groups,
-                parseStatus = obj.optString("parseStatus", "OK"),
+                parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
             )
         }
 
@@ -888,7 +2529,7 @@ class NativeAribSiParser : AutoCloseable {
                 linkageType = obj.optInt("linkageType", -1),
                 serviceKey = key,
                 privateDataPrefixHex = obj.optString("privateDataPrefixHex", ""),
-                parseStatus = obj.optString("parseStatus", "OK"),
+                parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
             ).takeIf { it.linkageType >= 0 }
         }
 
@@ -899,7 +2540,7 @@ class NativeAribSiParser : AutoCloseable {
             AribFreeCaMode(
                 raw = optIntOrNull(obj, "raw"),
                 scrambled = optBoolOrNull(obj, "scrambled"),
-                parseStatus = obj.optString("parseStatus", "OK"),
+                parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
             )
         }
 
@@ -914,9 +2555,146 @@ class NativeAribSiParser : AutoCloseable {
                 episodeNumber = optIntOrNull(it, "episodeNumber"),
                 lastEpisodeNumber = optIntOrNull(it, "lastEpisodeNumber"),
                 name = optStringOrNull(it, "name"),
-                parseStatus = it.optString("parseStatus", "OK"),
+                parseStatus = parseSiParseStatus(it.getString("parseStatus")),
             )
         }
+
+    private fun parseSeriesCandidates(descriptors: JSONObject): List<AribSeries> {
+        val array = requiredSeriesCandidatesArray(descriptors)
+        return (0 until array.length()).map { index ->
+            parseSeriesCandidate(requiredSeriesCandidateObject(array, index), index)
+        }
+    }
+
+    private fun requiredSeriesCandidatesArray(descriptors: JSONObject): JSONArray {
+        val value = if (descriptors.has("seriesCandidates")) descriptors.get("seriesCandidates") else null
+        return value as? JSONArray
+            ?: throw NativeSiException(
+                "JSON_ENCODING",
+                if (value == null) {
+                    "SI snapshotのseriesCandidatesが欠落しています"
+                } else {
+                    "SI snapshotのseriesCandidates型がarrayではありません"
+                },
+            )
+    }
+
+    private fun requiredSeriesCandidateObject(
+        array: JSONArray,
+        index: Int,
+    ): JSONObject =
+        array.optJSONObject(index)
+            ?: throw seriesCandidateEncodingError(index, "要素型がobjectではありません")
+
+    private fun parseSeriesCandidate(
+        candidate: JSONObject,
+        index: Int,
+    ): AribSeries {
+        val validationErrors = seriesCandidateValidationErrors(candidate)
+        if (validationErrors.isNotEmpty()) {
+            throw seriesCandidateEncodingError(index, validationErrors.joinToString(", "))
+        }
+        return AribSeries(
+            seriesId = candidate.getInt("seriesId"),
+            repeatLabel = candidate.getInt("repeatLabel"),
+            programPattern = candidate.getInt("programPattern"),
+            expireDateValid = candidate.getBoolean("expireDateValid"),
+            expireDate = if (candidate.isNull("expireDate")) null else candidate.getInt("expireDate"),
+            episodeNumber = candidate.getInt("episodeNumber"),
+            lastEpisodeNumber = candidate.getInt("lastEpisodeNumber"),
+            name = if (candidate.isNull("name")) null else candidate.getString("name"),
+            parseStatus = parseSiParseStatus(candidate.getString("parseStatus")),
+        )
+    }
+
+    private fun seriesCandidateValidationErrors(candidate: JSONObject): List<String> =
+        seriesCandidateNumericValidationErrors(candidate) +
+            seriesCandidateMetadataValidationErrors(candidate)
+
+    private fun seriesCandidateNumericValidationErrors(candidate: JSONObject): List<String> =
+        listOfNotNull(
+            integerFieldValidationError(candidate, "seriesId", 0L..SERIES_U16_MAX),
+            integerFieldValidationError(candidate, "repeatLabel", 0L..SERIES_REPEAT_LABEL_MAX),
+            integerFieldValidationError(candidate, "programPattern", 0L..SERIES_PROGRAM_PATTERN_MAX),
+            integerFieldValidationError(candidate, "episodeNumber", 0L..SERIES_EPISODE_MAX),
+            integerFieldValidationError(candidate, "lastEpisodeNumber", 0L..SERIES_EPISODE_MAX),
+            expireDateValidationError(candidate),
+        )
+
+    private fun integerFieldValidationError(
+        candidate: JSONObject,
+        key: String,
+        range: LongRange,
+    ): String? {
+        val missing = !candidate.has(key) || candidate.isNull(key)
+        val number = if (missing) null else candidate.get(key) as? Number
+        return when {
+            missing -> {
+                "$key が欠落しています"
+            }
+
+            number == null -> {
+                "$key の型が数値ではありません"
+            }
+
+            !isIntegralNumberInRange(number, range) -> {
+                "$key が整数値域 ${range.first}..${range.last} の外です"
+            }
+
+            else -> {
+                null
+            }
+        }
+    }
+
+    private fun isIntegralNumberInRange(
+        number: Number,
+        range: LongRange,
+    ): Boolean {
+        val value = number.toDouble()
+        val integral = value.isFinite() && value % 1.0 == 0.0
+        return integral && value >= range.first && value <= range.last
+    }
+
+    private fun expireDateValidationError(candidate: JSONObject): String? {
+        val validValue = if (candidate.has("expireDateValid")) candidate.get("expireDateValid") else null
+        val hasExpireDate = candidate.has("expireDate")
+        val expireDateIsNull = hasExpireDate && candidate.isNull("expireDate")
+        return when {
+            validValue !is Boolean -> "expireDateValid の型が不正です"
+            !hasExpireDate -> "expireDate が欠落しています"
+            validValue && expireDateIsNull -> "expireDateValid=true なのにexpireDateがnullです"
+            !validValue && !expireDateIsNull -> "expireDateValid=false なのにexpireDateが存在します"
+            validValue -> integerFieldValidationError(candidate, "expireDate", 0L..SERIES_U16_MAX)
+            else -> null
+        }
+    }
+
+    private fun seriesCandidateMetadataValidationErrors(candidate: JSONObject): List<String> =
+        buildList {
+            if (!isNullableStringField(candidate, "name")) {
+                add("name の型が不正です")
+            }
+            if (!candidate.has("parseStatus") || candidate.get("parseStatus") != "OK") {
+                add("parseStatus はOKでなければなりません")
+            }
+        }
+
+    private fun isNullableStringField(
+        candidate: JSONObject,
+        key: String,
+    ): Boolean =
+        candidate.has(key) &&
+            (candidate.isNull(key) || candidate.get(key) is String)
+
+    private fun seriesCandidateEncodingError(
+        index: Int,
+        detail: String,
+    ): NativeSiException =
+        NativeSiException(
+            "JSON_ENCODING",
+            "SI snapshotのseriesCandidates[$index]が不正です: $detail",
+        )
 
     private fun parseComponents(obj: JSONObject?): AribComponents? =
         obj?.let {
@@ -959,7 +2737,12 @@ class NativeAribSiParser : AutoCloseable {
                     main = optBoolOrNull(obj, "main"),
                     multiLingual = optBoolOrNull(obj, "multiLingual"),
                     qualityIndicator = optIntOrNull(obj, "qualityIndicator"),
-                    parseStatus = obj.optString("parseStatus", "OK"),
+                    parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
+                    channelCount = optIntOrNull(obj, "channelCount"),
+                    sampleRateHz = optIntOrNull(obj, "sampleRateHz"),
+                    audioDescription = optBoolOrNull(obj, "audioDescription"),
+                    hardOfHearing = optBoolOrNull(obj, "hardOfHearing"),
+                    dualMono = optBoolOrNull(obj, "dualMono"),
                 )
             }
         }
@@ -1016,9 +2799,10 @@ class NativeAribSiParser : AutoCloseable {
                         systemManagementId = optIntOrNull(smd, "systemManagementId"),
                         broadcastingFlag = optIntOrNull(smd, "broadcastingFlag"),
                         broadcastingIdentifier = optIntOrNull(smd, "broadcastingIdentifier"),
+                        broadcastSystem = parseBroadcastSystem(smd),
                         additionalBroadcastingIdentification = optIntOrNull(smd, "additionalBroadcastingIdentification"),
                         additionalIdentificationInfoHex = smd.optString("additionalIdentificationInfoHex"),
-                        semanticState = smd.optString("semanticState", "UNDETERMINED_SMD"),
+                        semanticState = parseSmdSemanticState(smd),
                         diagnostic = optStringOrNull(smd, "diagnostic"),
                     ),
                 missingComponents = parseStringArray(obj.optJSONArray("missingComponents")),
@@ -1101,7 +2885,7 @@ class NativeAribSiParser : AutoCloseable {
     private external fun nativeDecodeAribStringDiagnosticSummary(bytes: ByteArray): String?
 
     companion object {
-        private const val SI_SNAPSHOT_SCHEMA_VERSION = 1
+        private const val SI_SNAPSHOT_SCHEMA_VERSION = 2
 
         private fun requireNativeString(value: String?): String {
             if (value == null) {

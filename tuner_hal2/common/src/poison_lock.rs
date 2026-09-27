@@ -17,6 +17,7 @@ pub enum RuntimeLockKind {
     CallbackRuntimeSplitDiagnostics,
     FrontendCancelReason,
     SupervisorState,
+    SupervisorWorker,
     DvrQueueEpoch { queue_identity: Option<u64> },
 }
 
@@ -128,14 +129,14 @@ mod tests {
 
     #[test]
     fn poison_is_permanent_counted_and_saturating() {
-        let lock = PoisonTrackedMutex::new(7, RuntimeLockKind::CallbackStore);
+        let lock = PoisonTrackedMutex::new(7, RuntimeLockKind::SupervisorWorker);
         let _ = std::panic::catch_unwind(|| {
             let _guard = lock.lock().unwrap();
             panic!("汚染を注入");
         });
         for count in [1, 2] {
             let error = lock.lock().unwrap_err();
-            assert_eq!(error.lock, RuntimeLockKind::CallbackStore);
+            assert_eq!(error.lock, RuntimeLockKind::SupervisorWorker);
             assert_eq!(error.poison_count, count);
             assert!(!error.counter_saturated);
         }

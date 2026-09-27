@@ -559,7 +559,6 @@ impl HalErrorDetail {
 pub enum WorkerLockKind {
     Result,
     Completion,
-    SupervisorWorker,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
