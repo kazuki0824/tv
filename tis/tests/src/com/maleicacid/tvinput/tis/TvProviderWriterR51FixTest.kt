@@ -175,7 +175,7 @@ class TvProviderWriterR51FixTest {
             base.copy(
                 descriptors =
                     ProgramDescriptors(
-                        series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12),
+                        series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = null),
                     ),
             )
         val multiple =
@@ -184,8 +184,8 @@ class TvProviderWriterR51FixTest {
                     ProgramDescriptors(
                         seriesCandidates =
                             listOf(
-                                AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12),
-                                AribSeries(seriesId = 200, episodeNumber = 4, lastEpisodeNumber = 13),
+                                AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = null),
+                                AribSeries(seriesId = 200, episodeNumber = 4, lastEpisodeNumber = 13, name = null),
                             ),
                     ),
             )
