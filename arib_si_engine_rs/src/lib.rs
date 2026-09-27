@@ -1537,7 +1537,8 @@ fn json_value_to_java<'local>(
                 .and_then(|result| result.l())
                 .map_err(jni_failure)
             } else {
-                Err(SiJniFailureReason::JsonEncoding.failure("SI snapshot数値をJNI型へ変換できません"))
+                Err(SiJniFailureReason::JsonEncoding
+                    .failure("SI snapshot数値をJNI型へ変換できません"))
             }
         }
         serde_json::Value::String(value) => env
@@ -1596,14 +1597,15 @@ fn snapshot_bulk_value(handle: jlong) -> Result<serde_json::Value, SiJniFailure>
     let Some(parser) = parser else {
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
-    match parser.lock() {
+    let result = match parser.lock() {
         Ok(mut guard) => bulk_snapshot_value(&mut guard)
             .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
         }
-    }
+    };
+    result
 }
 
 #[no_mangle]
