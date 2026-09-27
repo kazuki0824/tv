@@ -103,7 +103,7 @@ class NativeAribSiParserCasDiscoveryTest {
                     .getDeclaredMethod("nativeSnapshotBulkTyped", Long::class.javaPrimitiveType)
                     .apply { isAccessible = true }
             val snapshot = snapshotMethod.invoke(parser, handleField.getLong(parser))
-            check(snapshot is NativeSiSnapshot)
+            check(snapshot is com.maleicacid.tvinput.aribsi.generated.BulkSnapshotDto)
             check(snapshot.collectionGeneration >= 0L)
             check(snapshot.serviceSemanticFacts.isEmpty())
             check(parser.programStateSnapshot().events.isEmpty())
