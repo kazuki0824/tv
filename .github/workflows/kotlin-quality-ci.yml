@@ -217,7 +217,9 @@ jobs:
         env:
           FILES_JSON: ${{ needs.all-kotlin.outputs.files }}
         run: |
-          mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
+          mapfile -t sources < <(
+            jq -r '.[] | select(startswith("tis/src/com/maleicacid/tvinput/aribsi/generated/") | not)' <<<"$FILES_JSON"
+          )
           "$KTLINT" "${sources[@]}"
 
   detekt:
@@ -252,6 +254,8 @@ jobs:
         env:
           FILES_JSON: ${{ needs.all-kotlin.outputs.files }}
         run: |
-          mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
+          mapfile -t sources < <(
+            jq -r '.[] | select(startswith("tis/src/com/maleicacid/tvinput/aribsi/generated/") | not)' <<<"$FILES_JSON"
+          )
           input="$(IFS=,; printf '%s' "${sources[*]}")"
           java -jar "$DETEKT" --input "$input"
