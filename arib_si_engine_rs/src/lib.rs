@@ -562,11 +562,12 @@ fn series_value(series: &crate::descriptors::SeriesDescriptor) -> serde_json::Va
     })
 }
 
+fn series_candidates_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::Value::Array(event.descriptors.series.iter().map(series_value).collect())
+}
+
 fn series_candidates_canonical_json(event: &EitEvent) -> Option<String> {
-    (event.descriptors.series.len() > 1).then(|| {
-        serde_json::Value::Array(event.descriptors.series.iter().map(series_value).collect())
-            .to_string()
-    })
+    (event.descriptors.series.len() > 1).then(|| series_candidates_value(event).to_string())
 }
 
 fn event_groups_value(event: &EitEvent) -> serde_json::Value {
@@ -957,6 +958,7 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
                 "parseStatus": "OK",
             },
             "series": event_primary_series_value(event),
+            "seriesCandidates": series_candidates_value(event),
             "seriesCandidatesCanonicalJson": series_candidates_canonical_json(event),
             "components": event_components_value(event),
             "diagnostics": {
@@ -1881,11 +1883,13 @@ mod tests {
         ];
         event.descriptors = crate::descriptors::parse_event_descriptors(&bytes);
         assert!(event_primary_series_value(&event).is_null());
-        let candidates: serde_json::Value =
-            serde_json::from_str(&series_candidates_canonical_json(&event).unwrap()).unwrap();
+        let candidates = series_candidates_value(&event);
         assert_eq!(candidates.as_array().unwrap().len(), 2);
         assert_eq!(candidates[0]["seriesId"], 1);
         assert_eq!(candidates[1]["seriesId"], 2);
+        let canonical: serde_json::Value =
+            serde_json::from_str(&series_candidates_canonical_json(&event).unwrap()).unwrap();
+        assert_eq!(canonical, candidates);
         event.descriptors.series.pop();
         assert_eq!(event_primary_series_value(&event)["seriesId"], 1);
         assert!(series_candidates_canonical_json(&event).is_none());
