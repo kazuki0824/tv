@@ -406,56 +406,114 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun parseSmdSemanticState(smd: JSONObject): SmdSemanticState =
         when (val value = smd.getString("semanticState")) {
-            "SUPPORTED_BROADCAST" -> SmdSemanticState.SUPPORTED_BROADCAST
-            "NON_BROADCAST" -> SmdSemanticState.NON_BROADCAST
-            "UNDEFINED_BROADCAST_CLASS" -> SmdSemanticState.UNDEFINED_BROADCAST_CLASS
-            "UNSUPPORTED_BROADCAST_SYSTEM" -> SmdSemanticState.UNSUPPORTED_BROADCAST_SYSTEM
-            "UNDETERMINED_SMD" -> SmdSemanticState.UNDETERMINED_SMD
-            else ->
+            "SUPPORTED_BROADCAST" -> {
+                SmdSemanticState.SUPPORTED_BROADCAST
+            }
+
+            "NON_BROADCAST" -> {
+                SmdSemanticState.NON_BROADCAST
+            }
+
+            "UNDEFINED_BROADCAST_CLASS" -> {
+                SmdSemanticState.UNDEFINED_BROADCAST_CLASS
+            }
+
+            "UNSUPPORTED_BROADCAST_SYSTEM" -> {
+                SmdSemanticState.UNSUPPORTED_BROADCAST_SYSTEM
+            }
+
+            "UNDETERMINED_SMD" -> {
+                SmdSemanticState.UNDETERMINED_SMD
+            }
+
+            else -> {
                 throw NativeSiException(
                     "JSON_ENCODING",
                     "SI snapshotのsemanticStateが未知です: $value",
                 )
+            }
         }
 
     private fun parseSiParseStatus(value: String): SiParseStatus =
         when (value) {
-            "OK" -> SiParseStatus.OK
-            "MalformedLength" -> SiParseStatus.MALFORMED_LENGTH
-            "TruncatedDescriptor" -> SiParseStatus.TRUNCATED_DESCRIPTOR
-            "UnsupportedValue" -> SiParseStatus.UNSUPPORTED_VALUE
-            "InvalidSequence" -> SiParseStatus.INVALID_SEQUENCE
-            "UNRESOLVED" -> SiParseStatus.UNRESOLVED
-            else ->
+            "OK" -> {
+                SiParseStatus.OK
+            }
+
+            "MalformedLength" -> {
+                SiParseStatus.MALFORMED_LENGTH
+            }
+
+            "TruncatedDescriptor" -> {
+                SiParseStatus.TRUNCATED_DESCRIPTOR
+            }
+
+            "UnsupportedValue" -> {
+                SiParseStatus.UNSUPPORTED_VALUE
+            }
+
+            "InvalidSequence" -> {
+                SiParseStatus.INVALID_SEQUENCE
+            }
+
+            "UNRESOLVED" -> {
+                SiParseStatus.UNRESOLVED
+            }
+
+            else -> {
                 throw NativeSiException(
                     "JSON_ENCODING",
                     "SI snapshotのparseStatusが未知です: $value",
                 )
+            }
         }
 
     private fun parseEitTimingState(value: String): EitTimingState =
         when (value) {
-            "DEFINED" -> EitTimingState.DEFINED
-            "UNDEFINED_TIME" -> EitTimingState.UNDEFINED_TIME
-            "BOTH_TIMING_UNDEFINED" -> EitTimingState.BOTH_TIMING_UNDEFINED
-            "MALFORMED_TIMING" -> EitTimingState.MALFORMED_TIMING
-            else ->
+            "DEFINED" -> {
+                EitTimingState.DEFINED
+            }
+
+            "UNDEFINED_TIME" -> {
+                EitTimingState.UNDEFINED_TIME
+            }
+
+            "BOTH_TIMING_UNDEFINED" -> {
+                EitTimingState.BOTH_TIMING_UNDEFINED
+            }
+
+            "MALFORMED_TIMING" -> {
+                EitTimingState.MALFORMED_TIMING
+            }
+
+            else -> {
                 throw NativeSiException(
                     "JSON_ENCODING",
                     "SI snapshotのtiming stateが未知です: $value",
                 )
+            }
         }
 
     private fun parseElementaryStreamKind(value: String?): ElementaryStreamKind? =
         when (value) {
-            null -> null
-            "VIDEO" -> ElementaryStreamKind.VIDEO
-            "AUDIO" -> ElementaryStreamKind.AUDIO
-            else ->
+            null -> {
+                null
+            }
+
+            "VIDEO" -> {
+                ElementaryStreamKind.VIDEO
+            }
+
+            "AUDIO" -> {
+                ElementaryStreamKind.AUDIO
+            }
+
+            else -> {
                 throw NativeSiException(
                     "JSON_ENCODING",
                     "SI snapshotのcodecKindが未知です: $value",
                 )
+            }
         }
 
     private fun parseBroadcastSystem(smd: JSONObject): BroadcastSystem? {
