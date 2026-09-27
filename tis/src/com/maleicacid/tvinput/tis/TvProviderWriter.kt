@@ -599,11 +599,14 @@ class TvProviderWriter private constructor(
                 put(COLUMN_MULTI_SERIES_ID, candidateSeriesIds.joinToString(","))
             } else {
                 if (singleSeriesId == null) {
-                    if (clearAbsentOptionalColumns) putNull(COLUMN_SERIES_ID)
+                    if (clearAbsentOptionalColumns) {
+                        putNull(COLUMN_SERIES_ID)
+                        putNull(COLUMN_MULTI_SERIES_ID)
+                    }
                 } else {
                     put(COLUMN_SERIES_ID, singleSeriesId)
+                    putNull(COLUMN_MULTI_SERIES_ID)
                 }
-                if (clearAbsentOptionalColumns) putNull(COLUMN_MULTI_SERIES_ID)
             }
             val episodeNumber = program.descriptors.series?.episodeNumber
             if (episodeNumber == null || episodeNumber <= 0) {
