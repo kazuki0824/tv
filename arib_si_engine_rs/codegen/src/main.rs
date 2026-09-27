@@ -6,7 +6,8 @@ use serde_generate::{kotlin, CodeGeneratorConfig, SourceInstaller};
 use serde_reflection::{Tracer, TracerConfig};
 use std::env;
 use std::error::Error;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let output_root = env::args()
@@ -29,5 +30,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_serialization(false);
     let installer = kotlin::Installer::new(output_root);
     installer.install_module(&config, &registry)?;
+    append_repository_trailing_blank_line(
+        &installer
+            .root_path()
+            .join("com/maleicacid/tvinput/aribsi/generated"),
+    )?;
+    Ok(())
+}
+
+fn append_repository_trailing_blank_line(dir: &Path) -> Result<(), Box<dyn Error>> {
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("kt") {
+            continue;
+        }
+        let mut content = fs::read_to_string(&path)?;
+        if !content.ends_with("\n\n") {
+            content.push('\n');
+            fs::write(path, content)?;
+        }
+    }
     Ok(())
 }
