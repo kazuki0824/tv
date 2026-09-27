@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class DescriptorDiagnosticScopeDto(
     val pid: Int?,
     val tableId: Int?,
@@ -12,3 +13,4 @@ data class DescriptorDiagnosticScopeDto(
     val eventId: Int?
 ) {
 }
+
