@@ -307,11 +307,16 @@ class NativeAribSiParser : AutoCloseable {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MagicNumber", "MaxLineLength")
     private fun parseNativeTransactionJson(raw: String): NativeTransaction {
-        val root = JSONObject(raw)
+        val root =
+            try {
+                JSONObject(raw)
+            } catch (error: RuntimeException) {
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのJSONが不正です: ${error.message.orEmpty()}",
+                )
+            }
         validateNativeTransaction(root)
-        check(root.getInt("schemaVersion") == SI_SNAPSHOT_SCHEMA_VERSION) {
-            "未対応のSI snapshot schemaVersion=${root.getInt("schemaVersion")}"
-        }
         val serviceFacts = parseServiceSemanticFacts(root.optJSONArray("serviceSemanticFacts"))
         return NativeTransaction(
             collectionGeneration = root.getLong("collectionGeneration"),
@@ -340,45 +345,1326 @@ class NativeAribSiParser : AutoCloseable {
         )
     }
 
-    private fun validateNativeTransaction(root: JSONObject) {
-        val arrays =
-            listOf(
-                "tableRequirements",
-                "catCaMetadata",
-                "malformedCaDescriptorDiagnostics",
-                "malformedCaDescriptorCounts",
-                "transportSemanticFacts",
-                "events",
-                "eitInstances",
-                "serviceSemanticFacts",
-                "parserDiagnostics",
+    private fun jsonEncodingError(detail: String): Nothing =
+        throw NativeSiException(
+            "JSON_ENCODING",
+            detail,
+        )
+
+    private fun requireExactFields(
+        obj: JSONObject,
+        context: String,
+        vararg expected: String,
+    ) {
+        val actual = obj.keys().asSequence().toSet()
+        val required = expected.toSet()
+        if (actual != required) {
+            jsonEncodingError(
+                "$context の項目集合が不正です missing=${required - actual} extra=${actual - required}",
             )
-        val fields =
-            arrays +
-                listOf("schemaVersion", "collectionGeneration", "ingestSequence", "discoveryStage", "broadcastClock")
-        check(root.keys().asSequence().toSet() == fields.toSet()) { "SI snapshotの必須項目または項目集合が不正です" }
-        requireSnapshotInteger(root, "schemaVersion", SI_SNAPSHOT_SCHEMA_VERSION.toLong())
-        requireSnapshotInteger(root, "collectionGeneration", Long.MAX_VALUE)
-        requireSnapshotInteger(root, "ingestSequence", Long.MAX_VALUE)
-        requireSnapshotInteger(root, "discoveryStage", SiDiscoveryStage.COMPLETE.toLong())
-        val clock = root.get("broadcastClock")
-        check(clock == JSONObject.NULL || clock is JSONObject) { "SI snapshotのbroadcastClock型が不正です" }
-        for (key in arrays) {
-            val array = root.getJSONArray(key)
-            for (index in 0 until array.length()) {
-                check(array.get(index) is JSONObject) { "SI snapshotの$key[$index]型が不正です" }
+        }
+    }
+
+    private fun requireObject(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): JSONObject {
+        if (!obj.has(key) || obj.isNull(key)) {
+            jsonEncodingError("$context.$key が欠落しています")
+        }
+        return obj.get(key) as? JSONObject
+            ?: jsonEncodingError("$context.$key の型がobjectではありません")
+    }
+
+    private fun requireNullableObject(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): JSONObject? {
+        if (!obj.has(key)) jsonEncodingError("$context.$key が欠落しています")
+        if (obj.isNull(key)) return null
+        return obj.get(key) as? JSONObject
+            ?: jsonEncodingError("$context.$key の型がobjectまたはnullではありません")
+    }
+
+    private fun requireArray(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): JSONArray {
+        if (!obj.has(key) || obj.isNull(key)) {
+            jsonEncodingError("$context.$key が欠落しています")
+        }
+        return obj.get(key) as? JSONArray
+            ?: jsonEncodingError("$context.$key の型がarrayではありません")
+    }
+
+    private fun requireString(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): String {
+        if (!obj.has(key) || obj.isNull(key)) {
+            jsonEncodingError("$context.$key が欠落しています")
+        }
+        return obj.get(key) as? String
+            ?: jsonEncodingError("$context.$key の型がstringではありません")
+    }
+
+    private fun requireNullableString(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): String? {
+        if (!obj.has(key)) jsonEncodingError("$context.$key が欠落しています")
+        if (obj.isNull(key)) return null
+        return obj.get(key) as? String
+            ?: jsonEncodingError("$context.$key の型がstringまたはnullではありません")
+    }
+
+    private fun requireBoolean(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): Boolean {
+        if (!obj.has(key) || obj.isNull(key)) {
+            jsonEncodingError("$context.$key が欠落しています")
+        }
+        return obj.get(key) as? Boolean
+            ?: jsonEncodingError("$context.$key の型がbooleanではありません")
+    }
+
+    private fun requireNullableBoolean(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ): Boolean? {
+        if (!obj.has(key)) jsonEncodingError("$context.$key が欠落しています")
+        if (obj.isNull(key)) return null
+        return obj.get(key) as? Boolean
+            ?: jsonEncodingError("$context.$key の型がbooleanまたはnullではありません")
+    }
+
+    private fun requireInteger(
+        obj: JSONObject,
+        key: String,
+        context: String,
+        range: LongRange,
+    ): Long {
+        if (!obj.has(key) || obj.isNull(key)) {
+            jsonEncodingError("$context.$key が欠落しています")
+        }
+        val value = obj.get(key)
+        if (value !is Int && value !is Long) {
+            jsonEncodingError("$context.$key の型がintegerではありません")
+        }
+        val number = (value as Number).toLong()
+        if (number !in range) {
+            jsonEncodingError("$context.$key が範囲外です value=$number")
+        }
+        return number
+    }
+
+    private fun requireNullableInteger(
+        obj: JSONObject,
+        key: String,
+        context: String,
+        range: LongRange,
+    ): Long? {
+        if (!obj.has(key)) jsonEncodingError("$context.$key が欠落しています")
+        if (obj.isNull(key)) return null
+        return requireInteger(obj, key, context, range)
+    }
+
+    private fun requireStringValue(
+        obj: JSONObject,
+        key: String,
+        context: String,
+        allowed: Set<String>,
+    ): String {
+        val value = requireString(obj, key, context)
+        if (value !in allowed) {
+            jsonEncodingError("$context.$key が未定義値です value=$value")
+        }
+        return value
+    }
+
+    private fun requireNullableStringValue(
+        obj: JSONObject,
+        key: String,
+        context: String,
+        allowed: Set<String>,
+    ): String? {
+        val value = requireNullableString(obj, key, context) ?: return null
+        if (value !in allowed) {
+            jsonEncodingError("$context.$key が未定義値です value=$value")
+        }
+        return value
+    }
+
+    private fun requireHex(
+        value: String,
+        context: String,
+    ) {
+        if (value.length % 2 != 0 || value.any { it.digitToIntOrNull(16) == null }) {
+            jsonEncodingError("$context が偶数長hexではありません")
+        }
+    }
+
+    private fun validateStringArray(
+        array: JSONArray,
+        context: String,
+    ) {
+        for (index in 0 until array.length()) {
+            if (array.get(index) !is String) {
+                jsonEncodingError("$context[$index] の型がstringではありません")
             }
         }
     }
 
-    private fun requireSnapshotInteger(
-        root: JSONObject,
-        key: String,
-        maximum: Long,
+    private fun validateIntegerArray(
+        array: JSONArray,
+        context: String,
+        range: LongRange,
     ) {
-        val value = root.get(key)
-        check(value is Int || value is Long) { "SI snapshotの${key}は整数である必要があります" }
-        check((value as Number).toLong() in 0..maximum) { "SI snapshotの${key}が範囲外です" }
+        for (index in 0 until array.length()) {
+            val value = array.get(index)
+            if (value !is Int && value !is Long) {
+                jsonEncodingError("$context[$index] の型がintegerではありません")
+            }
+            if ((value as Number).toLong() !in range) {
+                jsonEncodingError("$context[$index] が範囲外です")
+            }
+        }
+    }
+
+    private fun validateObjectArray(
+        array: JSONArray,
+        context: String,
+        validator: (JSONObject, String) -> Unit,
+    ) {
+        for (index in 0 until array.length()) {
+            val item = array.get(index) as? JSONObject
+                ?: jsonEncodingError("$context[$index] の型がobjectではありません")
+            validator(item, "$context[$index]")
+        }
+    }
+
+    private fun validateServiceKey(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+        )
+        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
+        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
+        requireInteger(obj, "serviceId", context, 0L..65_535L)
+    }
+
+    private fun validateBroadcastClock(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "tableId", "mjd", "millisOfDay")
+        requireInteger(obj, "tableId", context, 0L..255L)
+        requireInteger(obj, "mjd", context, 0L..65_535L)
+        requireInteger(obj, "millisOfDay", context, 0L..86_399_999L)
+    }
+
+    private fun validateTableRequirement(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "component",
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "required",
+            "complete",
+        )
+        requireString(obj, "component", context)
+        requireNullableInteger(obj, "originalNetworkId", context, 0L..65_535L)
+        requireNullableInteger(obj, "transportStreamId", context, 0L..65_535L)
+        requireNullableInteger(obj, "serviceId", context, 0L..65_535L)
+        requireBoolean(obj, "required", context)
+        requireBoolean(obj, "complete", context)
+    }
+
+    private fun validateCaMetadata(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "serviceKey",
+            "caSystemId",
+            "ecmPid",
+            "emmPid",
+            "elementaryPid",
+            "privateDataHex",
+            "source",
+        )
+        requireNullableObject(obj, "serviceKey", context)?.let {
+            validateServiceKey(it, "$context.serviceKey")
+        }
+        requireInteger(obj, "caSystemId", context, 0L..65_535L)
+        requireNullableInteger(obj, "ecmPid", context, 0L..8_191L)
+        requireNullableInteger(obj, "emmPid", context, 0L..8_191L)
+        requireNullableInteger(obj, "elementaryPid", context, 0L..8_191L)
+        requireHex(requireString(obj, "privateDataHex", context), "$context.privateDataHex")
+        requireStringValue(
+            obj,
+            "source",
+            context,
+            setOf("CAT", "PROGRAM", "ES"),
+        )
+    }
+
+    private fun validateMalformedCaDescriptor(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "pid",
+            "tableId",
+            "tableIdExtension",
+            "serviceId",
+            "elementaryPid",
+            "scope",
+            "offset",
+            "declaredLength",
+            "actualRemainingLength",
+            "reason",
+            "rawPrefixHex",
+        )
+        requireInteger(obj, "pid", context, 0L..8_191L)
+        requireInteger(obj, "tableId", context, 0L..255L)
+        requireNullableInteger(obj, "tableIdExtension", context, 0L..65_535L)
+        requireNullableInteger(obj, "serviceId", context, 0L..65_535L)
+        requireNullableInteger(obj, "elementaryPid", context, 0L..8_191L)
+        requireString(obj, "scope", context)
+        requireInteger(obj, "offset", context, 0L..Long.MAX_VALUE)
+        requireInteger(obj, "declaredLength", context, 0L..Long.MAX_VALUE)
+        requireInteger(obj, "actualRemainingLength", context, 0L..Long.MAX_VALUE)
+        requireString(obj, "reason", context)
+        requireHex(requireString(obj, "rawPrefixHex", context), "$context.rawPrefixHex")
+    }
+
+    private fun validateMalformedCaCount(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "serviceId", "count")
+        requireInteger(obj, "serviceId", context, 0L..65_535L)
+        requireInteger(obj, "count", context, 1L..Long.MAX_VALUE)
+    }
+
+    private fun validateTransport(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "originalNetworkId",
+            "transportStreamId",
+            "networkName",
+            "transportStreamName",
+            "remoteControlKeyId",
+            "sdtActual",
+        )
+        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
+        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
+        requireNullableString(obj, "networkName", context)
+        requireNullableString(obj, "transportStreamName", context)
+        requireNullableInteger(obj, "remoteControlKeyId", context, 0L..255L)
+        requireBoolean(obj, "sdtActual", context)
+    }
+
+    private fun validateAvc(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "profileIdc", "constraintFlags", "levelIdc")
+        requireInteger(obj, "profileIdc", context, 0L..255L)
+        requireInteger(obj, "constraintFlags", context, 0L..255L)
+        requireInteger(obj, "levelIdc", context, 0L..255L)
+    }
+
+    private fun validateAudioHeader(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "audioObjectType",
+            "samplingFrequency",
+            "channelConfiguration",
+            "extensionSamplingFrequency",
+            "coreAudioObjectType",
+            "channelCount",
+        )
+        requireInteger(obj, "audioObjectType", context, 0L..255L)
+        requireInteger(obj, "samplingFrequency", context, 0L..4_294_967_295L)
+        requireInteger(obj, "channelConfiguration", context, 0L..255L)
+        requireNullableInteger(
+            obj,
+            "extensionSamplingFrequency",
+            context,
+            0L..4_294_967_295L,
+        )
+        requireNullableInteger(obj, "coreAudioObjectType", context, 0L..255L)
+        requireNullableInteger(obj, "channelCount", context, 0L..255L)
+    }
+
+    private fun validateAudioExtension(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "profileLevelIndications",
+            "audioSpecificConfigHex",
+            "header",
+        )
+        validateIntegerArray(
+            requireArray(obj, "profileLevelIndications", context),
+            "$context.profileLevelIndications",
+            0L..255L,
+        )
+        requireNullableString(obj, "audioSpecificConfigHex", context)?.let {
+            requireHex(it, "$context.audioSpecificConfigHex")
+        }
+        requireNullableObject(obj, "header", context)?.let {
+            validateAudioHeader(it, "$context.header")
+        }
+    }
+
+    private fun validateCodecFacts(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "avc",
+            "mpeg4AudioProfileAndLevel",
+            "audioExtension",
+            "malformed",
+            "rawDescriptorsHex",
+        )
+        requireNullableObject(obj, "avc", context)?.let {
+            validateAvc(it, "$context.avc")
+        }
+        requireNullableInteger(
+            obj,
+            "mpeg4AudioProfileAndLevel",
+            context,
+            0L..255L,
+        )
+        requireNullableObject(obj, "audioExtension", context)?.let {
+            validateAudioExtension(it, "$context.audioExtension")
+        }
+        requireBoolean(obj, "malformed", context)
+        requireHex(
+            requireString(obj, "rawDescriptorsHex", context),
+            "$context.rawDescriptorsHex",
+        )
+    }
+
+    private fun validateElementaryStream(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "codecFacts",
+            "codecProfileLevel",
+            "codecSignalingResolved",
+            "codec",
+            "codecKind",
+            "elementaryPid",
+            "streamType",
+            "componentTag",
+            "componentType",
+            "streamContent",
+            "languageCodes",
+            "dataComponentId",
+            "captionDmf",
+            "captionTiming",
+            "automaticPresentationOnReception",
+            "isCaption",
+            "isSuperimpose",
+        )
+        validateCodecFacts(requireObject(obj, "codecFacts", context), "$context.codecFacts")
+        requireNullableString(obj, "codecProfileLevel", context)
+        requireBoolean(obj, "codecSignalingResolved", context)
+        requireNullableString(obj, "codec", context)
+        requireNullableStringValue(
+            obj,
+            "codecKind",
+            context,
+            setOf("VIDEO", "AUDIO"),
+        )
+        requireInteger(obj, "elementaryPid", context, 0L..8_191L)
+        requireInteger(obj, "streamType", context, 0L..255L)
+        requireNullableInteger(obj, "componentTag", context, 0L..255L)
+        requireNullableInteger(obj, "componentType", context, 0L..255L)
+        requireNullableInteger(obj, "streamContent", context, 0L..255L)
+        validateStringArray(
+            requireArray(obj, "languageCodes", context),
+            "$context.languageCodes",
+        )
+        requireNullableInteger(obj, "dataComponentId", context, 0L..65_535L)
+        requireNullableInteger(obj, "captionDmf", context, 0L..255L)
+        requireNullableInteger(obj, "captionTiming", context, 0L..255L)
+        requireNullableBoolean(obj, "automaticPresentationOnReception", context)
+        requireBoolean(obj, "isCaption", context)
+        requireBoolean(obj, "isSuperimpose", context)
+    }
+
+    private fun validateServiceCaDescriptor(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "caSystemId",
+            "caPid",
+            "scope",
+            "esPid",
+            "rawDescriptorHex",
+            "privateDataHex",
+        )
+        requireInteger(obj, "caSystemId", context, 0L..65_535L)
+        requireInteger(obj, "caPid", context, 0L..8_191L)
+        requireStringValue(obj, "scope", context, setOf("PROGRAM", "ES"))
+        requireNullableInteger(obj, "esPid", context, 0L..8_191L)
+        requireHex(
+            requireString(obj, "rawDescriptorHex", context),
+            "$context.rawDescriptorHex",
+        )
+        requireHex(
+            requireString(obj, "privateDataHex", context),
+            "$context.privateDataHex",
+        )
+    }
+
+    private fun validateSmd(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "descriptorPresent",
+            "syntaxValid",
+            "systemManagementId",
+            "broadcastingFlag",
+            "broadcastingIdentifier",
+            "broadcastSystem",
+            "additionalBroadcastingIdentification",
+            "additionalIdentificationInfoHex",
+            "semanticState",
+            "diagnostic",
+        )
+        requireBoolean(obj, "descriptorPresent", context)
+        requireBoolean(obj, "syntaxValid", context)
+        requireNullableInteger(obj, "systemManagementId", context, 0L..65_535L)
+        requireNullableInteger(obj, "broadcastingFlag", context, 0L..3L)
+        requireNullableInteger(obj, "broadcastingIdentifier", context, 0L..63L)
+        requireNullableStringValue(
+            obj,
+            "broadcastSystem",
+            context,
+            setOf("ISDB_T", "ISDB_S_BS", "ISDB_S_110CS"),
+        )
+        requireNullableInteger(
+            obj,
+            "additionalBroadcastingIdentification",
+            context,
+            0L..255L,
+        )
+        requireHex(
+            requireString(obj, "additionalIdentificationInfoHex", context),
+            "$context.additionalIdentificationInfoHex",
+        )
+        requireStringValue(
+            obj,
+            "semanticState",
+            context,
+            setOf(
+                "SUPPORTED_BROADCAST",
+                "NON_BROADCAST",
+                "UNDEFINED_BROADCAST_CLASS",
+                "UNSUPPORTED_BROADCAST_SYSTEM",
+                "UNDETERMINED_SMD",
+            ),
+        )
+        requireNullableString(obj, "diagnostic", context)
+    }
+
+    private fun validateServiceSemanticFacts(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "serviceType",
+            "pmtPidResolved",
+            "pmtParsed",
+            "pcrPidResolved",
+            "elementaryStreams",
+            "requiresCas",
+            "casFactsCanonicalJson",
+            "caDescriptorsResolved",
+            "freeCaMode",
+            "smd",
+            "missingComponents",
+            "semanticDiagnostics",
+            "name",
+            "providerName",
+            "pmtPid",
+            "pcrPid",
+            "serviceScopedCaDescriptors",
+        )
+        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
+        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
+        requireInteger(obj, "serviceId", context, 0L..65_535L)
+        requireNullableInteger(obj, "serviceType", context, 0L..255L)
+        requireBoolean(obj, "pmtPidResolved", context)
+        requireBoolean(obj, "pmtParsed", context)
+        requireBoolean(obj, "pcrPidResolved", context)
+        validateObjectArray(
+            requireArray(obj, "elementaryStreams", context),
+            "$context.elementaryStreams",
+            ::validateElementaryStream,
+        )
+        requireBoolean(obj, "requiresCas", context)
+        requireString(obj, "casFactsCanonicalJson", context)
+        requireBoolean(obj, "caDescriptorsResolved", context)
+        requireNullableBoolean(obj, "freeCaMode", context)
+        validateSmd(requireObject(obj, "smd", context), "$context.smd")
+        validateStringArray(
+            requireArray(obj, "missingComponents", context),
+            "$context.missingComponents",
+        )
+        validateStringArray(
+            requireArray(obj, "semanticDiagnostics", context),
+            "$context.semanticDiagnostics",
+        )
+        requireNullableString(obj, "name", context)
+        requireNullableString(obj, "providerName", context)
+        requireNullableInteger(obj, "pmtPid", context, 0L..8_191L)
+        requireNullableInteger(obj, "pcrPid", context, 0L..8_191L)
+        validateObjectArray(
+            requireArray(obj, "serviceScopedCaDescriptors", context),
+            "$context.serviceScopedCaDescriptors",
+            ::validateServiceCaDescriptor,
+        )
+    }
+
+    private fun validateEitInstance(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "tableId",
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "version",
+            "currentNextIndicator",
+            "lastSectionNumber",
+            "receivedSections",
+            "missingSections",
+            "safeSections",
+            "complete",
+            "inconsistent",
+        )
+        requireInteger(obj, "tableId", context, 0L..255L)
+        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
+        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
+        requireInteger(obj, "serviceId", context, 0L..65_535L)
+        requireInteger(obj, "version", context, 0L..31L)
+        requireBoolean(obj, "currentNextIndicator", context)
+        requireInteger(obj, "lastSectionNumber", context, 0L..255L)
+        validateIntegerArray(
+            requireArray(obj, "receivedSections", context),
+            "$context.receivedSections",
+            0L..255L,
+        )
+        validateIntegerArray(
+            requireArray(obj, "missingSections", context),
+            "$context.missingSections",
+            0L..255L,
+        )
+        validateIntegerArray(
+            requireArray(obj, "safeSections", context),
+            "$context.safeSections",
+            0L..255L,
+        )
+        requireBoolean(obj, "complete", context)
+        requireBoolean(obj, "inconsistent", context)
+    }
+
+    private fun validateParserDiagnostic(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "code", "message", "severity")
+        requireString(obj, "code", context)
+        requireString(obj, "message", context)
+        requireString(obj, "severity", context)
+    }
+
+    private fun validateProgramKey(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "kind",
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "eventId",
+        )
+        requireStringValue(obj, "kind", context, setOf("arib-event-v1"))
+        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
+        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
+        requireInteger(obj, "serviceId", context, 0L..65_535L)
+        requireInteger(obj, "eventId", context, 0L..65_535L)
+    }
+
+    private fun validateTiming(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "state",
+            "rawStartTimeHex",
+            "rawDurationHex",
+            "startUtcMillis",
+            "endUtcMillis",
+            "durationMillis",
+        )
+        requireStringValue(
+            obj,
+            "state",
+            context,
+            setOf(
+                "DEFINED",
+                "UNDEFINED_TIME",
+                "BOTH_TIMING_UNDEFINED",
+                "MALFORMED_TIMING",
+            ),
+        )
+        requireHex(requireString(obj, "rawStartTimeHex", context), "$context.rawStartTimeHex")
+        requireHex(requireString(obj, "rawDurationHex", context), "$context.rawDurationHex")
+        requireInteger(obj, "startUtcMillis", context, Long.MIN_VALUE..Long.MAX_VALUE)
+        requireInteger(obj, "endUtcMillis", context, Long.MIN_VALUE..Long.MAX_VALUE)
+        requireInteger(obj, "durationMillis", context, Long.MIN_VALUE..Long.MAX_VALUE)
+    }
+
+    private fun validateProgramSource(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "pid",
+            "tableId",
+            "version",
+            "sectionNumber",
+            "lastSectionNumber",
+        )
+        requireInteger(obj, "pid", context, 0L..8_191L)
+        requireInteger(obj, "tableId", context, 0L..255L)
+        requireInteger(obj, "version", context, 0L..31L)
+        requireInteger(obj, "sectionNumber", context, 0L..255L)
+        requireInteger(obj, "lastSectionNumber", context, 0L..255L)
+    }
+
+    private fun validateSeries(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "seriesId",
+            "repeatLabel",
+            "programPattern",
+            "expireDateValid",
+            "expireDate",
+            "episodeNumber",
+            "lastEpisodeNumber",
+            "name",
+            "parseStatus",
+        )
+        requireInteger(obj, "seriesId", context, 0L..65_535L)
+        requireInteger(obj, "repeatLabel", context, 0L..255L)
+        requireInteger(obj, "programPattern", context, 0L..255L)
+        requireBoolean(obj, "expireDateValid", context)
+        requireNullableInteger(obj, "expireDate", context, 0L..65_535L)
+        requireInteger(obj, "episodeNumber", context, 0L..65_535L)
+        requireInteger(obj, "lastEpisodeNumber", context, 0L..65_535L)
+        requireNullableString(obj, "name", context)
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateComponentEntries(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "video", "audio", "subtitle", "data")
+        val video = requireArray(obj, "video", context)
+        val audio = requireArray(obj, "audio", context)
+        val subtitle = requireArray(obj, "subtitle", context)
+        val data = requireArray(obj, "data", context)
+        validateObjectArray(video, "$context.video", ::validateVideoComponent)
+        validateObjectArray(audio, "$context.audio", ::validateAudioComponent)
+        if (subtitle.length() != 0 || data.length() != 0) {
+            jsonEncodingError("$context のsubtitle/data wire値は空でなければなりません")
+        }
+    }
+
+    private fun validateVideoComponent(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "streamContent",
+            "componentTag",
+            "componentType",
+            "language",
+            "text",
+            "resolution",
+            "scan",
+            "aspect",
+            "profileLevel",
+            "sourceDescriptor",
+            "parseStatus",
+        )
+        requireInteger(obj, "streamContent", context, 0L..255L)
+        requireInteger(obj, "componentTag", context, 0L..255L)
+        requireInteger(obj, "componentType", context, 0L..255L)
+        requireString(obj, "language", context)
+        requireString(obj, "text", context)
+        requireNullableString(obj, "resolution", context)
+        requireNullableString(obj, "scan", context)
+        requireNullableString(obj, "aspect", context)
+        if (!obj.isNull("profileLevel")) {
+            jsonEncodingError("$context.profileLevel はnullでなければなりません")
+        }
+        requireStringValue(
+            obj,
+            "sourceDescriptor",
+            context,
+            setOf("component_descriptor"),
+        )
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateAudioComponent(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "streamContent",
+            "componentTag",
+            "componentType",
+            "streamType",
+            "language",
+            "secondLanguage",
+            "channelConfiguration",
+            "channelCount",
+            "simulcastGroupTag",
+            "samplingRate",
+            "samplingInfo",
+            "sampleRateHz",
+            "audioDescription",
+            "hardOfHearing",
+            "dualMono",
+            "text",
+            "sourceDescriptor",
+            "main",
+            "multiLingual",
+            "qualityIndicator",
+            "parseStatus",
+        )
+        requireInteger(obj, "streamContent", context, 0L..255L)
+        requireInteger(obj, "componentTag", context, 0L..255L)
+        requireInteger(obj, "componentType", context, 0L..255L)
+        requireInteger(obj, "streamType", context, 0L..255L)
+        requireString(obj, "language", context)
+        requireNullableString(obj, "secondLanguage", context)
+        requireNullableString(obj, "channelConfiguration", context)
+        requireNullableInteger(obj, "channelCount", context, 0L..255L)
+        requireInteger(obj, "simulcastGroupTag", context, 0L..255L)
+        requireInteger(obj, "samplingRate", context, 0L..255L)
+        requireNullableString(obj, "samplingInfo", context)
+        requireNullableInteger(obj, "sampleRateHz", context, 0L..4_294_967_295L)
+        requireBoolean(obj, "audioDescription", context)
+        requireBoolean(obj, "hardOfHearing", context)
+        requireBoolean(obj, "dualMono", context)
+        requireString(obj, "text", context)
+        requireStringValue(
+            obj,
+            "sourceDescriptor",
+            context,
+            setOf("audio_component_descriptor"),
+        )
+        requireBoolean(obj, "main", context)
+        requireBoolean(obj, "multiLingual", context)
+        requireInteger(obj, "qualityIndicator", context, 0L..255L)
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateEventDescriptors(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "shortEvents",
+            "extendedTexts",
+            "extendedItems",
+            "component",
+            "audio",
+            "genres",
+            "eventGroups",
+            "componentGroups",
+            "linkage",
+            "freeCaMode",
+            "series",
+            "seriesCandidates",
+            "seriesCandidatesCanonicalJson",
+            "components",
+            "diagnostics",
+            "parentalRatings",
+        )
+        validateObjectArray(
+            requireArray(obj, "shortEvents", context),
+            "$context.shortEvents",
+        ) { item, itemContext ->
+            requireExactFields(item, itemContext, "languageCode", "title", "text", "parseStatus")
+            requireString(item, "languageCode", itemContext)
+            requireString(item, "title", itemContext)
+            requireString(item, "text", itemContext)
+            requireStringValue(item, "parseStatus", itemContext, setOf("OK"))
+        }
+        validateObjectArray(
+            requireArray(obj, "extendedTexts", context),
+            "$context.extendedTexts",
+        ) { item, itemContext ->
+            requireExactFields(item, itemContext, "languageCode", "text", "parseStatus")
+            requireString(item, "languageCode", itemContext)
+            requireString(item, "text", itemContext)
+            requireStringValue(item, "parseStatus", itemContext, setOf("OK"))
+        }
+        validateObjectArray(
+            requireArray(obj, "extendedItems", context),
+            "$context.extendedItems",
+        ) { item, itemContext ->
+            requireExactFields(item, itemContext, "languageCode", "description", "text")
+            requireString(item, "languageCode", itemContext)
+            requireString(item, "description", itemContext)
+            requireString(item, "text", itemContext)
+        }
+        validateSingleTextObject(requireObject(obj, "component", context), "$context.component", "text")
+        val audio = requireObject(obj, "audio", context)
+        requireExactFields(audio, "$context.audio", "componentText", "language")
+        requireString(audio, "componentText", "$context.audio")
+        requireString(audio, "language", "$context.audio")
+        validateGenres(requireObject(obj, "genres", context), "$context.genres")
+        validateObjectArray(
+            requireArray(obj, "eventGroups", context),
+            "$context.eventGroups",
+            ::validateEventGroup,
+        )
+        validateObjectArray(
+            requireArray(obj, "componentGroups", context),
+            "$context.componentGroups",
+            ::validateComponentGroupDescriptor,
+        )
+        validateObjectArray(
+            requireArray(obj, "linkage", context),
+            "$context.linkage",
+            ::validateLinkage,
+        )
+        validateFreeCaMode(requireObject(obj, "freeCaMode", context), "$context.freeCaMode")
+        requireNullableObject(obj, "series", context)?.let {
+            validateSeries(it, "$context.series")
+        }
+        validateObjectArray(
+            requireArray(obj, "seriesCandidates", context),
+            "$context.seriesCandidates",
+            ::validateSeries,
+        )
+        requireNullableString(obj, "seriesCandidatesCanonicalJson", context)
+        validateComponentEntries(requireObject(obj, "components", context), "$context.components")
+        validateEventDiagnostics(requireObject(obj, "diagnostics", context), "$context.diagnostics")
+        validateObjectArray(
+            requireArray(obj, "parentalRatings", context),
+            "$context.parentalRatings",
+            ::validateParentalRating,
+        )
+    }
+
+    private fun validateSingleTextObject(
+        obj: JSONObject,
+        context: String,
+        key: String,
+    ) {
+        requireExactFields(obj, context, key)
+        requireString(obj, key, context)
+    }
+
+    private fun validateGenres(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "content", "genreSupplementText")
+        validateObjectArray(requireArray(obj, "content", context), "$context.content") {
+                item,
+                itemContext,
+            ->
+            requireExactFields(
+                item,
+                itemContext,
+                "level1",
+                "level2",
+                "userNibble",
+                "aribName",
+                "parseStatus",
+            )
+            requireInteger(item, "level1", itemContext, 0L..255L)
+            requireInteger(item, "level2", itemContext, 0L..255L)
+            requireInteger(item, "userNibble", itemContext, 0L..255L)
+            requireString(item, "aribName", itemContext)
+            requireStringValue(item, "parseStatus", itemContext, setOf("OK"))
+        }
+        requireString(obj, "genreSupplementText", context)
+    }
+
+    private fun validateEventGroup(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "groupType",
+            "events",
+            "otherNetworkEvents",
+            "privateDataHex",
+            "parseStatus",
+        )
+        requireInteger(obj, "groupType", context, 0L..255L)
+        validateObjectArray(requireArray(obj, "events", context), "$context.events") {
+                item,
+                itemContext,
+            ->
+            requireExactFields(item, itemContext, "serviceId", "eventId")
+            requireInteger(item, "serviceId", itemContext, 0L..65_535L)
+            requireInteger(item, "eventId", itemContext, 0L..65_535L)
+        }
+        validateObjectArray(
+            requireArray(obj, "otherNetworkEvents", context),
+            "$context.otherNetworkEvents",
+        ) { item, itemContext ->
+            requireExactFields(
+                item,
+                itemContext,
+                "originalNetworkId",
+                "transportStreamId",
+                "serviceId",
+                "eventId",
+            )
+            requireInteger(item, "originalNetworkId", itemContext, 0L..65_535L)
+            requireInteger(item, "transportStreamId", itemContext, 0L..65_535L)
+            requireInteger(item, "serviceId", itemContext, 0L..65_535L)
+            requireInteger(item, "eventId", itemContext, 0L..65_535L)
+        }
+        requireHex(
+            requireString(obj, "privateDataHex", context),
+            "$context.privateDataHex",
+        )
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateComponentGroupDescriptor(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "componentGroupType", "groups", "parseStatus")
+        requireInteger(obj, "componentGroupType", context, 0L..255L)
+        validateObjectArray(requireArray(obj, "groups", context), "$context.groups") {
+                item,
+                itemContext,
+            ->
+            requireExactFields(item, itemContext, "componentGroupId", "componentTags")
+            requireInteger(item, "componentGroupId", itemContext, 0L..255L)
+            validateIntegerArray(
+                requireArray(item, "componentTags", itemContext),
+                "$itemContext.componentTags",
+                0L..255L,
+            )
+        }
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateLinkage(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "transportStreamId",
+            "originalNetworkId",
+            "serviceId",
+            "linkageType",
+            "privateDataPrefixHex",
+            "parseStatus",
+        )
+        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
+        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
+        requireInteger(obj, "serviceId", context, 0L..65_535L)
+        requireInteger(obj, "linkageType", context, 0L..255L)
+        requireHex(
+            requireString(obj, "privateDataPrefixHex", context),
+            "$context.privateDataPrefixHex",
+        )
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateFreeCaMode(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "raw", "scrambled", "parseStatus")
+        requireInteger(obj, "raw", context, 0L..1L)
+        requireBoolean(obj, "scrambled", context)
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateEventDiagnostics(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "truncatedDescriptorLoop",
+            "summary",
+            "descriptorDiagnostics",
+            "descriptorDiagnosticsCanonicalJson",
+            "descriptorFactsCanonicalJson",
+        )
+        requireNullableObject(obj, "truncatedDescriptorLoop", context)?.let { loop ->
+            requireExactFields(loop, "$context.truncatedDescriptorLoop", "declaredLength", "rawBytesHex", "parseStatus")
+            requireInteger(
+                loop,
+                "declaredLength",
+                "$context.truncatedDescriptorLoop",
+                0L..Long.MAX_VALUE,
+            )
+            requireHex(
+                requireString(loop, "rawBytesHex", "$context.truncatedDescriptorLoop"),
+                "$context.truncatedDescriptorLoop.rawBytesHex",
+            )
+            requireStringValue(
+                loop,
+                "parseStatus",
+                "$context.truncatedDescriptorLoop",
+                setOf("TruncatedDescriptor"),
+            )
+        }
+        requireString(obj, "summary", context)
+        val rawDiagnostics = requireArray(obj, "descriptorDiagnostics", context)
+        for (index in 0 until rawDiagnostics.length()) {
+            if (rawDiagnostics.get(index) !is JSONObject) {
+                jsonEncodingError("$context.descriptorDiagnostics[$index] の型がobjectではありません")
+            }
+        }
+        requireString(obj, "descriptorDiagnosticsCanonicalJson", context)
+        requireString(obj, "descriptorFactsCanonicalJson", context)
+    }
+
+    private fun validateParentalRating(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "countryCode", "rawRatingByte", "parseStatus")
+        val country = requireString(obj, "countryCode", context)
+        if (country.length != 3) jsonEncodingError("$context.countryCode は3文字でなければなりません")
+        requireInteger(obj, "rawRatingByte", context, 0L..255L)
+        requireStringValue(obj, "parseStatus", context, setOf("OK"))
+    }
+
+    private fun validateEvent(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(
+            obj,
+            context,
+            "programKey",
+            "eventId",
+            "serviceKey",
+            "stableIdentity",
+            "timing",
+            "title",
+            "description",
+            "extendedDescription",
+            "eventScope",
+            "source",
+            "descriptors",
+        )
+        requireNullableObject(obj, "programKey", context)?.let {
+            validateProgramKey(it, "$context.programKey")
+        }
+        requireInteger(obj, "eventId", context, 0L..65_535L)
+        validateServiceKey(requireObject(obj, "serviceKey", context), "$context.serviceKey")
+        requireNullableString(obj, "stableIdentity", context)
+        validateTiming(requireObject(obj, "timing", context), "$context.timing")
+        requireString(obj, "title", context)
+        requireString(obj, "description", context)
+        requireString(obj, "extendedDescription", context)
+        requireStringValue(
+            obj,
+            "eventScope",
+            context,
+            setOf(
+                "present_following_actual",
+                "present_following_other",
+                "schedule_actual",
+                "schedule_other",
+                "unknown",
+            ),
+        )
+        validateProgramSource(requireObject(obj, "source", context), "$context.source")
+        validateEventDescriptors(
+            requireObject(obj, "descriptors", context),
+            "$context.descriptors",
+        )
+    }
+
+    private fun validateNativeTransaction(root: JSONObject) {
+        requireExactFields(
+            root,
+            "SI snapshot",
+            "schemaVersion",
+            "collectionGeneration",
+            "ingestSequence",
+            "discoveryStage",
+            "broadcastClock",
+            "tableRequirements",
+            "catCaMetadata",
+            "malformedCaDescriptorDiagnostics",
+            "malformedCaDescriptorCounts",
+            "transportSemanticFacts",
+            "events",
+            "eitInstances",
+            "serviceSemanticFacts",
+            "parserDiagnostics",
+        )
+        requireInteger(
+            root,
+            "schemaVersion",
+            "SI snapshot",
+            SI_SNAPSHOT_SCHEMA_VERSION.toLong()..SI_SNAPSHOT_SCHEMA_VERSION.toLong(),
+        )
+        requireInteger(root, "collectionGeneration", "SI snapshot", 0L..Long.MAX_VALUE)
+        requireInteger(root, "ingestSequence", "SI snapshot", 0L..Long.MAX_VALUE)
+        requireInteger(
+            root,
+            "discoveryStage",
+            "SI snapshot",
+            0L..SiDiscoveryStage.COMPLETE.toLong(),
+        )
+        requireNullableObject(root, "broadcastClock", "SI snapshot")?.let {
+            validateBroadcastClock(it, "SI snapshot.broadcastClock")
+        }
+        validateObjectArray(
+            requireArray(root, "tableRequirements", "SI snapshot"),
+            "SI snapshot.tableRequirements",
+            ::validateTableRequirement,
+        )
+        validateObjectArray(
+            requireArray(root, "catCaMetadata", "SI snapshot"),
+            "SI snapshot.catCaMetadata",
+            ::validateCaMetadata,
+        )
+        validateObjectArray(
+            requireArray(root, "malformedCaDescriptorDiagnostics", "SI snapshot"),
+            "SI snapshot.malformedCaDescriptorDiagnostics",
+            ::validateMalformedCaDescriptor,
+        )
+        validateObjectArray(
+            requireArray(root, "malformedCaDescriptorCounts", "SI snapshot"),
+            "SI snapshot.malformedCaDescriptorCounts",
+            ::validateMalformedCaCount,
+        )
+        validateObjectArray(
+            requireArray(root, "transportSemanticFacts", "SI snapshot"),
+            "SI snapshot.transportSemanticFacts",
+            ::validateTransport,
+        )
+        validateObjectArray(
+            requireArray(root, "events", "SI snapshot"),
+            "SI snapshot.events",
+            ::validateEvent,
+        )
+        validateObjectArray(
+            requireArray(root, "eitInstances", "SI snapshot"),
+            "SI snapshot.eitInstances",
+            ::validateEitInstance,
+        )
+        validateObjectArray(
+            requireArray(root, "serviceSemanticFacts", "SI snapshot"),
+            "SI snapshot.serviceSemanticFacts",
+            ::validateServiceSemanticFacts,
+        )
+        validateObjectArray(
+            requireArray(root, "parserDiagnostics", "SI snapshot"),
+            "SI snapshot.parserDiagnostics",
+            ::validateParserDiagnostic,
+        )
     }
 
     private fun parseStringArray(array: JSONArray?): List<String> =
