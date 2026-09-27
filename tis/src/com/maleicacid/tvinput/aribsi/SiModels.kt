@@ -302,7 +302,7 @@ data class AribComponents(
 data class AribTruncatedDescriptorLoop(
     val declaredLength: Int,
     val rawBytesHex: String,
-    val parseStatus: String,
+    val parseStatus: SiParseStatus,
 )
 
 data class AribEventDiagnostics(
