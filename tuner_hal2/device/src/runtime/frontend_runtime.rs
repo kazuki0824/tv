@@ -770,7 +770,12 @@ impl FrontendRuntime {
         report: FrontendLivePumpReport,
         cancel_reason: Option<FrontendWorkerCancelReason>,
     ) -> Result<(), HalError> {
-        if generation != self.generation {
+        // worker置換で世代を進めた後に旧workerのlive pump終了報告が到着し得る。
+        // 旧世代の診断はcurrent状態へ反映せず破棄する。
+        if generation < self.generation {
+            return Ok(());
+        }
+        if generation > self.generation {
             let failure = FrontendDiagnosticWriteFailure::LivePumpReportGenerationMismatch {
                 report_generation: generation,
                 runtime_generation: self.generation,
@@ -1426,12 +1431,36 @@ mod tests {
     }
 
     #[test]
-    fn live_pump_report_write_failure_is_diagnostic_not_silent() {
+    fn stale_live_pump_report_is_discarded_without_mutating_current_generation() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(2).unwrap();
+        runtime.mark_tuning(2);
+        let before = runtime.snapshot();
+        runtime
+            .record_live_pump_report(
+                1,
+                FrontendLivePumpReport {
+                    packets_delivered: 0,
+                    malformed_bytes: 4,
+                    malformed_byte_counter_saturated: false,
+                    read_retries: 0,
+                    read_retry_counter_saturated: false,
+                    stopped_by_cancel: true,
+                    reached_eof: false,
+                },
+                Some(FrontendWorkerCancelReason::SupersededByNewRequest),
+            )
+            .unwrap();
+        assert_eq!(runtime.snapshot(), before);
+    }
+
+    #[test]
+    fn future_live_pump_report_write_failure_is_diagnostic_not_silent() {
         let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
         runtime.commit_generation(2).unwrap();
         runtime.mark_tuning(2);
         let result = runtime.record_live_pump_report(
-            1,
+            3,
             FrontendLivePumpReport {
                 packets_delivered: 0,
                 malformed_bytes: 4,
@@ -1448,7 +1477,7 @@ mod tests {
             runtime.diagnostic_write_failures(),
             &[
                 FrontendDiagnosticWriteFailure::LivePumpReportGenerationMismatch {
-                    report_generation: 1,
+                    report_generation: 3,
                     runtime_generation: 2,
                 }
             ]
