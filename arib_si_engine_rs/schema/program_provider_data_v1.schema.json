@@ -21,7 +21,8 @@
     "components",
     "diagnostics",
     "shortEvents",
-    "extendedTexts"
+    "extendedTexts",
+    "casFacts"
   ],
   "properties": {
     "schema": {
@@ -111,14 +112,7 @@
       "$ref": "#/$defs/diagnostics"
     },
     "casFacts": {
-      "anyOf": [
-        {
-          "$ref": "https://maleicacid.local/schema/cas_facts_v1.schema.json"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "$ref": "https://maleicacid.local/schema/cas_facts_v1.schema.json"
     }
   },
   "not": {
