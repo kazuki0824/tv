@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class ServiceSemanticFactsDto(
     val originalNetworkId: Int,
     val transportStreamId: Int,
@@ -23,3 +24,4 @@ data class ServiceSemanticFactsDto(
     val serviceScopedCaDescriptors: kotlin.collections.List<com.maleicacid.tvinput.aribsi.generated.ServiceCaDescriptorDto>
 ) {
 }
+
