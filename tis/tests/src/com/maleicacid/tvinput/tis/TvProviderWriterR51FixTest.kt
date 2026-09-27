@@ -78,7 +78,7 @@ class TvProviderWriterR51FixTest {
                                             componentType = 3,
                                             codec = "AAC",
                                             language = "jpn",
-                                            parseStatus = "OK",
+                                            parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.OK,
                                         ),
                                     ),
                             ),
