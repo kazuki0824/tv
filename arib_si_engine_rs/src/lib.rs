@@ -1244,6 +1244,7 @@ fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshot {
     }
 }
 
+#[cfg(test)]
 fn bulk_snapshot_json(state: &mut ParserState) -> Result<String, serde_json::Error> {
     serde_json::to_string(&build_bulk_snapshot(state))
 }
