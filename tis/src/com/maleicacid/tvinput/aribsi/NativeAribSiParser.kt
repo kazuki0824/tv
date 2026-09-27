@@ -4,10 +4,6 @@ import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONObject
 
-private const val SERIES_U16_MAX = 65_535L
-private const val SERIES_REPEAT_LABEL_MAX = 15L
-private const val SERIES_PROGRAM_PATTERN_MAX = 7L
-private const val SERIES_EPISODE_MAX = 4_095L
 
 private typealias NativeTransaction = NativeSiSnapshot
 
