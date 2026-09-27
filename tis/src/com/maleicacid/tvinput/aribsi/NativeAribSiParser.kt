@@ -4,7 +4,6 @@ import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONObject
 
-
 private typealias NativeTransaction = NativeSiSnapshot
 
 class NativeParserCleanupException(
