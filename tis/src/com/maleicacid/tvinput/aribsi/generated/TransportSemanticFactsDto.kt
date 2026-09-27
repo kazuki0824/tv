@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class TransportSemanticFactsDto(
     val originalNetworkId: Int,
     val transportStreamId: Int,
@@ -9,3 +10,4 @@ data class TransportSemanticFactsDto(
     val sdtActual: Boolean
 ) {
 }
+
