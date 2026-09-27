@@ -126,6 +126,32 @@ class NativeAribSiParserCasDiscoveryTest {
     }
 
     @Test
+    fun broadcastSystemWireValueIsDecodedToClosedTypeAndUnknownIsRejected() {
+        NativeAribSiParser().use { parser ->
+            val method =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("parseBroadcastSystem", JSONObject::class.java)
+                    .apply { isAccessible = true }
+
+            fun decode(value: Any): Any? =
+                method.invoke(
+                    parser,
+                    JSONObject().put("broadcastSystem", value),
+                )
+
+            check(decode("ISDB_T") == BroadcastSystem.ISDB_T)
+            check(decode("ISDB_S_BS") == BroadcastSystem.ISDB_S_BS)
+            check(decode("ISDB_S_110CS") == BroadcastSystem.ISDB_S_110CS)
+            check(decode(JSONObject.NULL) == null)
+
+            val failure = runCatching { decode("UNKNOWN") }.exceptionOrNull()
+            check(failure is java.lang.reflect.InvocationTargetException)
+            val cause = failure.cause
+            check(cause is NativeSiException && cause.reason == NativeSiFailureReason.JSON_ENCODING)
+        }
+    }
+
+    @Test
     fun seriesCandidatesRejectMissingWrongTypeAndOutOfRangeValues() {
         NativeAribSiParser().use { parser ->
             val method =

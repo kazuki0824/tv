@@ -102,7 +102,7 @@ class ServiceListBuilder(
         fun completenessForModel(
             service: AribService,
             facts: ServiceSemanticFacts?,
-            expectedSmdBroadcastSystem: String? = null,
+            expectedSmdBroadcastSystem: BroadcastSystem? = null,
         ): ServiceCompleteness {
             val diagnostic =
                 ServicePolicyEvaluator.evaluate(
@@ -128,11 +128,11 @@ object ServicePolicyEvaluator {
     @Suppress("MagicNumber")
     private val RECOGNIZED_UNSUPPORTED_AUDIO_STREAM_TYPES = setOf(0x11)
 
-    fun expectedSmdBroadcastSystem(profile: Int): String? =
+    fun expectedSmdBroadcastSystem(profile: Int): BroadcastSystem? =
         when (profile) {
-            SiDiscoveryProfile.ISDB_T -> "ISDB_T"
-            SiDiscoveryProfile.BS -> "ISDB_S_BS"
-            SiDiscoveryProfile.CS110 -> "ISDB_S_110CS"
+            SiDiscoveryProfile.ISDB_T -> BroadcastSystem.ISDB_T
+            SiDiscoveryProfile.BS -> BroadcastSystem.ISDB_S_BS
+            SiDiscoveryProfile.CS110 -> BroadcastSystem.ISDB_S_110CS
             else -> null
         }
 
@@ -157,7 +157,7 @@ object ServicePolicyEvaluator {
         fallbackKey: ServiceKey? = facts?.serviceKey,
         hasPhysicalTune: Boolean = true,
         hasInternalTuneKey: Boolean = true,
-        expectedSmdBroadcastSystem: String? = null,
+        expectedSmdBroadcastSystem: BroadcastSystem? = null,
     ): ServicePublishabilityDiagnostic {
         val key = facts?.serviceKey ?: fallbackKey ?: ServiceKey(0, 0, 0)
         if (facts == null) {

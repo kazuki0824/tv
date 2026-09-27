@@ -404,6 +404,27 @@ class NativeAribSiParser : AutoCloseable {
             )
         }
 
+    private fun parseBroadcastSystem(smd: JSONObject): BroadcastSystem? {
+        if (smd.isNull("broadcastSystem")) return null
+        val value = smd.get("broadcastSystem")
+        if (value !is String) {
+            throw NativeSiException(
+                "JSON_ENCODING",
+                "SI snapshotのbroadcastSystem型が不正です",
+            )
+        }
+        return when (value) {
+            "ISDB_T" -> BroadcastSystem.ISDB_T
+            "ISDB_S_BS" -> BroadcastSystem.ISDB_S_BS
+            "ISDB_S_110CS" -> BroadcastSystem.ISDB_S_110CS
+            else ->
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのbroadcastSystemが未知です: $value",
+                )
+        }
+    }
+
     private fun optIntOrNull(
         obj: JSONObject,
         key: String,
@@ -1164,7 +1185,7 @@ class NativeAribSiParser : AutoCloseable {
                         systemManagementId = optIntOrNull(smd, "systemManagementId"),
                         broadcastingFlag = optIntOrNull(smd, "broadcastingFlag"),
                         broadcastingIdentifier = optIntOrNull(smd, "broadcastingIdentifier"),
-                        broadcastSystem = optStringOrNull(smd, "broadcastSystem"),
+                        broadcastSystem = parseBroadcastSystem(smd),
                         additionalBroadcastingIdentification = optIntOrNull(smd, "additionalBroadcastingIdentification"),
                         additionalIdentificationInfoHex = smd.optString("additionalIdentificationInfoHex"),
                         semanticState = smd.optString("semanticState", "UNDETERMINED_SMD"),

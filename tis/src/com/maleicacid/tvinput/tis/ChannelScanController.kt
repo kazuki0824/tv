@@ -7,6 +7,7 @@ import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
+import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
@@ -556,7 +557,7 @@ class ChannelScanController(
         return result
     }
 
-    private fun expectedSmdBroadcastSystem(candidate: ScanCandidate): String =
+    private fun expectedSmdBroadcastSystem(candidate: ScanCandidate): BroadcastSystem =
         requireNotNull(ServicePolicyEvaluator.expectedSmdBroadcastSystem(discoveryProfile(candidate.kind)))
 
     private fun discoveryProfile(kind: ScanCandidateKind): Int =

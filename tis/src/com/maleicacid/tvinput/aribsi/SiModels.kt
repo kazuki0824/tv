@@ -422,13 +422,19 @@ data class ParserDiagnostic(
     val severity: String? = null,
 )
 
+enum class BroadcastSystem {
+    ISDB_T,
+    ISDB_S_BS,
+    ISDB_S_110CS,
+}
+
 data class SmdSemanticFacts(
     val descriptorPresent: Boolean,
     val syntaxValid: Boolean,
     val systemManagementId: Int?,
     val broadcastingFlag: Int?,
     val broadcastingIdentifier: Int?,
-    val broadcastSystem: String? = null,
+    val broadcastSystem: BroadcastSystem? = null,
     val additionalBroadcastingIdentification: Int?,
     val additionalIdentificationInfoHex: String,
     val semanticState: String,
