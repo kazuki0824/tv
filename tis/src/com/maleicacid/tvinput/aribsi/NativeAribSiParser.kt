@@ -943,34 +943,9 @@ class NativeAribSiParser : AutoCloseable {
         candidate: JSONObject,
         index: Int,
     ): AribSeries {
-        val requiredNumbers =
-            listOf(
-                "seriesId",
-                "repeatLabel",
-                "programPattern",
-                "episodeNumber",
-                "lastEpisodeNumber",
-            )
-        requiredNumbers.forEach { key ->
-            if (!candidate.has(key) || candidate.isNull(key) || candidate.get(key) !is Number) {
-                throw seriesCandidateEncodingError(index, "$key の型が不正です")
-            }
-        }
-        if (!candidate.has("expireDateValid") || candidate.get("expireDateValid") !is Boolean) {
-            throw seriesCandidateEncodingError(index, "expireDateValid の型が不正です")
-        }
-        if (!candidate.has("expireDate") ||
-            (!candidate.isNull("expireDate") && candidate.get("expireDate") !is Number)
-        ) {
-            throw seriesCandidateEncodingError(index, "expireDate の型が不正です")
-        }
-        if (!candidate.has("name") ||
-            (!candidate.isNull("name") && candidate.get("name") !is String)
-        ) {
-            throw seriesCandidateEncodingError(index, "name の型が不正です")
-        }
-        if (!candidate.has("parseStatus") || candidate.get("parseStatus") !is String) {
-            throw seriesCandidateEncodingError(index, "parseStatus の型が不正です")
+        val validationErrors = seriesCandidateValidationErrors(candidate)
+        if (validationErrors.isNotEmpty()) {
+            throw seriesCandidateEncodingError(index, validationErrors.joinToString(", "))
         }
         return AribSeries(
             seriesId = candidate.getInt("seriesId"),
@@ -984,6 +959,37 @@ class NativeAribSiParser : AutoCloseable {
             parseStatus = candidate.getString("parseStatus"),
         )
     }
+
+    private fun seriesCandidateValidationErrors(candidate: JSONObject): List<String> =
+        buildList {
+            listOf(
+                "seriesId",
+                "repeatLabel",
+                "programPattern",
+                "episodeNumber",
+                "lastEpisodeNumber",
+            ).forEach { key ->
+                if (!candidate.has(key) || candidate.isNull(key) || candidate.get(key) !is Number) {
+                    add("$key の型が不正です")
+                }
+            }
+            if (!candidate.has("expireDateValid") || candidate.get("expireDateValid") !is Boolean) {
+                add("expireDateValid の型が不正です")
+            }
+            if (!candidate.has("expireDate") ||
+                (!candidate.isNull("expireDate") && candidate.get("expireDate") !is Number)
+            ) {
+                add("expireDate の型が不正です")
+            }
+            if (!candidate.has("name") ||
+                (!candidate.isNull("name") && candidate.get("name") !is String)
+            ) {
+                add("name の型が不正です")
+            }
+            if (!candidate.has("parseStatus") || candidate.get("parseStatus") !is String) {
+                add("parseStatus の型が不正です")
+            }
+        }
 
     private fun seriesCandidateEncodingError(
         index: Int,
