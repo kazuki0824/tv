@@ -20,3 +20,9 @@ pub mod provider_data;
 pub mod sections;
 #[path = "core/service_discovery.rs"]
 pub mod service_discovery;
+
+#[path = "core/runtime_snapshot_dto.rs"]
+pub mod runtime_snapshot_dto;
+
+#[path = "core/runtime_snapshot_build.rs"]
+pub mod runtime_snapshot_build;

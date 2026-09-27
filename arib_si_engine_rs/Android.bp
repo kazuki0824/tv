@@ -22,6 +22,8 @@ rust_library {
         "src/core/eit.rs",
         "src/core/eit_instances.rs",
         "src/core/provider_data.rs",
+        "src/core/runtime_snapshot_dto.rs",
+        "src/core/runtime_snapshot_build.rs",
         "src/core/sections.rs",
         "src/core/service_discovery.rs",
     ],

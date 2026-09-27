@@ -4,31 +4,29 @@ mod ca_descriptor;
 mod descriptors;
 mod discovery_requirements;
 mod eit;
+mod jvm_snapshot_generated;
 pub(crate) mod provider_data;
 mod sections;
 mod service_discovery;
 
 use broadcast_clock::{parse_broadcast_clock, BroadcastClockFact};
-use ca_descriptor::{CaDescriptor, MalformedCaDescriptorDiagnostic};
-use descriptors::{
-    event_descriptor_diagnostic, event_descriptor_diagnostics_array_json_scoped,
-    event_provider_fields, json_escape, DescriptorSectionScope,
-};
+use ca_descriptor::MalformedCaDescriptorDiagnostic;
+use descriptors::json_escape;
 use discovery_requirements::DiscoveryProfile;
-use eit::{EitEvent, EitStableEventIdentity};
+use eit::EitEvent;
 use jni::objects::{JByteArray, JClass, JObject, JString, JThrowable, JValue};
-use jni::sys::{jint, jlong, jstring};
+use jni::sys::{jint, jintArray, jlong, jobject, jstring};
 use jni::JNIEnv;
-use maleicacid_arib_si_engine_core::eit_instances::{EitInstanceState, EitInstances};
+use maleicacid_arib_si_engine_core::eit_instances::EitInstances;
+use maleicacid_arib_si_engine_core::runtime_snapshot_build;
+use maleicacid_arib_si_engine_core::runtime_snapshot_dto::{
+    BroadcastClockDto, BulkSnapshotDto, MalformedCaDescriptorCountDto, ParserDiagnosticDto,
+};
 use provider_data as provider_data_api;
 use sections::{
     parse_section_header, section_crc_valid_with_header, section_has_malformed_descriptor_loop,
 };
-use serde::Serialize;
-use service_discovery::{
-    DiscoveredElementaryStream, DiscoveryPublishStage, ServiceDiscoveryCollector,
-    ServiceSemanticFacts, TableRequirementStatus,
-};
+use service_discovery::{DiscoveryPublishStage, ServiceDiscoveryCollector};
 use std::collections::BTreeMap;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -104,9 +102,9 @@ impl InvalidSectionReason {
             Self::Crc => ("SECTION_CRC_MISMATCH", "section CRCが一致しません"),
         };
         ParserDiagnosticDto {
-            code,
+            code: code.to_string(),
             message: message.to_string(),
-            severity: "error",
+            severity: Some("error".to_string()),
         }
     }
 }
@@ -256,966 +254,93 @@ impl ParserState {
     }
 }
 
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
-}
-
 fn json_string(value: &str) -> String {
     format!("\"{}\"", json_escape(value))
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ElementaryStreamDto {
-    codec_facts: maleicacid_arib_si_engine_core::codec_signaling::CodecDescriptorFacts,
-    codec_profile_level: Option<String>,
-    codec_signaling_resolved: bool,
-    codec: Option<&'static str>,
-    codec_kind: Option<&'static str>,
-    elementary_pid: u16,
-    stream_type: u8,
-    component_tag: Option<u8>,
-    component_type: Option<u8>,
-    stream_content: Option<u8>,
-    language_codes: Vec<String>,
-    data_component_id: Option<u16>,
-    caption_dmf: Option<u8>,
-    caption_timing: Option<u8>,
-    automatic_presentation_on_reception: Option<bool>,
-    is_caption: bool,
-    is_superimpose: bool,
-}
-
-impl From<&DiscoveredElementaryStream> for ElementaryStreamDto {
-    fn from(stream: &DiscoveredElementaryStream) -> Self {
-        Self {
-            codec_facts: stream.codec_facts.clone(),
-            codec_profile_level: stream.codec_facts.profile_level(),
-            codec_signaling_resolved: stream.codec_facts.is_resolved(),
-            codec: stream.codec_signaling().map(|(_, codec)| codec),
-            codec_kind: stream.codec_signaling().map(|(kind, _)| kind),
-            elementary_pid: stream.elementary_pid,
-            stream_type: stream.stream_type,
-            component_tag: stream.component_tag,
-            component_type: stream.component_type,
-            stream_content: stream.stream_content,
-            language_codes: stream.language_codes.clone(),
-            data_component_id: stream.data_component_id,
-            caption_dmf: stream.caption_dmf,
-            caption_timing: stream.caption_timing,
-            automatic_presentation_on_reception: stream.automatic_presentation_on_reception,
-            is_caption: stream.is_caption,
-            is_superimpose: stream.is_superimpose,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ServiceCaDescriptorDto {
-    ca_system_id: u16,
-    ca_pid: u16,
-    scope: &'static str,
-    es_pid: Option<u16>,
-    raw_descriptor_hex: String,
-    private_data_hex: String,
-}
-
-fn service_ca_descriptor_dto(
-    ca: &CaDescriptor,
-    scope: &'static str,
-    es_pid: Option<u16>,
-) -> ServiceCaDescriptorDto {
-    ServiceCaDescriptorDto {
-        ca_system_id: ca.ca_system_id,
-        ca_pid: ca.ca_pid,
-        scope,
-        es_pid,
-        raw_descriptor_hex: hex_lower(&ca.raw_descriptor),
-        private_data_hex: hex_lower(&ca.private_data),
-    }
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ServiceKeyDto {
-    original_network_id: u16,
-    transport_stream_id: u16,
-    service_id: u16,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TransportSemanticFactsDto {
-    original_network_id: u16,
-    transport_stream_id: u16,
-    network_name: Option<String>,
-    transport_stream_name: Option<String>,
-    remote_control_key_id: Option<u8>,
-    sdt_actual: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CaMetadataDto {
-    service_key: Option<ServiceKeyDto>,
-    ca_system_id: u16,
-    ecm_pid: Option<u16>,
-    emm_pid: Option<u16>,
-    elementary_pid: Option<u16>,
-    private_data_hex: String,
-    source: &'static str,
-}
-
-fn ca_metadata_dto(
-    service_key: Option<ServiceKeyDto>,
-    ca: &CaDescriptor,
-    ecm_pid: Option<u16>,
-    emm_pid: Option<u16>,
-    elementary_pid: Option<u16>,
-    source: &'static str,
-) -> CaMetadataDto {
-    CaMetadataDto {
-        service_key,
-        ca_system_id: ca.ca_system_id,
-        ecm_pid,
-        emm_pid,
-        elementary_pid,
-        private_data_hex: hex_lower(&ca.private_data),
-        source,
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MalformedCaDescriptorDiagnosticDto {
-    pid: u16,
-    table_id: u8,
-    table_id_extension: Option<u16>,
-    service_id: Option<u16>,
-    elementary_pid: Option<u16>,
-    scope: &'static str,
-    offset: usize,
-    declared_length: usize,
-    actual_remaining_length: usize,
-    reason: &'static str,
-    raw_prefix_hex: String,
-}
-
-impl From<&MalformedCaDescriptorDiagnostic> for MalformedCaDescriptorDiagnosticDto {
-    fn from(diagnostic: &MalformedCaDescriptorDiagnostic) -> Self {
-        Self {
-            pid: diagnostic.pid,
-            table_id: diagnostic.table_id,
-            table_id_extension: diagnostic.table_id_extension,
-            service_id: diagnostic.service_id,
-            elementary_pid: diagnostic.elementary_pid,
-            scope: diagnostic.scope,
-            offset: diagnostic.offset,
-            declared_length: diagnostic.declared_length,
-            actual_remaining_length: diagnostic.actual_remaining_length,
-            reason: diagnostic.reason,
-            raw_prefix_hex: diagnostic.raw_prefix_hex.clone(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MalformedCaDescriptorCountDto {
-    service_id: u16,
-    count: usize,
 }
 
 fn malformed_ca_descriptor_counts(
     diagnostics: &[MalformedCaDescriptorDiagnostic],
 ) -> Vec<MalformedCaDescriptorCountDto> {
     let mut counts: BTreeMap<u16, usize> = BTreeMap::new();
-    for d in diagnostics.iter().filter(|d| d.service_id.is_some()) {
-        *counts.entry(d.service_id.unwrap_or_default()).or_insert(0) += 1;
+    for diagnostic in diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.service_id.is_some())
+    {
+        if let Some(service_id) = diagnostic.service_id {
+            *counts.entry(service_id).or_insert(0) += 1;
+        }
     }
     counts
         .into_iter()
-        .map(|(service_id, count)| MalformedCaDescriptorCountDto { service_id, count })
+        .map(|(service_id, count)| MalformedCaDescriptorCountDto {
+            service_id: i32::from(service_id),
+            count: i32::try_from(count).unwrap_or(i32::MAX),
+        })
         .collect()
 }
 
-fn short_events_value(event: &EitEvent) -> serde_json::Value {
-    serde_json::Value::Array(
-        event
-            .descriptors
-            .short_events
-            .iter()
-            .map(|candidate| {
-                serde_json::json!({
-                    "languageCode": candidate.language_code,
-                    "title": candidate.title,
-                    "text": candidate.text,
-                    "parseStatus": "OK",
-                })
-            })
-            .collect(),
-    )
-}
-
-fn extended_texts_value(event: &EitEvent) -> serde_json::Value {
-    serde_json::Value::Array(
-        event
-            .descriptors
-            .extended_texts
-            .iter()
-            .map(|candidate| {
-                serde_json::json!({
-                    "languageCode": candidate.language_code,
-                    "text": candidate.text,
-                    "parseStatus": "OK",
-                })
-            })
-            .collect(),
-    )
-}
-
-fn extended_items_value(event: &EitEvent) -> serde_json::Value {
-    serde_json::Value::Array(
-        event
-            .descriptors
-            .extended_items
-            .iter()
-            .map(|item| {
-                serde_json::json!({
-                    "languageCode": item.language_code,
-                    "description": item.item_description,
-                    "text": item.item_text,
-                })
-            })
-            .collect(),
-    )
-}
-
-fn event_component_text(event: &EitEvent) -> String {
-    event
-        .descriptors
-        .components
-        .iter()
-        .map(|c| c.text.clone())
-        .filter(|v| !v.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn event_audio_component_text(event: &EitEvent) -> String {
-    event
-        .descriptors
-        .audio_components
-        .iter()
-        .map(|a| a.text.clone())
-        .filter(|v| !v.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn event_audio_language(event: &EitEvent) -> String {
-    let mut langs = Vec::new();
-    for audio in &event.descriptors.audio_components {
-        if !audio.language_code.is_empty() && !langs.contains(&audio.language_code) {
-            langs.push(audio.language_code.clone());
-        }
-        if let Some(second) = &audio.language_code_2 {
-            if !second.is_empty() && !langs.contains(second) {
-                langs.push(second.clone());
-            }
-        }
-    }
-    langs.join(",")
-}
-
-fn event_primary_series_value(event: &EitEvent) -> serde_json::Value {
-    match event.descriptors.series.as_slice() {
-        [series] => series_value(series),
-        _ => serde_json::Value::Null,
-    }
-}
-
-fn series_value(series: &crate::descriptors::SeriesDescriptor) -> serde_json::Value {
-    serde_json::json!({
-        "seriesId": series.series_id,
-        "repeatLabel": series.repeat_label,
-        "programPattern": series.program_pattern,
-        "expireDateValid": series.expire_date_valid,
-        "expireDate": if series.expire_date_valid {
-            serde_json::json!(series.expire_date)
-        } else {
-            serde_json::Value::Null
-        },
-        "episodeNumber": series.episode_number,
-        "lastEpisodeNumber": series.last_episode_number,
-        "name": if series.series_name.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::Value::String(series.series_name.clone())
-        },
-        "parseStatus": "OK",
-    })
-}
-
-fn series_candidates_value(event: &EitEvent) -> serde_json::Value {
-    serde_json::Value::Array(event.descriptors.series.iter().map(series_value).collect())
-}
-
-fn series_candidates_canonical_json(event: &EitEvent) -> Option<String> {
-    (event.descriptors.series.len() > 1).then(|| series_candidates_value(event).to_string())
-}
-
-fn event_groups_value(event: &EitEvent) -> serde_json::Value {
-    serde_json::Value::Array(
-        event
-            .descriptors
-            .event_groups
-            .iter()
-            .map(|group| {
-                let events = group
-                    .events
-                    .iter()
-                    .map(|related| {
-                        serde_json::json!({
-                            "serviceId": related.service_id,
-                            "eventId": related.event_id,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                let other_network_events = group
-                    .other_network_events
-                    .iter()
-                    .map(|related| {
-                        serde_json::json!({
-                            "originalNetworkId": related.original_network_id,
-                            "transportStreamId": related.transport_stream_id,
-                            "serviceId": related.service_id,
-                            "eventId": related.event_id,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                serde_json::json!({
-                    "groupType": group.group_type,
-                    "events": events,
-                    "otherNetworkEvents": other_network_events,
-                    "privateDataHex": hex_lower(&group.private_data),
-                    "parseStatus": "OK",
-                })
-            })
-            .collect(),
-    )
-}
-
-fn event_component_groups_value(event: &EitEvent) -> serde_json::Value {
-    serde_json::Value::Array(
-        event
-            .descriptors
-            .component_groups
-            .iter()
-            .map(|descriptor| {
-                serde_json::json!({
-                    "componentGroupType": descriptor.component_group_type,
-                    "groups": descriptor.groups.iter().map(|group| {
-                        serde_json::json!({
-                            "componentGroupId": group.component_group_id,
-                            "componentTags": group.component_tags,
-                        })
-                    }).collect::<Vec<_>>(),
-                    "parseStatus": "OK",
-                })
-            })
-            .collect(),
-    )
-}
-
-fn event_linkage_value(event: &EitEvent) -> serde_json::Value {
-    serde_json::Value::Array(
-        event
-            .descriptors
-            .linkages
-            .iter()
-            .map(|linkage| {
-                serde_json::json!({
-                    "transportStreamId": linkage.transport_stream_id,
-                    "originalNetworkId": linkage.original_network_id,
-                    "serviceId": linkage.service_id,
-                    "linkageType": linkage.linkage_type,
-                    "privateDataPrefixHex": hex_prefix(&linkage.private_data, 16),
-                    "parseStatus": "OK",
-                })
-            })
-            .collect(),
-    )
-}
-
-fn hex_prefix(bytes: &[u8], max_len: usize) -> String {
-    bytes
-        .iter()
-        .take(max_len)
-        .map(|b| format!("{:02x}", b))
-        .collect::<Vec<_>>()
-        .join("")
-}
-
-fn event_content_genres_value(event: &EitEvent) -> serde_json::Value {
-    serde_json::Value::Array(
-        event
-            .descriptors
-            .contents
-            .iter()
-            .map(|content| {
-                serde_json::json!({
-                    "level1": content.content_nibble_level_1,
-                    "level2": content.content_nibble_level_2,
-                    "userNibble": ((content.user_nibble_1 as u16) << 4) | content.user_nibble_2 as u16,
-                    "aribName": content.arib_display_name,
-                    "parseStatus": "OK",
-                })
-            })
-            .collect(),
-    )
-}
-
-fn event_genre_supplement_text(event: &EitEvent) -> String {
-    event
-        .descriptors
-        .contents
-        .iter()
-        .map(|c| c.arib_display_name.clone())
-        .collect::<Vec<_>>()
-        .join("、")
-}
-
-fn event_diagnostic_text(event: &EitEvent) -> String {
-    let d = &event.descriptors;
-    let counts = event_descriptor_diagnostic(d);
-    format!(
-        "contentCount={} content={:?} componentCount={} component={:?} audioCount={} audio={:?} parentalCount={} parental={:?} seriesCount={} series={:?} eventGroupCount={} eventGroups={:?} componentGroupCount={} componentGroups={:?} linkageCount={} linkage={:?} unknownCount={} unknown={:?} textDiagnostics={}",
-        counts.content_count, d.contents, counts.component_count, d.components,
-        counts.audio_component_count, d.audio_components,
-        d.parental_rating_descriptors.len(), d.parental_rating_descriptors,
-        counts.series_count, d.series, counts.event_group_count, d.event_groups,
-        counts.component_group_count, d.component_groups, counts.linkage_count, d.linkages,
-        counts.unknown_count, d.unknown,
-        d.diagnostics.iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; "),
-    )
-}
-
-fn rating_entries_value(
-    descriptor: &descriptors::ParentalRatingDescriptor,
-) -> Vec<serde_json::Value> {
-    descriptor.entries.iter().map(|rating| serde_json::json!({
-        "countryCode": rating.country_code,
-        "rawRatingByte": rating.raw_rating_byte,
-        "parseStatus": if descriptor.parse_status == descriptors::DescriptorParseStatus::Ok { "OK" } else { descriptor.parse_status.as_str() },
-    })).collect()
-}
-
-fn parental_ratings_value(event: &EitEvent) -> serde_json::Value {
-    serde_json::Value::Array(
-        event
-            .descriptors
-            .parental_rating_descriptors
-            .iter()
-            .filter(|descriptor| descriptor.parse_status == descriptors::DescriptorParseStatus::Ok)
-            .flat_map(rating_entries_value)
-            .collect(),
-    )
-}
-
-fn descriptor_facts_value(event: &EitEvent) -> serde_json::Value {
-    serde_json::json!({
-        "parentalRatingDescriptors": event.descriptors.parental_rating_descriptors.iter().map(|descriptor| {
-            serde_json::json!({
-                "entries": rating_entries_value(descriptor),
-                "rawDescriptorHex": hex_lower(&descriptor.raw_descriptor_bytes),
-                "parseStatus": if descriptor.parse_status == descriptors::DescriptorParseStatus::Ok { "OK" } else { descriptor.parse_status.as_str() },
-            })
-        }).collect::<Vec<_>>(),
-        "unknownDescriptors": event.descriptors.unknown.iter().map(|(tag, body)| {
-            let mut raw = vec![*tag, body.len() as u8];
-            raw.extend_from_slice(body);
-            serde_json::json!({ "tag": tag, "rawDescriptorHex": hex_lower(&raw) })
-        }).collect::<Vec<_>>(),
-    })
-}
-
-fn video_component_semantics(
-    stream_content: u8,
-    component_type: u8,
-) -> (
-    Option<&'static str>,
-    Option<&'static str>,
-    Option<&'static str>,
-) {
-    if stream_content != 0x01 {
-        return (None, None, None);
-    }
-    let (resolution, scan) = match component_type {
-        0x01..=0x04 => (Some("480"), Some("interlaced")),
-        0xa1..=0xa4 => (Some("480"), Some("progressive")),
-        0xb1..=0xb4 => (Some("1080"), Some("interlaced")),
-        0xc1..=0xc4 => (Some("720"), Some("progressive")),
-        0xd1..=0xd4 => (Some("240"), Some("progressive")),
-        _ => (None, None),
-    };
-    let aspect = if resolution.is_some() {
-        match component_type & 0x0f {
-            0x01 => Some("4:3"),
-            0x02 | 0x03 => Some("16:9"),
-            0x04 => Some(">16:9"),
-            _ => None,
-        }
+fn u64_to_i64_saturating(value: u64) -> i64 {
+    if value > i64::MAX as u64 {
+        i64::MAX
     } else {
-        None
-    };
-    (resolution, scan, aspect)
-}
-
-fn audio_mode(stream_content: u8, component_type: u8) -> Option<u8> {
-    (stream_content == 0x02).then_some(component_type & 0x1f)
-}
-
-fn audio_channel_configuration(stream_content: u8, component_type: u8) -> Option<&'static str> {
-    match audio_mode(stream_content, component_type)? {
-        0x01 => Some("1/0"),
-        0x02 => Some("1/0+1/0"),
-        0x03 => Some("2/0"),
-        0x04 => Some("2/1"),
-        0x05 => Some("3/0"),
-        0x06 => Some("2/2"),
-        0x07 => Some("3/1"),
-        0x08 => Some("3/2"),
-        0x09 => Some("3/2+LFE"),
-        _ => None,
+        value as i64
     }
 }
 
-fn audio_channel_count(stream_content: u8, component_type: u8) -> Option<u8> {
-    match audio_mode(stream_content, component_type)? {
-        0x01 => Some(1),
-        0x02 | 0x03 => Some(2),
-        0x04 | 0x05 => Some(3),
-        0x06 | 0x07 => Some(4),
-        0x08 => Some(5),
-        0x09 => Some(6),
-        _ => None,
-    }
-}
-
-fn audio_sampling_info(sampling_rate: u8) -> Option<&'static str> {
-    match sampling_rate {
-        0x01 => Some("16kHz"),
-        0x02 => Some("22.05kHz"),
-        0x03 => Some("24kHz"),
-        0x05 => Some("32kHz"),
-        0x06 => Some("44.1kHz"),
-        0x07 => Some("48kHz"),
-        _ => None,
-    }
-}
-
-fn audio_sample_rate_hz(sampling_rate: u8) -> Option<u32> {
-    match sampling_rate {
-        0x01 => Some(16_000),
-        0x02 => Some(22_050),
-        0x03 => Some(24_000),
-        0x05 => Some(32_000),
-        0x06 => Some(44_100),
-        0x07 => Some(48_000),
-        _ => None,
-    }
-}
-
-fn audio_accessibility(component_type: u8) -> (bool, bool) {
-    let kind = (component_type >> 5) & 0x03;
-    (kind == 0x01, kind == 0x02)
-}
-
-fn audio_dual_mono(stream_content: u8, component_type: u8) -> bool {
-    audio_mode(stream_content, component_type) == Some(0x02)
-}
-
-fn event_components_value(event: &EitEvent) -> serde_json::Value {
-    let video = event
-        .descriptors
-        .components
-        .iter()
-        .map(|component| {
-            let (resolution, scan, aspect) =
-                video_component_semantics(component.stream_content, component.component_type);
-            serde_json::json!({
-                "streamContent": component.stream_content,
-                "componentTag": component.component_tag,
-                "componentType": component.component_type,
-                "language": component.language_code,
-                "text": component.text,
-                "resolution": resolution,
-                "scan": scan,
-                "aspect": aspect,
-                "profileLevel": serde_json::Value::Null,
-                "sourceDescriptor": "component_descriptor",
-                "parseStatus": "OK",
-            })
-        })
-        .collect::<Vec<_>>();
-    let audio = event
-        .descriptors
-        .audio_components
-        .iter()
-        .map(|component| {
-            let (audio_description, hard_of_hearing) =
-                audio_accessibility(component.component_type);
-            serde_json::json!({
-                "streamType": component.stream_type,
-                "streamContent": component.stream_content,
-                "componentTag": component.component_tag,
-                "componentType": component.component_type,
-                "language": component.language_code,
-                "secondLanguage": component.language_code_2,
-                "channelConfiguration": audio_channel_configuration(
-                    component.stream_content,
-                    component.component_type,
-                ),
-                "channelCount": audio_channel_count(component.stream_content, component.component_type),
-                "simulcastGroupTag": component.simulcast_group_tag,
-                "samplingRate": component.sampling_rate,
-                "samplingInfo": audio_sampling_info(component.sampling_rate),
-                "sampleRateHz": audio_sample_rate_hz(component.sampling_rate),
-                "audioDescription": audio_description,
-                "hardOfHearing": hard_of_hearing,
-                "dualMono": audio_dual_mono(component.stream_content, component.component_type),
-                "text": component.text,
-                "sourceDescriptor": "audio_component_descriptor",
-                "main": component.main_component_flag,
-                "multiLingual": component.es_multi_lingual_flag,
-                "qualityIndicator": component.quality_indicator,
-                "parseStatus": "OK",
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::json!({
-        "video": video,
-        "audio": audio,
-        "subtitle": [],
-        "data": [],
-    })
-}
-
-fn stable_identity_string(id: EitStableEventIdentity) -> String {
-    provider_data_api::build_program_key(
-        i32::from(id.original_network_id),
-        i32::from(id.transport_stream_id),
-        i32::from(id.service_id),
-        i32::from(id.event_id),
-    )
-}
-
-fn json_value(text: String) -> serde_json::Value {
-    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)
-}
-
-fn event_value(event: &EitEvent) -> serde_json::Value {
-    let provider = event_provider_fields(&event.descriptors);
-    let descriptor_diagnostics = event_descriptor_diagnostics_array_json_scoped(
-        &event.descriptors,
-        Some(DescriptorSectionScope {
-            pid: Some(18),
-            table_id: Some(event.table_id),
-            table_id_extension: Some(event.service_id),
-            version: Some(event.version),
-            section_number: Some(event.section_number),
-            original_network_id: Some(event.original_network_id),
-            transport_stream_id: Some(event.transport_stream_id),
-            service_id: Some(event.service_id),
-            event_id: Some(event.event_id),
-        }),
-    );
-    let stable_identity =
-        event
-            .timing_state
-            .has_stable_identity()
-            .then_some(EitStableEventIdentity {
-                original_network_id: event.original_network_id,
-                transport_stream_id: event.transport_stream_id,
-                service_id: event.service_id,
-                event_id: event.event_id,
-            });
-    let program_key = stable_identity.map(|_| {
-        serde_json::json!({
-            "kind": "arib-event-v1",
-            "originalNetworkId": event.original_network_id,
-            "transportStreamId": event.transport_stream_id,
-            "serviceId": event.service_id,
-            "eventId": event.event_id,
-        })
-    });
-    serde_json::json!({
-        "programKey": program_key,
-        "eventId": event.event_id,
-        "serviceKey": {
-            "originalNetworkId": event.original_network_id,
-            "transportStreamId": event.transport_stream_id,
-            "serviceId": event.service_id,
-        },
-        "stableIdentity": stable_identity.map(stable_identity_string),
-        "timing": {
-            "state": event.timing_state.as_str(),
-            "rawStartTimeHex": hex_lower(&event.raw_start_time),
-            "rawDurationHex": hex_lower(&event.raw_duration),
-            "startUtcMillis": event.start_time_millis,
-            "endUtcMillis": event.start_time_millis.saturating_add(event.duration_millis),
-            "durationMillis": event.duration_millis,
-        },
-        "title": provider.title,
-        "description": provider.description,
-        "extendedDescription": provider.extended_description,
-        "eventScope": event.scope.as_str(),
-        "source": {
-            "pid": 18,
-            "tableId": event.table_id,
-            "version": event.version,
-            "sectionNumber": event.section_number,
-            "lastSectionNumber": event.last_section_number,
-        },
-        "descriptors": {
-            "shortEvents": short_events_value(event),
-            "extendedTexts": extended_texts_value(event),
-            "extendedItems": extended_items_value(event),
-            "component": { "text": event_component_text(event) },
-            "audio": { "componentText": event_audio_component_text(event), "language": event_audio_language(event) },
-            "genres": { "content": event_content_genres_value(event), "genreSupplementText": event_genre_supplement_text(event) },
-            "eventGroups": event_groups_value(event),
-            "componentGroups": event_component_groups_value(event),
-            "linkage": event_linkage_value(event),
-            "freeCaMode": {
-                "raw": if event.free_ca_mode { 1 } else { 0 },
-                "scrambled": event.free_ca_mode,
-                "parseStatus": "OK",
-            },
-            "series": event_primary_series_value(event),
-            "seriesCandidates": series_candidates_value(event),
-            "seriesCandidatesCanonicalJson": series_candidates_canonical_json(event),
-            "components": event_components_value(event),
-            "diagnostics": {
-                "truncatedDescriptorLoop": event.descriptors.truncated_loop.as_ref().map(|facts| serde_json::json!({
-                    "declaredLength": facts.declared_length,
-                    "rawBytesHex": hex_lower(&facts.raw_bytes),
-                    "parseStatus": "TruncatedDescriptor",
-                })),
-                "summary": event_diagnostic_text(event),
-                "descriptorDiagnostics": json_value(descriptor_diagnostics.clone()),
-                "descriptorDiagnosticsCanonicalJson": descriptor_diagnostics,
-                "descriptorFactsCanonicalJson": descriptor_facts_value(event).to_string(),
-            },
-            "parentalRatings": parental_ratings_value(event),
-        }
-    })
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SystemManagementFactsDto {
-    descriptor_present: bool,
-    syntax_valid: bool,
-    system_management_id: Option<u16>,
-    broadcasting_flag: Option<u8>,
-    broadcasting_identifier: Option<u8>,
-    broadcast_system: Option<&'static str>,
-    additional_broadcasting_identification: Option<u8>,
-    additional_identification_info_hex: String,
-    semantic_state: &'static str,
-    diagnostic: Option<&'static str>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ServiceSemanticFactsDto {
-    original_network_id: u16,
-    transport_stream_id: u16,
-    service_id: u16,
-    service_type: Option<u8>,
-    pmt_pid_resolved: bool,
-    pmt_parsed: bool,
-    pcr_pid_resolved: bool,
-    elementary_streams: Vec<ElementaryStreamDto>,
-    requires_cas: bool,
-    #[serde(serialize_with = "provider_data::serialize_cas_facts_json")]
-    cas_facts_canonical_json: provider_data::CasFactsV1,
-    ca_descriptors_resolved: bool,
-    free_ca_mode: Option<bool>,
-    smd: SystemManagementFactsDto,
-    missing_components: Vec<&'static str>,
-    semantic_diagnostics: Vec<&'static str>,
-    name: Option<String>,
-    provider_name: Option<String>,
-    pmt_pid: Option<u16>,
-    pcr_pid: Option<u16>,
-    service_scoped_ca_descriptors: Vec<ServiceCaDescriptorDto>,
-}
-
-impl From<&ServiceSemanticFacts> for ServiceSemanticFactsDto {
-    fn from(facts: &ServiceSemanticFacts) -> Self {
-        let mut ca = facts
-            .program_ca_descriptors
-            .iter()
-            .map(|descriptor| service_ca_descriptor_dto(descriptor, "PROGRAM", None))
-            .collect::<Vec<_>>();
-        for group in &facts.es_ca_descriptors {
-            ca.extend(group.descriptors.iter().map(|descriptor| {
-                service_ca_descriptor_dto(descriptor, "ES", Some(group.elementary_pid))
-            }));
-        }
-        Self {
-            name: facts.name.clone(),
-            provider_name: facts.provider_name.clone(),
-            pmt_pid: facts.pmt_pid,
-            pcr_pid: facts.pcr_pid,
-            service_scoped_ca_descriptors: ca,
-            original_network_id: facts.original_network_id,
-            transport_stream_id: facts.transport_stream_id,
-            service_id: facts.service_id,
-            service_type: facts.service_type,
-            pmt_pid_resolved: facts.pmt_pid_resolved,
-            pmt_parsed: facts.pmt_parsed,
-            pcr_pid_resolved: facts.pcr_pid_resolved,
-            elementary_streams: facts
-                .elementary_streams
-                .iter()
-                .map(ElementaryStreamDto::from)
-                .collect(),
-            requires_cas: facts.requires_cas,
-            cas_facts_canonical_json: provider_data::CasFactsV1::from(facts),
-            ca_descriptors_resolved: facts.ca_descriptors_resolved,
-            free_ca_mode: facts.free_ca_mode,
-            smd: SystemManagementFactsDto {
-                descriptor_present: facts.system_management.descriptor_present,
-                syntax_valid: facts.system_management.syntax_valid,
-                system_management_id: facts.system_management.system_management_id,
-                broadcasting_flag: facts.system_management.broadcasting_flag,
-                broadcasting_identifier: facts.system_management.broadcasting_identifier,
-                broadcast_system: facts
-                    .system_management
-                    .broadcast_system
-                    .map(|system| system.as_str()),
-                additional_broadcasting_identification: facts
-                    .system_management
-                    .additional_broadcasting_identification,
-                additional_identification_info_hex: hex_lower(
-                    &facts.system_management.additional_identification_info,
-                ),
-                semantic_state: facts.system_management.semantic_state.as_str(),
-                diagnostic: facts.system_management.diagnostic,
-            },
-            missing_components: facts.missing_components.clone(),
-            semantic_diagnostics: facts.semantic_diagnostics.clone(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TableRequirementStatusDto {
-    component: &'static str,
-    original_network_id: Option<u16>,
-    transport_stream_id: Option<u16>,
-    service_id: Option<u16>,
-    required: bool,
-    complete: bool,
-}
-
-impl From<&TableRequirementStatus> for TableRequirementStatusDto {
-    fn from(status: &TableRequirementStatus) -> Self {
-        Self {
-            component: status.component,
-            original_network_id: status.original_network_id,
-            transport_stream_id: status.transport_stream_id,
-            service_id: status.service_id,
-            required: status.required,
-            complete: status.complete,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BulkSnapshot {
-    schema_version: u32,
-    ingest_sequence: u64,
-    discovery_stage: jint,
-    broadcast_clock: Option<BroadcastClockFactDto>,
-    table_requirements: Vec<TableRequirementStatusDto>,
-    cat_ca_metadata: Vec<CaMetadataDto>,
-    malformed_ca_descriptor_diagnostics: Vec<MalformedCaDescriptorDiagnosticDto>,
-    malformed_ca_descriptor_counts: Vec<MalformedCaDescriptorCountDto>,
-    transport_semantic_facts: Vec<TransportSemanticFactsDto>,
-    events: Vec<serde_json::Value>,
-    collection_generation: u64,
-    eit_instances: Vec<EitInstanceState>,
-    service_semantic_facts: Vec<ServiceSemanticFactsDto>,
-    parser_diagnostics: Vec<ParserDiagnosticDto>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BroadcastClockFactDto {
-    table_id: u8,
-    mjd: u16,
-    millis_of_day: u32,
-}
-
-impl From<BroadcastClockFact> for BroadcastClockFactDto {
-    fn from(value: BroadcastClockFact) -> Self {
-        Self {
-            table_id: value.table_id,
-            mjd: value.mjd,
-            millis_of_day: value.millis_of_day,
-        }
-    }
-}
-
-fn bulk_snapshot_json(state: &mut ParserState) -> Result<String, serde_json::Error> {
+fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshotDto {
     state.expire_collection_at(Instant::now());
     let ingest_sequence = state.sections_seen;
     let last_status = state.last_status;
     let collection_state = state.collector.state();
     let discovery_stage = collection_state.publish_stage();
-    let table_requirements = &collection_state.table_requirements;
-    let semantic_facts = &collection_state.semantic_facts_by_service;
     let snapshot = &collection_state.snapshot;
     let mut parser_diagnostics = parser_diagnostics(ingest_sequence, last_status, snapshot);
     if let Some(reason) = state.invalid_section_reason {
         parser_diagnostics.push(reason.diagnostic());
     }
     let actual_transport_keys = state.sdt_actual_transport_keys();
-    let cat_ca = &snapshot.cat_ca.descriptors;
-    // 更新区間は排出型一括APIだけで公開する。
-    // 非排出型一括snapshotはEPG更新区間を返さない。これにより本番呼び出し側が
-    // 同じ廃止削除区間を誤って再公開することを防ぐ。
-    serde_json::to_string(&BulkSnapshot {
-        schema_version: 2,
-        ingest_sequence,
+    let events = state
+        .events()
+        .iter()
+        .map(|event| {
+            let stable_identity = event.timing_state.has_stable_identity().then(|| {
+                provider_data_api::build_program_key(
+                    i32::from(event.original_network_id),
+                    i32::from(event.transport_stream_id),
+                    i32::from(event.service_id),
+                    i32::from(event.event_id),
+                )
+            });
+            runtime_snapshot_build::event(event, stable_identity)
+        })
+        .collect();
+
+    BulkSnapshotDto {
+        collection_generation: u64_to_i64_saturating(state.collection_generation),
+        ingest_sequence: u64_to_i64_saturating(ingest_sequence),
         discovery_stage: discovery_stage_to_jint(discovery_stage),
-        broadcast_clock: state
-            .latest_broadcast_clock
-            .map(BroadcastClockFactDto::from),
-        table_requirements: table_requirements
+        broadcast_clock: state.latest_broadcast_clock.map(|clock| BroadcastClockDto {
+            table_id: i32::from(clock.table_id),
+            mjd: i32::from(clock.mjd),
+            millis_of_day: i64::from(clock.millis_of_day),
+        }),
+        table_requirements: collection_state
+            .table_requirements
             .iter()
-            .map(TableRequirementStatusDto::from)
+            .map(runtime_snapshot_build::table_requirement)
             .collect(),
-        cat_ca_metadata: cat_ca
+        cat_ca_metadata: snapshot
+            .cat_ca
+            .descriptors
             .iter()
-            .map(|ca| ca_metadata_dto(None, ca, None, Some(ca.ca_pid), None, "CAT"))
+            .map(|ca| {
+                runtime_snapshot_build::ca_metadata(None, ca, None, Some(ca.ca_pid), None, "CAT")
+            })
             .collect(),
         malformed_ca_descriptor_diagnostics: snapshot
             .malformed_ca_descriptor_diagnostics
             .iter()
-            .map(MalformedCaDescriptorDiagnosticDto::from)
+            .map(runtime_snapshot_build::malformed_ca)
             .collect(),
         malformed_ca_descriptor_counts: malformed_ca_descriptor_counts(
             &snapshot.malformed_ca_descriptor_diagnostics,
@@ -1223,33 +348,28 @@ fn bulk_snapshot_json(state: &mut ParserState) -> Result<String, serde_json::Err
         transport_semantic_facts: snapshot
             .transports
             .iter()
-            .map(|transport| TransportSemanticFactsDto {
-                original_network_id: transport.original_network_id,
-                transport_stream_id: transport.transport_stream_id,
-                network_name: transport.network_name.clone(),
-                transport_stream_name: transport.ts_name.clone(),
-                remote_control_key_id: transport.remote_control_key_id,
-                sdt_actual: actual_transport_keys
-                    .contains(&(transport.transport_stream_id, transport.original_network_id)),
+            .map(|transport| {
+                runtime_snapshot_build::transport(
+                    transport,
+                    actual_transport_keys
+                        .contains(&(transport.transport_stream_id, transport.original_network_id)),
+                )
             })
             .collect(),
-        events: state.events().iter().map(event_value).collect(),
-        eit_instances: state.eit_instances.states(),
-        collection_generation: state.collection_generation,
-        service_semantic_facts: semantic_facts
+        events,
+        eit_instances: state
+            .eit_instances
+            .states()
             .iter()
-            .map(ServiceSemanticFactsDto::from)
+            .map(runtime_snapshot_build::eit_instance)
+            .collect(),
+        service_semantic_facts: collection_state
+            .semantic_facts_by_service
+            .iter()
+            .map(runtime_snapshot_build::service_semantic_facts)
             .collect(),
         parser_diagnostics,
-    })
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ParserDiagnosticDto {
-    code: &'static str,
-    message: String,
-    severity: &'static str,
+    }
 }
 
 fn parser_diagnostics(
@@ -1259,14 +379,14 @@ fn parser_diagnostics(
 ) -> Vec<ParserDiagnosticDto> {
     let message = format!("sectionsSeen={} lastStatus={}", sections_seen, last_status);
     let mut diagnostics = vec![ParserDiagnosticDto {
-        code: "PARSER_STATE",
+        code: "PARSER_STATE".to_string(),
         message,
-        severity: "info",
+        severity: Some("info".to_string()),
     }];
     if last_status == STATUS_COLLECTION_LIMIT_EXCEEDED {
         diagnostics.push(ParserDiagnosticDto {
-            code: "COLLECTION_LIMIT_EXCEEDED",
-            severity: "error",
+            code: "COLLECTION_LIMIT_EXCEEDED".to_string(),
+            severity: Some("error".to_string()),
             message:
                 "SI収集の入力上限に達したため事実と更新区間を破棄しました。次の収集開始を待ちます"
                     .to_string(),
@@ -1301,9 +421,9 @@ fn parser_diagnostics(
         text_diagnostics
             .into_iter()
             .map(|message| ParserDiagnosticDto {
-                code: "ARIB_SI_TEXT_REPLACED",
+                code: "ARIB_SI_TEXT_REPLACED".to_string(),
                 message,
-                severity: "warning",
+                severity: Some("warning".to_string()),
             }),
     );
     diagnostics
@@ -1481,25 +601,7 @@ fn discovery_stage_to_jint(stage: DiscoveryPublishStage) -> jint {
     }
 }
 
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotBulkJson(
-    mut env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-) -> jstring {
-    java_string(&mut env, snapshot_bulk_json(handle))
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotPmtPidsForSectionFiltersJson(
-    mut env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-) -> jstring {
-    java_string(&mut env, snapshot_pmt_pids_for_section_filters_json(handle))
-}
-
-fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, SiJniFailure> {
+fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshotDto, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
@@ -1514,8 +616,7 @@ fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, S
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
     let result = match parser.lock() {
-        Ok(guard) => serde_json::to_string(&guard.collector.pmt_pids_for_section_filters())
-            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
+        Ok(mut guard) => Ok(build_bulk_snapshot(&mut guard)),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
@@ -1524,7 +625,54 @@ fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, S
     result
 }
 
-fn snapshot_bulk_json(handle: jlong) -> Result<String, SiJniFailure> {
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotBulkTyped(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jobject {
+    let snapshot = match snapshot_bulk_typed(handle) {
+        Ok(snapshot) => snapshot,
+        Err(failure) => return throw_si_failure(&mut env, failure) as jobject,
+    };
+    match jvm_snapshot_generated::snapshot_to_java(&mut env, snapshot) {
+        Ok(value) => value.into_raw(),
+        Err(failure) => throw_si_failure(&mut env, failure) as jobject,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotPmtPidsForSectionFilters(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jintArray {
+    let values = match snapshot_pmt_pids_for_section_filters(handle) {
+        Ok(values) => values,
+        Err(failure) => return throw_si_failure(&mut env, failure) as jintArray,
+    };
+    let length = match i32::try_from(values.len()) {
+        Ok(length) => length,
+        Err(error) => {
+            return throw_si_failure(&mut env, SiJniFailureReason::JniOutput.failure(error))
+                as jintArray
+        }
+    };
+    let array = match env.new_int_array(length) {
+        Ok(array) => array,
+        Err(error) => {
+            return throw_si_failure(&mut env, SiJniFailureReason::JniOutput.failure(error))
+                as jintArray
+        }
+    };
+    if let Err(error) = env.set_int_array_region(&array, 0, &values) {
+        return throw_si_failure(&mut env, SiJniFailureReason::JniOutput.failure(error))
+            as jintArray;
+    }
+    array.into_raw()
+}
+
+fn snapshot_pmt_pids_for_section_filters(handle: jlong) -> Result<Vec<jint>, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
@@ -1538,15 +686,19 @@ fn snapshot_bulk_json(handle: jlong) -> Result<String, SiJniFailure> {
     let Some(parser) = parser else {
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
-    let json = match parser.lock() {
-        Ok(mut guard) => bulk_snapshot_json(&mut guard)
-            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
+    let result = match parser.lock() {
+        Ok(guard) => Ok(guard
+            .collector
+            .pmt_pids_for_section_filters()
+            .into_iter()
+            .map(i32::from)
+            .collect()),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
         }
     };
-    json
+    result
 }
 
 fn jbytearray_to_vec(env: &JNIEnv<'_>, value: JByteArray<'_>) -> Result<Vec<u8>, SiJniFailure> {
@@ -1861,24 +1013,20 @@ mod tests {
         for &(pid, bytes, code) in cases {
             let mut state = ParserState::default();
             assert_eq!(state.ingest_section(pid, bytes), STATUS_INVALID_SECTION);
-            let snapshot: serde_json::Value =
-                serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
-            assert!(snapshot["parserDiagnostics"]
-                .as_array()
-                .unwrap()
+            let snapshot = build_bulk_snapshot(&mut state);
+            assert!(snapshot
+                .parser_diagnostics
                 .iter()
-                .any(|d| d["code"] == code));
+                .any(|diagnostic| diagnostic.code == code));
             assert_eq!(
                 state.ingest_section(0x10, &[0x7f, 0x30, 0]),
                 STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE
             );
-            let snapshot: serde_json::Value =
-                serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
-            assert!(!snapshot["parserDiagnostics"]
-                .as_array()
-                .unwrap()
+            let snapshot = build_bulk_snapshot(&mut state);
+            assert!(!snapshot
+                .parser_diagnostics
                 .iter()
-                .any(|d| d["code"] == code));
+                .any(|diagnostic| diagnostic.code == code));
         }
     }
 
@@ -1928,30 +1076,40 @@ mod tests {
             0xd5, 9, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0xd5, 9, 0, 2, 0, 0, 0, 0, 3, 0, 4,
         ];
         event.descriptors = crate::descriptors::parse_event_descriptors(&bytes);
-        assert!(event_primary_series_value(&event).is_null());
-        let candidates = series_candidates_value(&event);
-        assert_eq!(candidates.as_array().unwrap().len(), 2);
-        assert_eq!(candidates[0]["seriesId"], 1);
-        assert_eq!(candidates[1]["seriesId"], 2);
-        let canonical: serde_json::Value =
-            serde_json::from_str(&series_candidates_canonical_json(&event).unwrap()).unwrap();
-        assert_eq!(canonical, candidates);
+        let dto = runtime_snapshot_build::event(&event, None);
+        assert!(dto.descriptors.series.is_none());
+        assert_eq!(dto.descriptors.series_candidates.len(), 2);
+        assert_eq!(dto.descriptors.series_candidates[0].series_id, Some(1));
+        assert_eq!(dto.descriptors.series_candidates[1].series_id, Some(2));
+        let canonical: Vec<maleicacid_arib_si_engine_core::runtime_snapshot_dto::SeriesDto> =
+            serde_json::from_str(
+                dto.descriptors
+                    .series_candidates_canonical_json
+                    .as_deref()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(canonical, dto.descriptors.series_candidates);
         event.descriptors.series.pop();
-        assert_eq!(event_primary_series_value(&event)["seriesId"], 1);
-        assert!(series_candidates_canonical_json(&event).is_none());
+        let dto = runtime_snapshot_build::event(&event, None);
+        assert_eq!(
+            dto.descriptors
+                .series
+                .as_ref()
+                .and_then(|series| series.series_id),
+            Some(1)
+        );
+        assert!(dto.descriptors.series_candidates_canonical_json.is_none());
     }
 
     #[test]
     fn event_group_json_preserves_raw_group_type_without_derived_kind() {
         for group_type in 1u8..=5 {
-            let value = event_groups_value(&minimal_event_for_related_items(
-                group_type,
-                0x0100 + group_type as u16,
-            ));
-            let group = &value[0];
-            assert_eq!(group["groupType"].as_u64(), Some(u64::from(group_type)));
-            assert!(group["events"].is_array());
-            assert!(group.get("kind").is_none());
+            let event = minimal_event_for_related_items(group_type, 0x0100 + group_type as u16);
+            let dto = runtime_snapshot_build::event(&event, None);
+            let group = &dto.descriptors.event_groups[0];
+            assert_eq!(group.group_type, i32::from(group_type));
+            assert!(!group.events.is_empty());
         }
     }
 
@@ -1980,29 +1138,27 @@ mod tests {
             text: String::new(),
         }];
 
-        let components = event_components_value(&event);
-        assert_eq!(components["video"][0]["resolution"], "1080");
-        assert_eq!(components["video"][0]["scan"], "interlaced");
-        assert_eq!(components["video"][0]["aspect"], "16:9");
+        let dto = runtime_snapshot_build::event(&event, None);
+        let video = &dto.descriptors.components.video[0];
+        assert_eq!(video.resolution.as_deref(), Some("1080"));
+        assert_eq!(video.scan.as_deref(), Some("interlaced"));
+        assert_eq!(video.aspect.as_deref(), Some("16:9"));
         assert_eq!(
-            components["video"][0]["sourceDescriptor"],
-            "component_descriptor"
+            video.source_descriptor.as_deref(),
+            Some("component_descriptor")
         );
-        assert_eq!(components["audio"][0]["channelConfiguration"], "1/0+1/0");
-        assert_eq!(components["audio"][0]["channelCount"], 2);
-        assert_eq!(components["audio"][0]["samplingInfo"], "48kHz");
-        assert_eq!(components["audio"][0]["sampleRateHz"], 48_000);
-        assert_eq!(components["audio"][0]["audioDescription"], false);
-        assert_eq!(components["audio"][0]["hardOfHearing"], false);
-        assert_eq!(components["audio"][0]["dualMono"], true);
-        assert_eq!(audio_accessibility(0x22), (true, false));
-        assert_eq!(audio_accessibility(0x42), (false, true));
+        let audio = &dto.descriptors.components.audio[0];
+        assert_eq!(audio.channel_configuration.as_deref(), Some("1/0+1/0"));
+        assert_eq!(audio.channel_count, Some(2));
+        assert_eq!(audio.sampling_info.as_deref(), Some("48kHz"));
+        assert_eq!(audio.sample_rate_hz, Some(48_000));
+        assert_eq!(audio.audio_description, Some(false));
+        assert_eq!(audio.hard_of_hearing, Some(false));
+        assert_eq!(audio.dual_mono, Some(true));
         assert_eq!(
-            components["audio"][0]["sourceDescriptor"],
-            "audio_component_descriptor"
+            audio.source_descriptor.as_deref(),
+            Some("audio_component_descriptor"),
         );
-        assert!(components["video"][0].get("diagnosticCode").is_none());
-        assert!(components["audio"][0].get("diagnosticCode").is_none());
     }
 
     #[test]
@@ -2037,27 +1193,24 @@ mod tests {
                 .diagnostics
                 .iter()
                 .all(|d| d.event_identity.is_some() == expected));
-            let value = event_value(event);
-            assert_eq!(!value["programKey"].is_null(), expected);
-            assert_eq!(!value["stableIdentity"].is_null(), expected);
-            assert_eq!(value["eventId"], 0x1234);
-            assert_eq!(value["serviceKey"]["serviceId"], 1);
-            assert!(!value["descriptors"]["diagnostics"]["descriptorFactsCanonicalJson"].is_null());
+            let stable_identity = expected.then(|| {
+                provider_data_api::build_program_key(
+                    i32::from(event.original_network_id),
+                    i32::from(event.transport_stream_id),
+                    i32::from(event.service_id),
+                    i32::from(event.event_id),
+                )
+            });
+            let value = runtime_snapshot_build::event(event, stable_identity);
+            assert_eq!(value.stable_identity.is_some(), expected);
+            assert_eq!(value.event_id, 0x1234);
+            assert_eq!(value.service_key.service_id, 1);
+            assert!(value
+                .descriptors
+                .diagnostics
+                .descriptor_facts_canonical_json
+                .is_some());
         }
-    }
-
-    #[test]
-    fn event_identity_uses_the_same_canonical_key_as_provider_data() {
-        let identity = EitStableEventIdentity {
-            original_network_id: 4,
-            transport_stream_id: 16625,
-            service_id: 101,
-            event_id: 10,
-        };
-        assert_eq!(
-            stable_identity_string(identity),
-            provider_data_api::build_program_key(4, 16625, 101, 10)
-        );
     }
 
     #[test]
@@ -2078,15 +1231,13 @@ mod tests {
             state.ingest_section(0x0014, &tot),
             STATUS_COLLECTION_LIMIT_EXCEEDED
         );
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
-        assert!(snapshot["broadcastClock"].is_null());
-        assert_eq!(snapshot["discoveryStage"], DISCOVERY_STAGE_INCOMPLETE);
-        assert!(snapshot["parserDiagnostics"]
-            .as_array()
-            .unwrap()
+        let snapshot = build_bulk_snapshot(&mut state);
+        assert!(snapshot.broadcast_clock.is_none());
+        assert_eq!(snapshot.discovery_stage, DISCOVERY_STAGE_INCOMPLETE);
+        assert!(snapshot
+            .parser_diagnostics
             .iter()
-            .any(|value| value["code"] == "COLLECTION_LIMIT_EXCEEDED"));
+            .any(|diagnostic| diagnostic.code == "COLLECTION_LIMIT_EXCEEDED"));
     }
 
     #[test]
@@ -2140,10 +1291,10 @@ mod tests {
                 millis_of_day: (12 * 3_600 + 34 * 60 + 56) * 1_000,
             })
         );
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
-        assert_eq!(snapshot["broadcastClock"]["tableId"].as_u64(), Some(0x73));
-        assert_eq!(snapshot["broadcastClock"]["mjd"].as_u64(), Some(0xea60));
+        let snapshot = build_bulk_snapshot(&mut state);
+        let clock = snapshot.broadcast_clock.expect("broadcast clock");
+        assert_eq!(clock.table_id, 0x73);
+        assert_eq!(clock.mjd, 0xea60);
     }
 
     #[test]
@@ -2165,14 +1316,13 @@ mod tests {
             0xe0, 0x08, 0x48, 0x06, 0x01, 0x00, 0x03, 0x1b, b'$', b'X',
         ]);
         assert_eq!(state.ingest_section(0x0011, &sdt), STATUS_OK);
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
-        let diagnostics = snapshot["parserDiagnostics"].as_array().unwrap();
-        let text_diagnostic = diagnostics
+        let snapshot = build_bulk_snapshot(&mut state);
+        let text_diagnostic = snapshot
+            .parser_diagnostics
             .iter()
-            .find(|diagnostic| diagnostic["code"] == "ARIB_SI_TEXT_REPLACED")
+            .find(|diagnostic| diagnostic.code == "ARIB_SI_TEXT_REPLACED")
             .expect("ARIB SI text diagnostic");
-        let message = text_diagnostic["message"].as_str().unwrap();
+        let message = text_diagnostic.message.as_str();
         assert!(message.contains("field=serviceName"), "{}", message);
         assert!(message.contains("input_prefix_hex:1b2458"), "{}", message);
     }

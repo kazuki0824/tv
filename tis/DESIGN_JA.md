@@ -535,7 +535,7 @@ TIS の PSI/SI section path は allocation 前に `SectionEvent.dataLength` を�
 
 ### transaction DTO API
 
-`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。Rust→TIS runtime境界は`../開発規則.md`の同時更新不変条件に従う同一product build内の型付きJNI境界とし、異なるRust/Kotlin版を組み合わせるための`schemaVersion` negotiation、旧snapshot DTO decoder、互換fallbackを持たない。DTO変更はRust/Kotlin/試験/設計を同一変更で更新する。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
+`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。Rust→TIS runtime境界は`../開発規則.md`の同時更新不変条件に従い、Rust `BulkSnapshot`からJVMの`NativeSiSnapshot`および型付きSI domain objectを直接構築する同一product build内のtyped JNI境界とし、異なるRust/Kotlin版を組み合わせるための`schemaVersion` negotiation、旧snapshot DTO decoder、互換fallbackを持たない。DTO変更はRust/Kotlin/試験/設計を同一変更で更新する。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
 
 ```kotlin
 data class ExcludedEventDescriptorFacts(
@@ -705,7 +705,7 @@ cleanup完了後は現行buildのSI/EITからProgramを再収集し、現行prov
 
 ### 旧 indexed JNI / 廃止経路の禁止
 
-TIS は同一product buildでRustと同時更新される型付きbulk JNI境界と provider-data JNI API を通常境界とする。`nativeGetEventCount()`、`nativeGetEvent*` indexed JNI getter、旧 event JSON `canonicalGenres` フィールド、片側差し替え互換専用の空返却シンボル、旧snapshot DTO decoder、未使用 private external 宣言は残してはならない。旧経路を使う呼び出し不能コードや test-only 以外の廃止予定 path は、互換維持ではなく削除する。
+TIS は同一product buildでRustと同時更新されるRust所有`BulkSnapshot`由来の型付き`NativeSiSnapshot`境界と provider-data JNI API を通常境界とする。`NativeSiSnapshot`と`NativeSiJvmFactory`はJNI bindingであり、field値域・nullable条件・enum意味・cross-field不変条件をKotlin側で再検証しない。`nativeGetEventCount()`、`nativeGetEvent*` indexed JNI getter、旧 event JSON `canonicalGenres` フィールド、片側差し替え互換専用の空返却シンボル、旧snapshot DTO decoder、未使用 private external 宣言は残してはならない。旧経路を使う呼び出し不能コードや test-only 以外の廃止予定 path は、互換維持ではなく削除する。
 
 ### Program publish retry
 
