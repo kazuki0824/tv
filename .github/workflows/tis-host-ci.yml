@@ -6,6 +6,8 @@ on:
       - "tis/**"
       - "arib_si_engine_rs/src/**"
       - "arib_si_engine_rs/host_ci/**"
+      - "arib_si_engine_rs/schema/**/*.json"
+      - "arib_si_engine_rs/testdata/si_snapshot_v2/**/*.json"
       - ".github/workflows/tis-host-ci.yml"
   push:
     branches: [main]
@@ -13,6 +15,8 @@ on:
       - "tis/**"
       - "arib_si_engine_rs/src/**"
       - "arib_si_engine_rs/host_ci/**"
+      - "arib_si_engine_rs/schema/**/*.json"
+      - "arib_si_engine_rs/testdata/si_snapshot_v2/**/*.json"
       - ".github/workflows/tis-host-ci.yml"
 
 permissions:
@@ -155,6 +159,9 @@ jobs:
           echo "TIS_JUNIT_JAR=$tools_dir/junit.jar" >> "$GITHUB_ENV"
           echo "TIS_HAMCREST_JAR=$tools_dir/hamcrest-core.jar" >> "$GITHUB_ENV"
 
+      - name: SI snapshot schema差分検証依存を準備
+        run: python3 -m pip install --disable-pip-version-check 'jsonschema==4.23.0'
+
       - name: 本番KotlinとテストKotlinをコンパイル
         shell: bash
         run: |
@@ -216,13 +223,14 @@ jobs:
           java \
             -Xmx4g \
             -Djava.library.path=arib_si_engine_rs/host_ci/target/debug/deps \
+            -Dmaleicacid.repoRoot="$GITHUB_WORKSPACE" \
             -Dmaleicacid.tis.testAssetsRoot=tis/tests/assets \
             -cp "$runtime_classpath" \
             org.junit.runner.JUnitCore \
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
           # JUnitの成功だけでは試験数の減少を検知できない。試験追加/削除時に差分を確認して同じcommitで更新する。
-          grep --fixed-strings --line-regexp "OK (303 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings --line-regexp "OK (304 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest

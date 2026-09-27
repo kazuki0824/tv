@@ -508,6 +508,289 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+
+    @Suppress("LongMethod", "MagicNumber", "NestedBlockDepth")
+    @Test
+    fun snapshotSchemaAcceptanceMatchesKotlinConsumerAcceptance() {
+        val repoRoot =
+            System.getProperty("maleicacid.repoRoot")
+                ?: error("maleicacid.repoRoot が設定されていません")
+        val schemaVerifier =
+            java.io.File(
+                repoRoot,
+                "arib_si_engine_rs/host_ci/si_snapshot_schema_acceptance.py",
+            )
+        check(schemaVerifier.isFile)
+
+        NativeAribSiParser().use { parser ->
+            val handleField =
+                NativeAribSiParser::class.java
+                    .getDeclaredField("handle")
+                    .apply { isAccessible = true }
+            val snapshotMethod =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("nativeSnapshotBulkJson", Long::class.javaPrimitiveType)
+                    .apply { isAccessible = true }
+            val parseMethod =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("parseNativeTransactionJson", String::class.java)
+                    .apply { isAccessible = true }
+
+            check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
+            val nativeSeed =
+                JSONObject(
+                    snapshotMethod.invoke(
+                        parser,
+                        handleField.getLong(parser),
+                    ) as String,
+                )
+            val serviceSeed =
+                JSONObject(
+                    java.io.File(
+                        repoRoot,
+                        "arib_si_engine_rs/testdata/si_snapshot_v2/service_semantic_facts.json",
+                    ).readText(),
+                )
+            val clockSeed =
+                JSONObject(nativeSeed.toString()).put(
+                    "broadcastClock",
+                    JSONObject()
+                        .put("tableId", 0x70)
+                        .put("mjd", 60_000)
+                        .put("millisOfDay", 0),
+                ).put(
+                    "tableRequirements",
+                    JSONArray().put(
+                        JSONObject()
+                            .put("component", "PAT")
+                            .put("originalNetworkId", JSONObject.NULL)
+                            .put("transportStreamId", JSONObject.NULL)
+                            .put("serviceId", JSONObject.NULL)
+                            .put("required", true)
+                            .put("complete", false),
+                    ),
+                )
+            val textSeed =
+                JSONObject(nativeSeed.toString()).also { root ->
+                    val descriptors =
+                        root
+                            .getJSONArray("events")
+                            .getJSONObject(0)
+                            .getJSONObject("descriptors")
+                    descriptors.put(
+                        "shortEvents",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("languageCode", "jpn")
+                                .put("title", "title")
+                                .put("text", "text")
+                                .put("parseStatus", "OK"),
+                        ),
+                    )
+                    descriptors.put(
+                        "extendedTexts",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("languageCode", "jpn")
+                                .put("text", "extended")
+                                .put("parseStatus", "OK"),
+                        ),
+                    )
+                    descriptors.put(
+                        "extendedItems",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("languageCode", "jpn")
+                                .put("description", "description")
+                                .put("text", "item"),
+                        ),
+                    )
+                }
+
+            val cases = linkedMapOf<String, String>()
+
+            fun pathText(path: List<Any>): String =
+                if (path.isEmpty()) {
+                    "$"
+                } else {
+                    buildString {
+                        append("$")
+                        path.forEach { step ->
+                            when (step) {
+                                is String -> append(".").append(step)
+                                is Int -> append("[").append(step).append("]")
+                            }
+                        }
+                    }
+                }
+
+            fun navigate(
+                root: Any,
+                path: List<Any>,
+            ): Any {
+                var current = root
+                path.forEach { step ->
+                    current =
+                        when (step) {
+                            is String -> (current as JSONObject).get(step)
+                            is Int -> (current as JSONArray).get(step)
+                            else -> error("未知のJSON path要素です")
+                        }
+                }
+                return current
+            }
+
+            fun addMutation(
+                seedName: String,
+                seed: JSONObject,
+                path: List<Any>,
+                suffix: String,
+                remove: Boolean = false,
+                replacement: Any? = null,
+            ) {
+                val clone = JSONObject(seed.toString())
+                if (path.isEmpty()) {
+                    return
+                }
+                val parent = navigate(clone, path.dropLast(1))
+                val last = path.last()
+                when (parent) {
+                    is JSONObject -> {
+                        val key = last as String
+                        if (remove) {
+                            parent.remove(key)
+                        } else {
+                            parent.put(key, replacement ?: JSONObject.NULL)
+                        }
+                    }
+                    is JSONArray -> {
+                        parent.put(last as Int, replacement ?: JSONObject.NULL)
+                    }
+                    else -> error("JSON pathの親がcontainerではありません")
+                }
+                cases["$seedName:${pathText(path)}:$suffix"] = clone.toString()
+            }
+
+            fun visit(
+                seedName: String,
+                seed: JSONObject,
+                value: Any,
+                path: List<Any>,
+            ) {
+                if (cases.size >= 900) return
+                when (value) {
+                    is JSONObject -> {
+                        val extra = JSONObject(seed.toString())
+                        val target = navigate(extra, path) as JSONObject
+                        target.put("__unexpected__", 1)
+                        cases["$seedName:${pathText(path)}:extra-field"] = extra.toString()
+
+                        for (key in value.keys().asSequence().toList().sorted()) {
+                            val child = value.get(key)
+                            val childPath = path + key
+                            addMutation(seedName, seed, childPath, "remove", remove = true)
+                            when {
+                                child === JSONObject.NULL -> {
+                                    addMutation(seedName, seed, childPath, "null-to-object", replacement = JSONObject())
+                                }
+                                child is Boolean -> {
+                                    addMutation(seedName, seed, childPath, "boolean-flip", replacement = !child)
+                                    addMutation(seedName, seed, childPath, "boolean-to-string", replacement = child.toString())
+                                }
+                                child is Number -> {
+                                    val current = child.toLong()
+                                    for (candidate in linkedSetOf(-1L, 0L, 1L, current + 1L, 255L, 4_096L, 65_535L, 1_000_000L)) {
+                                        if (candidate != current) {
+                                            addMutation(seedName, seed, childPath, "number-$candidate", replacement = candidate)
+                                        }
+                                    }
+                                    addMutation(seedName, seed, childPath, "number-to-string", replacement = current.toString())
+                                }
+                                child is String -> {
+                                    for (candidate in linkedSetOf("", "x", "__UNKNOWN__", "jpn", "PMT", "DEFINED", "OK")) {
+                                        if (candidate != child) {
+                                            addMutation(seedName, seed, childPath, "string-$candidate", replacement = candidate)
+                                        }
+                                    }
+                                    addMutation(seedName, seed, childPath, "string-to-object", replacement = JSONObject())
+                                }
+                                child is JSONObject -> {
+                                    addMutation(seedName, seed, childPath, "object-to-boolean", replacement = false)
+                                }
+                                child is JSONArray -> {
+                                    addMutation(seedName, seed, childPath, "array-to-object", replacement = JSONObject())
+                                }
+                            }
+                            if (child is JSONObject || child is JSONArray) {
+                                visit(seedName, seed, child, childPath)
+                            }
+                        }
+                    }
+                    is JSONArray -> {
+                        if (value.length() > 0) {
+                            val child = value.get(0)
+                            val childPath = path + 0
+                            addMutation(seedName, seed, childPath, "array-item-to-null", replacement = JSONObject.NULL)
+                            if (child is JSONObject || child is JSONArray) {
+                                visit(seedName, seed, child, childPath)
+                            }
+                        }
+                    }
+                }
+            }
+
+            for ((seedName, seed) in listOf(
+                "native" to nativeSeed,
+                "service" to serviceSeed,
+                "clock" to clockSeed,
+                "text" to textSeed,
+            )) {
+                cases["$seedName:baseline"] = seed.toString()
+                visit(seedName, seed, seed, emptyList())
+            }
+            check(cases.size > 100) { "差分corpusが小さすぎます size=${cases.size}" }
+
+            val schemaInput = JSONArray()
+            cases.values.forEach(schemaInput::put)
+            val process =
+                ProcessBuilder(
+                    "python3",
+                    schemaVerifier.absolutePath,
+                    repoRoot,
+                ).start()
+            process.outputStream.bufferedWriter().use { writer ->
+                writer.write(schemaInput.toString())
+            }
+            val schemaStdout = process.inputStream.bufferedReader().readText()
+            val schemaStderr = process.errorStream.bufferedReader().readText()
+            check(process.waitFor() == 0) {
+                "schema validatorの実行に失敗しました: $schemaStderr"
+            }
+            val schemaAcceptance = JSONArray(schemaStdout)
+            check(schemaAcceptance.length() == cases.size)
+
+            cases.entries.forEachIndexed { index, (name, raw) ->
+                val consumerFailure =
+                    runCatching { parseMethod.invoke(parser, raw) }
+                        .exceptionOrNull()
+                        ?.let { (it as? java.lang.reflect.InvocationTargetException)?.cause ?: it }
+                val consumerAccepted = consumerFailure == null
+                if (!consumerAccepted) {
+                    check(
+                        consumerFailure is NativeSiException &&
+                            consumerFailure.reason == NativeSiFailureReason.JSON_ENCODING,
+                    ) {
+                        "consumerがJSON_ENCODING以外で拒否しました case=$name failure=$consumerFailure"
+                    }
+                }
+                val schemaAccepted = schemaAcceptance.getBoolean(index)
+                check(schemaAccepted == consumerAccepted) {
+                    "schema/consumer acceptance不一致 case=$name schema=$schemaAccepted consumer=$consumerAccepted raw=$raw"
+                }
+            }
+        }
+    }
+
     @Test
     fun failedDestroyKeepsHandleForOwnerRetry() {
         NativeAribSiParser().use { parser ->
