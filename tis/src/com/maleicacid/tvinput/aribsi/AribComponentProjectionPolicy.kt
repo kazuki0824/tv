@@ -175,6 +175,11 @@ object AribComponentProjectionPolicy {
             main = eventEntry.main ?: serviceEntry.main,
             multiLingual = eventEntry.multiLingual ?: serviceEntry.multiLingual,
             qualityIndicator = eventEntry.qualityIndicator ?: serviceEntry.qualityIndicator,
-            parseStatus = if (eventEntry.parseStatus != SiParseStatus.OK) eventEntry.parseStatus else serviceEntry.parseStatus,
+            parseStatus =
+                if (eventEntry.parseStatus != SiParseStatus.OK) {
+                    eventEntry.parseStatus
+                } else {
+                    serviceEntry.parseStatus
+                },
         )
 }
