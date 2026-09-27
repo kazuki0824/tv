@@ -1473,7 +1473,7 @@ fn u16_at(bytes: &[u8], offset: usize) -> u16 {
 /// TvProvider の安定キーに自然に入らない記述子向けの診断専用 JSON。
 /// TvProvider 向けのタイトルと説明は event_provider_fields() を使う。
 
-pub fn event_descriptor_diagnostics_scoped(
+pub(crate) fn event_descriptor_diagnostics_scoped(
     desc: &EventDescriptors,
     scope: Option<DescriptorSectionScope>,
 ) -> Vec<DescriptorDiagnosticV1> {
