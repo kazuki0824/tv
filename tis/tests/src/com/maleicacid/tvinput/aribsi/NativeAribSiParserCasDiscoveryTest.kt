@@ -391,7 +391,7 @@ class NativeAribSiParserCasDiscoveryTest {
                 for (index in undefinedRange) body[index] = 0xff
                 check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
                 val snapshot = parser.programStateSnapshot()
-                check(snapshot.events.single().timingState == "UNDEFINED_TIME")
+                check(snapshot.events.single().timingState == com.maleicacid.tvinput.aribsi.EitTimingState.UNDEFINED_TIME)
                 val authority = resolver.eitAuthority(snapshot, key)
                 check(authority is com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.PresentObserved)
                 check(authority.event?.eventId == 0x1234)
@@ -1011,7 +1011,7 @@ class NativeAribSiParserCasDiscoveryTest {
             val excluded = snapshot.excludedEventDescriptorFacts.single()
             check(excluded.descriptors.parentalRatings == listOf(AribParentalRating("JPN", 12)))
             val loop = requireNotNull(excluded.descriptors.diagnostics.truncatedDescriptorLoop)
-            check(loop.declaredLength == declared && loop.parseStatus == "TruncatedDescriptor")
+            check(loop.declaredLength == declared && loop.parseStatus == SiParseStatus.TRUNCATED_DESCRIPTOR)
             check(loop.rawBytesHex == available.joinToString("") { it.toString(16).padStart(2, '0') })
             val facts = JSONObject(requireNotNull(excluded.descriptors.diagnostics.descriptorFactsCanonicalJson))
             val ratings = facts.getJSONArray("parentalRatingDescriptors")
