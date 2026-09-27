@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 sealed class SiParseStatusDto {
 
     object OK : SiParseStatusDto() {
@@ -20,3 +21,4 @@ sealed class SiParseStatusDto {
     object UNRESOLVED : SiParseStatusDto() {
     }
 }
+
