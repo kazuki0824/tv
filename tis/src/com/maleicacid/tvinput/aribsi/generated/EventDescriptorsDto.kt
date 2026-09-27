@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class EventDescriptorsDto(
     val shortEvents: kotlin.collections.List<com.maleicacid.tvinput.aribsi.generated.ShortEventDto>,
     val extendedTexts: kotlin.collections.List<com.maleicacid.tvinput.aribsi.generated.ExtendedTextDto>,
@@ -20,3 +21,4 @@ data class EventDescriptorsDto(
     val diagnostics: com.maleicacid.tvinput.aribsi.generated.EventDiagnosticsDto
 ) {
 }
+
