@@ -1271,7 +1271,7 @@ class NativeAribSiParser : AutoCloseable {
     private external fun nativeDecodeAribStringDiagnosticSummary(bytes: ByteArray): String?
 
     companion object {
-        private const val SI_SNAPSHOT_SCHEMA_VERSION = 1
+        private const val SI_SNAPSHOT_SCHEMA_VERSION = 2
 
         private fun requireNativeString(value: String?): String {
             if (value == null) {

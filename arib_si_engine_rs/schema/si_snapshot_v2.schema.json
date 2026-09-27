@@ -1,0 +1,355 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maleicacid.example/schema/si_snapshot_v2.schema.json",
+  "title": "ARIB SI bulk snapshot v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "collectionGeneration",
+    "ingestSequence",
+    "discoveryStage",
+    "broadcastClock",
+    "tableRequirements",
+    "catCaMetadata",
+    "malformedCaDescriptorDiagnostics",
+    "malformedCaDescriptorCounts",
+    "transportSemanticFacts",
+    "events",
+    "eitInstances",
+    "serviceSemanticFacts",
+    "parserDiagnostics"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "collectionGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ingestSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "discoveryStage": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2
+    },
+    "broadcastClock": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "tableRequirements": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "catCaMetadata": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "malformedCaDescriptorDiagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "malformedCaDescriptorCounts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "transportSemanticFacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/transportSemanticFacts"
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "eitInstances": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "serviceSemanticFacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/serviceSemanticFacts"
+      }
+    },
+    "parserDiagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "$defs": {
+    "nullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nullableU8": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 255
+    },
+    "nullableU16": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "transportSemanticFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "originalNetworkId",
+        "transportStreamId",
+        "networkName",
+        "transportStreamName",
+        "remoteControlKeyId",
+        "sdtActual"
+      ],
+      "properties": {
+        "originalNetworkId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "transportStreamId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "networkName": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "transportStreamName": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "remoteControlKeyId": {
+          "$ref": "#/$defs/nullableU8"
+        },
+        "sdtActual": {
+          "type": "boolean"
+        }
+      }
+    },
+    "smd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "descriptorPresent",
+        "syntaxValid",
+        "systemManagementId",
+        "broadcastingFlag",
+        "broadcastingIdentifier",
+        "broadcastSystem",
+        "additionalBroadcastingIdentification",
+        "additionalIdentificationInfoHex",
+        "semanticState",
+        "diagnostic"
+      ],
+      "properties": {
+        "descriptorPresent": {
+          "type": "boolean"
+        },
+        "syntaxValid": {
+          "type": "boolean"
+        },
+        "systemManagementId": {
+          "$ref": "#/$defs/nullableU16"
+        },
+        "broadcastingFlag": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 3
+        },
+        "broadcastingIdentifier": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 63
+        },
+        "broadcastSystem": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "ISDB_T",
+            "ISDB_S_BS",
+            "ISDB_S_110CS",
+            null
+          ]
+        },
+        "additionalBroadcastingIdentification": {
+          "$ref": "#/$defs/nullableU8"
+        },
+        "additionalIdentificationInfoHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        },
+        "semanticState": {
+          "type": "string",
+          "enum": [
+            "SUPPORTED_BROADCAST",
+            "NON_BROADCAST",
+            "UNDEFINED_BROADCAST_CLASS",
+            "UNSUPPORTED_BROADCAST_SYSTEM",
+            "UNDETERMINED_SMD"
+          ]
+        },
+        "diagnostic": {
+          "$ref": "#/$defs/nullableString"
+        }
+      }
+    },
+    "serviceSemanticFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId",
+        "serviceType",
+        "pmtPidResolved",
+        "pmtParsed",
+        "pcrPidResolved",
+        "elementaryStreams",
+        "requiresCas",
+        "casFactsCanonicalJson",
+        "caDescriptorsResolved",
+        "freeCaMode",
+        "smd",
+        "missingComponents",
+        "semanticDiagnostics",
+        "name",
+        "providerName",
+        "pmtPid",
+        "pcrPid",
+        "serviceScopedCaDescriptors"
+      ],
+      "properties": {
+        "originalNetworkId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "transportStreamId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceType": {
+          "$ref": "#/$defs/nullableU8"
+        },
+        "pmtPidResolved": {
+          "type": "boolean"
+        },
+        "pmtParsed": {
+          "type": "boolean"
+        },
+        "pcrPidResolved": {
+          "type": "boolean"
+        },
+        "elementaryStreams": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "requiresCas": {
+          "type": "boolean"
+        },
+        "casFactsCanonicalJson": {
+          "type": "string"
+        },
+        "caDescriptorsResolved": {
+          "type": "boolean"
+        },
+        "freeCaMode": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "smd": {
+          "$ref": "#/$defs/smd"
+        },
+        "missingComponents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "semanticDiagnostics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "providerName": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "pmtPid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 8191
+        },
+        "pcrPid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 8191
+        },
+        "serviceScopedCaDescriptors": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}
