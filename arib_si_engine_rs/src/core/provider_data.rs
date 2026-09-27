@@ -888,7 +888,10 @@ fn normalize_program_extensions(mut data: ProgramProviderDataV1) -> Option<Progr
             .raw_provider_data_extensions
             .iter()
             .any(|extension| forbidden_program_extension(&extension.key))
-        || data.extensions.keys().any(|key| forbidden_program_extension(key))
+        || data
+            .extensions
+            .keys()
+            .any(|key| forbidden_program_extension(key))
     {
         return None;
     }
