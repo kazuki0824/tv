@@ -289,7 +289,7 @@ class NativeAribSiParser : AutoCloseable {
                         offset = descriptor.optInt("offset", -1),
                         declaredLength = descriptor.optInt("declaredLength", -1),
                         actualRemainingLength = descriptor.optInt("actualRemainingLength", -1),
-                        parseStatus = descriptor.optString("parseStatus"),
+                        parseStatus = parseSiParseStatus(descriptor.getString("parseStatus")),
                         rawPrefixHex = descriptor.optString("rawPrefixHex"),
                     ),
                 message = obj.optString("message"),
@@ -404,6 +404,60 @@ class NativeAribSiParser : AutoCloseable {
             )
         }
 
+    private fun parseSmdSemanticState(smd: JSONObject): SmdSemanticState =
+        when (val value = smd.getString("semanticState")) {
+            "SUPPORTED_BROADCAST" -> SmdSemanticState.SUPPORTED_BROADCAST
+            "NON_BROADCAST" -> SmdSemanticState.NON_BROADCAST
+            "UNDEFINED_BROADCAST_CLASS" -> SmdSemanticState.UNDEFINED_BROADCAST_CLASS
+            "UNSUPPORTED_BROADCAST_SYSTEM" -> SmdSemanticState.UNSUPPORTED_BROADCAST_SYSTEM
+            "UNDETERMINED_SMD" -> SmdSemanticState.UNDETERMINED_SMD
+            else ->
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのsemanticStateが未知です: $value",
+                )
+        }
+
+    private fun parseSiParseStatus(value: String): SiParseStatus =
+        when (value) {
+            "OK" -> SiParseStatus.OK
+            "MalformedLength" -> SiParseStatus.MALFORMED_LENGTH
+            "TruncatedDescriptor" -> SiParseStatus.TRUNCATED_DESCRIPTOR
+            "UnsupportedValue" -> SiParseStatus.UNSUPPORTED_VALUE
+            "InvalidSequence" -> SiParseStatus.INVALID_SEQUENCE
+            "UNRESOLVED" -> SiParseStatus.UNRESOLVED
+            else ->
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのparseStatusが未知です: $value",
+                )
+        }
+
+    private fun parseEitTimingState(value: String): EitTimingState =
+        when (value) {
+            "DEFINED" -> EitTimingState.DEFINED
+            "UNDEFINED_TIME" -> EitTimingState.UNDEFINED_TIME
+            "BOTH_TIMING_UNDEFINED" -> EitTimingState.BOTH_TIMING_UNDEFINED
+            "MALFORMED_TIMING" -> EitTimingState.MALFORMED_TIMING
+            else ->
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのtiming stateが未知です: $value",
+                )
+        }
+
+    private fun parseElementaryStreamKind(value: String?): ElementaryStreamKind? =
+        when (value) {
+            null -> null
+            "VIDEO" -> ElementaryStreamKind.VIDEO
+            "AUDIO" -> ElementaryStreamKind.AUDIO
+            else ->
+                throw NativeSiException(
+                    "JSON_ENCODING",
+                    "SI snapshotのcodecKindが未知です: $value",
+                )
+        }
+
     private fun parseBroadcastSystem(smd: JSONObject): BroadcastSystem? {
         if (smd.isNull("broadcastSystem")) return null
         val value = smd.get("broadcastSystem")
@@ -487,7 +541,7 @@ class NativeAribSiParser : AutoCloseable {
                     isCaption = obj.optBoolean("isCaption"),
                     isSuperimpose = obj.optBoolean("isSuperimpose"),
                     codec = optStringOrNull(obj, "codec"),
-                    codecKind = optStringOrNull(obj, "codecKind"),
+                    codecKind = parseElementaryStreamKind(optStringOrNull(obj, "codecKind")),
                     codecFacts = parseCodecFacts(obj),
                 )
             }
@@ -676,7 +730,7 @@ class NativeAribSiParser : AutoCloseable {
                 serviceKey = key,
                 stableIdentity = optStringOrNull(obj, "stableIdentity"),
                 eventId = eventId,
-                timingState = timingObj.optString("state", "MALFORMED_TIMING"),
+                timingState = parseEitTimingState(timingObj.getString("state")),
                 rawStartTimeHex = timingObj.optString("rawStartTimeHex"),
                 rawDurationHex = timingObj.optString("rawDurationHex"),
                 startTimeMillis = start,
@@ -730,7 +784,7 @@ class NativeAribSiParser : AutoCloseable {
                                         AribTruncatedDescriptorLoop(
                                             loop.getInt("declaredLength"),
                                             loop.getString("rawBytesHex"),
-                                            loop.getString("parseStatus"),
+                                            parseSiParseStatus(loop.getString("parseStatus")),
                                         )
                                     },
                             ),
@@ -752,10 +806,10 @@ class NativeAribSiParser : AutoCloseable {
                         languageCode = languageCode,
                         title = obj.optString("title"),
                         text = obj.optString("text"),
-                        parseStatus = obj.optString("parseStatus", "OK"),
+                        parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
                     )
                 }
-            }.filter { it.parseStatus.equals("OK", ignoreCase = true) }
+            }.filter { it.parseStatus == SiParseStatus.OK }
             .distinctBy { it.languageCode }
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -771,10 +825,10 @@ class NativeAribSiParser : AutoCloseable {
                     AribExtendedEventText(
                         languageCode = languageCode,
                         text = obj.optString("text"),
-                        parseStatus = obj.optString("parseStatus", "OK"),
+                        parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
                     )
                 }
-            }.filter { it.parseStatus.equals("OK", ignoreCase = true) }
+            }.filter { it.parseStatus == SiParseStatus.OK }
             .distinctBy { it.languageCode }
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -805,7 +859,7 @@ class NativeAribSiParser : AutoCloseable {
                 AribParentalRating(
                     countryCode = country,
                     rawRatingByte = raw,
-                    parseStatus = obj.optString("parseStatus", "OK"),
+                    parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
                 )
             }
         }
@@ -823,7 +877,7 @@ class NativeAribSiParser : AutoCloseable {
                     level2 = level2,
                     userNibble = obj.optInt("userNibble", 0),
                     aribName = obj.optString("aribName"),
-                    parseStatus = obj.optString("parseStatus", "OK"),
+                    parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
                 )
             }
         }
@@ -849,7 +903,7 @@ class NativeAribSiParser : AutoCloseable {
                 events = events,
                 otherNetworkEvents = otherNetworkEvents,
                 privateDataHex = privateDataHex,
-                parseStatus = obj.optString("parseStatus", "OK"),
+                parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
             )
         }
 
@@ -876,7 +930,7 @@ class NativeAribSiParser : AutoCloseable {
             AribComponentGroupDescriptor(
                 componentGroupType = type,
                 groups = groups,
-                parseStatus = obj.optString("parseStatus", "OK"),
+                parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
             )
         }
 
@@ -925,7 +979,7 @@ class NativeAribSiParser : AutoCloseable {
                 linkageType = obj.optInt("linkageType", -1),
                 serviceKey = key,
                 privateDataPrefixHex = obj.optString("privateDataPrefixHex", ""),
-                parseStatus = obj.optString("parseStatus", "OK"),
+                parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
             ).takeIf { it.linkageType >= 0 }
         }
 
@@ -936,7 +990,7 @@ class NativeAribSiParser : AutoCloseable {
             AribFreeCaMode(
                 raw = optIntOrNull(obj, "raw"),
                 scrambled = optBoolOrNull(obj, "scrambled"),
-                parseStatus = obj.optString("parseStatus", "OK"),
+                parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
             )
         }
 
@@ -951,7 +1005,7 @@ class NativeAribSiParser : AutoCloseable {
                 episodeNumber = optIntOrNull(it, "episodeNumber"),
                 lastEpisodeNumber = optIntOrNull(it, "lastEpisodeNumber"),
                 name = optStringOrNull(it, "name"),
-                parseStatus = it.optString("parseStatus", "OK"),
+                parseStatus = parseSiParseStatus(it.getString("parseStatus")),
             )
         }
 
@@ -999,7 +1053,7 @@ class NativeAribSiParser : AutoCloseable {
             episodeNumber = candidate.getInt("episodeNumber"),
             lastEpisodeNumber = candidate.getInt("lastEpisodeNumber"),
             name = if (candidate.isNull("name")) null else candidate.getString("name"),
-            parseStatus = candidate.getString("parseStatus"),
+            parseStatus = parseSiParseStatus(candidate.getString("parseStatus")),
         )
     }
 
@@ -1133,7 +1187,7 @@ class NativeAribSiParser : AutoCloseable {
                     main = optBoolOrNull(obj, "main"),
                     multiLingual = optBoolOrNull(obj, "multiLingual"),
                     qualityIndicator = optIntOrNull(obj, "qualityIndicator"),
-                    parseStatus = obj.optString("parseStatus", "OK"),
+                    parseStatus = parseSiParseStatus(obj.getString("parseStatus")),
                     channelCount = optIntOrNull(obj, "channelCount"),
                     sampleRateHz = optIntOrNull(obj, "sampleRateHz"),
                     audioDescription = optBoolOrNull(obj, "audioDescription"),
@@ -1198,7 +1252,7 @@ class NativeAribSiParser : AutoCloseable {
                         broadcastSystem = parseBroadcastSystem(smd),
                         additionalBroadcastingIdentification = optIntOrNull(smd, "additionalBroadcastingIdentification"),
                         additionalIdentificationInfoHex = smd.optString("additionalIdentificationInfoHex"),
-                        semanticState = smd.optString("semanticState", "UNDETERMINED_SMD"),
+                        semanticState = parseSmdSemanticState(smd),
                         diagnostic = optStringOrNull(smd, "diagnostic"),
                     ),
                 missingComponents = parseStringArray(obj.optJSONArray("missingComponents")),

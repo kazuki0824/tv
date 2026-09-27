@@ -118,7 +118,6 @@ class ServiceListBuilder(
 object ServicePolicyEvaluator {
     private const val SERVICE_TYPE_DIGITAL_TV = 0x01
     private const val SERVICE_TYPE_DIGITAL_AUDIO = 0x02
-    private const val SUPPORTED_SMD = "SUPPORTED_BROADCAST"
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
@@ -212,8 +211,8 @@ object ServicePolicyEvaluator {
                 }
             }
         }
-        if (facts.smd.semanticState != SUPPORTED_SMD) {
-            registrationReasons += facts.smd.semanticState
+        if (facts.smd.semanticState != SmdSemanticState.SUPPORTED_BROADCAST) {
+            registrationReasons += facts.smd.semanticState.wireValue
         } else if (
             expectedSmdBroadcastSystem != null &&
             facts.smd.broadcastSystem != expectedSmdBroadcastSystem

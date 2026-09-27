@@ -118,7 +118,7 @@ data class AribElementaryStream(
     val isCaption: Boolean = false,
     val isSuperimpose: Boolean = false,
     val codec: String? = null,
-    val codecKind: String? = null,
+    val codecKind: ElementaryStreamKind? = null,
     val codecFacts: AribCodecFacts = AribCodecFacts(),
 )
 
@@ -168,19 +168,19 @@ data class AribShortEventText(
     val languageCode: String,
     val title: String,
     val text: String,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribExtendedEventText(
     val languageCode: String,
     val text: String,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribParentalRating(
     val countryCode: String,
     val rawRatingByte: Int,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribContentGenre(
@@ -188,7 +188,7 @@ data class AribContentGenre(
     val level2: Int,
     val userNibble: Int = 0,
     val aribName: String = "",
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribEventGroupReference(
@@ -214,7 +214,7 @@ data class AribEventGroup(
     val events: List<AribEventGroupReference> = emptyList(),
     val otherNetworkEvents: List<AribOtherNetworkEventGroupReference> = emptyList(),
     val privateDataHex: String = "",
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribComponentGroup(
@@ -225,14 +225,14 @@ data class AribComponentGroup(
 data class AribComponentGroupDescriptor(
     val componentGroupType: Int,
     val groups: List<AribComponentGroup> = emptyList(),
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribLinkage(
     val linkageType: Int,
     val serviceKey: ServiceKey,
     val privateDataPrefixHex: String = "",
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 ) {
     val originalNetworkId: Int get() = serviceKey.originalNetworkId
     val transportStreamId: Int get() = serviceKey.transportStreamId
@@ -242,7 +242,7 @@ data class AribLinkage(
 data class AribFreeCaMode(
     val raw: Int?,
     val scrambled: Boolean?,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribSeries(
@@ -254,7 +254,7 @@ data class AribSeries(
     val episodeNumber: Int?,
     val lastEpisodeNumber: Int?,
     val name: String?,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribComponentEntry(
@@ -284,7 +284,7 @@ data class AribComponentEntry(
     val main: Boolean? = null,
     val multiLingual: Boolean? = null,
     val qualityIndicator: Int? = null,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
     val channelCount: Int? = null,
     val sampleRateHz: Int? = null,
     val audioDescription: Boolean? = null,
@@ -347,7 +347,7 @@ data class AribEvent(
     val serviceKey: ServiceKey,
     val stableIdentity: String?,
     val eventId: Int,
-    val timingState: String = "DEFINED",
+    val timingState: EitTimingState = EitTimingState.DEFINED,
     val rawStartTimeHex: String = "",
     val rawDurationHex: String = "",
     val startTimeMillis: Long,
@@ -389,7 +389,7 @@ data class DescriptorDiagnosticDescriptor(
     val offset: Int,
     val declaredLength: Int,
     val actualRemainingLength: Int,
-    val parseStatus: String,
+    val parseStatus: SiParseStatus,
     val rawPrefixHex: String,
 )
 
@@ -428,6 +428,41 @@ enum class BroadcastSystem {
     ISDB_S_110CS,
 }
 
+enum class SmdSemanticState(
+    val wireValue: String,
+) {
+    SUPPORTED_BROADCAST("SUPPORTED_BROADCAST"),
+    NON_BROADCAST("NON_BROADCAST"),
+    UNDEFINED_BROADCAST_CLASS("UNDEFINED_BROADCAST_CLASS"),
+    UNSUPPORTED_BROADCAST_SYSTEM("UNSUPPORTED_BROADCAST_SYSTEM"),
+    UNDETERMINED_SMD("UNDETERMINED_SMD"),
+}
+
+enum class SiParseStatus(
+    val wireValue: String,
+) {
+    OK("OK"),
+    MALFORMED_LENGTH("MalformedLength"),
+    TRUNCATED_DESCRIPTOR("TruncatedDescriptor"),
+    UNSUPPORTED_VALUE("UnsupportedValue"),
+    INVALID_SEQUENCE("InvalidSequence"),
+    UNRESOLVED("UNRESOLVED"),
+}
+
+enum class EitTimingState(
+    val wireValue: String,
+) {
+    DEFINED("DEFINED"),
+    UNDEFINED_TIME("UNDEFINED_TIME"),
+    BOTH_TIMING_UNDEFINED("BOTH_TIMING_UNDEFINED"),
+    MALFORMED_TIMING("MALFORMED_TIMING"),
+}
+
+enum class ElementaryStreamKind {
+    VIDEO,
+    AUDIO,
+}
+
 data class SmdSemanticFacts(
     val descriptorPresent: Boolean,
     val syntaxValid: Boolean,
@@ -437,7 +472,7 @@ data class SmdSemanticFacts(
     val broadcastSystem: BroadcastSystem? = null,
     val additionalBroadcastingIdentification: Int?,
     val additionalIdentificationInfoHex: String,
-    val semanticState: String,
+    val semanticState: SmdSemanticState,
     val diagnostic: String?,
 )
 
