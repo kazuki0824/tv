@@ -1103,7 +1103,7 @@ pub struct WorkerRuntimeSupervisor<K, A, R> {
     capacity: usize,
     deadline: std::time::Duration,
     state: PoisonTrackedMutex<WorkerRuntimeSupervisorMaps<K, A, R>>,
-    worker: std::sync::Mutex<SupervisorWorkerState>,
+    worker: PoisonTrackedMutex<SupervisorWorkerState>,
     worker_context: WorkerContext,
 }
 
@@ -1207,7 +1207,10 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
                 WorkerRuntimeSupervisorMaps::default(),
                 RuntimeLockKind::SupervisorState,
             ),
-            worker: std::sync::Mutex::new(SupervisorWorkerState::NotStarted),
+            worker: PoisonTrackedMutex::new(
+                SupervisorWorkerState::NotStarted,
+                RuntimeLockKind::SupervisorWorker,
+            ),
             worker_context: WorkerContext::new(),
         }
     }
@@ -1483,16 +1486,8 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
             + 'static,
         terminal_observer: impl FnOnce(&WorkerTerminalResult<()>) + Send + 'static,
     ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        use maleicacid_tuner_hal2_common::{
-            HalError, HalErrorDetail, HalInvalidStateKind, WorkerLockKind,
-        };
-        let mut slot = self
-            .worker
-            .lock()
-            .map_err(|_| HalError::WorkerLockPoisoned {
-                owner: "WorkerRuntimeSupervisor",
-                lock: WorkerLockKind::SupervisorWorker,
-            })?;
+        use maleicacid_tuner_hal2_common::{HalError, HalErrorDetail, HalInvalidStateKind};
+        let mut slot = self.worker.lock().map_err(HalError::LockPoisoned)?;
         if !matches!(*slot, SupervisorWorkerState::NotStarted) {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -1521,14 +1516,8 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     pub fn worker_terminal_result(
         &self,
     ) -> Result<Option<WorkerTerminalResult<()>>, maleicacid_tuner_hal2_common::HalError> {
-        use maleicacid_tuner_hal2_common::{HalError, WorkerLockKind};
-        let mut slot = self
-            .worker
-            .lock()
-            .map_err(|_| HalError::WorkerLockPoisoned {
-                owner: "WorkerRuntimeSupervisor",
-                lock: WorkerLockKind::SupervisorWorker,
-            })?;
+        use maleicacid_tuner_hal2_common::HalError;
+        let mut slot = self.worker.lock().map_err(HalError::LockPoisoned)?;
         if matches!(&*slot, SupervisorWorkerState::Running(worker) if worker.is_finished()) {
             if let SupervisorWorkerState::Running(worker) =
                 std::mem::replace(&mut *slot, SupervisorWorkerState::NotStarted)
@@ -2522,6 +2511,30 @@ mod tests {
             HalError::WorkerReaperUnavailable
         );
         assert_eq!(pending.state.lock().unwrap().entries.get(&1), Some(&9));
+    }
+
+    #[test]
+    fn supervisor_worker_poison_keeps_identity_and_detection_count() {
+        use maleicacid_tuner_hal2_common::{HalError, RuntimeLockKind};
+
+        let supervisor =
+            WorkerRuntimeSupervisor::<i32, i32, i32>::new(1, std::time::Duration::from_millis(1));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = supervisor.worker.lock().unwrap();
+            panic!("監督ワーカーslotを汚染");
+        }))
+        .is_err());
+
+        for count in [1, 2] {
+            let error = supervisor.worker_terminal_result().unwrap_err();
+            assert!(matches!(
+                error,
+                HalError::LockPoisoned(poison)
+                    if poison.lock == RuntimeLockKind::SupervisorWorker
+                        && poison.poison_count == count
+                        && !poison.counter_saturated
+            ));
+        }
     }
 
     #[test]
