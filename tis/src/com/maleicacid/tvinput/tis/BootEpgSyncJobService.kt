@@ -47,6 +47,10 @@ class BootEpgSyncJobService : JobService() {
                 Unit
             }
         }
+        if (!ProgramUpgradeCleanup.ensure(applicationContext)) {
+            DirectBootGuard.deferPending(applicationContext, "PROGRAM_UPGRADE_CLEANUP_FAILED")
+            return finish(run, needsReschedule = true)
+        }
         val inputId = TisInputIdResolver.resolveOwnInputId(applicationContext)
         if (inputId == null) {
             DirectBootGuard.deferPending(applicationContext, "TV_INPUT_ID_UNRESOLVED")
