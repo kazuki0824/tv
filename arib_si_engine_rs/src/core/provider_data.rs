@@ -1176,7 +1176,7 @@ fn valid_descriptor_diagnostic(item: &DescriptorDiagnosticV1) -> bool {
         && item.descriptor.tag <= 255
         && item.descriptor.offset >= 0
         && item.descriptor.declared_length >= 0
-        && item.descriptor.declared_length <= 255
+        && item.descriptor.declared_length <= 4095
         && item.descriptor.actual_remaining_length >= 0
         && !item.descriptor.parse_status.is_empty()
         && item.message.chars().count() <= 256

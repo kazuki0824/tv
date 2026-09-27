@@ -148,7 +148,7 @@
         "declaredLength": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 4095
         },
         "actualRemainingLength": {
           "type": "integer",

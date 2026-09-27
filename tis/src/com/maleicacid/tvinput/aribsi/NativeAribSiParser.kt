@@ -17,6 +17,7 @@ private const val COMPONENT_GROUP_TYPE_MAX = 7L
 private const val AUDIO_QUALITY_INDICATOR_MAX = 3L
 private const val AUDIO_SAMPLING_RATE_MAX = 7L
 private const val CAPTION_TIMING_MAX = 3L
+private const val DESCRIPTOR_DECLARED_LENGTH_MAX = 4_095L
 private const val WIRE_U8_MAX = 255L
 private const val WIRE_U16_MAX = 65_535L
 private const val WIRE_PID_MAX = 8_191L
@@ -1451,10 +1452,17 @@ class NativeAribSiParser : AutoCloseable {
     ) {
         requireExactFields(obj, context, "componentGroupType", "groups", "parseStatus")
         requireInteger(obj, "componentGroupType", context, 0L..COMPONENT_GROUP_TYPE_MAX)
-        validateObjectArray(requireArray(obj, "groups", context), "$context.groups") { item, itemContext ->
+        validateObjectArray(
+            requireArray(obj, "groups", context),
+            "$context.groups",
+        ) { item, itemContext ->
             requireExactFields(item, itemContext, "componentGroupId", "componentTags")
             requireInteger(item, "componentGroupId", itemContext, 0L..WIRE_NIBBLE_MAX)
-            validateIntegerArray(requireArray(item, "componentTags", itemContext), "$itemContext.componentTags", 0L..WIRE_U8_MAX)
+            validateIntegerArray(
+                requireArray(item, "componentTags", itemContext),
+                "$itemContext.componentTags",
+                0L..WIRE_U8_MAX,
+            )
         }
         requireStringValue(obj, "parseStatus", context, setOf("OK"))
     }
@@ -1508,10 +1516,29 @@ class NativeAribSiParser : AutoCloseable {
             "descriptorFactsCanonicalJson",
         )
         requireNullableObject(obj, "truncatedDescriptorLoop", context)?.let { loop ->
-            requireExactFields(loop, "$context.truncatedDescriptorLoop", "declaredLength", "rawBytesHex", "parseStatus")
-            requireInteger(loop, "declaredLength", "$context.truncatedDescriptorLoop", 0L..Long.MAX_VALUE)
-            requireHex(requireString(loop, "rawBytesHex", "$context.truncatedDescriptorLoop"), "$context.truncatedDescriptorLoop.rawBytesHex")
-            requireStringValue(loop, "parseStatus", "$context.truncatedDescriptorLoop", setOf("TruncatedDescriptor"))
+            requireExactFields(
+                loop,
+                "$context.truncatedDescriptorLoop",
+                "declaredLength",
+                "rawBytesHex",
+                "parseStatus",
+            )
+            requireInteger(
+                loop,
+                "declaredLength",
+                "$context.truncatedDescriptorLoop",
+                0L..DESCRIPTOR_DECLARED_LENGTH_MAX,
+            )
+            requireHex(
+                requireString(loop, "rawBytesHex", "$context.truncatedDescriptorLoop"),
+                "$context.truncatedDescriptorLoop.rawBytesHex",
+            )
+            requireStringValue(
+                loop,
+                "parseStatus",
+                "$context.truncatedDescriptorLoop",
+                setOf("TruncatedDescriptor"),
+            )
         }
         requireString(obj, "summary", context)
         validateObjectArray(
@@ -1529,11 +1556,25 @@ class NativeAribSiParser : AutoCloseable {
         obj: JSONObject,
         context: String,
     ) {
-        requireExactFields(obj, context, "schema", "schemaVersion", "severity", "code", "scope", "descriptor", "message")
+        requireExactFields(
+            obj,
+            context,
+            "schema",
+            "schemaVersion",
+            "severity",
+            "code",
+            "scope",
+            "descriptor",
+            "message",
+        )
         requireStringValue(obj, "schema", context, setOf("maleicacid.tv.descriptorDiagnostic"))
         requireInteger(obj, "schemaVersion", context, 1L..1L)
-        if (requireString(obj, "severity", context).isEmpty()) jsonEncodingError("$context.severity は空文字列にできません")
-        if (requireString(obj, "code", context).isEmpty()) jsonEncodingError("$context.code は空文字列にできません")
+        if (requireString(obj, "severity", context).isEmpty()) {
+            jsonEncodingError("$context.severity は空文字列にできません")
+        }
+        if (requireString(obj, "code", context).isEmpty()) {
+            jsonEncodingError("$context.code は空文字列にできません")
+        }
         validateDescriptorDiagnosticScope(requireObject(obj, "scope", context), "$context.scope")
         validateDescriptorDiagnosticDescriptor(requireObject(obj, "descriptor", context), "$context.descriptor")
         val message = requireString(obj, "message", context)
@@ -1546,7 +1587,19 @@ class NativeAribSiParser : AutoCloseable {
         obj: JSONObject,
         context: String,
     ) {
-        requireAllowedFields(obj, context, "pid", "tableId", "tableIdExtension", "version", "sectionNumber", "originalNetworkId", "transportStreamId", "serviceId", "eventId")
+        requireAllowedFields(
+            obj,
+            context,
+            "pid",
+            "tableId",
+            "tableIdExtension",
+            "version",
+            "sectionNumber",
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "eventId",
+        )
         validateOptionalNullableInteger(obj, "pid", context, 0L..WIRE_PID_MAX)
         validateOptionalNullableInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
         validateOptionalNullableInteger(obj, "tableIdExtension", context, 0L..WIRE_U16_MAX)
@@ -1563,16 +1616,30 @@ class NativeAribSiParser : AutoCloseable {
         obj: JSONObject,
         context: String,
     ) {
-        requireAllowedFields(obj, context, "tag", "name", "offset", "declaredLength", "actualRemainingLength", "parseStatus", "rawPrefixHex")
+        requireAllowedFields(
+            obj,
+            context,
+            "tag",
+            "name",
+            "offset",
+            "declaredLength",
+            "actualRemainingLength",
+            "parseStatus",
+            "rawPrefixHex",
+        )
         requireInteger(obj, "tag", context, 0L..WIRE_U8_MAX)
         validateOptionalNullableString(obj, "name", context)
         requireInteger(obj, "offset", context, 0L..Long.MAX_VALUE)
-        requireInteger(obj, "declaredLength", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "declaredLength", context, 0L..DESCRIPTOR_DECLARED_LENGTH_MAX)
         requireInteger(obj, "actualRemainingLength", context, 0L..Long.MAX_VALUE)
-        if (requireString(obj, "parseStatus", context).isEmpty()) jsonEncodingError("$context.parseStatus は空文字列にできません")
+        if (requireString(obj, "parseStatus", context).isEmpty()) {
+            jsonEncodingError("$context.parseStatus は空文字列にできません")
+        }
         val rawPrefixHex = requireString(obj, "rawPrefixHex", context)
         requireHex(rawPrefixHex, "$context.rawPrefixHex")
-        if (rawPrefixHex.length > 128) jsonEncodingError("$context.rawPrefixHex は128文字以下でなければなりません")
+        if (rawPrefixHex.length > 128) {
+            jsonEncodingError("$context.rawPrefixHex は128文字以下でなければなりません")
+        }
     }
 
     private fun validateParentalRating(
