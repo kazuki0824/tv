@@ -366,6 +366,29 @@ class NativeAribSiParserCasDiscoveryTest {
                         ),
                     )
                 },
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.getJSONObject("timing").put("state", "BOTH_TIMING_UNDEFINED")
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.put("programKey", JSONObject.NULL)
+                    event.put("stableIdentity", JSONObject.NULL)
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.getJSONObject("programKey").put("eventId", event.getInt("eventId") + 1)
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    val stable = JSONObject(event.getString("stableIdentity"))
+                    stable.put("serviceId", stable.getInt("serviceId") + 1)
+                    event.put("stableIdentity", stable.toString())
+                },
+            )
             )
         }
     }

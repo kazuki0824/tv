@@ -1703,13 +1703,24 @@ class NativeAribSiParser : AutoCloseable {
             "source",
             "descriptors",
         )
-        requireNullableObject(obj, "programKey", context)?.let {
+        val programKey = requireNullableObject(obj, "programKey", context)
+        programKey?.let {
             validateProgramKey(it, "$context.programKey")
         }
-        requireInteger(obj, "eventId", context, 0L..WIRE_U16_MAX)
-        validateServiceKey(requireObject(obj, "serviceKey", context), "$context.serviceKey")
-        requireNullableString(obj, "stableIdentity", context)
-        validateTiming(requireObject(obj, "timing", context), "$context.timing")
+        val eventId = requireInteger(obj, "eventId", context, 0L..WIRE_U16_MAX)
+        val serviceKey = requireObject(obj, "serviceKey", context)
+        validateServiceKey(serviceKey, "$context.serviceKey")
+        val stableIdentity = requireNullableString(obj, "stableIdentity", context)
+        val timing = requireObject(obj, "timing", context)
+        validateTiming(timing, "$context.timing")
+        validateEventIdentity(
+            programKey = programKey,
+            stableIdentity = stableIdentity,
+            serviceKey = serviceKey,
+            eventId = eventId,
+            timingState = timing.getString("state"),
+            context = context,
+        )
         requireString(obj, "title", context)
         requireString(obj, "description", context)
         requireString(obj, "extendedDescription", context)
@@ -1730,6 +1741,49 @@ class NativeAribSiParser : AutoCloseable {
             requireObject(obj, "descriptors", context),
             "$context.descriptors",
         )
+    }
+
+    private fun validateEventIdentity(
+        programKey: JSONObject?,
+        stableIdentity: String?,
+        serviceKey: JSONObject,
+        eventId: Long,
+        timingState: String,
+        context: String,
+    ) {
+        val identityRequired = timingState == "DEFINED" || timingState == "UNDEFINED_TIME"
+        if (identityRequired != (programKey != null && stableIdentity != null)) {
+            jsonEncodingError(
+                "$context のtiming stateとprogramKey/stableIdentityの有無が不整合です",
+            )
+        }
+        if (!identityRequired) return
+
+        val key = requireNotNull(programKey)
+        val stable =
+            try {
+                JSONObject(requireNotNull(stableIdentity))
+            } catch (error: org.json.JSONException) {
+                jsonEncodingError("$context.stableIdentity がProgramKey JSONではありません")
+            }
+        validateProgramKey(stable, "$context.stableIdentity")
+
+        val expectedOriginalNetworkId = serviceKey.getLong("originalNetworkId")
+        val expectedTransportStreamId = serviceKey.getLong("transportStreamId")
+        val expectedServiceId = serviceKey.getLong("serviceId")
+        for ((field, expected) in listOf(
+            "originalNetworkId" to expectedOriginalNetworkId,
+            "transportStreamId" to expectedTransportStreamId,
+            "serviceId" to expectedServiceId,
+            "eventId" to eventId,
+        )) {
+            if (key.getLong(field) != expected || stable.getLong(field) != expected) {
+                jsonEncodingError("$context のidentity.$field がserviceKey/eventIdと不一致です")
+            }
+        }
+        if (key.getString("kind") != stable.getString("kind")) {
+            jsonEncodingError("$context のprogramKeyとstableIdentityのkindが不一致です")
+        }
     }
 
     // snapshot全体の必須arrayを一度に照合し、部分受理を防ぐため長さを許容する。

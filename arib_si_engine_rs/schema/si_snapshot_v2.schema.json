@@ -2337,7 +2337,51 @@
         "descriptors": {
           "$ref": "#/$defs/eventDescriptors"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "timing": {
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "DEFINED",
+                      "UNDEFINED_TIME"
+                    ]
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              }
+            },
+            "required": [
+              "timing"
+            ]
+          },
+          "then": {
+            "properties": {
+              "programKey": {
+                "$ref": "#/$defs/programKey"
+              },
+              "stableIdentity": {
+                "type": "string"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "programKey": {
+                "type": "null"
+              },
+              "stableIdentity": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }
