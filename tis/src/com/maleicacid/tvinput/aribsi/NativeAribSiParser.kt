@@ -12,36 +12,6 @@ private const val SERIES_U16_MAX = 65_535L
 private const val SERIES_REPEAT_LABEL_MAX = 15L
 private const val SERIES_PROGRAM_PATTERN_MAX = 7L
 private const val SERIES_EPISODE_MAX = 4_095L
-private const val WIRE_NIBBLE_MAX = 15L
-private const val COMPONENT_GROUP_TYPE_MAX = 7L
-private const val AUDIO_QUALITY_INDICATOR_MAX = 3L
-private const val AUDIO_SAMPLING_RATE_MAX = 7L
-private const val CAPTION_TIMING_MAX = 3L
-private const val DESCRIPTOR_DECLARED_LENGTH_MAX = 4_095L
-private const val WIRE_U8_MAX = 255L
-private const val WIRE_U16_MAX = 65_535L
-private const val WIRE_PID_MAX = 8_191L
-private const val WIRE_U32_MAX = 4_294_967_295L
-private const val MPEG_VERSION_MAX = 31L
-private const val SMD_BROADCASTING_FLAG_MAX = 3L
-private const val SMD_BROADCASTING_IDENTIFIER_MAX = 63L
-private const val DAY_MILLIS_MAX = 86_399_999L
-private const val BROADCAST_CLOCK_TDT_TABLE_ID = 0x70L
-private const val BROADCAST_CLOCK_TOT_TABLE_ID = 0x73L
-private const val ISO_639_CODE_LENGTH = 3
-private const val HEX_PAIR_WIDTH = 2
-private const val HEX_RADIX = 16
-
-private val TABLE_REQUIREMENT_COMPONENTS =
-    setOf(
-        "BAT",
-        "NIT",
-        "NIT-other",
-        "PAT",
-        "PMT",
-        "SDT",
-        "SDT-other",
-    )
 
 class NativeParserCleanupException(
     val status: Int,
@@ -1381,7 +1351,6 @@ class NativeAribSiParser : AutoCloseable {
     private external fun nativeDecodeAribStringDiagnosticSummary(bytes: ByteArray): String?
 
     companion object {
-
         private fun requireNativeString(value: String?): String {
             if (value == null) {
                 throw NativeSiException("JNI_OUTPUT", "JNIが例外なしのnullを返しました")
