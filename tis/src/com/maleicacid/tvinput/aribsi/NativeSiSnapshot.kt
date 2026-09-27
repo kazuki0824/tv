@@ -590,20 +590,14 @@ object NativeSiJvmFactory {
         descriptorDiagnostics: List<DescriptorDiagnostic>,
         descriptorDiagnosticsCanonicalJson: String,
         descriptorFactsCanonicalJson: String?,
+        textDiagnostics: List<String>,
         truncatedDescriptorLoop: AribTruncatedDescriptorLoop?,
     ) = AribEventDiagnostics(
         summary = summary,
         descriptorDiagnostics = descriptorDiagnostics,
         descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson,
         descriptorFactsCanonicalJson = descriptorFactsCanonicalJson,
-        textDiagnostics =
-            summary
-                .split(' ', '\n')
-                .filter {
-                    it.contains("unknownCount=") ||
-                        it.contains("component=") ||
-                        it.contains("audio=")
-                },
+        textDiagnostics = textDiagnostics,
         truncatedDescriptorLoop = truncatedDescriptorLoop,
     )
 
