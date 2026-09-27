@@ -34,6 +34,16 @@ fn parse_status(status: DescriptorParseStatus) -> SiParseStatusDto {
     }
 }
 
+fn descriptor_fact_parse_status(status: DescriptorParseStatus) -> &'static str {
+    match status {
+        DescriptorParseStatus::Ok => "OK",
+        DescriptorParseStatus::MalformedLength => "MalformedLength",
+        DescriptorParseStatus::TruncatedDescriptor => "TruncatedDescriptor",
+        DescriptorParseStatus::UnsupportedValue => "UnsupportedValue",
+        DescriptorParseStatus::InvalidSequence => "InvalidSequence",
+    }
+}
+
 fn timing_state(state: EitTimingState) -> EitTimingStateDto {
     match state {
         EitTimingState::Defined => EitTimingStateDto::Defined,
@@ -389,7 +399,7 @@ fn rating_entries(descriptor: &ParentalRatingDescriptor) -> Vec<RatingV1> {
         .map(|rating| RatingV1 {
             country_code: rating.country_code.clone(),
             raw_rating_byte: i64::from(rating.raw_rating_byte),
-            parse_status: descriptor.parse_status.as_str().to_string(),
+            parse_status: descriptor_fact_parse_status(descriptor.parse_status).to_string(),
         })
         .collect()
 }
@@ -403,7 +413,7 @@ fn descriptor_facts(event: &EitEvent) -> DescriptorFactsV1 {
             .map(|descriptor| ParentalRatingDescriptorV1 {
                 entries: rating_entries(descriptor),
                 raw_descriptor_hex: hex(&descriptor.raw_descriptor_bytes),
-                parse_status: descriptor.parse_status.as_str().to_string(),
+                parse_status: descriptor_fact_parse_status(descriptor.parse_status).to_string(),
             })
             .collect(),
         unknown_descriptors: event
