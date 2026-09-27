@@ -25,11 +25,17 @@ object ProgramUpgradeCleanup {
             if (prefs.getString(KEY_SOFTWARE_IDENTITY, null) == currentIdentity) return true
 
             val inputId = TisInputIdResolver.resolveOwnInputId(appContext) ?: return false
-            val deleted = deleteOwnedPrograms(appContext, inputId)
-            if (!deleted) return false
-
-            if (!prefs.edit().putString(KEY_SOFTWARE_IDENTITY, currentIdentity).commit()) {
-                Log.w(LogTags.TIS, "Program upgrade cleanup software identityを保存できません")
+            val ownedProgramIds = queryOwnedProgramIds(appContext, inputId) ?: return false
+            val completed =
+                runCleanupTransaction(
+                    programIds = ownedProgramIds,
+                    deleteProgram = { programId -> deleteProgram(appContext, programId) },
+                    commitIdentity = {
+                        prefs.edit().putString(KEY_SOFTWARE_IDENTITY, currentIdentity).commit()
+                    },
+                )
+            if (!completed) {
+                Log.w(LogTags.TIS, "Program upgrade cleanupを完了できません inputId=$inputId")
                 return false
             }
             Log.i(LogTags.TIS, "旧product buildのProgram行を破棄しました inputId=$inputId")
@@ -44,10 +50,10 @@ object ProgramUpgradeCleanup {
             Log.w(LogTags.TIS, "Program upgrade cleanup software identityを取得できません", it)
         }.getOrNull()
 
-    private fun deleteOwnedPrograms(
+    private fun queryOwnedProgramIds(
         context: Context,
         inputId: String,
-    ): Boolean =
+    ): List<Long>? =
         runCatching {
             val channelCursor =
                 context.contentResolver.query(
@@ -62,7 +68,7 @@ object ProgramUpgradeCleanup {
                 while (cursor.moveToNext()) channelIds += cursor.getLong(0)
             }
 
-            val programIds = mutableListOf<Long>()
+            val rows = mutableListOf<Pair<Long, String?>>()
             channelIds.forEach { channelId ->
                 val programCursor =
                     context.contentResolver.query(
@@ -77,26 +83,45 @@ object ProgramUpgradeCleanup {
                     ) ?: error("TvProvider program query returned null cursor channelId=$channelId")
                 programCursor.use { cursor ->
                     while (cursor.moveToNext()) {
-                        if (cursor.getString(1) == context.packageName) {
-                            programIds += cursor.getLong(0)
-                        }
+                        rows += cursor.getLong(0) to cursor.getString(1)
                     }
                 }
             }
-
-            programIds.forEach { programId ->
-                val deleted =
-                    context.contentResolver.delete(
-                        ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, programId),
-                        null,
-                        null,
-                    )
-                check(deleted == 1) { "旧Program行を削除できません id=$programId deleted=$deleted" }
-            }
-            true
+            ownedProgramIds(rows, context.packageName)
         }.onFailure {
-            Log.w(LogTags.TIS, "Program upgrade cleanupに失敗しました", it)
+            Log.w(LogTags.TIS, "旧Program行の列挙に失敗しました", it)
+        }.getOrNull()
+
+    private fun deleteProgram(
+        context: Context,
+        programId: Long,
+    ): Boolean =
+        runCatching {
+            context.contentResolver.delete(
+                ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, programId),
+                null,
+                null,
+            ) == 1
+        }.onFailure {
+            Log.w(LogTags.TIS, "旧Program行の削除に失敗しました id=$programId", it)
         }.getOrDefault(false)
+
+    internal fun ownedProgramIds(
+        rows: List<Pair<Long, String?>>,
+        ownPackage: String,
+    ): List<Long> = rows.filter { it.second == ownPackage }.map { it.first }
+
+    internal fun runCleanupTransaction(
+        programIds: List<Long>,
+        deleteProgram: (Long) -> Boolean,
+        commitIdentity: () -> Boolean,
+    ): Boolean {
+        for (programId in programIds) {
+            if (!deleteProgram(programId)) return false
+        }
+        return commitIdentity()
+    }
+
 
     internal fun softwareIdentityForTest(
         fingerprint: String,
