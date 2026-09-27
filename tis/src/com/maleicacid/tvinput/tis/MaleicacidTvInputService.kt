@@ -32,7 +32,7 @@ class MaleicacidTvInputService : TvInputService() {
     override fun onCreateSession(
         inputId: String,
         sessionId: String,
-    ): Session {
+    ): Session? {
         Log.i(LogTags.TIS, "ライブセッションを作成します inputId=$inputId sessionId=$sessionId")
         return createLiveSession(inputId, sessionId, this)
     }
@@ -41,7 +41,7 @@ class MaleicacidTvInputService : TvInputService() {
         inputId: String,
         sessionId: String,
         tvAppAttributionSource: AttributionSource,
-    ): Session {
+    ): Session? {
         Log.i(LogTags.TIS, "ライブセッションを作成します inputId=$inputId sessionId=$sessionId")
         val sessionContext =
             createContext(
@@ -57,9 +57,10 @@ class MaleicacidTvInputService : TvInputService() {
         inputId: String,
         tvInputSessionId: String,
         sessionContext: Context,
-    ): Session {
-        check(ProgramUpgradeCleanup.ensure(applicationContext)) {
-            "旧Program行のcleanupが完了していないためライブセッションを開始できません"
+    ): Session? {
+        if (!ProgramUpgradeCleanup.ensure(applicationContext)) {
+            Log.w(LogTags.TIS, "旧Program行のcleanupが未完了のためライブセッション生成を拒否します")
+            return null
         }
         // TvInputService.onCreateSession()入口から MaleicacidLiveSession constructor が
         // active ライブセッション を登録するまでの短い区間で、boot / background maintenance を
