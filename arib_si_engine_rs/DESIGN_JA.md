@@ -2,7 +2,7 @@
 
 ### 解析coreとTIS向け保存policyの境界
 
-本crateの`src/core/eit.rs`はEITのraw識別子・時刻状態・記述子・構文診断を解析し、`src/core/eit_instances.rs`が同一collectionの表ごとの受信事実を保持する。共通`SectionTracker`を用い、TIS固有の公開scope、永続キーの採用可否、旧Program保護、更新・削除区間は算出しない。`ServiceDiscoveryEngine` / `ServiceDiscoveryCollector`へEPG保存stateや公開gateを置かない。JNIは同じ放送事実をbulkの型付きfactとして渡す。`../開発規則.md`の同時更新不変条件に従い、Rust→TISのruntime境界を異なるproduct build間で相互運用するversioned wire protocolにしない。Rust側DTOとKotlin側DTOは同一変更・同一buildで更新し、`schemaVersion` negotiation、旧snapshot DTO受理、片側差し替え互換を設けない。JSON Schemaを試験・診断用に保持する場合もruntime互換の規範正本にはしない。TISの公開判断の唯一のownerはKotlin `EpgPublicationPolicy` / `EpgSectionPolicy`であり、具体契約は`../tis/DESIGN_JA.md`の「TIS / EPG 公開境界」を正とする。
+本crateの`src/core/eit.rs`はEITのraw識別子・時刻状態・記述子・構文診断を解析し、`src/core/eit_instances.rs`が同一collectionの表ごとの受信事実を保持する。共通`SectionTracker`を用い、TIS固有の公開scope、永続キーの採用可否、旧Program保護、更新・削除区間は算出しない。`ServiceDiscoveryEngine` / `ServiceDiscoveryCollector`へEPG保存stateや公開gateを置かない。JNIは同じ放送事実を、Rustの`BulkSnapshot`から構築した同一build内のJNI object graphとして渡す。`../開発規則.md`の同時更新不変条件に従い、Rust→TISのruntime境界を異なるproduct build間で相互運用するversioned wire protocolにしない。Rust側DTOとKotlin側DTOは同一変更・同一buildで更新し、`schemaVersion` negotiation、旧snapshot DTO受理、片側差し替え互換を設けない。JSON Schemaを試験・診断用に保持する場合もruntime互換の規範正本にはしない。TISの公開判断の唯一のownerはKotlin `EpgPublicationPolicy` / `EpgSectionPolicy`であり、具体契約は`../tis/DESIGN_JA.md`の「TIS / EPG 公開境界」を正とする。
 
 両時刻未定義でもraw event_idを捨てない。JNIのidentity表現とprovider-dataのcanonical key生成は放送識別子の符号化に限定し、保存用identityへ採用するかを判断しない。
 
@@ -62,7 +62,7 @@ XCS の実装方針は、実装上の先例として `xtne6f/EDCB` の `work-plu
 
 EITの通常bulk `eitInstances[]` はtable ID・ONID/TSID/SID・version・current_next_indicator・last_section_number・receivedSections・missingSections・safeSections・complete・inconsistentを返す。current/nextは独立したinstanceとし、nextはcurrent eventsへ混ぜない。p/fは放送された0..lastの全section、scheduleは8番号のsegmentごとの先頭から観測したsegment_last_section_numberまでを必要集合とする。未観測segmentは先頭section不足として残す。構文的な空event loopも受信済みsectionであり、event数を完成条件にしない。`safeSections`はevent loop完結かつ構造破損診断なしを表し、未知descriptorのUnsupportedValueを構造破損に変換しない。媒体別の公開section選択・requiredLast・deletionAuthoritativeはRust DTOへ含めない。segment構成の根拠は[ARIB公式TR-B15 4.6-E1 第4編13.3.1–13.3.2（誌面4-73–4-74）](https://www.arib.or.jp/english/html/overview/doc/8-TR-B15v4_6-2p4-E1.pdf)で、現行日本語原文との差は未証明のままとする。
 
-bulkの`collectionGeneration`は受信事実の失効・再収集を識別する値であり、collection reset時に更新する。Kotlinはこの値とprofileの変化で旧時刻境界を破棄する。Rust側に排出型の更新window queueを置かず、JNIのbulk snapshot入口は現在の放送事実だけを同一buildの型付き境界へ返す。snapshotのrevision negotiationや旧DTO変換をこの入口の責務にしない。
+bulkの`collectionGeneration`は受信事実の失効・再収集を識別する値であり、collection reset時に更新する。Kotlinはこの値とprofileの変化で旧時刻境界を破棄する。Rust側に排出型の更新window queueを置かず、JNIのbulk snapshot入口は現在の放送事実だけを同一buildのobject graph境界へ返す。snapshotのrevision negotiationや旧DTO変換をこの入口の責務にしない。
 
 TIS向けJNI parserの一回のcollectionは単調時計で60秒、入力累計4MiB、入力8192sectionをそれぞれ上限とする。繰り返し・不正入力も入力資源を消費するため累計に含める。byte/section上限に達する次の入力は`COLLECTION_LIMIT_EXCEEDED`で拒否し、SI/EPG/時計の事実と未排出更新区間を全て破棄する。部分状態を正常完成として公開せず、上限診断をbulkへ返し、そのcollection中の後続入力も拒否する。60秒経過後の次の入力またはsnapshot要求でprofileを維持した空collectionへ切り替え、版番号を再同期する。raw入力量の上限を厳密なheap使用byte数の上限とは表現しない。一般SIの診断・表scope、EITの現在版・旧公開事実・未排出区間は同じcollection寿命に従う。選局・明示的reset・closeでも破棄する。この期限はTISの走査目的別終了条件の代用品ではない。
 
@@ -404,7 +404,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 `arib_si_engine_rs` の SI event DTO は旧 `canonicalGenres` フィールドを出力しない。Rust parser は Android canonical genre を決定しないため、`nativeGetEventCanonicalGenre()`、`nativeGetEventCanonicalGenresJson()` は互換シンボルとしても残さない。provider-dataにも canonical genre 投影結果を保持しない。
 
-`nativeGetEventCount()` と `nativeGetEvent*` indexed JNI getter 群は廃止する。EIT event の通常境界は同一product buildで同時更新される型付きbulk snapshotと provider-data builder API のみとする。runtime境界をJSON文字列のversioned wire protocolとして固定せず、片側差し替え互換のためのJNIシンボル、旧DTO decoder、空配列返却、空文字返却、未使用Kotlin private external宣言をリリース物へ残してはならない。
+`nativeGetEventCount()` と `nativeGetEvent*` indexed JNI getter 群は廃止する。EIT event の通常境界は同一product buildで同時更新されるRust所有bulk snapshot由来のJNI object graphと provider-data builder API のみとする。runtime境界をJSON文字列のversioned wire protocolとして固定せず、片側差し替え互換のためのJNIシンボル、旧DTO decoder、空配列返却、空文字返却、未使用Kotlin private external宣言をリリース物へ残してはならない。
 
 ### JSON Schema / schema 整合確認データ
 
