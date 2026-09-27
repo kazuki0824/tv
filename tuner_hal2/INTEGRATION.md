@@ -251,9 +251,29 @@ VTS用静的XMLは手編集正本にせず、単一`VtsEnvironmentProfile`ファ
 
 build-time compiler / validatorは、静的なHAL product contractとAOSP VTS契約の整合を検証する。起動時probeで初めて確定するfrontendの実在性、公開frontend ID、hardware info、実信号のLOCKED到達、PID上の実データ到来はbuild-timeに捏造しない。
 
-実機がある場合、`resolve-device`はprofileの未解決な受信候補とTS内識別値を具体化するためにpublic Tuner AIDLを使用する。具体値の解決後、VTS実行前には同じくpublic Tuner AIDLだけを使用するdevice preflightを行い、生成済みVTS構成が要求するfrontend種別、公開`FrontendInfo` / `DemuxCapabilities`、解決済み信号のLOCKED到達、対象PIDのdata pathが実機上で成立することを確認する。具体的な合否項目と実行手順は`タスク完了判定の実施方法.md`を正とし、本書では試験手順を二重定義しない。
+実機がある場合、`resolve-device`はprofileの未解決な受信候補とTS内識別値を具体化するためにpublic Tuner AIDLを使用する。具体値の解決後、VTS実行前には同じくpublic Tuner AIDLだけを使用するdevice preflightを行い、生成済みVTS構成が要求するfrontend種別、公開`FrontendInfo` / `DemuxCapabilities`、解決済み信号のLOCKED到達、対象PIDのdata pathが実機上で成立することを確認する。
 
-`resolve-device`とpreflightはHAL内部registry、private diagnostic、driver-private stateをVTS成功条件の正本にしない。解決済みprofileに対するpreflight不成立時は別frontend、別周波数、別PIDへ自動fallbackして同じprofileの解決結果を変更せず、そのprofileによるVTS実行を開始しない。preflight結果またはVTS実行結果をHAL runtime capabilityへフィードバックして次回起動時の公開能力を変更してはならない。
+実機反復は次の順序で行う。
+
+```text
+profile init / resolve-region
+  ↓
+必要な通常Android build / flash
+  ↓
+resolve-device
+  ↓
+compile / validate
+  ↓
+build graph反映またはinstall-device
+  ↓
+device preflight
+  ↓
+AOSP Tuner VTS
+```
+
+device preflightでは、同じ解決済みprofileと生成XMLを対象に、public Tuner AIDLからfrontend種別と公開capabilityがXML要求に一致すること、解決済みfrequency / selectorでLOCKEDへ到達すること、profileが要求するsection / PES / record / playback等の対象PID data pathが成立することを確認する。preflightでprofile値やXMLを修正せず、不成立ならそのprofileによるVTSを開始しない。別候補を採用する場合は`resolve-device`へ戻り、同じprofileを更新して再compileする。
+
+`resolve-device`とpreflightはHAL内部registry、private diagnostic、driver-private stateをVTS成功条件の正本にしない。解決済みprofileに対するpreflight不成立時は別frontend、別周波数、別PIDへ自動fallbackして同じprofileの解決結果を変更せず、そのprofileによるVTS実行を開始しない。preflight結果またはVTS実行結果をHAL runtime capabilityへフィードバックして次回起動時の公開能力を変更してはならない。実行結果・使用profile・生成物・反映方法の証跡化は`../タスク完了判定の実施方法.md`を正とする。
 
 #### VTS device agentの配置と実行
 
@@ -289,7 +309,7 @@ variantを使用する場合、variant propertyの値と生成XML filenameは同
 - 解決済みfilenameへのvendor image installがbuild graphに接続され、生成物が`tuner_hal2`のproduct integrationだけへ属する。
 - adb root/remount可能な試験端末では、同じ解決済みfilenameへcompile成果物を`install-device`で一時配置し、再build/reflashなしでVTS反復確認へ進める。root/remount不可またはvariant property不一致ならbuild graph経路を使用する。
 - VTS設定は`tuner_hal2`の試験設定にだけ使用され、HAL capability、frontend registry、backend probe結果または公開API成功範囲を書き換えない。
-- device preflightとTuner VTS実行手順が`タスク完了判定の実施方法.md`から一意に実行できる。
+- device preflightとTuner VTS実行手順が本節から一意に実行でき、実施証跡は`../タスク完了判定の実施方法.md`の形式で記録できる。
 
 これらが未接続の状態では、profileの値を手作業で複数箇所へ転記してVTS構成を成立させたことにしない。
 
