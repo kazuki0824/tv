@@ -2613,6 +2613,7 @@ class PlaybackPipeline(
             return canonicalForCount(channelCount)
         }
 
+        @Suppress("MagicNumber")
         fun fromChannelConfiguration(channelConfiguration: String?): Int? =
             when (channelConfiguration) {
                 "1/0" -> AudioFormat.CHANNEL_OUT_MONO
@@ -2626,6 +2627,7 @@ class PlaybackPipeline(
                 else -> null
             }
 
+        @Suppress("MagicNumber")
         fun canonicalForCount(channelCount: Int): Int? =
             when (channelCount) {
                 1 -> AudioFormat.CHANNEL_OUT_MONO
@@ -2637,6 +2639,7 @@ class PlaybackPipeline(
                 8 -> AudioFormat.CHANNEL_OUT_7POINT1_SURROUND
                 else -> null
             }
+    }
 
     private fun getIntegerOrDefault(
         format: MediaFormat,
