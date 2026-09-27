@@ -602,7 +602,7 @@ class TvProviderWriter private constructor(
         val candidateSeriesIds =
             program.descriptors.seriesCandidates
                 .asSequence()
-                .filter { it.parseStatus == "OK" }
+                .filter { it.parseStatus == com.maleicacid.tvinput.aribsi.SiParseStatus.OK }
                 .mapNotNull { it.seriesId }
                 .distinct()
                 .toList()
