@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class ServiceCaDescriptorDto(
     val caSystemId: Int,
     val caPid: Int,
@@ -9,3 +10,4 @@ data class ServiceCaDescriptorDto(
     val privateDataHex: String
 ) {
 }
+
