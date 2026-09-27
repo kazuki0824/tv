@@ -319,7 +319,7 @@ class TvProviderWriterProgramsTest {
                                             codec = "AAC",
                                             language = "jpn",
                                             secondLanguage = "eng",
-                                            parseStatus = "OK",
+                                            parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.OK,
                                         ),
                                     ),
                             ),
