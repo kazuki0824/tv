@@ -164,6 +164,8 @@ ARIB descriptor は `descriptor_length`、descriptor 内部 length、loop 単位
 
 ## API 境界の固定
 
+PMT section filterのbootstrapに限り、PATで観測したPMT PID集合を意味objectへ昇格させず取得する狭いcontrol snapshotを例外境界として認める。Rust側の正規入口は `ServiceDiscoveryCollector::pmt_pids_for_section_filters()`、JNI入口は `nativeSnapshotPmtPidsForSectionFiltersJson()` とし、同一collectorの現在状態から重複除去済みPID集合だけを返す。この境界はONID / TSID / SID、公開可能service identity、registration / publishability、CA判断、PMT解析完了を確定せず、PMT filterを開くためだけに使用する。PAT由来PIDをstable service factへ読み替えず、JNI/lock/JSON失敗を空集合へ丸めない。通常のservice semantic判断は引き続きbulk snapshotだけを正本とする。
+
 Kotlin/JNI の通常サービス境界は、channel registrationやplayback policyを確定済みのsnapshotではなく、service / transport単位の `ServiceSemanticFacts` bulk snapshotとする。snapshotはONID / TSID / SID、ARIB `service_type`、PMT/PCRの存在・構文状態、ES/component一覧とcodec signaling、CA descriptor / free_CA_mode、CA descriptor等から導出した`requiresCas`、SMD意味状態、欠落・不正理由を返す。`registration_ready_snapshot()`、`clear_live_playback_supported_snapshot()`、`publishability_by_service`のようにAndroid/TIS/product policyをRust側で確定する公開境界は設計しない。TISは`ServiceSemanticFacts`から`requiresCas`を受け取り、current product capabilityと組み合わせて`channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackSupported`、`unsupportedCas`を算出し、その判断をchannel登録、Programs公開、視聴セッションへ一貫して使用する。
 
 PAT は ONID を持たないため、`(transport_stream_id, service_id) -> pmt_pid` をそのまま公開可能サービス識別子として扱わない。SDT/NIT/BAT 等で ONID が一意に解決できた場合だけ `(original_network_id, transport_stream_id, service_id, pmt_pid)` へ昇格し、ONID が曖昧な場合は意味objectへの昇格を抑止または欠落診断に留める。

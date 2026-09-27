@@ -176,6 +176,8 @@ TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投
 
 複数のtable instanceを包括的・継続的に取得する必要がある操作では、TISは`TableInfo repeat=true`を使用する。Tuner HALに未知の全instance集合の列挙や終端推測を要求しない。
 
+PMT本文を受信する前にPMT section filterを開くbootstrapだけは、`NativeAribSiParser.pmtPidsForSectionFilters()` を使用してよい。同入口は `arib_si_engine_rs/DESIGN_JA.md` が定めるcontrol snapshotのtyped投影であり、返却PIDをchannel identity、ServiceKey、登録可否、EPG公開可否、CAS判断、live playback可否へ使用してはならない。通常の意味判断とpublicationは同じnative transactionから得るbulk snapshotを正とし、bootstrap PID取得失敗を「PMTなし」の正常状態へ丸めない。
+
 TISは`SiCollectionRequirements`で操作目的に応じた必要集合を作り、同一bulkのscope別table完成状態とEIT instance状態で判定する。global discoveryStageを操作完了の代理にしない。
 
 | 操作 | 対象集合と必要instance | 更新・終了条件 |
