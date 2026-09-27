@@ -156,6 +156,11 @@ object AribComponentProjectionPolicy {
             secondLanguage = eventEntry.secondLanguage ?: serviceEntry.secondLanguage,
             channelConfiguration = eventEntry.channelConfiguration ?: serviceEntry.channelConfiguration,
             samplingInfo = eventEntry.samplingInfo ?: serviceEntry.samplingInfo,
+            channelCount = eventEntry.channelCount ?: serviceEntry.channelCount,
+            sampleRateHz = eventEntry.sampleRateHz ?: serviceEntry.sampleRateHz,
+            audioDescription = eventEntry.audioDescription ?: serviceEntry.audioDescription,
+            hardOfHearing = eventEntry.hardOfHearing ?: serviceEntry.hardOfHearing,
+            dualMono = eventEntry.dualMono ?: serviceEntry.dualMono,
             // 診断表示用の文字列であり、分割してcodecやdescriptor事実を復元する入力ではない。
             sourceDescriptor =
                 when {

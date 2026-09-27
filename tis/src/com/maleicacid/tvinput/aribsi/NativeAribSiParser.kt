@@ -1103,6 +1103,11 @@ class NativeAribSiParser : AutoCloseable {
                     multiLingual = optBoolOrNull(obj, "multiLingual"),
                     qualityIndicator = optIntOrNull(obj, "qualityIndicator"),
                     parseStatus = obj.optString("parseStatus", "OK"),
+                    channelCount = optIntOrNull(obj, "channelCount"),
+                    sampleRateHz = optIntOrNull(obj, "sampleRateHz"),
+                    audioDescription = optBoolOrNull(obj, "audioDescription"),
+                    hardOfHearing = optBoolOrNull(obj, "hardOfHearing"),
+                    dualMono = optBoolOrNull(obj, "dualMono"),
                 )
             }
         }

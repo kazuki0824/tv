@@ -285,6 +285,11 @@ data class AribComponentEntry(
     val multiLingual: Boolean? = null,
     val qualityIndicator: Int? = null,
     val parseStatus: String = "OK",
+    val channelCount: Int? = null,
+    val sampleRateHz: Int? = null,
+    val audioDescription: Boolean? = null,
+    val hardOfHearing: Boolean? = null,
+    val dualMono: Boolean? = null,
 )
 
 data class AribComponents(
