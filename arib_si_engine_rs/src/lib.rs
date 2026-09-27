@@ -1538,26 +1538,20 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     let length = match i32::try_from(values.len()) {
         Ok(length) => length,
         Err(error) => {
-            return throw_si_failure(
-                &mut env,
-                SiJniFailureReason::JniOutput.failure(error),
-            ) as jintArray
+            return throw_si_failure(&mut env, SiJniFailureReason::JniOutput.failure(error))
+                as jintArray
         }
     };
     let array = match env.new_int_array(length) {
         Ok(array) => array,
         Err(error) => {
-            return throw_si_failure(
-                &mut env,
-                SiJniFailureReason::JniOutput.failure(error),
-            ) as jintArray
+            return throw_si_failure(&mut env, SiJniFailureReason::JniOutput.failure(error))
+                as jintArray
         }
     };
     if let Err(error) = env.set_int_array_region(&array, 0, &values) {
-        return throw_si_failure(
-            &mut env,
-            SiJniFailureReason::JniOutput.failure(error),
-        ) as jintArray;
+        return throw_si_failure(&mut env, SiJniFailureReason::JniOutput.failure(error))
+            as jintArray;
     }
     array.into_raw()
 }
