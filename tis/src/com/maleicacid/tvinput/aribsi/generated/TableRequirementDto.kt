@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class TableRequirementDto(
     val component: String,
     val originalNetworkId: Int?,
@@ -9,3 +10,4 @@ data class TableRequirementDto(
     val complete: Boolean
 ) {
 }
+
