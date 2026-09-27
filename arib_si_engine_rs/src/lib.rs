@@ -1499,13 +1499,14 @@ fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshot, SiJniFailure> {
     let Some(parser) = parser else {
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
-    match parser.lock() {
+    let result = match parser.lock() {
         Ok(mut guard) => Ok(build_bulk_snapshot(&mut guard)),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
         }
-    }
+    };
+    result
 }
 
 #[no_mangle]
