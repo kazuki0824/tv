@@ -1713,14 +1713,7 @@ class NativeAribSiParser : AutoCloseable {
         val stableIdentity = requireNullableString(obj, "stableIdentity", context)
         val timing = requireObject(obj, "timing", context)
         validateTiming(timing, "$context.timing")
-        validateEventIdentity(
-            programKey = programKey,
-            stableIdentity = stableIdentity,
-            serviceKey = serviceKey,
-            eventId = eventId,
-            timingState = timing.getString("state"),
-            context = context,
-        )
+        validateEventIdentity(obj, context)
         requireString(obj, "title", context)
         requireString(obj, "description", context)
         requireString(obj, "extendedDescription", context)
@@ -1744,14 +1737,16 @@ class NativeAribSiParser : AutoCloseable {
     }
 
     private fun validateEventIdentity(
-        programKey: JSONObject?,
-        stableIdentity: String?,
-        serviceKey: JSONObject,
-        eventId: Long,
-        timingState: String,
+        obj: JSONObject,
         context: String,
     ) {
+        val programKey = requireNullableObject(obj, "programKey", context)
+        val stableIdentity = requireNullableString(obj, "stableIdentity", context)
+        val serviceKey = requireObject(obj, "serviceKey", context)
+        val eventId = obj.getLong("eventId")
+        val timingState = requireObject(obj, "timing", context).getString("state")
         val identityRequired = timingState == "DEFINED" || timingState == "UNDEFINED_TIME"
+
         if (identityRequired != (programKey != null && stableIdentity != null)) {
             jsonEncodingError(
                 "$context のtiming stateとprogramKey/stableIdentityの有無が不整合です",
@@ -1764,7 +1759,10 @@ class NativeAribSiParser : AutoCloseable {
             try {
                 JSONObject(requireNotNull(stableIdentity))
             } catch (error: org.json.JSONException) {
-                jsonEncodingError("$context.stableIdentity がProgramKey JSONではありません")
+                jsonEncodingError(
+                    "$context.stableIdentity がProgramKey JSONではありません: " +
+                        error.message.orEmpty(),
+                )
             }
         validateProgramKey(stable, "$context.stableIdentity")
 
