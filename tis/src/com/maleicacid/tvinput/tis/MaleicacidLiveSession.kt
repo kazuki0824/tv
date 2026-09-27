@@ -470,11 +470,12 @@ class MaleicacidLiveSession(
                 defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey),
                 dualMonoPresentation = dualMonoPresentation,
             )
+        val currentAudioComponent =
+            currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)
         val selection =
             initialSelection.copy(
-                audioComponentType =
-                    currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)?.componentType
-                        ?: initialSelection.audio?.componentType,
+                audioChannelConfiguration = currentAudioComponent?.channelConfiguration,
+                audioDualMono = currentAudioComponent?.dualMono,
             )
         val audioOnly = PlaybackPolicy.isAudioOnlyService(service.serviceType)
         if (PlaybackPolicy.shouldRejectSelection(service.serviceType ?: -1, selection)) {
@@ -540,7 +541,14 @@ class MaleicacidLiveSession(
             audioPid = audio?.elementaryPid,
             audioStreamType = audio?.streamType,
             videoConfiguration = video?.let { DecoderConfigurationIdentity.from(it) },
-            audioConfiguration = audio?.let { DecoderConfigurationIdentity.from(it, selection.audioComponentType ?: it.componentType) },
+            audioConfiguration =
+                audio?.let {
+                    DecoderConfigurationIdentity.from(
+                        it,
+                        selection.audioChannelConfiguration,
+                        selection.audioDualMono,
+                    )
+                },
             subtitlePid = selection.subtitle?.elementaryPid,
             subtitleDataComponentId = selection.subtitle?.dataComponentId,
             subtitleLanguageId = selection.subtitleLanguageId,
@@ -617,11 +625,12 @@ class MaleicacidLiveSession(
                         defaultComponentGroupTags = defaultComponentGroupTags,
                         dualMonoPresentation = dualMonoPresentation,
                     )
+                val currentAudioComponent =
+                    currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)
                 val selection =
                     initialSelection.copy(
-                        audioComponentType =
-                            currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)?.componentType
-                                ?: initialSelection.audio?.componentType,
+                        audioChannelConfiguration = currentAudioComponent?.channelConfiguration,
+                        audioDualMono = currentAudioComponent?.dualMono,
                     )
                 val signature =
                     playbackSignatureFor(service, selection) ?: run {
