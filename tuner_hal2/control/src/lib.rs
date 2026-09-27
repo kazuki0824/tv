@@ -2564,7 +2564,6 @@ mod tests {
                     let _guard = handle.completion.0.lock().unwrap();
                     panic!("完了ロックを汚染");
                 }
-                WorkerLockKind::SupervisorWorker => panic!("ワーカー結果ロックではありません"),
             }));
             assert!(poisoned.is_err());
             release_tx.send(()).unwrap();
