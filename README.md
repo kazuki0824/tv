@@ -13,8 +13,8 @@
 
 ## モジュール
 
-- Tuner HAL: `tuner_hal/README_JA.md`
-- Tuner HAL product default 構成: `tuner_hal2/README_JA.md`
+- Tuner HAL 公開契約: `TUNER_HAL_DESIGN_JA.md`
+- Tuner HAL 実装・product default 構成: `tuner_hal2/README_JA.md`
 - TIS: `tis/README_JA.md`
 - ARIB SI engine: `arib_si_engine_rs/README_JA.md`
 - CAS plugin: `cas_plugin/README_JA.md`

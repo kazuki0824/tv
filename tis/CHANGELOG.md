@@ -1,3 +1,7 @@
+# 不要な例示設定の削除
+
+- 正式な製品組込み設定を継承するだけだった未参照の例示makefileを削除した。
+
 # PR #108 TvProvider queryを公開URI制約へ修正
 
 - `ACCESS_ALL_EPG_DATA`を持たないTISがraw SQL `selection`を渡し、AOSP TvProviderから `SecurityException: Selection not allowed` を受けていた経路を除去した。追加の特権permissionは付与しない。

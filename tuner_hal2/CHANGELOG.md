@@ -1,3 +1,19 @@
+# 旧 tuner_hal 削除
+
+- Tuner HAL の公開契約正本をリポジトリ直下の `TUNER_HAL_DESIGN_JA.md` へ移し、`tuner_hal2` を唯一の製品実装として文書参照を整理した。
+- 旧実装にだけ残っていた有効な回帰試験のうち、Linux DVB UAPI の packed layout / stride / unaligned access、px4 probe prefix と ueventd / SELinux の一致、DVB frontend export ID の衝突・値域境界を `tuner_hal2` へ移動した。
+- parser、MULTI2、record-index、transaction / cleanup、live reader の旧試験は、現行 `tuner_hal2` に同等またはより直接的な試験が存在することを確認し、旧実装を試験正本として残さない。
+- 旧 lab profile、静的 VTS XML、`render_vts_config.py` は現行 `VtsEnvironmentProfile` / compiler / validator / device resolver と重複し、旧 profile 自身が実機値へ更新前提の placeholder であるため移植しない。
+- 旧 `tuner_hal` を参照用ソースとして残す規則を除去し、削除後も公開契約・実装規約・統合手順の正本が一意に解決するよう参照を更新した。
+- 公開契約、残すべき試験資産、参照先の移行完了後に旧 `tuner_hal/` ディレクトリ全体を削除した。
+- 移動後の `tuner_hal2 host Rust CI`、`tuner_hal2 VTS profile CI`、CAS plugin C++検証、TISホストCI、TIS Robolectric host CI は成功した。Rust quality CI は `service_entry.rs` の整形差分だけで失敗したため、本変更で Rust 1.81.0 の rustfmt 出力に合わせて修正した。
+- 本変更後のCI、Android/Soong全体、device atest、CTS/VTS実機、実機受信はコミット作成時点では未実施であり、完了判定では別途確認する。
+
+# 不要な例示設定の削除
+
+- 正式な製品組込み設定と重複していたmakefile、BoardConfig、ueventdの例示ファイルを削除した。
+- 使用されていないVTS環境設定と地域データの例示ファイルを削除し、設定生成は既存の対話用道具と実データへ一本化した。
+
 # PR #113 CAS共有参照からの局所読取り
 
 - `setKeyToken()` で得たCAS共有参照を既存の鍵結合管理へ渡し、放送入力とPlayback DVRはその参照からpacket用の鍵を取得する構成に変更した。CAS側のECM更新・失効をTISの再設定へ依存させない。

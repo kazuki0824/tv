@@ -193,3 +193,113 @@ mod tests {
         assert_eq!(FE_SET_PROPERTY, iow::<DtvProperties>(FE_IOCTL_TYPE, 82));
     }
 }
+
+#[cfg(test)]
+mod dtv_property_abi_tests {
+    use super::*;
+    use core::mem::{align_of, size_of, MaybeUninit};
+
+    fn offset_of_dtv_property_cmd() -> usize {
+        let value = MaybeUninit::<DtvProperty>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).cmd) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_reserved() -> usize {
+        let value = MaybeUninit::<DtvProperty>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).reserved) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_u() -> usize {
+        let value = MaybeUninit::<DtvProperty>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).u) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_result() -> usize {
+        let value = MaybeUninit::<DtvProperty>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).result) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_buffer_data() -> usize {
+        let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).data) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_buffer_len() -> usize {
+        let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).len) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_buffer_reserved1() -> usize {
+        let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).reserved1) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_buffer_reserved2() -> usize {
+        let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).reserved2) as usize - base as usize }
+    }
+
+    #[test]
+    fn dtv_property_layout_matches_linux_uapi() {
+        assert_eq!(size_of::<DtvProperty>(), 76);
+        assert_eq!(align_of::<DtvProperty>(), 1);
+        assert_eq!(offset_of_dtv_property_cmd(), 0);
+        assert_eq!(offset_of_dtv_property_reserved(), 4);
+        assert_eq!(offset_of_dtv_property_u(), 16);
+        assert_eq!(offset_of_dtv_property_result(), 72);
+    }
+
+    #[test]
+    fn dtv_property_array_stride_is_76() {
+        let props = [
+            DtvProperty::with_data(DTV_CLEAR, 0),
+            DtvProperty::with_data(DTV_TUNE, 0),
+        ];
+        let base = props.as_ptr() as usize;
+        let second = unsafe { props.as_ptr().add(1) } as usize;
+        assert_eq!(second - base, 76);
+    }
+
+    #[test]
+    fn dtv_property_buffer_layout_matches_linux_uapi() {
+        assert_eq!(size_of::<DtvPropertyBuffer>(), 56);
+        assert_eq!(align_of::<DtvPropertyBuffer>(), 1);
+        assert_eq!(offset_of_dtv_property_buffer_data(), 0);
+        assert_eq!(offset_of_dtv_property_buffer_len(), 32);
+        assert_eq!(offset_of_dtv_property_buffer_reserved1(), 36);
+        assert_eq!(offset_of_dtv_property_buffer_reserved2(), 48);
+    }
+
+    #[test]
+    fn dtv_property_packed_helpers_read_unaligned_fields() {
+        let prop = DtvProperty {
+            cmd: DTV_ENUM_DELSYS,
+            reserved: [0; 3],
+            u: DtvPropertyUnion {
+                buffer: DtvPropertyBuffer {
+                    data: [0x5a; 32],
+                    len: 3,
+                    reserved1: [0; 3],
+                    reserved2: core::ptr::null_mut(),
+                },
+            },
+            result: -7,
+        };
+        let buffer = prop.read_buffer_unaligned();
+        let buffer_data = buffer.read_data_unaligned();
+        assert_eq!(buffer.read_len_unaligned(), 3);
+        assert_eq!(&buffer_data[..3], &[0x5a, 0x5a, 0x5a]);
+        assert_eq!(prop.read_result_unaligned(), -7);
+
+        let data_prop = DtvProperty::with_data(DTV_TUNE, 0x1234_5678);
+        assert_eq!(data_prop.read_data_unaligned(), 0x1234_5678);
+    }
+}

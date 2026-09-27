@@ -6,10 +6,9 @@
 
 ```text
 - product default Tuner HAL service は tuner_hal2 だけとする。
-- 旧 tuner_hal は参照用ソースとして repository に残すだけで、product image へ入れない。
+- Tuner HAL 公開契約のSSOTはリポジトリ直下の TUNER_HAL_DESIGN_JA.md とする。
 - ITuner/default を登録する実体は android.hardware.tv.tuner-service.maleicacid2 だけとする。
-- 旧 tuner_hal の product package、VINTF fragment、init rc、PRODUCT_PACKAGES、product integration を同一productで有効化しない。
-- 旧 `tuner_hal/INTEGRATION.md` は legacy/reference 用であり、既定 product 統合手順のSSOTにはしない。
+- 削除済みの旧 tuner_hal service を product package、VINTF fragment、init rc、PRODUCT_PACKAGES、product integration へ再導入しない。
 ```
 
 ## 1. product makefile
@@ -53,7 +52,7 @@ import /vendor/etc/ueventd.tuner_hal2.rc
 
 ## 3.1 px4_drv readback ABI のproduct前提
 
-px4 backendをproductへ組み込む場合、採用kernel driverは `../開発規則.md` のpx4_drv product-level invariantを満たす版へ固定する。公開AIDLの意味、status capability、generation/readiness、scan callbackの規範値は `../tuner_hal/DESIGN_JA.md` を正とし、本節では再定義しない。
+px4 backendをproductへ組み込む場合、採用kernel driverは `../開発規則.md` のpx4_drv product-level invariantを満たす版へ固定する。公開AIDLの意味、status capability、generation/readiness、scan callbackの規範値は `../TUNER_HAL_DESIGN_JA.md` を正とし、本節では再定義しない。
 
 product build / 実機VTSの前に、少なくとも次のABI接続を確認する。
 
@@ -93,7 +92,7 @@ android.hardware.tv.tuner.ITuner/default が登録されている
 
 `libmaleicacid_tuner_hal2_descrambler` は `libmaleicacid_cas_key_client` を静的リンクする。共通product入口からCAS pluginと標準MediaCasServiceも製品へ組み込み、CAS側のvendor sepolicyを共通BoardConfig入口から取り込む。Tuner HALだけを単独で配置した構成ではproduction tokenの鍵解決は成立しない。
 
-token・参照寿命の公開契約は `../tuner_hal/DESIGN_JA.md`、CAS側の内部読取り契約は `../cas_plugin/DESIGN_JA.md` を参照する。
+token・参照寿命の公開契約は `../TUNER_HAL_DESIGN_JA.md`、CAS側の内部読取り契約は `../cas_plugin/DESIGN_JA.md` を参照する。
 
 ### B25方式の製品固定parameter入力
 
@@ -112,23 +111,15 @@ $(call inherit-product, vendor/maleicacid/tv/config/product_integration.mk)
 
 fs-configとSELinuxはvendor image上の配置と通常の実行時アクセスを制御する。`get_android_qcow2.sh`の取得revision・共通入口・Yakisoba依存の条件は `../cas_plugin/INTEGRATION.md` を参照する。
 
-## 5. 旧tuner_halの扱い
+## 5. 旧サービスの再導入禁止
 
-旧 `tuner_hal` は参照用ソースである。次をproductへ入れてはならない。
-
-```text
-- maleicacid.tv.tuner_hal-service
-- tuner_hal/tuner-hal-service.rc
-- tuner_hal/tuner-hal-service.xml
-```
-
-旧実装を手動でビルド・参照することは妨げないが、同一productで `ITuner/default` を二重登録してはならない。
+削除済みの旧 Tuner HAL service `maleicacid.tv.tuner_hal-service` を product package、VINTF、init、PRODUCT_PACKAGES または product integration へ再導入してはならない。同一productで `ITuner/default` を二重登録してはならない。
 
 ## 6. VTS / product config policy
 
-VTS / product config の公開契約、capability、`VtsEnvironmentProfile`の入力、状態、`VTS-STATE-BOUND` / `VTS-STATE-REJECTED`の意味は `../tuner_hal/DESIGN_JA.md` の`製品スコープ / AOSP capability / VTS profile 境界`、`CapabilitySnapshot`、`ProductProfile`、`VTS環境に関する設計保留`を正とする。本節は、それらをproduct buildと実機VTSへ接続する配置・生成・検証経路だけを所有し、profile入力の規範値、HAL capability、公開API戻り値、VTS状態を再定義しない。
+VTS / product config の公開契約、capability、`VtsEnvironmentProfile`の入力、状態、`VTS-STATE-BOUND` / `VTS-STATE-REJECTED`の意味は `../TUNER_HAL_DESIGN_JA.md` の`製品スコープ / AOSP capability / VTS profile 境界`、`CapabilitySnapshot`、`ProductProfile`、`VTS環境に関する設計保留`を正とする。本節は、それらをproduct buildと実機VTSへ接続する配置・生成・検証経路だけを所有し、profile入力の規範値、HAL capability、公開API戻り値、VTS状態を再定義しない。
 
-本製品は monitor event feature を製品能力として採用せず、静的VTS/product configでも同featureを要求・広告する構成にしない。monitor event の公開API戻り値とcapability契約は `../tuner_hal/DESIGN_JA.md` を正とし、本書では重複定義しない。本書のproduct integration設定を、未定義の将来profileでmonitor eventを有効化するための切替点として扱ってはならない。
+本製品は monitor event feature を製品能力として採用せず、静的VTS/product configでも同featureを要求・広告する構成にしない。monitor event の公開API戻り値とcapability契約は `../TUNER_HAL_DESIGN_JA.md` を正とし、本書では重複定義しない。本書のproduct integration設定を、未定義の将来profileでmonitor eventを有効化するための切替点として扱ってはならない。
 
 ### 6.1 単一VtsEnvironmentProfileファイルと依存方向
 
@@ -136,7 +127,7 @@ VTS / product config の公開契約、capability、`VtsEnvironmentProfile`の�
 
 対話CLIはこの同一ファイルを生成・読み込み・更新する。地域から生成した受信候補、実機接続後に解決したfrequency / service / PAT / PMT / PIDに由来する具体値も、別のderived-resolution設定ファイルへ分離せず、同じ`VtsEnvironmentProfile`ファイルへ保存する。生成AOSP Tuner VTS XMLはderived artifactであり、この設定ファイルと同格の正本ではない。
 
-Tuner HALのcapability、公開個数、FMQ/PES/AV/DVR/worker等の製品資源上限、frontend probe結果を`VtsEnvironmentProfile`の独立した規範値として複製してはならない。これらは`../tuner_hal/DESIGN_JA.md`の`ProductProfile` / `CapabilitySnapshot`と`tuner_hal2`の実機probeを正本とする。profile compilerが静的照合に必要とするHAL側情報は、同じ正本から機械的に取得したread-only contractとして入力してよいが、人間編集設定として保存せず、HALのruntime能力を変更する入力にも使用しない。
+Tuner HALのcapability、公開個数、FMQ/PES/AV/DVR/worker等の製品資源上限、frontend probe結果を`VtsEnvironmentProfile`の独立した規範値として複製してはならない。これらは`../TUNER_HAL_DESIGN_JA.md`の`ProductProfile` / `CapabilitySnapshot`と`tuner_hal2`の実機probeを正本とする。profile compilerが静的照合に必要とするHAL側情報は、同じ正本から機械的に取得したread-only contractとして入力してよいが、人間編集設定として保存せず、HALのruntime能力を変更する入力にも使用しない。
 
 依存方向は次に固定する。
 
@@ -209,9 +200,9 @@ compile         同じファイルだけを入力に検証しAOSP Tuner VTS XML�
 install-device  compile済みVTS XMLをadb root/remount可能な試験端末の解決済みvendor pathへ配置する
 ```
 
-`init` は実機接続を前提にしない。AOSP/VTS契約識別、対象backend/product、受信方式、明示入力または地域入力、要求するVTS flow、queue要求等、入力時点で確定できる値を対話的に取得し、未確定項目を架空値で埋めずにprofileを保存する。必要入力が揃っていないprofileは `../tuner_hal/DESIGN_JA.md` の `VTS-STATE-UNBOUND` 判定に従い、保存可能であっても静的VTS XMLをinstall可能とは扱わない。
+`init` は実機接続を前提にしない。AOSP/VTS契約識別、対象backend/product、受信方式、明示入力または地域入力、要求するVTS flow、queue要求等、入力時点で確定できる値を対話的に取得し、未確定項目を架空値で埋めずにprofileを保存する。必要入力が揃っていないprofileは `../TUNER_HAL_DESIGN_JA.md` の `VTS-STATE-UNBOUND` 判定に従い、保存可能であっても静的VTS XMLをinstall可能とは扱わない。
 
-CLIと生成profileのtargetはproduct defaultである`tuner_hal2`に固定する。profile compiler、生成XML module、variant設定、vendor imageへの配置は`tuner_hal2`のproduct integrationだけへ接続し、旧`tuner_hal`の`profiles/`、`tools/render_vts_config.py`、`config/tuner_vts_config_*`、旧service packageを更新・参照・fallback先にしてはならない。旧`tuner_hal`に存在するprofile rendererは設計参考として読めても、このCLIの実行対象または生成先にはしない。
+CLIと生成profileのtargetはproduct defaultである`tuner_hal2`に固定する。profile compiler、生成XML module、variant設定、vendor imageへの配置は`tuner_hal2`のproduct integrationだけへ接続する。削除済みの旧`tuner_hal`にあった`profiles/`、`tools/render_vts_config.py`、`config/tuner_vts_config_*`、旧service packageを更新・参照・fallback先にしてはならず、現行treeにはそれらを設計参考または生成先として扱う経路を持たない。
 
 ここでいう`tuner_hal2`への反映は、`tuner_hal2`を被試験HALとするVTS構成を生成・配置することだけを意味する。`VtsEnvironmentProfile`をHAL serviceがruntime設定として読み込み、`CapabilitySnapshot`、frontend registry、backend probe結果、資源上限、公開API成功範囲を変更する経路は設けない。
 
@@ -245,14 +236,14 @@ region resolverは全国送信所を上記規則で順位付けした後、ま�
 
 VTS用静的XMLは手編集正本にせず、単一`VtsEnvironmentProfile`ファイルだけをprofile入力としてbuild-timeのcompiler / validatorで生成する。compiler / validatorは少なくとも次の順序でfail-closedに検証する。
 
-1. profile自体のschema、必須項目、型、ID参照、および全profile fieldに6.2の消費経路があることを検証する。profileが保存可能でも、`../tuner_hal/DESIGN_JA.md`が静的XMLに要求する具体入力が未解決ならXML生成へ進めない。
-2. `../tuner_hal/DESIGN_JA.md` が要求するVTS契約識別入力と、実際にbuild/testへ使用するAOSP Tuner VTS契約を照合する。一意に一致しない場合はXMLを生成・installしない。
-3. profileのfrontend設定、flow、filter種別、DVR種別、PID、queue容量が`../tuner_hal/DESIGN_JA.md`で成功対応として認めた公開契約と矛盾しないことを検証する。
+1. profile自体のschema、必須項目、型、ID参照、および全profile fieldに6.2の消費経路があることを検証する。profileが保存可能でも、`../TUNER_HAL_DESIGN_JA.md`が静的XMLに要求する具体入力が未解決ならXML生成へ進めない。
+2. `../TUNER_HAL_DESIGN_JA.md` が要求するVTS契約識別入力と、実際にbuild/testへ使用するAOSP Tuner VTS契約を照合する。一意に一致しない場合はXMLを生成・installしない。
+3. profileのfrontend設定、flow、filter種別、DVR種別、PID、queue容量が`../TUNER_HAL_DESIGN_JA.md`で成功対応として認めた公開契約と矛盾しないことを検証する。
 4. `tuner_hal2`の同一product capability正本から機械的に取得したread-only contractと照合し、VTSが要求するfilter / DVR個数、FMQ / processing bufferその他の静的資源claimが製品上限を超えないことを依存閉包単位で検証する。VTS合格のためにHAL側の能力値を上書きまたは縮退させてはならない。
 5. 選択したAOSP Tuner VTS schemaで生成XMLを検証する。
-6. `../tuner_hal/DESIGN_JA.md` のfilename解決契約に従い、選択したVTS loaderとvariant入力からinstall先を一意に解決する。
+6. `../TUNER_HAL_DESIGN_JA.md` のfilename解決契約に従い、選択したVTS loaderとvariant入力からinstall先を一意に解決する。
 
-r52のdescrambling profileを導入する際は、手順2で同正本の「r52のCAS試験profile境界」を照合し、必要な試験側修正を含むartifactのsource/tag/commitを固定する。現行のexample profileと生成器がr52のCAS試験経路を実装済みであるとは扱わない。ClearKeyへの置換やXMLの手編集だけで不一致を補完しない。
+r52のdescrambling profileを導入する際は、手順2で同正本の「r52のCAS試験profile境界」を照合し、必要な試験側修正を含むartifactのsource/tag/commitを固定する。現行のprofile生成器がr52のCAS試験経路を実装済みであるとは扱わない。ClearKeyへの置換やXMLの手編集だけで不一致を補完しない。
 
 いずれかが失敗した場合は、推測値、既定PID、既定周波数、sample XML値、別profileへのfallbackで補完せず、VTS config artifactを成立させない。生成済みXMLを直接修正してvalidatorを迂回してはならない。
 
@@ -274,7 +265,7 @@ agentの論理責務・禁止責務、C++をFMQ descriptor import/read境界へ�
 
 ### 6.7 生成物とproduct配置
 
-生成されるAOSP Tuner VTS XMLはderived artifactであり、`VtsEnvironmentProfile`と同格の正本ではない。恒久的・再現可能なproduct imageへの配置は、`../tuner_hal/DESIGN_JA.md`のfilename解決契約で得た解決済みfilenameを使用し、生成・検証済みXMLをproduct build graph経由でvendor imageへ正確に1個installする。`PRODUCT_COPY_FILES`、生成済みconfig moduleその他の具体的なbuild mechanismは、この一意なinstall契約を満たす限り実装詳細とする。
+生成されるAOSP Tuner VTS XMLはderived artifactであり、`VtsEnvironmentProfile`と同格の正本ではない。恒久的・再現可能なproduct imageへの配置は、`../TUNER_HAL_DESIGN_JA.md`のfilename解決契約で得た解決済みfilenameを使用し、生成・検証済みXMLをproduct build graph経由でvendor imageへ正確に1個installする。`PRODUCT_COPY_FILES`、生成済みconfig moduleその他の具体的なbuild mechanismは、この一意なinstall契約を満たす限り実装詳細とする。
 
 実機VTSの反復確認では、compile後に必ずAndroidを再build/reflashすることを要求しない。対象端末で`adb root`後のadbdが実際にuid 0となり、`adb remount`でvendor側へ書き込み可能な状態を確立できる場合、`install-device`はcompile済みでprofileから解決されるfilenameと一致するXMLをadb経由で`/vendor/etc/<resolved-filename>`へ配置し、その配置内容を読み戻して一致確認した上でVTSへ進めてよい。このadb配置は試験端末上の反復用経路であり、product imageの恒久的・再現可能な構成をbuild graphから切り離す根拠にはしない。
 
@@ -282,11 +273,11 @@ agentの論理責務・禁止責務、C++をFMQ descriptor import/read境界へ�
 
 variantを使用する場合、variant propertyの値と生成XML filenameは同一`VtsEnvironmentProfile`の入力から導出し、product makefile側で別値を独立定義しない。`ro.vendor.vts_tuner_configuration_variant`はboot後に`install-device`が書き換える設定面にせず、adb配置前に実機のproperty値がprofileのvariantと完全一致することを確認する。不一致の場合はfail-closedとし、propertyをadbで上書きせず、必要なら一致するproduct imageをbuild/flashする。variantを使用しない場合も、実機propertyが空であることを同様に確認する。
 
-`config/product_integration.mk`は、`../tuner_hal/DESIGN_JA.md`のVTS状態契約に従って静的configをinstall可能と判定されたproductだけで、生成・検証済みVTS config artifactをvendor imageへのbuild graphへ接続できる構造にする。artifactを含めないproductでは、推測した既定XMLまたは旧`tuner_hal`のVTS XMLを代用しない。
+`config/product_integration.mk`は、`../TUNER_HAL_DESIGN_JA.md`のVTS状態契約に従って静的configをinstall可能と判定されたproductだけで、生成・検証済みVTS config artifactをvendor imageへのbuild graphへ接続できる構造にする。artifactを含めないproductでは、推測した既定XMLまたは削除済み旧実装のVTS XMLを代用しない。
 
 ### 6.8 統合完了条件への接続
 
-本節は`VTS-STATE-BOUND`等の状態意味を追加定義しない。`../tuner_hal/DESIGN_JA.md`で静的VTS configをinstall可能と判定されたprofileについて、product integrationとしては次が成立していることを要求する。
+本節は`VTS-STATE-BOUND`等の状態意味を追加定義しない。`../TUNER_HAL_DESIGN_JA.md`で静的VTS configをinstall可能と判定されたprofileについて、product integrationとしては次が成立していることを要求する。
 
 - `VtsEnvironmentProfile`が実在する単一設定ファイルとして存在し、CLIがその同一ファイルを生成・更新する。
 - 実機なしでも地域等から受信候補を同じprofileへ保存でき、未解決値を架空値で埋めない。
@@ -304,7 +295,7 @@ variantを使用する場合、variant propertyの値と生成XML filenameは同
 
 ## 7. section filter runtime契約の参照
 
-`TableInfo repeat=false`を含むsection filterの公開意味、first-instance解決、停止条件、`repeat=true`との使い分け、未知の全instance集合の終端をHALが推測しない契約は`../tuner_hal/DESIGN_JA.md`を正とする。複数table instanceのinstance別完成・更新・寿命は`../arib_si_engine_rs/DESIGN_JA.md`の「複数table instanceの完成・更新・寿命」、操作ごとの必要instance集合と完成時の明示`stop()`は`../tis/DESIGN_JA.md`の「複数table instance収集と停止」を正とする。
+`TableInfo repeat=false`を含むsection filterの公開意味、first-instance解決、停止条件、`repeat=true`との使い分け、未知の全instance集合の終端をHALが推測しない契約は`../TUNER_HAL_DESIGN_JA.md`を正とする。複数table instanceのinstance別完成・更新・寿命は`../arib_si_engine_rs/DESIGN_JA.md`の「複数table instanceの完成・更新・寿命」、操作ごとの必要instance集合と完成時の明示`stop()`は`../tis/DESIGN_JA.md`の「複数table instance収集と停止」を正とする。
 
 本書が所有するのはproduct統合だけであり、VINTF/init/package/VTS設定の配置によって上記runtime契約を変更または再定義してはならない。
 
@@ -333,7 +324,7 @@ probe adapter、ueventd、SELinux側のいずれかだけに別prefixを追加�
 
 ## 9. LineageOS 22.1 Tuner AIDL null 許容境界の統合
 
-`tuner_hal/DESIGN_JA.md` の `nullable Binder 境界` に従い、LineageOS 22.1 / Android 15 では frozen V1/V2 を変更せず、unfrozen current V3 で Rust から表現できない null 入力だけを補う。
+`TUNER_HAL_DESIGN_JA.md` の `nullable Binder 境界` に従い、LineageOS 22.1 / Android 15 では frozen V1/V2 を変更せず、unfrozen current V3 で Rust から表現できない null 入力だけを補う。
 
 `hardware/interfaces` には次の修正を適用する。
 

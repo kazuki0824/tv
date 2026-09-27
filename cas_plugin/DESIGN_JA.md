@@ -2,9 +2,9 @@
 
 本書は Maleicacid の CAS plugin に関する規範正本である。AOSP Media CAS service と vendor CasPlugin の境界、B25/B1 capability、plugin/session lifecycle、backend ownership、ECM/EMM処理、session/tokenと動的鍵状態の対応・更新・失効、token寿命、teardownを所有する。
 
-製品全体のrelease到達点とmodule間責務は `../開発規則.md`、Tuner HAL公開契約は `../tuner_hal/DESIGN_JA.md`、TIS runtimeは `../tis/DESIGN_JA.md` を正とする。本書はそれらを再定義しない。
+製品全体のrelease到達点とmodule間責務は `../開発規則.md`、Tuner HAL公開契約は `../TUNER_HAL_DESIGN_JA.md`、TIS runtimeは `../tis/DESIGN_JA.md` を正とする。本書はそれらを再定義しない。
 
-完了判定の方法は `../タスク完了判定の実施方法.md`、製品組込みは [INTEGRATION.md](INTEGRATION.md) を参照する。CASとTunerの試験profileの適用範囲は `../tuner_hal/DESIGN_JA.md` の「r52のCAS試験profile境界」に従う。
+完了判定の方法は `../タスク完了判定の実施方法.md`、製品組込みは [INTEGRATION.md](INTEGRATION.md) を参照する。CASとTunerの試験profileの適用範囲は `../TUNER_HAL_DESIGN_JA.md` の「r52のCAS試験profile境界」に従う。
 
 ## 1. AOSP Media CAS service と Maleicacid plugin の境界
 
@@ -349,7 +349,7 @@ AOSP MediaCasServiceからCasPluginへの呼出しは同一process内のC++ ABI�
 
 Tuner再起動が参照結合だけを失う場合と、採用した共有方式で鍵状態自体も失う場合を区別する。後者は表の鍵状態喪失規則も適用する。失効の検出・認可・確定をどのprocessへ配置しても、この責任をTISへ転嫁しない。
 
-表の操作名は説明用であり、追加の公開APIやwire methodを要求しない。`resolve`不能時の`setKeyToken()`戻り値・既存結合の維持・診断は`../tuner_hal/DESIGN_JA.md`のtoken契約へ写像する。packet処理で参照不能なら復号成功やscrambling_controlの平文化にせず、同正本の失敗診断・scrambled pass-through契約に従う。
+表の操作名は説明用であり、追加の公開APIやwire methodを要求しない。`resolve`不能時の`setKeyToken()`戻り値・既存結合の維持・診断は`../TUNER_HAL_DESIGN_JA.md`のtoken契約へ写像する。packet処理で参照不能なら復号成功やscrambling_controlの平文化にせず、同正本の失敗診断・scrambled pass-through契約に従う。
 
 ## 12. processEcm() commit契約
 
