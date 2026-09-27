@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class SmdSemanticFactsDto(
     val descriptorPresent: Boolean,
     val syntaxValid: Boolean,
@@ -13,3 +14,4 @@ data class SmdSemanticFactsDto(
     val diagnostic: String?
 ) {
 }
+
