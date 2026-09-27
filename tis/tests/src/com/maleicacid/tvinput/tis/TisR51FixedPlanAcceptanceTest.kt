@@ -29,6 +29,7 @@ import com.maleicacid.tvinput.aribsi.ServicePublishabilityDiagnostic
 import com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot
 import com.maleicacid.tvinput.aribsi.ServiceSemanticFacts
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
+import com.maleicacid.tvinput.aribsi.SiParseStatus
 import com.maleicacid.tvinput.aribsi.SiStatus
 import com.maleicacid.tvinput.aribsi.SmdSemanticFacts
 import com.maleicacid.tvinput.aribsi.TableRequirementStatus
@@ -2282,7 +2283,10 @@ class TisR51FixedPlanAcceptanceTest {
                             .optString(
                                 "captionServiceKind",
                             ).takeIf { !obj.isNull("captionServiceKind") && it.isNotBlank() },
-                    parseStatus = obj.optString("parseStatus", "OK"),
+                    parseStatus =
+                        SiParseStatus.entries.single {
+                            it.wireValue == obj.getString("parseStatus")
+                        },
                 )
             }
         }
