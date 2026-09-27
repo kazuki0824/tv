@@ -5513,6 +5513,11 @@ fn close_frontend_workers_and_live_data_with_sink(
             let terminal_acceptance_result =
                 accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
             let terminal_state_accepted = terminal_acceptance_result.is_ok();
+            let close_result = close_frontend_live_data_after_terminal_acceptance(
+                &runtime,
+                frontend_id,
+                &terminal_acceptance_result,
+            );
             let mut terminal_result = Ok(());
             for (_, outcome) in outcomes {
                 if let Some(error) = frontend_worker_stop_failure(&outcome) {
@@ -5530,11 +5535,6 @@ fn close_frontend_workers_and_live_data_with_sink(
                 )),
             };
 
-            let close_result = close_frontend_live_data_after_terminal_acceptance(
-                &runtime,
-                frontend_id,
-                &terminal_acceptance_result,
-            );
             report.push(
                 FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
                     target,
