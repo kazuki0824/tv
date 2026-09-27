@@ -994,11 +994,21 @@ class NativeAribSiParser : AutoCloseable {
         val missing = !candidate.has(key) || candidate.isNull(key)
         val number = if (missing) null else candidate.get(key) as? Number
         return when {
-            missing -> "$key が欠落しています"
-            number == null -> "$key の型が数値ではありません"
-            !isIntegralNumberInRange(number, range) ->
+            missing -> {
+                "$key が欠落しています"
+            }
+
+            number == null -> {
+                "$key の型が数値ではありません"
+            }
+
+            !isIntegralNumberInRange(number, range) -> {
                 "$key が整数値域 ${range.first}..${range.last} の外です"
-            else -> null
+            }
+
+            else -> {
+                null
+            }
         }
     }
 
