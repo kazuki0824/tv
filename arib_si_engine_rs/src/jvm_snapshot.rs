@@ -257,21 +257,13 @@ fn json_optional_string<'a>(
     }
 }
 
-fn json_i64(
-    object: &Map<String, Value>,
-    key: &str,
-    context: &str,
-) -> Result<i64, SiJniFailure> {
+fn json_i64(object: &Map<String, Value>, key: &str, context: &str) -> Result<i64, SiJniFailure> {
     json_field(object, key, context)?
         .as_i64()
         .ok_or_else(|| output_failure(format!("{context}.{key} がintegerではありません")))
 }
 
-fn json_i32(
-    object: &Map<String, Value>,
-    key: &str,
-    context: &str,
-) -> Result<i32, SiJniFailure> {
+fn json_i32(object: &Map<String, Value>, key: &str, context: &str) -> Result<i32, SiJniFailure> {
     i32::try_from(json_i64(object, key, context)?).map_err(output_failure)
 }
 
@@ -284,18 +276,14 @@ fn json_optional_i32(
     if value.is_null() {
         Ok(None)
     } else {
-        let raw = value
-            .as_i64()
-            .ok_or_else(|| output_failure(format!("{context}.{key} がinteger/nullではありません")))?;
+        let raw = value.as_i64().ok_or_else(|| {
+            output_failure(format!("{context}.{key} がinteger/nullではありません"))
+        })?;
         i32::try_from(raw).map(Some).map_err(output_failure)
     }
 }
 
-fn json_bool(
-    object: &Map<String, Value>,
-    key: &str,
-    context: &str,
-) -> Result<bool, SiJniFailure> {
+fn json_bool(object: &Map<String, Value>, key: &str, context: &str) -> Result<bool, SiJniFailure> {
     json_field(object, key, context)?
         .as_bool()
         .ok_or_else(|| output_failure(format!("{context}.{key} がbooleanではありません")))
@@ -412,11 +400,15 @@ fn build_ca_metadata<'local>(
 ) -> Result<JObject<'local>, SiJniFailure> {
     let onid = boxed_int(
         env,
-        value.service_key.map(|key| i32::from(key.original_network_id)),
+        value
+            .service_key
+            .map(|key| i32::from(key.original_network_id)),
     )?;
     let tsid = boxed_int(
         env,
-        value.service_key.map(|key| i32::from(key.transport_stream_id)),
+        value
+            .service_key
+            .map(|key| i32::from(key.transport_stream_id)),
     )?;
     let sid = boxed_int(env, value.service_key.map(|key| i32::from(key.service_id)))?;
     let ecm = boxed_int(env, value.ecm_pid.map(i32::from))?;
@@ -596,8 +588,12 @@ fn build_codec_facts<'local>(
         audio_hex = optional_string_object(env, extension.audio_specific_config_hex.as_deref())?;
         audio_header = match extension.header {
             Some(header) => {
-                let extension_rate =
-                    boxed_int(env, header.extension_sampling_frequency.and_then(|v| i32::try_from(v).ok()))?;
+                let extension_rate = boxed_int(
+                    env,
+                    header
+                        .extension_sampling_frequency
+                        .and_then(|v| i32::try_from(v).ok()),
+                )?;
                 let core_type = boxed_int(env, header.core_audio_object_type.map(i32::from))?;
                 let channel_count = boxed_int(env, header.channel_count.map(i32::from))?;
                 let value = call_factory(
@@ -820,10 +816,13 @@ fn build_service_semantic_facts<'local>(
     let provider_name = optional_string_object(env, value.provider_name.as_deref())?;
     let pmt_pid = boxed_int(env, value.pmt_pid.map(i32::from))?;
     let pcr_pid = boxed_int(env, value.pcr_pid.map(i32::from))?;
-    let ca_descriptors =
-        object_list(env, &value.service_scoped_ca_descriptors, build_ca_descriptor)?;
-    let cas_json = serde_json::to_string(&value.cas_facts_canonical_json)
-        .map_err(output_failure)?;
+    let ca_descriptors = object_list(
+        env,
+        &value.service_scoped_ca_descriptors,
+        build_ca_descriptor,
+    )?;
+    let cas_json =
+        serde_json::to_string(&value.cas_facts_canonical_json).map_err(output_failure)?;
     let cas_json = string_object(env, &cas_json)?;
     let result = call_factory(
         env,
@@ -1186,7 +1185,10 @@ fn build_series<'local>(
     let series_id = boxed_int(env, json_optional_i32(object, "seriesId", "series")?)?;
     let expire_date = boxed_int(env, json_optional_i32(object, "expireDate", "series")?)?;
     let episode = boxed_int(env, json_optional_i32(object, "episodeNumber", "series")?)?;
-    let last_episode = boxed_int(env, json_optional_i32(object, "lastEpisodeNumber", "series")?)?;
+    let last_episode = boxed_int(
+        env,
+        json_optional_i32(object, "lastEpisodeNumber", "series")?,
+    )?;
     let name = optional_string_object(env, json_optional_string(object, "name", "series")?)?;
     let status = parse_status(env, json_string(object, "parseStatus", "series")?)?;
     let result = call_factory(
@@ -1218,16 +1220,42 @@ fn build_video_component<'local>(
     value: &Value,
 ) -> Result<JObject<'local>, SiJniFailure> {
     let object = json_object(value, "videoComponent")?;
-    let stream_content = boxed_int(env, json_optional_i32(object, "streamContent", "videoComponent")?)?;
-    let component_tag = boxed_int(env, json_optional_i32(object, "componentTag", "videoComponent")?)?;
-    let component_type = boxed_int(env, json_optional_i32(object, "componentType", "videoComponent")?)?;
-    let language = optional_string_object(env, json_optional_string(object, "language", "videoComponent")?)?;
-    let text = optional_string_object(env, json_optional_string(object, "text", "videoComponent")?)?;
-    let source = optional_string_object(env, json_optional_string(object, "sourceDescriptor", "videoComponent")?)?;
-    let resolution = optional_string_object(env, json_optional_string(object, "resolution", "videoComponent")?)?;
-    let scan = optional_string_object(env, json_optional_string(object, "scan", "videoComponent")?)?;
-    let aspect = optional_string_object(env, json_optional_string(object, "aspect", "videoComponent")?)?;
-    let profile = optional_string_object(env, json_optional_string(object, "profileLevel", "videoComponent")?)?;
+    let stream_content = boxed_int(
+        env,
+        json_optional_i32(object, "streamContent", "videoComponent")?,
+    )?;
+    let component_tag = boxed_int(
+        env,
+        json_optional_i32(object, "componentTag", "videoComponent")?,
+    )?;
+    let component_type = boxed_int(
+        env,
+        json_optional_i32(object, "componentType", "videoComponent")?,
+    )?;
+    let language = optional_string_object(
+        env,
+        json_optional_string(object, "language", "videoComponent")?,
+    )?;
+    let text =
+        optional_string_object(env, json_optional_string(object, "text", "videoComponent")?)?;
+    let source = optional_string_object(
+        env,
+        json_optional_string(object, "sourceDescriptor", "videoComponent")?,
+    )?;
+    let resolution = optional_string_object(
+        env,
+        json_optional_string(object, "resolution", "videoComponent")?,
+    )?;
+    let scan =
+        optional_string_object(env, json_optional_string(object, "scan", "videoComponent")?)?;
+    let aspect = optional_string_object(
+        env,
+        json_optional_string(object, "aspect", "videoComponent")?,
+    )?;
+    let profile = optional_string_object(
+        env,
+        json_optional_string(object, "profileLevel", "videoComponent")?,
+    )?;
     let status = parse_status(env, json_string(object, "parseStatus", "videoComponent")?)?;
     let result = call_factory(
         env,
@@ -1272,27 +1300,82 @@ fn build_audio_component<'local>(
     value: &Value,
 ) -> Result<JObject<'local>, SiJniFailure> {
     let object = json_object(value, "audioComponent")?;
-    let stream_type = boxed_int(env, json_optional_i32(object, "streamType", "audioComponent")?)?;
-    let stream_content = boxed_int(env, json_optional_i32(object, "streamContent", "audioComponent")?)?;
-    let component_tag = boxed_int(env, json_optional_i32(object, "componentTag", "audioComponent")?)?;
-    let component_type = boxed_int(env, json_optional_i32(object, "componentType", "audioComponent")?)?;
-    let language = optional_string_object(env, json_optional_string(object, "language", "audioComponent")?)?;
-    let second_language = optional_string_object(env, json_optional_string(object, "secondLanguage", "audioComponent")?)?;
-    let channel_configuration = optional_string_object(env, json_optional_string(object, "channelConfiguration", "audioComponent")?)?;
-    let simulcast = boxed_int(env, json_optional_i32(object, "simulcastGroupTag", "audioComponent")?)?;
-    let sampling_rate = boxed_int(env, json_optional_i32(object, "samplingRate", "audioComponent")?)?;
-    let sampling_info = optional_string_object(env, json_optional_string(object, "samplingInfo", "audioComponent")?)?;
-    let text = optional_string_object(env, json_optional_string(object, "text", "audioComponent")?)?;
-    let source = optional_string_object(env, json_optional_string(object, "sourceDescriptor", "audioComponent")?)?;
+    let stream_type = boxed_int(
+        env,
+        json_optional_i32(object, "streamType", "audioComponent")?,
+    )?;
+    let stream_content = boxed_int(
+        env,
+        json_optional_i32(object, "streamContent", "audioComponent")?,
+    )?;
+    let component_tag = boxed_int(
+        env,
+        json_optional_i32(object, "componentTag", "audioComponent")?,
+    )?;
+    let component_type = boxed_int(
+        env,
+        json_optional_i32(object, "componentType", "audioComponent")?,
+    )?;
+    let language = optional_string_object(
+        env,
+        json_optional_string(object, "language", "audioComponent")?,
+    )?;
+    let second_language = optional_string_object(
+        env,
+        json_optional_string(object, "secondLanguage", "audioComponent")?,
+    )?;
+    let channel_configuration = optional_string_object(
+        env,
+        json_optional_string(object, "channelConfiguration", "audioComponent")?,
+    )?;
+    let simulcast = boxed_int(
+        env,
+        json_optional_i32(object, "simulcastGroupTag", "audioComponent")?,
+    )?;
+    let sampling_rate = boxed_int(
+        env,
+        json_optional_i32(object, "samplingRate", "audioComponent")?,
+    )?;
+    let sampling_info = optional_string_object(
+        env,
+        json_optional_string(object, "samplingInfo", "audioComponent")?,
+    )?;
+    let text =
+        optional_string_object(env, json_optional_string(object, "text", "audioComponent")?)?;
+    let source = optional_string_object(
+        env,
+        json_optional_string(object, "sourceDescriptor", "audioComponent")?,
+    )?;
     let main = boxed_bool(env, json_optional_bool(object, "main", "audioComponent")?)?;
-    let multi = boxed_bool(env, json_optional_bool(object, "multiLingual", "audioComponent")?)?;
-    let quality = boxed_int(env, json_optional_i32(object, "qualityIndicator", "audioComponent")?)?;
+    let multi = boxed_bool(
+        env,
+        json_optional_bool(object, "multiLingual", "audioComponent")?,
+    )?;
+    let quality = boxed_int(
+        env,
+        json_optional_i32(object, "qualityIndicator", "audioComponent")?,
+    )?;
     let status = parse_status(env, json_string(object, "parseStatus", "audioComponent")?)?;
-    let channel_count = boxed_int(env, json_optional_i32(object, "channelCount", "audioComponent")?)?;
-    let sample_rate = boxed_int(env, json_optional_i32(object, "sampleRateHz", "audioComponent")?)?;
-    let audio_description = boxed_bool(env, json_optional_bool(object, "audioDescription", "audioComponent")?)?;
-    let hard_of_hearing = boxed_bool(env, json_optional_bool(object, "hardOfHearing", "audioComponent")?)?;
-    let dual_mono = boxed_bool(env, json_optional_bool(object, "dualMono", "audioComponent")?)?;
+    let channel_count = boxed_int(
+        env,
+        json_optional_i32(object, "channelCount", "audioComponent")?,
+    )?;
+    let sample_rate = boxed_int(
+        env,
+        json_optional_i32(object, "sampleRateHz", "audioComponent")?,
+    )?;
+    let audio_description = boxed_bool(
+        env,
+        json_optional_bool(object, "audioDescription", "audioComponent")?,
+    )?;
+    let hard_of_hearing = boxed_bool(
+        env,
+        json_optional_bool(object, "hardOfHearing", "audioComponent")?,
+    )?;
+    let dual_mono = boxed_bool(
+        env,
+        json_optional_bool(object, "dualMono", "audioComponent")?,
+    )?;
     let result = call_factory(
         env,
         "audioComponentEntry",
@@ -1355,8 +1438,16 @@ fn build_components<'local>(
     env: &mut JNIEnv<'local>,
     object: &Map<String, Value>,
 ) -> Result<JObject<'local>, SiJniFailure> {
-    let video = object_list(env, json_array(object, "video", "components")?, build_video_component)?;
-    let audio = object_list(env, json_array(object, "audio", "components")?, build_audio_component)?;
+    let video = object_list(
+        env,
+        json_array(object, "video", "components")?,
+        build_video_component,
+    )?;
+    let audio = object_list(
+        env,
+        json_array(object, "audio", "components")?,
+        build_audio_component,
+    )?;
     let result = call_factory(
         env,
         "components",
@@ -1373,8 +1464,14 @@ fn build_truncated_loop<'local>(
     env: &mut JNIEnv<'local>,
     object: &Map<String, Value>,
 ) -> Result<JObject<'local>, SiJniFailure> {
-    let raw = string_object(env, json_string(object, "rawBytesHex", "truncatedDescriptorLoop")?)?;
-    let status = parse_status(env, json_string(object, "parseStatus", "truncatedDescriptorLoop")?)?;
+    let raw = string_object(
+        env,
+        json_string(object, "rawBytesHex", "truncatedDescriptorLoop")?,
+    )?;
+    let status = parse_status(
+        env,
+        json_string(object, "parseStatus", "truncatedDescriptorLoop")?,
+    )?;
     let result = call_factory(
         env,
         "truncatedDescriptorLoop",
@@ -1399,20 +1496,63 @@ fn build_descriptor_diagnostic<'local>(
     let scope = json_object_field(object, "scope", "descriptorDiagnostic")?;
     let descriptor = json_object_field(object, "descriptor", "descriptorDiagnostic")?;
     let schema = string_object(env, json_string(object, "schema", "descriptorDiagnostic")?)?;
-    let severity = string_object(env, json_string(object, "severity", "descriptorDiagnostic")?)?;
+    let severity = string_object(
+        env,
+        json_string(object, "severity", "descriptorDiagnostic")?,
+    )?;
     let code = string_object(env, json_string(object, "code", "descriptorDiagnostic")?)?;
-    let pid = boxed_int(env, json_optional_i32(scope, "pid", "descriptorDiagnostic.scope")?)?;
-    let table_id = boxed_int(env, json_optional_i32(scope, "tableId", "descriptorDiagnostic.scope")?)?;
-    let table_extension = boxed_int(env, json_optional_i32(scope, "tableIdExtension", "descriptorDiagnostic.scope")?)?;
-    let version = boxed_int(env, json_optional_i32(scope, "version", "descriptorDiagnostic.scope")?)?;
-    let section = boxed_int(env, json_optional_i32(scope, "sectionNumber", "descriptorDiagnostic.scope")?)?;
-    let onid = boxed_int(env, json_optional_i32(scope, "originalNetworkId", "descriptorDiagnostic.scope")?)?;
-    let tsid = boxed_int(env, json_optional_i32(scope, "transportStreamId", "descriptorDiagnostic.scope")?)?;
-    let sid = boxed_int(env, json_optional_i32(scope, "serviceId", "descriptorDiagnostic.scope")?)?;
-    let event_id = boxed_int(env, json_optional_i32(scope, "eventId", "descriptorDiagnostic.scope")?)?;
-    let name = optional_string_object(env, json_optional_string(descriptor, "name", "descriptorDiagnostic.descriptor")?)?;
-    let parse_status = string_object(env, json_string(descriptor, "parseStatus", "descriptorDiagnostic.descriptor")?)?;
-    let raw_prefix = string_object(env, json_string(descriptor, "rawPrefixHex", "descriptorDiagnostic.descriptor")?)?;
+    let pid = boxed_int(
+        env,
+        json_optional_i32(scope, "pid", "descriptorDiagnostic.scope")?,
+    )?;
+    let table_id = boxed_int(
+        env,
+        json_optional_i32(scope, "tableId", "descriptorDiagnostic.scope")?,
+    )?;
+    let table_extension = boxed_int(
+        env,
+        json_optional_i32(scope, "tableIdExtension", "descriptorDiagnostic.scope")?,
+    )?;
+    let version = boxed_int(
+        env,
+        json_optional_i32(scope, "version", "descriptorDiagnostic.scope")?,
+    )?;
+    let section = boxed_int(
+        env,
+        json_optional_i32(scope, "sectionNumber", "descriptorDiagnostic.scope")?,
+    )?;
+    let onid = boxed_int(
+        env,
+        json_optional_i32(scope, "originalNetworkId", "descriptorDiagnostic.scope")?,
+    )?;
+    let tsid = boxed_int(
+        env,
+        json_optional_i32(scope, "transportStreamId", "descriptorDiagnostic.scope")?,
+    )?;
+    let sid = boxed_int(
+        env,
+        json_optional_i32(scope, "serviceId", "descriptorDiagnostic.scope")?,
+    )?;
+    let event_id = boxed_int(
+        env,
+        json_optional_i32(scope, "eventId", "descriptorDiagnostic.scope")?,
+    )?;
+    let name = optional_string_object(
+        env,
+        json_optional_string(descriptor, "name", "descriptorDiagnostic.descriptor")?,
+    )?;
+    let parse_status = string_object(
+        env,
+        json_string(descriptor, "parseStatus", "descriptorDiagnostic.descriptor")?,
+    )?;
+    let raw_prefix = string_object(
+        env,
+        json_string(
+            descriptor,
+            "rawPrefixHex",
+            "descriptorDiagnostic.descriptor",
+        )?,
+    )?;
     let message = string_object(env, json_string(object, "message", "descriptorDiagnostic")?)?;
     let result = call_factory(
         env,
@@ -1471,9 +1611,7 @@ fn text_diagnostics(summary: &str) -> Vec<String> {
     summary
         .split([' ', '\n'])
         .filter(|item| {
-            item.contains("unknownCount=")
-                || item.contains("component=")
-                || item.contains("audio=")
+            item.contains("unknownCount=") || item.contains("component=") || item.contains("audio=")
         })
         .map(str::to_string)
         .collect()
@@ -1503,14 +1641,11 @@ fn build_event_diagnostics<'local>(
         json_optional_string(object, "descriptorFactsCanonicalJson", "eventDiagnostics")?,
     )?;
     let texts = string_list(env, &text_diagnostics(summary_value))?;
-    let truncated = match json_optional_object_field(
-        object,
-        "truncatedDescriptorLoop",
-        "eventDiagnostics",
-    )? {
-        Some(loop_object) => build_truncated_loop(env, loop_object)?,
-        None => JObject::null(),
-    };
+    let truncated =
+        match json_optional_object_field(object, "truncatedDescriptorLoop", "eventDiagnostics")? {
+            Some(loop_object) => build_truncated_loop(env, loop_object)?,
+            None => JObject::null(),
+        };
     let result = call_factory(
         env,
         "eventDiagnostics",
@@ -1524,7 +1659,14 @@ fn build_event_diagnostics<'local>(
             JValue::Object(&truncated),
         ],
     );
-    for child in [summary, descriptor_diagnostics, canonical, facts, texts, truncated] {
+    for child in [
+        summary,
+        descriptor_diagnostics,
+        canonical,
+        facts,
+        texts,
+        truncated,
+    ] {
         if !child.is_null() {
             jni_result(env.delete_local_ref(child))?;
         }
@@ -1574,8 +1716,10 @@ fn build_event_descriptors<'local>(
     let component = json_object_field(object, "component", "eventDescriptors")?;
     let audio = json_object_field(object, "audio", "eventDescriptors")?;
     let genres = json_object_field(object, "genres", "eventDescriptors")?;
-    let component_text =
-        optional_string_object(env, json_optional_string(component, "text", "eventDescriptors.component")?)?;
+    let component_text = optional_string_object(
+        env,
+        json_optional_string(component, "text", "eventDescriptors.component")?,
+    )?;
     let audio_text = optional_string_object(
         env,
         json_optional_string(audio, "componentText", "eventDescriptors.audio")?,
@@ -1587,11 +1731,7 @@ fn build_event_descriptors<'local>(
     )?;
     let genre_supplement = optional_string_object(
         env,
-        json_optional_string(
-            genres,
-            "genreSupplementText",
-            "eventDescriptors.genres",
-        )?,
+        json_optional_string(genres, "genreSupplementText", "eventDescriptors.genres")?,
     )?;
     let event_groups = object_list(
         env,
@@ -1623,11 +1763,7 @@ fn build_event_descriptors<'local>(
     )?;
     let candidates_json = optional_string_object(
         env,
-        json_optional_string(
-            object,
-            "seriesCandidatesCanonicalJson",
-            "eventDescriptors",
-        )?,
+        json_optional_string(object, "seriesCandidatesCanonicalJson", "eventDescriptors")?,
     )?;
     let parental = object_list(
         env,
@@ -1700,8 +1836,10 @@ fn build_event<'local>(
     let service_key = json_object_field(object, "serviceKey", "event")?;
     let timing = json_object_field(object, "timing", "event")?;
     let source = json_object_field(object, "source", "event")?;
-    let stable_identity =
-        optional_string_object(env, json_optional_string(object, "stableIdentity", "event")?)?;
+    let stable_identity = optional_string_object(
+        env,
+        json_optional_string(object, "stableIdentity", "event")?,
+    )?;
     let timing_state = enum_by_wire(
         env,
         "EitTimingState",
@@ -1731,10 +1869,8 @@ fn build_event<'local>(
             JValue::Int(json_i32(source, "lastSectionNumber", "event.source")?),
         ],
     )?;
-    let descriptors = build_event_descriptors(
-        env,
-        json_object_field(object, "descriptors", "event")?,
-    )?;
+    let descriptors =
+        build_event_descriptors(env, json_object_field(object, "descriptors", "event")?)?;
     let result = call_factory(
         env,
         "event",
@@ -1828,8 +1964,11 @@ pub(super) fn snapshot_to_java<'local>(
     let transports = object_list(env, &snapshot.transport_semantic_facts, build_transport)?;
     let events = object_list(env, &snapshot.events, build_event)?;
     let eit_instances = object_list(env, &snapshot.eit_instances, build_eit_instance)?;
-    let service_facts =
-        object_list(env, &snapshot.service_semantic_facts, build_service_semantic_facts)?;
+    let service_facts = object_list(
+        env,
+        &snapshot.service_semantic_facts,
+        build_service_semantic_facts,
+    )?;
     let parser_diagnostics =
         object_list(env, &snapshot.parser_diagnostics, build_parser_diagnostic)?;
     let result = call_factory(
