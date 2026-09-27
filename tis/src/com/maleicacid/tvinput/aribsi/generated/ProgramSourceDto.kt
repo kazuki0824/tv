@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class ProgramSourceDto(
     val pid: Int,
     val tableId: Int,
@@ -8,3 +9,4 @@ data class ProgramSourceDto(
     val lastSectionNumber: Int
 ) {
 }
+
