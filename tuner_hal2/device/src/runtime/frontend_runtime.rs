@@ -770,8 +770,8 @@ impl FrontendRuntime {
         report: FrontendLivePumpReport,
         cancel_reason: Option<FrontendWorkerCancelReason>,
     ) -> Result<(), HalError> {
-        // worker置換で世代を進めた後に旧workerのlive pump終了報告が到着し得る。
-        // 旧世代の診断はcurrent状態へ反映せず破棄する。
+        // ワーカー置換で世代を進めた後に旧ワーカーのライブ搬送終了報告が到着し得る。
+        // 旧世代の診断は現世代の状態へ反映せず破棄する。
         if generation < self.generation {
             return Ok(());
         }
