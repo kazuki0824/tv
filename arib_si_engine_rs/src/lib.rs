@@ -254,7 +254,6 @@ impl ParserState {
     }
 }
 
-
 fn json_string(value: &str) -> String {
     format!("\"{}\"", json_escape(value))
 }
