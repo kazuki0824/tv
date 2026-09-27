@@ -4,7 +4,7 @@ mod ca_descriptor;
 mod descriptors;
 mod discovery_requirements;
 mod eit;
-mod jvm_snapshot;
+mod jvm_snapshot_generated;
 pub(crate) mod provider_data;
 mod sections;
 mod service_discovery;
@@ -615,7 +615,7 @@ fn discovery_stage_to_jint(stage: DiscoveryPublishStage) -> jint {
     }
 }
 
-fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshot, SiJniFailure> {
+fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshotDto, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
@@ -649,7 +649,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
         Ok(snapshot) => snapshot,
         Err(failure) => return throw_si_failure(&mut env, failure) as jobject,
     };
-    match jvm_snapshot::snapshot_to_java(&mut env, snapshot) {
+    match jvm_snapshot_generated::snapshot_to_java(&mut env, snapshot) {
         Ok(value) => value.into_raw(),
         Err(failure) => throw_si_failure(&mut env, failure) as jobject,
     }
