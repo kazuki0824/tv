@@ -5,8 +5,8 @@ import android.media.tv.TvContentRating
 import android.media.tv.TvContract
 import android.net.Uri
 import com.maleicacid.tvinput.aribsi.AribEvent
-import com.maleicacid.tvinput.aribsi.EitTimingState
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
+import com.maleicacid.tvinput.aribsi.EitTimingState
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.ServiceKey
 
