@@ -20,6 +20,7 @@ import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
+import com.maleicacid.tvinput.aribsi.SiParseStatus
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
@@ -723,7 +724,7 @@ class MaleicacidLiveSession(
         componentTag ?: return null
         val currentEvent = currentProgramEvent(serviceKey, nowMillis) ?: return null
         return currentEvent.descriptors.components.audio
-            .firstOrNull { component -> component.parseStatus.equals("OK", ignoreCase = true) && component.componentTag == componentTag }
+            .firstOrNull { component -> component.parseStatus == SiParseStatus.OK && component.componentTag == componentTag }
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -737,7 +738,7 @@ class MaleicacidLiveSession(
         componentTag ?: return null
         val currentEvent = currentProgramEvent(serviceKey, nowMillis) ?: return null
         return currentEvent.descriptors.components.video
-            .firstOrNull { component -> component.parseStatus.equals("OK", ignoreCase = true) && component.componentTag == componentTag }
+            .firstOrNull { component -> component.parseStatus == SiParseStatus.OK && component.componentTag == componentTag }
     }
 
     private fun currentDefaultComponentGroupTags(

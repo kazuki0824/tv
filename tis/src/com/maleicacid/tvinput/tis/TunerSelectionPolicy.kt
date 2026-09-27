@@ -4,6 +4,7 @@ import android.media.MediaFormat
 import android.media.tv.TvTrackInfo
 import com.maleicacid.tvinput.aribsi.AribComponentEntry
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.SiParseStatus
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.StreamSelectorType
 
@@ -187,7 +188,7 @@ object AudioTrackMetadataPolicy {
         fallbackLanguage: String?,
         component: AribComponentEntry?,
     ): Projection {
-        val valid = component?.takeIf { it.parseStatus.equals("OK", ignoreCase = true) }
+        val valid = component?.takeIf { it.parseStatus == SiParseStatus.OK }
         return Projection(
             language = valid?.language?.takeIf { it.isNotBlank() } ?: fallbackLanguage,
             encoding = encodingForPmtStreamType(pmtStreamType),
@@ -221,7 +222,7 @@ object VideoTrackMetadataPolicy {
         component: AribComponentEntry?,
         exact: PlaybackPipeline.VideoFormatInfo? = null,
     ): Projection {
-        val valid = component?.takeIf { it.parseStatus.equals("OK", ignoreCase = true) }
+        val valid = component?.takeIf { it.parseStatus == SiParseStatus.OK }
         val geometry = exact?.takeIf { it.width > 0 && it.height > 0 }
         return Projection(
             description = valid?.text?.takeIf { it.isNotBlank() },

@@ -292,7 +292,7 @@ object ProviderDataBridge {
                 .put("episodeNumber", series.episodeNumber ?: JSONObject.NULL)
                 .put("lastEpisodeNumber", series.lastEpisodeNumber ?: JSONObject.NULL)
                 .put("name", series.name ?: JSONObject.NULL)
-                .put("parseStatus", series.parseStatus)
+                .put("parseStatus", series.parseStatus.wireValue)
         } ?: JSONObject.NULL
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
@@ -442,7 +442,7 @@ object ProviderDataBridge {
                         .put("codec", entry.codec?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                         .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                         .put("text", entry.text?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                        .put("parseStatus", entry.parseStatus)
+                        .put("parseStatus", entry.parseStatus.wireValue)
                 entry.resolution?.let { obj.put("resolution", it) }
                 entry.scan?.let { obj.put("scan", it) }
                 entry.aspect?.let { obj.put("aspect", it) }
@@ -473,7 +473,7 @@ object ProviderDataBridge {
                         .put("main", entry.main ?: JSONObject.NULL)
                         .put("multiLingual", entry.multiLingual ?: JSONObject.NULL)
                         .put("qualityIndicator", entry.qualityIndicator ?: JSONObject.NULL)
-                        .put("parseStatus", entry.parseStatus)
+                        .put("parseStatus", entry.parseStatus.wireValue)
                 entry.channelConfiguration?.let { obj.put("channelConfiguration", it) }
                 entry.samplingInfo?.let { obj.put("samplingInfo", it) }
                 entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
@@ -500,7 +500,7 @@ object ProviderDataBridge {
                             requireNotNull(entry.captionServiceKind?.takeIf { it.isNotBlank() }) {
                                 "subtitle captionServiceKind is required"
                             },
-                        ).put("parseStatus", entry.parseStatus),
+                        ).put("parseStatus", entry.parseStatus.wireValue),
                 )
             }
         }
@@ -514,7 +514,7 @@ object ProviderDataBridge {
                         .put("componentTag", entry.componentTag ?: JSONObject.NULL)
                         .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
                         .put("componentType", entry.componentType ?: JSONObject.NULL)
-                        .put("parseStatus", entry.parseStatus),
+                        .put("parseStatus", entry.parseStatus.wireValue),
                 )
             }
         }
