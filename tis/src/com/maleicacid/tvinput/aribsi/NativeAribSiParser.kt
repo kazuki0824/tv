@@ -198,9 +198,10 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun readNativeTransaction(): NativeTransaction {
         check(handle != 0L) { "ネイティブ解析器は終了済みです" }
-        val snapshot =
+        val transport =
             nativeSnapshotBulkTyped(handle)
                 ?: throw NativeSiException("JNI_OUTPUT", "JNIがtyped SI snapshotを返しませんでした")
+        val snapshot = transport.toDomainSnapshot()
         return snapshot.copy(
             events = attachServiceComponentsToEvents(snapshot.events, snapshot.serviceSemanticFacts),
         )
@@ -283,7 +284,7 @@ class NativeAribSiParser : AutoCloseable {
         profile: Int,
     ): Int
 
-    private external fun nativeSnapshotBulkTyped(handle: Long): NativeSiSnapshot?
+    private external fun nativeSnapshotBulkTyped(handle: Long): com.maleicacid.tvinput.aribsi.generated.BulkSnapshotDto?
 
     private external fun nativeSnapshotPmtPidsForSectionFilters(handle: Long): IntArray?
 
