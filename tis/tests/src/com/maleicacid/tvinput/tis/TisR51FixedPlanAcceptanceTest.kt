@@ -860,12 +860,23 @@ class TisR51FixedPlanAcceptanceTest {
         check(providerAudio.getString("codec") == "MPEG-4-AAC-LATM")
         check(!providerAudio.has("r51PlaybackSupported"))
         check(AudioTrackMetadataPolicy.encodingForPmtStreamType(0x0f) == android.media.MediaFormat.MIMETYPE_AUDIO_AAC)
-        check(AudioTrackMetadataPolicy.channelCountForComponentType(0x02) == 2)
-        check(AudioTrackMetadataPolicy.channelCountForComponentType(0x29) == 6)
-        check(AudioTrackMetadataPolicy.sampleRateHz(0x07) == 48_000)
-        check(AudioTrackMetadataPolicy.sampleRateHz(0x04) == null)
-        check(AudioTrackMetadataPolicy.isAudioDescription(0x20))
-        check(AudioTrackMetadataPolicy.isHardOfHearing(0x40))
+        val typedAudioMetadata =
+            AudioTrackMetadataPolicy.project(
+                0x0f,
+                null,
+                AribComponentEntry(
+                    esPid = null,
+                    channelCount = 6,
+                    sampleRateHz = 48_000,
+                    audioDescription = true,
+                    hardOfHearing = false,
+                    parseStatus = "OK",
+                ),
+            )
+        check(typedAudioMetadata.channelCount == 6)
+        check(typedAudioMetadata.sampleRateHz == 48_000)
+        check(typedAudioMetadata.audioDescription)
+        check(!typedAudioMetadata.hardOfHearing)
         check(TunerSelectionPolicy.selectVideo(service.streams)?.streamType == 0x1b)
         check(!PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x11))
     }

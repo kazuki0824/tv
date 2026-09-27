@@ -738,7 +738,12 @@ class NativeAribSiParserCasDiscoveryTest {
             check(audio.language == "jpn")
             check(audio.secondLanguage == "eng")
             check(audio.channelConfiguration == "1/0+1/0")
+            check(audio.channelCount == 2)
             check(audio.samplingInfo == "48kHz")
+            check(audio.sampleRateHz == 48_000)
+            check(audio.audioDescription == false)
+            check(audio.hardOfHearing == false)
+            check(audio.dualMono == true)
             check(audio.sourceDescriptor == "audio_component_descriptor")
 
             check(event.descriptors.series?.expireDateValid == true)
