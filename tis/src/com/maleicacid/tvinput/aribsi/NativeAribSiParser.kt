@@ -21,6 +21,8 @@ private const val SMD_BROADCASTING_FLAG_MAX = 3L
 private const val SMD_BROADCASTING_IDENTIFIER_MAX = 63L
 private const val DAY_MILLIS_MAX = 86_399_999L
 private const val ISO_639_CODE_LENGTH = 3
+private const val HEX_PAIR_WIDTH = 2
+private const val HEX_RADIX = 16
 
 class NativeParserCleanupException(
     val status: Int,
@@ -314,7 +316,8 @@ class NativeAribSiParser : AutoCloseable {
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MagicNumber", "MaxLineLength")
+    // JSON decoder例外をwire failureへ正規化する境界なので、元例外をdomainへ漏らさない。
+    @Suppress("MagicNumber", "MaxLineLength", "SwallowedException")
     private fun parseNativeTransactionJson(raw: String): NativeTransaction {
         val root =
             try {
@@ -516,7 +519,7 @@ class NativeAribSiParser : AutoCloseable {
         value: String,
         context: String,
     ) {
-        if (value.length % 2 != 0 || value.any { it.digitToIntOrNull(16) == null }) {
+        if (value.length % HEX_PAIR_WIDTH != 0 || value.any { it.digitToIntOrNull(HEX_RADIX) == null }) {
             jsonEncodingError("$context が偶数長hexではありません")
         }
     }
