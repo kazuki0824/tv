@@ -18,7 +18,7 @@ use descriptors::{
 use discovery_requirements::DiscoveryProfile;
 use eit::{EitEvent, EitStableEventIdentity};
 use jni::objects::{JByteArray, JClass, JObject, JString, JThrowable, JValue};
-use jni::sys::{jint, jlong, jobject, jstring};
+use jni::sys::{jint, jintArray, jlong, jobject, jstring};
 use jni::JNIEnv;
 use maleicacid_arib_si_engine_core::eit_instances::{EitInstanceState, EitInstances};
 use provider_data as provider_data_api;
@@ -1526,15 +1526,43 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotPmtPidsForSectionFiltersJson(
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotPmtPidsForSectionFilters(
     mut env: JNIEnv<'_>,
     _this: JObject<'_>,
     handle: jlong,
-) -> jstring {
-    java_string(&mut env, snapshot_pmt_pids_for_section_filters_json(handle))
+) -> jintArray {
+    let values = match snapshot_pmt_pids_for_section_filters(handle) {
+        Ok(values) => values,
+        Err(failure) => return throw_si_failure(&mut env, failure) as jintArray,
+    };
+    let length = match i32::try_from(values.len()) {
+        Ok(length) => length,
+        Err(error) => {
+            return throw_si_failure(
+                &mut env,
+                SiJniFailureReason::JniOutput.failure(error),
+            ) as jintArray
+        }
+    };
+    let array = match env.new_int_array(length) {
+        Ok(array) => array,
+        Err(error) => {
+            return throw_si_failure(
+                &mut env,
+                SiJniFailureReason::JniOutput.failure(error),
+            ) as jintArray
+        }
+    };
+    if let Err(error) = env.set_int_array_region(&array, 0, &values) {
+        return throw_si_failure(
+            &mut env,
+            SiJniFailureReason::JniOutput.failure(error),
+        ) as jintArray;
+    }
+    array.into_raw()
 }
 
-fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, SiJniFailure> {
+fn snapshot_pmt_pids_for_section_filters(handle: jlong) -> Result<Vec<jint>, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
@@ -1549,8 +1577,12 @@ fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, S
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
     let result = match parser.lock() {
-        Ok(guard) => serde_json::to_string(&guard.collector.pmt_pids_for_section_filters())
-            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
+        Ok(guard) => Ok(guard
+            .collector
+            .pmt_pids_for_section_filters()
+            .into_iter()
+            .map(i32::from)
+            .collect()),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
