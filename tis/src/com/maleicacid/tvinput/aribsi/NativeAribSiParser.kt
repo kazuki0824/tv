@@ -26,9 +26,22 @@ private const val MPEG_VERSION_MAX = 31L
 private const val SMD_BROADCASTING_FLAG_MAX = 3L
 private const val SMD_BROADCASTING_IDENTIFIER_MAX = 63L
 private const val DAY_MILLIS_MAX = 86_399_999L
+private const val BROADCAST_CLOCK_TDT_TABLE_ID = 0x70L
+private const val BROADCAST_CLOCK_TOT_TABLE_ID = 0x73L
 private const val ISO_639_CODE_LENGTH = 3
 private const val HEX_PAIR_WIDTH = 2
 private const val HEX_RADIX = 16
+
+private val TABLE_REQUIREMENT_COMPONENTS =
+    setOf(
+        "BAT",
+        "NIT",
+        "NIT-other",
+        "PAT",
+        "PMT",
+        "SDT",
+        "SDT-other",
+    )
 
 class NativeParserCleanupException(
     val status: Int,
@@ -536,6 +549,21 @@ class NativeAribSiParser : AutoCloseable {
         return value
     }
 
+    private fun requireLanguageCode(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ) {
+        val value = requireString(obj, key, context)
+        val asciiAlphabetic =
+            value.all { char ->
+                char in 'A'..'Z' || char in 'a'..'z'
+            }
+        if (value.length != ISO_639_CODE_LENGTH || !asciiAlphabetic) {
+            jsonEncodingError("$context.$key は3文字ASCII alphabeticでなければなりません")
+        }
+    }
+
     private fun requireNullableStringValue(
         obj: JSONObject,
         key: String,
@@ -619,7 +647,10 @@ class NativeAribSiParser : AutoCloseable {
         context: String,
     ) {
         requireExactFields(obj, context, "tableId", "mjd", "millisOfDay")
-        requireInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        val tableId = requireInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        if (tableId != BROADCAST_CLOCK_TDT_TABLE_ID && tableId != BROADCAST_CLOCK_TOT_TABLE_ID) {
+            jsonEncodingError("$context.tableId はTDT/TOTでなければなりません value=$tableId")
+        }
         requireInteger(obj, "mjd", context, 0L..WIRE_U16_MAX)
         requireInteger(obj, "millisOfDay", context, 0L..DAY_MILLIS_MAX)
     }
@@ -638,7 +669,7 @@ class NativeAribSiParser : AutoCloseable {
             "required",
             "complete",
         )
-        requireString(obj, "component", context)
+        requireStringValue(obj, "component", context, TABLE_REQUIREMENT_COMPONENTS)
         requireNullableInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
         requireNullableInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
         requireNullableInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
@@ -1325,7 +1356,7 @@ class NativeAribSiParser : AutoCloseable {
             "$context.shortEvents",
         ) { item, itemContext ->
             requireExactFields(item, itemContext, "languageCode", "title", "text", "parseStatus")
-            requireString(item, "languageCode", itemContext)
+            requireLanguageCode(item, "languageCode", itemContext)
             requireString(item, "title", itemContext)
             requireString(item, "text", itemContext)
             requireStringValue(item, "parseStatus", itemContext, setOf("OK"))
@@ -1335,7 +1366,7 @@ class NativeAribSiParser : AutoCloseable {
             "$context.extendedTexts",
         ) { item, itemContext ->
             requireExactFields(item, itemContext, "languageCode", "text", "parseStatus")
-            requireString(item, "languageCode", itemContext)
+            requireLanguageCode(item, "languageCode", itemContext)
             requireString(item, "text", itemContext)
             requireStringValue(item, "parseStatus", itemContext, setOf("OK"))
         }
@@ -1344,7 +1375,7 @@ class NativeAribSiParser : AutoCloseable {
             "$context.extendedItems",
         ) { item, itemContext ->
             requireExactFields(item, itemContext, "languageCode", "description", "text")
-            requireString(item, "languageCode", itemContext)
+            requireLanguageCode(item, "languageCode", itemContext)
             requireString(item, "description", itemContext)
             requireString(item, "text", itemContext)
         }

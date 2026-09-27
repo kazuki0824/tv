@@ -190,6 +190,12 @@ class NativeAribSiParserCasDiscoveryTest {
                 return parseFailure(JSONObject(base.toString()).put("serviceSemanticFacts", JSONArray().put(service)))
             }
 
+            fun snapshotFailure(mutator: (JSONObject) -> Unit): Throwable? {
+                val snapshot = JSONObject(base.toString())
+                mutator(snapshot)
+                return parseFailure(snapshot)
+            }
+
             fun eventFailure(mutator: (JSONObject) -> Unit): Throwable? {
                 val snapshot = JSONObject(base.toString())
                 mutator(snapshot.getJSONArray("events").getJSONObject(0))
@@ -204,6 +210,73 @@ class NativeAribSiParserCasDiscoveryTest {
             assertJsonEncoding(serviceFailure { it.put("pmtParsed", "true") })
             assertJsonEncoding(serviceFailure { it.getJSONObject("smd").put("semanticState", "UNKNOWN") })
             assertJsonEncoding(serviceFailure { it.put("unexpected", 1) })
+            assertJsonEncoding(
+                snapshotFailure { snapshot ->
+                    snapshot.put(
+                        "broadcastClock",
+                        JSONObject()
+                            .put("tableId", 0)
+                            .put("mjd", 60_000)
+                            .put("millisOfDay", 0),
+                    )
+                },
+            )
+            assertJsonEncoding(
+                snapshotFailure { snapshot ->
+                    snapshot.put(
+                        "tableRequirements",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("component", "")
+                                .put("originalNetworkId", JSONObject.NULL)
+                                .put("transportStreamId", JSONObject.NULL)
+                                .put("serviceId", JSONObject.NULL)
+                                .put("required", true)
+                                .put("complete", false),
+                        ),
+                    )
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.getJSONObject("descriptors").put(
+                        "shortEvents",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("languageCode", "x")
+                                .put("title", "title")
+                                .put("text", "text")
+                                .put("parseStatus", "OK"),
+                        ),
+                    )
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.getJSONObject("descriptors").put(
+                        "extendedTexts",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("languageCode", "x")
+                                .put("text", "text")
+                                .put("parseStatus", "OK"),
+                        ),
+                    )
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.getJSONObject("descriptors").put(
+                        "extendedItems",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("languageCode", "x")
+                                .put("description", "description")
+                                .put("text", "text"),
+                        ),
+                    )
+                },
+            )
 
             assertJsonEncoding(
                 eventFailure { event ->

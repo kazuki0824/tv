@@ -140,8 +140,10 @@
       "properties": {
         "tableId": {
           "type": "integer",
-          "minimum": 0,
-          "maximum": 255
+          "enum": [
+            112,
+            115
+          ]
         },
         "mjd": {
           "type": "integer",
@@ -168,7 +170,16 @@
       ],
       "properties": {
         "component": {
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "BAT",
+            "NIT",
+            "NIT-other",
+            "PAT",
+            "PMT",
+            "SDT",
+            "SDT-other"
+          ]
         },
         "originalNetworkId": {
           "anyOf": [
@@ -1345,7 +1356,8 @@
       ],
       "properties": {
         "languageCode": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[A-Za-z]{3}$"
         },
         "title": {
           "type": "string"
@@ -1368,7 +1380,8 @@
       ],
       "properties": {
         "languageCode": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[A-Za-z]{3}$"
         },
         "text": {
           "type": "string"
@@ -1388,7 +1401,8 @@
       ],
       "properties": {
         "languageCode": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[A-Za-z]{3}$"
         },
         "description": {
           "type": "string"
