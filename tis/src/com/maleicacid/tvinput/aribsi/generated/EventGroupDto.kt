@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class EventGroupDto(
     val groupType: Int,
     val events: kotlin.collections.List<com.maleicacid.tvinput.aribsi.generated.EventGroupReferenceDto>,
@@ -8,3 +9,4 @@ data class EventGroupDto(
     val parseStatus: com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
 ) {
 }
+
