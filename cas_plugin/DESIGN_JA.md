@@ -229,7 +229,20 @@ EMM処理は適用対象messageごとに、復号後command、更新番号、全
 | 解釈・適用できないcommand | `ERROR_CAS_CANNOT_HANDLE`。復号成功を更新成功へ置き換えない |
 | 適用対象の検証・更新が完了 | 成功。後続ECMが更新済み台帳を参照できる |
 
-Yakisoba構成の完了確認は、[タスク完了判定の実施方法](../タスク完了判定の実施方法.md#casのyakisoba構成の完了確認)を参照する。
+### 6.4 `yakisoba_only` 最低試験
+
+§6.1〜§6.3の入力受理・拒否、鍵更新、共有backend orderingを固定する最低試験には次を含める。
+
+- 不正sectionを拒否し、鍵状態を変更しない。
+- 1 section内の複数EMM messageをmessage境界ごとに処理する。
+- 対象外宛先を除外し、鍵更新成功として扱わない。
+- MAC不正を復号失敗へ写像し、鍵を更新しない。
+- 重複更新を新規更新として再適用しない。
+- 拒否される更新を成功へ変換しない。
+- EMMで確定したwork keyを後続ECMが参照できる。
+- 複数plugin instanceからの同時初期化・ECM・EMM処理を、同じ共有backend resource ownerのorderingで処理する。
+
+完了判定で必要な実行証跡の形式は `../タスク完了判定の実施方法.md` を正とする。
 
 ## 7. SmartCard backend
 
@@ -383,55 +396,11 @@ MediaCas側のTRM資源回収では、Frameworkが管理対象sessionへ `closeS
 
 backend物理cleanupのretry/reset/taint方式はbackend resource ownerの実装詳細とし、service-global `CleanupPending` worker/tableを必須化しない。
 
-## 14. CAS plugin / Tuner HAL / TIS責務
+## 14. 隣接moduleとの責務境界
 
-### CAS plugin
+CAS plugin / Tuner HAL / TISのproduct-levelなmodule間責務は `../開発規則.md` を唯一の正本とし、本書では責務一覧を再定義しない。
 
-```text
-- B25/B1 CA system supportをfactory経由で提供
-- plugin/session lifecycle
-- CA private data受領
-- ECM
-- B25 EMM
-- backend binding
-- sessionのKs更新と内部鍵状態の失効
-- MediaCas session IDとstable key slotの対応維持
-- CAS event/status
-```
-
-CAS pluginはTS demux、188-byte TS packet descramble、AV、DVRを担当しない。製品固定値の使用は`../開発規則.md`に従い、CAS側のsession更新は動的なKs状態を対象とする。
-
-### Tuner HAL
-
-```text
-- ITuner.openDescrambler()
-- IDescrambler.setKeyToken()
-- addPid() / removePid()
-- token -> stable key slot linkage
-- PID -> token mapping
-- payload-only MULTI2 descramble
-- scrambling-controlに基づくodd/even key選択
-- descramble diagnostics
-```
-
-Tuner HALはB25/B1、SmartCard/Yakisoba、credential sourceを解釈して分岐しない。ECM/EMMやcard I/Oを担当しない。
-
-### TIS
-
-```text
-- CA descriptorからcaSystemIdを決定
-- §5が参照する同一CasController内でcaSystemIdごとにMediaCas/CAS pluginを共有
-- B25 PMT/CAT/ECM/EMM filter
-- B1 PMT/ECM filter
-- MediaCas / MediaCas.Session lifecycle
-- B25 processEcm() / processEmm()
-- B1 processEcm()
-- MediaCas session ID bytesをTuner key tokenとしてsetKeyToken()へ渡す
-- addPid()で対象PIDを接続
-- MediaCas close前のVOID unlink
-```
-
-TISはraw key、card protocol、MULTI2 algorithmを解釈・保持しない。
+本書はCAS plugin内部のfactory / plugin / session / backend、ECM / EMM、session-tokenと動的鍵状態、revoke / teardownの契約を所有する。Tuner HALのdescrambler公開契約とpacket処理は `../TUNER_HAL_DESIGN_JA.md`、TISのMediaCas / descrambler orchestrationは `../tis/DESIGN_JA.md` を参照する。
 
 ## 15. error mapping
 

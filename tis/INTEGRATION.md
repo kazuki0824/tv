@@ -79,7 +79,7 @@ build確認では次を必須とする。
 
 実機確認では字幕PES入力からlibaribcaption decoder/renderer、RGBA8888出力、TIS字幕overlay表示までを接続確認対象とする。renderer viewport、PTS/NoPTS、scheduler、decoder/renderer lifecycleのruntime意味論は `DESIGN_JA.md` を正とし、本書で独立に再定義しない。
 
-libaribcaption rendererの設計正本は本節と`DESIGN_JA.md`に集約済みであり、旧shared-library前提の別future_work文書を維持しない。残る作業は本節のbuild gateと実機の字幕PES→decoder→renderer→RGBA8888→overlay確認で管理し、設計済み内容をfuture_workへ重複定義しない。
+libaribcaption rendererのproduct統合は本節、viewport / PTS / scheduler / decoder・renderer lifecycle等のruntime設計は`DESIGN_JA.md`をそれぞれ正本とする。旧shared-library前提の別future_work文書を維持せず、残るbuild gateと実機の字幕PES→decoder→renderer→RGBA8888→overlay確認は本節の統合確認として管理する。
 
 ## 権限と priv-app
 

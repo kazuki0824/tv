@@ -28,7 +28,7 @@ TISの物理候補表は製品scan実装データのSSOTであり、`開発規�
 
 ## サービス登録・公開・再生policy境界
 
-`arib_si_engine_rs` が返すservice / transport単位の `ServiceSemanticFacts` をAndroid channel登録、EPG公開、ライブ再生へ接続する判断はTISが所有する。`ServiceSemanticFacts` はONID / TSID / SID、ARIB `service_type`、PMT/PCRの存在・構文状態、ES/component一覧とcodec signaling、CA descriptor / free_CA_mode、CA descriptor等から導出した`requiresCas`、SMD意味状態、欠落・不正理由など放送由来の事実だけを含む。`channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackSupported`、`unsupportedCas`のような現在の製品能力・TIF policy結果は含まない。
+`arib_si_engine_rs/DESIGN_JA.md` が定義するservice / transport単位の `ServiceSemanticFacts` を入力とし、Android channel登録、EPG公開、ライブ再生へ接続するproduct policyの算出はTISが所有する。`ServiceSemanticFacts` のfield集合、放送意味、導出条件、包含・除外境界は同SI engine設計を唯一の正本とし、本書では再定義しない。
 
 TISはcurrent `ServiceSemanticFacts`から`requiresCas`を意味事実として受け取り、SI段階では `../開発規則.md` が対象releaseで有効化したservice type / codec範囲とcurrent CAS状態から `channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackStaticallyEligible`、`unsupportedCas` を算出する。`clearLivePlaybackStaticallyEligible` はdecoderを開く前の静的候補factであり、`clearLivePlaybackSupported`を表明しない。実decoder availabilityはlive playback開始時のMediaCodec選択・configure成功を正本とし、static eligibilityを満たしてもdecoderを利用できないserviceは再生成功扱いにしない。このpolicy結果はSI parserへ逆流させず、保存済みprovider-dataをcurrent policyのfallback sourceにしない。
 
