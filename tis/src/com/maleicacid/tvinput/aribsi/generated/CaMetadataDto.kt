@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class CaMetadataDto(
     val serviceKey: com.maleicacid.tvinput.aribsi.generated.ServiceKeyDto?,
     val caSystemId: Int,
@@ -10,3 +11,4 @@ data class CaMetadataDto(
     val source: com.maleicacid.tvinput.aribsi.generated.CaMetadataSourceDto
 ) {
 }
+
