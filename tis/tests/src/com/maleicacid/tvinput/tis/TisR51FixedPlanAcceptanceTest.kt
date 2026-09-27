@@ -399,7 +399,10 @@ class TisR51FixedPlanAcceptanceTest {
                 com.maleicacid.tvinput.aribsi
                     .CaMetadata(null, 5, null, emm, null),
             )
-        val valid = semanticFacts(requiresCas = true).let { it.copy(smd = it.smd.copy(broadcastSystem = BroadcastSystem.ISDB_T)) }
+        val valid =
+            semanticFacts(requiresCas = true).let {
+                it.copy(smd = it.smd.copy(broadcastSystem = BroadcastSystem.ISDB_T))
+            }
         val invalid =
             listOf(
                 valid.copy(caDescriptorsResolved = false),
@@ -526,7 +529,15 @@ class TisR51FixedPlanAcceptanceTest {
             check("CA_DESCRIPTOR_UNRESOLVED" in unresolved.reasons)
             val scrambled = policy.evaluateLive(snapshot(clear.copy(requiresCas = true, freeCaMode = true)), key)
             check(scrambled.registrationReady && scrambled.casDecisionReady && !scrambled.clearLivePlaybackStaticallyEligible)
-            for (facts in listOf(clear.copy(serviceType = 0xa1), clear.copy(smd = clear.smd.copy(broadcastSystem = BroadcastSystem.ISDB_S_BS)))) {
+            for (facts in listOf(
+                clear.copy(serviceType = 0xa1),
+                clear.copy(
+                    smd =
+                        clear.smd.copy(
+                            broadcastSystem = BroadcastSystem.ISDB_S_BS,
+                        ),
+                ),
+            )) {
                 val rejected = policy.evaluateLive(snapshot(facts), key)
                 check(!rejected.registrationReady && !rejected.clearLivePlaybackStaticallyEligible)
             }

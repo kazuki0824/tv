@@ -414,14 +414,24 @@ class NativeAribSiParser : AutoCloseable {
             )
         }
         return when (value) {
-            "ISDB_T" -> BroadcastSystem.ISDB_T
-            "ISDB_S_BS" -> BroadcastSystem.ISDB_S_BS
-            "ISDB_S_110CS" -> BroadcastSystem.ISDB_S_110CS
-            else ->
+            "ISDB_T" -> {
+                BroadcastSystem.ISDB_T
+            }
+
+            "ISDB_S_BS" -> {
+                BroadcastSystem.ISDB_S_BS
+            }
+
+            "ISDB_S_110CS" -> {
+                BroadcastSystem.ISDB_S_110CS
+            }
+
+            else -> {
                 throw NativeSiException(
                     "JSON_ENCODING",
                     "SI snapshotのbroadcastSystemが未知です: $value",
                 )
+            }
         }
     }
 
