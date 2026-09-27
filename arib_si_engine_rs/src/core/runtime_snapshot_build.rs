@@ -7,8 +7,8 @@ use crate::descriptors::{
 use crate::eit::{EitEvent, EitTimingState};
 use crate::eit_instances::EitInstanceState;
 use crate::provider_data::{
-    CasFactsV1, DescriptorDiagnosticV1, DescriptorFactsV1, ParentalRatingDescriptorV1,
-    RatingV1, RawDescriptorV1,
+    CasFactsV1, DescriptorDiagnosticV1, DescriptorFactsV1, ParentalRatingDescriptorV1, RatingV1,
+    RawDescriptorV1,
 };
 use crate::runtime_snapshot_dto::*;
 use crate::service_discovery::{
@@ -241,10 +241,9 @@ pub fn service_semantic_facts(value: &ServiceSemanticFacts) -> ServiceSemanticFa
         .collect::<Vec<_>>();
     for group in &value.es_ca_descriptors {
         ca.extend(
-            group
-                .descriptors
-                .iter()
-                .map(|descriptor| service_ca_descriptor(descriptor, "ES", Some(group.elementary_pid))),
+            group.descriptors.iter().map(|descriptor| {
+                service_ca_descriptor(descriptor, "ES", Some(group.elementary_pid))
+            }),
         );
     }
     ServiceSemanticFactsDto {
@@ -255,7 +254,11 @@ pub fn service_semantic_facts(value: &ServiceSemanticFacts) -> ServiceSemanticFa
         pmt_pid_resolved: value.pmt_pid_resolved,
         pmt_parsed: value.pmt_parsed,
         pcr_pid_resolved: value.pcr_pid_resolved,
-        elementary_streams: value.elementary_streams.iter().map(elementary_stream).collect(),
+        elementary_streams: value
+            .elementary_streams
+            .iter()
+            .map(elementary_stream)
+            .collect(),
         requires_cas: value.requires_cas,
         cas_facts_canonical_json: serde_json::to_string(&CasFactsV1::from(value)).ok(),
         ca_descriptors_resolved: value.ca_descriptors_resolved,
@@ -265,15 +268,21 @@ pub fn service_semantic_facts(value: &ServiceSemanticFacts) -> ServiceSemanticFa
             syntax_valid: value.system_management.syntax_valid,
             system_management_id: value.system_management.system_management_id.map(i32::from),
             broadcasting_flag: value.system_management.broadcasting_flag.map(i32::from),
-            broadcasting_identifier: value.system_management.broadcasting_identifier.map(i32::from),
-            broadcast_system: value.system_management.broadcast_system.map(broadcast_system),
+            broadcasting_identifier: value
+                .system_management
+                .broadcasting_identifier
+                .map(i32::from),
+            broadcast_system: value
+                .system_management
+                .broadcast_system
+                .map(broadcast_system),
             additional_broadcasting_identification: value
                 .system_management
                 .additional_broadcasting_identification
                 .map(i32::from),
-            additional_identification_info_hex: hex(
-                &value.system_management.additional_identification_info,
-            ),
+            additional_identification_info_hex: hex(&value
+                .system_management
+                .additional_identification_info),
             semantic_state: smd_state(value.system_management.semantic_state),
             diagnostic: value.system_management.diagnostic.map(str::to_string),
         },
@@ -304,8 +313,18 @@ pub fn eit_instance(value: &EitInstanceState) -> EitInstanceDto {
         version: i32::from(value.version),
         current_next_indicator: value.current_next_indicator,
         last_section_number: i32::from(value.last_section_number),
-        received_sections: value.received_sections.iter().copied().map(i32::from).collect(),
-        missing_sections: value.missing_sections.iter().copied().map(i32::from).collect(),
+        received_sections: value
+            .received_sections
+            .iter()
+            .copied()
+            .map(i32::from)
+            .collect(),
+        missing_sections: value
+            .missing_sections
+            .iter()
+            .copied()
+            .map(i32::from)
+            .collect(),
         safe_sections: value.safe_sections.iter().copied().map(i32::from).collect(),
         complete: value.complete,
         inconsistent: value.inconsistent,
@@ -320,12 +339,18 @@ fn descriptor_diagnostic(value: DescriptorDiagnosticV1) -> DescriptorDiagnosticD
         code: value.code,
         scope: DescriptorDiagnosticScopeDto {
             pid: value.scope.pid.and_then(|value| i32::try_from(value).ok()),
-            table_id: value.scope.table_id.and_then(|value| i32::try_from(value).ok()),
+            table_id: value
+                .scope
+                .table_id
+                .and_then(|value| i32::try_from(value).ok()),
             table_id_extension: value
                 .scope
                 .table_id_extension
                 .and_then(|value| i32::try_from(value).ok()),
-            version: value.scope.version.and_then(|value| i32::try_from(value).ok()),
+            version: value
+                .scope
+                .version
+                .and_then(|value| i32::try_from(value).ok()),
             section_number: value
                 .scope
                 .section_number
@@ -342,7 +367,10 @@ fn descriptor_diagnostic(value: DescriptorDiagnosticV1) -> DescriptorDiagnosticD
                 .scope
                 .service_id
                 .and_then(|value| i32::try_from(value).ok()),
-            event_id: value.scope.event_id.and_then(|value| i32::try_from(value).ok()),
+            event_id: value
+                .scope
+                .event_id
+                .and_then(|value| i32::try_from(value).ok()),
         },
         descriptor: DescriptorDiagnosticDescriptorDto {
             tag: i32::try_from(value.descriptor.tag).unwrap_or(i32::MAX),
@@ -438,7 +466,9 @@ fn series(value: &SeriesDescriptor) -> SeriesDto {
         repeat_label: i32::from(value.repeat_label),
         program_pattern: i32::from(value.program_pattern),
         expire_date_valid: value.expire_date_valid,
-        expire_date: value.expire_date_valid.then(|| i32::from(value.expire_date)),
+        expire_date: value
+            .expire_date_valid
+            .then(|| i32::from(value.expire_date)),
         episode_number: Some(i32::from(value.episode_number)),
         last_episode_number: Some(i32::from(value.last_episode_number)),
         name: (!value.series_name.is_empty()).then(|| value.series_name.clone()),
@@ -480,7 +510,12 @@ fn component_group(value: &ComponentGroupDescriptor) -> ComponentGroupDescriptor
             .iter()
             .map(|group| ComponentGroupDto {
                 component_group_id: i32::from(group.component_group_id),
-                component_tags: group.component_tags.iter().copied().map(i32::from).collect(),
+                component_tags: group
+                    .component_tags
+                    .iter()
+                    .copied()
+                    .map(i32::from)
+                    .collect(),
             })
             .collect(),
         parse_status: SiParseStatusDto::Ok,
@@ -498,9 +533,7 @@ fn linkage(value: &LinkageDescriptor) -> LinkageDto {
     }
 }
 
-fn video_component(
-    value: &crate::descriptors::ComponentDescriptor,
-) -> VideoComponentDto {
+fn video_component(value: &crate::descriptors::ComponentDescriptor) -> VideoComponentDto {
     let (resolution, scan) = match (value.stream_content, value.component_type) {
         (0x01, 0x01..=0x04) => (Some("480"), Some("interlaced")),
         (0x01, 0xa1..=0xa4) => (Some("480"), Some("progressive")),
@@ -587,9 +620,7 @@ fn audio_sampling_info(value: u8) -> Option<&'static str> {
     }
 }
 
-fn audio_component(
-    value: &crate::descriptors::AudioComponentDescriptor,
-) -> AudioComponentDto {
+fn audio_component(value: &crate::descriptors::AudioComponentDescriptor) -> AudioComponentDto {
     let accessibility = (value.component_type >> 5) & 0x03;
     AudioComponentDto {
         stream_type: Some(i32::from(value.stream_type)),
@@ -677,16 +708,25 @@ pub fn event(value: &EitEvent, stable_identity: Option<String>) -> EventDto {
         .iter()
         .filter(|descriptor| descriptor.parse_status == DescriptorParseStatus::Ok)
         .flat_map(|descriptor| {
-            descriptor.entries.iter().map(move |rating| ParentalRatingDto {
-                country_code: rating.country_code.clone(),
-                raw_rating_byte: i32::from(rating.raw_rating_byte),
-                parse_status: parse_status(descriptor.parse_status),
-            })
+            descriptor
+                .entries
+                .iter()
+                .map(move |rating| ParentalRatingDto {
+                    country_code: rating.country_code.clone(),
+                    raw_rating_byte: i32::from(rating.raw_rating_byte),
+                    parse_status: parse_status(descriptor.parse_status),
+                })
         })
         .collect();
-    let series_candidates = value.descriptors.series.iter().map(series).collect::<Vec<_>>();
-    let series_candidates_canonical_json =
-        (series_candidates.len() > 1).then(|| serde_json::to_string(&series_candidates).ok()).flatten();
+    let series_candidates = value
+        .descriptors
+        .series
+        .iter()
+        .map(series)
+        .collect::<Vec<_>>();
+    let series_candidates_canonical_json = (series_candidates.len() > 1)
+        .then(|| serde_json::to_string(&series_candidates).ok())
+        .flatten();
     EventDto {
         service_key: service_key(
             value.original_network_id,
@@ -759,7 +799,12 @@ pub fn event(value: &EitEvent, stable_identity: Option<String>) -> EventDto {
                     .collect::<Vec<_>>()
                     .join("、"),
             ),
-            event_groups: value.descriptors.event_groups.iter().map(event_group).collect(),
+            event_groups: value
+                .descriptors
+                .event_groups
+                .iter()
+                .map(event_group)
+                .collect(),
             component_groups: value
                 .descriptors
                 .component_groups
@@ -780,7 +825,12 @@ pub fn event(value: &EitEvent, stable_identity: Option<String>) -> EventDto {
             series_candidates_canonical_json,
             parental_ratings,
             components: ComponentsDto {
-                video: value.descriptors.components.iter().map(video_component).collect(),
+                video: value
+                    .descriptors
+                    .components
+                    .iter()
+                    .map(video_component)
+                    .collect(),
                 audio: value
                     .descriptors
                     .audio_components
