@@ -4,6 +4,7 @@ mod ca_descriptor;
 mod descriptors;
 mod discovery_requirements;
 mod eit;
+mod jvm_snapshot;
 pub(crate) mod provider_data;
 mod sections;
 mod service_discovery;
@@ -1247,10 +1248,6 @@ fn bulk_snapshot_json(state: &mut ParserState) -> Result<String, serde_json::Err
     serde_json::to_string(&build_bulk_snapshot(state))
 }
 
-fn bulk_snapshot_value(state: &mut ParserState) -> Result<serde_json::Value, serde_json::Error> {
-    serde_json::to_value(build_bulk_snapshot(state))
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ParserDiagnosticDto {
@@ -1488,101 +1485,7 @@ fn discovery_stage_to_jint(stage: DiscoveryPublishStage) -> jint {
     }
 }
 
-fn json_value_to_java<'local>(
-    env: &mut JNIEnv<'local>,
-    value: &serde_json::Value,
-) -> Result<JObject<'local>, SiJniFailure> {
-    let jni_failure = |error| SiJniFailureReason::JniOutput.failure(error);
-    match value {
-        serde_json::Value::Null => env
-            .get_static_field("org/json/JSONObject", "NULL", "Ljava/lang/Object;")
-            .and_then(|field| field.l())
-            .map_err(jni_failure),
-        serde_json::Value::Bool(value) => env
-            .call_static_method(
-                "java/lang/Boolean",
-                "valueOf",
-                "(Z)Ljava/lang/Boolean;",
-                &[JValue::Bool(u8::from(*value))],
-            )
-            .and_then(|result| result.l())
-            .map_err(jni_failure),
-        serde_json::Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                env.call_static_method(
-                    "java/lang/Long",
-                    "valueOf",
-                    "(J)Ljava/lang/Long;",
-                    &[JValue::Long(value)],
-                )
-                .and_then(|result| result.l())
-                .map_err(jni_failure)
-            } else if let Some(value) = value.as_u64().and_then(|value| i64::try_from(value).ok()) {
-                env.call_static_method(
-                    "java/lang/Long",
-                    "valueOf",
-                    "(J)Ljava/lang/Long;",
-                    &[JValue::Long(value)],
-                )
-                .and_then(|result| result.l())
-                .map_err(jni_failure)
-            } else if let Some(value) = value.as_f64() {
-                env.call_static_method(
-                    "java/lang/Double",
-                    "valueOf",
-                    "(D)Ljava/lang/Double;",
-                    &[JValue::Double(value)],
-                )
-                .and_then(|result| result.l())
-                .map_err(jni_failure)
-            } else {
-                Err(SiJniFailureReason::JsonEncoding
-                    .failure("SI snapshot数値をJNI型へ変換できません"))
-            }
-        }
-        serde_json::Value::String(value) => env
-            .new_string(value)
-            .map(JObject::from)
-            .map_err(jni_failure),
-        serde_json::Value::Array(values) => {
-            let array = env
-                .new_object("org/json/JSONArray", "()V", &[])
-                .map_err(jni_failure)?;
-            for value in values {
-                let child = json_value_to_java(env, value)?;
-                env.call_method(
-                    &array,
-                    "put",
-                    "(Ljava/lang/Object;)Lorg/json/JSONArray;",
-                    &[JValue::Object(&child)],
-                )
-                .map_err(jni_failure)?;
-                env.delete_local_ref(child).map_err(jni_failure)?;
-            }
-            Ok(array)
-        }
-        serde_json::Value::Object(values) => {
-            let object = env
-                .new_object("org/json/JSONObject", "()V", &[])
-                .map_err(jni_failure)?;
-            for (key, value) in values {
-                let key = env.new_string(key).map_err(jni_failure)?;
-                let child = json_value_to_java(env, value)?;
-                env.call_method(
-                    &object,
-                    "put",
-                    "(Ljava/lang/String;Ljava/lang/Object;)Lorg/json/JSONObject;",
-                    &[JValue::Object(&JObject::from(key)), JValue::Object(&child)],
-                )
-                .map_err(jni_failure)?;
-                env.delete_local_ref(child).map_err(jni_failure)?;
-            }
-            Ok(object)
-        }
-    }
-}
-
-fn snapshot_bulk_value(handle: jlong) -> Result<serde_json::Value, SiJniFailure> {
+fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshot, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
@@ -1596,28 +1499,26 @@ fn snapshot_bulk_value(handle: jlong) -> Result<serde_json::Value, SiJniFailure>
     let Some(parser) = parser else {
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
-    let result = match parser.lock() {
-        Ok(mut guard) => bulk_snapshot_value(&mut guard)
-            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
+    match parser.lock() {
+        Ok(mut guard) => Ok(build_bulk_snapshot(&mut guard)),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
         }
-    };
-    result
+    }
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotBulkObject(
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotBulkTyped(
     mut env: JNIEnv<'_>,
     _this: JObject<'_>,
     handle: jlong,
 ) -> jobject {
-    let value = match snapshot_bulk_value(handle) {
-        Ok(value) => value,
+    let snapshot = match snapshot_bulk_typed(handle) {
+        Ok(snapshot) => snapshot,
         Err(failure) => return throw_si_failure(&mut env, failure) as jobject,
     };
-    match json_value_to_java(&mut env, &value) {
+    match jvm_snapshot::snapshot_to_java(&mut env, snapshot) {
         Ok(value) => value.into_raw(),
         Err(failure) => throw_si_failure(&mut env, failure) as jobject,
     }
