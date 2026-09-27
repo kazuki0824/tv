@@ -2,7 +2,6 @@ package com.maleicacid.tvinput.aribsi
 
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
-import org.json.JSONArray
 import org.json.JSONObject
 
 private const val SERIES_U16_MAX = 65_535L
@@ -89,9 +88,11 @@ class NativeAribSiParser : AutoCloseable {
     @Synchronized
     fun pmtPidsForSectionFilters(): Set<TsPid> {
         check(handle != 0L) { "ネイティブ解析器は終了済みです" }
-        val array = JSONArray(requireNativeString(nativeSnapshotPmtPidsForSectionFiltersJson(handle)))
-        return (0 until array.length()).mapTo(linkedSetOf()) { index ->
-            requireNotNull(TsPid.fromOrNull(array.getInt(index))) {
+        val values =
+            nativeSnapshotPmtPidsForSectionFilters(handle)
+                ?: throw NativeSiException("JNI_OUTPUT", "JNIがPMT PID snapshotを返しませんでした")
+        return values.mapIndexedTo(linkedSetOf()) { index, value ->
+            requireNotNull(TsPid.fromOrNull(value)) {
                 "native PMT PID が範囲外です index=$index"
             }
         }
@@ -289,7 +290,7 @@ class NativeAribSiParser : AutoCloseable {
 
     private external fun nativeSnapshotBulkTyped(handle: Long): NativeSiSnapshot?
 
-    private external fun nativeSnapshotPmtPidsForSectionFiltersJson(handle: Long): String?
+    private external fun nativeSnapshotPmtPidsForSectionFilters(handle: Long): IntArray?
 
     private external fun nativeDecodeAribString(bytes: ByteArray): String?
 
