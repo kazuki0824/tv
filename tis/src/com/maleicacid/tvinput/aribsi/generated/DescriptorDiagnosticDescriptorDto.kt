@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class DescriptorDiagnosticDescriptorDto(
     val tag: Int,
     val name: String?,
@@ -10,3 +11,4 @@ data class DescriptorDiagnosticDescriptorDto(
     val rawPrefixHex: String
 ) {
 }
+
