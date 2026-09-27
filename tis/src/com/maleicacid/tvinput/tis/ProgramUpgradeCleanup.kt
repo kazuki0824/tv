@@ -122,7 +122,6 @@ object ProgramUpgradeCleanup {
         return commitIdentity()
     }
 
-
     internal fun softwareIdentityForTest(
         fingerprint: String,
         versionCode: Long,
