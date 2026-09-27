@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class EitInstanceDto(
     val originalNetworkId: Int,
     val transportStreamId: Int,
@@ -15,3 +16,4 @@ data class EitInstanceDto(
     val inconsistent: Boolean
 ) {
 }
+
