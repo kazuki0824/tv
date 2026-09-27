@@ -33,7 +33,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.81.0
-  CODEGEN_RUST_TOOLCHAIN: 1.82.0
+  CODEGEN_RUST_TOOLCHAIN: 1.85.0
 
 jobs:
   kotlin-bindings:
