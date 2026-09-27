@@ -465,6 +465,7 @@ object NativeSiJvmFactory {
         profileLevel: String?,
         parseStatus: SiParseStatus,
     ) = AribComponentEntry(
+        esPid = null,
         streamContent = streamContent,
         componentTag = componentTag,
         componentType = componentType,
@@ -502,6 +503,7 @@ object NativeSiJvmFactory {
         hardOfHearing: Boolean?,
         dualMono: Boolean?,
     ) = AribComponentEntry(
+        esPid = null,
         streamType = streamType,
         streamContent = streamContent,
         componentTag = componentTag,
