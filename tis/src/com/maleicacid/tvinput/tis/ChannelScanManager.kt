@@ -154,6 +154,7 @@ object ChannelScanManager {
     ): Int? {
         retryPendingRelease()
         val appContext = context.applicationContext
+        if (!ProgramUpgradeCleanup.ensure(appContext)) return null
         val task = beginScan(ScanPurpose.SETUP_SCAN, appContext) ?: return null
         val generation = task.generation
         executor.execute {
@@ -214,6 +215,10 @@ object ChannelScanManager {
         val targetSnapshot = targetChannels.toList()
         val requiredServiceKeys = targetSnapshot.map { it.serviceKey }.toSet()
         val appContext = context.applicationContext
+        if (!ProgramUpgradeCleanup.ensure(appContext)) {
+            markBootEpgSyncDeferred(appContext, "PROGRAM_UPGRADE_CLEANUP_FAILED")
+            return null
+        }
         val precheck =
             bootEpgSyncStartDecision(
                 activeLiveSessions.size,
@@ -345,6 +350,10 @@ object ChannelScanManager {
             return false
         }
         val appContext = context.applicationContext
+        if (!ProgramUpgradeCleanup.ensure(appContext)) {
+            markBackgroundMaintenanceSkipped("PROGRAM_UPGRADE_CLEANUP_FAILED", source)
+            return false
+        }
         val task = beginScan(ScanPurpose.BACKGROUND_MAINTENANCE, appContext)
         if (task == null) {
             markBackgroundMaintenanceSkipped("SCAN_RUNNING", source)
