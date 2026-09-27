@@ -3391,7 +3391,7 @@ fn accept_frontend_worker_terminal_outcomes(
     runtime: &SharedRuntime,
     outcomes: &[(FrontendWorkerKind, FrontendWorkerStopOutcome)],
 ) -> Result<(), HalError> {
-    let mut state_failures = FirstErrorCollector::new();
+    let mut failures = FirstErrorCollector::new();
     for (_, outcome) in outcomes {
         if let FrontendWorkerStopOutcome::BackendSubmitFailed {
             frontend_id,
@@ -3411,24 +3411,12 @@ fn accept_frontend_worker_terminal_outcomes(
             });
         }
         if let Some(event) = FrontendWorkerTerminalEvent::from_stop_outcome(outcome) {
-            let report = match lock_runtime(
-                runtime,
-                "service runtime lock poisoned while accepting frontend worker terminal state",
-            ) {
-                Ok(mut guard) => {
-                    crate::frontend_worker_termination_use_case::FrontendWorkerTerminationUseCase::
-                        accept_worker_terminal_report(&mut guard, event)
-                }
-                Err(error) => {
-                    state_failures.push_result(Err(error));
-                    continue;
-                }
-            };
-            let (state_result, _diagnostic_result) = report.into_parts();
-            state_failures.push_result(state_result.map(|_| ()));
+            failures.push_result(
+                FrontendTuneScanTxn::accept_worker_terminal(runtime, event).map(|_| ()),
+            );
         }
     }
-    state_failures.into_result()
+    failures.into_result()
 }
 
 fn record_frontend_reaper_completion(
