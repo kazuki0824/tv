@@ -114,11 +114,21 @@ internal class EpgPublicationPolicy {
         fun isProgramRow(
             profile: Int,
             event: AribEvent,
-        ): Boolean = EpgSectionPolicy.accepts(profile, event.source.tableId, event.source.sectionNumber) && event.timingState == EitTimingState.DEFINED
+        ): Boolean =
+            EpgSectionPolicy.accepts(
+                profile,
+                event.source.tableId,
+                event.source.sectionNumber,
+            ) &&
+                event.timingState == EitTimingState.DEFINED
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
-        private fun preservesIdentity(event: AribEvent): Boolean = event.timingState == EitTimingState.DEFINED || event.timingState == EitTimingState.UNDEFINED_TIME
+        private fun preservesIdentity(
+            event: AribEvent,
+        ): Boolean =
+            event.timingState == EitTimingState.DEFINED ||
+                event.timingState == EitTimingState.UNDEFINED_TIME
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
