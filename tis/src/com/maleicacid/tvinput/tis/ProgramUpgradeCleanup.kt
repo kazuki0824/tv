@@ -29,7 +29,7 @@ object ProgramUpgradeCleanup {
             if (!deleted) return false
 
             if (!prefs.edit().putString(KEY_SOFTWARE_IDENTITY, currentIdentity).commit()) {
-                Log.e(LogTags.TIS, "Program upgrade cleanup software identityを保存できません")
+                Log.w(LogTags.TIS, "Program upgrade cleanup software identityを保存できません")
                 return false
             }
             Log.i(LogTags.TIS, "旧product buildのProgram行を破棄しました inputId=$inputId")
@@ -41,7 +41,7 @@ object ProgramUpgradeCleanup {
             val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
             "${Build.FINGERPRINT}|${packageInfo.longVersionCode}"
         }.onFailure {
-            Log.e(LogTags.TIS, "Program upgrade cleanup software identityを取得できません", it)
+            Log.w(LogTags.TIS, "Program upgrade cleanup software identityを取得できません", it)
         }.getOrNull()
 
     private fun deleteOwnedPrograms(
@@ -95,7 +95,7 @@ object ProgramUpgradeCleanup {
             }
             true
         }.onFailure {
-            Log.e(LogTags.TIS, "Program upgrade cleanupに失敗しました", it)
+            Log.w(LogTags.TIS, "Program upgrade cleanupに失敗しました", it)
         }.getOrDefault(false)
 
     internal fun softwareIdentityForTest(
