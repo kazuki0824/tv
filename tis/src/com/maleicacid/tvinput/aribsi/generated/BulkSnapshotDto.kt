@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class BulkSnapshotDto(
     val collectionGeneration: Long,
     val ingestSequence: Long,
@@ -16,3 +17,4 @@ data class BulkSnapshotDto(
     val parserDiagnostics: kotlin.collections.List<com.maleicacid.tvinput.aribsi.generated.ParserDiagnosticDto>
 ) {
 }
+
