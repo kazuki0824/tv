@@ -12,6 +12,15 @@ private const val SERIES_U16_MAX = 65_535L
 private const val SERIES_REPEAT_LABEL_MAX = 15L
 private const val SERIES_PROGRAM_PATTERN_MAX = 7L
 private const val SERIES_EPISODE_MAX = 4_095L
+private const val WIRE_U8_MAX = 255L
+private const val WIRE_U16_MAX = 65_535L
+private const val WIRE_PID_MAX = 8_191L
+private const val WIRE_U32_MAX = 4_294_967_295L
+private const val MPEG_VERSION_MAX = 31L
+private const val SMD_BROADCASTING_FLAG_MAX = 3L
+private const val SMD_BROADCASTING_IDENTIFIER_MAX = 63L
+private const val DAY_MILLIS_MAX = 86_399_999L
+private const val ISO_639_CODE_LENGTH = 3
 
 class NativeParserCleanupException(
     val status: Int,
@@ -310,7 +319,7 @@ class NativeAribSiParser : AutoCloseable {
         val root =
             try {
                 JSONObject(raw)
-            } catch (error: RuntimeException) {
+            } catch (error: org.json.JSONException) {
                 throw NativeSiException(
                     "JSON_ENCODING",
                     "SI snapshotのJSONが不正です: ${error.message.orEmpty()}",
@@ -545,8 +554,9 @@ class NativeAribSiParser : AutoCloseable {
         validator: (JSONObject, String) -> Unit,
     ) {
         for (index in 0 until array.length()) {
-            val item = array.get(index) as? JSONObject
-                ?: jsonEncodingError("$context[$index] の型がobjectではありません")
+            val item =
+                array.get(index) as? JSONObject
+                    ?: jsonEncodingError("$context[$index] の型がobjectではありません")
             validator(item, "$context[$index]")
         }
     }
@@ -562,9 +572,9 @@ class NativeAribSiParser : AutoCloseable {
             "transportStreamId",
             "serviceId",
         )
-        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
-        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
-        requireInteger(obj, "serviceId", context, 0L..65_535L)
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
     }
 
     private fun validateBroadcastClock(
@@ -572,9 +582,9 @@ class NativeAribSiParser : AutoCloseable {
         context: String,
     ) {
         requireExactFields(obj, context, "tableId", "mjd", "millisOfDay")
-        requireInteger(obj, "tableId", context, 0L..255L)
-        requireInteger(obj, "mjd", context, 0L..65_535L)
-        requireInteger(obj, "millisOfDay", context, 0L..86_399_999L)
+        requireInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "mjd", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "millisOfDay", context, 0L..DAY_MILLIS_MAX)
     }
 
     private fun validateTableRequirement(
@@ -592,9 +602,9 @@ class NativeAribSiParser : AutoCloseable {
             "complete",
         )
         requireString(obj, "component", context)
-        requireNullableInteger(obj, "originalNetworkId", context, 0L..65_535L)
-        requireNullableInteger(obj, "transportStreamId", context, 0L..65_535L)
-        requireNullableInteger(obj, "serviceId", context, 0L..65_535L)
+        requireNullableInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
         requireBoolean(obj, "required", context)
         requireBoolean(obj, "complete", context)
     }
@@ -617,10 +627,10 @@ class NativeAribSiParser : AutoCloseable {
         requireNullableObject(obj, "serviceKey", context)?.let {
             validateServiceKey(it, "$context.serviceKey")
         }
-        requireInteger(obj, "caSystemId", context, 0L..65_535L)
-        requireNullableInteger(obj, "ecmPid", context, 0L..8_191L)
-        requireNullableInteger(obj, "emmPid", context, 0L..8_191L)
-        requireNullableInteger(obj, "elementaryPid", context, 0L..8_191L)
+        requireInteger(obj, "caSystemId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "ecmPid", context, 0L..WIRE_PID_MAX)
+        requireNullableInteger(obj, "emmPid", context, 0L..WIRE_PID_MAX)
+        requireNullableInteger(obj, "elementaryPid", context, 0L..WIRE_PID_MAX)
         requireHex(requireString(obj, "privateDataHex", context), "$context.privateDataHex")
         requireStringValue(
             obj,
@@ -649,11 +659,11 @@ class NativeAribSiParser : AutoCloseable {
             "reason",
             "rawPrefixHex",
         )
-        requireInteger(obj, "pid", context, 0L..8_191L)
-        requireInteger(obj, "tableId", context, 0L..255L)
-        requireNullableInteger(obj, "tableIdExtension", context, 0L..65_535L)
-        requireNullableInteger(obj, "serviceId", context, 0L..65_535L)
-        requireNullableInteger(obj, "elementaryPid", context, 0L..8_191L)
+        requireInteger(obj, "pid", context, 0L..WIRE_PID_MAX)
+        requireInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "tableIdExtension", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "elementaryPid", context, 0L..WIRE_PID_MAX)
         requireString(obj, "scope", context)
         requireInteger(obj, "offset", context, 0L..Long.MAX_VALUE)
         requireInteger(obj, "declaredLength", context, 0L..Long.MAX_VALUE)
@@ -667,7 +677,7 @@ class NativeAribSiParser : AutoCloseable {
         context: String,
     ) {
         requireExactFields(obj, context, "serviceId", "count")
-        requireInteger(obj, "serviceId", context, 0L..65_535L)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
         requireInteger(obj, "count", context, 1L..Long.MAX_VALUE)
     }
 
@@ -685,11 +695,11 @@ class NativeAribSiParser : AutoCloseable {
             "remoteControlKeyId",
             "sdtActual",
         )
-        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
-        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
         requireNullableString(obj, "networkName", context)
         requireNullableString(obj, "transportStreamName", context)
-        requireNullableInteger(obj, "remoteControlKeyId", context, 0L..255L)
+        requireNullableInteger(obj, "remoteControlKeyId", context, 0L..WIRE_U8_MAX)
         requireBoolean(obj, "sdtActual", context)
     }
 
@@ -698,9 +708,9 @@ class NativeAribSiParser : AutoCloseable {
         context: String,
     ) {
         requireExactFields(obj, context, "profileIdc", "constraintFlags", "levelIdc")
-        requireInteger(obj, "profileIdc", context, 0L..255L)
-        requireInteger(obj, "constraintFlags", context, 0L..255L)
-        requireInteger(obj, "levelIdc", context, 0L..255L)
+        requireInteger(obj, "profileIdc", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "constraintFlags", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "levelIdc", context, 0L..WIRE_U8_MAX)
     }
 
     private fun validateAudioHeader(
@@ -717,17 +727,17 @@ class NativeAribSiParser : AutoCloseable {
             "coreAudioObjectType",
             "channelCount",
         )
-        requireInteger(obj, "audioObjectType", context, 0L..255L)
-        requireInteger(obj, "samplingFrequency", context, 0L..4_294_967_295L)
-        requireInteger(obj, "channelConfiguration", context, 0L..255L)
+        requireInteger(obj, "audioObjectType", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "samplingFrequency", context, 0L..WIRE_U32_MAX)
+        requireInteger(obj, "channelConfiguration", context, 0L..WIRE_U8_MAX)
         requireNullableInteger(
             obj,
             "extensionSamplingFrequency",
             context,
-            0L..4_294_967_295L,
+            0L..WIRE_U32_MAX,
         )
-        requireNullableInteger(obj, "coreAudioObjectType", context, 0L..255L)
-        requireNullableInteger(obj, "channelCount", context, 0L..255L)
+        requireNullableInteger(obj, "coreAudioObjectType", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "channelCount", context, 0L..WIRE_U8_MAX)
     }
 
     private fun validateAudioExtension(
@@ -744,7 +754,7 @@ class NativeAribSiParser : AutoCloseable {
         validateIntegerArray(
             requireArray(obj, "profileLevelIndications", context),
             "$context.profileLevelIndications",
-            0L..255L,
+            0L..WIRE_U8_MAX,
         )
         requireNullableString(obj, "audioSpecificConfigHex", context)?.let {
             requireHex(it, "$context.audioSpecificConfigHex")
@@ -774,7 +784,7 @@ class NativeAribSiParser : AutoCloseable {
             obj,
             "mpeg4AudioProfileAndLevel",
             context,
-            0L..255L,
+            0L..WIRE_U8_MAX,
         )
         requireNullableObject(obj, "audioExtension", context)?.let {
             validateAudioExtension(it, "$context.audioExtension")
@@ -821,18 +831,18 @@ class NativeAribSiParser : AutoCloseable {
             context,
             setOf("VIDEO", "AUDIO"),
         )
-        requireInteger(obj, "elementaryPid", context, 0L..8_191L)
-        requireInteger(obj, "streamType", context, 0L..255L)
-        requireNullableInteger(obj, "componentTag", context, 0L..255L)
-        requireNullableInteger(obj, "componentType", context, 0L..255L)
-        requireNullableInteger(obj, "streamContent", context, 0L..255L)
+        requireInteger(obj, "elementaryPid", context, 0L..WIRE_PID_MAX)
+        requireInteger(obj, "streamType", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "componentTag", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "componentType", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "streamContent", context, 0L..WIRE_U8_MAX)
         validateStringArray(
             requireArray(obj, "languageCodes", context),
             "$context.languageCodes",
         )
-        requireNullableInteger(obj, "dataComponentId", context, 0L..65_535L)
-        requireNullableInteger(obj, "captionDmf", context, 0L..255L)
-        requireNullableInteger(obj, "captionTiming", context, 0L..255L)
+        requireNullableInteger(obj, "dataComponentId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "captionDmf", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "captionTiming", context, 0L..WIRE_U8_MAX)
         requireNullableBoolean(obj, "automaticPresentationOnReception", context)
         requireBoolean(obj, "isCaption", context)
         requireBoolean(obj, "isSuperimpose", context)
@@ -852,10 +862,10 @@ class NativeAribSiParser : AutoCloseable {
             "rawDescriptorHex",
             "privateDataHex",
         )
-        requireInteger(obj, "caSystemId", context, 0L..65_535L)
-        requireInteger(obj, "caPid", context, 0L..8_191L)
+        requireInteger(obj, "caSystemId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "caPid", context, 0L..WIRE_PID_MAX)
         requireStringValue(obj, "scope", context, setOf("PROGRAM", "ES"))
-        requireNullableInteger(obj, "esPid", context, 0L..8_191L)
+        requireNullableInteger(obj, "esPid", context, 0L..WIRE_PID_MAX)
         requireHex(
             requireString(obj, "rawDescriptorHex", context),
             "$context.rawDescriptorHex",
@@ -886,9 +896,9 @@ class NativeAribSiParser : AutoCloseable {
         )
         requireBoolean(obj, "descriptorPresent", context)
         requireBoolean(obj, "syntaxValid", context)
-        requireNullableInteger(obj, "systemManagementId", context, 0L..65_535L)
-        requireNullableInteger(obj, "broadcastingFlag", context, 0L..3L)
-        requireNullableInteger(obj, "broadcastingIdentifier", context, 0L..63L)
+        requireNullableInteger(obj, "systemManagementId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "broadcastingFlag", context, 0L..SMD_BROADCASTING_FLAG_MAX)
+        requireNullableInteger(obj, "broadcastingIdentifier", context, 0L..SMD_BROADCASTING_IDENTIFIER_MAX)
         requireNullableStringValue(
             obj,
             "broadcastSystem",
@@ -899,7 +909,7 @@ class NativeAribSiParser : AutoCloseable {
             obj,
             "additionalBroadcastingIdentification",
             context,
-            0L..255L,
+            0L..WIRE_U8_MAX,
         )
         requireHex(
             requireString(obj, "additionalIdentificationInfoHex", context),
@@ -920,6 +930,8 @@ class NativeAribSiParser : AutoCloseable {
         requireNullableString(obj, "diagnostic", context)
     }
 
+    // 同一wire objectの必須項目を一括照合するため、分割して検証漏れを作らない。
+    @Suppress("LongMethod")
     private fun validateServiceSemanticFacts(
         obj: JSONObject,
         context: String,
@@ -948,10 +960,10 @@ class NativeAribSiParser : AutoCloseable {
             "pcrPid",
             "serviceScopedCaDescriptors",
         )
-        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
-        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
-        requireInteger(obj, "serviceId", context, 0L..65_535L)
-        requireNullableInteger(obj, "serviceType", context, 0L..255L)
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireNullableInteger(obj, "serviceType", context, 0L..WIRE_U8_MAX)
         requireBoolean(obj, "pmtPidResolved", context)
         requireBoolean(obj, "pmtParsed", context)
         requireBoolean(obj, "pcrPidResolved", context)
@@ -975,8 +987,8 @@ class NativeAribSiParser : AutoCloseable {
         )
         requireNullableString(obj, "name", context)
         requireNullableString(obj, "providerName", context)
-        requireNullableInteger(obj, "pmtPid", context, 0L..8_191L)
-        requireNullableInteger(obj, "pcrPid", context, 0L..8_191L)
+        requireNullableInteger(obj, "pmtPid", context, 0L..WIRE_PID_MAX)
+        requireNullableInteger(obj, "pcrPid", context, 0L..WIRE_PID_MAX)
         validateObjectArray(
             requireArray(obj, "serviceScopedCaDescriptors", context),
             "$context.serviceScopedCaDescriptors",
@@ -1004,27 +1016,27 @@ class NativeAribSiParser : AutoCloseable {
             "complete",
             "inconsistent",
         )
-        requireInteger(obj, "tableId", context, 0L..255L)
-        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
-        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
-        requireInteger(obj, "serviceId", context, 0L..65_535L)
-        requireInteger(obj, "version", context, 0L..31L)
+        requireInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "version", context, 0L..MPEG_VERSION_MAX)
         requireBoolean(obj, "currentNextIndicator", context)
-        requireInteger(obj, "lastSectionNumber", context, 0L..255L)
+        requireInteger(obj, "lastSectionNumber", context, 0L..WIRE_U8_MAX)
         validateIntegerArray(
             requireArray(obj, "receivedSections", context),
             "$context.receivedSections",
-            0L..255L,
+            0L..WIRE_U8_MAX,
         )
         validateIntegerArray(
             requireArray(obj, "missingSections", context),
             "$context.missingSections",
-            0L..255L,
+            0L..WIRE_U8_MAX,
         )
         validateIntegerArray(
             requireArray(obj, "safeSections", context),
             "$context.safeSections",
-            0L..255L,
+            0L..WIRE_U8_MAX,
         )
         requireBoolean(obj, "complete", context)
         requireBoolean(obj, "inconsistent", context)
@@ -1054,10 +1066,10 @@ class NativeAribSiParser : AutoCloseable {
             "eventId",
         )
         requireStringValue(obj, "kind", context, setOf("arib-event-v1"))
-        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
-        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
-        requireInteger(obj, "serviceId", context, 0L..65_535L)
-        requireInteger(obj, "eventId", context, 0L..65_535L)
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "eventId", context, 0L..WIRE_U16_MAX)
     }
 
     private fun validateTiming(
@@ -1105,11 +1117,11 @@ class NativeAribSiParser : AutoCloseable {
             "sectionNumber",
             "lastSectionNumber",
         )
-        requireInteger(obj, "pid", context, 0L..8_191L)
-        requireInteger(obj, "tableId", context, 0L..255L)
-        requireInteger(obj, "version", context, 0L..31L)
-        requireInteger(obj, "sectionNumber", context, 0L..255L)
-        requireInteger(obj, "lastSectionNumber", context, 0L..255L)
+        requireInteger(obj, "pid", context, 0L..WIRE_PID_MAX)
+        requireInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "version", context, 0L..MPEG_VERSION_MAX)
+        requireInteger(obj, "sectionNumber", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "lastSectionNumber", context, 0L..WIRE_U8_MAX)
     }
 
     private fun validateSeries(
@@ -1129,13 +1141,13 @@ class NativeAribSiParser : AutoCloseable {
             "name",
             "parseStatus",
         )
-        requireInteger(obj, "seriesId", context, 0L..65_535L)
-        requireInteger(obj, "repeatLabel", context, 0L..255L)
-        requireInteger(obj, "programPattern", context, 0L..255L)
+        requireInteger(obj, "seriesId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "repeatLabel", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "programPattern", context, 0L..WIRE_U8_MAX)
         requireBoolean(obj, "expireDateValid", context)
-        requireNullableInteger(obj, "expireDate", context, 0L..65_535L)
-        requireInteger(obj, "episodeNumber", context, 0L..65_535L)
-        requireInteger(obj, "lastEpisodeNumber", context, 0L..65_535L)
+        requireNullableInteger(obj, "expireDate", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "episodeNumber", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "lastEpisodeNumber", context, 0L..WIRE_U16_MAX)
         requireNullableString(obj, "name", context)
         requireStringValue(obj, "parseStatus", context, setOf("OK"))
     }
@@ -1175,9 +1187,9 @@ class NativeAribSiParser : AutoCloseable {
             "sourceDescriptor",
             "parseStatus",
         )
-        requireInteger(obj, "streamContent", context, 0L..255L)
-        requireInteger(obj, "componentTag", context, 0L..255L)
-        requireInteger(obj, "componentType", context, 0L..255L)
+        requireInteger(obj, "streamContent", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "componentTag", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "componentType", context, 0L..WIRE_U8_MAX)
         requireString(obj, "language", context)
         requireString(obj, "text", context)
         requireNullableString(obj, "resolution", context)
@@ -1224,18 +1236,18 @@ class NativeAribSiParser : AutoCloseable {
             "qualityIndicator",
             "parseStatus",
         )
-        requireInteger(obj, "streamContent", context, 0L..255L)
-        requireInteger(obj, "componentTag", context, 0L..255L)
-        requireInteger(obj, "componentType", context, 0L..255L)
-        requireInteger(obj, "streamType", context, 0L..255L)
+        requireInteger(obj, "streamContent", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "componentTag", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "componentType", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "streamType", context, 0L..WIRE_U8_MAX)
         requireString(obj, "language", context)
         requireNullableString(obj, "secondLanguage", context)
         requireNullableString(obj, "channelConfiguration", context)
-        requireNullableInteger(obj, "channelCount", context, 0L..255L)
-        requireInteger(obj, "simulcastGroupTag", context, 0L..255L)
-        requireInteger(obj, "samplingRate", context, 0L..255L)
+        requireNullableInteger(obj, "channelCount", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "simulcastGroupTag", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "samplingRate", context, 0L..WIRE_U8_MAX)
         requireNullableString(obj, "samplingInfo", context)
-        requireNullableInteger(obj, "sampleRateHz", context, 0L..4_294_967_295L)
+        requireNullableInteger(obj, "sampleRateHz", context, 0L..WIRE_U32_MAX)
         requireBoolean(obj, "audioDescription", context)
         requireBoolean(obj, "hardOfHearing", context)
         requireBoolean(obj, "dualMono", context)
@@ -1248,10 +1260,12 @@ class NativeAribSiParser : AutoCloseable {
         )
         requireBoolean(obj, "main", context)
         requireBoolean(obj, "multiLingual", context)
-        requireInteger(obj, "qualityIndicator", context, 0L..255L)
+        requireInteger(obj, "qualityIndicator", context, 0L..WIRE_U8_MAX)
         requireStringValue(obj, "parseStatus", context, setOf("OK"))
     }
 
+    // event descriptor objectのfield集合を一か所で照合するため、分割して第二契約を作らない。
+    @Suppress("LongMethod")
     private fun validateEventDescriptors(
         obj: JSONObject,
         context: String,
@@ -1358,10 +1372,10 @@ class NativeAribSiParser : AutoCloseable {
         context: String,
     ) {
         requireExactFields(obj, context, "content", "genreSupplementText")
-        validateObjectArray(requireArray(obj, "content", context), "$context.content") {
-                item,
-                itemContext,
-            ->
+        validateObjectArray(
+            requireArray(obj, "content", context),
+            "$context.content",
+        ) { item, itemContext ->
             requireExactFields(
                 item,
                 itemContext,
@@ -1371,9 +1385,9 @@ class NativeAribSiParser : AutoCloseable {
                 "aribName",
                 "parseStatus",
             )
-            requireInteger(item, "level1", itemContext, 0L..255L)
-            requireInteger(item, "level2", itemContext, 0L..255L)
-            requireInteger(item, "userNibble", itemContext, 0L..255L)
+            requireInteger(item, "level1", itemContext, 0L..WIRE_U8_MAX)
+            requireInteger(item, "level2", itemContext, 0L..WIRE_U8_MAX)
+            requireInteger(item, "userNibble", itemContext, 0L..WIRE_U8_MAX)
             requireString(item, "aribName", itemContext)
             requireStringValue(item, "parseStatus", itemContext, setOf("OK"))
         }
@@ -1393,14 +1407,14 @@ class NativeAribSiParser : AutoCloseable {
             "privateDataHex",
             "parseStatus",
         )
-        requireInteger(obj, "groupType", context, 0L..255L)
-        validateObjectArray(requireArray(obj, "events", context), "$context.events") {
-                item,
-                itemContext,
-            ->
+        requireInteger(obj, "groupType", context, 0L..WIRE_U8_MAX)
+        validateObjectArray(
+            requireArray(obj, "events", context),
+            "$context.events",
+        ) { item, itemContext ->
             requireExactFields(item, itemContext, "serviceId", "eventId")
-            requireInteger(item, "serviceId", itemContext, 0L..65_535L)
-            requireInteger(item, "eventId", itemContext, 0L..65_535L)
+            requireInteger(item, "serviceId", itemContext, 0L..WIRE_U16_MAX)
+            requireInteger(item, "eventId", itemContext, 0L..WIRE_U16_MAX)
         }
         validateObjectArray(
             requireArray(obj, "otherNetworkEvents", context),
@@ -1414,10 +1428,10 @@ class NativeAribSiParser : AutoCloseable {
                 "serviceId",
                 "eventId",
             )
-            requireInteger(item, "originalNetworkId", itemContext, 0L..65_535L)
-            requireInteger(item, "transportStreamId", itemContext, 0L..65_535L)
-            requireInteger(item, "serviceId", itemContext, 0L..65_535L)
-            requireInteger(item, "eventId", itemContext, 0L..65_535L)
+            requireInteger(item, "originalNetworkId", itemContext, 0L..WIRE_U16_MAX)
+            requireInteger(item, "transportStreamId", itemContext, 0L..WIRE_U16_MAX)
+            requireInteger(item, "serviceId", itemContext, 0L..WIRE_U16_MAX)
+            requireInteger(item, "eventId", itemContext, 0L..WIRE_U16_MAX)
         }
         requireHex(
             requireString(obj, "privateDataHex", context),
@@ -1431,17 +1445,17 @@ class NativeAribSiParser : AutoCloseable {
         context: String,
     ) {
         requireExactFields(obj, context, "componentGroupType", "groups", "parseStatus")
-        requireInteger(obj, "componentGroupType", context, 0L..255L)
-        validateObjectArray(requireArray(obj, "groups", context), "$context.groups") {
-                item,
-                itemContext,
-            ->
+        requireInteger(obj, "componentGroupType", context, 0L..WIRE_U8_MAX)
+        validateObjectArray(
+            requireArray(obj, "groups", context),
+            "$context.groups",
+        ) { item, itemContext ->
             requireExactFields(item, itemContext, "componentGroupId", "componentTags")
-            requireInteger(item, "componentGroupId", itemContext, 0L..255L)
+            requireInteger(item, "componentGroupId", itemContext, 0L..WIRE_U8_MAX)
             validateIntegerArray(
                 requireArray(item, "componentTags", itemContext),
                 "$itemContext.componentTags",
-                0L..255L,
+                0L..WIRE_U8_MAX,
             )
         }
         requireStringValue(obj, "parseStatus", context, setOf("OK"))
@@ -1461,10 +1475,10 @@ class NativeAribSiParser : AutoCloseable {
             "privateDataPrefixHex",
             "parseStatus",
         )
-        requireInteger(obj, "transportStreamId", context, 0L..65_535L)
-        requireInteger(obj, "originalNetworkId", context, 0L..65_535L)
-        requireInteger(obj, "serviceId", context, 0L..65_535L)
-        requireInteger(obj, "linkageType", context, 0L..255L)
+        requireInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "linkageType", context, 0L..WIRE_U8_MAX)
         requireHex(
             requireString(obj, "privateDataPrefixHex", context),
             "$context.privateDataPrefixHex",
@@ -1531,8 +1545,8 @@ class NativeAribSiParser : AutoCloseable {
     ) {
         requireExactFields(obj, context, "countryCode", "rawRatingByte", "parseStatus")
         val country = requireString(obj, "countryCode", context)
-        if (country.length != 3) jsonEncodingError("$context.countryCode は3文字でなければなりません")
-        requireInteger(obj, "rawRatingByte", context, 0L..255L)
+        if (country.length != ISO_639_CODE_LENGTH) jsonEncodingError("$context.countryCode は3文字でなければなりません")
+        requireInteger(obj, "rawRatingByte", context, 0L..WIRE_U8_MAX)
         requireStringValue(obj, "parseStatus", context, setOf("OK"))
     }
 
@@ -1558,7 +1572,7 @@ class NativeAribSiParser : AutoCloseable {
         requireNullableObject(obj, "programKey", context)?.let {
             validateProgramKey(it, "$context.programKey")
         }
-        requireInteger(obj, "eventId", context, 0L..65_535L)
+        requireInteger(obj, "eventId", context, 0L..WIRE_U16_MAX)
         validateServiceKey(requireObject(obj, "serviceKey", context), "$context.serviceKey")
         requireNullableString(obj, "stableIdentity", context)
         validateTiming(requireObject(obj, "timing", context), "$context.timing")
@@ -1584,6 +1598,8 @@ class NativeAribSiParser : AutoCloseable {
         )
     }
 
+    // snapshot全体の必須arrayを一度に照合し、部分受理を防ぐため長さを許容する。
+    @Suppress("LongMethod")
     private fun validateNativeTransaction(root: JSONObject) {
         requireExactFields(
             root,
