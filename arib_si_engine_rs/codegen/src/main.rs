@@ -28,13 +28,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let config = CodeGeneratorConfig::new("com.maleicacid.tvinput.aribsi.generated".to_string())
         .with_serialization(false);
+    let generated_dir = output_root.join("com/maleicacid/tvinput/aribsi/generated");
     let installer = kotlin::Installer::new(output_root);
     installer.install_module(&config, &registry)?;
-    append_repository_trailing_blank_line(
-        &installer
-            .root_path()
-            .join("com/maleicacid/tvinput/aribsi/generated"),
-    )?;
+    append_repository_trailing_blank_line(&generated_dir)?;
     Ok(())
 }
 
