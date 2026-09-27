@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class AudioComponentDto(
     val streamType: Int?,
     val streamContent: Int?,
@@ -24,3 +25,4 @@ data class AudioComponentDto(
     val dualMono: Boolean?
 ) {
 }
+
