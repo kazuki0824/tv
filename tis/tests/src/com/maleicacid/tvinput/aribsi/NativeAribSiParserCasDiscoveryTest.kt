@@ -126,6 +126,152 @@ class NativeAribSiParserCasDiscoveryTest {
     }
 
     @Test
+    fun snapshotRejectsNestedContractViolationsAsJsonEncoding() {
+        NativeAribSiParser().use { parser ->
+            val handleField =
+                NativeAribSiParser::class.java
+                    .getDeclaredField("handle")
+                    .apply { isAccessible = true }
+            val snapshotMethod =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod(
+                        "nativeSnapshotBulkJson",
+                        Long::class.javaPrimitiveType,
+                    ).apply { isAccessible = true }
+            val parseMethod =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod(
+                        "parseNativeTransactionJson",
+                        String::class.java,
+                    ).apply { isAccessible = true }
+            val base =
+                JSONObject(
+                    snapshotMethod.invoke(
+                        parser,
+                        handleField.getLong(parser),
+                    ) as String,
+                )
+
+            fun validService(): JSONObject =
+                JSONObject()
+                    .put("originalNetworkId", 4)
+                    .put("transportStreamId", 16_400)
+                    .put("serviceId", 101)
+                    .put("serviceType", 1)
+                    .put("pmtPidResolved", true)
+                    .put("pmtParsed", true)
+                    .put("pcrPidResolved", true)
+                    .put("elementaryStreams", JSONArray())
+                    .put("requiresCas", false)
+                    .put("casFactsCanonicalJson", "{}")
+                    .put("caDescriptorsResolved", true)
+                    .put("freeCaMode", false)
+                    .put(
+                        "smd",
+                        JSONObject()
+                            .put("descriptorPresent", true)
+                            .put("syntaxValid", true)
+                            .put("systemManagementId", 768)
+                            .put("broadcastingFlag", 0)
+                            .put("broadcastingIdentifier", 3)
+                            .put("broadcastSystem", "ISDB_T")
+                            .put("additionalBroadcastingIdentification", 0)
+                            .put("additionalIdentificationInfoHex", "")
+                            .put("semanticState", "SUPPORTED_BROADCAST")
+                            .put("diagnostic", JSONObject.NULL),
+                    ).put("missingComponents", JSONArray())
+                    .put("semanticDiagnostics", JSONArray())
+                    .put("name", "service")
+                    .put("providerName", JSONObject.NULL)
+                    .put("pmtPid", 256)
+                    .put("pcrPid", 257)
+                    .put("serviceScopedCaDescriptors", JSONArray())
+
+            fun failureFor(mutator: (JSONObject) -> Unit): Throwable? {
+                val service = validService()
+                mutator(service)
+                val snapshot =
+                    JSONObject(base.toString())
+                        .put(
+                            "serviceSemanticFacts",
+                            JSONArray().put(service),
+                        )
+                return runCatching {
+                    parseMethod.invoke(parser, snapshot.toString())
+                }.exceptionOrNull()
+                    ?.let {
+                        (it as? java.lang.reflect.InvocationTargetException)
+                            ?.cause
+                            ?: it
+                    }
+            }
+
+            val missingRequired =
+                failureFor {
+                    it.getJSONObject("smd").remove("broadcastSystem")
+                }
+            check(
+                missingRequired is NativeSiException &&
+                    missingRequired.reason == NativeSiFailureReason.JSON_ENCODING,
+            )
+
+            val wrongType =
+                failureFor {
+                    it.put("pmtParsed", "true")
+                }
+            check(
+                wrongType is NativeSiException &&
+                    wrongType.reason == NativeSiFailureReason.JSON_ENCODING,
+            )
+
+            val unknownEnum =
+                failureFor {
+                    it.getJSONObject("smd").put("semanticState", "UNKNOWN")
+                }
+            check(
+                unknownEnum is NativeSiException &&
+                    unknownEnum.reason == NativeSiFailureReason.JSON_ENCODING,
+            )
+
+            val extraField =
+                failureFor {
+                    it.put("unexpected", 1)
+                }
+            check(
+                extraField is NativeSiException &&
+                    extraField.reason == NativeSiFailureReason.JSON_ENCODING,
+            )
+        }
+    }
+
+    @Test
+    fun closedSiClassificationWireValuesRejectUnknown() {
+        NativeAribSiParser().use { parser ->
+            fun method(name: String) =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod(name, String::class.java)
+                    .apply { isAccessible = true }
+
+            for (name in listOf(
+                "parseSiParseStatus",
+                "parseEitTimingState",
+                "parseElementaryStreamKind",
+            )) {
+                val failure =
+                    runCatching {
+                        method(name).invoke(parser, "UNKNOWN")
+                    }.exceptionOrNull()
+                check(failure is java.lang.reflect.InvocationTargetException)
+                val cause = failure.cause
+                check(
+                    cause is NativeSiException &&
+                        cause.reason == NativeSiFailureReason.JSON_ENCODING,
+                )
+            }
+        }
+    }
+
+    @Test
     fun broadcastSystemWireValueIsDecodedToClosedTypeAndUnknownIsRejected() {
         NativeAribSiParser().use { parser ->
             val method =
