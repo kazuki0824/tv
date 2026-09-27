@@ -1658,31 +1658,6 @@ fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, S
     result
 }
 
-fn snapshot_bulk_json(handle: jlong) -> Result<String, SiJniFailure> {
-    if !si_module_is_healthy() {
-        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
-    }
-    let parser = match registry().lock() {
-        Ok(guard) => guard.get(handle),
-        Err(_) => {
-            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
-            return Err(SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME));
-        }
-    };
-    let Some(parser) = parser else {
-        return Err(SiJniFailureReason::InvalidHandle.failure(handle));
-    };
-    let json = match parser.lock() {
-        Ok(mut guard) => bulk_snapshot_json(&mut guard)
-            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
-        Err(_) => {
-            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
-            Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
-        }
-    };
-    json
-}
-
 fn jbytearray_to_vec(env: &JNIEnv<'_>, value: JByteArray<'_>) -> Result<Vec<u8>, SiJniFailure> {
     env.convert_byte_array(value)
         .map_err(|error| SiJniFailureReason::JniInput.failure(error))
