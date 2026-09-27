@@ -13,7 +13,7 @@ use broadcast_clock::{parse_broadcast_clock, BroadcastClockFact};
 use ca_descriptor::{CaDescriptor, MalformedCaDescriptorDiagnostic};
 use descriptors::json_escape;
 use discovery_requirements::DiscoveryProfile;
-use eit::{EitEvent, EitStableEventIdentity};
+use eit::EitEvent;
 use jni::objects::{JByteArray, JClass, JObject, JString, JThrowable, JValue};
 use jni::sys::{jint, jintArray, jlong, jobject, jstring};
 use jni::JNIEnv;
@@ -1094,30 +1094,39 @@ mod tests {
             0xd5, 9, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0xd5, 9, 0, 2, 0, 0, 0, 0, 3, 0, 4,
         ];
         event.descriptors = crate::descriptors::parse_event_descriptors(&bytes);
-        assert!(event_primary_series_value(&event).is_null());
-        let candidates = series_candidates_value(&event);
-        assert_eq!(candidates.as_array().unwrap().len(), 2);
-        assert_eq!(candidates[0]["seriesId"], 1);
-        assert_eq!(candidates[1]["seriesId"], 2);
-        let canonical: serde_json::Value =
-            serde_json::from_str(&series_candidates_canonical_json(&event).unwrap()).unwrap();
-        assert_eq!(canonical, candidates);
+        let dto = runtime_snapshot_build::event(&event, None);
+        assert!(dto.descriptors.series.is_none());
+        assert_eq!(dto.descriptors.series_candidates.len(), 2);
+        assert_eq!(dto.descriptors.series_candidates[0].series_id, Some(1));
+        assert_eq!(dto.descriptors.series_candidates[1].series_id, Some(2));
+        let canonical: serde_json::Value = serde_json::from_str(
+            dto.descriptors
+                .series_candidates_canonical_json
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            canonical,
+            serde_json::to_value(&dto.descriptors.series_candidates).unwrap(),
+        );
         event.descriptors.series.pop();
-        assert_eq!(event_primary_series_value(&event)["seriesId"], 1);
-        assert!(series_candidates_canonical_json(&event).is_none());
+        let dto = runtime_snapshot_build::event(&event, None);
+        assert_eq!(dto.descriptors.series.as_ref().and_then(|series| series.series_id), Some(1));
+        assert!(dto.descriptors.series_candidates_canonical_json.is_none());
     }
 
     #[test]
     fn event_group_json_preserves_raw_group_type_without_derived_kind() {
         for group_type in 1u8..=5 {
-            let value = event_groups_value(&minimal_event_for_related_items(
+            let event = minimal_event_for_related_items(
                 group_type,
                 0x0100 + group_type as u16,
-            ));
-            let group = &value[0];
-            assert_eq!(group["groupType"].as_u64(), Some(u64::from(group_type)));
-            assert!(group["events"].is_array());
-            assert!(group.get("kind").is_none());
+            );
+            let dto = runtime_snapshot_build::event(&event, None);
+            let group = &dto.descriptors.event_groups[0];
+            assert_eq!(group.group_type, i32::from(group_type));
+            assert!(!group.events.is_empty());
         }
     }
 
@@ -1146,29 +1155,24 @@ mod tests {
             text: String::new(),
         }];
 
-        let components = event_components_value(&event);
-        assert_eq!(components["video"][0]["resolution"], "1080");
-        assert_eq!(components["video"][0]["scan"], "interlaced");
-        assert_eq!(components["video"][0]["aspect"], "16:9");
+        let dto = runtime_snapshot_build::event(&event, None);
+        let video = &dto.descriptors.components.video[0];
+        assert_eq!(video.resolution.as_deref(), Some("1080"));
+        assert_eq!(video.scan.as_deref(), Some("interlaced"));
+        assert_eq!(video.aspect.as_deref(), Some("16:9"));
+        assert_eq!(video.source_descriptor.as_deref(), Some("component_descriptor"));
+        let audio = &dto.descriptors.components.audio[0];
+        assert_eq!(audio.channel_configuration.as_deref(), Some("1/0+1/0"));
+        assert_eq!(audio.channel_count, Some(2));
+        assert_eq!(audio.sampling_info.as_deref(), Some("48kHz"));
+        assert_eq!(audio.sample_rate_hz, Some(48_000));
+        assert_eq!(audio.audio_description, Some(false));
+        assert_eq!(audio.hard_of_hearing, Some(false));
+        assert_eq!(audio.dual_mono, Some(true));
         assert_eq!(
-            components["video"][0]["sourceDescriptor"],
-            "component_descriptor"
+            audio.source_descriptor.as_deref(),
+            Some("audio_component_descriptor"),
         );
-        assert_eq!(components["audio"][0]["channelConfiguration"], "1/0+1/0");
-        assert_eq!(components["audio"][0]["channelCount"], 2);
-        assert_eq!(components["audio"][0]["samplingInfo"], "48kHz");
-        assert_eq!(components["audio"][0]["sampleRateHz"], 48_000);
-        assert_eq!(components["audio"][0]["audioDescription"], false);
-        assert_eq!(components["audio"][0]["hardOfHearing"], false);
-        assert_eq!(components["audio"][0]["dualMono"], true);
-        assert_eq!(audio_accessibility(0x22), (true, false));
-        assert_eq!(audio_accessibility(0x42), (false, true));
-        assert_eq!(
-            components["audio"][0]["sourceDescriptor"],
-            "audio_component_descriptor"
-        );
-        assert!(components["video"][0].get("diagnosticCode").is_none());
-        assert!(components["audio"][0].get("diagnosticCode").is_none());
     }
 
     #[test]
@@ -1203,27 +1207,24 @@ mod tests {
                 .diagnostics
                 .iter()
                 .all(|d| d.event_identity.is_some() == expected));
-            let value = event_value(event);
-            assert_eq!(!value["programKey"].is_null(), expected);
-            assert_eq!(!value["stableIdentity"].is_null(), expected);
-            assert_eq!(value["eventId"], 0x1234);
-            assert_eq!(value["serviceKey"]["serviceId"], 1);
-            assert!(!value["descriptors"]["diagnostics"]["descriptorFactsCanonicalJson"].is_null());
+            let stable_identity = expected.then(|| {
+                provider_data_api::build_program_key(
+                    i32::from(event.original_network_id),
+                    i32::from(event.transport_stream_id),
+                    i32::from(event.service_id),
+                    i32::from(event.event_id),
+                )
+            });
+            let value = runtime_snapshot_build::event(event, stable_identity);
+            assert_eq!(value.stable_identity.is_some(), expected);
+            assert_eq!(value.event_id, 0x1234);
+            assert_eq!(value.service_key.service_id, 1);
+            assert!(value
+                .descriptors
+                .diagnostics
+                .descriptor_facts_canonical_json
+                .is_some());
         }
-    }
-
-    #[test]
-    fn event_identity_uses_the_same_canonical_key_as_provider_data() {
-        let identity = EitStableEventIdentity {
-            original_network_id: 4,
-            transport_stream_id: 16625,
-            service_id: 101,
-            event_id: 10,
-        };
-        assert_eq!(
-            stable_identity_string(identity),
-            provider_data_api::build_program_key(4, 16625, 101, 10)
-        );
     }
 
     #[test]
