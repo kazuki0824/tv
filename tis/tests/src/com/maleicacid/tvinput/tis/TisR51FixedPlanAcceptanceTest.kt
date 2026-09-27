@@ -337,7 +337,7 @@ class TisR51FixedPlanAcceptanceTest {
             for (timing in listOf(0L to event.durationMillis, event.startTimeMillis to 0L)) {
                 val present =
                     event.copy(
-                        timingState = "UNDEFINED_TIME",
+                        timingState = com.maleicacid.tvinput.aribsi.EitTimingState.UNDEFINED_TIME,
                         startTimeMillis = timing.first,
                         durationMillis = timing.second,
                         source = event.source.copy(tableId = 0x4e, version = 1, sectionNumber = 0),
@@ -800,7 +800,7 @@ class TisR51FixedPlanAcceptanceTest {
                 name = "HEVC service",
                 pcrPid = TsPid(0x100),
                 freeCaMode = false,
-                streams = listOf(es(TsPid(0x120), 0x24, componentTag = 1).copy(codec = "HEVC", codecKind = "VIDEO")),
+                streams = listOf(es(TsPid(0x120), 0x24, componentTag = 1).copy(codec = "HEVC", codecKind = com.maleicacid.tvinput.aribsi.ElementaryStreamKind.VIDEO)),
             )
         val components = org.json.JSONObject(AribComponentProjectionPolicy.toComponentsObjectForService(service))
         val video = components.getJSONArray("video").getJSONObject(0)
@@ -848,7 +848,7 @@ class TisR51FixedPlanAcceptanceTest {
                 streams =
                     listOf(
                         es(TsPid(0x101), 0x1b),
-                        es(TsPid(0x111), 0x11, componentTag = 2, language = "jpn").copy(codec = "MPEG-4-AAC-LATM", codecKind = "AUDIO"),
+                        es(TsPid(0x111), 0x11, componentTag = 2, language = "jpn").copy(codec = "MPEG-4-AAC-LATM", codecKind = com.maleicacid.tvinput.aribsi.ElementaryStreamKind.AUDIO),
                     ),
             )
         val components = org.json.JSONObject(AribComponentProjectionPolicy.toComponentsObjectForService(service))
@@ -882,7 +882,7 @@ class TisR51FixedPlanAcceptanceTest {
                     sampleRateHz = 48_000,
                     audioDescription = true,
                     hardOfHearing = false,
-                    parseStatus = "OK",
+                    parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.OK,
                 ),
             )
         check(typedAudioMetadata.channelCount == 6)
@@ -906,7 +906,7 @@ class TisR51FixedPlanAcceptanceTest {
                 componentType = 0xb3,
                 language = "jpn",
                 sourceDescriptor = "component_descriptor",
-                parseStatus = "OK",
+                parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.OK,
             )
         val audioComponent =
             AribComponentEntry(
@@ -915,7 +915,7 @@ class TisR51FixedPlanAcceptanceTest {
                 componentType = 0x03,
                 language = "jpn",
                 sourceDescriptor = "audio_component_descriptor",
-                parseStatus = "OK",
+                parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.OK,
             )
         val merged =
             AribComponentProjectionPolicy.mergeEventAndServiceComponents(
@@ -1091,12 +1091,12 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun malformedAndTruncatedParentalRatingAreNotProjectedToContentRating() {
         val malformed =
             aribEvent(
-                parentalRatings = listOf(AribParentalRating("JPN", 12, parseStatus = "MalformedLength")),
+                parentalRatings = listOf(AribParentalRating("JPN", 12, parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.MALFORMED_LENGTH)),
                 descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson("MalformedLength", 0x55),
             )
         val truncated =
             aribEvent(
-                parentalRatings = listOf(AribParentalRating("JPN", 15, parseStatus = "TruncatedDescriptor")),
+                parentalRatings = listOf(AribParentalRating("JPN", 15, parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.TRUNCATED_DESCRIPTOR)),
                 descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson("TruncatedDescriptor", 0x55),
             )
         val records =
@@ -1730,7 +1730,7 @@ class TisR51FixedPlanAcceptanceTest {
         val incomplete = complete.copy(version = 2, receivedSections = listOf(0), missingSections = listOf(1), complete = false)
         val pending = policy.project(SiDiscoveryProfile.ISDB_T, 1, emptyList(), listOf(incomplete))
         check(pending.windows.isEmpty() && pending.authoritativeProgramKeysByService.isEmpty())
-        val undefined = event.copy(timingState = "UNDEFINED_TIME", startTimeMillis = 0, source = event.source.copy(version = 2))
+        val undefined = event.copy(timingState = com.maleicacid.tvinput.aribsi.EitTimingState.UNDEFINED_TIME, startTimeMillis = 0, source = event.source.copy(version = 2))
         val current = policy.project(SiDiscoveryProfile.ISDB_T, 1, listOf(undefined), listOf(complete.copy(version = 2)))
         check(current.windows.single().deletionAuthoritative)
         check(
@@ -2164,7 +2164,7 @@ class TisR51FixedPlanAcceptanceTest {
                 broadcastSystem = BroadcastSystem.ISDB_T,
                 additionalBroadcastingIdentification = 0,
                 additionalIdentificationInfoHex = "",
-                semanticState = "SUPPORTED_BROADCAST",
+                semanticState = com.maleicacid.tvinput.aribsi.SmdSemanticState.SUPPORTED_BROADCAST,
                 diagnostic = null,
             ),
         missingComponents = emptyList(),
