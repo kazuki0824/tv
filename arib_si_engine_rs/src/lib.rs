@@ -1101,17 +1101,20 @@ mod tests {
         assert_eq!(canonical, dto.descriptors.series_candidates);
         event.descriptors.series.pop();
         let dto = runtime_snapshot_build::event(&event, None);
-        assert_eq!(dto.descriptors.series.as_ref().and_then(|series| series.series_id), Some(1));
+        assert_eq!(
+            dto.descriptors
+                .series
+                .as_ref()
+                .and_then(|series| series.series_id),
+            Some(1)
+        );
         assert!(dto.descriptors.series_candidates_canonical_json.is_none());
     }
 
     #[test]
     fn event_group_json_preserves_raw_group_type_without_derived_kind() {
         for group_type in 1u8..=5 {
-            let event = minimal_event_for_related_items(
-                group_type,
-                0x0100 + group_type as u16,
-            );
+            let event = minimal_event_for_related_items(group_type, 0x0100 + group_type as u16);
             let dto = runtime_snapshot_build::event(&event, None);
             let group = &dto.descriptors.event_groups[0];
             assert_eq!(group.group_type, i32::from(group_type));
@@ -1149,7 +1152,10 @@ mod tests {
         assert_eq!(video.resolution.as_deref(), Some("1080"));
         assert_eq!(video.scan.as_deref(), Some("interlaced"));
         assert_eq!(video.aspect.as_deref(), Some("16:9"));
-        assert_eq!(video.source_descriptor.as_deref(), Some("component_descriptor"));
+        assert_eq!(
+            video.source_descriptor.as_deref(),
+            Some("component_descriptor")
+        );
         let audio = &dto.descriptors.components.audio[0];
         assert_eq!(audio.channel_configuration.as_deref(), Some("1/0+1/0"));
         assert_eq!(audio.channel_count, Some(2));
