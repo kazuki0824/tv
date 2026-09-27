@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class CodecFactsDto(
     val avc: com.maleicacid.tvinput.aribsi.generated.AvcSignalingDto?,
     val audioConfigHex: String?,
@@ -9,3 +10,4 @@ data class CodecFactsDto(
     val resolved: Boolean
 ) {
 }
+
