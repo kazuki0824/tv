@@ -1875,6 +1875,7 @@ mod provider_data_tests {
         let mut value =
             serde_json::from_str::<serde_json::Value>(&minimal_program_json("")).unwrap();
         value["schema"] = serde_json::json!("maleicacid.tv.programRequest");
+        value.as_object_mut().unwrap().remove("casFacts");
         value["casFactsCanonicalJson"] = serde_json::json!(
             r#"{"pmtPid":null,"parseStatus":"PMT_UNRESOLVED","sdtFreeCaMode":null,"descriptors":[]}"#
         );
