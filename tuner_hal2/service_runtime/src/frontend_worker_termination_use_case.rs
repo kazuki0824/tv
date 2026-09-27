@@ -98,8 +98,7 @@ impl FrontendWorkerTerminationUseCase {
         }
 
         FrontendWorkerTerminalAcceptanceReport {
-            state_result: state_result
-                .map(|_| FrontendWorkerTerminalEventAcceptance::Accepted),
+            state_result: state_result.map(|_| FrontendWorkerTerminalEventAcceptance::Accepted),
             diagnostic_result,
         }
     }
