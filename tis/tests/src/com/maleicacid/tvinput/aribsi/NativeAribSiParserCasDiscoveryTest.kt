@@ -508,8 +508,17 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
-
-    @Suppress("LongMethod", "MagicNumber", "NestedBlockDepth")
+    @Suppress(
+        "CyclomaticComplexMethod",
+        "LongMethod",
+        "MagicNumber",
+        "MaxLineLength",
+        "NestedBlockDepth",
+        "ktlint:standard:blank-line-between-when-conditions",
+        "ktlint:standard:chain-method-continuation",
+        "ktlint:standard:max-line-length",
+        "ktlint:standard:when-entry-bracing",
+    )
     @Test
     fun snapshotSchemaAcceptanceMatchesKotlinConsumerAcceptance() {
         val repoRoot =
