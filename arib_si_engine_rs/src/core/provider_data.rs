@@ -1674,27 +1674,20 @@ mod provider_data_tests {
     use super::*;
 
     #[test]
-    fn runtime_publish_judgement_is_rejected_by_builder_and_removed_from_legacy_data() {
+    fn runtime_publish_judgement_is_rejected_in_requests_and_stored_programs() {
         let diagnostic =
             serde_json::json!([{"code":"OLD_POLICY","message":"旧公開判断","severity":null}]);
         let mut request = minimal_program_request_value();
         request["diagnostics"]["publishDiagnostics"] = diagnostic.clone();
         assert!(!build_program_provider_data(&request.to_string()).success);
+
         let mut stored: serde_json::Value =
             serde_json::from_str(&minimal_program_json("")).unwrap();
         stored["diagnostics"]["publishDiagnostics"] = diagnostic;
         let result = normalize_program_provider_data(stored.to_string().as_bytes());
-        assert!(result.success);
-        let canonical: serde_json::Value = serde_json::from_str(&result.json).unwrap();
-        assert_eq!(
-            canonical["diagnostics"]["publishDiagnostics"],
-            serde_json::json!([])
-        );
-        assert!(extract_program_key_result(stored.to_string().as_bytes()).is_some());
-        assert_eq!(
-            normalize_program_provider_data(result.json.as_bytes()).json,
-            result.json
-        );
+        assert!(!result.success);
+        assert_eq!(result.error_code, "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED");
+        assert!(extract_program_key_result(stored.to_string().as_bytes()).is_none());
     }
 
     #[test]
