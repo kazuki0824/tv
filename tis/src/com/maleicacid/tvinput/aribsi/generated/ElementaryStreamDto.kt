@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class ElementaryStreamDto(
     val elementaryPid: Int,
     val streamType: Int,
@@ -18,3 +19,4 @@ data class ElementaryStreamDto(
     val codecFacts: com.maleicacid.tvinput.aribsi.generated.CodecFactsDto
 ) {
 }
+
