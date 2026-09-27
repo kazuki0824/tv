@@ -17,8 +17,8 @@ import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribEventDescriptors
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
-import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSeries
+import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.EitInstanceState
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.NativeAribSiParser
