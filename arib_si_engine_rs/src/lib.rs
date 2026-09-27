@@ -1026,6 +1026,7 @@ struct SystemManagementFactsDto {
     system_management_id: Option<u16>,
     broadcasting_flag: Option<u8>,
     broadcasting_identifier: Option<u8>,
+    broadcast_system: Option<&'static str>,
     additional_broadcasting_identification: Option<u8>,
     additional_identification_info_hex: String,
     semantic_state: &'static str,
@@ -1098,6 +1099,10 @@ impl From<&ServiceSemanticFacts> for ServiceSemanticFactsDto {
                 system_management_id: facts.system_management.system_management_id,
                 broadcasting_flag: facts.system_management.broadcasting_flag,
                 broadcasting_identifier: facts.system_management.broadcasting_identifier,
+                broadcast_system: facts
+                    .system_management
+                    .broadcast_system
+                    .map(|system| system.as_str()),
                 additional_broadcasting_identification: facts
                     .system_management
                     .additional_broadcasting_identification,

@@ -428,6 +428,7 @@ data class SmdSemanticFacts(
     val systemManagementId: Int?,
     val broadcastingFlag: Int?,
     val broadcastingIdentifier: Int?,
+    val broadcastSystem: String? = null,
     val additionalBroadcastingIdentification: Int?,
     val additionalIdentificationInfoHex: String,
     val semanticState: String,

@@ -1164,6 +1164,7 @@ class NativeAribSiParser : AutoCloseable {
                         systemManagementId = optIntOrNull(smd, "systemManagementId"),
                         broadcastingFlag = optIntOrNull(smd, "broadcastingFlag"),
                         broadcastingIdentifier = optIntOrNull(smd, "broadcastingIdentifier"),
+                        broadcastSystem = optStringOrNull(smd, "broadcastSystem"),
                         additionalBroadcastingIdentification = optIntOrNull(smd, "additionalBroadcastingIdentification"),
                         additionalIdentificationInfoHex = smd.optString("additionalIdentificationInfoHex"),
                         semanticState = smd.optString("semanticState", "UNDETERMINED_SMD"),

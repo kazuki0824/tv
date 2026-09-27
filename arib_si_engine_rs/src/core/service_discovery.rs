@@ -76,6 +76,23 @@ impl SmdSemanticState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BroadcastSystem {
+    IsdbSBs,
+    IsdbT,
+    IsdbS110Cs,
+}
+
+impl BroadcastSystem {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IsdbSBs => "ISDB_S_BS",
+            Self::IsdbT => "ISDB_T",
+            Self::IsdbS110Cs => "ISDB_S_110CS",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SystemManagementFacts {
     pub descriptor_present: bool,
@@ -83,6 +100,7 @@ pub struct SystemManagementFacts {
     pub system_management_id: Option<u16>,
     pub broadcasting_flag: Option<u8>,
     pub broadcasting_identifier: Option<u8>,
+    pub broadcast_system: Option<BroadcastSystem>,
     pub additional_broadcasting_identification: Option<u8>,
     pub additional_identification_info: Vec<u8>,
     pub semantic_state: SmdSemanticState,
@@ -1742,10 +1760,14 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
                 u16::from_be_bytes([descriptors[body_start], descriptors[body_start + 1]]);
             let broadcasting_flag = ((system_management_id >> 14) & 0x03) as u8;
             let broadcasting_identifier = ((system_management_id >> 8) & 0x3f) as u8;
+            let broadcast_system = match (broadcasting_flag, broadcasting_identifier) {
+                (0, 0b000010) => Some(BroadcastSystem::IsdbSBs),
+                (0, 0b000011) => Some(BroadcastSystem::IsdbT),
+                (0, 0b000100) => Some(BroadcastSystem::IsdbS110Cs),
+                _ => None,
+            };
             let semantic_state = match broadcasting_flag {
-                0 if matches!(broadcasting_identifier, 0b000010..=0b000100) => {
-                    SmdSemanticState::SupportedBroadcast
-                }
+                0 if broadcast_system.is_some() => SmdSemanticState::SupportedBroadcast,
                 0 => SmdSemanticState::UnsupportedBroadcastSystem,
                 1 | 2 => SmdSemanticState::NonBroadcast,
                 _ => SmdSemanticState::UndefinedBroadcastClass,
@@ -1756,6 +1778,7 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
                 system_management_id: Some(system_management_id),
                 broadcasting_flag: Some(broadcasting_flag),
                 broadcasting_identifier: Some(broadcasting_identifier),
+                broadcast_system,
                 additional_broadcasting_identification: Some(system_management_id as u8),
                 additional_identification_info: descriptors[body_start + 2..body_end].to_vec(),
                 semantic_state,

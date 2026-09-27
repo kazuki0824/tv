@@ -102,13 +102,13 @@ class ServiceListBuilder(
         fun completenessForModel(
             service: AribService,
             facts: ServiceSemanticFacts?,
-            expectedSmdBroadcastingIdentifier: Int? = null,
+            expectedSmdBroadcastSystem: String? = null,
         ): ServiceCompleteness {
             val diagnostic =
                 ServicePolicyEvaluator.evaluate(
                     facts = facts,
                     fallbackKey = service.serviceKey,
-                    expectedSmdBroadcastingIdentifier = expectedSmdBroadcastingIdentifier,
+                    expectedSmdBroadcastSystem = expectedSmdBroadcastSystem,
                 )
             return ServiceCompleteness(diagnostic)
         }
@@ -128,13 +128,11 @@ object ServicePolicyEvaluator {
     @Suppress("MagicNumber")
     private val RECOGNIZED_UNSUPPORTED_AUDIO_STREAM_TYPES = setOf(0x11)
 
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-    @Suppress("MagicNumber")
-    fun expectedSmdBroadcastingIdentifier(profile: Int): Int? =
+    fun expectedSmdBroadcastSystem(profile: Int): String? =
         when (profile) {
-            SiDiscoveryProfile.ISDB_T -> 0b000011
-            SiDiscoveryProfile.BS -> 0b000010
-            SiDiscoveryProfile.CS110 -> 0b000100
+            SiDiscoveryProfile.ISDB_T -> "ISDB_T"
+            SiDiscoveryProfile.BS -> "ISDB_S_BS"
+            SiDiscoveryProfile.CS110 -> "ISDB_S_110CS"
             else -> null
         }
 
@@ -147,7 +145,7 @@ object ServicePolicyEvaluator {
         evaluate(
             facts = snapshot?.semanticFactsByServiceKey?.get(key),
             fallbackKey = key,
-            expectedSmdBroadcastingIdentifier = snapshot?.programs?.discoveryProfile?.let(::expectedSmdBroadcastingIdentifier),
+            expectedSmdBroadcastSystem = snapshot?.programs?.discoveryProfile?.let(::expectedSmdBroadcastSystem),
         )
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
@@ -159,7 +157,7 @@ object ServicePolicyEvaluator {
         fallbackKey: ServiceKey? = facts?.serviceKey,
         hasPhysicalTune: Boolean = true,
         hasInternalTuneKey: Boolean = true,
-        expectedSmdBroadcastingIdentifier: Int? = null,
+        expectedSmdBroadcastSystem: String? = null,
     ): ServicePublishabilityDiagnostic {
         val key = facts?.serviceKey ?: fallbackKey ?: ServiceKey(0, 0, 0)
         if (facts == null) {
@@ -217,8 +215,8 @@ object ServicePolicyEvaluator {
         if (facts.smd.semanticState != SUPPORTED_SMD) {
             registrationReasons += facts.smd.semanticState
         } else if (
-            expectedSmdBroadcastingIdentifier != null &&
-            facts.smd.broadcastingIdentifier != expectedSmdBroadcastingIdentifier
+            expectedSmdBroadcastSystem != null &&
+            facts.smd.broadcastSystem != expectedSmdBroadcastSystem
         ) {
             registrationReasons += "UNSUPPORTED_BROADCAST_SYSTEM"
         }

@@ -398,11 +398,11 @@ class TisR51FixedPlanAcceptanceTest {
                 com.maleicacid.tvinput.aribsi
                     .CaMetadata(null, 5, null, emm, null),
             )
-        val valid = semanticFacts(requiresCas = true).let { it.copy(smd = it.smd.copy(broadcastingIdentifier = 3)) }
+        val valid = semanticFacts(requiresCas = true).let { it.copy(smd = it.smd.copy(broadcastSystem = "ISDB_T")) }
         val invalid =
             listOf(
                 valid.copy(caDescriptorsResolved = false),
-                valid.copy(smd = valid.smd.copy(broadcastingIdentifier = 2)),
+                valid.copy(smd = valid.smd.copy(broadcastSystem = "ISDB_S_BS")),
                 valid.copy(serviceType = 0xa1),
             )
         for (facts in invalid) {
@@ -415,7 +415,7 @@ class TisR51FixedPlanAcceptanceTest {
                 val decision =
                     com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(
                         nextFacts,
-                        expectedSmdBroadcastingIdentifier = 3,
+                        expectedSmdBroadcastSystem = "ISDB_T",
                     )
                 val accepted = SectionFilterPolicy.metadataForCasDecision(decision.casDecisionReady, metadata)
                 for ((current, next) in listOf(
@@ -511,7 +511,7 @@ class TisR51FixedPlanAcceptanceTest {
     fun livePolicyRejectsUnresolvedCaUnknownServiceAndDeliveryMismatch() {
         NativeAribSiParser().use { parser ->
             val initial = parser.livePlaybackSnapshot()
-            val clear = semanticFacts().let { it.copy(smd = it.smd.copy(broadcastingIdentifier = 3)) }
+            val clear = semanticFacts().let { it.copy(smd = it.smd.copy(broadcastSystem = "ISDB_T")) }
 
             fun snapshot(facts: ServiceSemanticFacts) =
                 initial.copy(
@@ -525,7 +525,7 @@ class TisR51FixedPlanAcceptanceTest {
             check("CA_DESCRIPTOR_UNRESOLVED" in unresolved.reasons)
             val scrambled = policy.evaluateLive(snapshot(clear.copy(requiresCas = true, freeCaMode = true)), key)
             check(scrambled.registrationReady && scrambled.casDecisionReady && !scrambled.clearLivePlaybackStaticallyEligible)
-            for (facts in listOf(clear.copy(serviceType = 0xa1), clear.copy(smd = clear.smd.copy(broadcastingIdentifier = 2)))) {
+            for (facts in listOf(clear.copy(serviceType = 0xa1), clear.copy(smd = clear.smd.copy(broadcastSystem = "ISDB_S_BS")))) {
                 val rejected = policy.evaluateLive(snapshot(facts), key)
                 check(!rejected.registrationReady && !rejected.clearLivePlaybackStaticallyEligible)
             }
@@ -2149,6 +2149,7 @@ class TisR51FixedPlanAcceptanceTest {
                 systemManagementId = 0,
                 broadcastingFlag = 0,
                 broadcastingIdentifier = 0,
+                broadcastSystem = "ISDB_T",
                 additionalBroadcastingIdentification = 0,
                 additionalIdentificationInfoHex = "",
                 semanticState = "SUPPORTED_BROADCAST",
