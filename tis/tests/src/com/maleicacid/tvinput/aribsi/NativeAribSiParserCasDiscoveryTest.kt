@@ -125,6 +125,7 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+    @Suppress("LongMethod", "MagicNumber")
     @Test
     fun snapshotRejectsNestedContractViolationsAsJsonEncoding() {
         NativeAribSiParser().use { parser ->
@@ -134,23 +135,14 @@ class NativeAribSiParserCasDiscoveryTest {
                     .apply { isAccessible = true }
             val snapshotMethod =
                 NativeAribSiParser::class.java
-                    .getDeclaredMethod(
-                        "nativeSnapshotBulkJson",
-                        Long::class.javaPrimitiveType,
-                    ).apply { isAccessible = true }
+                    .getDeclaredMethod("nativeSnapshotBulkJson", Long::class.javaPrimitiveType)
+                    .apply { isAccessible = true }
             val parseMethod =
                 NativeAribSiParser::class.java
-                    .getDeclaredMethod(
-                        "parseNativeTransactionJson",
-                        String::class.java,
-                    ).apply { isAccessible = true }
-            val base =
-                JSONObject(
-                    snapshotMethod.invoke(
-                        parser,
-                        handleField.getLong(parser),
-                    ) as String,
-                )
+                    .getDeclaredMethod("parseNativeTransactionJson", String::class.java)
+                    .apply { isAccessible = true }
+            check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
+            val base = JSONObject(snapshotMethod.invoke(parser, handleField.getLong(parser)) as String)
 
             fun validService(): JSONObject =
                 JSONObject()
@@ -187,59 +179,120 @@ class NativeAribSiParserCasDiscoveryTest {
                     .put("pcrPid", 257)
                     .put("serviceScopedCaDescriptors", JSONArray())
 
-            fun failureFor(mutator: (JSONObject) -> Unit): Throwable? {
+            fun parseFailure(snapshot: JSONObject): Throwable? =
+                runCatching { parseMethod.invoke(parser, snapshot.toString()) }
+                    .exceptionOrNull()
+                    ?.let { (it as? java.lang.reflect.InvocationTargetException)?.cause ?: it }
+
+            fun serviceFailure(mutator: (JSONObject) -> Unit): Throwable? {
                 val service = validService()
                 mutator(service)
-                val snapshot =
-                    JSONObject(base.toString())
-                        .put(
-                            "serviceSemanticFacts",
-                            JSONArray().put(service),
-                        )
-                return runCatching {
-                    parseMethod.invoke(parser, snapshot.toString())
-                }.exceptionOrNull()
-                    ?.let {
-                        (it as? java.lang.reflect.InvocationTargetException)
-                            ?.cause
-                            ?: it
-                    }
+                return parseFailure(JSONObject(base.toString()).put("serviceSemanticFacts", JSONArray().put(service)))
             }
 
-            val missingRequired =
-                failureFor {
-                    it.getJSONObject("smd").remove("broadcastSystem")
-                }
-            check(
-                missingRequired is NativeSiException &&
-                    missingRequired.reason == NativeSiFailureReason.JSON_ENCODING,
-            )
+            fun eventFailure(mutator: (JSONObject) -> Unit): Throwable? {
+                val snapshot = JSONObject(base.toString())
+                mutator(snapshot.getJSONArray("events").getJSONObject(0))
+                return parseFailure(snapshot)
+            }
 
-            val wrongType =
-                failureFor {
-                    it.put("pmtParsed", "true")
-                }
-            check(
-                wrongType is NativeSiException &&
-                    wrongType.reason == NativeSiFailureReason.JSON_ENCODING,
-            )
+            fun assertJsonEncoding(failure: Throwable?) {
+                check(failure is NativeSiException && failure.reason == NativeSiFailureReason.JSON_ENCODING)
+            }
 
-            val unknownEnum =
-                failureFor {
-                    it.getJSONObject("smd").put("semanticState", "UNKNOWN")
-                }
-            check(
-                unknownEnum is NativeSiException &&
-                    unknownEnum.reason == NativeSiFailureReason.JSON_ENCODING,
-            )
+            assertJsonEncoding(serviceFailure { it.getJSONObject("smd").remove("broadcastSystem") })
+            assertJsonEncoding(serviceFailure { it.put("pmtParsed", "true") })
+            assertJsonEncoding(serviceFailure { it.getJSONObject("smd").put("semanticState", "UNKNOWN") })
+            assertJsonEncoding(serviceFailure { it.put("unexpected", 1) })
 
-            val extraField =
-                failureFor {
-                    it.put("unexpected", 1)
-                }
-            check(
-                extraField is NativeSiException &&
-                    extraField.reason == NativeSiFailureReason.JSON_ENCODING,
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.getJSONObject("descriptors").put(
+                        "eventGroups",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("groupType", 16)
+                                .put("events", JSONArray())
+                                .put("otherNetworkEvents", JSONArray())
+                                .put("privateDataHex", "")
+                                .put("parseStatus", "OK"),
+                        ),
+                    )
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.getJSONObject("descriptors").put(
+                        "componentGroups",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("componentGroupType", 8)
+                                .put(
+                                    "groups",
+                                    JSONArray().put(
+                                        JSONObject()
+                                            .put("componentGroupId", 0)
+                                            .put("componentTags", JSONArray()),
+                                    ),
+                                ).put("parseStatus", "OK"),
+                        ),
+                    )
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.getJSONObject("descriptors").getJSONObject("series").put("repeatLabel", 16)
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.getJSONObject("descriptors").getJSONObject("genres").put(
+                        "content",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("level1", 16)
+                                .put("level2", 0)
+                                .put("userNibble", 0)
+                                .put("aribName", "invalid")
+                                .put("parseStatus", "OK"),
+                        ),
+                    )
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event
+                        .getJSONObject("descriptors")
+                        .getJSONObject("components")
+                        .getJSONArray("audio")
+                        .getJSONObject(0)
+                        .put("qualityIndicator", 4)
+                },
+            )
+            assertJsonEncoding(
+                eventFailure { event ->
+                    event.getJSONObject("descriptors").getJSONObject("diagnostics").put(
+                        "descriptorDiagnostics",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("schema", "invalid.schema")
+                                .put("schemaVersion", 1)
+                                .put("severity", "warning")
+                                .put("code", "TEST")
+                                .put("scope", JSONObject())
+                                .put(
+                                    "descriptor",
+                                    JSONObject()
+                                        .put("tag", 0)
+                                        .put("offset", 0)
+                                        .put("declaredLength", 0)
+                                        .put("actualRemainingLength", 0)
+                                        .put("parseStatus", "MalformedLength")
+                                        .put("rawPrefixHex", ""),
+                                ).put("message", "test"),
+                        ),
+                    )
+                },
             )
         }
     }

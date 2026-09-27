@@ -737,7 +737,7 @@
             {
               "type": "integer",
               "minimum": 0,
-              "maximum": 255
+              "maximum": 15
             },
             {
               "type": "null"
@@ -767,7 +767,7 @@
             {
               "type": "integer",
               "minimum": 0,
-              "maximum": 255
+              "maximum": 15
             },
             {
               "type": "null"
@@ -779,7 +779,7 @@
             {
               "type": "integer",
               "minimum": 0,
-              "maximum": 255
+              "maximum": 3
             },
             {
               "type": "null"
@@ -1412,12 +1412,12 @@
         "level1": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 15
         },
         "level2": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 15
         },
         "userNibble": {
           "type": "integer",
@@ -1498,7 +1498,7 @@
         "groupType": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 15
         },
         "events": {
           "type": "array",
@@ -1519,7 +1519,38 @@
         "parseStatus": {
           "const": "OK"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "groupType": {
+                "enum": [
+                  4,
+                  5
+                ]
+              }
+            },
+            "required": [
+              "groupType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "privateDataHex": {
+                "const": ""
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "otherNetworkEvents": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
     },
     "componentGroup": {
       "type": "object",
@@ -1532,7 +1563,7 @@
         "componentGroupId": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 15
         },
         "componentTags": {
           "type": "array",
@@ -1556,7 +1587,7 @@
         "componentGroupType": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 7
         },
         "groups": {
           "type": "array",
@@ -1655,12 +1686,12 @@
         "repeatLabel": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 15
         },
         "programPattern": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 7
         },
         "expireDateValid": {
           "type": "boolean"
@@ -1680,12 +1711,12 @@
         "episodeNumber": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 4095
         },
         "lastEpisodeNumber": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 4095
         },
         "name": {
           "anyOf": [
@@ -1700,7 +1731,37 @@
         "parseStatus": {
           "const": "OK"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "expireDateValid": {
+                "const": true
+              }
+            },
+            "required": [
+              "expireDateValid"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expireDate": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65535
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "expireDate": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     },
     "eventVideoComponent": {
       "type": "object",
@@ -1722,7 +1783,7 @@
         "streamContent": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 15
         },
         "componentTag": {
           "type": "integer",
@@ -1811,7 +1872,7 @@
         "streamContent": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 15
         },
         "componentTag": {
           "type": "integer",
@@ -1871,7 +1932,7 @@
         "samplingRate": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 7
         },
         "samplingInfo": {
           "anyOf": [
@@ -1918,7 +1979,7 @@
         "qualityIndicator": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 255
+          "maximum": 3
         },
         "parseStatus": {
           "const": "OK"

@@ -307,6 +307,7 @@ data class AribTruncatedDescriptorLoop(
 
 data class AribEventDiagnostics(
     val summary: String = "",
+    val descriptorDiagnostics: List<DescriptorDiagnostic> = emptyList(),
     val descriptorDiagnosticsCanonicalJson: String = "[]",
     val descriptorFactsCanonicalJson: String? = null,
     val textDiagnostics: List<String> = emptyList(),
@@ -389,7 +390,7 @@ data class DescriptorDiagnosticDescriptor(
     val offset: Int,
     val declaredLength: Int,
     val actualRemainingLength: Int,
-    val parseStatus: SiParseStatus,
+    val parseStatus: String,
     val rawPrefixHex: String,
 )
 
@@ -401,7 +402,6 @@ data class DescriptorDiagnostic(
     val scope: DescriptorDiagnosticScope,
     val descriptor: DescriptorDiagnosticDescriptor,
     val message: String,
-    val rawJson: String,
 )
 
 data class AribEpgUpdateWindow(

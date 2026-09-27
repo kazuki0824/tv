@@ -12,6 +12,11 @@ private const val SERIES_U16_MAX = 65_535L
 private const val SERIES_REPEAT_LABEL_MAX = 15L
 private const val SERIES_PROGRAM_PATTERN_MAX = 7L
 private const val SERIES_EPISODE_MAX = 4_095L
+private const val WIRE_NIBBLE_MAX = 15L
+private const val COMPONENT_GROUP_TYPE_MAX = 7L
+private const val AUDIO_QUALITY_INDICATOR_MAX = 3L
+private const val AUDIO_SAMPLING_RATE_MAX = 7L
+private const val CAPTION_TIMING_MAX = 3L
 private const val WIRE_U8_MAX = 255L
 private const val WIRE_U16_MAX = 65_535L
 private const val WIRE_PID_MAX = 8_191L
@@ -267,20 +272,19 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun descriptorDiagnosticsFromEvents(events: List<AribEvent>): List<DescriptorDiagnostic> =
         events.flatMap { event ->
-            parseDescriptorDiagnostics(event.descriptors.diagnostics.descriptorDiagnosticsCanonicalJson)
+            event.descriptors.diagnostics.descriptorDiagnostics
         }
 
-    private fun parseDescriptorDiagnostics(raw: String): List<DescriptorDiagnostic> {
-        val array = runCatching { JSONArray(raw.ifBlank { "[]" }) }.getOrNull() ?: return emptyList()
-        return (0 until array.length()).mapNotNull { index ->
-            val obj = array.optJSONObject(index) ?: return@mapNotNull null
-            val scope = obj.optJSONObject("scope") ?: JSONObject()
-            val descriptor = obj.optJSONObject("descriptor") ?: JSONObject()
+    private fun parseDescriptorDiagnostics(array: JSONArray): List<DescriptorDiagnostic> =
+        (0 until array.length()).map { index ->
+            val obj = array.getJSONObject(index)
+            val scope = obj.getJSONObject("scope")
+            val descriptor = obj.getJSONObject("descriptor")
             DescriptorDiagnostic(
-                schema = obj.optString("schema"),
-                schemaVersion = obj.optInt("schemaVersion", 0),
-                severity = obj.optString("severity"),
-                code = obj.optString("code"),
+                schema = obj.getString("schema"),
+                schemaVersion = obj.getInt("schemaVersion"),
+                severity = obj.getString("severity"),
+                code = obj.getString("code"),
                 scope =
                     DescriptorDiagnosticScope(
                         pid = TsPid.fromOrNull(optIntOrNull(scope, "pid")),
@@ -295,19 +299,17 @@ class NativeAribSiParser : AutoCloseable {
                     ),
                 descriptor =
                     DescriptorDiagnosticDescriptor(
-                        tag = descriptor.optInt("tag", -1),
+                        tag = descriptor.getInt("tag"),
                         name = optStringOrNull(descriptor, "name"),
-                        offset = descriptor.optInt("offset", -1),
-                        declaredLength = descriptor.optInt("declaredLength", -1),
-                        actualRemainingLength = descriptor.optInt("actualRemainingLength", -1),
-                        parseStatus = parseSiParseStatus(descriptor.getString("parseStatus")),
-                        rawPrefixHex = descriptor.optString("rawPrefixHex"),
+                        offset = descriptor.getInt("offset"),
+                        declaredLength = descriptor.getInt("declaredLength"),
+                        actualRemainingLength = descriptor.getInt("actualRemainingLength"),
+                        parseStatus = descriptor.getString("parseStatus"),
+                        rawPrefixHex = descriptor.getString("rawPrefixHex"),
                     ),
-                message = obj.optString("message"),
-                rawJson = obj.toString(),
+                message = obj.getString("message"),
             )
         }
-    }
 
     private fun readNativeTransaction(): NativeTransaction {
         check(handle != 0L) { "ネイティブ解析器は終了済みです" }
@@ -375,6 +377,37 @@ class NativeAribSiParser : AutoCloseable {
                 "$context の項目集合が不正です missing=${required - actual} extra=${actual - required}",
             )
         }
+    }
+
+    private fun requireAllowedFields(
+        obj: JSONObject,
+        context: String,
+        vararg fields: String,
+    ) {
+        val allowed = fields.toSet()
+        val extra = obj.keys().asSequence().toSet() - allowed
+        if (extra.isNotEmpty()) {
+            jsonEncodingError("$context に未定義項目があります extra=$extra")
+        }
+    }
+
+    private fun validateOptionalNullableInteger(
+        obj: JSONObject,
+        key: String,
+        context: String,
+        range: LongRange,
+    ) {
+        if (!obj.has(key) || obj.isNull(key)) return
+        requireInteger(obj, key, context, range)
+    }
+
+    private fun validateOptionalNullableString(
+        obj: JSONObject,
+        key: String,
+        context: String,
+    ) {
+        if (!obj.has(key) || obj.isNull(key)) return
+        requireString(obj, key, context)
     }
 
     private fun requireObject(
@@ -838,14 +871,14 @@ class NativeAribSiParser : AutoCloseable {
         requireInteger(obj, "streamType", context, 0L..WIRE_U8_MAX)
         requireNullableInteger(obj, "componentTag", context, 0L..WIRE_U8_MAX)
         requireNullableInteger(obj, "componentType", context, 0L..WIRE_U8_MAX)
-        requireNullableInteger(obj, "streamContent", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "streamContent", context, 0L..WIRE_NIBBLE_MAX)
         validateStringArray(
             requireArray(obj, "languageCodes", context),
             "$context.languageCodes",
         )
         requireNullableInteger(obj, "dataComponentId", context, 0L..WIRE_U16_MAX)
-        requireNullableInteger(obj, "captionDmf", context, 0L..WIRE_U8_MAX)
-        requireNullableInteger(obj, "captionTiming", context, 0L..WIRE_U8_MAX)
+        requireNullableInteger(obj, "captionDmf", context, 0L..WIRE_NIBBLE_MAX)
+        requireNullableInteger(obj, "captionTiming", context, 0L..CAPTION_TIMING_MAX)
         requireNullableBoolean(obj, "automaticPresentationOnReception", context)
         requireBoolean(obj, "isCaption", context)
         requireBoolean(obj, "isSuperimpose", context)
@@ -1144,13 +1177,16 @@ class NativeAribSiParser : AutoCloseable {
             "name",
             "parseStatus",
         )
-        requireInteger(obj, "seriesId", context, 0L..WIRE_U16_MAX)
-        requireInteger(obj, "repeatLabel", context, 0L..WIRE_U8_MAX)
-        requireInteger(obj, "programPattern", context, 0L..WIRE_U8_MAX)
-        requireBoolean(obj, "expireDateValid", context)
-        requireNullableInteger(obj, "expireDate", context, 0L..WIRE_U16_MAX)
-        requireInteger(obj, "episodeNumber", context, 0L..WIRE_U16_MAX)
-        requireInteger(obj, "lastEpisodeNumber", context, 0L..WIRE_U16_MAX)
+        requireInteger(obj, "seriesId", context, 0L..SERIES_U16_MAX)
+        requireInteger(obj, "repeatLabel", context, 0L..SERIES_REPEAT_LABEL_MAX)
+        requireInteger(obj, "programPattern", context, 0L..SERIES_PROGRAM_PATTERN_MAX)
+        val expireDateValid = requireBoolean(obj, "expireDateValid", context)
+        val expireDate = requireNullableInteger(obj, "expireDate", context, 0L..SERIES_U16_MAX)
+        if (expireDateValid != (expireDate != null)) {
+            jsonEncodingError("$context.expireDateValid と expireDate が不整合です")
+        }
+        requireInteger(obj, "episodeNumber", context, 0L..SERIES_EPISODE_MAX)
+        requireInteger(obj, "lastEpisodeNumber", context, 0L..SERIES_EPISODE_MAX)
         requireNullableString(obj, "name", context)
         requireStringValue(obj, "parseStatus", context, setOf("OK"))
     }
@@ -1190,7 +1226,7 @@ class NativeAribSiParser : AutoCloseable {
             "sourceDescriptor",
             "parseStatus",
         )
-        requireInteger(obj, "streamContent", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "streamContent", context, 0L..WIRE_NIBBLE_MAX)
         requireInteger(obj, "componentTag", context, 0L..WIRE_U8_MAX)
         requireInteger(obj, "componentType", context, 0L..WIRE_U8_MAX)
         requireString(obj, "language", context)
@@ -1201,12 +1237,7 @@ class NativeAribSiParser : AutoCloseable {
         if (!obj.isNull("profileLevel")) {
             jsonEncodingError("$context.profileLevel はnullでなければなりません")
         }
-        requireStringValue(
-            obj,
-            "sourceDescriptor",
-            context,
-            setOf("component_descriptor"),
-        )
+        requireStringValue(obj, "sourceDescriptor", context, setOf("component_descriptor"))
         requireStringValue(obj, "parseStatus", context, setOf("OK"))
     }
 
@@ -1239,7 +1270,7 @@ class NativeAribSiParser : AutoCloseable {
             "qualityIndicator",
             "parseStatus",
         )
-        requireInteger(obj, "streamContent", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "streamContent", context, 0L..WIRE_NIBBLE_MAX)
         requireInteger(obj, "componentTag", context, 0L..WIRE_U8_MAX)
         requireInteger(obj, "componentType", context, 0L..WIRE_U8_MAX)
         requireInteger(obj, "streamType", context, 0L..WIRE_U8_MAX)
@@ -1248,22 +1279,17 @@ class NativeAribSiParser : AutoCloseable {
         requireNullableString(obj, "channelConfiguration", context)
         requireNullableInteger(obj, "channelCount", context, 0L..WIRE_U8_MAX)
         requireInteger(obj, "simulcastGroupTag", context, 0L..WIRE_U8_MAX)
-        requireInteger(obj, "samplingRate", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "samplingRate", context, 0L..AUDIO_SAMPLING_RATE_MAX)
         requireNullableString(obj, "samplingInfo", context)
         requireNullableInteger(obj, "sampleRateHz", context, 0L..WIRE_U32_MAX)
         requireBoolean(obj, "audioDescription", context)
         requireBoolean(obj, "hardOfHearing", context)
         requireBoolean(obj, "dualMono", context)
         requireString(obj, "text", context)
-        requireStringValue(
-            obj,
-            "sourceDescriptor",
-            context,
-            setOf("audio_component_descriptor"),
-        )
+        requireStringValue(obj, "sourceDescriptor", context, setOf("audio_component_descriptor"))
         requireBoolean(obj, "main", context)
         requireBoolean(obj, "multiLingual", context)
-        requireInteger(obj, "qualityIndicator", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "qualityIndicator", context, 0L..AUDIO_QUALITY_INDICATOR_MAX)
         requireStringValue(obj, "parseStatus", context, setOf("OK"))
     }
 
@@ -1375,21 +1401,10 @@ class NativeAribSiParser : AutoCloseable {
         context: String,
     ) {
         requireExactFields(obj, context, "content", "genreSupplementText")
-        validateObjectArray(
-            requireArray(obj, "content", context),
-            "$context.content",
-        ) { item, itemContext ->
-            requireExactFields(
-                item,
-                itemContext,
-                "level1",
-                "level2",
-                "userNibble",
-                "aribName",
-                "parseStatus",
-            )
-            requireInteger(item, "level1", itemContext, 0L..WIRE_U8_MAX)
-            requireInteger(item, "level2", itemContext, 0L..WIRE_U8_MAX)
+        validateObjectArray(requireArray(obj, "content", context), "$context.content") { item, itemContext ->
+            requireExactFields(item, itemContext, "level1", "level2", "userNibble", "aribName", "parseStatus")
+            requireInteger(item, "level1", itemContext, 0L..WIRE_NIBBLE_MAX)
+            requireInteger(item, "level2", itemContext, 0L..WIRE_NIBBLE_MAX)
             requireInteger(item, "userNibble", itemContext, 0L..WIRE_U8_MAX)
             requireString(item, "aribName", itemContext)
             requireStringValue(item, "parseStatus", itemContext, setOf("OK"))
@@ -1397,49 +1412,36 @@ class NativeAribSiParser : AutoCloseable {
         requireString(obj, "genreSupplementText", context)
     }
 
+    // ARIB bit幅とgroup type相関をwire入口で固定し、後段のsilent dropへ到達させない。
+    @Suppress("MagicNumber")
     private fun validateEventGroup(
         obj: JSONObject,
         context: String,
     ) {
-        requireExactFields(
-            obj,
-            context,
-            "groupType",
-            "events",
-            "otherNetworkEvents",
-            "privateDataHex",
-            "parseStatus",
-        )
-        requireInteger(obj, "groupType", context, 0L..WIRE_U8_MAX)
-        validateObjectArray(
-            requireArray(obj, "events", context),
-            "$context.events",
-        ) { item, itemContext ->
+        requireExactFields(obj, context, "groupType", "events", "otherNetworkEvents", "privateDataHex", "parseStatus")
+        val groupType = requireInteger(obj, "groupType", context, 0L..WIRE_NIBBLE_MAX)
+        validateObjectArray(requireArray(obj, "events", context), "$context.events") { item, itemContext ->
             requireExactFields(item, itemContext, "serviceId", "eventId")
             requireInteger(item, "serviceId", itemContext, 0L..WIRE_U16_MAX)
             requireInteger(item, "eventId", itemContext, 0L..WIRE_U16_MAX)
         }
-        validateObjectArray(
-            requireArray(obj, "otherNetworkEvents", context),
-            "$context.otherNetworkEvents",
-        ) { item, itemContext ->
-            requireExactFields(
-                item,
-                itemContext,
-                "originalNetworkId",
-                "transportStreamId",
-                "serviceId",
-                "eventId",
-            )
+        val otherNetworkEvents = requireArray(obj, "otherNetworkEvents", context)
+        validateObjectArray(otherNetworkEvents, "$context.otherNetworkEvents") { item, itemContext ->
+            requireExactFields(item, itemContext, "originalNetworkId", "transportStreamId", "serviceId", "eventId")
             requireInteger(item, "originalNetworkId", itemContext, 0L..WIRE_U16_MAX)
             requireInteger(item, "transportStreamId", itemContext, 0L..WIRE_U16_MAX)
             requireInteger(item, "serviceId", itemContext, 0L..WIRE_U16_MAX)
             requireInteger(item, "eventId", itemContext, 0L..WIRE_U16_MAX)
         }
-        requireHex(
-            requireString(obj, "privateDataHex", context),
-            "$context.privateDataHex",
-        )
+        val privateDataHex = requireString(obj, "privateDataHex", context)
+        requireHex(privateDataHex, "$context.privateDataHex")
+        if (groupType == 4L || groupType == 5L) {
+            if (privateDataHex.isNotEmpty()) {
+                jsonEncodingError("$context.privateDataHex は groupType=4/5 では空でなければなりません")
+            }
+        } else if (otherNetworkEvents.length() != 0) {
+            jsonEncodingError("$context.otherNetworkEvents は groupType=4/5 以外では空でなければなりません")
+        }
         requireStringValue(obj, "parseStatus", context, setOf("OK"))
     }
 
@@ -1448,18 +1450,11 @@ class NativeAribSiParser : AutoCloseable {
         context: String,
     ) {
         requireExactFields(obj, context, "componentGroupType", "groups", "parseStatus")
-        requireInteger(obj, "componentGroupType", context, 0L..WIRE_U8_MAX)
-        validateObjectArray(
-            requireArray(obj, "groups", context),
-            "$context.groups",
-        ) { item, itemContext ->
+        requireInteger(obj, "componentGroupType", context, 0L..COMPONENT_GROUP_TYPE_MAX)
+        validateObjectArray(requireArray(obj, "groups", context), "$context.groups") { item, itemContext ->
             requireExactFields(item, itemContext, "componentGroupId", "componentTags")
-            requireInteger(item, "componentGroupId", itemContext, 0L..WIRE_U8_MAX)
-            validateIntegerArray(
-                requireArray(item, "componentTags", itemContext),
-                "$itemContext.componentTags",
-                0L..WIRE_U8_MAX,
-            )
+            requireInteger(item, "componentGroupId", itemContext, 0L..WIRE_NIBBLE_MAX)
+            validateIntegerArray(requireArray(item, "componentTags", itemContext), "$itemContext.componentTags", 0L..WIRE_U8_MAX)
         }
         requireStringValue(obj, "parseStatus", context, setOf("OK"))
     }
@@ -1514,32 +1509,70 @@ class NativeAribSiParser : AutoCloseable {
         )
         requireNullableObject(obj, "truncatedDescriptorLoop", context)?.let { loop ->
             requireExactFields(loop, "$context.truncatedDescriptorLoop", "declaredLength", "rawBytesHex", "parseStatus")
-            requireInteger(
-                loop,
-                "declaredLength",
-                "$context.truncatedDescriptorLoop",
-                0L..Long.MAX_VALUE,
-            )
-            requireHex(
-                requireString(loop, "rawBytesHex", "$context.truncatedDescriptorLoop"),
-                "$context.truncatedDescriptorLoop.rawBytesHex",
-            )
-            requireStringValue(
-                loop,
-                "parseStatus",
-                "$context.truncatedDescriptorLoop",
-                setOf("TruncatedDescriptor"),
-            )
+            requireInteger(loop, "declaredLength", "$context.truncatedDescriptorLoop", 0L..Long.MAX_VALUE)
+            requireHex(requireString(loop, "rawBytesHex", "$context.truncatedDescriptorLoop"), "$context.truncatedDescriptorLoop.rawBytesHex")
+            requireStringValue(loop, "parseStatus", "$context.truncatedDescriptorLoop", setOf("TruncatedDescriptor"))
         }
         requireString(obj, "summary", context)
-        val rawDiagnostics = requireArray(obj, "descriptorDiagnostics", context)
-        for (index in 0 until rawDiagnostics.length()) {
-            if (rawDiagnostics.get(index) !is JSONObject) {
-                jsonEncodingError("$context.descriptorDiagnostics[$index] の型がobjectではありません")
-            }
-        }
+        validateObjectArray(
+            requireArray(obj, "descriptorDiagnostics", context),
+            "$context.descriptorDiagnostics",
+            ::validateDescriptorDiagnostic,
+        )
         requireString(obj, "descriptorDiagnosticsCanonicalJson", context)
         requireString(obj, "descriptorFactsCanonicalJson", context)
+    }
+
+    // descriptor_diagnostic_v1.schema.json の参照契約をruntime入口でも同じ形で検証する。
+    @Suppress("MagicNumber")
+    private fun validateDescriptorDiagnostic(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireExactFields(obj, context, "schema", "schemaVersion", "severity", "code", "scope", "descriptor", "message")
+        requireStringValue(obj, "schema", context, setOf("maleicacid.tv.descriptorDiagnostic"))
+        requireInteger(obj, "schemaVersion", context, 1L..1L)
+        if (requireString(obj, "severity", context).isEmpty()) jsonEncodingError("$context.severity は空文字列にできません")
+        if (requireString(obj, "code", context).isEmpty()) jsonEncodingError("$context.code は空文字列にできません")
+        validateDescriptorDiagnosticScope(requireObject(obj, "scope", context), "$context.scope")
+        validateDescriptorDiagnosticDescriptor(requireObject(obj, "descriptor", context), "$context.descriptor")
+        val message = requireString(obj, "message", context)
+        if (message.codePointCount(0, message.length) > 256) {
+            jsonEncodingError("$context.message は256文字以下でなければなりません")
+        }
+    }
+
+    private fun validateDescriptorDiagnosticScope(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireAllowedFields(obj, context, "pid", "tableId", "tableIdExtension", "version", "sectionNumber", "originalNetworkId", "transportStreamId", "serviceId", "eventId")
+        validateOptionalNullableInteger(obj, "pid", context, 0L..WIRE_PID_MAX)
+        validateOptionalNullableInteger(obj, "tableId", context, 0L..WIRE_U8_MAX)
+        validateOptionalNullableInteger(obj, "tableIdExtension", context, 0L..WIRE_U16_MAX)
+        validateOptionalNullableInteger(obj, "version", context, 0L..MPEG_VERSION_MAX)
+        validateOptionalNullableInteger(obj, "sectionNumber", context, 0L..WIRE_U8_MAX)
+        validateOptionalNullableInteger(obj, "originalNetworkId", context, 0L..WIRE_U16_MAX)
+        validateOptionalNullableInteger(obj, "transportStreamId", context, 0L..WIRE_U16_MAX)
+        validateOptionalNullableInteger(obj, "serviceId", context, 0L..WIRE_U16_MAX)
+        validateOptionalNullableInteger(obj, "eventId", context, 0L..WIRE_U16_MAX)
+    }
+
+    @Suppress("MagicNumber")
+    private fun validateDescriptorDiagnosticDescriptor(
+        obj: JSONObject,
+        context: String,
+    ) {
+        requireAllowedFields(obj, context, "tag", "name", "offset", "declaredLength", "actualRemainingLength", "parseStatus", "rawPrefixHex")
+        requireInteger(obj, "tag", context, 0L..WIRE_U8_MAX)
+        validateOptionalNullableString(obj, "name", context)
+        requireInteger(obj, "offset", context, 0L..Long.MAX_VALUE)
+        requireInteger(obj, "declaredLength", context, 0L..WIRE_U8_MAX)
+        requireInteger(obj, "actualRemainingLength", context, 0L..Long.MAX_VALUE)
+        if (requireString(obj, "parseStatus", context).isEmpty()) jsonEncodingError("$context.parseStatus は空文字列にできません")
+        val rawPrefixHex = requireString(obj, "rawPrefixHex", context)
+        requireHex(rawPrefixHex, "$context.rawPrefixHex")
+        if (rawPrefixHex.length > 128) jsonEncodingError("$context.rawPrefixHex は128文字以下でなければなりません")
     }
 
     private fun validateParentalRating(
@@ -2139,6 +2172,10 @@ class NativeAribSiParser : AutoCloseable {
                         diagnostics =
                             AribEventDiagnostics(
                                 summary = diagnostics.optString("summary"),
+                                descriptorDiagnostics =
+                                    parseDescriptorDiagnostics(
+                                        diagnostics.getJSONArray("descriptorDiagnostics"),
+                                    ),
                                 descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson,
                                 descriptorFactsCanonicalJson = optStringOrNull(diagnostics, "descriptorFactsCanonicalJson"),
                                 textDiagnostics = parseTextDiagnosticSummary(diagnostics.optString("summary")),
