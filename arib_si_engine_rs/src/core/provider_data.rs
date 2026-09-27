@@ -83,7 +83,7 @@ struct CasV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CasFactsV1 {
     pmt_pid: Option<i64>,
-    parse_status: String,
+    pub(crate) parse_status: String,
     sdt_free_ca_mode: Option<bool>,
     descriptors: Vec<CaBasisV1>,
 }
@@ -95,7 +95,7 @@ struct CaBasisV1 {
     es_pid: Option<i64>,
     ca_system_id: i64,
     ca_pid: i64,
-    raw_descriptor_hex: String,
+    pub(crate) raw_descriptor_hex: String,
 }
 
 impl From<&crate::service_discovery::ServiceSemanticFacts> for CasFactsV1 {
@@ -182,10 +182,10 @@ fn valid_cas_facts(facts: &Option<CasFactsV1>, requires_cas: bool) -> bool {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RatingV1 {
-    country_code: String,
-    raw_rating_byte: i64,
-    parse_status: String,
+pub(crate) struct RatingV1 {
+    pub(crate) country_code: String,
+    pub(crate) raw_rating_byte: i64,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -195,7 +195,7 @@ struct GenreV1 {
     level2: i64,
     user_nibble: i64,
     arib_name: String,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -209,7 +209,7 @@ struct SeriesV1 {
     episode_number: i64,
     last_episode_number: i64,
     name: Option<String>,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -217,7 +217,7 @@ struct SeriesV1 {
 struct FreeCaModeV1 {
     raw: i64,
     scrambled: bool,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -226,7 +226,7 @@ struct ShortEventV1 {
     language_code: String,
     title: String,
     text: String,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -234,7 +234,7 @@ struct ShortEventV1 {
 struct ExtendedTextV1 {
     language_code: String,
     text: String,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -243,7 +243,7 @@ struct ExtendedItemV1 {
     language_code: String,
     description: String,
     text: String,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -269,7 +269,7 @@ struct EventGroupV1 {
     events: Vec<EventGroupReferenceV1>,
     other_network_events: Vec<OtherNetworkEventReferenceV1>,
     private_data_hex: String,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -280,7 +280,7 @@ struct LinkageV1 {
     service_id: i64,
     linkage_type: i64,
     private_data_prefix_hex: String,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -340,7 +340,7 @@ struct VideoComponentV1 {
     aspect: Option<String>,
     profile_level: Option<String>,
     source_descriptor: Option<String>,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -370,7 +370,7 @@ struct AudioComponentV1 {
     multi_lingual: Option<bool>,
     #[serde(default)]
     quality_indicator: Option<i64>,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -384,7 +384,7 @@ struct SubtitleComponentV1 {
     automatic_presentation_on_reception: Option<bool>,
     language: Option<String>,
     caption_service_kind: String,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -394,7 +394,7 @@ struct DataComponentV1 {
     component_tag: Option<i64>,
     data_component_id: Option<i64>,
     component_type: Option<i64>,
-    parse_status: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -408,24 +408,24 @@ struct ComponentsV1 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawDescriptorV1 {
-    tag: i64,
-    raw_descriptor_hex: String,
+pub(crate) struct RawDescriptorV1 {
+    pub(crate) tag: i64,
+    pub(crate) raw_descriptor_hex: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ParentalRatingDescriptorV1 {
-    entries: Vec<RatingV1>,
-    raw_descriptor_hex: String,
-    parse_status: String,
+pub(crate) struct ParentalRatingDescriptorV1 {
+    pub(crate) entries: Vec<RatingV1>,
+    pub(crate) raw_descriptor_hex: String,
+    pub(crate) parse_status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DescriptorFactsV1 {
-    parental_rating_descriptors: Vec<ParentalRatingDescriptorV1>,
-    unknown_descriptors: Vec<RawDescriptorV1>,
+pub(crate) struct DescriptorFactsV1 {
+    pub(crate) parental_rating_descriptors: Vec<ParentalRatingDescriptorV1>,
+    pub(crate) unknown_descriptors: Vec<RawDescriptorV1>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
