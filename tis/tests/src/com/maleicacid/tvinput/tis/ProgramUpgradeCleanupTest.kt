@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.tis
 
 import org.junit.Test
 
+@Suppress("MagicNumber")
 class ProgramUpgradeCleanupTest {
     @Test
     fun deletesOnlyOwnPrograms() {
