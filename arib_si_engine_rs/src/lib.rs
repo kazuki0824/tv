@@ -271,7 +271,10 @@ fn malformed_ca_descriptor_counts(
     diagnostics: &[MalformedCaDescriptorDiagnostic],
 ) -> Vec<MalformedCaDescriptorCountDto> {
     let mut counts: BTreeMap<u16, usize> = BTreeMap::new();
-    for diagnostic in diagnostics.iter().filter(|diagnostic| diagnostic.service_id.is_some()) {
+    for diagnostic in diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.service_id.is_some())
+    {
         if let Some(service_id) = diagnostic.service_id {
             *counts.entry(service_id).or_insert(0) += 1;
         }
@@ -340,14 +343,7 @@ fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshotDto {
             .descriptors
             .iter()
             .map(|ca| {
-                runtime_snapshot_build::ca_metadata(
-                    None,
-                    ca,
-                    None,
-                    Some(ca.ca_pid),
-                    None,
-                    "CAT",
-                )
+                runtime_snapshot_build::ca_metadata(None, ca, None, Some(ca.ca_pid), None, "CAT")
             })
             .collect(),
         malformed_ca_descriptor_diagnostics: snapshot
@@ -435,11 +431,15 @@ fn parser_diagnostics(
         .collect::<Vec<_>>();
     text_diagnostics.sort();
     text_diagnostics.dedup();
-    diagnostics.extend(text_diagnostics.into_iter().map(|message| ParserDiagnosticDto {
-        code: "ARIB_SI_TEXT_REPLACED".to_string(),
-        message,
-        severity: Some("warning".to_string()),
-    }));
+    diagnostics.extend(
+        text_diagnostics
+            .into_iter()
+            .map(|message| ParserDiagnosticDto {
+                code: "ARIB_SI_TEXT_REPLACED".to_string(),
+                message,
+                severity: Some("warning".to_string()),
+            }),
+    );
     diagnostics
 }
 
