@@ -2805,10 +2805,13 @@ fn reconcile_px4_live_pump_consumer(
         return Ok(());
     }
 
-    let report = live_pump
-        .take()
-        .expect("存在確認済みのlive pump")
-        .join_after_stop()?;
+    let Some(owner) = live_pump.take() else {
+        return Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "consumer再検証時にlive pump所有が消失しました",
+        ));
+    };
+    let report = owner.join_after_stop()?;
     {
         let mut guard = lock_runtime(
             runtime,
