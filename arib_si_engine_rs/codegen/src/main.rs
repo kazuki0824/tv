@@ -25,10 +25,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     tracer.trace_simple_type::<CaMetadataSourceDto>()?;
     let registry = tracer.registry()?;
 
-    let config = CodeGeneratorConfig::new(
-        "com.maleicacid.tvinput.aribsi.generated".to_string(),
-    )
-    .with_serialization(false);
+    let config = CodeGeneratorConfig::new("com.maleicacid.tvinput.aribsi.generated".to_string())
+        .with_serialization(false);
     let installer = kotlin::Installer::new(output_root);
     installer.install_module(&config, &registry)?;
     Ok(())
