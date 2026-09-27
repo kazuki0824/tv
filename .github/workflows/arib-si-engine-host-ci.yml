@@ -6,6 +6,8 @@ on:
       - "arib_si_engine_rs/**/*.rs"
       - "arib_si_engine_rs/**/Cargo.toml"
       - "arib_si_engine_rs/host_ci/Cargo.lock"
+      - "arib_si_engine_rs/codegen/**"
+      - "tis/src/com/maleicacid/tvinput/aribsi/generated/**/*.kt"
       - "arib_si_engine_rs/schema/**/*.json"
       - "arib_si_engine_rs/testdata/**/*.json"
       - "tis/tests/assets/**/*.json"
@@ -31,8 +33,30 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.81.0
+  CODEGEN_RUST_TOOLCHAIN: 1.82.0
 
 jobs:
+  kotlin-bindings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Kotlin binding生成用Rust toolchainを導入
+        run: rustup toolchain install "$CODEGEN_RUST_TOOLCHAIN" --profile minimal
+      - name: Rust DTOからKotlin bindingを再生成してcommit済み生成物と照合
+        shell: bash
+        run: |
+          generated_root="$RUNNER_TEMP/si-kotlin-bindings"
+          mkdir -p "$generated_root"
+          cargo +"$CODEGEN_RUST_TOOLCHAIN" run \
+            --manifest-path arib_si_engine_rs/codegen/Cargo.toml \
+            -- "$generated_root"
+          diff -ru \
+            tis/src/com/maleicacid/tvinput/aribsi/generated \
+            "$generated_root/com/maleicacid/tvinput/aribsi/generated"
+
   clippy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
