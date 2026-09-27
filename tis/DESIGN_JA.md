@@ -535,7 +535,7 @@ TIS の PSI/SI section path は allocation 前に `SectionEvent.dataLength` を�
 
 ### transaction DTO API
 
-`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。Rust→TISのbulk JSONは`../arib_si_engine_rs/schema/si_snapshot_v2.schema.json`を唯一のwire contractとし、TISは対応する`schemaVersion`だけを受理する。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
+`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。Rust→TIS runtime境界は`../開発規則.md`の同時更新不変条件に従う同一product build内の型付きJNI境界とし、異なるRust/Kotlin版を組み合わせるための`schemaVersion` negotiation、旧snapshot DTO decoder、互換fallbackを持たない。DTO変更はRust/Kotlin/試験/設計を同一変更で更新する。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
 
 ```kotlin
 data class ExcludedEventDescriptorFacts(
@@ -691,9 +691,21 @@ SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan ge
 
 Channel provider-data の新規書き込み・読み取り正形式は JSON v1 のみとする。`key=value;...` 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` を持ち、保存項目と正規化は`arib_si_engine_rs/DESIGN_JA.md`とRust provider-data APIを正とする。表示名の正本は`Channels.COLUMN_DISPLAY_NAME`とし、provider-dataへ重複保存しない。`inputId`はprovider-dataへ重複保存せず、channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとする。`channelRegistrationReady`、`epgPublishable`、`unsupportedCas`、`clearLivePlaybackSupported`等のTIS policyを保存しない。
 
+### product更新時のProgram破棄と再収集
+
+`TvProvider.Programs` はSI/EITから再生成できる番組表キャッシュであり、product/TISのrelease間でprovider-data互換性を維持する永続データではない。`../開発規則.md`の更新不変条件に従い、旧product buildが書いたProgram行を現行buildへmigration、normalize、旧schema decodeして引き継がない。
+
+TISはdevice-protected storageに、最後にProgram cleanupを完了したsoftware identityとして `Build.FINGERPRINT` とTIS packageの `longVersionCode` の組を保存する。起動時に現在値と一致しない場合、boot EPG sync、background maintenance、live sessionでの既存Program参照、Program upsert/delete、現在番組解決より前に、current TIS inputに属するchannelのうち `TvContract.Programs.COLUMN_PACKAGE_NAME == context.packageName` のProgram行を全て削除する。削除が全件成功した後だけcurrent software identityをcommitする。
+
+upgrade cleanupが失敗した場合は旧Program行を現行データとして使用せず、software identityを更新せず、EPG/Program処理を開始しない。既存行の旧provider-dataからprogramKey、service identity、時刻、rating、CAS状態その他を抽出してcleanup失敗を回避してはならない。cleanupは再実行可能かつ冪等にする。
+
+cleanup完了後は現行buildのSI/EITからProgramを再収集し、現行provider-dataだけで再登録する。Channel rowはこのcleanupの対象外であり、channel scan結果、表示番号、ユーザーが利用するchannel identityをProgram cleanupの副作用で削除・再作成しない。`RecordedPrograms`も対象外とする。
+
+`normalizeProgramProviderData(rawBytes)` と `extractProgramKey(rawBytes)` はcurrent buildが書いた現行Program provider-dataの検査・利用に限定し、product更新時の旧Program migration APIとして使わない。旧release形式の受理を追加してupgrade cleanupを迂回してはならない。
+
 ### 旧 indexed JNI / 廃止経路の禁止
 
-TIS は `nativeSnapshotBulkJson()` と provider-data JNI API を通常境界とする。`nativeGetEventCount()`、`nativeGetEvent*` indexed JNI getter、旧 event JSON `canonicalGenres` フィールド、互換専用の空返却シンボル、未使用 private external 宣言は残してはならない。旧経路を使う呼び出し不能コードや test-only 以外の廃止予定 path は、互換維持ではなく削除する。
+TIS は同一product buildでRustと同時更新される型付きbulk JNI境界と provider-data JNI API を通常境界とする。`nativeGetEventCount()`、`nativeGetEvent*` indexed JNI getter、旧 event JSON `canonicalGenres` フィールド、片側差し替え互換専用の空返却シンボル、旧snapshot DTO decoder、未使用 private external 宣言は残してはならない。旧経路を使う呼び出し不能コードや test-only 以外の廃止予定 path は、互換維持ではなく削除する。
 
 ### Program publish retry
 
