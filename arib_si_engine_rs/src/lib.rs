@@ -1145,7 +1145,6 @@ impl From<&TableRequirementStatus> for TableRequirementStatusDto {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BulkSnapshot {
-    schema_version: u32,
     ingest_sequence: u64,
     discovery_stage: jint,
     broadcast_clock: Option<BroadcastClockFactDto>,
@@ -1198,7 +1197,6 @@ fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshot {
     // 非排出型一括snapshotはEPG更新区間を返さない。これにより本番呼び出し側が
     // 同じ廃止削除区間を誤って再公開することを防ぐ。
     BulkSnapshot {
-        schema_version: 2,
         ingest_sequence,
         discovery_stage: discovery_stage_to_jint(discovery_stage),
         broadcast_clock: state
