@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class VideoComponentDto(
     val streamContent: Int?,
     val componentTag: Int?,
@@ -14,3 +15,4 @@ data class VideoComponentDto(
     val parseStatus: com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
 ) {
 }
+
