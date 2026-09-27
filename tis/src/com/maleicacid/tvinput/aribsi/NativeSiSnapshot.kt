@@ -59,9 +59,10 @@ data class NativeSiSnapshot(
         } + catCaMetadata
 
     val pmtPids: Map<ServiceKey, TsPid> get() =
-        serviceSemanticFacts.mapNotNull { facts ->
-            facts.pmtPid?.let { facts.serviceKey to it }
-        }.toMap()
+        serviceSemanticFacts
+            .mapNotNull { facts ->
+                facts.pmtPid?.let { facts.serviceKey to it }
+            }.toMap()
 
     val actualTransports: List<AribTransport> get() =
         transportSemanticFacts.filter { it.sdtActual }
@@ -73,8 +74,11 @@ data class NativeSiSnapshot(
  */
 object NativeSiJvmFactory {
     @JvmStatic
-    fun broadcastClock(tableId: Int, mjd: Int, millisOfDay: Long) =
-        AribBroadcastClockFact(tableId, mjd, millisOfDay)
+    fun broadcastClock(
+        tableId: Int,
+        mjd: Int,
+        millisOfDay: Long,
+    ) = AribBroadcastClockFact(tableId, mjd, millisOfDay)
 
     @JvmStatic
     fun tableRequirement(
@@ -166,8 +170,11 @@ object NativeSiJvmFactory {
     )
 
     @JvmStatic
-    fun parserDiagnostic(code: String, message: String, severity: String?) =
-        ParserDiagnostic(code, message, severity)
+    fun parserDiagnostic(
+        code: String,
+        message: String,
+        severity: String?,
+    ) = ParserDiagnostic(code, message, severity)
 
     @JvmStatic
     fun eitInstance(
@@ -197,8 +204,11 @@ object NativeSiJvmFactory {
     )
 
     @JvmStatic
-    fun avcSignaling(profileIdc: Int, constraintFlags: Int, levelIdc: Int) =
-        AribAvcSignaling(profileIdc, constraintFlags, levelIdc)
+    fun avcSignaling(
+        profileIdc: Int,
+        constraintFlags: Int,
+        levelIdc: Int,
+    ) = AribAvcSignaling(profileIdc, constraintFlags, levelIdc)
 
     @JvmStatic
     fun audioConfigHeader(
@@ -348,20 +358,33 @@ object NativeSiJvmFactory {
     )
 
     @JvmStatic
-    fun shortEvent(languageCode: String, title: String, text: String, parseStatus: SiParseStatus) =
-        AribShortEventText(languageCode, title, text, parseStatus)
+    fun shortEvent(
+        languageCode: String,
+        title: String,
+        text: String,
+        parseStatus: SiParseStatus,
+    ) = AribShortEventText(languageCode, title, text, parseStatus)
 
     @JvmStatic
-    fun extendedText(languageCode: String, text: String, parseStatus: SiParseStatus) =
-        AribExtendedEventText(languageCode, text, parseStatus)
+    fun extendedText(
+        languageCode: String,
+        text: String,
+        parseStatus: SiParseStatus,
+    ) = AribExtendedEventText(languageCode, text, parseStatus)
 
     @JvmStatic
-    fun extendedItem(languageCode: String, description: String, text: String) =
-        AribExtendedItem(languageCode, description, text)
+    fun extendedItem(
+        languageCode: String,
+        description: String,
+        text: String,
+    ) = AribExtendedItem(languageCode, description, text)
 
     @JvmStatic
-    fun parentalRating(countryCode: String, rawRatingByte: Int, parseStatus: SiParseStatus) =
-        AribParentalRating(countryCode, rawRatingByte, parseStatus)
+    fun parentalRating(
+        countryCode: String,
+        rawRatingByte: Int,
+        parseStatus: SiParseStatus,
+    ) = AribParentalRating(countryCode, rawRatingByte, parseStatus)
 
     @JvmStatic
     fun contentGenre(
@@ -373,8 +396,10 @@ object NativeSiJvmFactory {
     ) = AribContentGenre(level1, level2, userNibble, aribName, parseStatus)
 
     @JvmStatic
-    fun eventGroupReference(serviceId: Int, eventId: Int) =
-        AribEventGroupReference(ServiceId16(serviceId), eventId)
+    fun eventGroupReference(
+        serviceId: Int,
+        eventId: Int,
+    ) = AribEventGroupReference(ServiceId16(serviceId), eventId)
 
     @JvmStatic
     fun otherNetworkEventGroupReference(
@@ -399,8 +424,10 @@ object NativeSiJvmFactory {
     ) = AribEventGroup(groupType, events, otherNetworkEvents, privateDataHex, parseStatus)
 
     @JvmStatic
-    fun componentGroup(componentGroupId: Int, componentTags: List<Int>) =
-        AribComponentGroup(componentGroupId, componentTags)
+    fun componentGroup(
+        componentGroupId: Int,
+        componentTags: List<Int>,
+    ) = AribComponentGroup(componentGroupId, componentTags)
 
     @JvmStatic
     fun componentGroupDescriptor(
@@ -425,8 +452,11 @@ object NativeSiJvmFactory {
     )
 
     @JvmStatic
-    fun freeCaMode(raw: Int?, scrambled: Boolean?, parseStatus: SiParseStatus) =
-        AribFreeCaMode(raw, scrambled, parseStatus)
+    fun freeCaMode(
+        raw: Int?,
+        scrambled: Boolean?,
+        parseStatus: SiParseStatus,
+    ) = AribFreeCaMode(raw, scrambled, parseStatus)
 
     @JvmStatic
     fun series(
@@ -528,12 +558,17 @@ object NativeSiJvmFactory {
     )
 
     @JvmStatic
-    fun components(video: List<AribComponentEntry>, audio: List<AribComponentEntry>) =
-        AribComponents(video = video, audio = audio)
+    fun components(
+        video: List<AribComponentEntry>,
+        audio: List<AribComponentEntry>,
+    ) = AribComponents(video = video, audio = audio)
 
     @JvmStatic
-    fun truncatedDescriptorLoop(declaredLength: Int, rawBytesHex: String, parseStatus: SiParseStatus) =
-        AribTruncatedDescriptorLoop(declaredLength, rawBytesHex, parseStatus)
+    fun truncatedDescriptorLoop(
+        declaredLength: Int,
+        rawBytesHex: String,
+        parseStatus: SiParseStatus,
+    ) = AribTruncatedDescriptorLoop(declaredLength, rawBytesHex, parseStatus)
 
     @JvmStatic
     fun descriptorDiagnostic(
@@ -644,8 +679,13 @@ object NativeSiJvmFactory {
     )
 
     @JvmStatic
-    fun programSource(pid: Int, tableId: Int, version: Int, sectionNumber: Int, lastSectionNumber: Int) =
-        AribProgramSource(TsPid(pid), tableId, version, sectionNumber, lastSectionNumber)
+    fun programSource(
+        pid: Int,
+        tableId: Int,
+        version: Int,
+        sectionNumber: Int,
+        lastSectionNumber: Int,
+    ) = AribProgramSource(TsPid(pid), tableId, version, sectionNumber, lastSectionNumber)
 
     @JvmStatic
     fun event(
