@@ -1,4 +1,4 @@
-@file:Suppress("LongMethod", "MaxLineLength", "TooManyFunctions")
+@file:Suppress("LongMethod", "MagicNumber", "MaxLineLength", "TooManyFunctions")
 
 package com.maleicacid.tvinput.aribsi
 
@@ -32,11 +32,9 @@ import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TransportStreamId16
 import com.maleicacid.tvinput.common.TsPid
 
-private fun String.hexBytes(): ByteArray =
-    chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+private fun String.hexBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
-private fun ServiceKeyDto.toDomain(): ServiceKey =
-    ServiceKey(originalNetworkId, transportStreamId, serviceId)
+private fun ServiceKeyDto.toDomain(): ServiceKey = ServiceKey(originalNetworkId, transportStreamId, serviceId)
 
 private fun SiParseStatusDto.toDomain(): SiParseStatus =
     when (this) {
@@ -261,8 +259,7 @@ private fun AudioComponentDto.toDomain(): AribComponentEntry =
         dualMono = dualMono,
     )
 
-private fun ContentGenreDto.toDomain(): AribContentGenre =
-    AribContentGenre(level1, level2, userNibble, aribName, parseStatus.toDomain())
+private fun ContentGenreDto.toDomain(): AribContentGenre = AribContentGenre(level1, level2, userNibble, aribName, parseStatus.toDomain())
 
 private fun EventGroupDto.toDomain(): AribEventGroup =
     AribEventGroup(
@@ -296,8 +293,7 @@ private fun LinkageDto.toDomain(): AribLinkage =
         parseStatus = parseStatus.toDomain(),
     )
 
-private fun FreeCaModeDto.toDomain(): AribFreeCaMode =
-    AribFreeCaMode(raw, scrambled, parseStatus.toDomain())
+private fun FreeCaModeDto.toDomain(): AribFreeCaMode = AribFreeCaMode(raw, scrambled, parseStatus.toDomain())
 
 private fun com.maleicacid.tvinput.aribsi.generated.SeriesDto.toDomain(): AribSeries =
     AribSeries(
