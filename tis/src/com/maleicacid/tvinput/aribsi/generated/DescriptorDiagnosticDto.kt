@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class DescriptorDiagnosticDto(
     val schema: String,
     val schemaVersion: Int,
@@ -10,3 +11,4 @@ data class DescriptorDiagnosticDto(
     val message: String
 ) {
 }
+
