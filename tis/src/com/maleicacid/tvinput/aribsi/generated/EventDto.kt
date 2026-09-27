@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class EventDto(
     val serviceKey: com.maleicacid.tvinput.aribsi.generated.ServiceKeyDto,
     val stableIdentity: String?,
@@ -17,3 +18,4 @@ data class EventDto(
     val descriptors: com.maleicacid.tvinput.aribsi.generated.EventDescriptorsDto
 ) {
 }
+
