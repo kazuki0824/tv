@@ -113,7 +113,7 @@ session: Opening -> Active -> Closing -> Closed
 
 pluginの `Releasing` はvendor CasPluginの破棄開始、`Released` は破棄完了を表す。AOSP AIDL `CasImpl::release()` の応答時点とは区別する。標準実装は `mPluginHolder` を空にして新規呼出しを拒否するが、実行中のmethodは局所的な `shared_ptr` を保持するため、そのmethodが参照を解放するまでplugin破棄は遅延し得る。AIDL release呼出しをvendor pluginへ通知する独自method、service改変、監視threadを追加しない。
 
-同期backend処理はplugin methodの参照寿命内で完了させる。AIDL releaseと競合して既に実行中のmethodは、その応答後に結果をcommitし得る。これをpluginが検知・拒否できるとは規定しない。session closeが先に確定した場合は、そのsessionへの後着commitを拒否する。通常のTIS終了ではECM/EMM配送停止、descrambler参照解除、各session close、MediaCas closeを直列に行い、この競合を発生させない。
+同期backend処理はplugin methodの参照寿命内で完了させる。AIDL releaseと競合して既に実行中のmethodは、その応答後に結果をcommitし得る。これをpluginが検知・拒否できるとは規定しない。session closeが先に確定した場合は、そのsessionへの後着commitを拒否する。TIS側の通常終了・再選局・資源回収における配送停止、descrambler参照解除、session/plugin closeの順序は `../tis/DESIGN_JA.md` を正とし、本書では再定義しない。
 
 内部workerを採用する場合は、plugin破棄開始で新規処理とcallbackを停止し、既存処理を取消しまたは完了待ちして、sessionと鍵参照を失効させてから破棄を完了する。workerが自身の停止に必要なplugin寿命を循環参照で保持してはならない。`appData` はservice wrapper所有の借用値であり、plugin破棄後に使用しない。AIDL release応答時点で全worker、callback、鍵資源が既に破棄済みという強い保証は追加しない。
 
@@ -375,9 +375,9 @@ revoke後に競合して既に取得済みの内部material参照は、そのpac
 
 tokenはrevoke、必要なdescramblerからの参照解除、既取得内部参照drainが完了するまで別sessionへ再割当てしない。参照解除は、利用中のdescramblerへのVOID成功、または当該descramblerの閉鎖完了によって成立する。
 
-MediaCas由来tokenを利用中のTuner descramblerで使用した場合、通常終了・再選局ではMediaCas session close前に `setKeyToken(VOID)` を成功させる。VOID失敗時は当該session/pluginと資源の所有を保持して再試行する。VOID成功後にsession closeと対応PID/descrambler解放へ進み、全sessionの解放後にplugin releaseへ進む。
+MediaCas由来tokenがTuner descramblerへ結合されている場合、token再割当てに必要な参照解除は、利用中descramblerへのVOID成功または当該descramblerの閉鎖完了で成立する。通常終了・再選局時にどの順序でVOID、session close、PID/descrambler解放、plugin closeを実行・再試行するかは `../tis/DESIGN_JA.md` を正とする。
 
-AOSP Tunerの資源回収は `releaseAll()` 内でdescramblerを閉じ、その後に `onResourceLost()` を通知する。この通知を受けた経路では、既に閉鎖されたdescramblerへのVOID成功を要求しない。閉鎖完了により新規packet処理からの参照がなくなったことをTIS側の所有管理へ反映し、MediaCas sessionのcloseへ進む。通常のVOID失敗、単なるtimeout、受信信号喪失を資源回収通知と同一視しない。TIS側の具体処理は `../tis/DESIGN_JA.md` を正とする。
+AOSP Tuner資源回収でdescramblerの閉鎖完了が確認された場合、そのtokenについて追加のVOID成功をCAS側revoke成立条件にしない。資源回収通知の識別、TIS所有状態の更新、MediaCas session/pluginの後処理は `../tis/DESIGN_JA.md` を正とする。本書はdescrambler閉鎖を新規key resolve遮断に十分な参照解除事実として扱う。
 
 MediaCas側のTRM資源回収では、Frameworkが管理対象sessionへ `closeSession()` を呼んでから `MediaCas.EventListener.onResourceLost()` を通知する。この強制closeでは、TISによる先行VOIDを待たず、pluginはsession closeの確定点で当該slotをrevokeする。Tuner Descramblerがまだ旧tokenを保持していても、新規packet処理がそのslotから鍵を再取得できてはならない。TISの通知処理は残った参照の解消と受信停止を担い、revokeの開始条件にはしない。TIS側のTRM登録条件、通知後の所有処理、通常closeとの区別は `../tis/DESIGN_JA.md` の「r52のMediaCas資源回収」を正とする。
 

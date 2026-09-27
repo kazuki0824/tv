@@ -32,7 +32,7 @@ CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 ## Treble partition / platform API 統合
 
-`MaleicacidTvInput` はTuner、TvProvider、privileged permissionを利用するplatform-coupled componentであるため、`/product`へ配置せず、`system_ext_specific: true`かつ`platform_apis: true`の`/system_ext` priv-appとして組み込む。MediaSyncの追加private listenerはstock LineageOSでも同一TISをbuild/runできるようruntime reflectionで解決して呼び出し、private listener経路が呼び出し可能な場合はExact modeを使う。API不存在、reflection解決失敗、登録setter呼出し失敗などを含めprivate listener経路を呼び出せない場合は、公開`MediaCodec.OnFrameRenderedListener`を型付きで使うCompatibility modeへ切り替える。このためMediaSyncのplatform patchは必須ではない。その他のplatform APIをreflectionやHAL binder直呼びへ一般化してはならない。
+`MaleicacidTvInput` はTuner、TvProvider、privileged permissionを利用するplatform-coupled componentであるため、`/product`へ配置せず、`system_ext_specific: true`かつ`platform_apis: true`の`/system_ext` priv-appとして組み込む。MediaSync private listener patchは任意のplatform統合差分として扱い、TIS runtimeがExact / Compatibilityを選択する条件とavailabilityの意味は`DESIGN_JA.md`を正とする。本書ではpatchの有無によるruntime状態遷移を再定義しない。その他のplatform APIをreflectionやHAL binder直呼びへ一般化してはならない。
 
 `privapp-permissions-maleicacid-tvinput` は `MaleicacidTvInput` と同じ `/system_ext` に配置する。TIS専用の `libmaleicacid_arib_si_engine_jni` と `libmaleicacid_arib_caption_jni` も `system_ext_specific: true` とし、TISから `/product` 専用native moduleへ逆向き依存を作らない。TIS専用 `libaribcaption` variantを正式統合する場合も、TISのnative依存closureから利用可能なsystem/system_ext側variantとして閉じ、product-only private dependencyにしない。
 
@@ -108,9 +108,9 @@ cmd package check-permission android.permission.TUNER_RESOURCE_ACCESS com.maleic
 
 ## 録画・予約の product 統合境界
 
-現行 product 統合では `rec/` 配下の予約録画サービス、receiver、test module を product package または release確認条件へ入れない。TIS manifest metadata は `android:canRecord="false"` を維持する。`TvInputService` の録画 API に対する runtime 契約は `DESIGN_JA.md` を正とする。
+録画・予約のrelease境界は `../開発規則.md` を正とする。同正本で録画機能が有効化されていないreleaseでは、`rec/` 配下の予約録画サービス、receiver、test moduleをproduct packageまたはrelease確認gateへ入れず、TIS manifestの録画capabilityも `DESIGN_JA.md` のruntime契約に一致させる。
 
-`MaleicacidRecScopeTests` は録画・予約作業で明示指定して使う範囲に限定し、現行 product の build / atest / VTS / 実機確認 gate へ混ぜない。
+`MaleicacidRecScopeTests` は録画・予約機能を扱う作業で明示指定し、録画機能を有効化していないreleaseのbuild / atest / VTS / 実機確認gateへ混ぜない。
 
 ## Direct Boot の product 統合条件
 
@@ -120,23 +120,21 @@ TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<
 
 ## ARIB exceptional ratingのLive TV App標準extension統合
 
-JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。System TV App本体へ直接patchを当てる方式は採用しない。
+ARIB exceptional ratingのAndroid canonical mapping、`contentAgeHint`、stock Live TV presetとの関係、blocked-rating policy authorityは`DESIGN_JA.md`を正とする。本書はそのruntime意味を再定義せず、独立`AribContentRatings` APKをTIF標準rating providerとして発見可能にするproduct統合だけを所有する。
 
-Android 15 / LineageOS 22.1系の既存`ContentRatingLevelPolicy`は、TIF rating-provider XMLの`contentAgeHint`をpreset policyの入力として使う。`HIGH`は6以上、`MEDIUM`は12以上、`LOW`はrating system内の最大age hint以上をblocked候補へ含め、`NONE`は空集合にする。単一ratingである`BROADCASTER_DEFINED`は`contentAgeHint=12`で公開し、stock policyでは`HIGH/MEDIUM/LOW`の各presetでblocked候補になる。12はproduct preset policy分類用metadataであり、ARIB raw `0x12..0xFF`の年齢解釈ではない。`CUSTOM`ではstock TV Appの通常rating設定から同canonical ratingを追加・削除する。第二policy APK、TV App private state reader、`packages/apps/TV` source patchは追加しない。
-
-製品buildでは`AribContentRatings`とstock `LiveTv`を組み込み、rating-provider receiverとXML metadataを発見可能にする。repo内の静的確認ではprovider package、`ACTION_QUERY_CONTENT_RATING_SYSTEMS`、`META_DATA_CONTENT_RATING_SYSTEMS`、`ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`、`contentAgeHint=12`を確認し、System TV App本体へのARIB専用source patchを要求しない。product tree / 実機ではrating provider discovery、parental controls無効、`NONE`、`HIGH/MEDIUM/LOW`、`CUSTOM`での標準blocked-rating編集、PIN unblock、他domain/ratingSystem非干渉を確認する。
+製品buildでは`AribContentRatings`とstock `LiveTv`を組み込み、rating-provider receiverとXML metadataが正本設計どおり発見できることを確認する。System TV App本体へのARIB専用source patch、第二policy APK、TV App private state readerを追加しない。
 
 ```text
 m AribContentRatings LiveTv
 ```
 
-TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy authorityとして扱う。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。
+product tree / 実機ではprovider discoveryと、`DESIGN_JA.md`が要求する標準parental-control経路の確認を行う。具体的なrating値・preset別結果は同設計正本の期待値から導出し、本書へ重複表を持たない。
 
 ## 任意のMediaSync Exact-mode platform統合
 
 この節をLineageOS 22.1向けMediaSync platform patchを任意に適用する場合の手順と確認項目の正本とし、patch配下へ別のREADMEや重複手順書を置かない。
 
-TISは追加private APIを静的参照しない。private listener経路を呼び出せるplatformではExact modeを使用し、API不存在、reflection解決失敗、登録setter呼出し失敗などにより呼び出せない場合は公開`MediaCodec.OnFrameRenderedListener`を使うCompatibility modeで動作する。`DESIGN_JA.md`のfinal-output成功意味論が必要な製品だけ、次の2patchをLineageOS 22.1 platform treeへ適用してprivate listener経路を提供する。patchを適用しないOSでもTISのbuildと起動を可能にし、Compatibility modeで動作させる。patch本文はTIS側runtime変更とは独立した再現可能なplatform統合差分として維持する。
+TISのExact / Compatibility選択条件と各modeのruntime意味は`DESIGN_JA.md`を正とする。本節はExact mode用private listenerを提供する任意patchの適用・build・実機確認だけを所有する。TIS APKは追加private APIを静的参照せず、patch本文はTIS側runtime契約とは独立した再現可能なplatform統合差分として維持する。
 
 ```text
 tis/platform_patches/lineage-22.1/frameworks_av_mediasync_first_output.patch
@@ -180,7 +178,7 @@ m libstagefright
 m MaleicacidTvInput
 ```
 
-patchを適用した構成の実機ではExact modeが選択されること、late-dropではavailabilityが成立しないこと、current final outputへのqueue成功で一回だけ通知されること、re-arm後の旧sequence eventが棄却されることを確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのJava/JNI/native型接続やnative実行時意味論を代替しない。未パッチplatformのCompatibility modeをfinal-output成功の確認結果として扱わない。これらは未決設計ではなく任意patchを採用する製品の統合・検証gateなので`future_work/r53`へ重複配置しない。
+patchを適用した構成の実機ではprivate listenerのJava/JNI/native型接続と、`DESIGN_JA.md`がExact modeに要求する観測を確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのnative実行時確認を代替しない。未パッチ構成のruntime結果をExact modeの確認結果として扱わない。これらは任意patchを採用する製品の統合・検証gateなので`future_work/r53`へ重複配置しない。
 
 ## flash 後の確認
 
@@ -200,11 +198,9 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 
 ## 視聴年齢制限 / CAS の product 統合確認
 
-AOSP system-defined `com.android.tv / ISDB / ISDB_4..ISDB_20` に加え、`AribContentRatings` が `com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` をTIF標準rating-provider機構から公開していることを確認する。TISは明示的なARIB `0x12..0xFF` をこのexceptional ratingへ写像し、rating情報そのものが存在しない場合だけ `TvContentRating.UNRATED` を使用する。
+製品統合では、AOSP system-defined ISDB ratingに加え、`AribContentRatings` のTIF標準rating-provider package / receiver / XML metadataがstock TV Appから発見可能であることを確認する。exceptional ratingのcanonical名、raw ARIB値からの写像、`contentAgeHint`、preset / CUSTOM policy、PIN解除、`TvInputManager.isRatingBlocked()` とTIS通知のruntime意味は `DESIGN_JA.md` を唯一の正本とし、本書では再掲しない。
 
-System TV App本体へARIB専用source patchを追加しない。`AribContentRatings`のTIF標準rating-provider metadataをstock TV Appが読み込み、`contentAgeHint=12`を既存preset policyへ適用する。`HIGH/MEDIUM/LOW`ではexceptional ratingがblocked候補に含まれ、`NONE`では含まれない。`CUSTOM`はstock TV Appの通常blocked-rating編集を使う。PIN認証済みの現在コンテンツに対する`onUnblockContent()`一時解除を維持し、第三者custom rating、CTS Verifier由来rating、他domain/ratingSystemのblock/unblock可否へこのproduct metadataを波及させない。
-
-TIS自身はraw ARIB値から独自にAV blockを強制せず、現在コンテンツの `TvContentRating` を `TvInputManager.isRatingBlocked()` に渡した結果だけをpolicy判定として使用する。`notifyContentBlocked()` / `notifyContentAllowed()` とPIN解除のruntime意味論は `DESIGN_JA.md` を正とする。
+System TV App本体へARIB専用source patchを追加せず、独立rating providerをproduct imageへ組み込むこと、stock TV Appからproviderが発見できること、設計正本が要求するrating metadataが実機で列挙できることを統合確認対象とする。
 
 `MaleicacidTvInputAcceptanceTests` と実機確認では、通常ISDB年齢rating、`0x12` / `0xFF` exceptional rating、rating情報欠落時のUNRATED、PINによるcurrent-content unblock、第三者custom rating非干渉、CAS 仮実装境界、TvProvider投影が product integration 後も成立することを確認する。
 
@@ -250,7 +246,7 @@ atest \
 ```text
 - provider-data JSON v1、descriptor 診断、未対応 codec 試験データは maleicacid_arib_si_engine_rs_test と MaleicacidTvInputAcceptanceTests で確認する。
 - TvProvider 標準列投影、字幕トラック、視聴年齢制限、CAS 仮実装境界、設定、scan、チャンネル登録は MaleicacidTvInputAcceptanceTests の対象とする。
-- 録画・予約は現行 product の確認対象外とし、MaleicacidRecScopeTests は録画・予約作業で明示指定して使う。
+- 録画・予約の確認対象は `../開発規則.md` のrelease境界から導出し、未有効化releaseでは `MaleicacidRecScopeTests` を通常gateへ含めない。
 ```
 
 ### 実機投入後の確認
