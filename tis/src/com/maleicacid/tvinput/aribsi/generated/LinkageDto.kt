@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class LinkageDto(
     val linkageType: Int,
     val originalNetworkId: Int,
@@ -9,3 +10,4 @@ data class LinkageDto(
     val parseStatus: com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
 ) {
 }
+
