@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 sealed class CaMetadataSourceDto {
 
     object PROGRAM : CaMetadataSourceDto() {
@@ -11,3 +12,4 @@ sealed class CaMetadataSourceDto {
     object CAT : CaMetadataSourceDto() {
     }
 }
+
