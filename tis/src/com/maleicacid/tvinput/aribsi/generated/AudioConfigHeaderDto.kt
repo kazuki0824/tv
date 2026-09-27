@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class AudioConfigHeaderDto(
     val audioObjectType: Int,
     val samplingFrequency: Int,
@@ -9,3 +10,4 @@ data class AudioConfigHeaderDto(
     val channelCount: Int?
 ) {
 }
+
