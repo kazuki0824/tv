@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi.generated
 
+
 data class SeriesDto(
     val seriesId: Int?,
     val repeatLabel: Int,
@@ -12,3 +13,4 @@ data class SeriesDto(
     val parseStatus: com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
 ) {
 }
+
