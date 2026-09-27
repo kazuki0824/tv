@@ -1,9 +1,6 @@
 package com.maleicacid.tvinput.aribsi
 
-import com.maleicacid.tvinput.common.NetworkId16
-import com.maleicacid.tvinput.common.ServiceId16
 import com.maleicacid.tvinput.common.ServiceKey
-import com.maleicacid.tvinput.common.TransportStreamId16
 import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONArray
 import org.json.JSONObject
