@@ -956,6 +956,55 @@ mod terminal_tests {
     }
 
     #[test]
+    fn stale_worker_terminal_does_not_change_current_state_or_failure_diagnostics() {
+        let runtime = runtime_with_frontend_generation(7);
+        let before_state = runtime.query().frontend_runtime_snapshot(1).unwrap();
+        let before_diagnostics = runtime.frontend_worker_cleanup_diagnostics().unwrap();
+        let shared = Arc::new(std::sync::Mutex::new(runtime));
+
+        let acceptance = FrontendTuneScanTxn::accept_worker_terminal(
+            &shared,
+            FrontendWorkerTerminalEvent::new(
+                1,
+                6,
+                FrontendWorkerKind::Tune,
+                WorkerTerminalResult::RuntimeFailure(HalError::cleanup_failed(
+                    "worker",
+                    "stale failure",
+                )),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            acceptance,
+            FrontendWorkerTerminalEventAcceptance::DiscardedStale
+        );
+        let guard = TunerServiceRuntime::lock_shared(
+            shared.as_ref(),
+            "test frontend runtime lock poisoned",
+        )
+        .unwrap();
+        assert_eq!(
+            guard.query().frontend_runtime_snapshot(1).unwrap(),
+            before_state
+        );
+        let after_diagnostics = guard.frontend_worker_cleanup_diagnostics().unwrap();
+        assert_eq!(
+            after_diagnostics.records().len(),
+            before_diagnostics.records().len()
+        );
+        assert_eq!(
+            after_diagnostics.dropped_count(),
+            before_diagnostics.dropped_count()
+        );
+        assert_eq!(
+            after_diagnostics.record_failure_count(),
+            before_diagnostics.record_failure_count()
+        );
+    }
+
+    #[test]
     fn completed_stop_outcome_keeps_terminal_classification() {
         let error = HalError::cleanup_failed("worker", "failure");
         let cases = [
