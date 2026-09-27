@@ -366,6 +366,7 @@ class NativeAribSiParserCasDiscoveryTest {
                         ),
                     )
                 },
+            )
             assertJsonEncoding(
                 eventFailure { event ->
                     event.getJSONObject("timing").put("state", "BOTH_TIMING_UNDEFINED")
@@ -388,7 +389,6 @@ class NativeAribSiParserCasDiscoveryTest {
                     stable.put("serviceId", stable.getInt("serviceId") + 1)
                     event.put("stableIdentity", stable.toString())
                 },
-            )
             )
         }
     }
