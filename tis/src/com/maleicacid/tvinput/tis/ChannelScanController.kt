@@ -808,6 +808,7 @@ class ChannelScanController(
 
         fun isLost(generation: Long): Boolean = lostGeneration.get() == generation
 
+        @Suppress("MaxLineLength")
         fun signalUnavailableEvent(generation: Long): Int? = signalUnavailable?.takeIf { it.generation == generation }?.event
 
         fun onSignalUnavailable(
