@@ -15,7 +15,6 @@ enum class NativeSiFailureReason {
     PARSER_POISONED,
     INVALID_HANDLE,
     JNI_INPUT,
-    JSON_ENCODING,
     JNI_OUTPUT,
 }
 
@@ -323,7 +322,9 @@ class NativeAribSiParser : AutoCloseable {
         ): AribAacConfiguration? {
             val result = nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) })
             return when (result.status) {
-                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.PENDING -> null
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.PENDING -> {
+                    null
+                }
 
                 com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.INVALID -> {
                     throw IllegalArgumentException(checkNotNull(result.reason))

@@ -35,7 +35,9 @@ impl From<AacAdtsConfiguration> for AacAdtsConfigurationDto {
         Self {
             audio_object_type: i32::from(value.audio_object_type),
             sampling_frequency: value.sampling_frequency as i32,
-            extension_sampling_frequency: value.extension_sampling_frequency.map(|item| item as i32),
+            extension_sampling_frequency: value
+                .extension_sampling_frequency
+                .map(|item| item as i32),
             channel_configuration: i32::from(value.channel_configuration),
             channel_count: i32::from(value.channel_count),
             audio_specific_config_hex: value.audio_specific_config_hex,
@@ -80,9 +82,8 @@ mod tests {
             }
         );
 
-        let invalid = AacConfigurationProbeDto::from(AacConfigurationProbe::Invalid {
-            reason: "invalid",
-        });
+        let invalid =
+            AacConfigurationProbeDto::from(AacConfigurationProbe::Invalid { reason: "invalid" });
         assert_eq!(invalid.status, AacProbeStatusDto::Invalid);
         assert_eq!(invalid.reason.as_deref(), Some("invalid"));
         assert!(invalid.configuration.is_none());

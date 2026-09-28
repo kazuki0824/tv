@@ -347,8 +347,7 @@ canonical JSON は Rust `serde_json` で生成し、struct フィールド順序
 | `PARSER_POISONED` | 解析器状態のロック汚染 |
 | `INVALID_HANDLE` | 存在しない解析器handle |
 | `JNI_INPUT` | Java文字列・配列の取得や変換の失敗 |
-| `JSON_ENCODING` | snapshotまたはcodec結果のJSON生成失敗 |
-| `JNI_OUTPUT` | Java結果文字列の生成失敗、例外なしの不正なnull戻り値 |
+| `JNI_OUTPUT` | Java結果の生成失敗、例外なしの不正なnull戻り値 |
 
 SI内部のロックを保持した状態で、Java VMへの結果生成・例外送出を行わない。ロック汚染はモジュール異常状態と汚染回数へ反映し、正常な空のスナップショットへ置き換えない。具体的なロック取得・解放順序とJNI補助関数の使用規則は、`CODE_CONVENTION.md`を正とする。
 

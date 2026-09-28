@@ -239,7 +239,11 @@ pub(super) fn aac_probe_to_java<'local>(
     env: &mut JNIEnv<'local>,
     value: &AacConfigurationProbeDto,
 ) -> Result<JObject<'local>, SiJniFailure> {
-    let status = generated_enum(env, "AacProbeStatusDto", aac_probe_status_variant(&value.status))?;
+    let status = generated_enum(
+        env,
+        "AacProbeStatusDto",
+        aac_probe_status_variant(&value.status),
+    )?;
     let reason = optional_string_object(env, value.reason.as_deref())?;
     let configuration = match value.configuration.as_ref() {
         Some(configuration) => build_aac_adts_configuration(env, configuration)?,

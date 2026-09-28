@@ -531,7 +531,6 @@ enum SiJniFailureReason {
     ParserPoisoned,
     InvalidHandle,
     JniInput,
-    JsonEncoding,
     JniOutput,
 }
 
@@ -543,7 +542,6 @@ impl SiJniFailureReason {
             Self::ParserPoisoned => "PARSER_POISONED",
             Self::InvalidHandle => "INVALID_HANDLE",
             Self::JniInput => "JNI_INPUT",
-            Self::JsonEncoding => "JSON_ENCODING",
             Self::JniOutput => "JNI_OUTPUT",
         }
     }
