@@ -1,0 +1,22 @@
+version: "1.0"
+linter: qodana-jvm-android
+projectJDK: 17
+
+# Soong is the production build owner, but this Gradle model already mirrors the
+# TIS Android source set for Robolectric. Reuse it so Qodana can resolve Android
+# manifest/framework entry points instead of treating the Kotlin files as an
+# unmodelled standalone source tree.
+rootJavaProjects:
+  - "./tis/host_ci/robolectric"
+
+# Dead-code enforcement is for production TIS Kotlin. Tests and host stubs are
+# deliberately outside this inspection scope.
+onlyDirectory: tis/src
+
+profile:
+  base:
+    name: empty
+  inspections:
+    - inspection: UnusedSymbol
+      enabled: true
+      severity: ERROR
