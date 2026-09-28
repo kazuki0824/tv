@@ -41,6 +41,11 @@ jobs:
       - name: Kotlin unused symbolをQodanaで検査
         uses: JetBrains/qodana-action@v2026.2
         with:
+          # PR modeはmerge-base commitを別worktreeで解析する。そのcommitにはこのPRで
+          # 追加したqodana.yamlが存在しないため、導入PR自身を解析できない。
+          # unused-symbol gateは差分限定ではなくHEAD全体を対象にする。
+          pr-mode: false
+          post-pr-comment: false
           args: >-
             --linter qodana-jvm-android
             --config qodana.yaml
