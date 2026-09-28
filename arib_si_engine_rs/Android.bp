@@ -45,8 +45,6 @@ rust_ffi_shared {
     min_sdk_version: "31",
     rustlibs: [
         "libjni",
-        "libserde",
-        "libserde_json",
         "libmaleicacid_arib_si_engine_core",
     ],
 }
@@ -110,7 +108,6 @@ rust_test {
     edition: "2021",
     rustlibs: [
         "libjni",
-        "libserde",
         "libserde_json",
         "libmaleicacid_arib_si_engine_core",
     ],
