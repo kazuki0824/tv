@@ -781,6 +781,7 @@ class ChannelScanController(
             private set
         private val activeGeneration = AtomicLong(-1L)
         private val lostGeneration = AtomicLong(-1L)
+
         @Volatile private var signalUnavailable: SignalUnavailable? = null
         private val publicationLock = Any()
 
@@ -807,14 +808,12 @@ class ChannelScanController(
 
         fun isLost(generation: Long): Boolean = lostGeneration.get() == generation
 
-        fun signalUnavailableEvent(generation: Long): Int? =
-            signalUnavailable?.takeIf { it.generation == generation }?.event
+        fun signalUnavailableEvent(generation: Long): Int? = signalUnavailable?.takeIf { it.generation == generation }?.event
 
         fun onSignalUnavailable(
             generation: Long,
             event: Int,
-        ) =
-            synchronized(publicationLock) {
+        ) = synchronized(publicationLock) {
                 val active = activeGeneration.get()
                 if (active != -1L && active != generation) return@synchronized
                 val pending = signalUnavailable
