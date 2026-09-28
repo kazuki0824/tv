@@ -9,6 +9,7 @@
 - JNI入口はロック解放後に `jvm_snapshot::snapshot_to_java` を呼び、`BulkSnapshot` から `NativeSiSnapshot` と型付きSI domain objectを直接構築する。production SI snapshot境界でJSON文字列化、`serde_json::to_value` によるdynamic object graph化、`JSONObject` / `JSONArray` の生成を行わない。
 - field集合、意味、値域、nullable条件、enum選択、cross-field不変条件はRust側のSI意味型・snapshot構築処理をSSOTとする。JVM constructionは検証済みfactの機械的投影だけに限定する。
 - PMT section-filter bootstrapのcontrol snapshotは `nativeSnapshotPmtPidsForSectionFilters()` から `IntArray` を返し、JSON文字列境界を設けない。
+- AAC codec probe は `codec_probe_dto.rs` の `AacConfigurationProbeDto` / `AacAdtsConfigurationDto` / `AacProbeStatusDto` を transport SSOT とし、同じ serde-reflection / serde-generate 生成物を JVM へ直接構築する。codec probe の結果をJSON文字列化しない。
 
 ## JNIの失敗伝達
 

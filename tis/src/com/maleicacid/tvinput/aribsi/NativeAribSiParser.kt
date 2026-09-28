@@ -2,7 +2,6 @@ package com.maleicacid.tvinput.aribsi
 
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
-import org.json.JSONObject
 
 private typealias NativeTransaction = NativeSiSnapshot
 
@@ -322,32 +321,24 @@ class NativeAribSiParser : AutoCloseable {
             adts: ByteArray,
             ascHex: String?,
         ): AribAacConfiguration? {
-            val raw = requireNativeString(nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) }))
-            val result = JSONObject(raw)
-            return when (result.getString("status")) {
-                "PENDING" -> {
-                    null
+            val result = nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) })
+            return when (result.status) {
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.PENDING -> null
+
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.INVALID -> {
+                    throw IllegalArgumentException(checkNotNull(result.reason))
                 }
 
-                "INVALID" -> {
-                    throw IllegalArgumentException(result.getString("reason"))
-                }
-
-                "READY" -> {
-                    result.getJSONObject("configuration").let {
-                        AribAacConfiguration(
-                            it.getInt("audioObjectType"),
-                            it.getInt("samplingFrequency"),
-                            if (it.isNull("extensionSamplingFrequency")) null else it.getInt("extensionSamplingFrequency"),
-                            it.getInt("channelConfiguration"),
-                            it.getInt("channelCount"),
-                            codecConfigBytes(it.getString("audioSpecificConfigHex"), 512),
-                        )
-                    }
-                }
-
-                else -> {
-                    error("codec構成probeが未知の状態を返しました")
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.READY -> {
+                    val configuration = checkNotNull(result.configuration)
+                    AribAacConfiguration(
+                        configuration.audioObjectType,
+                        configuration.samplingFrequency,
+                        configuration.extensionSamplingFrequency,
+                        configuration.channelConfiguration,
+                        configuration.channelCount,
+                        codecConfigBytes(configuration.audioSpecificConfigHex, 512),
+                    )
                 }
             }
         }
@@ -355,7 +346,7 @@ class NativeAribSiParser : AutoCloseable {
         @JvmStatic private external fun nativeProbeAacConfiguration(
             adts: ByteArray,
             asc: ByteArray?,
-        ): String?
+        ): com.maleicacid.tvinput.aribsi.generated.AacConfigurationProbeDto
 
         init {
             System.loadLibrary("maleicacid_arib_si_engine_jni")

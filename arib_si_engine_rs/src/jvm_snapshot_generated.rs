@@ -1,6 +1,7 @@
 use super::{SiJniFailure, SiJniFailureReason};
 use jni::objects::{JObject, JValue};
 use jni::JNIEnv;
+use maleicacid_arib_si_engine_core::codec_probe_dto::*;
 use maleicacid_arib_si_engine_core::runtime_snapshot_dto::*;
 
 const PREFIX: &str = "com/maleicacid/tvinput/aribsi/generated/";
@@ -197,6 +198,69 @@ fn ca_source_variant(value: &CaMetadataSourceDto) -> &'static str {
         CaMetadataSourceDto::ElementaryStream => "ELEMENTARY_STREAM",
         CaMetadataSourceDto::Cat => "CAT",
     }
+}
+
+fn aac_probe_status_variant(value: &AacProbeStatusDto) -> &'static str {
+    match value {
+        AacProbeStatusDto::Pending => "PENDING",
+        AacProbeStatusDto::Invalid => "INVALID",
+        AacProbeStatusDto::Ready => "READY",
+    }
+}
+
+fn build_aac_adts_configuration<'local>(
+    env: &mut JNIEnv<'local>,
+    value: &AacAdtsConfigurationDto,
+) -> Result<JObject<'local>, SiJniFailure> {
+    let extension_sampling_frequency = boxed_int(env, value.extension_sampling_frequency)?;
+    let audio_specific_config_hex = string_object(env, &value.audio_specific_config_hex)?;
+    let result = new_generated(
+        env,
+        "AacAdtsConfigurationDto",
+        "(IILjava/lang/Integer;IILjava/lang/String;)V",
+        &[
+            JValue::Int(value.audio_object_type),
+            JValue::Int(value.sampling_frequency),
+            JValue::Object(&extension_sampling_frequency),
+            JValue::Int(value.channel_configuration),
+            JValue::Int(value.channel_count),
+            JValue::Object(&audio_specific_config_hex),
+        ],
+    );
+    for object in [extension_sampling_frequency, audio_specific_config_hex] {
+        if !object.is_null() {
+            jni_result(env.delete_local_ref(object))?;
+        }
+    }
+    result
+}
+
+pub(super) fn aac_probe_to_java<'local>(
+    env: &mut JNIEnv<'local>,
+    value: &AacConfigurationProbeDto,
+) -> Result<JObject<'local>, SiJniFailure> {
+    let status = generated_enum(env, "AacProbeStatusDto", aac_probe_status_variant(&value.status))?;
+    let reason = optional_string_object(env, value.reason.as_deref())?;
+    let configuration = match value.configuration.as_ref() {
+        Some(configuration) => build_aac_adts_configuration(env, configuration)?,
+        None => JObject::null(),
+    };
+    let result = new_generated(
+        env,
+        "AacConfigurationProbeDto",
+        "(Lcom/maleicacid/tvinput/aribsi/generated/AacProbeStatusDto;Ljava/lang/String;Lcom/maleicacid/tvinput/aribsi/generated/AacAdtsConfigurationDto;)V",
+        &[
+            JValue::Object(&status),
+            JValue::Object(&reason),
+            JValue::Object(&configuration),
+        ],
+    );
+    for object in [status, reason, configuration] {
+        if !object.is_null() {
+            jni_result(env.delete_local_ref(object))?;
+        }
+    }
+    result
 }
 
 fn build_service_key<'local>(

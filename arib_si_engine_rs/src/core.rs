@@ -6,6 +6,8 @@ pub mod broadcast_clock;
 pub mod ca_descriptor;
 #[path = "core/codec_signaling.rs"]
 pub mod codec_signaling;
+#[path = "core/codec_probe_dto.rs"]
+pub mod codec_probe_dto;
 #[path = "core/descriptors.rs"]
 pub mod descriptors;
 #[path = "core/discovery_requirements.rs"]
