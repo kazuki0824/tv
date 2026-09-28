@@ -783,20 +783,22 @@ class ChannelScanController(
         @Volatile private var signalUnavailable: SignalUnavailable? = null
         private val publicationLock = Any()
 
-        fun reset() {
-            terminalObserved = false
-            activeGeneration.set(-1L)
-            lostGeneration.set(-1L)
-            signalUnavailable = null
-        }
-
-        fun activate(generation: Long) {
-            activeGeneration.set(generation)
-            signalUnavailable?.let { pending ->
-                if (pending.generation < generation) signalUnavailable = null
+        fun reset() =
+            synchronized(publicationLock) {
+                terminalObserved = false
+                activeGeneration.set(-1L)
+                lostGeneration.set(-1L)
+                signalUnavailable = null
             }
-            if (isLost(generation)) terminalObserved = true
-        }
+
+        fun activate(generation: Long) =
+            synchronized(publicationLock) {
+                activeGeneration.set(generation)
+                signalUnavailable?.let { pending ->
+                    if (pending.generation < generation) signalUnavailable = null
+                }
+                if (isLost(generation)) terminalObserved = true
+            }
 
         fun clearActive(generation: Long) {
             activeGeneration.compareAndSet(generation, -1L)
