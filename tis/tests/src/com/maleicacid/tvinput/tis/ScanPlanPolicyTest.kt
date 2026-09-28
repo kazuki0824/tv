@@ -131,7 +131,7 @@ class ScanPlanPolicyTest {
     fun bsFailedCancelRetainsResourceLossAdmissionAndTerminalOutcome() {
         for (prior in listOf("scanning", "stopped", "timeout")) {
             val operation = TunerController.StreamIdDiscoveryOperation(23L)
-            val fence = ChannelScanController.ResourceLossFence().apply { activate(23L) }
+            val fence = ChannelScanController.ScanGenerationFence().apply { activate(23L) }
             if (prior == "stopped") {
                 operation.reportIds(intArrayOf(16400))
                 operation.complete()
@@ -183,7 +183,7 @@ class ScanPlanPolicyTest {
     fun bsResourceLossWakesCallerAndRejectsCandidatesAndPublication() {
         val controller = Executors.newSingleThreadExecutor()
         val caller = Executors.newSingleThreadExecutor()
-        val fence = ChannelScanController.ResourceLossFence()
+        val fence = ChannelScanController.ScanGenerationFence()
         val operation = TunerController.StreamIdDiscoveryOperation(9L)
         val waiting = java.util.concurrent.CountDownLatch(1)
         var notifications = 0

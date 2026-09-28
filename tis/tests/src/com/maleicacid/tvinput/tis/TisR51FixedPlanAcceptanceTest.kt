@@ -54,6 +54,35 @@ class TisR51FixedPlanAcceptanceTest {
         check(!ChannelScanController.shouldContinueInitialScanAfterSynchronousTuneResult(false))
     }
 
+    @Test
+    fun scanSignalUnavailableIsGenerationFencedAndNotPublishable() {
+        val fence = ChannelScanController.ScanGenerationFence()
+        val generation = 41L
+        fence.onSignalUnavailable(generation, OnTuneEventListener.SIGNAL_NO_SIGNAL)
+        fence.onSignalUnavailable(generation - 1, OnTuneEventListener.SIGNAL_LOST_LOCK)
+        fence.activate(generation)
+        check(fence.signalUnavailableEvent(generation) == OnTuneEventListener.SIGNAL_NO_SIGNAL)
+        check(
+            !ChannelScanController
+                .SiCollectionResult(
+                    ChannelScanController.SiCollectionOutcome.SIGNAL_UNAVAILABLE,
+                    null,
+                    clearLivePlaybackStaticallyEligibleServices = 1,
+                    registrationReadyServices = 1,
+                ).mayPublishChannels,
+        )
+
+        fence.clearActive(generation)
+        fence.activate(generation + 1)
+        fence.onSignalUnavailable(generation, OnTuneEventListener.SIGNAL_LOST_LOCK)
+        check(fence.signalUnavailableEvent(generation + 1) == null)
+
+        fence.onSignalUnavailable(generation + 1, OnTuneEventListener.SIGNAL_LOST_LOCK)
+        check(fence.signalUnavailableEvent(generation + 1) == OnTuneEventListener.SIGNAL_LOST_LOCK)
+        fence.reset()
+        check(fence.signalUnavailableEvent(generation + 1) == null)
+    }
+
     private val key = ServiceKey(4, 0x4010, 101)
     private val otherKey = ServiceKey(4, 0x4010, 102)
 
@@ -65,7 +94,7 @@ class TisR51FixedPlanAcceptanceTest {
     fun resourceLossInvalidatesBeforeCleanupAndNotifiesDespiteFailures() {
         for ((stopFails, filterFails) in listOf(true to false, false to true, true to true)) {
             val generation = 7L
-            val fence = ChannelScanController.ResourceLossFence()
+            val fence = ChannelScanController.ScanGenerationFence()
             fence.activate(generation)
             var accepted = true
             var currentTune: Long? = generation
