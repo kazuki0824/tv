@@ -3,8 +3,6 @@ package com.maleicacid.tvinput.aribsi
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 
-private typealias NativeTransaction = NativeSiSnapshot
-
 class NativeParserCleanupException(
     val status: Int,
 ) : IllegalStateException("ネイティブ解析器の解放に失敗しました status=$status")
@@ -162,7 +160,7 @@ class NativeAribSiParser : AutoCloseable {
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
-    private fun buildProgramPublishSnapshot(snapshot: NativeTransaction): ProgramPublishSnapshot {
+    private fun buildProgramPublishSnapshot(snapshot: NativeSiSnapshot): ProgramPublishSnapshot {
         val publication =
             epgPublication.project(
                 discoveryProfile,
@@ -194,7 +192,7 @@ class NativeAribSiParser : AutoCloseable {
             event.descriptors.diagnostics.descriptorDiagnostics
         }
 
-    private fun readNativeTransaction(): NativeTransaction {
+    private fun readNativeTransaction(): NativeSiSnapshot {
         check(handle != 0L) { "ネイティブ解析器は終了済みです" }
         val transport =
             nativeSnapshotBulkTyped(handle)
