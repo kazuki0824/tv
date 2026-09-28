@@ -121,9 +121,4 @@ object ProgramUpgradeCleanup {
         }
         return commitIdentity()
     }
-
-    internal fun softwareIdentityForTest(
-        fingerprint: String,
-        versionCode: Long,
-    ): String = "$fingerprint|$versionCode"
 }
