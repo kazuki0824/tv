@@ -814,12 +814,12 @@ class ChannelScanController(
             generation: Long,
             event: Int,
         ) = synchronized(publicationLock) {
-                val active = activeGeneration.get()
-                if (active != -1L && active != generation) return@synchronized
-                val pending = signalUnavailable
-                if (pending != null && generation < pending.generation) return@synchronized
-                signalUnavailable = SignalUnavailable(generation, event)
-            }
+            val active = activeGeneration.get()
+            if (active != -1L && active != generation) return@synchronized
+            val pending = signalUnavailable
+            if (pending != null && generation < pending.generation) return@synchronized
+            signalUnavailable = SignalUnavailable(generation, event)
+        }
 
         fun onLost(generation: Long) =
             synchronized(publicationLock) {
