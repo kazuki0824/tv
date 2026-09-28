@@ -403,7 +403,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 `arib_si_engine_rs` の SI event DTO は旧 `canonicalGenres` フィールドを出力しない。Rust parser は Android canonical genre を決定しないため、`nativeGetEventCanonicalGenre()`、`nativeGetEventCanonicalGenresJson()` は互換シンボルとしても残さない。provider-dataにも canonical genre 投影結果を保持しない。
 
-`nativeGetEventCount()` と `nativeGetEvent*` indexed JNI getter 群は廃止する。EIT event の通常境界は同一product buildで同時更新されるRust所有`BulkSnapshot`から直接構築した型付き`NativeSiSnapshot`と provider-data builder API のみとする。runtime境界をJSON文字列のversioned wire protocolとして固定せず、片側差し替え互換のためのJNIシンボル、旧DTO decoder、空配列返却、空文字返却、未使用Kotlin private external宣言をリリース物へ残してはならない。
+`nativeGetEventCount()` と `nativeGetEvent*` indexed JNI getter 群は廃止する。EIT event の通常境界は、同一product buildで同時更新されるRust所有`BulkSnapshotDto`からcodegen生成Kotlin `BulkSnapshotDto` / nested DTOをJNIで直接構築し、`GeneratedSiSnapshotMapper.toDomainSnapshot()`でTIS側`NativeSiSnapshot`へ機械的に投影するtyped境界と、provider-data builder API のみとする。runtime境界をJSON文字列のversioned wire protocolとして固定せず、片側差し替え互換のためのJNIシンボル、旧DTO decoder、空配列返却、空文字返却、未使用Kotlin private external宣言をリリース物へ残してはならない。
 
 ### JSON Schema / schema 整合確認データ
 
