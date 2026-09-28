@@ -14,8 +14,11 @@ rootJavaProjects:
 onlyDirectory: tis/src
 
 profile:
+  # Qodana公式がCI/CD向けとする標準profileを土台にする。
+  # 独自ルール群を手書きせず、unused symbolだけは今回の導入目的として
+  # ERRORに固定して退行を確実に落とす。
   base:
-    name: empty
+    name: qodana.recommended
   inspections:
     - inspection: UnusedSymbol
       enabled: true
