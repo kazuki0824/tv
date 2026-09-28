@@ -625,8 +625,9 @@ class ChannelScanController(
             runCatching {
                 SectionFilterPolicy.completeCleanup({
                     while (!cancelled.get() && !resourceLostFor(tuneGeneration)) {
-                        scanGenerationFence.signalUnavailableEvent(tuneGeneration)?.let { event ->
-                            signalUnavailableEvent = event
+                        val unavailableEvent = scanGenerationFence.signalUnavailableEvent(tuneGeneration)
+                        if (unavailableEvent != null) {
+                            signalUnavailableEvent = unavailableEvent
                             outcome = SiCollectionOutcome.SIGNAL_UNAVAILABLE
                             break
                         }
