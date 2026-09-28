@@ -2,7 +2,7 @@
 
 ### 解析coreとTIS向け保存policyの境界
 
-本crateの`src/core/eit.rs`はEITのraw識別子・時刻状態・記述子・構文診断を解析し、`src/core/eit_instances.rs`が同一collectionの表ごとの受信事実を保持する。共通`SectionTracker`を用い、TIS固有の公開scope、永続キーの採用可否、旧Program保護、更新・削除区間は算出しない。`ServiceDiscoveryEngine` / `ServiceDiscoveryCollector`へEPG保存stateや公開gateを置かない。JNIは同じ放送事実を、Rustの`BulkSnapshot`からJVMの`NativeSiSnapshot`および既存の型付きSI domain objectへ直接構築して渡す。Rust側のSI意味型・snapshot型をfield集合、意味、値域、nullable条件、enum、cross-field不変条件のSSOTとし、Kotlin側の受取型と`NativeSiJvmFactory`は同一build内の機械的bindingに限定する。Kotlin側で同じ意味契約をvalidatorとして再定義しない。`../開発規則.md`の同時更新不変条件に従い、Rust→TISのruntime境界を異なるproduct build間で相互運用するversioned wire protocolにしない。Rust側DTOとKotlin側DTOは同一変更・同一buildで更新し、`schemaVersion` negotiation、旧snapshot DTO受理、片側差し替え互換を設けない。JSON Schemaを試験・診断用に保持する場合もruntime互換の規範正本にはしない。TISの公開判断の唯一のownerはKotlin `EpgPublicationPolicy` / `EpgSectionPolicy`であり、具体契約は`../tis/DESIGN_JA.md`の「TIS / EPG 公開境界」を正とする。
+本crateの`src/core/eit.rs`はEITのraw識別子・時刻状態・記述子・構文診断を解析し、`src/core/eit_instances.rs`が同一collectionの表ごとの受信事実を保持する。共通`SectionTracker`を用い、TIS固有の公開scope、永続キーの採用可否、旧Program保護、更新・削除区間は算出しない。`ServiceDiscoveryEngine` / `ServiceDiscoveryCollector`へEPG保存stateや公開gateを置かない。JNIは同じ放送事実を、Rustの`BulkSnapshotDto`からcodegen生成Kotlin `BulkSnapshotDto`およびnested DTOへ直接構築して渡し、Kotlinの`GeneratedSiSnapshotMapper.toDomainSnapshot()`がTIS側の`NativeSiSnapshot`へ機械的に投影する。Rust側のSI意味型・snapshot型をfield集合、意味、値域、nullable条件、enum、cross-field不変条件のSSOTとし、codegen生成Kotlin DTOと`GeneratedSiSnapshotMapper`は同一build内の機械的bindingに限定する。Kotlin側で同じ意味契約をvalidatorとして再定義しない。`../開発規則.md`の同時更新不変条件に従い、Rust→TISのruntime境界を異なるproduct build間で相互運用するversioned wire protocolにしない。Rust側DTOとKotlin側DTOは同一変更・同一buildで更新し、`schemaVersion` negotiation、旧snapshot DTO受理、片側差し替え互換を設けない。JSON Schemaを試験・診断用に保持する場合もruntime互換の規範正本にはしない。TISの公開判断の唯一のownerはKotlin `EpgPublicationPolicy` / `EpgSectionPolicy`であり、具体契約は`../tis/DESIGN_JA.md`の「TIS / EPG 公開境界」を正とする。
 
 両時刻未定義でもraw event_idを捨てない。JNIのidentity表現とprovider-dataのcanonical key生成は放送識別子の符号化に限定し、保存用identityへ採用するかを判断しない。
 
@@ -347,8 +347,7 @@ canonical JSON は Rust `serde_json` で生成し、struct フィールド順序
 | `PARSER_POISONED` | 解析器状態のロック汚染 |
 | `INVALID_HANDLE` | 存在しない解析器handle |
 | `JNI_INPUT` | Java文字列・配列の取得や変換の失敗 |
-| `JSON_ENCODING` | snapshotまたはcodec結果のJSON生成失敗 |
-| `JNI_OUTPUT` | Java結果文字列の生成失敗、例外なしの不正なnull戻り値 |
+| `JNI_OUTPUT` | Java結果の生成失敗、例外なしの不正なnull戻り値 |
 
 SI内部のロックを保持した状態で、Java VMへの結果生成・例外送出を行わない。ロック汚染はモジュール異常状態と汚染回数へ反映し、正常な空のスナップショットへ置き換えない。具体的なロック取得・解放順序とJNI補助関数の使用規則は、`CODE_CONVENTION.md`を正とする。
 
@@ -404,7 +403,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 `arib_si_engine_rs` の SI event DTO は旧 `canonicalGenres` フィールドを出力しない。Rust parser は Android canonical genre を決定しないため、`nativeGetEventCanonicalGenre()`、`nativeGetEventCanonicalGenresJson()` は互換シンボルとしても残さない。provider-dataにも canonical genre 投影結果を保持しない。
 
-`nativeGetEventCount()` と `nativeGetEvent*` indexed JNI getter 群は廃止する。EIT event の通常境界は同一product buildで同時更新されるRust所有`BulkSnapshot`から直接構築した型付き`NativeSiSnapshot`と provider-data builder API のみとする。runtime境界をJSON文字列のversioned wire protocolとして固定せず、片側差し替え互換のためのJNIシンボル、旧DTO decoder、空配列返却、空文字返却、未使用Kotlin private external宣言をリリース物へ残してはならない。
+`nativeGetEventCount()` と `nativeGetEvent*` indexed JNI getter 群は廃止する。EIT event の通常境界は、同一product buildで同時更新されるRust所有`BulkSnapshotDto`からcodegen生成Kotlin `BulkSnapshotDto` / nested DTOをJNIで直接構築し、`GeneratedSiSnapshotMapper.toDomainSnapshot()`でTIS側`NativeSiSnapshot`へ機械的に投影するtyped境界と、provider-data builder API のみとする。runtime境界をJSON文字列のversioned wire protocolとして固定せず、片側差し替え互換のためのJNIシンボル、旧DTO decoder、空配列返却、空文字返却、未使用Kotlin private external宣言をリリース物へ残してはならない。
 
 ### JSON Schema / schema 整合確認データ
 
@@ -459,7 +458,7 @@ PMTの構文解析済み事実とsection instance完成は別条件とし、必�
 
 PMT ESのAVC video descriptor、MPEG-4 audio descriptor、MPEG-4 audio extension descriptorは`CodecDescriptorFacts`に集約し、通常のES snapshotで渡す。AVCはprofile_idc・constraint flags・level_idc、音声は通常記述子のprofile値・拡張記述子のprofile値列・ASC原bytes・ASC共通先頭部を別々に保持する。同じtagの矛盾、長さ不正、予約bit不正、0xff指定時の拡張記述子欠落を正常profileへ昇格しない。ASC共通先頭部の解釈はcodec固有config全体の検証を意味しない。未知のMPEG-4音声をAACと推測しない。
 
-`codec_signaling`はASC内とADTS内のPCEを同一の純粋構文処理で読む。SI収集stateを作らない独立JNI entryで、有限なADTS startup入力と任意のPMT ASCから`Pending` / `Invalid` / `Ready(AacAdtsConfiguration)`を返す。これはcodec構成metadataの解析であり、TS/PES demux、AU再構成、decoder選択、再生可否policyは担当しない。ARIBで用いるLC coreのPCEについて、profile・sampling frequencyの一致、要素参照の重複禁止、CC数0、mono/stereo mixdown不使用を検証する。channel_configuration=0はPCEのSCE/CPE/LFEからchannel countを求め、欠落を1chへ昇格しない。帯域内PCEからASCへ移す場合はPCE fieldとcomment原bytesを保ち、byte alignmentだけASCの起点に合わせる。根拠は[ISO/IEC 14496-3:2009 Table 4.2とADTS節](https://csclub.uwaterloo.ca/~pbarfuss/ISO14496-3-2009.pdf)、[ARIB STD-B32 3.11-E1 Part 2 5.2.3 / 6.2.3](https://www.arib.or.jp/english/html/overview/doc/6-STD-B32v3_11-2p3-E1.pdf)とする。
+`codec_signaling`はASC内とADTS内のPCEを同一の純粋構文処理で読む。SI収集stateを作らない独立JNI entryで、有限なADTS startup入力と任意のPMT ASCから`Pending` / `Invalid` / `Ready(AacAdtsConfiguration)`を返す。JNI transport は `codec_probe_dto.rs` の `AacConfigurationProbeDto` / `AacAdtsConfigurationDto` / `AacProbeStatusDto` をRust側SSOTとし、SI snapshotと同じhost-only serde-reflection / serde-generate経路で生成したKotlin bindingを直接構築する。codec probeの結果をJSON文字列、`JSONObject`、dynamic field-name lookupへ変換しない。これはcodec構成metadataの解析であり、TS/PES demux、AU再構成、decoder選択、再生可否policyは担当しない。ARIBで用いるLC coreのPCEについて、profile・sampling frequencyの一致、要素参照の重複禁止、CC数0、mono/stereo mixdown不使用を検証する。channel_configuration=0はPCEのSCE/CPE/LFEからchannel countを求め、欠落を1chへ昇格しない。帯域内PCEからASCへ移す場合はPCE fieldとcomment原bytesを保ち、byte alignmentだけASCの起点に合わせる。根拠は[ISO/IEC 14496-3:2009 Table 4.2とADTS節](https://csclub.uwaterloo.ca/~pbarfuss/ISO14496-3-2009.pdf)、[ARIB STD-B32 3.11-E1 Part 2 5.2.3 / 6.2.3](https://www.arib.or.jp/english/html/overview/doc/6-STD-B32v3_11-2p3-E1.pdf)とする。
 
 根拠は[STD-B10 5.13-E1 6.2.47/50/51](https://www.arib.or.jp/english/html/overview/doc/6-STD-B10v5_13-E1.pdf)、[H.222.0 (2006) Amendment 1 Table 2-71・2.6.72/73](https://www.itu.int/rec/dologin_pub.asp?id=T-REC-H.222.0-200701-S%21Amd1%21PDF-E&lang=e&type=items)、[STD-B32 3.11-E1 Part 2 Chapter 6/7・Description 3](https://www.arib.or.jp/english/html/overview/doc/6-STD-B32v3_11-2p3-E1.pdf)とする。通常記述子の0x5aはHE-AAC、拡張記述子の0x5aはALS L2であり、数値体系を混同しない。ALSの拡張profileは0x3c/0x5a/0x5b/0x5cを認識する。これは取得済み英訳の根拠であり、現行日本語版との全条項差を解消したという宣言ではない。
 

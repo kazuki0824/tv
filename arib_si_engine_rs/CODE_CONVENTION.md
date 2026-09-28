@@ -5,10 +5,11 @@
 ## JNIのスナップショット取得
 
 - `snapshot_bulk_typed` は登録表から解析器参照を取得し、登録表のロックを解放してから解析器をロックする。
-- 解析器ロック内では `build_bulk_snapshot` によりRust所有の `BulkSnapshot` を確定し、JVM object生成を行わない。snapshot確定後に解析器ロックを解放する。
-- JNI入口はロック解放後に `jvm_snapshot::snapshot_to_java` を呼び、`BulkSnapshot` から `NativeSiSnapshot` と型付きSI domain objectを直接構築する。production SI snapshot境界でJSON文字列化、`serde_json::to_value` によるdynamic object graph化、`JSONObject` / `JSONArray` の生成を行わない。
+- 解析器ロック内では `build_bulk_snapshot` によりRust所有の `BulkSnapshotDto` を確定し、JVM object生成を行わない。snapshot確定後に解析器ロックを解放する。
+- JNI入口はロック解放後に `jvm_snapshot_generated::snapshot_to_java` を呼び、Rust `BulkSnapshotDto` からcodegen生成Kotlin `BulkSnapshotDto` とnested DTOを直接構築する。Kotlin側は `GeneratedSiSnapshotMapper.toDomainSnapshot()` でTIS側の `NativeSiSnapshot` へ機械的に投影する。production SI snapshot境界でJSON文字列化、`serde_json::to_value` によるdynamic object graph化、`JSONObject` / `JSONArray` の生成を行わない。
 - field集合、意味、値域、nullable条件、enum選択、cross-field不変条件はRust側のSI意味型・snapshot構築処理をSSOTとする。JVM constructionは検証済みfactの機械的投影だけに限定する。
 - PMT section-filter bootstrapのcontrol snapshotは `nativeSnapshotPmtPidsForSectionFilters()` から `IntArray` を返し、JSON文字列境界を設けない。
+- AAC codec probe は `codec_probe_dto.rs` の `AacConfigurationProbeDto` / `AacAdtsConfigurationDto` / `AacProbeStatusDto` を transport SSOT とし、同じ serde-reflection / serde-generate 生成物を JVM へ直接構築する。codec probe の結果をJSON文字列化しない。
 
 ## JNIの失敗伝達
 

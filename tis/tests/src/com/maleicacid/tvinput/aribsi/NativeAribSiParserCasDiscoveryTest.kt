@@ -58,6 +58,21 @@ class NativeAribSiParserCasDiscoveryTest {
     }
 
     @Test
+    fun codecProbeCrossesJniAsGeneratedTypedDto() {
+        val method =
+            NativeAribSiParser::class.java
+                .getDeclaredMethod(
+                    "nativeProbeAacConfiguration",
+                    ByteArray::class.java,
+                    ByteArray::class.java,
+                ).apply { isAccessible = true }
+        val result = method.invoke(null, ByteArray(0), null)
+        check(result is com.maleicacid.tvinput.aribsi.generated.AacConfigurationProbeDto)
+        check(result.status == com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.PENDING)
+        check(result.reason == null && result.configuration == null)
+    }
+
+    @Test
     fun codecJniFailureDoesNotBecomeInvalidCodecData() {
         val method =
             NativeAribSiParser::class.java

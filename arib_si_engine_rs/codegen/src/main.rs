@@ -1,3 +1,6 @@
+use maleicacid_arib_si_engine_core::codec_probe_dto::{
+    AacAdtsConfigurationDto, AacConfigurationProbeDto, AacProbeStatusDto,
+};
 use maleicacid_arib_si_engine_core::runtime_snapshot_dto::{
     BroadcastSystemDto, BulkSnapshotDto, CaDescriptorScopeDto, CaMetadataSourceDto,
     EitTimingStateDto, ElementaryStreamKindDto, SiParseStatusDto, SmdSemanticStateDto,
@@ -16,6 +19,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("usage: maleicacid-si-kotlin-bindings <kotlin-source-root>")?;
 
     let mut tracer = Tracer::new(TracerConfig::default());
+    tracer.trace_simple_type::<AacConfigurationProbeDto>()?;
+    tracer.trace_simple_type::<AacAdtsConfigurationDto>()?;
+    tracer.trace_simple_type::<AacProbeStatusDto>()?;
     tracer.trace_simple_type::<BulkSnapshotDto>()?;
     tracer.trace_simple_type::<SiParseStatusDto>()?;
     tracer.trace_simple_type::<EitTimingStateDto>()?;

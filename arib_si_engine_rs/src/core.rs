@@ -4,6 +4,8 @@ pub mod arib_string;
 pub mod broadcast_clock;
 #[path = "core/ca_descriptor.rs"]
 pub mod ca_descriptor;
+#[path = "core/codec_probe_dto.rs"]
+pub mod codec_probe_dto;
 #[path = "core/codec_signaling.rs"]
 pub mod codec_signaling;
 #[path = "core/descriptors.rs"]

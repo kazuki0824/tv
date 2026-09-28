@@ -2,9 +2,6 @@ package com.maleicacid.tvinput.aribsi
 
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
-import org.json.JSONObject
-
-private typealias NativeTransaction = NativeSiSnapshot
 
 class NativeParserCleanupException(
     val status: Int,
@@ -16,7 +13,6 @@ enum class NativeSiFailureReason {
     PARSER_POISONED,
     INVALID_HANDLE,
     JNI_INPUT,
-    JSON_ENCODING,
     JNI_OUTPUT,
 }
 
@@ -164,7 +160,7 @@ class NativeAribSiParser : AutoCloseable {
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
-    private fun buildProgramPublishSnapshot(snapshot: NativeTransaction): ProgramPublishSnapshot {
+    private fun buildProgramPublishSnapshot(snapshot: NativeSiSnapshot): ProgramPublishSnapshot {
         val publication =
             epgPublication.project(
                 discoveryProfile,
@@ -196,7 +192,7 @@ class NativeAribSiParser : AutoCloseable {
             event.descriptors.diagnostics.descriptorDiagnostics
         }
 
-    private fun readNativeTransaction(): NativeTransaction {
+    private fun readNativeTransaction(): NativeSiSnapshot {
         check(handle != 0L) { "ネイティブ解析器は終了済みです" }
         val transport =
             nativeSnapshotBulkTyped(handle)
@@ -322,32 +318,26 @@ class NativeAribSiParser : AutoCloseable {
             adts: ByteArray,
             ascHex: String?,
         ): AribAacConfiguration? {
-            val raw = requireNativeString(nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) }))
-            val result = JSONObject(raw)
-            return when (result.getString("status")) {
-                "PENDING" -> {
+            val result = nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) })
+            return when (result.status) {
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.PENDING -> {
                     null
                 }
 
-                "INVALID" -> {
-                    throw IllegalArgumentException(result.getString("reason"))
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.INVALID -> {
+                    throw IllegalArgumentException(checkNotNull(result.reason))
                 }
 
-                "READY" -> {
-                    result.getJSONObject("configuration").let {
-                        AribAacConfiguration(
-                            it.getInt("audioObjectType"),
-                            it.getInt("samplingFrequency"),
-                            if (it.isNull("extensionSamplingFrequency")) null else it.getInt("extensionSamplingFrequency"),
-                            it.getInt("channelConfiguration"),
-                            it.getInt("channelCount"),
-                            codecConfigBytes(it.getString("audioSpecificConfigHex"), 512),
-                        )
-                    }
-                }
-
-                else -> {
-                    error("codec構成probeが未知の状態を返しました")
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.READY -> {
+                    val configuration = checkNotNull(result.configuration)
+                    AribAacConfiguration(
+                        configuration.audioObjectType,
+                        configuration.samplingFrequency,
+                        configuration.extensionSamplingFrequency,
+                        configuration.channelConfiguration,
+                        configuration.channelCount,
+                        codecConfigBytes(configuration.audioSpecificConfigHex, 512),
+                    )
                 }
             }
         }
@@ -355,7 +345,7 @@ class NativeAribSiParser : AutoCloseable {
         @JvmStatic private external fun nativeProbeAacConfiguration(
             adts: ByteArray,
             asc: ByteArray?,
-        ): String?
+        ): com.maleicacid.tvinput.aribsi.generated.AacConfigurationProbeDto
 
         init {
             System.loadLibrary("maleicacid_arib_si_engine_jni")

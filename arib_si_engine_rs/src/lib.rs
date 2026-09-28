@@ -17,6 +17,7 @@ use eit::EitEvent;
 use jni::objects::{JByteArray, JClass, JObject, JString, JThrowable, JValue};
 use jni::sys::{jint, jintArray, jlong, jobject, jstring};
 use jni::JNIEnv;
+use maleicacid_arib_si_engine_core::codec_probe_dto::AacConfigurationProbeDto;
 use maleicacid_arib_si_engine_core::eit_instances::EitInstances;
 use maleicacid_arib_si_engine_core::runtime_snapshot_build;
 use maleicacid_arib_si_engine_core::runtime_snapshot_dto::{
@@ -530,7 +531,6 @@ enum SiJniFailureReason {
     ParserPoisoned,
     InvalidHandle,
     JniInput,
-    JsonEncoding,
     JniOutput,
 }
 
@@ -542,7 +542,6 @@ impl SiJniFailureReason {
             Self::ParserPoisoned => "PARSER_POISONED",
             Self::InvalidHandle => "INVALID_HANDLE",
             Self::JniInput => "JNI_INPUT",
-            Self::JsonEncoding => "JSON_ENCODING",
             Self::JniOutput => "JNI_OUTPUT",
         }
     }
@@ -732,7 +731,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _class: JClass<'_>,
     adts: JByteArray<'_>,
     asc: JByteArray<'_>,
-) -> jstring {
+) -> jobject {
     use maleicacid_arib_si_engine_core::codec_signaling::{
         probe_adts_configuration, AacConfigurationProbe,
     };
@@ -745,7 +744,8 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     let result = match (input, config) {
         (Ok(input), Ok(config)) => probe_adts_configuration(&input, config.as_deref()),
         (Err(CodecInputFailure::Jni(error)), _) | (_, Err(CodecInputFailure::Jni(error))) => {
-            return java_string(&mut env, Err(SiJniFailureReason::JniInput.failure(error)));
+            return throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error))
+                as jobject;
         }
         (Err(CodecInputFailure::TooLarge), _) | (_, Err(CodecInputFailure::TooLarge)) => {
             AacConfigurationProbe::Invalid {
@@ -753,11 +753,11 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
             }
         }
     };
-    java_string(
-        &mut env,
-        serde_json::to_string(&result)
-            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
-    )
+    let transport = AacConfigurationProbeDto::from(result);
+    match jvm_snapshot_generated::aac_probe_to_java(&mut env, &transport) {
+        Ok(value) => value.into_raw(),
+        Err(failure) => throw_si_failure(&mut env, failure) as jobject,
+    }
 }
 
 fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String {
