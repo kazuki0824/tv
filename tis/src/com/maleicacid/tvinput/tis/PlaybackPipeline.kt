@@ -1868,7 +1868,7 @@ class PlaybackPipeline(
 
     enum class MediaEventBoundsDecision { ACCEPT, MALFORMED, OVERSIZED, OUT_OF_BOUNDS }
 
-    private data class CaptionPesSample(
+    private class CaptionPesSample(
         val payload: ByteArray,
         val pts90k: Long?,
     )

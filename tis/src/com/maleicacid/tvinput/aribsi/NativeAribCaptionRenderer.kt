@@ -42,7 +42,27 @@ class NativeAribCaptionRenderer(
         val height: Int,
         val stride: Int,
         val rgba8888: ByteArray,
-    )
+    ) {
+        override fun equals(other: Any?): Boolean =
+            this === other ||
+                (other is RenderedCaptionImage &&
+                    dstX == other.dstX &&
+                    dstY == other.dstY &&
+                    width == other.width &&
+                    height == other.height &&
+                    stride == other.stride &&
+                    rgba8888.contentEquals(other.rgba8888))
+
+        override fun hashCode(): Int {
+            var result = dstX
+            result = 31 * result + dstY
+            result = 31 * result + width
+            result = 31 * result + height
+            result = 31 * result + stride
+            result = 31 * result + rgba8888.contentHashCode()
+            return result
+        }
+    }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")

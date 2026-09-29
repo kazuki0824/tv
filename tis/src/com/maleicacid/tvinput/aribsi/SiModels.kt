@@ -76,7 +76,27 @@ data class AribAacConfiguration(
     val channelConfiguration: Int,
     val channelCount: Int,
     val audioSpecificConfig: ByteArray,
-)
+) {
+    override fun equals(other: Any?): Boolean =
+        this === other ||
+            (other is AribAacConfiguration &&
+                audioObjectType == other.audioObjectType &&
+                samplingFrequency == other.samplingFrequency &&
+                extensionSamplingFrequency == other.extensionSamplingFrequency &&
+                channelConfiguration == other.channelConfiguration &&
+                channelCount == other.channelCount &&
+                audioSpecificConfig.contentEquals(other.audioSpecificConfig))
+
+    override fun hashCode(): Int {
+        var result = audioObjectType
+        result = 31 * result + samplingFrequency
+        result = 31 * result + (extensionSamplingFrequency ?: 0)
+        result = 31 * result + channelConfiguration
+        result = 31 * result + channelCount
+        result = 31 * result + audioSpecificConfig.contentHashCode()
+        return result
+    }
+}
 
 data class AribCodecFacts(
     val avc: AribAvcSignaling? = null,
