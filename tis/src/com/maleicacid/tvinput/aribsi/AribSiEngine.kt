@@ -33,11 +33,6 @@ class AribSiEngine(
             nativeParser.serviceRegistrationSnapshot()
         }
 
-    fun casDiscoverySnapshot(): CasDiscoverySnapshot =
-        synchronized(lock) {
-            nativeParser.casDiscoverySnapshot()
-        }
-
     fun pmtPidsForSectionFilters(): Set<TsPid> =
         synchronized(lock) {
             nativeParser.pmtPidsForSectionFilters()

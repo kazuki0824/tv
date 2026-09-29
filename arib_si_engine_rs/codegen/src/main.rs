@@ -47,9 +47,42 @@ fn normalize_generated_kotlin(dir: &Path) -> Result<(), Box<dyn Error>> {
         if path.extension().and_then(|extension| extension.to_str()) != Some("kt") {
             continue;
         }
-        let source = fs::read_to_string(&path)?
+        let mut source = fs::read_to_string(&path)?
             .replace("com.maleicacid.tvinput.aribsi.generated.", "")
             .replace("kotlin.collections.List", "List");
+        // serde names remain canonical wire values; only Kotlin singleton identifiers use PascalCase.
+        let variant_names: &[(&str, &str)] = match path.file_stem().and_then(|stem| stem.to_str()) {
+            Some("EitTimingStateDto") => &[
+                ("DEFINED", "Defined"),
+                ("UNDEFINED_TIME", "UndefinedTime"),
+                ("BOTH_TIMING_UNDEFINED", "BothTimingUndefined"),
+                ("MALFORMED_TIMING", "MalformedTiming"),
+            ],
+            Some("BroadcastSystemDto") => &[
+                ("ISDB_T", "IsdbT"),
+                ("ISDB_S_BS", "IsdbSBs"),
+                ("ISDB_S_110CS", "IsdbS110Cs"),
+            ],
+            Some("SmdSemanticStateDto") => &[
+                ("SUPPORTED_BROADCAST", "SupportedBroadcast"),
+                ("NON_BROADCAST", "NonBroadcast"),
+                ("UNDEFINED_BROADCAST_CLASS", "UndefinedBroadcastClass"),
+                ("UNSUPPORTED_BROADCAST_SYSTEM", "UnsupportedBroadcastSystem"),
+                ("UNDETERMINED_SMD", "UndeterminedSmd"),
+            ],
+            Some("CaMetadataSourceDto") => &[
+                ("PROGRAM", "Program"),
+                ("ELEMENTARY_STREAM", "ElementaryStream"),
+                ("CAT", "Cat"),
+            ],
+            _ => &[],
+        };
+        for (wire_name, kotlin_name) in variant_names {
+            source = source.replace(
+                &format!("object {wire_name} :"),
+                &format!("object {kotlin_name} :"),
+            );
+        }
         let lines: Vec<&str> = source.lines().collect();
         let mut content = String::new();
         let mut index = 0;

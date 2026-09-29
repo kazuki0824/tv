@@ -4,10 +4,12 @@ import android.content.Context
 import android.media.tv.TvContentRating
 import android.media.tv.TvContract
 import android.net.Uri
+import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.EitTimingState
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
+import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
 
 class CurrentProgramRatingResolver internal constructor(
@@ -113,10 +115,6 @@ class CurrentProgramRatingResolver internal constructor(
     @Volatile
     private var currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
 
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    fun currentProgramResolutionDiagnosticForTest(): CurrentProgramResolutionDiagnostic = currentProgramResolutionDiagnostic
-
     sealed class EitAuthority {
         object Unconfirmed : EitAuthority()
 
@@ -215,10 +213,18 @@ class CurrentProgramRatingResolver internal constructor(
                     currentProgramResolutionDiagnostic.copy(
                         ratingFreshnessRule = selection.second,
                     )
+                val diagnostic = currentProgramResolutionDiagnostic
+                if (diagnostic.overlapCount > 1) {
+                    Log.w(
+                        LogTags.TIS,
+                        "current Program overlap selectionRule=${diagnostic.selectionRule} overlapCount=${diagnostic.overlapCount} selectedProgramId=${diagnostic.selectedProgramId} ratingFreshnessRule=${diagnostic.ratingFreshnessRule}",
+                    )
+                }
                 ResolveResult.Ratings(selection.first ?: unresolvedRatingFallback(channelUri, serviceKey))
             }
 
             is TvProviderLookupResult.QueryFailed -> {
+                currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
                 ResolveResult.ProviderQueryFailed(
                     channelUriString = channelUri?.toString().orEmpty(),
                     serviceKey = serviceKey,
@@ -253,7 +259,10 @@ class CurrentProgramRatingResolver internal constructor(
         serviceKey: ServiceKey?,
         nowMillis: Long,
     ): TvProviderLookupResult {
-        if (channelUri == null) return TvProviderLookupResult.Success(null)
+        if (channelUri == null) {
+            currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
+            return TvProviderLookupResult.Success(null)
+        }
         val projection =
             arrayOf(
                 TvContract.Programs._ID,

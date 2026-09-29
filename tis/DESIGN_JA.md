@@ -469,7 +469,7 @@ publish fingerprint は、provider-data bytesを含む TvProvider へ実際に�
 
 現在番組 resolver は `TvContract.buildProgramsUriForChannel(channelUri, now, now + 1ms)` の時間範囲URIを使用し、TvProvider queryのSQL `selection` / `selectionArgs` は渡さない。このURIが `END_TIME_UTC_MILLIS > now AND START_TIME_UTC_MILLIS < now + 1ms` のoverlapへ絞るため、整数ms時刻では現在番組の `START_TIME_UTC_MILLIS <= now AND END_TIME_UTC_MILLIS > now` と一致する。sort order は `START_TIME_UTC_MILLIS DESC, END_TIME_UTC_MILLIS ASC, _ID DESC` に固定する。overlap がある場合も cursor 返却順には依存せず、この規則で1件を選ぶ。
 
-現在番組選択の診断は process-local `CurrentProgramResolutionDiagnostic` とし、`selectionRule`、`overlapCount`、`selectedProgramId` を保持できる。`selectionRule` は `START_DESC_END_ASC_ID_DESC` とし、対象なしの場合は empty string とする。この診断は `Programs.COLUMN_INTERNAL_PROVIDER_DATA` へ永続化せず、publish fingerprint、Program identity、unblock identity の構成要素にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
+現在番組選択の診断は process-local `CurrentProgramResolutionDiagnostic` とし、`selectionRule`、`overlapCount`、`selectedProgramId` を保持する。`selectionRule` は `START_DESC_END_ASC_ID_DESC` とし、対象なしの場合は empty string とする。TvProvider検索で複数行が重なる場合は選択規則・候補数・選択行ID・rating鮮度規則をTISログへ出し、診断を観測可能にする。検索失敗時は古い選択結果を残さない。この診断は `Programs.COLUMN_INTERNAL_PROVIDER_DATA` へ永続化せず、publish fingerprint、Program identity、unblock identity の構成要素にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
 
 ## CA descriptor / provider-data 直列化
 
@@ -591,22 +591,11 @@ data class ServiceRegistrationSnapshot(
 fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot
 ```
 
-```kotlin
-data class CasDiscoverySnapshot(
-    val services: List<AribService>,
-    val caMetadata: List<CaMetadata>,
-    val pmtPids: Map<ServiceKey, TsPid>,
-    val catEmmPids: List<TsPid>,
-    val diagnostics: List<DescriptorDiagnostic>,
-    val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
-)
-
-fun casDiscoverySnapshot(): CasDiscoverySnapshot
-```
+CAS検出に必要な`services`、`caMetadata`、`pmtPids`、`catEmmPids`、`descriptorDiagnostics`、`malformedCaDescriptorDiagnostics`は`LivePlaybackSnapshot`の同一native transactionに含める。CAS専用の第二snapshot取得入口を設けない。スクランブルされたサービスでもこれらの診断を保持する。
 
 `ingestSequence`はsection ingestにより意味stateが更新された順序であり、snapshot read回数ではない。readするたびに増える`snapshotGeneration`は設けない。discovery stage、table requirement status、services、CA、diagnosticsは一回取得した同じimmutable native transactionから用途別DTOへ投影し、stageやCAS用serviceを別JNI readで再取得しない。
 
-`MalformedCaDescriptorDiagnostic` は、少なくとも `pid`、`tableId`、`tableIdExtension`、`serviceId`、`elementaryPid`、`scope`、`offset`、`declaredLength`、`actualRemainingLength`、`reason`、`rawPrefixHex` を持つ。詳細診断の一次保存先は CAS discovery snapshot とし、Program provider-data は `malformedCaDescriptorCount` summary だけを保存する。
+`MalformedCaDescriptorDiagnostic` は、少なくとも `pid`、`tableId`、`tableIdExtension`、`serviceId`、`elementaryPid`、`scope`、`offset`、`declaredLength`、`actualRemainingLength`、`reason`、`rawPrefixHex` を持つ。詳細診断の一次保存先は `LivePlaybackSnapshot` とし、Program provider-data は `malformedCaDescriptorCount` summary だけを保存する。
 
 `takeProgramPublishSnapshot()`は、同じロック内で一回取得したimmutable native transactionからevents / EIT instance / service semantic facts / 診断情報を読み、Kotlin policyでupdateWindowsを投影する。区間queueのdrainは行わない。LiveSessionの現在番組判定・視聴年齢制限判定・映像メタデータ補完は、live refreshで取得して保持した`LivePlaybackSnapshot.programs`を使い、途中でnative transactionを再読しない。`snapshotEvents()`と`takeEpgUpdateWindows()`を別々に呼んで合成する経路は設けない。
 
@@ -721,7 +710,7 @@ Provider 必須問い合わせ failure、Program insert/update failure、廃止�
 
 LineageOS 22.1の通常経路では、`TvInputService.onCreateSession(inputId, sessionId, tvAppAttributionSource)`で受け取ったnon-null `tvAppAttributionSource`をsession寿命中のattribution正本とする。session生成時に`serviceContext.createContext(new ContextParams.Builder().setNextAttributionSource(tvAppAttributionSource).build())`で変更不能なsession固有`sessionContext`を作り、`sessionId`、`tvAppAttributionSource`、`sessionContext`を同じsession creation snapshotへ確定する。途中失敗ではSessionを公開せず、作成済みartifactを解放する。
 
-Tuner SDKのTRM接続にはframework由来`sessionId`を`Tuner(serviceContext, sessionId, useCase)`へ渡す。AudioTrack生成はAndroid 15（API 35）環境の公開`AudioTrack.Builder.setContext(sessionContext)`を必須とし、`sessionContext.getAttributionSource()`からTV app attribution chainとdevice固有audio session情報を伝播させる。通常経路で素の`serviceContext`をAudioTrackへ渡さず、2引数版／1引数版の互換経路から3引数通常経路へ黙示fallbackしない。生成したAudioTrackは同generationのMediaSyncへ設定し、session releaseまたは置換後は旧`sessionContext`と旧AudioTrackを新しいMediaSync generationへ再利用しない。
+TISと同梱するJNI・rating providerのproduct最小SDKはAndroid 15（API 35）とし、hostのRobolectric buildも同じ最小SDKで検証する。Tuner SDKのTRM接続にはframework由来`sessionId`を`Tuner(serviceContext, sessionId, useCase)`へ渡す。AudioTrack生成はAndroid 15（API 35）環境の公開`AudioTrack.Builder.setContext(sessionContext)`を必須とし、`sessionContext.getAttributionSource()`からTV app attribution chainとdevice固有audio session情報を伝播させる。通常経路で素の`serviceContext`をAudioTrackへ渡さず、2引数版／1引数版の互換経路から3引数通常経路へ黙示fallbackしない。生成したAudioTrackは同generationのMediaSyncへ設定し、session releaseまたは置換後は旧`sessionContext`と旧AudioTrackを新しいMediaSync generationへ再利用しない。
 
 `setAttributionSource()`を探索・呼出しするreflection、vendor独自AIDL、reflection失敗時の無言fallbackを通常経路に置かない。例外は本書で明示したMediaSync final-output観測用の任意Framework-private `@hide` contractだけとし、そのlistener型とsetterだけをruntime reflectionで解決する。API不存在または登録失敗では診断を残して公開`MediaCodec.OnFrameRenderedListener`へ切り替え、TISのbuildと起動に同一platform sourceの変更を要求しない。それ以外のnon-SDK APIを便乗して使用してはならない。
 

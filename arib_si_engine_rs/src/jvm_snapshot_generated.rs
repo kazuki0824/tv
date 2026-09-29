@@ -153,10 +153,10 @@ fn parse_status_variant(value: &SiParseStatusDto) -> &'static str {
 
 fn timing_variant(value: &EitTimingStateDto) -> &'static str {
     match value {
-        EitTimingStateDto::Defined => "DEFINED",
-        EitTimingStateDto::UndefinedTime => "UNDEFINED_TIME",
-        EitTimingStateDto::BothTimingUndefined => "BOTH_TIMING_UNDEFINED",
-        EitTimingStateDto::MalformedTiming => "MALFORMED_TIMING",
+        EitTimingStateDto::Defined => "Defined",
+        EitTimingStateDto::UndefinedTime => "UndefinedTime",
+        EitTimingStateDto::BothTimingUndefined => "BothTimingUndefined",
+        EitTimingStateDto::MalformedTiming => "MalformedTiming",
     }
 }
 
@@ -169,19 +169,19 @@ fn stream_kind_variant(value: &ElementaryStreamKindDto) -> &'static str {
 
 fn broadcast_system_variant(value: &BroadcastSystemDto) -> &'static str {
     match value {
-        BroadcastSystemDto::IsdbT => "ISDB_T",
-        BroadcastSystemDto::IsdbSBs => "ISDB_S_BS",
-        BroadcastSystemDto::IsdbS110Cs => "ISDB_S_110CS",
+        BroadcastSystemDto::IsdbT => "IsdbT",
+        BroadcastSystemDto::IsdbSBs => "IsdbSBs",
+        BroadcastSystemDto::IsdbS110Cs => "IsdbS110Cs",
     }
 }
 
 fn smd_state_variant(value: &SmdSemanticStateDto) -> &'static str {
     match value {
-        SmdSemanticStateDto::SupportedBroadcast => "SUPPORTED_BROADCAST",
-        SmdSemanticStateDto::NonBroadcast => "NON_BROADCAST",
-        SmdSemanticStateDto::UndefinedBroadcastClass => "UNDEFINED_BROADCAST_CLASS",
-        SmdSemanticStateDto::UnsupportedBroadcastSystem => "UNSUPPORTED_BROADCAST_SYSTEM",
-        SmdSemanticStateDto::UndeterminedSmd => "UNDETERMINED_SMD",
+        SmdSemanticStateDto::SupportedBroadcast => "SupportedBroadcast",
+        SmdSemanticStateDto::NonBroadcast => "NonBroadcast",
+        SmdSemanticStateDto::UndefinedBroadcastClass => "UndefinedBroadcastClass",
+        SmdSemanticStateDto::UnsupportedBroadcastSystem => "UnsupportedBroadcastSystem",
+        SmdSemanticStateDto::UndeterminedSmd => "UndeterminedSmd",
     }
 }
 
@@ -194,9 +194,9 @@ fn ca_scope_variant(value: &CaDescriptorScopeDto) -> &'static str {
 
 fn ca_source_variant(value: &CaMetadataSourceDto) -> &'static str {
     match value {
-        CaMetadataSourceDto::Program => "PROGRAM",
-        CaMetadataSourceDto::ElementaryStream => "ELEMENTARY_STREAM",
-        CaMetadataSourceDto::Cat => "CAT",
+        CaMetadataSourceDto::Program => "Program",
+        CaMetadataSourceDto::ElementaryStream => "ElementaryStream",
+        CaMetadataSourceDto::Cat => "Cat",
     }
 }
 

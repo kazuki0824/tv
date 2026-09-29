@@ -114,23 +114,6 @@ class NativeAribSiParser : AutoCloseable {
     }
 
     @Synchronized
-    fun casDiscoverySnapshot(): CasDiscoverySnapshot {
-        val snapshot = readNativeTransaction()
-        return CasDiscoverySnapshot(
-            services = snapshot.services,
-            caMetadata = snapshot.caMetadata,
-            pmtPids = snapshot.pmtPids,
-            catEmmPids =
-                snapshot.catCaMetadata
-                    .mapNotNull { it.emmPid }
-                    .distinct()
-                    .sorted(),
-            diagnostics = descriptorDiagnosticsFromEvents(snapshot.events),
-            malformedCaDescriptorDiagnostics = snapshot.malformedCaDescriptorDiagnostics,
-        )
-    }
-
-    @Synchronized
     fun livePlaybackSnapshot(): LivePlaybackSnapshot {
         val snapshot = readNativeTransaction()
         return LivePlaybackSnapshot(
