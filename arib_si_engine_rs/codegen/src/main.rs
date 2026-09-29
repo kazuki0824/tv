@@ -55,11 +55,7 @@ fn normalize_generated_kotlin(dir: &Path) -> Result<(), Box<dyn Error>> {
         let mut index = 0;
         while index < lines.len() {
             let line = lines[index];
-            if line.ends_with(" {")
-                && lines
-                    .get(index + 1)
-                    .is_some_and(|next| next.trim() == "}")
-            {
+            if line.ends_with(" {") && lines.get(index + 1).is_some_and(|next| next.trim() == "}") {
                 content.push_str(&line[..line.len() - 2]);
                 content.push('\n');
                 index += 2;
