@@ -396,16 +396,19 @@ class TunerController(
     private fun armTuneEventListener(
         tunerInstance: Tuner,
         generation: Long,
-    ): Boolean {
-        return onTuneEventCallback == null ||
+    ): Boolean =
+        onTuneEventCallback == null ||
             runCatching {
                 tunerInstance.setOnTuneEventListener(sectionExecutor) { event ->
                     if (tunerInstance === tuner && !released) handleTuneEventOnController(generation, event)
                 }
             }.onFailure { error ->
-                Log.w(LogTags.TIS, "frontend tune event listener 登録に失敗しました inputId=$inputId generation=$generation", error)
+                Log.w(
+                    LogTags.TIS,
+                    "frontend tune event listener 登録に失敗しました inputId=$inputId generation=$generation",
+                    error,
+                )
             }.isSuccess
-    }
 
     private fun handleTuneEventOnController(
         generation: Long,
