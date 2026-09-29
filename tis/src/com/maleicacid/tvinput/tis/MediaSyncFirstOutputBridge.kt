@@ -23,6 +23,8 @@ internal object MediaSyncFirstOutputBridge {
         val setter: java.lang.reflect.Method,
     )
 
+    // 任意のplatform-private契約だけを探索し、不在なら公開callbackへ切り替える。ログのfallbackは一語。
+    @Suppress("AndroidLintPrivateApi", "AndroidLintTextConcatSpace")
     private val binding: Binding? by lazy(LazyThreadSafetyMode.PUBLICATION) {
         runCatching {
             val listenerClass = Class.forName(LISTENER_CLASS_NAME)

@@ -1134,7 +1134,8 @@ class TunerController(
 
     fun closeSectionFilters(): Unit = callOnController { closeSectionFiltersOnController() }
 
-    @Suppress("TooGenericExceptionCaught")
+    // 同一例外の再throw時に addSuppressed(self) が失敗しないよう同一性を検査する。
+    @Suppress("KotlinConstantConditions", "TooGenericExceptionCaught")
     private fun closeSectionFiltersOnController() {
         sectionFilters.clear()
         var failure: RuntimeException? = null
@@ -1548,7 +1549,8 @@ class TunerController(
         }
     }
 
-    @Suppress("MagicNumber", "MaxLineLength")
+    // 連結されるログ項目名は generation= であり、途中に空白を入れない。
+    @Suppress("AndroidLintTextConcatSpace", "MagicNumber", "MaxLineLength")
     fun setOnSubtitlePesCallback(callback: (Long, String, ByteArray, CaptionTimestamp, AribBroadcastClock.StatementTime?) -> Unit) {
         playbackPipeline.setOnSubtitlePesCallback { generation, trackId, pesData, timestamp ->
             val pid =

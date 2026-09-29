@@ -1122,7 +1122,7 @@ class PlaybackPipeline(
         if (videoPathExpected && !videoInputQueued) return
         if (audioPathExpected && !audioInputQueued) return
         if (audioPathExpected && audioTrack == null) return
-        runCatching { sync.setPlaybackParams(PlaybackParams().setSpeed(1.0f)) }
+        runCatching { sync.playbackParams = PlaybackParams().setSpeed(1.0f) }
             .onSuccess { mediaSyncStarted = true }
             .onFailure { error ->
                 val reason =
@@ -1709,7 +1709,8 @@ class PlaybackPipeline(
         }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
+        // 連結されるログ項目名は decoderMask= であり、途中に空白を入れない。
+        @Suppress("AndroidLintTextConcatSpace", "MaxLineLength")
         override fun onOutputFormatChanged(format: MediaFormat) {
             val sampleRate = getIntegerOrDefault(format, MediaFormat.KEY_SAMPLE_RATE, outputSampleRate)
             val channelCount = getIntegerOrDefault(format, MediaFormat.KEY_CHANNEL_COUNT, outputChannels)
@@ -2677,7 +2678,7 @@ class PlaybackPipeline(
         if (sync !=
             null
         ) {
-            runCatching { sync.setPlaybackParams(PlaybackParams().setSpeed(0.0f)) }
+            runCatching { sync.playbackParams = PlaybackParams().setSpeed(0.0f) }
             runCatching { sync.setCallback(null, null) }
             runCatching { sync.setOnErrorListener(null, null) }
         }

@@ -14,7 +14,7 @@ object LanguageCodeNormalizer {
         Locale
             .getISOLanguages()
             .mapNotNull { iso2 ->
-                runCatching { iso2.lowercase(Locale.ROOT) to Locale(iso2).getISO3Language().lowercase(Locale.ROOT) }.getOrNull()
+                runCatching { iso2.lowercase(Locale.ROOT) to Locale(iso2).iso3Language.lowercase(Locale.ROOT) }.getOrNull()
             }.toMap()
 
     private val bibliographicAliases =

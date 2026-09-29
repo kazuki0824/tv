@@ -596,6 +596,8 @@ object ChannelScanManager {
         BootEpgSyncScheduler.scheduleIfEligible(context.applicationContext, source)
     }
 
+    // 連結されるログ項目名は activeLiveSessions= であり、途中に空白を入れない。
+    @Suppress("AndroidLintTextConcatSpace")
     private fun markBackgroundMaintenanceSkipped(
         reason: String,
         source: String,

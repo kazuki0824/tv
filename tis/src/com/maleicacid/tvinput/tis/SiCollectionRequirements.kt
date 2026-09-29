@@ -83,22 +83,22 @@ internal class SiCollectionRequirements(
             val rows = snapshot.tableRequirements.filter { it.component == component && it.required }
             if (rows.isEmpty()) require(Key(component, null, null, null), false)
         }
-        for (table in snapshot.tableRequirements.filter { it.required }) {
-            val scope = table.originalNetworkId to table.transportStreamId
+        for ((component, onid, tsid, sid, _, complete) in snapshot.tableRequirements.filter { it.required }) {
+            val scope = onid to tsid
             val pmtOutsideTargets =
-                table.component == "PMT" && table.serviceId != null && targets.isNotEmpty() &&
+                component == "PMT" && sid != null && targets.isNotEmpty() &&
                     targets.none {
-                        it.originalNetworkId == scope.first && it.transportStreamId == scope.second &&
-                            it.serviceId == table.serviceId
+                        it.originalNetworkId == onid && it.transportStreamId == tsid &&
+                            it.serviceId == sid
                     }
             val transportOutsideTargets =
-                table.component in setOf("SDT", "NIT") && table.transportStreamId != null &&
+                component in setOf("SDT", "NIT") && tsid != null &&
                     transports.isNotEmpty() && scope !in transports
             val outsideTargets = pmtOutsideTargets || transportOutsideTargets
             if (outsideTargets) {
                 continue
             }
-            require(Key(table.component, table.originalNetworkId, table.transportStreamId, table.serviceId), table.complete)
+            require(Key(component, onid, tsid, sid), complete)
         }
         if (targets.isEmpty()) require(Key("TARGET_SERVICE", null, null, null), false)
         for (key in targets) {

@@ -499,7 +499,8 @@ class TvProviderWriter private constructor(
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "SpreadOperator")
+    // 現行mapperの明示写像値をencodeする。未制約のProgramRecord値域は設計上の逸脱許可対象。
+    @Suppress("AndroidLintWrongConstant", "CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "SpreadOperator")
     private fun programValues(
         channelId: Long,
         program: ProgramRecord,

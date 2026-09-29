@@ -66,7 +66,8 @@ object SectionFilterPolicy {
     }
 
     /** 他の解放を省略せず、最初の失敗に後続失敗を添えて返す。 */
-    @Suppress("TooGenericExceptionCaught")
+    // actions は同一例外を再throwし得る。addSuppressed(self) を避ける同一性検査を保持する。
+    @Suppress("KotlinConstantConditions", "TooGenericExceptionCaught")
     fun completeCleanup(vararg actions: () -> Unit) {
         var failure: Exception? = null
         for (action in actions) {
