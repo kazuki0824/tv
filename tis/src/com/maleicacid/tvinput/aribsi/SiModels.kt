@@ -602,7 +602,7 @@ data class CaMetadata(
     }
 
     override fun hashCode(): Int {
-        var result = serviceKey?.hashCode() ?: 0
+        var result = serviceKey.hashCode()
         result = 31 * result + caSystemId
         result = 31 * result + (ecmPid?.value ?: 0)
         result = 31 * result + (emmPid?.value ?: 0)

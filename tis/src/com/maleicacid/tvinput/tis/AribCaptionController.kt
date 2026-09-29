@@ -64,7 +64,7 @@ class AribCaptionController(
     private val released = AtomicBoolean(false)
     private val presentationEpoch = AtomicLong(0L)
     private val boundaries =
-        PriorityQueue<Boundary>(
+        PriorityQueue(
             compareBy<Boundary> { it.mediaTimeMillis }
                 .thenBy { it.frameToken }
                 .thenBy { if (it is Boundary.Display) 0 else 1 },
