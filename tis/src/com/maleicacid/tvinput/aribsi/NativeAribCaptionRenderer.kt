@@ -43,15 +43,16 @@ class NativeAribCaptionRenderer(
         val stride: Int,
         val rgba8888: ByteArray,
     ) {
-        override fun equals(other: Any?): Boolean =
-            this === other ||
-                (other is RenderedCaptionImage &&
-                    dstX == other.dstX &&
-                    dstY == other.dstY &&
-                    width == other.width &&
-                    height == other.height &&
-                    stride == other.stride &&
-                    rgba8888.contentEquals(other.rgba8888))
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is RenderedCaptionImage) return false
+            return dstX == other.dstX &&
+                dstY == other.dstY &&
+                width == other.width &&
+                height == other.height &&
+                stride == other.stride &&
+                rgba8888.contentEquals(other.rgba8888)
+        }
 
         override fun hashCode(): Int {
             var result = dstX
