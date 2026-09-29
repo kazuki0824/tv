@@ -6,6 +6,5 @@ data class OtherNetworkEventGroupReferenceDto(
     val transportStreamId: Int,
     val serviceId: Int,
     val eventId: Int
-) {
-}
+)
 

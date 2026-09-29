@@ -5,6 +5,5 @@ data class ParserDiagnosticDto(
     val code: String,
     val message: String,
     val severity: String?
-) {
-}
+)
 

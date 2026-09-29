@@ -3,10 +3,8 @@ package com.maleicacid.tvinput.aribsi.generated
 
 sealed class ElementaryStreamKindDto {
 
-    object VIDEO : ElementaryStreamKindDto() {
-    }
+    object VIDEO : ElementaryStreamKindDto()
 
-    object AUDIO : ElementaryStreamKindDto() {
-    }
+    object AUDIO : ElementaryStreamKindDto()
 }
 

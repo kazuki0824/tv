@@ -1,6 +1,5 @@
 package com.maleicacid.tvinput.aribsi
 
-import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 
 class NativeParserCleanupException(

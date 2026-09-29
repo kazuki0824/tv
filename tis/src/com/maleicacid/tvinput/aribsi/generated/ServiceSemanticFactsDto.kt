@@ -9,19 +9,18 @@ data class ServiceSemanticFactsDto(
     val pmtPidResolved: Boolean,
     val pmtParsed: Boolean,
     val pcrPidResolved: Boolean,
-    val elementaryStreams: kotlin.collections.List<com.maleicacid.tvinput.aribsi.generated.ElementaryStreamDto>,
+    val elementaryStreams: List<ElementaryStreamDto>,
     val requiresCas: Boolean,
     val casFactsCanonicalJson: String?,
     val caDescriptorsResolved: Boolean,
     val freeCaMode: Boolean?,
-    val smd: com.maleicacid.tvinput.aribsi.generated.SmdSemanticFactsDto,
-    val missingComponents: kotlin.collections.List<String>,
-    val semanticDiagnostics: kotlin.collections.List<String>,
+    val smd: SmdSemanticFactsDto,
+    val missingComponents: List<String>,
+    val semanticDiagnostics: List<String>,
     val name: String?,
     val providerName: String?,
     val pmtPid: Int?,
     val pcrPid: Int?,
-    val serviceScopedCaDescriptors: kotlin.collections.List<com.maleicacid.tvinput.aribsi.generated.ServiceCaDescriptorDto>
-) {
-}
+    val serviceScopedCaDescriptors: List<ServiceCaDescriptorDto>
+)
 

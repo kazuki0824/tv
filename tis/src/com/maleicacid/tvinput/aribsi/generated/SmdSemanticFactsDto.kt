@@ -7,11 +7,10 @@ data class SmdSemanticFactsDto(
     val systemManagementId: Int?,
     val broadcastingFlag: Int?,
     val broadcastingIdentifier: Int?,
-    val broadcastSystem: com.maleicacid.tvinput.aribsi.generated.BroadcastSystemDto?,
+    val broadcastSystem: BroadcastSystemDto?,
     val additionalBroadcastingIdentification: Int?,
     val additionalIdentificationInfoHex: String,
-    val semanticState: com.maleicacid.tvinput.aribsi.generated.SmdSemanticStateDto,
+    val semanticState: SmdSemanticStateDto,
     val diagnostic: String?
-) {
-}
+)
 

@@ -10,7 +10,6 @@ data class SeriesDto(
     val episodeNumber: Int?,
     val lastEpisodeNumber: Int?,
     val name: String?,
-    val parseStatus: com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
-) {
-}
+    val parseStatus: SiParseStatusDto
+)
 

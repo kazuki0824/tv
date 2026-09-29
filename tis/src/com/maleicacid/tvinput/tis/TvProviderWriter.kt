@@ -7,10 +7,8 @@ import android.media.tv.TvContract
 import android.net.Uri
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
-import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
-import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
 import java.security.MessageDigest

@@ -11,6 +11,5 @@ data class DescriptorDiagnosticScopeDto(
     val transportStreamId: Int?,
     val serviceId: Int?,
     val eventId: Int?
-) {
-}
+)
 

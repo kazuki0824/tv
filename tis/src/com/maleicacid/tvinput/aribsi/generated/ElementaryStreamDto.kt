@@ -7,7 +7,7 @@ data class ElementaryStreamDto(
     val componentTag: Int?,
     val componentType: Int?,
     val streamContent: Int?,
-    val languageCodes: kotlin.collections.List<String>,
+    val languageCodes: List<String>,
     val dataComponentId: Int?,
     val captionDmf: Int?,
     val captionTiming: Int?,
@@ -15,8 +15,7 @@ data class ElementaryStreamDto(
     val isCaption: Boolean,
     val isSuperimpose: Boolean,
     val codec: String?,
-    val codecKind: com.maleicacid.tvinput.aribsi.generated.ElementaryStreamKindDto?,
-    val codecFacts: com.maleicacid.tvinput.aribsi.generated.CodecFactsDto
-) {
-}
+    val codecKind: ElementaryStreamKindDto?,
+    val codecFacts: CodecFactsDto
+)
 

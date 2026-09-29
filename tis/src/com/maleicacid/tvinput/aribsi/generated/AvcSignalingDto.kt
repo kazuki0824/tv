@@ -5,6 +5,5 @@ data class AvcSignalingDto(
     val profileIdc: Int,
     val constraintFlags: Int,
     val levelIdc: Int
-) {
-}
+)
 

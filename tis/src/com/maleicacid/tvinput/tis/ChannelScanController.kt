@@ -2,7 +2,6 @@ package com.maleicacid.tvinput.tis
 
 import android.content.Context
 import android.media.tv.TvInputService
-import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.frontend.OnTuneEventListener
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
