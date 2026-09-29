@@ -25,7 +25,9 @@ class AribCaptionController(
     private val overlayLayerId: String = "caption",
     private val allowNoPts: Boolean = false,
     private val broadcastDeadline: ((AribBroadcastClock.StatementTime, Long?) -> AribBroadcastClock.Deadline?)? = null,
-    private val onDiagnostic: (CaptionDiagnostic) -> Unit = { diagnostic -> Log.w(LogTags.TIS, "ARIB字幕診断 $diagnostic") },
+    private val onDiagnostic: (CaptionDiagnostic) -> Unit = { diagnostic ->
+        Log.w(LogTags.TIS, "ARIB字幕診断 $diagnostic")
+    },
 ) : AutoCloseable {
     data class CaptionDiagnostic(
         val reason: Reason,
