@@ -213,13 +213,7 @@ class CurrentProgramRatingResolver internal constructor(
                     currentProgramResolutionDiagnostic.copy(
                         ratingFreshnessRule = selection.second,
                     )
-                val diagnostic = currentProgramResolutionDiagnostic
-                if (diagnostic.overlapCount > 1) {
-                    Log.w(
-                        LogTags.TIS,
-                        "current Program overlap selectionRule=${diagnostic.selectionRule} overlapCount=${diagnostic.overlapCount} selectedProgramId=${diagnostic.selectedProgramId} ratingFreshnessRule=${diagnostic.ratingFreshnessRule}",
-                    )
-                }
+                logOverlappingProgramResolution()
                 ResolveResult.Ratings(selection.first ?: unresolvedRatingFallback(channelUri, serviceKey))
             }
 
@@ -232,6 +226,17 @@ class CurrentProgramRatingResolver internal constructor(
                 )
             }
         }
+    }
+
+    private fun logOverlappingProgramResolution() {
+        val diagnostic = currentProgramResolutionDiagnostic
+        if (diagnostic.overlapCount <= 1) return
+        Log.w(
+            LogTags.TIS,
+            "current Program overlap selectionRule=${diagnostic.selectionRule} " +
+                "overlapCount=${diagnostic.overlapCount} selectedProgramId=${diagnostic.selectedProgramId} " +
+                "ratingFreshnessRule=${diagnostic.ratingFreshnessRule}",
+        )
     }
 
     private fun unresolvedRatingFallback(
