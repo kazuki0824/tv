@@ -83,7 +83,10 @@ internal class SiCollectionRequirements(
             val rows = snapshot.tableRequirements.filter { it.component == component && it.required }
             if (rows.isEmpty()) require(Key(component, null, null, null), false)
         }
-        for ((component, onid, tsid, sid, _, complete) in snapshot.tableRequirements.filter { it.required }) {
+        for (table in snapshot.tableRequirements.filter { it.required }) {
+            val (component, onid, tsid) = table
+            val sid = table.serviceId
+            val complete = table.complete
             val scope = onid to tsid
             val pmtOutsideTargets =
                 component == "PMT" && sid != null && targets.isNotEmpty() &&

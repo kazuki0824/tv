@@ -9,12 +9,13 @@ import java.util.Locale
  */
 object LanguageCodeNormalizer {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
+    // Kotlin 1.9ではLocaleのISO3 getterをプロパティとして解決できないため明示呼出しを保持する。
+    @Suppress("MaxLineLength", "UsePropertyAccessSyntax")
     private val iso2ToIso3T: Map<String, String> =
         Locale
             .getISOLanguages()
             .mapNotNull { iso2 ->
-                runCatching { iso2.lowercase(Locale.ROOT) to Locale(iso2).iso3Language.lowercase(Locale.ROOT) }.getOrNull()
+                runCatching { iso2.lowercase(Locale.ROOT) to Locale(iso2).getISO3Language().lowercase(Locale.ROOT) }.getOrNull()
             }.toMap()
 
     private val bibliographicAliases =
