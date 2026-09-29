@@ -117,18 +117,6 @@ class CurrentProgramRatingResolver internal constructor(
     @Suppress("MaxLineLength")
     fun currentProgramResolutionDiagnosticForTest(): CurrentProgramResolutionDiagnostic = currentProgramResolutionDiagnostic
 
-    fun resolve(
-        channelUri: Uri?,
-        serviceKey: ServiceKey?,
-        latestEvents: List<AribEvent>,
-        ratingProfile: AribRatingMapper.BroadcastProfile,
-        nowMillis: Long = System.currentTimeMillis(),
-    ): CurrentProgramRatingSet =
-        when (val result = resolveDetailed(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)) {
-            is ResolveResult.Ratings -> result.ratingSet
-            is ResolveResult.ProviderQueryFailed -> unresolvedRatingFallback(channelUri, serviceKey)
-        }
-
     sealed class EitAuthority {
         object Unconfirmed : EitAuthority()
 

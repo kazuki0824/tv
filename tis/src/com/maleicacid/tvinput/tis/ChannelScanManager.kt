@@ -110,10 +110,6 @@ object ChannelScanManager {
         if (remaining == 0 && context != null) drainPendingBootEpgSyncIfIdle(context, "PLAYBACK_PIPELINE_STOPPED")
     }
 
-    fun activeLiveSessionCountForTest(): Int = activeLiveSessions.size
-
-    fun sessionCreationInProgressCountForTest(): Int = sessionCreationsInProgress.get()
-
     fun beginLiveSessionCreation() {
         retryPendingRelease()
         sessionCreationsInProgress.incrementAndGet()

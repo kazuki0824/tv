@@ -14,7 +14,6 @@ import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
-import com.maleicacid.tvinput.aribsi.SiDiscoveryStage
 import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
@@ -385,24 +384,6 @@ class ChannelScanController(
         terminalCancelObserved = true
     }
 
-    fun beginSiIngestAfterTune() {
-        if (tunerController.beginSiIngestAfterTune()) {
-            refreshDynamicSectionFilters()
-            publishCurrentServiceSnapshot(PublishMode.LIVE_TUNE_REFRESH)
-        }
-    }
-
-    /** 完全な section を受ける入口。byte array は 生 TS packet ではない。 */
-    fun onSection(
-        pid: Int,
-        section: ByteArray,
-    ) {
-        val tsPid = TsPid.fromOrNull(pid) ?: return
-        tunerController.onSection(tsPid, section)
-        refreshDynamicSectionFilters()
-        publishCurrentServiceSnapshot(PublishMode.LIVE_TUNE_REFRESH)
-    }
-
     fun refreshDynamicSectionFilters() {
         if (terminalResourceLostObserved) return
         val generation = tunerController.currentGeneration()
@@ -746,12 +727,6 @@ class ChannelScanController(
         // CASのcloseもTunerControllerが所有する。同じCASを二つのownerから閉じない。
         tunerController.release()
     }
-
-    fun terminalCancelObservedForLastTask(): Boolean = terminalCancelObserved
-
-    fun terminalResourceLostObservedForLastTask(): Boolean = terminalResourceLostObserved
-
-    fun skippedUnresolvedTransportCountForDiagnostic(): Int = skippedUnresolvedTransportCount
 
     private fun resetResourceLostState() = scanGenerationFence.reset()
 

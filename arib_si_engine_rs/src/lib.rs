@@ -940,15 +940,6 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeLastStatus(
-    _env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-) -> jint {
-    with_state(handle, STATUS_INVALID_HANDLE, |state| state.last_status)
-}
-
-#[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSetDiscoveryProfile(
     _env: JNIEnv<'_>,
     _this: JObject<'_>,

@@ -167,11 +167,6 @@ value class RelativeStreamNumber(
         require(value in RELATIVE_STREAM_RANGE) { "相対ストリーム番号は 0..7 でなければなりません: $value" }
     }
 
-    companion object {
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun fromOrNull(value: Int?): RelativeStreamNumber? = value?.takeIf { it in RELATIVE_STREAM_RANGE }?.let(::RelativeStreamNumber)
-    }
 }
 
 enum class StreamSelectorType { NONE, TSID, RELATIVE }

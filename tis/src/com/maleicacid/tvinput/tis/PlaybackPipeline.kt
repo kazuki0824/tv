@@ -304,13 +304,6 @@ class PlaybackPipeline(
         runOnPlaybackExecutorBlocking { onPlaybackGenerationRestarted = callback }
     }
 
-    fun reportUnavailable(
-        reason: PlaybackUnavailableReason,
-        detail: String = "",
-    ) {
-        enqueuePlaybackAction { emitUnavailable(reason, detail) }
-    }
-
     fun setVolume(volume: Float) {
         enqueuePlaybackAction { setVolumeOnPlaybackExecutor(volume) }
     }
@@ -1174,34 +1167,6 @@ class PlaybackPipeline(
     }
 
     fun currentPlaybackGenerationForTest(): Long = playbackGeneration
-
-    fun oversizedSamplesDroppedForDiagnostic(): Int = oversizedSamplesDropped
-
-    fun malformedSamplesDroppedForDiagnostic(): Int = malformedSamplesDropped
-
-    fun decoderBackpressureDropsForDiagnostic(): Int = decoderBackpressureDrops
-
-    fun subtitleMissingPtsSamplesForDiagnostic(): Int = subtitleMissingPtsSamples
-
-    fun simulateFirstFrameRenderedForTest(generation: Long) {
-        enqueuePlaybackAction {
-            val arm = waitingAvailabilityArm ?: return@enqueuePlaybackAction
-            when (videoAvailabilityMode) {
-                VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT -> {
-                    val sync = mediaSync ?: return@enqueuePlaybackAction
-                    commitVideoAvailability(sync, generation, arm.armSequence)
-                }
-
-                VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT -> {
-                    commitCompatibilityVideoAvailability(generation, arm.armedAtNanoTime)
-                }
-
-                null -> {
-                    Unit
-                }
-            }
-        }
-    }
 
     private fun releaseMediaEvent(event: MediaEvent) {
         runCatching { event.release() }.onFailure { Log.w(LogTags.TIS, "MediaEvent の release に失敗しました", it) }
@@ -3026,15 +2991,6 @@ class PlaybackPipeline(
             channelCount: Int,
             channelConfiguration: String?,
         ): Int? = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, channelConfiguration)
-
-        fun videoFormatInfoForTest(
-            streamType: Int,
-            spsWithStartCode: ByteArray,
-        ): VideoFormatInfo? {
-            val dimensions =
-                h264DimensionsForTest(spsWithStartCode) ?: return null
-            return VideoFormatInfo(streamType, MediaFormat.MIMETYPE_VIDEO_AVC, dimensions.first, dimensions.second)
-        }
 
         private const val AV_FILTER_BUFFER_BYTES = 16 * 1024 * 1024L
         private const val SUBTITLE_FILTER_BUFFER_BYTES = 256 * 1024L
