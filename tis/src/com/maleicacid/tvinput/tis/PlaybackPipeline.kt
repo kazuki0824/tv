@@ -491,7 +491,7 @@ class PlaybackPipeline(
             audioDecoder =
                 AudioDecoderPipeline(
                     audioKind!!,
-                    requireNotNull(audio),
+                    audio,
                     selection.audioChannelConfiguration,
                     selection.audioDualMono == true,
                     selection.dualMonoPresentation,

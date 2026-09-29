@@ -157,7 +157,7 @@ class ChannelScanController(
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
                 diagnostics += ScanDiagnostic(candidate, "選局に失敗しました result=${tune.resultCode} ${tune.message}")
-                return shouldContinueInitialScanAfterSynchronousTuneResult(tune.success)
+                return shouldContinueInitialScanAfterSynchronousTuneResult(false)
             }
             activateScanGeneration(tune.generation)
             try {
