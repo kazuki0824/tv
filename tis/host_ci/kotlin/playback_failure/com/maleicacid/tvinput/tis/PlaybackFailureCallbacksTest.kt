@@ -34,12 +34,9 @@ class PlaybackFailureCallbacksTest {
         section: ByteArray,
     ) {
         val method =
-            TunerController::class.java.getDeclaredMethod(
-                "onSectionOnController",
-                TsPid::class.java,
-                ByteArray::class.java,
-                Long::class.javaPrimitiveType,
-            )
+            TunerController::class.java.declaredMethods.single {
+                it.name.startsWith("onSectionOnController-") && it.parameterCount == 3
+            }
         method.isAccessible = true
         val generation =
             TunerController::class.java
@@ -47,7 +44,7 @@ class PlaybackFailureCallbacksTest {
                 .apply { isAccessible = true }
                 .getLong(this)
         try {
-            method.invoke(this, pid, section, generation)
+            method.invoke(this, pid.value, section, generation)
         } catch (error: java.lang.reflect.InvocationTargetException) {
             throw error.cause ?: error
         }
