@@ -58,8 +58,6 @@ class AribSiEngine(
             nativeParser.broadcastClockSnapshot()
         }
 
-    fun decodeAribString(bytes: ByteArray): String = synchronized(lock) { nativeParser.decodeAribString(bytes) }
-
     fun reset(discoveryProfile: Int = SiDiscoveryProfile.ISDB_T) =
         synchronized(lock) {
             nativeParser.close()

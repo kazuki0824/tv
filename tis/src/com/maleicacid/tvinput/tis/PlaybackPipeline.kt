@@ -187,7 +187,7 @@ class PlaybackPipeline(
         ;
 
         companion object {
-            fun fromStreamType(streamType: Int): VideoCodecKind? = values().firstOrNull { it.streamType == streamType }
+            fun fromStreamType(streamType: Int): VideoCodecKind? = entries.firstOrNull { it.streamType == streamType }
         }
     }
 
@@ -203,7 +203,7 @@ class PlaybackPipeline(
         ;
 
         companion object {
-            fun fromStreamType(streamType: Int): AudioCodecKind? = values().firstOrNull { it.streamType == streamType }
+            fun fromStreamType(streamType: Int): AudioCodecKind? = entries.firstOrNull { it.streamType == streamType }
         }
     }
 
@@ -791,8 +791,7 @@ class PlaybackPipeline(
                                     val buffer = ByteArray(dataLength)
                                     val read = filter.read(buffer, 0, dataLength.toLong())
                                     check(read == buffer.size) { "字幕PESの読取りが不足しています expected=${buffer.size} actual=$read" }
-                                    val pes = buffer
-                                    val captionSample = captionSampleFromPes(pes, superimpose) ?: continue
+                                    val captionSample = captionSampleFromPes(buffer, superimpose) ?: continue
                                     if (!sourceIsCurrent(filter)) continue
                                     onSubtitlePes(
                                         filterGeneration,
@@ -2301,7 +2300,7 @@ class PlaybackPipeline(
                             } else {
                                 8
                             }
-                        ; repeat(count) { index -> if (bits.readBit() == 1) skipScalingList(bits, if (index < 6) 16 else 64) }
+                        repeat(count) { index -> if (bits.readBit() == 1) skipScalingList(bits, if (index < 6) 16 else 64) }
                     }
                 }
                 bits.readUE()
@@ -2366,7 +2365,7 @@ class PlaybackPipeline(
                         } else {
                             AVC_SAR_TABLE[aspectRatioIdc]
                         }
-                    ; if (sar != null && sar.first > 0 &&
+                    if (sar != null && sar.first > 0 &&
                         sar.second > 0
                     ) {
                         sarWidth = sar.first
@@ -2423,7 +2422,7 @@ class PlaybackPipeline(
                 ) {
                     nextScale = (lastScale + bits.readSE() + 256) % 256
                 }
-                ; lastScale = if (nextScale == 0) lastScale else nextScale
+                lastScale = if (nextScale == 0) lastScale else nextScale
             }
         }
 
@@ -2471,7 +2470,7 @@ class PlaybackPipeline(
                         base
                     }
                 }
-            ; val channels =
+            val channels =
                 if (channelMode ==
                     3
                 ) {
@@ -2479,7 +2478,7 @@ class PlaybackPipeline(
                 } else {
                     2
                 }
-            ; return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels)
+            return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels)
         }
 
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -2531,7 +2530,7 @@ class PlaybackPipeline(
                             continue
                         }
                     }
-                ; if (i + prefixLength >=
+                if (i + prefixLength >=
                     bytes.size
                 ) {
                     return null
