@@ -585,7 +585,9 @@ object ChannelScanManager {
         source: String,
     ) {
         val backgroundWorkBlocked =
-            activeLiveSessions.isNotEmpty() || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0 ||
+            activeLiveSessions.isNotEmpty() ||
+                sessionCreationsInProgress.get() > 0 ||
+                activePlaybackPipelines.get() > 0 ||
                 isScanRunning()
         if (backgroundWorkBlocked) {
             return
