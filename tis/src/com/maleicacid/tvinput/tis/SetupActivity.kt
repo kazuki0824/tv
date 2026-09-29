@@ -143,7 +143,8 @@ class SetupActivity :
                         "${it.candidate.displayChannel}: ${it.message}"
                     }
                 "${purposeLabel(state.purpose)} 完了\n" +
-                    "スキャン数=${state.result.scanned} 公開数=${state.result.published}" +
+                    "スキャン数=${state.result.scanned} 公開数=${state.result.published} " +
+                    "未解決transportによる登録省略数=${state.result.skippedUnresolvedTransportCount}" +
                     if (diagnostics.isNotBlank()) "\n$diagnostics" else ""
             }
 
