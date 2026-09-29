@@ -35,7 +35,12 @@ class PlaybackFailureCallbacksTest {
     ) {
         val method =
             TunerController::class.java
-                .getDeclaredMethod("onSectionOnController", TsPid::class.java, ByteArray::class.java, Long::class.javaPrimitiveType)
+                .getDeclaredMethod(
+                    "onSectionOnController",
+                    TsPid::class.java,
+                    ByteArray::class.java,
+                    Long::class.javaPrimitiveType,
+                )
                 .apply { isAccessible = true }
         val generation =
             TunerController::class.java
