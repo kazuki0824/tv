@@ -256,7 +256,7 @@ class MaleicacidLiveSession(
         return true
     }
 
-    override fun onCreateOverlayView(): View? = captionOverlayView
+    override fun onCreateOverlayView(): View = captionOverlayView
 
     override fun onSetStreamVolume(volume: Float) {
         enqueueSessionAction { onSetStreamVolumeOnSessionExecutor(volume) }
