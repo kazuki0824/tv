@@ -273,8 +273,6 @@ class NativeAribSiParser : AutoCloseable {
 
     private external fun nativeDecodeAribString(bytes: ByteArray): String?
 
-    private external fun nativeDecodeAribStringDiagnosticSummary(bytes: ByteArray): String?
-
     companion object {
         private fun requireNativeString(value: String?): String {
             if (value == null) {
