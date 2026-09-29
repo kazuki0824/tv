@@ -980,7 +980,7 @@ class TunerController(
                             }
 
                             SectionFilterPolicy.DataLengthDecision.ACCEPT -> {
-                                Unit
+                                // 続けてsectionを読み込む。
                             }
                         }
                         val section = ByteArray(length.toInt())
@@ -1012,7 +1012,7 @@ class TunerController(
                             }
 
                             SectionFilterPolicy.ReadDecision.STALE_SOURCE -> {
-                                Unit
+                                // 現在の選局世代に属さない配送は破棄する。
                             }
                         }
                     }
@@ -1703,7 +1703,7 @@ class TunerController(
                         .apply {
                             when (channel.streamSelector.type) {
                                 StreamSelectorType.NONE -> {
-                                    Unit
+                                    // stream IDによる選択は不要。
                                 }
 
                                 StreamSelectorType.TSID -> {
