@@ -8,7 +8,6 @@ on:
       - "tis/AndroidManifest.xml"
       - "tis/host_ci/robolectric/**"
       - "qodana.yaml"
-      - ".qodana/baseline-unused-symbol.sarif.json"
       - ".github/workflows/qodana-kotlin-unused.yml"
   push:
     branches: [main]
@@ -17,7 +16,6 @@ on:
       - "tis/AndroidManifest.xml"
       - "tis/host_ci/robolectric/**"
       - "qodana.yaml"
-      - ".qodana/baseline-unused-symbol.sarif.json"
       - ".github/workflows/qodana-kotlin-unused.yml"
 
 permissions:
@@ -51,7 +49,6 @@ jobs:
           args: >-
             --linter qodana-jvm-android
             --config qodana.yaml
-            --baseline .qodana/baseline-unused-symbol.sarif.json
             --fail-threshold 0
           upload-result: true
           artifact-name: qodana-kotlin-unused
