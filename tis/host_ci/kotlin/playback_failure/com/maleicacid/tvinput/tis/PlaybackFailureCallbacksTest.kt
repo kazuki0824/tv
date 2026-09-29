@@ -20,15 +20,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
+private fun PlaybackPipeline.playbackGenerationForTest(): Long =
+    PlaybackPipeline::class.java
+        .getDeclaredField("playbackGeneration")
+        .apply { isAccessible = true }
+        .getLong(this)
+
 // 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
 @Suppress("TooManyFunctions")
 class PlaybackFailureCallbacksTest {
-    private fun PlaybackPipeline.playbackGenerationForTest(): Long =
-        PlaybackPipeline::class.java
-            .getDeclaredField("playbackGeneration")
-            .apply { isAccessible = true }
-            .getLong(this)
-
     private fun TunerController.dispatchSectionForTest(
         pid: TsPid,
         section: ByteArray,
