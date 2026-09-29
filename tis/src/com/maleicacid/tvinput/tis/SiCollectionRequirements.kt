@@ -84,17 +84,16 @@ internal class SiCollectionRequirements(
             if (rows.isEmpty()) require(Key(component, null, null, null), false)
         }
         for (table in snapshot.tableRequirements.filter { it.required }) {
-            val onid = table.originalNetworkId
-            val tsid = table.transportStreamId
+            val scope = table.originalNetworkId to table.transportStreamId
             val pmtOutsideTargets =
                 table.component == "PMT" && table.serviceId != null && targets.isNotEmpty() &&
                     targets.none {
-                        it.originalNetworkId == onid && it.transportStreamId == tsid &&
+                        it.originalNetworkId == scope.first && it.transportStreamId == scope.second &&
                             it.serviceId == table.serviceId
                     }
             val transportOutsideTargets =
                 table.component in setOf("SDT", "NIT") && table.transportStreamId != null &&
-                    transports.isNotEmpty() && (onid to tsid) !in transports
+                    transports.isNotEmpty() && scope !in transports
             val outsideTargets = pmtOutsideTargets || transportOutsideTargets
             if (outsideTargets) {
                 continue
