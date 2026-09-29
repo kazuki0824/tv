@@ -53,8 +53,8 @@ class TunerController(
     private val context: Context,
     private val inputId: String,
     private val useCase: Int = TvInputService.PRIORITY_HINT_USE_CASE_TYPE_LIVE,
-    private val sessionId: String? = null,
-    private val sessionContext: Context? = null,
+    sessionId: String? = null,
+    sessionContext: Context? = null,
 ) : AutoCloseable {
     interface SectionFilterHandle : AutoCloseable {
         val pid: TsPid

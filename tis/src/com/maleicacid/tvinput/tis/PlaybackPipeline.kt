@@ -884,7 +884,7 @@ class PlaybackPipeline(
                 codecCallbackHandler,
             )
             sync.setOnErrorListener(
-                MediaSync.OnErrorListener { callbackSync, what, extra ->
+                { callbackSync, what, extra ->
                     enqueuePlaybackAction { handleMediaSyncError(callbackSync, generation, what, extra) }
                 },
                 codecCallbackHandler,
@@ -1561,7 +1561,7 @@ class PlaybackPipeline(
 
         override fun onDecoderPrepared(codec: MediaCodec) {
             codec.setOnFrameRenderedListener(
-                MediaCodec.OnFrameRenderedListener { callbackCodec, _, nanoTime ->
+                { callbackCodec, _, nanoTime ->
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration ||
                             this@VideoDecoderPipeline.codec !== callbackCodec
@@ -1646,7 +1646,7 @@ class PlaybackPipeline(
         private val kind: AudioCodecKind,
         private val stream: AribElementaryStream,
         private val channelConfiguration: String?,
-        private val dualMono: Boolean,
+        dualMono: Boolean,
         initialDualMonoPresentation: DualMonoPresentation,
         initialVolume: Float,
         override val generation: Long,

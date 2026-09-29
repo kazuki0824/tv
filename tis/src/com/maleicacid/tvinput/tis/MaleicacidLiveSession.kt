@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MaleicacidLiveSession(
     serviceContext: Context,
     private val sessionContext: Context,
-    private val inputId: String,
+    inputId: String,
     private val sessionId: String,
 ) : TvInputService.Session(sessionContext) {
     private val appContext = serviceContext.applicationContext

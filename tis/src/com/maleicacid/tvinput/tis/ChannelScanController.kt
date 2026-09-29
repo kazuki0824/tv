@@ -23,11 +23,11 @@ import java.util.concurrent.atomic.AtomicLong
 // 走査状態と公開処理の所有を一か所に保ち、関数数だけを理由に別の所有者へ分散しない。
 @Suppress("LargeClass", "TooManyFunctions")
 class ChannelScanController(
-    private val context: Context,
-    private val inputId: String,
+    context: Context,
+    inputId: String,
     private val engine: AribSiEngine,
     scanPurpose: ScanPurpose,
-    private val cancelRequested: AtomicBoolean = AtomicBoolean(false),
+    cancelRequested: AtomicBoolean = AtomicBoolean(false),
 ) : AutoCloseable {
     data class ScanDiagnostic(
         val candidate: ScanCandidate,
@@ -488,16 +488,15 @@ class ChannelScanController(
         services: List<AribService>,
         actualTransportKeys: Set<TransportKey>,
     ): List<AribService> {
-        val actualTransports = actualTransportKeys
-        if (actualTransports.size != 1) {
+        if (actualTransportKeys.size != 1) {
             skippedUnresolvedTransportCount += services.size
             Log.w(
                 LogTags.TIS,
-                "current candidate の SDT actual TransportKey が一意に確定していないため channel 登録を省略します actualTransports=$actualTransports",
+                "current candidate の SDT actual TransportKey が一意に確定していないため channel 登録を省略します actualTransports=$actualTransportKeys",
             )
             return emptyList()
         }
-        val actualTransport = actualTransports.single()
+        val actualTransport = actualTransportKeys.single()
         val filtered = services.filter { TransportKey(it.serviceKey.originalNetwork, it.serviceKey.transportStream) == actualTransport }
         skippedUnresolvedTransportCount += services.size - filtered.size
         return filtered
