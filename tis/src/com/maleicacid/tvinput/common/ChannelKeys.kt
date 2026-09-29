@@ -166,7 +166,6 @@ value class RelativeStreamNumber(
     init {
         require(value in RELATIVE_STREAM_RANGE) { "相対ストリーム番号は 0..7 でなければなりません: $value" }
     }
-
 }
 
 enum class StreamSelectorType { NONE, TSID, RELATIVE }

@@ -386,6 +386,7 @@ data class AribEpgUpdateWindow(
 )
 
 typealias EpgUpdateWindow = AribEpgUpdateWindow
+
 data class ParserDiagnostic(
     val code: String,
     val message: String,

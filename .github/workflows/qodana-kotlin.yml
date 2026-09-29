@@ -1,4 +1,4 @@
-name: Qodana Kotlin unused-symbol CI
+name: Qodana Kotlin CI
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
       - "tis/AndroidManifest.xml"
       - "tis/host_ci/robolectric/**"
       - "qodana.yaml"
-      - ".github/workflows/qodana-kotlin-unused.yml"
+      - ".github/workflows/qodana-kotlin.yml"
   push:
     branches: [main]
     paths:
@@ -16,7 +16,7 @@ on:
       - "tis/AndroidManifest.xml"
       - "tis/host_ci/robolectric/**"
       - "qodana.yaml"
-      - ".github/workflows/qodana-kotlin-unused.yml"
+      - ".github/workflows/qodana-kotlin.yml"
 
 permissions:
   contents: read
@@ -24,11 +24,11 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: qodana-kotlin-unused-${{ github.event.pull_request.number || github.ref }}
+  group: qodana-kotlin-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  qodana-kotlin-unused:
+  qodana-kotlin:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -38,12 +38,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Kotlin unused symbolをQodanaで検査
+      - name: TIS KotlinをQodanaで検査
         uses: JetBrains/qodana-action@v2026.2
         with:
           # PR modeはmerge-base commitを別worktreeで解析する。そのcommitにはこのPRで
           # 追加したqodana.yamlが存在しないため、導入PR自身を解析できない。
-          # unused-symbol gateは差分限定ではなくHEAD全体を対象にする。
+          # 検査は差分限定ではなくHEAD全体を対象にする。
           pr-mode: false
           post-pr-comment: false
           args: >-
@@ -51,4 +51,4 @@ jobs:
             --config qodana.yaml
             --fail-threshold 0
           upload-result: true
-          artifact-name: qodana-kotlin-unused
+          artifact-name: qodana-kotlin
