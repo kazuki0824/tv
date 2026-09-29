@@ -28,11 +28,6 @@ class AribSiEngine(
             nativeParser.takeProgramPublishSnapshot()
         }
 
-    fun programStateSnapshot(): ProgramPublishSnapshot =
-        synchronized(lock) {
-            nativeParser.programStateSnapshot()
-        }
-
     fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot =
         synchronized(lock) {
             nativeParser.serviceRegistrationSnapshot()

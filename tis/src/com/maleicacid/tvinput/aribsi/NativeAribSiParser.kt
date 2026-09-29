@@ -96,9 +96,6 @@ class NativeAribSiParser : AutoCloseable {
     @Synchronized
     fun takeProgramPublishSnapshot(): ProgramPublishSnapshot = buildProgramPublishSnapshot(readNativeTransaction())
 
-    @Synchronized
-    fun programStateSnapshot(): ProgramPublishSnapshot = buildProgramPublishSnapshot(readNativeTransaction())
-
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Synchronized
