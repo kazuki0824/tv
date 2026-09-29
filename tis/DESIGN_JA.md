@@ -608,7 +608,7 @@ fun casDiscoverySnapshot(): CasDiscoverySnapshot
 
 `MalformedCaDescriptorDiagnostic` は、少なくとも `pid`、`tableId`、`tableIdExtension`、`serviceId`、`elementaryPid`、`scope`、`offset`、`declaredLength`、`actualRemainingLength`、`reason`、`rawPrefixHex` を持つ。詳細診断の一次保存先は CAS discovery snapshot とし、Program provider-data は `malformedCaDescriptorCount` summary だけを保存する。
 
-`takeProgramPublishSnapshot()`と`programStateSnapshot()`は、同じロック内で一回取得したimmutable native transactionからevents / EIT instance / service semantic facts / 診断情報を読み、同じKotlin policyでupdateWindowsを投影する。区間queueのdrainは行わない。公開経路は前者、LiveSessionの現在番組判定・視聴年齢制限判定・映像メタデータ補完は後者を使う。`snapshotEvents()`と`takeEpgUpdateWindows()`を別々に呼んで合成する経路は設けない。
+`takeProgramPublishSnapshot()`は、同じロック内で一回取得したimmutable native transactionからevents / EIT instance / service semantic facts / 診断情報を読み、Kotlin policyでupdateWindowsを投影する。区間queueのdrainは行わない。LiveSessionの現在番組判定・視聴年齢制限判定・映像メタデータ補完は、live refreshで取得して保持した`LivePlaybackSnapshot.programs`を使い、途中でnative transactionを再読しない。`snapshotEvents()`と`takeEpgUpdateWindows()`を別々に呼んで合成する経路は設けない。
 
 `events`は公開policyを通過した候補だけとし、除外eventの完全な記述子事実は`excludedEventDescriptorFacts`へ保持する。この診断専用DTOは`AribEvent`ではなく、MapperのProgram入力へ渡さない。`descriptors.diagnostics.descriptorFactsCanonicalJson`はRustの構造化事実をそのまま保持し、不正parental descriptorの全raw bytes・entries・parse statusを64-byte診断prefixへ置き換えない。公開可否を再判定する第二policyや、診断専用の再parseは設けない。
 
