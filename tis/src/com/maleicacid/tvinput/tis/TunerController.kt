@@ -1266,12 +1266,6 @@ class TunerController(
             WellKnownSectionPid.TDT,
         )
 
-    fun onSection(
-        pid: TsPid,
-        section: ByteArray,
-        generation: Long = tuneGeneration,
-    ): Unit = callOnController { onSectionOnController(pid, section, generation) }
-
     private fun onSectionFromFilter(
         pid: TsPid,
         section: ByteArray,
