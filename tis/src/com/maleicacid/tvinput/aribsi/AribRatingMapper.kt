@@ -73,16 +73,6 @@ object AribRatingMapper {
         }
     }
 
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-    @Suppress("MagicNumber")
-    fun isExceptional(
-        rating: AribParentalRating,
-        profile: BroadcastProfile,
-    ): Boolean =
-        profile != BroadcastProfile.UNRESOLVED &&
-            rating.countryCode == "JPN" &&
-            rating.rawRatingByte in 0x12..0xff
-
     fun unrated(): TvContentRating = TvContentRating.UNRATED
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
