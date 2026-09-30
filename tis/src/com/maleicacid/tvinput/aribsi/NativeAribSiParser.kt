@@ -305,15 +305,15 @@ class NativeAribSiParser : AutoCloseable {
         ): AribAacConfiguration? {
             val result = nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) })
             return when (result.status) {
-                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.PENDING -> {
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Pending -> {
                     null
                 }
 
-                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.INVALID -> {
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Invalid -> {
                     throw IllegalArgumentException(checkNotNull(result.reason))
                 }
 
-                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.READY -> {
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Ready -> {
                     val configuration = checkNotNull(result.configuration)
                     AribAacConfiguration(
                         configuration.audioObjectType,
