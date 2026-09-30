@@ -1,0 +1,54 @@
+name: Qodana Kotlin CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "tis/src/**/*.kt"
+      - "tis/AndroidManifest.xml"
+      - "tis/host_ci/robolectric/**"
+      - "qodana.yaml"
+      - ".github/workflows/qodana-kotlin.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tis/src/**/*.kt"
+      - "tis/AndroidManifest.xml"
+      - "tis/host_ci/robolectric/**"
+      - "qodana.yaml"
+      - ".github/workflows/qodana-kotlin.yml"
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+concurrency:
+  group: qodana-kotlin-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qodana-kotlin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: TIS KotlinをQodanaで検査
+        uses: JetBrains/qodana-action@v2026.2
+        with:
+          # PR modeはmerge-base commitを別worktreeで解析する。そのcommitにはこのPRで
+          # 追加したqodana.yamlが存在しないため、導入PR自身を解析できない。
+          # 検査は差分限定ではなくHEAD全体を対象にする。
+          pr-mode: false
+          post-pr-comment: false
+          args: >-
+            --linter qodana-jvm-android
+            --config qodana.yaml
+            --fail-threshold 0
+          upload-result: true
+          artifact-name: qodana-kotlin
