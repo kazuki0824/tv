@@ -477,7 +477,13 @@ object ChannelScanManager {
         scanRunning: Boolean,
         purpose: ScanPurpose?,
     ): LiveSessionPreemptDecision {
-        if (!scanRunning || purpose == null) return LiveSessionPreemptDecision(shouldCancel = false, deferBootEpgSync = false, diagnosticReason = null)
+        if (!scanRunning || purpose == null) {
+            return LiveSessionPreemptDecision(
+                shouldCancel = false,
+                deferBootEpgSync = false,
+                diagnosticReason = null,
+            )
+        }
         return when (purpose) {
             ScanPurpose.BOOT_EPG_SYNC -> {
                 LiveSessionPreemptDecision(
@@ -587,7 +593,9 @@ object ChannelScanManager {
         source: String,
     ) {
         val backgroundWorkBlocked =
-            activeLiveSessions.isNotEmpty() || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0 ||
+            activeLiveSessions.isNotEmpty() ||
+                sessionCreationsInProgress.get() > 0 ||
+                activePlaybackPipelines.get() > 0 ||
                 isScanRunning()
         if (backgroundWorkBlocked) {
             return
