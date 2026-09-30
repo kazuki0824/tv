@@ -79,8 +79,9 @@ object AribRatingMapper {
         rating: AribParentalRating,
         profile: BroadcastProfile,
     ): Boolean {
-        if (profile == BroadcastProfile.UNRESOLVED) return false
-        return rating.countryCode == "JPN" && rating.rawRatingByte in 0x12..0xff
+        return profile != BroadcastProfile.UNRESOLVED &&
+            rating.countryCode == "JPN" &&
+            rating.rawRatingByte in 0x12..0xff
     }
 
     fun unrated(): TvContentRating = TvContentRating.UNRATED
