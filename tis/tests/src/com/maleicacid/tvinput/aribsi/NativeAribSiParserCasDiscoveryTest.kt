@@ -31,7 +31,7 @@ class NativeAribSiParserCasDiscoveryTest {
             check(thrown is java.lang.reflect.InvocationTargetException)
             val failure = thrown.cause
             check(failure is NativeSiException && failure.reason == NativeSiFailureReason.INVALID_HANDLE)
-            check(parser.programStateSnapshot().events.isEmpty())
+            check(parser.livePlaybackSnapshot().programs.events.isEmpty())
         }
     }
 
@@ -121,7 +121,7 @@ class NativeAribSiParserCasDiscoveryTest {
             check(snapshot is com.maleicacid.tvinput.aribsi.generated.BulkSnapshotDto)
             check(snapshot.collectionGeneration >= 0L)
             check(snapshot.serviceSemanticFacts.isEmpty())
-            check(parser.programStateSnapshot().events.isEmpty())
+            check(parser.livePlaybackSnapshot().programs.events.isEmpty())
         }
     }
 
@@ -156,7 +156,7 @@ class NativeAribSiParserCasDiscoveryTest {
                 val body = eitWithDescriptors(listOf(0x55, 4, 0x4a, 0x50, 0x4e, 0x0c))
                 for (index in undefinedRange) body[index] = 0xff
                 check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
-                val snapshot = parser.programStateSnapshot()
+                val snapshot = parser.livePlaybackSnapshot().programs
                 check(snapshot.events.single().timingState == com.maleicacid.tvinput.aribsi.EitTimingState.UNDEFINED_TIME)
                 val authority = resolver.eitAuthority(snapshot, key)
                 check(authority is com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.PresentObserved)
@@ -209,9 +209,9 @@ class NativeAribSiParserCasDiscoveryTest {
                         setSectionLength(it, 0xf0)
                     }.toIntArray()
             check(parser.ingestSection(TsPid(PID_EIT), section(following)) == SiStatus.OK)
-            check(resolver.eitAuthority(parser.programStateSnapshot(), key) == unknown)
+            check(resolver.eitAuthority(parser.livePlaybackSnapshot().programs, key) == unknown)
             check(parser.ingestSection(TsPid(PID_EIT), section(present)) == SiStatus.OK)
-            val gap = parser.programStateSnapshot()
+            val gap = parser.livePlaybackSnapshot().programs
             check(
                 gap.events
                     .single()
@@ -221,12 +221,12 @@ class NativeAribSiParserCasDiscoveryTest {
             check(resolver.eitAuthority(gap, key) == empty)
             val nextPresent = present.copyOf().also { it[5] = 0xc3 }
             check(parser.ingestSection(TsPid(PID_EIT), section(nextPresent)) == SiStatus.OK)
-            val partialFollowing = parser.programStateSnapshot()
+            val partialFollowing = parser.livePlaybackSnapshot().programs
             check(!partialFollowing.eitInstances.single().complete)
             check(resolver.eitAuthority(partialFollowing, key) == empty)
             val nextFollowing = following.copyOf().also { it[5] = 0xc5 }
             check(parser.ingestSection(TsPid(PID_EIT), section(nextFollowing)) == SiStatus.OK)
-            check(resolver.eitAuthority(parser.programStateSnapshot(), key) == unknown)
+            check(resolver.eitAuthority(parser.livePlaybackSnapshot().programs, key) == unknown)
         }
     }
 
@@ -653,7 +653,7 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(TsPid(PID_PMT), section(pmtWithComponentTagsBody())) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
 
-            val event = parser.programStateSnapshot().events.single()
+            val event = parser.livePlaybackSnapshot().programs.events.single()
             val video =
                 event.descriptors.components.video
                     .single()
@@ -739,11 +739,11 @@ class NativeAribSiParserCasDiscoveryTest {
         for (body in malformedBodies) {
             NativeAribSiParser().use { parser ->
                 check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(emptyList()))) == SiStatus.OK)
-                val valid = parser.programStateSnapshot()
+                val valid = parser.livePlaybackSnapshot().programs
                 check(EventModelMapper().toProgramRecords(valid.events, valid.discoveryProfile).size == 1)
                 body[5] = 0xc3
                 check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
-                val invalid = parser.programStateSnapshot()
+                val invalid = parser.livePlaybackSnapshot().programs
                 check(invalid.events.isEmpty())
                 check(EventModelMapper().toProgramRecords(invalid.events, invalid.discoveryProfile).isEmpty())
                 check(invalid.updateWindows.none { it.deletionAuthoritative })
@@ -808,7 +808,7 @@ class NativeAribSiParserCasDiscoveryTest {
                     "MALFORMED_TIMING" -> body[18] = 0xfa
                 }
                 check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
-                val snapshot = parser.programStateSnapshot()
+                val snapshot = parser.livePlaybackSnapshot().programs
                 val excluded = snapshot.excludedEventDescriptorFacts.single()
                 check(excluded.eventId == 0x1234)
                 check((excluded.stableIdentity != null) == (state == "DEFINED" || state == "UNDEFINED_TIME"))
@@ -826,7 +826,7 @@ class NativeAribSiParserCasDiscoveryTest {
             val malformed = listOf(0x55, 255) + (0 until 255).toList()
             val expectedHex = malformed.joinToString("") { it.toString(16).padStart(2, '0') }
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(valid + malformed))) == SiStatus.OK)
-            for (snapshot in listOf(parser.takeProgramPublishSnapshot(), parser.programStateSnapshot())) {
+            for (snapshot in listOf(parser.takeProgramPublishSnapshot(), parser.livePlaybackSnapshot().programs)) {
                 check(snapshot.events.isEmpty())
                 check(EventModelMapper().toProgramRecords(snapshot.events, snapshot.discoveryProfile).isEmpty())
                 check(snapshot.updateWindows.none { it.deletionAuthoritative })
@@ -863,7 +863,7 @@ class NativeAribSiParserCasDiscoveryTest {
             val unknown = listOf(0xfe, 80) + (0 until 80).toList()
             val body = eitWithDescriptors(valid + unsupported + unknown)
             check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
-            val event = parser.programStateSnapshot().events.single()
+            val event = parser.livePlaybackSnapshot().programs.events.single()
             check(event.descriptors.parentalRatings == listOf(AribParentalRating("JPN", 12)))
             val facts = JSONObject(requireNotNull(event.descriptors.diagnostics.descriptorFactsCanonicalJson))
             val ratings = facts.getJSONArray("parentalRatingDescriptors")
@@ -933,7 +933,7 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(TsPid(PID_PMT), section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
 
-            val event = parser.programStateSnapshot().events.single()
+            val event = parser.livePlaybackSnapshot().programs.events.single()
             val eitOnlyVideo =
                 event.descriptors.components.video
                     .single { it.componentTag == 0x10 }
