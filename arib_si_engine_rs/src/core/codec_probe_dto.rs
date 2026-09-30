@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AacProbeStatusDto {
-    #[serde(rename = "PENDING")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "PENDING"))]
     Pending,
-    #[serde(rename = "INVALID")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "INVALID"))]
     Invalid,
-    #[serde(rename = "READY")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "READY"))]
     Ready,
 }
 
