@@ -7,6 +7,6 @@ publish = false
 [workspace]
 
 [dependencies]
-maleicacid_arib_si_engine_core = { path = "../host_ci/core", features = ["kotlin-bindings"] }
+maleicacid_arib_si_engine_core = { path = "../host_ci/core" }
 serde-generate = { version = "=0.34.1", default-features = false, features = ["kotlin"] }
 serde-reflection = "=0.6.0"
