@@ -7,7 +7,6 @@ data class LinkageDto(
     val transportStreamId: Int,
     val serviceId: Int,
     val privateDataPrefixHex: String,
-    val parseStatus: com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
-) {
-}
+    val parseStatus: SiParseStatusDto
+)
 

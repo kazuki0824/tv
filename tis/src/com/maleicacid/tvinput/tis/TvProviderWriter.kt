@@ -7,10 +7,8 @@ import android.media.tv.TvContract
 import android.net.Uri
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
-import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
-import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
 import java.security.MessageDigest
@@ -414,12 +412,6 @@ class TvProviderWriter private constructor(
         return if (failures.isEmpty()) ExistingServiceKeysResult.Success(out) else ExistingServiceKeysResult.Failure(failures)
     }
 
-    fun existingServiceKeys(keys: Iterable<ServiceKey>): Set<ServiceKey> =
-        when (val result = existingServiceKeysResult(keys)) {
-            is ExistingServiceKeysResult.Success -> result.keys
-            is ExistingServiceKeysResult.Failure -> emptySet()
-        }
-
     fun existingChannelsResult(): Result<List<ChannelRecord>> =
         channelStore
             .listExistingChannels()
@@ -427,13 +419,6 @@ class TvProviderWriter private constructor(
 
     @Deprecated("TvProvider問い合わせ失敗を空のチャンネル一覧へ潰してはなりません", level = DeprecationLevel.ERROR)
     fun existingChannelsForTestOnly(): List<ChannelRecord> = existingChannelsResult().getOrElse { emptyList() }
-
-    fun validateForTest(channel: ChannelRecord): Diagnostic? = validate(channel)
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    fun channelValuesForTest(channel: ChannelRecord): ContentValues =
-        channelValues(channel, (ProviderDataBridge.buildChannelProviderData(channel) as ProviderDataBridge.Success).bytes)
 
     fun programValuesForTest(
         channelId: Long,

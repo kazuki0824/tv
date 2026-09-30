@@ -8,6 +8,5 @@ data class TableRequirementDto(
     val serviceId: Int?,
     val required: Boolean,
     val complete: Boolean
-) {
-}
+)
 

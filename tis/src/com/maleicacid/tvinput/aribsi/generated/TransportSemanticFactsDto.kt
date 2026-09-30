@@ -8,6 +8,5 @@ data class TransportSemanticFactsDto(
     val transportStreamName: String?,
     val remoteControlKeyId: Int?,
     val sdtActual: Boolean
-) {
-}
+)
 

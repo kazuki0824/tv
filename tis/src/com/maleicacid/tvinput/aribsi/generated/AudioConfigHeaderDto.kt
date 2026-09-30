@@ -8,6 +8,5 @@ data class AudioConfigHeaderDto(
     val extensionSamplingFrequency: Int?,
     val coreAudioObjectType: Int?,
     val channelCount: Int?
-) {
-}
+)
 

@@ -12,7 +12,6 @@ data class VideoComponentDto(
     val scan: String?,
     val aspect: String?,
     val profileLevel: String?,
-    val parseStatus: com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
-) {
-}
+    val parseStatus: SiParseStatusDto
+)
 

@@ -7,6 +7,5 @@ data class ProgramSourceDto(
     val version: Int,
     val sectionNumber: Int,
     val lastSectionNumber: Int
-) {
-}
+)
 

@@ -6,7 +6,6 @@ data class ContentGenreDto(
     val level2: Int,
     val userNibble: Int,
     val aribName: String,
-    val parseStatus: com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
-) {
-}
+    val parseStatus: SiParseStatusDto
+)
 
