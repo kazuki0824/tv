@@ -157,7 +157,7 @@ class ChannelScanController(
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
                 diagnostics += ScanDiagnostic(candidate, "選局に失敗しました result=${tune.resultCode} ${tune.message}")
-                return shouldContinueInitialScanAfterSynchronousTuneResult(tune.success)
+                return shouldContinueInitialScanAfterSynchronousTuneResult(false)
             }
             activateScanGeneration(tune.generation)
             try {
@@ -488,16 +488,15 @@ class ChannelScanController(
         services: List<AribService>,
         actualTransportKeys: Set<TransportKey>,
     ): List<AribService> {
-        val actualTransports = actualTransportKeys
-        if (actualTransports.size != 1) {
+        if (actualTransportKeys.size != 1) {
             skippedUnresolvedTransportCount += services.size
             Log.w(
                 LogTags.TIS,
-                "current candidate の SDT actual TransportKey が一意に確定していないため channel 登録を省略します actualTransports=$actualTransports",
+                "current candidate の SDT actual TransportKey が一意に確定していないため channel 登録を省略します actualTransports=$actualTransportKeys",
             )
             return emptyList()
         }
-        val actualTransport = actualTransports.single()
+        val actualTransport = actualTransportKeys.single()
         val filtered = services.filter { TransportKey(it.serviceKey.originalNetwork, it.serviceKey.transportStream) == actualTransport }
         skippedUnresolvedTransportCount += services.size - filtered.size
         return filtered
