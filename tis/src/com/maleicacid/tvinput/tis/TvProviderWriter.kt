@@ -417,9 +417,6 @@ class TvProviderWriter private constructor(
             .listExistingChannels()
             .onFailure { error -> Log.w(LogTags.TIS, "既存channel復元に失敗しました inputId=$inputId", error) }
 
-    @Deprecated("TvProvider問い合わせ失敗を空のチャンネル一覧へ潰してはなりません", level = DeprecationLevel.ERROR)
-    fun existingChannelsForTestOnly(): List<ChannelRecord> = existingChannelsResult().getOrElse { emptyList() }
-
     fun programValuesForTest(
         channelId: Long,
         program: ProgramRecord,
