@@ -31,7 +31,13 @@ class NativeAribSiParserCasDiscoveryTest {
             check(thrown is java.lang.reflect.InvocationTargetException)
             val failure = thrown.cause
             check(failure is NativeSiException && failure.reason == NativeSiFailureReason.INVALID_HANDLE)
-            check(parser.livePlaybackSnapshot().programs.events.isEmpty())
+            check(
+                parser
+                    .livePlaybackSnapshot()
+                    .programs
+                    .events
+                    .isEmpty(),
+            )
         }
     }
 
@@ -121,7 +127,13 @@ class NativeAribSiParserCasDiscoveryTest {
             check(snapshot is com.maleicacid.tvinput.aribsi.generated.BulkSnapshotDto)
             check(snapshot.collectionGeneration >= 0L)
             check(snapshot.serviceSemanticFacts.isEmpty())
-            check(parser.livePlaybackSnapshot().programs.events.isEmpty())
+            check(
+                parser
+                    .livePlaybackSnapshot()
+                    .programs
+                    .events
+                    .isEmpty(),
+            )
         }
     }
 
@@ -653,7 +665,12 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(TsPid(PID_PMT), section(pmtWithComponentTagsBody())) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
 
-            val event = parser.livePlaybackSnapshot().programs.events.single()
+            val event =
+                parser
+                    .livePlaybackSnapshot()
+                    .programs
+                    .events
+                    .single()
             val video =
                 event.descriptors.components.video
                     .single()
@@ -863,7 +880,12 @@ class NativeAribSiParserCasDiscoveryTest {
             val unknown = listOf(0xfe, 80) + (0 until 80).toList()
             val body = eitWithDescriptors(valid + unsupported + unknown)
             check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
-            val event = parser.livePlaybackSnapshot().programs.events.single()
+            val event =
+                parser
+                    .livePlaybackSnapshot()
+                    .programs
+                    .events
+                    .single()
             check(event.descriptors.parentalRatings == listOf(AribParentalRating("JPN", 12)))
             val facts = JSONObject(requireNotNull(event.descriptors.diagnostics.descriptorFactsCanonicalJson))
             val ratings = facts.getJSONArray("parentalRatingDescriptors")
@@ -933,7 +955,12 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(TsPid(PID_PMT), section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
 
-            val event = parser.livePlaybackSnapshot().programs.events.single()
+            val event =
+                parser
+                    .livePlaybackSnapshot()
+                    .programs
+                    .events
+                    .single()
             val eitOnlyVideo =
                 event.descriptors.components.video
                     .single { it.componentTag == 0x10 }
