@@ -169,7 +169,7 @@ class TunerController(
             "TunerSectionFilterHandle(pid=$pid, generation=$generation, filters=${artifacts.size}, closing=$closing)"
     }
 
-    private inner class UnavailableSectionFilterHandle(
+    private class UnavailableSectionFilterHandle(
         override val pid: TsPid,
         private val reason: String,
     ) : SectionFilterHandle {

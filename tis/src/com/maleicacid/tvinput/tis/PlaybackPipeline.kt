@@ -187,7 +187,7 @@ class PlaybackPipeline(
         ;
 
         companion object {
-            fun fromStreamType(streamType: Int): VideoCodecKind? = values().firstOrNull { it.streamType == streamType }
+            fun fromStreamType(streamType: Int): VideoCodecKind? = entries.firstOrNull { it.streamType == streamType }
         }
     }
 
@@ -203,7 +203,7 @@ class PlaybackPipeline(
         ;
 
         companion object {
-            fun fromStreamType(streamType: Int): AudioCodecKind? = values().firstOrNull { it.streamType == streamType }
+            fun fromStreamType(streamType: Int): AudioCodecKind? = entries.firstOrNull { it.streamType == streamType }
         }
     }
 
@@ -798,8 +798,7 @@ class PlaybackPipeline(
                                     val buffer = ByteArray(dataLength)
                                     val read = filter.read(buffer, 0, dataLength.toLong())
                                     check(read == buffer.size) { "字幕PESの読取りが不足しています expected=${buffer.size} actual=$read" }
-                                    val pes = buffer
-                                    val captionSample = captionSampleFromPes(pes, superimpose) ?: continue
+                                    val captionSample = captionSampleFromPes(buffer, superimpose) ?: continue
                                     if (!sourceIsCurrent(filter)) continue
                                     onSubtitlePes(
                                         filterGeneration,
@@ -892,7 +891,7 @@ class PlaybackPipeline(
                 codecCallbackHandler,
             )
             sync.setOnErrorListener(
-                MediaSync.OnErrorListener { callbackSync, what, extra ->
+                { callbackSync, what, extra ->
                     enqueuePlaybackAction { handleMediaSyncError(callbackSync, generation, what, extra) }
                 },
                 codecCallbackHandler,
@@ -1597,7 +1596,7 @@ class PlaybackPipeline(
 
         override fun onDecoderPrepared(codec: MediaCodec) {
             codec.setOnFrameRenderedListener(
-                MediaCodec.OnFrameRenderedListener { callbackCodec, _, nanoTime ->
+                { callbackCodec, _, nanoTime ->
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration ||
                             this@VideoDecoderPipeline.codec !== callbackCodec

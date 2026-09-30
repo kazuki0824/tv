@@ -365,7 +365,7 @@ class CurrentProgramRatingResolver internal constructor(
                             ?: return@mapNotNull null
                     (event to end).takeIf { event.serviceKey == key && nowMillis >= event.startTimeMillis && nowMillis < end }
                 }.sortedWith(
-                    compareByDescending<Pair<com.maleicacid.tvinput.aribsi.AribEvent, Long>> { it.first.startTimeMillis }
+                    compareByDescending<Pair<AribEvent, Long>> { it.first.startTimeMillis }
                         .thenBy { it.second }
                         .thenByDescending { it.first.eventId },
                 ).firstOrNull() ?: return null
