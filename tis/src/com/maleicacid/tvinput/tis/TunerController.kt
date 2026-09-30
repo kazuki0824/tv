@@ -810,19 +810,6 @@ class TunerController(
         return tuneResolvedChannel(synthetic)
     }
 
-    @Suppress("MaxLineLength")
-    fun tuneAndBeginSiIngest(settings: FrontendSettings): Int = callOnController { tuneAndBeginSiIngestOnController(settings) }
-
-    private fun tuneAndBeginSiIngestOnController(settings: FrontendSettings): Int {
-        val tunerInstance = tuner ?: return Tuner.RESULT_UNAVAILABLE
-        resetBeforeTune()
-        val result = tunerInstance.tune(settings)
-        if (result == Tuner.RESULT_SUCCESS) {
-            initializeAcceptedTune(null, tuneGeneration + 1L)
-        }
-        return result
-    }
-
     @Suppress("ReturnCount", "MaxLineLength")
     private fun tuneResolvedChannel(channel: ResolvedChannel): TuneOutcome {
         resetBeforeTune()
@@ -916,27 +903,6 @@ class TunerController(
         )
     }
 
-    fun beginSiIngestAfterTune(): Boolean = callOnController { beginSiIngestAfterTuneOnController() }
-
-    private fun beginSiIngestAfterTuneOnController(): Boolean {
-        if (!tuneAccepted) {
-            Log.w(LogTags.TIS, "tune 要求未受付のため SI 取得を開始しません inputId=$inputId")
-            return false
-        }
-        openInitialSectionFilters(tuneGeneration)
-        return true
-    }
-
-    fun openInitialSectionFilters(generation: Long = tuneGeneration): Unit =
-        callOnController {
-            openInitialSectionFiltersOnController(generation)
-        }
-
-    private fun openInitialSectionFiltersOnController(generation: Long = tuneGeneration) {
-        if (!tuneAccepted) return
-        prepareInitialSectionFiltersOnController(generation)
-    }
-
     @Suppress("MaxLineLength")
     private fun prepareInitialSectionFiltersOnController(generation: Long) {
         listOf(
@@ -952,8 +918,6 @@ class TunerController(
         }
         Log.d(LogTags.TIS, "初期 section filter を開きます inputId=$inputId pids=${sectionFilterHandles.keys} generation=$generation")
     }
-
-    fun openSectionFilters() = openInitialSectionFilters()
 
     fun openProgramMapFilter(pmtPid: TsPid): SectionFilterHandle = openSectionFilter(pmtPid)
 
@@ -1672,11 +1636,7 @@ class TunerController(
             expectedClockGeneration,
         )
 
-    fun currentResolvedChannel(): ResolvedChannel? = callOnController { currentTune }
-
     fun currentGeneration(): Long = callOnController { tuneGeneration }
-
-    fun isTuneRequestAccepted(): Boolean = callOnController { tuneAccepted }
 
     @Suppress("MagicNumber", "MaxLineLength")
     private fun resolveChannel(channelUri: Uri): Result<ResolvedChannel> =
