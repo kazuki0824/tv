@@ -57,7 +57,9 @@ value class ServiceId16(
     }
 }
 
-data class ServiceKey(
+// factory経由の生成を維持する。data classのcopyは型付きの検証済みIDを受け取る。
+@Suppress("DataClassPrivateConstructor")
+data class ServiceKey private constructor(
     val originalNetwork: NetworkId16,
     val transportStream: TransportStreamId16,
     val service: ServiceId16,

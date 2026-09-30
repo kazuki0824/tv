@@ -16,7 +16,7 @@ class NativeAribSiParserCasDiscoveryTest {
         NativeAribSiParser().use { parser ->
             check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
             check(parser.pmtPidsForSectionFilters() == setOf(TsPid(PID_PMT)))
-            check(parser.livePlaybackSnapshot().pmtPids.isEmpty())
+            check(parser.casDiscoverySnapshot().pmtPids.isEmpty())
         }
     }
 
@@ -519,7 +519,7 @@ class NativeAribSiParserCasDiscoveryTest {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
-    fun caDiscoveryFactsRemainAvailableForScrambledServiceInLiveSnapshot() {
+    fun caDiscoveryDoesNotDependOnClearLivePlaybackSnapshot() {
         val parser = NativeAribSiParser()
         try {
             check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
@@ -530,13 +530,16 @@ class NativeAribSiParserCasDiscoveryTest {
             // サービス登録 snapshot はチャンネル登録可否判定用に予約する。
             // CAS検出は、そのsnapshotが空かどうかに依存してはならない。
 
-            val snapshot = parser.livePlaybackSnapshot()
+            val snapshot = parser.casDiscoverySnapshot()
             val discoveryServices = snapshot.services
             check(discoveryServices.single().serviceKey.serviceId == SERVICE_ID)
 
-            check(snapshot.pmtPids.values.single() == TsPid(PID_PMT))
-            check(snapshot.caMetadata.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == TsPid(ECM_PID_PROGRAM) })
-            check(snapshot.catEmmPids == listOf(TsPid(EMM_PID)))
+            val liveSnapshot = parser.livePlaybackSnapshot()
+            check(liveSnapshot.services == snapshot.services)
+            check(liveSnapshot.pmtPids.values.single() == TsPid(PID_PMT))
+            check(liveSnapshot.caMetadata == snapshot.caMetadata)
+            check(liveSnapshot.caMetadata.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == TsPid(ECM_PID_PROGRAM) })
+            check(liveSnapshot.catEmmPids == listOf(TsPid(EMM_PID)))
 
             val metadata = snapshot.caMetadata
             check(metadata.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == TsPid(ECM_PID_PROGRAM) }) {

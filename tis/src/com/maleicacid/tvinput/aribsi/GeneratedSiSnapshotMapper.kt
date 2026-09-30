@@ -48,10 +48,10 @@ private fun SiParseStatusDto.toDomain(): SiParseStatus =
 
 private fun EitTimingStateDto.toDomain(): EitTimingState =
     when (this) {
-        EitTimingStateDto.Defined -> EitTimingState.DEFINED
-        EitTimingStateDto.UndefinedTime -> EitTimingState.UNDEFINED_TIME
-        EitTimingStateDto.BothTimingUndefined -> EitTimingState.BOTH_TIMING_UNDEFINED
-        EitTimingStateDto.MalformedTiming -> EitTimingState.MALFORMED_TIMING
+        EitTimingStateDto.DEFINED -> EitTimingState.DEFINED
+        EitTimingStateDto.UNDEFINED_TIME -> EitTimingState.UNDEFINED_TIME
+        EitTimingStateDto.BOTH_TIMING_UNDEFINED -> EitTimingState.BOTH_TIMING_UNDEFINED
+        EitTimingStateDto.MALFORMED_TIMING -> EitTimingState.MALFORMED_TIMING
     }
 
 private fun ElementaryStreamKindDto.toDomain(): ElementaryStreamKind =
@@ -62,18 +62,18 @@ private fun ElementaryStreamKindDto.toDomain(): ElementaryStreamKind =
 
 private fun BroadcastSystemDto.toDomain(): BroadcastSystem =
     when (this) {
-        BroadcastSystemDto.IsdbT -> BroadcastSystem.ISDB_T
-        BroadcastSystemDto.IsdbSBs -> BroadcastSystem.ISDB_S_BS
-        BroadcastSystemDto.IsdbS110Cs -> BroadcastSystem.ISDB_S_110CS
+        BroadcastSystemDto.ISDB_T -> BroadcastSystem.ISDB_T
+        BroadcastSystemDto.ISDB_S_BS -> BroadcastSystem.ISDB_S_BS
+        BroadcastSystemDto.ISDB_S_110CS -> BroadcastSystem.ISDB_S_110CS
     }
 
 private fun SmdSemanticStateDto.toDomain(): SmdSemanticState =
     when (this) {
-        SmdSemanticStateDto.SupportedBroadcast -> SmdSemanticState.SUPPORTED_BROADCAST
-        SmdSemanticStateDto.NonBroadcast -> SmdSemanticState.NON_BROADCAST
-        SmdSemanticStateDto.UndefinedBroadcastClass -> SmdSemanticState.UNDEFINED_BROADCAST_CLASS
-        SmdSemanticStateDto.UnsupportedBroadcastSystem -> SmdSemanticState.UNSUPPORTED_BROADCAST_SYSTEM
-        SmdSemanticStateDto.UndeterminedSmd -> SmdSemanticState.UNDETERMINED_SMD
+        SmdSemanticStateDto.SUPPORTED_BROADCAST -> SmdSemanticState.SUPPORTED_BROADCAST
+        SmdSemanticStateDto.NON_BROADCAST -> SmdSemanticState.NON_BROADCAST
+        SmdSemanticStateDto.UNDEFINED_BROADCAST_CLASS -> SmdSemanticState.UNDEFINED_BROADCAST_CLASS
+        SmdSemanticStateDto.UNSUPPORTED_BROADCAST_SYSTEM -> SmdSemanticState.UNSUPPORTED_BROADCAST_SYSTEM
+        SmdSemanticStateDto.UNDETERMINED_SMD -> SmdSemanticState.UNDETERMINED_SMD
     }
 
 private fun CaDescriptorScopeDto.toDomain(): CaDescriptorScope =
@@ -84,9 +84,9 @@ private fun CaDescriptorScopeDto.toDomain(): CaDescriptorScope =
 
 private fun CaMetadataSourceDto.toDomain(): CaMetadataSource =
     when (this) {
-        CaMetadataSourceDto.Program -> CaMetadataSource.PROGRAM
-        CaMetadataSourceDto.ElementaryStream -> CaMetadataSource.ELEMENTARY_STREAM
-        CaMetadataSourceDto.Cat -> CaMetadataSource.CAT
+        CaMetadataSourceDto.PROGRAM -> CaMetadataSource.PROGRAM
+        CaMetadataSourceDto.ELEMENTARY_STREAM -> CaMetadataSource.ELEMENTARY_STREAM
+        CaMetadataSourceDto.CAT -> CaMetadataSource.CAT
     }
 
 private fun CodecFactsDto.toDomain(): AribCodecFacts =

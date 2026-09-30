@@ -47,44 +47,23 @@ fn normalize_generated_kotlin(dir: &Path) -> Result<(), Box<dyn Error>> {
         if path.extension().and_then(|extension| extension.to_str()) != Some("kt") {
             continue;
         }
-        let mut source = fs::read_to_string(&path)?
+        let source = fs::read_to_string(&path)?
             .replace("com.maleicacid.tvinput.aribsi.generated.", "")
             .replace("kotlin.collections.List", "List");
-        // serde names remain canonical wire values; only Kotlin singleton identifiers use PascalCase.
-        let variant_names: &[(&str, &str)] = match path.file_stem().and_then(|stem| stem.to_str()) {
-            Some("EitTimingStateDto") => &[
-                ("DEFINED", "Defined"),
-                ("UNDEFINED_TIME", "UndefinedTime"),
-                ("BOTH_TIMING_UNDEFINED", "BothTimingUndefined"),
-                ("MALFORMED_TIMING", "MalformedTiming"),
-            ],
-            Some("BroadcastSystemDto") => &[
-                ("ISDB_T", "IsdbT"),
-                ("ISDB_S_BS", "IsdbSBs"),
-                ("ISDB_S_110CS", "IsdbS110Cs"),
-            ],
-            Some("SmdSemanticStateDto") => &[
-                ("SUPPORTED_BROADCAST", "SupportedBroadcast"),
-                ("NON_BROADCAST", "NonBroadcast"),
-                ("UNDEFINED_BROADCAST_CLASS", "UndefinedBroadcastClass"),
-                ("UNSUPPORTED_BROADCAST_SYSTEM", "UnsupportedBroadcastSystem"),
-                ("UNDETERMINED_SMD", "UndeterminedSmd"),
-            ],
-            Some("CaMetadataSourceDto") => &[
-                ("PROGRAM", "Program"),
-                ("ELEMENTARY_STREAM", "ElementaryStream"),
-                ("CAT", "Cat"),
-            ],
-            _ => &[],
-        };
-        for (wire_name, kotlin_name) in variant_names {
-            source = source.replace(
-                &format!("object {wire_name} :"),
-                &format!("object {kotlin_name} :"),
-            );
-        }
+        // serde の enum variant 名は wire と JVM の共通契約なので改名しない。
+        // underscore を含む生成 singleton の命名警告だけを、その生成ファイル内で抑制する。
+        let has_wire_variant_name = source.lines().any(|line| {
+            line.trim_start()
+                .strip_prefix("object ")
+                .and_then(|declaration| declaration.split_whitespace().next())
+                .is_some_and(|name| name.contains('_'))
+        });
         let lines: Vec<&str> = source.lines().collect();
         let mut content = String::new();
+        if has_wire_variant_name {
+            content.push_str("// serde の wire enum 名を維持する生成ファイル。\n");
+            content.push_str("@file:Suppress(\"ClassName\")\n\n");
+        }
         let mut index = 0;
         while index < lines.len() {
             let line = lines[index];

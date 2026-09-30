@@ -1,12 +1,15 @@
+// serde の wire enum 名を維持する生成ファイル。
+@file:Suppress("ClassName")
+
 package com.maleicacid.tvinput.aribsi.generated
 
 
 sealed class CaMetadataSourceDto {
 
-    object Program : CaMetadataSourceDto()
+    object PROGRAM : CaMetadataSourceDto()
 
-    object ElementaryStream : CaMetadataSourceDto()
+    object ELEMENTARY_STREAM : CaMetadataSourceDto()
 
-    object Cat : CaMetadataSourceDto()
+    object CAT : CaMetadataSourceDto()
 }
 

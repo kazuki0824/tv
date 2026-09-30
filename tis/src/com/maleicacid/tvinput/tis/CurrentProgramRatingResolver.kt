@@ -4,12 +4,10 @@ import android.content.Context
 import android.media.tv.TvContentRating
 import android.media.tv.TvContract
 import android.net.Uri
-import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.EitTimingState
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
-import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
 
 class CurrentProgramRatingResolver internal constructor(
@@ -115,6 +113,10 @@ class CurrentProgramRatingResolver internal constructor(
     @Volatile
     private var currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
 
+    // process-local診断を試験から観測する契約。未使用警告のためにruntimeログを増やさない。
+    @Suppress("MaxLineLength", "UnusedSymbol")
+    fun currentProgramResolutionDiagnosticForTest(): CurrentProgramResolutionDiagnostic = currentProgramResolutionDiagnostic
+
     sealed class EitAuthority {
         object Unconfirmed : EitAuthority()
 
@@ -213,12 +215,10 @@ class CurrentProgramRatingResolver internal constructor(
                     currentProgramResolutionDiagnostic.copy(
                         ratingFreshnessRule = selection.second,
                     )
-                logOverlappingProgramResolution()
                 ResolveResult.Ratings(selection.first ?: unresolvedRatingFallback(channelUri, serviceKey))
             }
 
             is TvProviderLookupResult.QueryFailed -> {
-                currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
                 ResolveResult.ProviderQueryFailed(
                     channelUriString = channelUri?.toString().orEmpty(),
                     serviceKey = serviceKey,
@@ -226,17 +226,6 @@ class CurrentProgramRatingResolver internal constructor(
                 )
             }
         }
-    }
-
-    private fun logOverlappingProgramResolution() {
-        val diagnostic = currentProgramResolutionDiagnostic
-        if (diagnostic.overlapCount <= 1) return
-        Log.w(
-            LogTags.TIS,
-            "current Program overlap selectionRule=${diagnostic.selectionRule} " +
-                "overlapCount=${diagnostic.overlapCount} selectedProgramId=${diagnostic.selectedProgramId} " +
-                "ratingFreshnessRule=${diagnostic.ratingFreshnessRule}",
-        )
     }
 
     private fun unresolvedRatingFallback(
@@ -264,10 +253,7 @@ class CurrentProgramRatingResolver internal constructor(
         serviceKey: ServiceKey?,
         nowMillis: Long,
     ): TvProviderLookupResult {
-        if (channelUri == null) {
-            currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
-            return TvProviderLookupResult.Success(null)
-        }
+        if (channelUri == null) return TvProviderLookupResult.Success(null)
         val projection =
             arrayOf(
                 TvContract.Programs._ID,

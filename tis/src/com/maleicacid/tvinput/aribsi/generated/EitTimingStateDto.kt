@@ -1,14 +1,17 @@
+// serde の wire enum 名を維持する生成ファイル。
+@file:Suppress("ClassName")
+
 package com.maleicacid.tvinput.aribsi.generated
 
 
 sealed class EitTimingStateDto {
 
-    object Defined : EitTimingStateDto()
+    object DEFINED : EitTimingStateDto()
 
-    object UndefinedTime : EitTimingStateDto()
+    object UNDEFINED_TIME : EitTimingStateDto()
 
-    object BothTimingUndefined : EitTimingStateDto()
+    object BOTH_TIMING_UNDEFINED : EitTimingStateDto()
 
-    object MalformedTiming : EitTimingStateDto()
+    object MALFORMED_TIMING : EitTimingStateDto()
 }
 

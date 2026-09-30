@@ -1155,6 +1155,10 @@ class PlaybackPipeline(
         }, FIRST_FRAME_TIMEOUT_MS)
     }
 
+    // ホスト試験は世代更新の公開観測点を使い、private field名への反射を避ける。
+    @Suppress("UnusedSymbol")
+    fun currentPlaybackGenerationForTest(): Long = playbackGeneration
+
     private fun logAudioUnavailable(
         reason: PlaybackUnavailableReason,
         detail: String,

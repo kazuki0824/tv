@@ -1,12 +1,15 @@
+// serde の wire enum 名を維持する生成ファイル。
+@file:Suppress("ClassName")
+
 package com.maleicacid.tvinput.aribsi.generated
 
 
 sealed class BroadcastSystemDto {
 
-    object IsdbT : BroadcastSystemDto()
+    object ISDB_T : BroadcastSystemDto()
 
-    object IsdbSBs : BroadcastSystemDto()
+    object ISDB_S_BS : BroadcastSystemDto()
 
-    object IsdbS110Cs : BroadcastSystemDto()
+    object ISDB_S_110CS : BroadcastSystemDto()
 }
 

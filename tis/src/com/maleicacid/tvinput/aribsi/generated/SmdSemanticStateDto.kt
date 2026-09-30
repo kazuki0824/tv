@@ -1,16 +1,19 @@
+// serde の wire enum 名を維持する生成ファイル。
+@file:Suppress("ClassName")
+
 package com.maleicacid.tvinput.aribsi.generated
 
 
 sealed class SmdSemanticStateDto {
 
-    object SupportedBroadcast : SmdSemanticStateDto()
+    object SUPPORTED_BROADCAST : SmdSemanticStateDto()
 
-    object NonBroadcast : SmdSemanticStateDto()
+    object NON_BROADCAST : SmdSemanticStateDto()
 
-    object UndefinedBroadcastClass : SmdSemanticStateDto()
+    object UNDEFINED_BROADCAST_CLASS : SmdSemanticStateDto()
 
-    object UnsupportedBroadcastSystem : SmdSemanticStateDto()
+    object UNSUPPORTED_BROADCAST_SYSTEM : SmdSemanticStateDto()
 
-    object UndeterminedSmd : SmdSemanticStateDto()
+    object UNDETERMINED_SMD : SmdSemanticStateDto()
 }
 

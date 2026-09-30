@@ -20,36 +20,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-private fun PlaybackPipeline.playbackGenerationForTest(): Long =
-    PlaybackPipeline::class.java
-        .getDeclaredField("playbackGeneration")
-        .apply { isAccessible = true }
-        .getLong(this)
-
 // 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
 @Suppress("TooManyFunctions")
 class PlaybackFailureCallbacksTest {
-    private fun TunerController.dispatchSectionForTest(
-        pid: TsPid,
-        section: ByteArray,
-    ) {
-        val method =
-            TunerController::class.java.declaredMethods.single {
-                it.name.startsWith("onSectionOnController-") && it.parameterCount == 3
-            }
-        method.isAccessible = true
-        val generation =
-            TunerController::class.java
-                .getDeclaredField("tuneGeneration")
-                .apply { isAccessible = true }
-                .getLong(this)
-        try {
-            method.invoke(this, pid.value, section, generation)
-        } catch (error: java.lang.reflect.InvocationTargetException) {
-            throw error.cause ?: error
-        }
-    }
-
     @Suppress("LongMethod")
     @Test
     fun casFilterRejectRollbackKeepsProductionRetryMarker() {
@@ -362,14 +335,14 @@ class PlaybackFailureCallbacksTest {
                             faults.invalidateAt = operation
                             faults.pluginFailure = failCleanup
                             val pid = if (operation == MediaCas.Operation.ECM) ecm.pid else emm.pid
-                            val result = runCatching { controller.dispatchSectionForTest(pid, byteArrayOf(1)) }
+                            val result = runCatching { controller.onSection(pid, byteArrayOf(1)) }
                             check(result.isFailure == failCleanup)
                             if (failCleanup) check(requireNotNull(result.exceptionOrNull()).suppressed.size == 2)
                             check(faults.pluginCloses == 1 && faults.sessionCloses == 0)
                             check(ecm.closes == 1 && emm.closes == 1 && pmt.closes == 0)
                             check(pmtPids == setOf(pmt.pid) && emmPids.isEmpty())
                             check(ecmPids.isEmpty() == !failCleanup)
-                            check(fixture.pipeline.playbackGenerationForTest() == 8L)
+                            check(fixture.pipeline.currentPlaybackGenerationForTest() == 8L)
                             check(fixture.notifications == 1)
                             check(fixture.state == PlaybackStartState.Failed(fixture.signature, 7L))
                             val failure = fixture.failures.single()
@@ -377,7 +350,7 @@ class PlaybackFailureCallbacksTest {
                             check(failure.reason == PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY)
                             check(cas.lastDiagnostic().errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED)
                             val calls = faults.calls.toList()
-                            controller.dispatchSectionForTest(pid, byteArrayOf(1))
+                            controller.onSection(pid, byteArrayOf(1))
                             check(faults.calls == calls && fixture.notifications == 1)
                             faults.pluginFailure = false
                             cas.clearForResourceLoss()
@@ -595,7 +568,7 @@ class PlaybackFailureCallbacksTest {
                     }
                 cas.updateFromCaMetadata(metadata, 7L) { descrambler }
                 check(controller.startPlayback(fixture.selection, requiresCas = true, generation = 7L) == null)
-                check(fixture.pipeline.playbackGenerationForTest() == 7L)
+                check(fixture.pipeline.currentPlaybackGenerationForTest() == 7L)
                 cas.onEcmSection(TsPid(0x123), byteArrayOf(1))
                 executor.submit {}.get(5, TimeUnit.SECONDS)
                 check(decisions == listOf(true))
@@ -627,7 +600,7 @@ class PlaybackFailureCallbacksTest {
                 check(fixture.restarts.isEmpty())
                 check(fixture.failures.single().generation == 7L)
                 check(fixture.failures.single().reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE)
-                check(fixture.pipeline.playbackGenerationForTest() == 8L)
+                check(fixture.pipeline.currentPlaybackGenerationForTest() == 8L)
             } else {
                 val restart = fixture.restarts.single()
                 check(restart.videoOnly && restart.originGeneration == 7L && restart.result.generation == 9L)
@@ -646,7 +619,7 @@ class PlaybackFailureCallbacksTest {
         fixture.invoke("handleMediaSyncError", MediaSync(), 7L, MediaSync.MEDIASYNC_ERROR_AUDIOTRACK_FAIL, 0)
         fixture.invoke("restartCurrentPlaybackGeneration", 6L)
         check(fixture.notifications == 0 && fixture.failures.isEmpty() && fixture.restarts.isEmpty())
-        check(fixture.pipeline.playbackGenerationForTest() == 7L && fixture.releaseAttempts == 1)
+        check(fixture.pipeline.currentPlaybackGenerationForTest() == 7L && fixture.releaseAttempts == 1)
         fixture.rejectRelease = false
         fixture.cleanup.retry()
         fixture.cleanup.requireComplete()
@@ -749,7 +722,7 @@ class PlaybackFailureCallbacksTest {
             val failure = failures.single()
             check(failure.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
             check(failure.generation == 7L && failure.detail.contains("injected filter"))
-            check(pipeline.playbackGenerationForTest() == 8L)
+            check(pipeline.currentPlaybackGenerationForTest() == 8L)
             check(notifications == 1 && state == PlaybackStartState.Failed(signature, 7L))
             check(restarts.isEmpty())
             checkRetainedThenReleased()

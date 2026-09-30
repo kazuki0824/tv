@@ -34,8 +34,8 @@ internal class SiCollectionRequirements(
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    // tableの必要項目を一度に分解し、Qodanaのループ変数警告とdetektの項目数上限の競合を局所的に解消する。
-    @Suppress("CyclomaticComplexMethod", "DestructuringDeclarationWithTooManyEntries", "LongMethod", "MagicNumber", "MaxLineLength")
+    // 六つのSI項目は位置ではなく名前で読む。生成DTOのcomponentN順序に結合しない。
+    @Suppress("CyclomaticComplexMethod", "DestructuringDeclaration", "LongMethod", "MagicNumber", "MaxLineLength")
     fun evaluate(snapshot: ServiceRegistrationSnapshot): Status {
         val targets =
             if (mode == ChannelScanController.PublishMode.SETUP_SCAN) {
@@ -84,7 +84,12 @@ internal class SiCollectionRequirements(
             val rows = snapshot.tableRequirements.filter { it.component == component && it.required }
             if (rows.isEmpty()) require(Key(component, null, null, null), false)
         }
-        for ((component, onid, tsid, sid, _, complete) in snapshot.tableRequirements.filter { it.required }) {
+        for (table in snapshot.tableRequirements.filter { it.required }) {
+            val component = table.component
+            val onid = table.originalNetworkId
+            val tsid = table.transportStreamId
+            val sid = table.serviceId
+            val complete = table.complete
             val scope = onid to tsid
             val pmtOutsideTargets =
                 component == "PMT" && sid != null && targets.isNotEmpty() &&

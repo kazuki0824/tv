@@ -1270,6 +1270,14 @@ class TunerController(
             WellKnownSectionPid.TDT,
         )
 
+    // ホスト試験は実controllerの配送経路を直接検証する。JNI名やprivate fieldへの反射に結合させない。
+    @Suppress("UnusedSymbol")
+    fun onSection(
+        pid: TsPid,
+        section: ByteArray,
+        generation: Long = tuneGeneration,
+    ): Unit = callOnController { onSectionOnController(pid, section, generation) }
+
     private fun onSectionFromFilter(
         pid: TsPid,
         section: ByteArray,

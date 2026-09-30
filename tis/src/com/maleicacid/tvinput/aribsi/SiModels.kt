@@ -554,6 +554,15 @@ data class ServiceRegistrationSnapshot(
     val eitInstances: List<EitInstanceState> = emptyList(),
 )
 
+data class CasDiscoverySnapshot(
+    val services: List<AribService>,
+    val caMetadata: List<CaMetadata>,
+    val pmtPids: Map<ServiceKey, TsPid>,
+    val catEmmPids: List<TsPid>,
+    val diagnostics: List<DescriptorDiagnostic>,
+    val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
+)
+
 data class LivePlaybackSnapshot(
     val collectionGeneration: Long,
     val programs: ProgramPublishSnapshot,
