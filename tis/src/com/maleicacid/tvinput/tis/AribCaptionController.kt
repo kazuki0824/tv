@@ -95,7 +95,6 @@ class AribCaptionController(
             dispatch = { action -> enqueue(action) },
             postDelayed = { runnable, delayMillis ->
                 mainHandler.postDelayed(runnable, delayMillis)
-                Unit
             },
             removeCallbacks = { runnable -> mainHandler.removeCallbacks(runnable) },
             onDue = { trackId, pesData ->
@@ -225,7 +224,7 @@ class AribCaptionController(
             }
 
             NativeAribCaptionRenderer.DecodeResult.NoOutput -> {
-                Unit
+                // 描画する字幕がない。
             }
 
             is NativeAribCaptionRenderer.DecodeResult.Rendered -> {

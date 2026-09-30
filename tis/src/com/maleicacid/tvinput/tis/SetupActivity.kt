@@ -113,7 +113,7 @@ class SetupActivity :
                 is ScanState.Idle,
                 is ScanState.Running,
                 -> {
-                    Unit
+                    // 完了前の状態では通知しない。
                 }
             }
         }
