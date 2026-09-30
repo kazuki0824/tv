@@ -2,6 +2,4 @@
     <string name="app_name">Maleicacid TV 入力</string>
     <string name="input_label">Maleicacid 内蔵チューナー</string>
     <string name="setup_label">チャンネル設定</string>
-    <string name="invalid_setup_request">不正な設定要求です。inputIdがないか、このTvInputServiceに属していません。</string>
-    <string name="boot_epg_sync_pending_status">%1$s\n起動後EPG同期は保留中です。設定画面の外で処理します。source=%2$s</string>
 </resources>

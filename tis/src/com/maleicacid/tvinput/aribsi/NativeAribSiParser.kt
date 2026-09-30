@@ -70,6 +70,8 @@ class NativeAribSiParser : AutoCloseable {
         return nativeIngestSection(handle, pid.value, section)
     }
 
+    fun lastStatus(): Int = nativeLastStatus(handle)
+
     @Synchronized
     fun broadcastClockSnapshot(): AribBroadcastClockFact? = readNativeTransaction().broadcastClock
 
@@ -95,9 +97,6 @@ class NativeAribSiParser : AutoCloseable {
 
     @Synchronized
     fun takeProgramPublishSnapshot(): ProgramPublishSnapshot = buildProgramPublishSnapshot(readNativeTransaction())
-
-    @Synchronized
-    fun programStateSnapshot(): ProgramPublishSnapshot = buildProgramPublishSnapshot(readNativeTransaction())
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
@@ -229,6 +228,11 @@ class NativeAribSiParser : AutoCloseable {
 
     fun decodeAribString(bytes: ByteArray): String = requireNativeString(nativeDecodeAribString(bytes))
 
+    fun decodeAribStringDiagnosticSummary(bytes: ByteArray): String {
+        val result = nativeDecodeAribStringDiagnosticSummary(bytes)
+        return requireNativeString(result)
+    }
+
     override fun close() {
         val current = handle
         if (current != 0L) {
@@ -264,6 +268,8 @@ class NativeAribSiParser : AutoCloseable {
         pid: Int,
         section: ByteArray,
     ): Int
+
+    private external fun nativeLastStatus(handle: Long): Int
 
     private external fun nativeSetDiscoveryProfile(
         handle: Long,
