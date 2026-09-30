@@ -3,7 +3,7 @@ package com.maleicacid.tvinput.aribsi.generated
 
 sealed class SiParseStatusDto {
 
-    object OK : SiParseStatusDto()
+    object Ok : SiParseStatusDto()
 
     object MalformedLength : SiParseStatusDto()
 
@@ -13,6 +13,6 @@ sealed class SiParseStatusDto {
 
     object InvalidSequence : SiParseStatusDto()
 
-    object UNRESOLVED : SiParseStatusDto()
+    object Unresolved : SiParseStatusDto()
 }
 
