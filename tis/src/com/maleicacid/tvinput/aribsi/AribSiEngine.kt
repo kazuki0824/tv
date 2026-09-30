@@ -55,11 +55,6 @@ class AribSiEngine(
 
     fun decodeAribString(bytes: ByteArray): String = synchronized(lock) { nativeParser.decodeAribString(bytes) }
 
-    fun decodeAribStringDiagnosticSummary(bytes: ByteArray): String =
-        synchronized(lock) {
-            nativeParser.decodeAribStringDiagnosticSummary(bytes)
-        }
-
     fun reset(discoveryProfile: Int = SiDiscoveryProfile.ISDB_T) =
         synchronized(lock) {
             nativeParser.close()
