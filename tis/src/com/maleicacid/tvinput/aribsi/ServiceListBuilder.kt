@@ -56,47 +56,9 @@ class ServiceListBuilder(
 
     fun snapshot(): List<AribService> = engine.serviceRegistrationSnapshot().services
 
-    fun completenessSummary(): ServiceSnapshotSummary {
-        val transaction = engine.serviceRegistrationSnapshot()
-        val completeness =
-            transaction.services.map {
-                completenessForModel(it, transaction.semanticFactsByServiceKey[it.serviceKey])
-            }
-        return ServiceSnapshotSummary(
-            completeness = completeness,
-        )
-    }
 
-    fun registrationReadySnapshot(): List<AribService> {
-        val transaction = engine.serviceRegistrationSnapshot()
-        return transaction.services.filter { service ->
-            ServicePolicyEvaluator
-                .evaluate(transaction.semanticFactsByServiceKey[service.serviceKey])
-                .registrationReady
-        }
-    }
 
-    fun clearLivePlaybackStaticallyEligibleSnapshot(): List<AribService> {
-        val transaction = engine.serviceRegistrationSnapshot()
-        return transaction.services.filter { service ->
-            ServicePolicyEvaluator
-                .evaluate(transaction.semanticFactsByServiceKey[service.serviceKey])
-                .clearLivePlaybackStaticallyEligible
-        }
-    }
 
-    fun incompleteReasons(): Map<ServiceKey, List<String>> {
-        val transaction = engine.serviceRegistrationSnapshot()
-        val completeness =
-            transaction.services.map {
-                completenessForModel(it, transaction.semanticFactsByServiceKey[it.serviceKey])
-            }
-        val reasons =
-            completeness
-                .filter { !it.registrationReady }
-                .associate { it.serviceKey to it.reasons }
-        return reasons
-    }
 
     companion object {
         fun completenessForModel(
