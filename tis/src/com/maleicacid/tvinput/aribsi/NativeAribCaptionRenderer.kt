@@ -72,8 +72,7 @@ class NativeAribCaptionRenderer(
         height: Int,
     ): Boolean {
         val current = handle.takeIf { it != 0L } ?: return false
-        if (width <= 0 || height <= 0) return false
-        return nativeSetViewport(current, width, height)
+        return width > 0 && height > 0 && nativeSetViewport(current, width, height)
     }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
