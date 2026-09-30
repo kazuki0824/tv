@@ -123,8 +123,7 @@
     "boundary": "PROGRAM",
     "encoding": "UTF8",
     "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[],\"publishDiagnostics\":[],\"parserDiagnostics\":[]},\"casFacts\":{\"pmtPid\":null,\"parseStatus\":\"PMT_UNRESOLVED\",\"sdtFreeCaMode\":null,\"descriptors\":[]}}",
-    "accepted": false,
-    "schemaAccepted": false
+    "accepted": false
   },
   {
     "name": "CASの根拠と未解決状態を保持",
@@ -152,8 +151,7 @@
     "boundary": "PROGRAM",
     "encoding": "UTF8",
     "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[],\"publishDiagnostics\":[{\"code\":\"OLD_POLICY\",\"message\":\"旧版での公開判断\"}],\"parserDiagnostics\":[]},\"shortEvents\":[],\"extendedTexts\":[],\"casFacts\":{\"pmtPid\":null,\"parseStatus\":\"PMT_UNRESOLVED\",\"sdtFreeCaMode\":null,\"descriptors\":[]}}",
-    "accepted": false,
-    "schemaAccepted": false
+    "accepted": false
   },
   {
     "name": "rating-country-JPN",
