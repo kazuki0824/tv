@@ -236,10 +236,6 @@ class AribCaptionController(
 
     fun flushForSubtitleContinuityLoss() = enqueue { restartPresentation() }
 
-    fun noPtsRejectedCountForDiagnostic(): Int = runBlocking { noPtsRejectedCount }
-
-    fun invalidViewportCountForDiagnostic(): Int = runBlocking { invalidViewportCount }
-
     private fun updateOverlaySize(
         width: Int,
         height: Int,
