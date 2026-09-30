@@ -57,7 +57,9 @@ value class ServiceId16(
     }
 }
 
-class ServiceKey private constructor(
+// factory経由の生成を維持する。data classのcopyは型付きの検証済みIDを受け取る。
+@Suppress("DataClassPrivateConstructor")
+data class ServiceKey private constructor(
     val originalNetwork: NetworkId16,
     val transportStream: TransportStreamId16,
     val service: ServiceId16,
@@ -65,22 +67,6 @@ class ServiceKey private constructor(
     val originalNetworkId: Int get() = originalNetwork.value
     val transportStreamId: Int get() = transportStream.value
     val serviceId: Int get() = service.value
-
-    override fun equals(other: Any?): Boolean =
-        this === other ||
-            (
-                other is ServiceKey &&
-                    originalNetwork == other.originalNetwork &&
-                    transportStream == other.transportStream &&
-                    service == other.service
-            )
-
-    override fun hashCode(): Int {
-        var result = originalNetwork.hashCode()
-        result = 31 * result + transportStream.hashCode()
-        result = 31 * result + service.hashCode()
-        return result
-    }
 
     override fun toString(): String =
         "ServiceKey(originalNetworkId=$originalNetworkId, transportStreamId=$transportStreamId, serviceId=$serviceId)"
