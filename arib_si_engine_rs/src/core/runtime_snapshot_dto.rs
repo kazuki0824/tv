@@ -2,79 +2,79 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SiParseStatusDto {
-    #[serde(rename = "OK")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "OK"))]
     Ok,
-    #[serde(rename = "MalformedLength")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "MalformedLength"))]
     MalformedLength,
-    #[serde(rename = "TruncatedDescriptor")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "TruncatedDescriptor"))]
     TruncatedDescriptor,
-    #[serde(rename = "UnsupportedValue")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "UnsupportedValue"))]
     UnsupportedValue,
-    #[serde(rename = "InvalidSequence")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "InvalidSequence"))]
     InvalidSequence,
-    #[serde(rename = "UNRESOLVED")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "UNRESOLVED"))]
     Unresolved,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum EitTimingStateDto {
-    #[serde(rename = "DEFINED")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "DEFINED"))]
     Defined,
-    #[serde(rename = "UNDEFINED_TIME")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "UNDEFINED_TIME"))]
     UndefinedTime,
-    #[serde(rename = "BOTH_TIMING_UNDEFINED")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "BOTH_TIMING_UNDEFINED"))]
     BothTimingUndefined,
-    #[serde(rename = "MALFORMED_TIMING")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "MALFORMED_TIMING"))]
     MalformedTiming,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ElementaryStreamKindDto {
-    #[serde(rename = "VIDEO")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "VIDEO"))]
     Video,
-    #[serde(rename = "AUDIO")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "AUDIO"))]
     Audio,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum BroadcastSystemDto {
-    #[serde(rename = "ISDB_T")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "ISDB_T"))]
     IsdbT,
-    #[serde(rename = "ISDB_S_BS")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "ISDB_S_BS"))]
     IsdbSBs,
-    #[serde(rename = "ISDB_S_110CS")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "ISDB_S_110CS"))]
     IsdbS110Cs,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SmdSemanticStateDto {
-    #[serde(rename = "SUPPORTED_BROADCAST")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "SUPPORTED_BROADCAST"))]
     SupportedBroadcast,
-    #[serde(rename = "NON_BROADCAST")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "NON_BROADCAST"))]
     NonBroadcast,
-    #[serde(rename = "UNDEFINED_BROADCAST_CLASS")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "UNDEFINED_BROADCAST_CLASS"))]
     UndefinedBroadcastClass,
-    #[serde(rename = "UNSUPPORTED_BROADCAST_SYSTEM")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "UNSUPPORTED_BROADCAST_SYSTEM"))]
     UnsupportedBroadcastSystem,
-    #[serde(rename = "UNDETERMINED_SMD")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "UNDETERMINED_SMD"))]
     UndeterminedSmd,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CaDescriptorScopeDto {
-    #[serde(rename = "PROGRAM")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "PROGRAM"))]
     Program,
-    #[serde(rename = "ES")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "ES"))]
     Es,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CaMetadataSourceDto {
-    #[serde(rename = "PROGRAM")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "PROGRAM"))]
     Program,
-    #[serde(rename = "ELEMENTARY_STREAM")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "ELEMENTARY_STREAM"))]
     ElementaryStream,
-    #[serde(rename = "CAT")]
+    #[cfg_attr(not(feature = "kotlin-bindings"), serde(rename = "CAT"))]
     Cat,
 }
 
