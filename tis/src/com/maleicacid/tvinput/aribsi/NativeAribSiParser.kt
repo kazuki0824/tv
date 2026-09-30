@@ -226,11 +226,6 @@ class NativeAribSiParser : AutoCloseable {
 
     fun decodeAribString(bytes: ByteArray): String = requireNativeString(nativeDecodeAribString(bytes))
 
-    fun decodeAribStringDiagnosticSummary(bytes: ByteArray): String {
-        val result = nativeDecodeAribStringDiagnosticSummary(bytes)
-        return requireNativeString(result)
-    }
-
     override fun close() {
         val current = handle
         if (current != 0L) {
@@ -277,8 +272,6 @@ class NativeAribSiParser : AutoCloseable {
     private external fun nativeSnapshotPmtPidsForSectionFilters(handle: Long): IntArray?
 
     private external fun nativeDecodeAribString(bytes: ByteArray): String?
-
-    private external fun nativeDecodeAribStringDiagnosticSummary(bytes: ByteArray): String?
 
     companion object {
         private fun requireNativeString(value: String?): String {
