@@ -70,8 +70,6 @@ class NativeAribSiParser : AutoCloseable {
         return nativeIngestSection(handle, pid.value, section)
     }
 
-    fun lastStatus(): Int = nativeLastStatus(handle)
-
     @Synchronized
     fun broadcastClockSnapshot(): AribBroadcastClockFact? = readNativeTransaction().broadcastClock
 
@@ -268,8 +266,6 @@ class NativeAribSiParser : AutoCloseable {
         pid: Int,
         section: ByteArray,
     ): Int
-
-    private external fun nativeLastStatus(handle: Long): Int
 
     private external fun nativeSetDiscoveryProfile(
         handle: Long,
