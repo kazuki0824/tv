@@ -498,7 +498,7 @@ class PlaybackPipeline(
             audioDecoder =
                 AudioDecoderPipeline(
                     audioKind!!,
-                    requireNotNull(audio),
+                    audio,
                     selection.audioChannelConfiguration,
                     selection.audioDualMono == true,
                     selection.dualMonoPresentation,
@@ -1196,7 +1196,7 @@ class PlaybackPipeline(
                 }
 
                 null -> {
-                    Unit
+                    // availability modeが未確定なら通知しない。
                 }
             }
         }
@@ -1903,7 +1903,7 @@ class PlaybackPipeline(
 
     enum class MediaEventBoundsDecision { ACCEPT, MALFORMED, OVERSIZED, OUT_OF_BOUNDS }
 
-    private data class CaptionPesSample(
+    private class CaptionPesSample(
         val payload: ByteArray,
         val pts90k: Long?,
     )
@@ -2335,7 +2335,7 @@ class PlaybackPipeline(
                             } else {
                                 8
                             }
-                        ; repeat(count) { index -> if (bits.readBit() == 1) skipScalingList(bits, if (index < 6) 16 else 64) }
+                        repeat(count) { index -> if (bits.readBit() == 1) skipScalingList(bits, if (index < 6) 16 else 64) }
                     }
                 }
                 bits.readUE()
@@ -2400,7 +2400,7 @@ class PlaybackPipeline(
                         } else {
                             AVC_SAR_TABLE[aspectRatioIdc]
                         }
-                    ; if (sar != null && sar.first > 0 &&
+                    if (sar != null && sar.first > 0 &&
                         sar.second > 0
                     ) {
                         sarWidth = sar.first
@@ -2457,7 +2457,7 @@ class PlaybackPipeline(
                 ) {
                     nextScale = (lastScale + bits.readSE() + 256) % 256
                 }
-                ; lastScale = if (nextScale == 0) lastScale else nextScale
+                lastScale = if (nextScale == 0) lastScale else nextScale
             }
         }
 
@@ -2505,7 +2505,7 @@ class PlaybackPipeline(
                         base
                     }
                 }
-            ; val channels =
+            val channels =
                 if (channelMode ==
                     3
                 ) {
@@ -2513,7 +2513,7 @@ class PlaybackPipeline(
                 } else {
                     2
                 }
-            ; return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels)
+            return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels)
         }
 
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -2565,7 +2565,7 @@ class PlaybackPipeline(
                             continue
                         }
                     }
-                ; if (i + prefixLength >=
+                if (i + prefixLength >=
                     bytes.size
                 ) {
                     return null
