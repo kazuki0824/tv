@@ -113,6 +113,10 @@ class CurrentProgramRatingResolver internal constructor(
     @Volatile
     private var currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
 
+    // process-local診断を試験から観測する契約。未使用警告のためにruntimeログを増やさない。
+    @Suppress("MaxLineLength", "unused")
+    fun currentProgramResolutionDiagnosticForTest(): CurrentProgramResolutionDiagnostic = currentProgramResolutionDiagnostic
+
     sealed class EitAuthority {
         object Unconfirmed : EitAuthority()
 
