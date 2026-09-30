@@ -56,10 +56,6 @@ class ServiceListBuilder(
 
     fun snapshot(): List<AribService> = engine.serviceRegistrationSnapshot().services
 
-
-
-
-
     companion object {
         fun completenessForModel(
             service: AribService,
