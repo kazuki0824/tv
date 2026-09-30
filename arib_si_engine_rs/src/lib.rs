@@ -940,15 +940,6 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeLastStatus(
-    _env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-) -> jint {
-    with_state(handle, STATUS_INVALID_HANDLE, |state| state.last_status)
-}
-
-#[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSetDiscoveryProfile(
     _env: JNIEnv<'_>,
     _this: JObject<'_>,
@@ -976,17 +967,6 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     let decoded =
         jbytearray_to_vec(&env, bytes).map(|bytes| arib_string::decode_arib_string_lossy(&bytes).0);
     java_string(&mut env, decoded)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeDecodeAribStringDiagnosticSummary(
-    mut env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    bytes: JByteArray<'_>,
-) -> jstring {
-    let summary = jbytearray_to_vec(&env, bytes)
-        .map(|bytes| arib_string::decode_arib_string_lossy(&bytes).1.summary());
-    java_string(&mut env, summary)
 }
 
 #[cfg(test)]
