@@ -68,10 +68,12 @@ class ServiceKey private constructor(
 
     override fun equals(other: Any?): Boolean =
         this === other ||
-            (other is ServiceKey &&
-                originalNetwork == other.originalNetwork &&
-                transportStream == other.transportStream &&
-                service == other.service)
+            (
+                other is ServiceKey &&
+                    originalNetwork == other.originalNetwork &&
+                    transportStream == other.transportStream &&
+                    service == other.service
+            )
 
     override fun hashCode(): Int {
         var result = originalNetwork.hashCode()
@@ -180,7 +182,6 @@ value class RelativeStreamNumber(
     init {
         require(value in RELATIVE_STREAM_RANGE) { "相対ストリーム番号は 0..7 でなければなりません: $value" }
     }
-
 }
 
 enum class StreamSelectorType { NONE, TSID, RELATIVE }
