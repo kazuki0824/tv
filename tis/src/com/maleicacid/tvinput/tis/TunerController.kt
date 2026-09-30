@@ -1269,7 +1269,8 @@ class TunerController(
             WellKnownSectionPid.TDT,
         )
 
-    fun onSection(
+    @Suppress("unused")
+    internal fun onSection(
         pid: TsPid,
         section: ByteArray,
         generation: Long = tuneGeneration,

@@ -1165,7 +1165,8 @@ class PlaybackPipeline(
         )
     }
 
-    fun currentPlaybackGenerationForTest(): Long = playbackGeneration
+    @Suppress("unused")
+    internal fun currentPlaybackGenerationForTest(): Long = playbackGeneration
 
     private fun releaseMediaEvent(event: MediaEvent) {
         runCatching { event.release() }.onFailure { Log.w(LogTags.TIS, "MediaEvent の release に失敗しました", it) }

@@ -57,7 +57,7 @@ value class ServiceId16(
     }
 }
 
-data class ServiceKey private constructor(
+data class ServiceKey(
     val originalNetwork: NetworkId16,
     val transportStream: TransportStreamId16,
     val service: ServiceId16,
