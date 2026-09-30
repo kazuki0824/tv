@@ -46,7 +46,6 @@ class NativeAribSiParserCasDiscoveryTest {
         NativeAribSiParser().use { parser ->
             for (name in listOf(
                 "nativeDecodeAribString",
-                "nativeDecodeAribStringDiagnosticSummary",
                 "nativeExtractProgramKeyResult",
                 "nativeDecodeChannelProviderData",
             )) {
