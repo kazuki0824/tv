@@ -472,29 +472,6 @@ fn registry() -> &'static Mutex<ParserRegistry> {
     REGISTRY.get_or_init(|| Mutex::new(ParserRegistry::default()))
 }
 
-fn with_state<T>(handle: jlong, default_value: T, f: impl FnOnce(&ParserState) -> T) -> T {
-    if !si_module_is_healthy() {
-        return default_value;
-    }
-    let parser = match registry().lock() {
-        Ok(guard) => guard.get(handle),
-        Err(_) => {
-            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
-            return default_value;
-        }
-    };
-    let Some(parser) = parser else {
-        return default_value;
-    };
-    let result = match parser.lock() {
-        Ok(guard) => f(&guard),
-        Err(_) => {
-            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
-            default_value
-        }
-    };
-    result
-}
 
 fn with_state_mut(
     handle: jlong,
