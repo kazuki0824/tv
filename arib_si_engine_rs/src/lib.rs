@@ -472,7 +472,6 @@ fn registry() -> &'static Mutex<ParserRegistry> {
     REGISTRY.get_or_init(|| Mutex::new(ParserRegistry::default()))
 }
 
-
 fn with_state_mut(
     handle: jlong,
     default_value: jint,
