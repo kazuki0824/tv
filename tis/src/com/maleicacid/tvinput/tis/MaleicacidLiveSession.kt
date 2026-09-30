@@ -10,7 +10,6 @@ import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
 import android.media.tv.tuner.frontend.OnTuneEventListener
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.view.Surface
 import android.view.View
@@ -1339,12 +1338,7 @@ class MaleicacidLiveSession(
                 addAction(TvInputManager.ACTION_PARENTAL_CONTROLS_ENABLED_CHANGED)
             }
         runCatching {
-            if (Build.VERSION.SDK_INT >= 33) {
-                appContext.registerReceiver(parentalControlReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("DEPRECATION")
-                appContext.registerReceiver(parentalControlReceiver, filter)
-            }
+            appContext.registerReceiver(parentalControlReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
             parentalReceiverRegistered = true
         }
     }
