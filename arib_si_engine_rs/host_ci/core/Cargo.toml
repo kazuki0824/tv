@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+default = []
+kotlin-bindings = []
+
 [lib]
 name = "maleicacid_arib_si_engine_core"
 path = "../../src/core.rs"
