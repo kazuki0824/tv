@@ -537,8 +537,6 @@ struct ProgramProviderDataRequestV1 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChannelTuneV1 {
-    #[serde(rename = "displayName", default, skip_serializing)]
-    legacy_display_name: Option<String>,
     delivery_system: String,
     frequency_hz: i64,
     stream_id: Option<i64>,
@@ -864,7 +862,6 @@ fn channel_data_from_request(
         schema_version: CHANNEL_SCHEMA_VERSION,
         service_key: request.service_key,
         tune: ChannelTuneV1 {
-            legacy_display_name: None,
             delivery_system: request.tune.delivery_system,
             frequency_hz: request.tune.frequency_hz,
             stream_id: request.tune.stream_id,
@@ -905,7 +902,6 @@ fn normalize_program_extensions(mut data: ProgramProviderDataV1) -> Option<Progr
 }
 
 fn normalize_channel_extensions(mut data: ChannelProviderDataV1) -> ChannelProviderDataV1 {
-    data.tune.legacy_display_name = None;
     data.diagnostics
         .raw_provider_data_extensions
         .retain(|extension| !forbidden_channel_extension(&extension.key));
@@ -2217,20 +2213,6 @@ mod provider_data_tests {
             serde_json::from_str(value["canonical"].as_str().unwrap()).unwrap();
         assert_eq!(canonical["cas"]["requiresCas"], false);
         assert!(decode_channel_provider_data(&[0xff, 0xfe]).is_empty());
-    }
-
-    #[test]
-    fn channel_decode_migrates_legacy_display_name() {
-        let built = build_channel_provider_data(&minimal_channel_request("", 16_400));
-        assert!(built.success, "{}", built.error_message);
-        let mut stored: serde_json::Value = serde_json::from_str(&built.json).unwrap();
-        stored["tune"]["displayName"] = serde_json::json!("legacy duplicate");
-
-        let decoded = decode_channel_provider_data(stored.to_string().as_bytes());
-        let value: serde_json::Value = serde_json::from_str(&decoded).unwrap();
-        let canonical: serde_json::Value =
-            serde_json::from_str(value["canonical"].as_str().unwrap()).unwrap();
-        assert!(canonical["tune"].get("displayName").is_none());
     }
 
     #[test]
