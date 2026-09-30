@@ -142,12 +142,12 @@ fn int_list<'local>(
 
 fn parse_status_variant(value: &SiParseStatusDto) -> &'static str {
     match value {
-        SiParseStatusDto::Ok => "OK",
+        SiParseStatusDto::Ok => "Ok",
         SiParseStatusDto::MalformedLength => "MalformedLength",
         SiParseStatusDto::TruncatedDescriptor => "TruncatedDescriptor",
         SiParseStatusDto::UnsupportedValue => "UnsupportedValue",
         SiParseStatusDto::InvalidSequence => "InvalidSequence",
-        SiParseStatusDto::Unresolved => "UNRESOLVED",
+        SiParseStatusDto::Unresolved => "Unresolved",
     }
 }
 
@@ -162,8 +162,8 @@ fn timing_variant(value: &EitTimingStateDto) -> &'static str {
 
 fn stream_kind_variant(value: &ElementaryStreamKindDto) -> &'static str {
     match value {
-        ElementaryStreamKindDto::Video => "VIDEO",
-        ElementaryStreamKindDto::Audio => "AUDIO",
+        ElementaryStreamKindDto::Video => "Video",
+        ElementaryStreamKindDto::Audio => "Audio",
     }
 }
 
@@ -187,8 +187,8 @@ fn smd_state_variant(value: &SmdSemanticStateDto) -> &'static str {
 
 fn ca_scope_variant(value: &CaDescriptorScopeDto) -> &'static str {
     match value {
-        CaDescriptorScopeDto::Program => "PROGRAM",
-        CaDescriptorScopeDto::Es => "ES",
+        CaDescriptorScopeDto::Program => "Program",
+        CaDescriptorScopeDto::Es => "Es",
     }
 }
 
@@ -202,9 +202,9 @@ fn ca_source_variant(value: &CaMetadataSourceDto) -> &'static str {
 
 fn aac_probe_status_variant(value: &AacProbeStatusDto) -> &'static str {
     match value {
-        AacProbeStatusDto::Pending => "PENDING",
-        AacProbeStatusDto::Invalid => "INVALID",
-        AacProbeStatusDto::Ready => "READY",
+        AacProbeStatusDto::Pending => "Pending",
+        AacProbeStatusDto::Invalid => "Invalid",
+        AacProbeStatusDto::Ready => "Ready",
     }
 }
 
