@@ -1682,7 +1682,7 @@ class PlaybackPipeline(
         private val kind: AudioCodecKind,
         private val stream: AribElementaryStream,
         private val channelConfiguration: String?,
-        private val dualMono: Boolean,
+        dualMono: Boolean,
         initialDualMonoPresentation: DualMonoPresentation,
         initialVolume: Float,
         override val generation: Long,

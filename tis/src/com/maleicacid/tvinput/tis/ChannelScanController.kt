@@ -23,11 +23,11 @@ import java.util.concurrent.atomic.AtomicLong
 // 走査状態と公開処理の所有を一か所に保ち、関数数だけを理由に別の所有者へ分散しない。
 @Suppress("LargeClass", "TooManyFunctions")
 class ChannelScanController(
-    private val context: Context,
-    private val inputId: String,
+    context: Context,
+    inputId: String,
     private val engine: AribSiEngine,
     scanPurpose: ScanPurpose,
-    private val cancelRequested: AtomicBoolean = AtomicBoolean(false),
+    cancelRequested: AtomicBoolean = AtomicBoolean(false),
 ) : AutoCloseable {
     data class ScanDiagnostic(
         val candidate: ScanCandidate,
