@@ -8,22 +8,10 @@ import com.maleicacid.tvinput.common.TsPid
 
 object SiStatus {
     const val OK = 0
-    const val IGNORED_UNSUPPORTED_PID_OR_TABLE = 1
     const val INVALID_HANDLE = -1
-    const val INVALID_PID = -2
     const val INVALID_SECTION = -3
     const val MALFORMED_DESCRIPTOR = -4
-    const val INDEX_OUT_OF_RANGE = -5
-    const val JNI_ERROR = -6
     const val INTERNAL_ERROR = -7
-    const val INVALID_DISCOVERY_PROFILE = -8
-    const val COLLECTION_LIMIT_EXCEEDED = -9
-}
-
-object SiDiscoveryStage {
-    const val INCOMPLETE = 0
-    const val PARTIAL = 1
-    const val COMPLETE = 2
 }
 
 object SiDiscoveryProfile {
@@ -35,11 +23,6 @@ object SiDiscoveryProfile {
 data class SiIngestResult(
     val pid: TsPid,
     val status: Int,
-)
-
-data class PmtPidMapping(
-    val serviceKey: ServiceKey,
-    val pmtPid: TsPid,
 )
 
 enum class CaDescriptorScope { PROGRAM, ES }
@@ -154,10 +137,6 @@ data class AribService(
     val streams: List<AribElementaryStream> = emptyList(),
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
 ) {
-    val hasProgramCaDescriptor: Boolean
-        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.PROGRAM }
-    val hasEsCaDescriptor: Boolean
-        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.ES }
     val requiresCas: Boolean get() = serviceScopedCaDescriptors.isNotEmpty()
 }
 
@@ -382,13 +361,6 @@ data class AribEvent(
     val descriptors: AribEventDescriptors = AribEventDescriptors(),
 )
 
-data class AribEventDiagnostic(
-    val serviceKey: ServiceKey,
-    val stableIdentity: String?,
-    val eventId: Int,
-    val diagnosticText: String,
-)
-
 data class DescriptorDiagnosticScope(
     val pid: TsPid?,
     val tableId: Int?,
@@ -435,7 +407,6 @@ data class AribEpgUpdateWindow(
 )
 
 typealias EpgUpdateWindow = AribEpgUpdateWindow
-typealias ProgramPublishability = ServicePublishabilityDiagnostic
 
 data class ParserDiagnostic(
     val code: String,
@@ -470,13 +441,11 @@ enum class SiParseStatus(
     UNRESOLVED("UNRESOLVED"),
 }
 
-enum class EitTimingState(
-    val wireValue: String,
-) {
-    DEFINED("DEFINED"),
-    UNDEFINED_TIME("UNDEFINED_TIME"),
-    BOTH_TIMING_UNDEFINED("BOTH_TIMING_UNDEFINED"),
-    MALFORMED_TIMING("MALFORMED_TIMING"),
+enum class EitTimingState {
+    DEFINED,
+    UNDEFINED_TIME,
+    BOTH_TIMING_UNDEFINED,
+    MALFORMED_TIMING,
 }
 
 enum class ElementaryStreamKind {
