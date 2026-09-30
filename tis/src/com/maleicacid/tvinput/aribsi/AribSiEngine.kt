@@ -34,7 +34,7 @@ class AribSiEngine(
         }
 
     // CAS discovery APIは設計契約として保持する。利用側の変更だけを理由に削除しない。
-    @Suppress("UnusedSymbol")
+    @Suppress("unused")
     fun casDiscoverySnapshot(): CasDiscoverySnapshot =
         synchronized(lock) {
             nativeParser.casDiscoverySnapshot()

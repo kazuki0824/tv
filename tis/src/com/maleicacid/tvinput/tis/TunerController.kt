@@ -1271,7 +1271,7 @@ class TunerController(
         )
 
     // ホスト試験は実controllerの配送経路を直接検証する。JNI名やprivate fieldへの反射に結合させない。
-    @Suppress("UnusedSymbol")
+    @Suppress("unused")
     fun onSection(
         pid: TsPid,
         section: ByteArray,
