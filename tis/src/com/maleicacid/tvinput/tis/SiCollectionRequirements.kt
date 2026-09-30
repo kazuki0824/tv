@@ -84,8 +84,7 @@ internal class SiCollectionRequirements(
             if (rows.isEmpty()) require(Key(component, null, null, null), false)
         }
         // 六つのSI項目は位置ではなく名前で読み、生成DTOのcomponentN順序に結合しない。
-        //noinspection DestructuringDeclaration
-        for (table in snapshot.tableRequirements.filter { it.required }) {
+        for (@Suppress("DestructuringDeclaration") table in snapshot.tableRequirements.filter { it.required }) {
             val component = table.component
             val onid = table.originalNetworkId
             val tsid = table.transportStreamId
