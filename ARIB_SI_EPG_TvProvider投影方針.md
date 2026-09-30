@@ -4,7 +4,7 @@
 
 この文書は、`arib_si_engine_rs` が抽出したARIB SI/EPG情報を Android `TvProvider` の標準列と `internal_provider_data` にどう投影するかを固定する。
 
-この文書では、EDCBとEPGStationから補完できた範囲を TvProvider 標準列への投影として固定する。現行仕様で標準列へ自然対応できる値だけを部分投影し、自然対応できない情報は TvProvider 標準列や一般ユーザー向け UI 本文へ投影しない。`internal_provider_data` の schema、key 名、正規化、保存上限、診断情報 schema は `arib_si_engine_rs/DESIGN_JA.md` と `arib_si_engine_rs/schema/*.schema.json` を正とし、本書では再定義しない。
+この文書では、EDCBとEPGStationから補完できた範囲を TvProvider 標準列への投影として固定する。現行仕様で標準列へ自然対応できる値だけを部分投影し、自然対応できない情報は TvProvider 標準列や一般ユーザー向け UI 本文へ投影しない。`internal_provider_data` の schema、key 名、正規化、保存上限、診断情報 schema は `arib_si_engine_rs` のRust serde型・Rust validationと `arib_si_engine_rs/DESIGN_JA.md` を正とし、本書では再定義しない。
 
 ## 2. 基本原則
 
@@ -195,7 +195,7 @@ Programs.COLUMN_LONG_DESCRIPTION のUI補足:
   イベントグループは LONG_DESCRIPTION に出さない
 
 Programs.COLUMN_INTERNAL_PROVIDER_DATA:
-  SI engine正本が生成したcanonical JSON v1 UTF-8 bytesを保存する。schema、nested key、canonical encode、正規化、安定キー抽出は `arib_si_engine_rs/DESIGN_JA.md` と `arib_si_engine_rs/schema/*.schema.json` を唯一の正本とし、本書では再定義しない。
+  SI engine正本が生成したcanonical JSON v1 UTF-8 bytesを保存する。schema、nested key、canonical encode、正規化、安定キー抽出は `arib_si_engine_rs` のRust serde型・Rust validationと `arib_si_engine_rs/DESIGN_JA.md` を唯一の正本とし、本書では再定義しない。
   TvProvider標準列への投影結果、TISのcurrent product policy、runtime診断をprovider-data schemaへ逆流させない。publish fingerprintやprocess-local cache等の書込み抑止・runtime診断方式は `tis/DESIGN_JA.md` を正とする。
 
 Channels.COLUMN_TYPE:
@@ -232,14 +232,14 @@ Channels.COLUMN_TYPE:
 ```text
 1. どの標準列へ入れるかを明記する。
 2. 一般ユーザー向けUIに表示させる理由を明記する。
-3. provider-dataの構造変更が必要な場合は、`arib_si_engine_rs/DESIGN_JA.md` と同crateのserde構造体・schema・正本testdataを更新し、本書では完全構造を再定義しない。TIS側にschema整合確認データがある場合はSI engine正本との一致を確認する。
-4. 標準列への投影結果を確認し、provider-data変更を伴う場合はSI engine正本側のschema・encode・testでも整合を確認する。
+3. provider-dataの構造変更が必要な場合は、`arib_si_engine_rs/DESIGN_JA.md` と同crateのRust serde構造体・validationを更新し、本書では完全構造を再定義しない。testdataは回帰試験ベクトルとして必要に応じて更新する。
+4. 標準列への投影結果を確認し、provider-data変更を伴う場合はSI engine正本側のRust型・validation・encode・testでも整合を確認する。
 5. この文書を更新し、開発規則.mdのリリース物ルールに反しないことを確認する。
 ```
 
 ## 9. internal_provider_data 参照方針
 
-`internal_provider_data` の具体 schema、正規化、安定キー抽出、保存上限、診断情報 schema は `arib_si_engine_rs/DESIGN_JA.md` の「provider-data / diagnostics Rust SSOT」と `arib_si_engine_rs/schema/*.schema.json` を正とする。本書は TvProvider 標準列への投影規則、一般ユーザー向け本文への補足出力規則、標準列非投影または部分投影の境界だけを固定する。
+`internal_provider_data` の具体 schema、正規化、安定キー抽出、保存上限、診断情報 schema は `arib_si_engine_rs` のRust serde型・Rust validationと `arib_si_engine_rs/DESIGN_JA.md` を正とする。本書は TvProvider 標準列への投影規則、一般ユーザー向け本文への補足出力規則、標準列非投影または部分投影の境界だけを固定する。
 
 標準列へ自然対応しない完全構造は JSON v1 `internal_provider_data` に保存する。ただし、そのフィールド定義、正規化、切り詰め、診断情報の詳細を本書で再定義してはならない。
 
