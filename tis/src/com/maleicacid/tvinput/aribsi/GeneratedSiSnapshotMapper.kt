@@ -38,12 +38,12 @@ private fun ServiceKeyDto.toDomain(): ServiceKey = ServiceKey(originalNetworkId,
 
 private fun SiParseStatusDto.toDomain(): SiParseStatus =
     when (this) {
-        SiParseStatusDto.OK -> SiParseStatus.OK
+        SiParseStatusDto.Ok -> SiParseStatus.OK
         SiParseStatusDto.MalformedLength -> SiParseStatus.MALFORMED_LENGTH
         SiParseStatusDto.TruncatedDescriptor -> SiParseStatus.TRUNCATED_DESCRIPTOR
         SiParseStatusDto.UnsupportedValue -> SiParseStatus.UNSUPPORTED_VALUE
         SiParseStatusDto.InvalidSequence -> SiParseStatus.INVALID_SEQUENCE
-        SiParseStatusDto.UNRESOLVED -> SiParseStatus.UNRESOLVED
+        SiParseStatusDto.Unresolved -> SiParseStatus.UNRESOLVED
     }
 
 private fun EitTimingStateDto.toDomain(): EitTimingState =
@@ -56,8 +56,8 @@ private fun EitTimingStateDto.toDomain(): EitTimingState =
 
 private fun ElementaryStreamKindDto.toDomain(): ElementaryStreamKind =
     when (this) {
-        ElementaryStreamKindDto.VIDEO -> ElementaryStreamKind.VIDEO
-        ElementaryStreamKindDto.AUDIO -> ElementaryStreamKind.AUDIO
+        ElementaryStreamKindDto.Video -> ElementaryStreamKind.VIDEO
+        ElementaryStreamKindDto.Audio -> ElementaryStreamKind.AUDIO
     }
 
 private fun BroadcastSystemDto.toDomain(): BroadcastSystem =
@@ -78,8 +78,8 @@ private fun SmdSemanticStateDto.toDomain(): SmdSemanticState =
 
 private fun CaDescriptorScopeDto.toDomain(): CaDescriptorScope =
     when (this) {
-        CaDescriptorScopeDto.PROGRAM -> CaDescriptorScope.PROGRAM
-        CaDescriptorScopeDto.ES -> CaDescriptorScope.ES
+        CaDescriptorScopeDto.Program -> CaDescriptorScope.PROGRAM
+        CaDescriptorScopeDto.Es -> CaDescriptorScope.ES
     }
 
 private fun CaMetadataSourceDto.toDomain(): CaMetadataSource =
