@@ -363,7 +363,7 @@ class TisR51FixedPlanAcceptanceTest {
             }
         val uri = android.net.Uri.parse("content://android.media.tv/channel/1")
         NativeAribSiParser().use { parser ->
-            val baseline = parser.programStateSnapshot()
+            val baseline = parser.livePlaybackSnapshot().programs
             for (timing in listOf(0L to event.durationMillis, event.startTimeMillis to 0L)) {
                 val present =
                     event.copy(
@@ -610,7 +610,7 @@ class TisR51FixedPlanAcceptanceTest {
                 }
             }
         NativeAribSiParser().use { parser ->
-            val unobserved = parser.programStateSnapshot()
+            val unobserved = parser.livePlaybackSnapshot().programs
             val following =
                 event.copy(
                     eventId = 2,

@@ -18,7 +18,7 @@ android_app {
     resource_dirs: ["res"],
 
     platform_apis: true,
-    min_sdk_version: "31",
+    min_sdk_version: "35",
     certificate: "platform",
 
     jni_libs: [
@@ -50,7 +50,7 @@ android_test {
     asset_dirs: ["tests/assets"],
     manifest: "tests/AndroidManifest.xml",
     platform_apis: true,
-    min_sdk_version: "31",
+    min_sdk_version: "35",
     certificate: "platform",
     instrumentation_for: "MaleicacidTvInput",
     static_libs: [
