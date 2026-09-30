@@ -78,11 +78,10 @@ object AribRatingMapper {
     fun isExceptional(
         rating: AribParentalRating,
         profile: BroadcastProfile,
-    ): Boolean {
-        return profile != BroadcastProfile.UNRESOLVED &&
+    ): Boolean =
+        profile != BroadcastProfile.UNRESOLVED &&
             rating.countryCode == "JPN" &&
             rating.rawRatingByte in 0x12..0xff
-    }
 
     fun unrated(): TvContentRating = TvContentRating.UNRATED
 
