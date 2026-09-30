@@ -113,10 +113,6 @@ class CurrentProgramRatingResolver internal constructor(
     @Volatile
     private var currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
 
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    fun currentProgramResolutionDiagnosticForTest(): CurrentProgramResolutionDiagnostic = currentProgramResolutionDiagnostic
-
     sealed class EitAuthority {
         object Unconfirmed : EitAuthority()
 
