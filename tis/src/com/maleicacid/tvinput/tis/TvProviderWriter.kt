@@ -930,7 +930,7 @@ class TvProviderWriter private constructor(
                 cursor.use { c ->
                     while (c.moveToNext()) {
                         val data = providerDataBytes(c, 1)
-                        val key = TvProviderWriter.parseProgramKey(data)
+                        val key = parseProgramKey(data)
                         if (key != null && key !in out) out[key] = c.getLong(0)
                     }
                 }
@@ -953,7 +953,7 @@ class TvProviderWriter private constructor(
                 cursor.use { c ->
                     while (c.moveToNext()) {
                         val data = providerDataBytes(c, 1)
-                        val key = TvProviderWriter.parseProgramKey(data)
+                        val key = parseProgramKey(data)
                         if (key != null && key !in out) out[key] = c.getLong(0)
                     }
                 }
@@ -1018,8 +1018,8 @@ class TvProviderWriter private constructor(
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(0)
                         val ownerPackage = cursor.getString(1)
-                        val key = TvProviderWriter.parseProgramKey(providerDataBytes(cursor, 2))
-                        if (TvProviderWriter.shouldDeleteOwnedObsoleteProgramRow(
+                        val key = parseProgramKey(providerDataBytes(cursor, 2))
+                        if (shouldDeleteOwnedObsoleteProgramRow(
                                 ownerPackage,
                                 context.packageName,
                                 key,

@@ -16,7 +16,6 @@ import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
-import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
