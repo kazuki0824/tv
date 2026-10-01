@@ -35,7 +35,6 @@ kotlin {
 val androidAll = "org.robolectric:android-all:15-robolectric-13954326"
 
 dependencies {
-    compileOnly(androidAll)
     testCompileOnly(androidAll)
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:1.9.22")
