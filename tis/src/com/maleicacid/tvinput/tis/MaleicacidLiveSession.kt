@@ -10,7 +10,6 @@ import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
 import android.media.tv.tuner.frontend.OnTuneEventListener
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.view.Surface
 import android.view.View
@@ -36,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MaleicacidLiveSession(
     serviceContext: Context,
     private val sessionContext: Context,
-    private val inputId: String,
+    inputId: String,
     private val sessionId: String,
 ) : TvInputService.Session(sessionContext) {
     private val appContext = serviceContext.applicationContext
@@ -233,13 +232,10 @@ class MaleicacidLiveSession(
     }
 
     override fun onSetSurface(surface: Surface?): Boolean =
-        if (releaseOnce.get()) {
-            false
-        } else {
+        !releaseOnce.get() &&
             runOnSessionExecutorBlocking {
-                if (releaseOnce.get()) false else onSetSurfaceOnSessionExecutor(surface)
+                !releaseOnce.get() && onSetSurfaceOnSessionExecutor(surface)
             }
-        }
 
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
         this.surface = surface
@@ -256,7 +252,7 @@ class MaleicacidLiveSession(
         return true
     }
 
-    override fun onCreateOverlayView(): View? = captionOverlayView
+    override fun onCreateOverlayView(): View = captionOverlayView
 
     override fun onSetStreamVolume(volume: Float) {
         enqueueSessionAction { onSetStreamVolumeOnSessionExecutor(volume) }
@@ -280,14 +276,11 @@ class MaleicacidLiveSession(
     }
 
     override fun onTune(channelUri: Uri?): Boolean =
-        if (releaseOnce.get()) {
-            false
-        } else {
+        !releaseOnce.get() &&
             runOnSessionExecutorBlocking {
                 if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
                 onTuneOnSessionExecutor(channelUri)
             }
-        }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
@@ -583,14 +576,11 @@ class MaleicacidLiveSession(
         type: Int,
         trackId: String?,
     ): Boolean =
-        if (releaseOnce.get()) {
-            false
-        } else {
+        !releaseOnce.get() &&
             runOnSessionExecutorBlocking {
                 if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
                 onSelectTrackOnSessionExecutor(type, trackId)
             }
-        }
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
@@ -1339,12 +1329,7 @@ class MaleicacidLiveSession(
                 addAction(TvInputManager.ACTION_PARENTAL_CONTROLS_ENABLED_CHANGED)
             }
         runCatching {
-            if (Build.VERSION.SDK_INT >= 33) {
-                appContext.registerReceiver(parentalControlReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("DEPRECATION")
-                appContext.registerReceiver(parentalControlReceiver, filter)
-            }
+            appContext.registerReceiver(parentalControlReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
             parentalReceiverRegistered = true
         }
     }

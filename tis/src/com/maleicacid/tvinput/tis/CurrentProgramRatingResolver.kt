@@ -113,21 +113,9 @@ class CurrentProgramRatingResolver internal constructor(
     @Volatile
     private var currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
 
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
+    // process-local診断を試験から観測する契約。未使用警告のためにruntimeログを増やさない。
+    @Suppress("MaxLineLength", "unused")
     fun currentProgramResolutionDiagnosticForTest(): CurrentProgramResolutionDiagnostic = currentProgramResolutionDiagnostic
-
-    fun resolve(
-        channelUri: Uri?,
-        serviceKey: ServiceKey?,
-        latestEvents: List<AribEvent>,
-        ratingProfile: AribRatingMapper.BroadcastProfile,
-        nowMillis: Long = System.currentTimeMillis(),
-    ): CurrentProgramRatingSet =
-        when (val result = resolveDetailed(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)) {
-            is ResolveResult.Ratings -> result.ratingSet
-            is ResolveResult.ProviderQueryFailed -> unresolvedRatingFallback(channelUri, serviceKey)
-        }
 
     sealed class EitAuthority {
         object Unconfirmed : EitAuthority()
@@ -365,7 +353,7 @@ class CurrentProgramRatingResolver internal constructor(
                             ?: return@mapNotNull null
                     (event to end).takeIf { event.serviceKey == key && nowMillis >= event.startTimeMillis && nowMillis < end }
                 }.sortedWith(
-                    compareByDescending<Pair<com.maleicacid.tvinput.aribsi.AribEvent, Long>> { it.first.startTimeMillis }
+                    compareByDescending<Pair<AribEvent, Long>> { it.first.startTimeMillis }
                         .thenBy { it.second }
                         .thenByDescending { it.first.eventId },
                 ).firstOrNull() ?: return null

@@ -25,7 +25,19 @@ class AribCaptionController(
     private val overlayLayerId: String = "caption",
     private val allowNoPts: Boolean = false,
     private val broadcastDeadline: ((AribBroadcastClock.StatementTime, Long?) -> AribBroadcastClock.Deadline?)? = null,
+    private val onDiagnostic: (CaptionDiagnostic) -> Unit = { diagnostic ->
+        Log.w(LogTags.TIS, "ARIB字幕診断 $diagnostic")
+    },
 ) : AutoCloseable {
+    data class CaptionDiagnostic(
+        val reason: Reason,
+        val playbackGeneration: Long,
+        val trackId: String?,
+        val count: Int,
+    ) {
+        enum class Reason { NO_AUTHORITATIVE_PTS }
+    }
+
     data class CaptionViewport(
         val overlayWidthPx: Int,
         val overlayHeightPx: Int,
@@ -64,7 +76,7 @@ class AribCaptionController(
     private val released = AtomicBoolean(false)
     private val presentationEpoch = AtomicLong(0L)
     private val boundaries =
-        PriorityQueue<Boundary>(
+        PriorityQueue(
             compareBy<Boundary> { it.mediaTimeMillis }
                 .thenBy { it.frameToken }
                 .thenBy { if (it is Boundary.Display) 0 else 1 },
@@ -95,7 +107,6 @@ class AribCaptionController(
             dispatch = { action -> enqueue(action) },
             postDelayed = { runnable, delayMillis ->
                 mainHandler.postDelayed(runnable, delayMillis)
-                Unit
             },
             removeCallbacks = { runnable -> mainHandler.removeCallbacks(runnable) },
             onDue = { trackId, pesData ->
@@ -154,6 +165,7 @@ class AribCaptionController(
     ) = enqueue {
         if (playbackGeneration == generation && videoPathExpected == hasVideo) return@enqueue
         playbackGeneration = generation
+        noPtsRejectedCount = 0
         videoPathExpected = hasVideo
         videoWidth = 0
         videoHeight = 0
@@ -210,9 +222,13 @@ class AribCaptionController(
         forceImmediate: Boolean,
     ) {
         val track = selectedTrack ?: return
+        if (!enabled || track.id != trackId) return
+        if (!allowNoPts && timestamp == CaptionTimestamp.NoPts) {
+            recordNoPtsRejected(trackId)
+            return
+        }
         val currentViewport = viewport ?: return
         val currentRenderer = renderer ?: return
-        if (!enabled || track.id != trackId) return
         when (
             val decoded =
                 runCatching { currentRenderer.decodePes(pesData, timestamp) }
@@ -220,12 +236,11 @@ class AribCaptionController(
                     .getOrNull() ?: return
         ) {
             NativeAribCaptionRenderer.DecodeResult.NoPtsRejected -> {
-                noPtsRejectedCount++
-                Log.w(LogTags.TIS, "この字幕serviceではauthoritative PTSなしPESを受理しません count=$noPtsRejectedCount")
+                recordNoPtsRejected(trackId)
             }
 
             NativeAribCaptionRenderer.DecodeResult.NoOutput -> {
-                Unit
+                // 描画する字幕がない。
             }
 
             is NativeAribCaptionRenderer.DecodeResult.Rendered -> {
@@ -237,9 +252,17 @@ class AribCaptionController(
 
     fun flushForSubtitleContinuityLoss() = enqueue { restartPresentation() }
 
-    fun noPtsRejectedCountForDiagnostic(): Int = runBlocking { noPtsRejectedCount }
-
-    fun invalidViewportCountForDiagnostic(): Int = runBlocking { invalidViewportCount }
+    private fun recordNoPtsRejected(trackId: String?) {
+        noPtsRejectedCount++
+        onDiagnostic(
+            CaptionDiagnostic(
+                reason = CaptionDiagnostic.Reason.NO_AUTHORITATIVE_PTS,
+                playbackGeneration = playbackGeneration,
+                trackId = trackId,
+                count = noPtsRejectedCount,
+            ),
+        )
+    }
 
     private fun updateOverlaySize(
         width: Int,
@@ -338,7 +361,7 @@ class AribCaptionController(
         val pts = frame.ptsMillis
         if (pts == null) {
             if (!allowNoPts) {
-                noPtsRejectedCount++
+                recordNoPtsRejected(selectedTrack?.id)
                 return
             }
             displayImmediate(frame, currentViewport)

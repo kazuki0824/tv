@@ -3,10 +3,8 @@ package com.maleicacid.tvinput.aribsi.generated
 
 sealed class CaDescriptorScopeDto {
 
-    object PROGRAM : CaDescriptorScopeDto() {
-    }
+    object Program : CaDescriptorScopeDto()
 
-    object ES : CaDescriptorScopeDto() {
-    }
+    object Es : CaDescriptorScopeDto()
 }
 

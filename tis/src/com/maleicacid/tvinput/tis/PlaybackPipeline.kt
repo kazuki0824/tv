@@ -187,7 +187,7 @@ class PlaybackPipeline(
         ;
 
         companion object {
-            fun fromStreamType(streamType: Int): VideoCodecKind? = values().firstOrNull { it.streamType == streamType }
+            fun fromStreamType(streamType: Int): VideoCodecKind? = entries.firstOrNull { it.streamType == streamType }
         }
     }
 
@@ -203,7 +203,7 @@ class PlaybackPipeline(
         ;
 
         companion object {
-            fun fromStreamType(streamType: Int): AudioCodecKind? = values().firstOrNull { it.streamType == streamType }
+            fun fromStreamType(streamType: Int): AudioCodecKind? = entries.firstOrNull { it.streamType == streamType }
         }
     }
 
@@ -302,13 +302,6 @@ class PlaybackPipeline(
 
     fun setOnPlaybackGenerationRestartedCallback(callback: (PlaybackGenerationRestart) -> Unit) {
         runOnPlaybackExecutorBlocking { onPlaybackGenerationRestarted = callback }
-    }
-
-    fun reportUnavailable(
-        reason: PlaybackUnavailableReason,
-        detail: String = "",
-    ) {
-        enqueuePlaybackAction { emitUnavailable(reason, detail) }
     }
 
     fun setVolume(volume: Float) {
@@ -498,7 +491,7 @@ class PlaybackPipeline(
             audioDecoder =
                 AudioDecoderPipeline(
                     audioKind!!,
-                    requireNotNull(audio),
+                    audio,
                     selection.audioChannelConfiguration,
                     selection.audioDualMono == true,
                     selection.dualMonoPresentation,
@@ -798,8 +791,7 @@ class PlaybackPipeline(
                                     val buffer = ByteArray(dataLength)
                                     val read = filter.read(buffer, 0, dataLength.toLong())
                                     check(read == buffer.size) { "字幕PESの読取りが不足しています expected=${buffer.size} actual=$read" }
-                                    val pes = buffer
-                                    val captionSample = captionSampleFromPes(pes, superimpose) ?: continue
+                                    val captionSample = captionSampleFromPes(buffer, superimpose) ?: continue
                                     if (!sourceIsCurrent(filter)) continue
                                     onSubtitlePes(
                                         filterGeneration,
@@ -892,7 +884,7 @@ class PlaybackPipeline(
                 codecCallbackHandler,
             )
             sync.setOnErrorListener(
-                MediaSync.OnErrorListener { callbackSync, what, extra ->
+                { callbackSync, what, extra ->
                     enqueuePlaybackAction { handleMediaSyncError(callbackSync, generation, what, extra) }
                 },
                 codecCallbackHandler,
@@ -1173,35 +1165,8 @@ class PlaybackPipeline(
         )
     }
 
-    fun currentPlaybackGenerationForTest(): Long = playbackGeneration
-
-    fun oversizedSamplesDroppedForDiagnostic(): Int = oversizedSamplesDropped
-
-    fun malformedSamplesDroppedForDiagnostic(): Int = malformedSamplesDropped
-
-    fun decoderBackpressureDropsForDiagnostic(): Int = decoderBackpressureDrops
-
-    fun subtitleMissingPtsSamplesForDiagnostic(): Int = subtitleMissingPtsSamples
-
-    fun simulateFirstFrameRenderedForTest(generation: Long) {
-        enqueuePlaybackAction {
-            val arm = waitingAvailabilityArm ?: return@enqueuePlaybackAction
-            when (videoAvailabilityMode) {
-                VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT -> {
-                    val sync = mediaSync ?: return@enqueuePlaybackAction
-                    commitVideoAvailability(sync, generation, arm.armSequence)
-                }
-
-                VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT -> {
-                    commitCompatibilityVideoAvailability(generation, arm.armedAtNanoTime)
-                }
-
-                null -> {
-                    Unit
-                }
-            }
-        }
-    }
+    @Suppress("unused")
+    internal fun currentPlaybackGenerationForTest(): Long = playbackGeneration
 
     private fun releaseMediaEvent(event: MediaEvent) {
         runCatching { event.release() }.onFailure { Log.w(LogTags.TIS, "MediaEvent の release に失敗しました", it) }
@@ -1597,7 +1562,7 @@ class PlaybackPipeline(
 
         override fun onDecoderPrepared(codec: MediaCodec) {
             codec.setOnFrameRenderedListener(
-                MediaCodec.OnFrameRenderedListener { callbackCodec, _, nanoTime ->
+                { callbackCodec, _, nanoTime ->
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration ||
                             this@VideoDecoderPipeline.codec !== callbackCodec
@@ -1682,7 +1647,7 @@ class PlaybackPipeline(
         private val kind: AudioCodecKind,
         private val stream: AribElementaryStream,
         private val channelConfiguration: String?,
-        private val dualMono: Boolean,
+        dualMono: Boolean,
         initialDualMonoPresentation: DualMonoPresentation,
         initialVolume: Float,
         override val generation: Long,
@@ -1764,8 +1729,8 @@ class PlaybackPipeline(
             if (channelMask == null) {
                 errorSink(
                     PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                    "decoded PCM channel topology is inconsistent channelCount=$channelCount dec" +
-                        "oderMask=$decoderMask channelConfiguration=$channelConfiguration",
+                    "decoded PCM channel topology is inconsistent channelCount=$channelCount " +
+                        "decoderMask=$decoderMask channelConfiguration=$channelConfiguration",
                 )
                 return
             }
@@ -1904,7 +1869,7 @@ class PlaybackPipeline(
 
     enum class MediaEventBoundsDecision { ACCEPT, MALFORMED, OVERSIZED, OUT_OF_BOUNDS }
 
-    private data class CaptionPesSample(
+    private class CaptionPesSample(
         val payload: ByteArray,
         val pts90k: Long?,
     )
@@ -2336,7 +2301,7 @@ class PlaybackPipeline(
                             } else {
                                 8
                             }
-                        ; repeat(count) { index -> if (bits.readBit() == 1) skipScalingList(bits, if (index < 6) 16 else 64) }
+                        repeat(count) { index -> if (bits.readBit() == 1) skipScalingList(bits, if (index < 6) 16 else 64) }
                     }
                 }
                 bits.readUE()
@@ -2401,7 +2366,7 @@ class PlaybackPipeline(
                         } else {
                             AVC_SAR_TABLE[aspectRatioIdc]
                         }
-                    ; if (sar != null && sar.first > 0 &&
+                    if (sar != null && sar.first > 0 &&
                         sar.second > 0
                     ) {
                         sarWidth = sar.first
@@ -2458,7 +2423,7 @@ class PlaybackPipeline(
                 ) {
                     nextScale = (lastScale + bits.readSE() + 256) % 256
                 }
-                ; lastScale = if (nextScale == 0) lastScale else nextScale
+                lastScale = if (nextScale == 0) lastScale else nextScale
             }
         }
 
@@ -2506,7 +2471,7 @@ class PlaybackPipeline(
                         base
                     }
                 }
-            ; val channels =
+            val channels =
                 if (channelMode ==
                     3
                 ) {
@@ -2514,7 +2479,7 @@ class PlaybackPipeline(
                 } else {
                     2
                 }
-            ; return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels)
+            return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels)
         }
 
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -2566,7 +2531,7 @@ class PlaybackPipeline(
                             continue
                         }
                     }
-                ; if (i + prefixLength >=
+                if (i + prefixLength >=
                     bytes.size
                 ) {
                     return null
@@ -3026,15 +2991,6 @@ class PlaybackPipeline(
             channelCount: Int,
             channelConfiguration: String?,
         ): Int? = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, channelConfiguration)
-
-        fun videoFormatInfoForTest(
-            streamType: Int,
-            spsWithStartCode: ByteArray,
-        ): VideoFormatInfo? {
-            val dimensions =
-                h264DimensionsForTest(spsWithStartCode) ?: return null
-            return VideoFormatInfo(streamType, MediaFormat.MIMETYPE_VIDEO_AVC, dimensions.first, dimensions.second)
-        }
 
         private const val AV_FILTER_BUFFER_BYTES = 16 * 1024 * 1024L
         private const val SUBTITLE_FILTER_BUFFER_BYTES = 256 * 1024L

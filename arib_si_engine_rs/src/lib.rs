@@ -472,30 +472,6 @@ fn registry() -> &'static Mutex<ParserRegistry> {
     REGISTRY.get_or_init(|| Mutex::new(ParserRegistry::default()))
 }
 
-fn with_state<T>(handle: jlong, default_value: T, f: impl FnOnce(&ParserState) -> T) -> T {
-    if !si_module_is_healthy() {
-        return default_value;
-    }
-    let parser = match registry().lock() {
-        Ok(guard) => guard.get(handle),
-        Err(_) => {
-            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
-            return default_value;
-        }
-    };
-    let Some(parser) = parser else {
-        return default_value;
-    };
-    let result = match parser.lock() {
-        Ok(guard) => f(&guard),
-        Err(_) => {
-            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
-            default_value
-        }
-    };
-    result
-}
-
 fn with_state_mut(
     handle: jlong,
     default_value: jint,
@@ -940,15 +916,6 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeLastStatus(
-    _env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-) -> jint {
-    with_state(handle, STATUS_INVALID_HANDLE, |state| state.last_status)
-}
-
-#[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSetDiscoveryProfile(
     _env: JNIEnv<'_>,
     _this: JObject<'_>,
@@ -976,17 +943,6 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     let decoded =
         jbytearray_to_vec(&env, bytes).map(|bytes| arib_string::decode_arib_string_lossy(&bytes).0);
     java_string(&mut env, decoded)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeDecodeAribStringDiagnosticSummary(
-    mut env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    bytes: JByteArray<'_>,
-) -> jstring {
-    let summary = jbytearray_to_vec(&env, bytes)
-        .map(|bytes| arib_string::decode_arib_string_lossy(&bytes).1.summary());
-    java_string(&mut env, summary)
 }
 
 #[cfg(test)]

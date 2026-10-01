@@ -38,55 +38,55 @@ private fun ServiceKeyDto.toDomain(): ServiceKey = ServiceKey(originalNetworkId,
 
 private fun SiParseStatusDto.toDomain(): SiParseStatus =
     when (this) {
-        SiParseStatusDto.OK -> SiParseStatus.OK
+        SiParseStatusDto.Ok -> SiParseStatus.OK
         SiParseStatusDto.MalformedLength -> SiParseStatus.MALFORMED_LENGTH
         SiParseStatusDto.TruncatedDescriptor -> SiParseStatus.TRUNCATED_DESCRIPTOR
         SiParseStatusDto.UnsupportedValue -> SiParseStatus.UNSUPPORTED_VALUE
         SiParseStatusDto.InvalidSequence -> SiParseStatus.INVALID_SEQUENCE
-        SiParseStatusDto.UNRESOLVED -> SiParseStatus.UNRESOLVED
+        SiParseStatusDto.Unresolved -> SiParseStatus.UNRESOLVED
     }
 
 private fun EitTimingStateDto.toDomain(): EitTimingState =
     when (this) {
-        EitTimingStateDto.DEFINED -> EitTimingState.DEFINED
-        EitTimingStateDto.UNDEFINED_TIME -> EitTimingState.UNDEFINED_TIME
-        EitTimingStateDto.BOTH_TIMING_UNDEFINED -> EitTimingState.BOTH_TIMING_UNDEFINED
-        EitTimingStateDto.MALFORMED_TIMING -> EitTimingState.MALFORMED_TIMING
+        EitTimingStateDto.Defined -> EitTimingState.DEFINED
+        EitTimingStateDto.UndefinedTime -> EitTimingState.UNDEFINED_TIME
+        EitTimingStateDto.BothTimingUndefined -> EitTimingState.BOTH_TIMING_UNDEFINED
+        EitTimingStateDto.MalformedTiming -> EitTimingState.MALFORMED_TIMING
     }
 
 private fun ElementaryStreamKindDto.toDomain(): ElementaryStreamKind =
     when (this) {
-        ElementaryStreamKindDto.VIDEO -> ElementaryStreamKind.VIDEO
-        ElementaryStreamKindDto.AUDIO -> ElementaryStreamKind.AUDIO
+        ElementaryStreamKindDto.Video -> ElementaryStreamKind.VIDEO
+        ElementaryStreamKindDto.Audio -> ElementaryStreamKind.AUDIO
     }
 
 private fun BroadcastSystemDto.toDomain(): BroadcastSystem =
     when (this) {
-        BroadcastSystemDto.ISDB_T -> BroadcastSystem.ISDB_T
-        BroadcastSystemDto.ISDB_S_BS -> BroadcastSystem.ISDB_S_BS
-        BroadcastSystemDto.ISDB_S_110CS -> BroadcastSystem.ISDB_S_110CS
+        BroadcastSystemDto.IsdbT -> BroadcastSystem.ISDB_T
+        BroadcastSystemDto.IsdbSBs -> BroadcastSystem.ISDB_S_BS
+        BroadcastSystemDto.IsdbS110Cs -> BroadcastSystem.ISDB_S_110CS
     }
 
 private fun SmdSemanticStateDto.toDomain(): SmdSemanticState =
     when (this) {
-        SmdSemanticStateDto.SUPPORTED_BROADCAST -> SmdSemanticState.SUPPORTED_BROADCAST
-        SmdSemanticStateDto.NON_BROADCAST -> SmdSemanticState.NON_BROADCAST
-        SmdSemanticStateDto.UNDEFINED_BROADCAST_CLASS -> SmdSemanticState.UNDEFINED_BROADCAST_CLASS
-        SmdSemanticStateDto.UNSUPPORTED_BROADCAST_SYSTEM -> SmdSemanticState.UNSUPPORTED_BROADCAST_SYSTEM
-        SmdSemanticStateDto.UNDETERMINED_SMD -> SmdSemanticState.UNDETERMINED_SMD
+        SmdSemanticStateDto.SupportedBroadcast -> SmdSemanticState.SUPPORTED_BROADCAST
+        SmdSemanticStateDto.NonBroadcast -> SmdSemanticState.NON_BROADCAST
+        SmdSemanticStateDto.UndefinedBroadcastClass -> SmdSemanticState.UNDEFINED_BROADCAST_CLASS
+        SmdSemanticStateDto.UnsupportedBroadcastSystem -> SmdSemanticState.UNSUPPORTED_BROADCAST_SYSTEM
+        SmdSemanticStateDto.UndeterminedSmd -> SmdSemanticState.UNDETERMINED_SMD
     }
 
 private fun CaDescriptorScopeDto.toDomain(): CaDescriptorScope =
     when (this) {
-        CaDescriptorScopeDto.PROGRAM -> CaDescriptorScope.PROGRAM
-        CaDescriptorScopeDto.ES -> CaDescriptorScope.ES
+        CaDescriptorScopeDto.Program -> CaDescriptorScope.PROGRAM
+        CaDescriptorScopeDto.Es -> CaDescriptorScope.ES
     }
 
 private fun CaMetadataSourceDto.toDomain(): CaMetadataSource =
     when (this) {
-        CaMetadataSourceDto.PROGRAM -> CaMetadataSource.PROGRAM
-        CaMetadataSourceDto.ELEMENTARY_STREAM -> CaMetadataSource.ELEMENTARY_STREAM
-        CaMetadataSourceDto.CAT -> CaMetadataSource.CAT
+        CaMetadataSourceDto.Program -> CaMetadataSource.PROGRAM
+        CaMetadataSourceDto.ElementaryStream -> CaMetadataSource.ELEMENTARY_STREAM
+        CaMetadataSourceDto.Cat -> CaMetadataSource.CAT
     }
 
 private fun CodecFactsDto.toDomain(): AribCodecFacts =

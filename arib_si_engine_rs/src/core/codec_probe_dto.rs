@@ -3,11 +3,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AacProbeStatusDto {
-    #[serde(rename = "PENDING")]
     Pending,
-    #[serde(rename = "INVALID")]
     Invalid,
-    #[serde(rename = "READY")]
     Ready,
 }
 

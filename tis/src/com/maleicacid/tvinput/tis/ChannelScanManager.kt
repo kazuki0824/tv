@@ -110,10 +110,6 @@ object ChannelScanManager {
         if (remaining == 0 && context != null) drainPendingBootEpgSyncIfIdle(context, "PLAYBACK_PIPELINE_STOPPED")
     }
 
-    fun activeLiveSessionCountForTest(): Int = activeLiveSessions.size
-
-    fun sessionCreationInProgressCountForTest(): Int = sessionCreationsInProgress.get()
-
     fun beginLiveSessionCreation() {
         retryPendingRelease()
         sessionCreationsInProgress.incrementAndGet()
@@ -236,14 +232,14 @@ object ChannelScanManager {
             return null
         }
         val generation = task.generation
-        if (activeLiveSessions.size > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
+        if (activeLiveSessions.isNotEmpty() || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
             markBootEpgSyncDeferred(appContext, "LIVE_SESSION_STARTING_OR_ACTIVE")
             return null
         }
         executor.execute {
-            if (activeLiveSessions.size > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
+            if (activeLiveSessions.isNotEmpty() || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
                 setTerminalStateIfCurrent(generation, ScanState.Idle)
                 finishScanIfCurrent(generation)
                 markBootEpgSyncDeferred(appContext, "LIVE_SESSION_STARTING_OR_ACTIVE")
@@ -360,14 +356,14 @@ object ChannelScanManager {
             return false
         }
         val generation = task.generation
-        if (activeLiveSessions.size > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
+        if (activeLiveSessions.isNotEmpty() || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
             markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
             return false
         }
         executor.execute {
-            if (activeLiveSessions.size > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
+            if (activeLiveSessions.isNotEmpty() || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
                 setTerminalStateIfCurrent(generation, ScanState.Idle)
                 finishScanIfCurrent(generation)
                 markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
@@ -477,22 +473,32 @@ object ChannelScanManager {
         scanRunning: Boolean,
         purpose: ScanPurpose?,
     ): LiveSessionPreemptDecision {
-        if (!scanRunning || purpose == null) return LiveSessionPreemptDecision(false, false, null)
+        if (!scanRunning || purpose == null) {
+            return LiveSessionPreemptDecision(
+                shouldCancel = false,
+                deferBootEpgSync = false,
+                diagnosticReason = null,
+            )
+        }
         return when (purpose) {
             ScanPurpose.BOOT_EPG_SYNC -> {
-                LiveSessionPreemptDecision(true, true, "LIVE_SESSION_PREEMPTED_RUNNING_BOOT_EPG_SYNC")
+                LiveSessionPreemptDecision(
+                    shouldCancel = true,
+                    deferBootEpgSync = true,
+                    diagnosticReason = "LIVE_SESSION_PREEMPTED_RUNNING_BOOT_EPG_SYNC",
+                )
             }
 
             ScanPurpose.BACKGROUND_MAINTENANCE -> {
                 LiveSessionPreemptDecision(
-                    true,
-                    false,
-                    "LIVE_SESSION_PREEMPTED_RUNNING_BACKGROUND_MAINTENANCE",
+                    shouldCancel = true,
+                    deferBootEpgSync = false,
+                    diagnosticReason = "LIVE_SESSION_PREEMPTED_RUNNING_BACKGROUND_MAINTENANCE",
                 )
             }
 
             ScanPurpose.SETUP_SCAN -> {
-                LiveSessionPreemptDecision(false, false, null)
+                LiveSessionPreemptDecision(shouldCancel = false, deferBootEpgSync = false, diagnosticReason = null)
             }
         }
     }
@@ -583,7 +589,9 @@ object ChannelScanManager {
         source: String,
     ) {
         val backgroundWorkBlocked =
-            activeLiveSessions.size > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0 ||
+            activeLiveSessions.isNotEmpty() ||
+                sessionCreationsInProgress.get() > 0 ||
+                activePlaybackPipelines.get() > 0 ||
                 isScanRunning()
         if (backgroundWorkBlocked) {
             return
@@ -613,8 +621,8 @@ object ChannelScanManager {
         }
         Log.i(
             LogTags.TIS,
-            "background channel maintenance を開始しません source=$source reason=$reason active" +
-                "LiveSessions=${activeLiveSessions.size} sessionCreationsInProgress=" +
+            "background channel maintenance を開始しません source=$source reason=$reason " +
+                "activeLiveSessions=${activeLiveSessions.size} sessionCreationsInProgress=" +
                 "${sessionCreationsInProgress.get()} scanRunning=${isScanRunning()}",
         )
     }

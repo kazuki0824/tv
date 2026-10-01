@@ -20,6 +20,23 @@ object ProviderDataBridge {
         val diagnosticsDroppedCount: Int,
     ) : ProviderDataResult {
         val json: String get() = bytes.toString(Charsets.UTF_8)
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is Success) return false
+            return bytes.contentEquals(other.bytes) &&
+                schemaVersion == other.schemaVersion &&
+                truncated == other.truncated &&
+                diagnosticsDroppedCount == other.diagnosticsDroppedCount
+        }
+
+        override fun hashCode(): Int {
+            var result = bytes.contentHashCode()
+            result = 31 * result + schemaVersion
+            result = 31 * result + truncated.hashCode()
+            result = 31 * result + diagnosticsDroppedCount
+            return result
+        }
     }
 
     data class Failure(
@@ -49,7 +66,26 @@ object ProviderDataBridge {
         val serviceKey: ServiceKey,
         val tune: ChannelTune,
         val requiresCas: Boolean,
-    )
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is ChannelProviderDataResult) return false
+            return canonicalBytes.contentEquals(other.canonicalBytes) &&
+                schemaVersion == other.schemaVersion &&
+                serviceKey == other.serviceKey &&
+                tune == other.tune &&
+                requiresCas == other.requiresCas
+        }
+
+        override fun hashCode(): Int {
+            var result = canonicalBytes.contentHashCode()
+            result = 31 * result + schemaVersion
+            result = 31 * result + serviceKey.hashCode()
+            result = 31 * result + tune.hashCode()
+            result = 31 * result + requiresCas.hashCode()
+            return result
+        }
+    }
 
     private val native by lazy { NativeAribSiParser() }
 

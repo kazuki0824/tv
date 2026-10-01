@@ -2,7 +2,6 @@ package com.maleicacid.tvinput.tis
 
 import android.content.Context
 import android.media.tv.TvInputService
-import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.frontend.OnTuneEventListener
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
@@ -14,11 +13,9 @@ import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
-import com.maleicacid.tvinput.aribsi.SiDiscoveryStage
 import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
-import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -26,11 +23,11 @@ import java.util.concurrent.atomic.AtomicLong
 // 走査状態と公開処理の所有を一か所に保ち、関数数だけを理由に別の所有者へ分散しない。
 @Suppress("LargeClass", "TooManyFunctions")
 class ChannelScanController(
-    private val context: Context,
-    private val inputId: String,
+    context: Context,
+    inputId: String,
     private val engine: AribSiEngine,
     scanPurpose: ScanPurpose,
-    private val cancelRequested: AtomicBoolean = AtomicBoolean(false),
+    cancelRequested: AtomicBoolean = AtomicBoolean(false),
 ) : AutoCloseable {
     data class ScanDiagnostic(
         val candidate: ScanCandidate,
@@ -160,7 +157,7 @@ class ChannelScanController(
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
                 diagnostics += ScanDiagnostic(candidate, "選局に失敗しました result=${tune.resultCode} ${tune.message}")
-                return shouldContinueInitialScanAfterSynchronousTuneResult(tune.success)
+                return shouldContinueInitialScanAfterSynchronousTuneResult(false)
             }
             activateScanGeneration(tune.generation)
             try {
@@ -385,24 +382,6 @@ class ChannelScanController(
         terminalCancelObserved = true
     }
 
-    fun beginSiIngestAfterTune() {
-        if (tunerController.beginSiIngestAfterTune()) {
-            refreshDynamicSectionFilters()
-            publishCurrentServiceSnapshot(PublishMode.LIVE_TUNE_REFRESH)
-        }
-    }
-
-    /** 完全な section を受ける入口。byte array は 生 TS packet ではない。 */
-    fun onSection(
-        pid: Int,
-        section: ByteArray,
-    ) {
-        val tsPid = TsPid.fromOrNull(pid) ?: return
-        tunerController.onSection(tsPid, section)
-        refreshDynamicSectionFilters()
-        publishCurrentServiceSnapshot(PublishMode.LIVE_TUNE_REFRESH)
-    }
-
     fun refreshDynamicSectionFilters() {
         if (terminalResourceLostObserved) return
         val generation = tunerController.currentGeneration()
@@ -509,16 +488,15 @@ class ChannelScanController(
         services: List<AribService>,
         actualTransportKeys: Set<TransportKey>,
     ): List<AribService> {
-        val actualTransports = actualTransportKeys
-        if (actualTransports.size != 1) {
+        if (actualTransportKeys.size != 1) {
             skippedUnresolvedTransportCount += services.size
             Log.w(
                 LogTags.TIS,
-                "current candidate の SDT actual TransportKey が一意に確定していないため channel 登録を省略します actualTransports=$actualTransports",
+                "current candidate の SDT actual TransportKey が一意に確定していないため channel 登録を省略します actualTransports=$actualTransportKeys",
             )
             return emptyList()
         }
-        val actualTransport = actualTransports.single()
+        val actualTransport = actualTransportKeys.single()
         val filtered = services.filter { TransportKey(it.serviceKey.originalNetwork, it.serviceKey.transportStream) == actualTransport }
         skippedUnresolvedTransportCount += services.size - filtered.size
         return filtered
@@ -746,12 +724,6 @@ class ChannelScanController(
         // CASのcloseもTunerControllerが所有する。同じCASを二つのownerから閉じない。
         tunerController.release()
     }
-
-    fun terminalCancelObservedForLastTask(): Boolean = terminalCancelObserved
-
-    fun terminalResourceLostObservedForLastTask(): Boolean = terminalResourceLostObserved
-
-    fun skippedUnresolvedTransportCountForDiagnostic(): Int = skippedUnresolvedTransportCount
 
     private fun resetResourceLostState() = scanGenerationFence.reset()
 

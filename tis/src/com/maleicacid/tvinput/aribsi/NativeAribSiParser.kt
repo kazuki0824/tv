@@ -1,6 +1,5 @@
 package com.maleicacid.tvinput.aribsi
 
-import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 
 class NativeParserCleanupException(
@@ -70,8 +69,6 @@ class NativeAribSiParser : AutoCloseable {
         check(handle != 0L) { "ネイティブ解析器は終了済みです" }
         return nativeIngestSection(handle, pid.value, section)
     }
-
-    fun lastStatus(): Int = nativeLastStatus(handle)
 
     @Synchronized
     fun broadcastClockSnapshot(): AribBroadcastClockFact? = readNativeTransaction().broadcastClock
@@ -229,11 +226,6 @@ class NativeAribSiParser : AutoCloseable {
 
     fun decodeAribString(bytes: ByteArray): String = requireNativeString(nativeDecodeAribString(bytes))
 
-    fun decodeAribStringDiagnosticSummary(bytes: ByteArray): String {
-        val result = nativeDecodeAribStringDiagnosticSummary(bytes)
-        return requireNativeString(result)
-    }
-
     override fun close() {
         val current = handle
         if (current != 0L) {
@@ -270,8 +262,6 @@ class NativeAribSiParser : AutoCloseable {
         section: ByteArray,
     ): Int
 
-    private external fun nativeLastStatus(handle: Long): Int
-
     private external fun nativeSetDiscoveryProfile(
         handle: Long,
         profile: Int,
@@ -282,8 +272,6 @@ class NativeAribSiParser : AutoCloseable {
     private external fun nativeSnapshotPmtPidsForSectionFilters(handle: Long): IntArray?
 
     private external fun nativeDecodeAribString(bytes: ByteArray): String?
-
-    private external fun nativeDecodeAribStringDiagnosticSummary(bytes: ByteArray): String?
 
     companion object {
         private fun requireNativeString(value: String?): String {
@@ -317,15 +305,15 @@ class NativeAribSiParser : AutoCloseable {
         ): AribAacConfiguration? {
             val result = nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) })
             return when (result.status) {
-                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.PENDING -> {
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Pending -> {
                     null
                 }
 
-                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.INVALID -> {
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Invalid -> {
                     throw IllegalArgumentException(checkNotNull(result.reason))
                 }
 
-                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.READY -> {
+                com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Ready -> {
                     val configuration = checkNotNull(result.configuration)
                     AribAacConfiguration(
                         configuration.audioObjectType,

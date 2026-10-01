@@ -9,6 +9,5 @@ data class DescriptorDiagnosticDescriptorDto(
     val actualRemainingLength: Int,
     val parseStatus: String,
     val rawPrefixHex: String
-) {
-}
+)
 

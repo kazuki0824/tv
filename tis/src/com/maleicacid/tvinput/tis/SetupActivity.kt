@@ -6,6 +6,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.maleicacid.tvinput.R
 
 class SetupActivity :
     Activity(),
@@ -47,7 +48,7 @@ class SetupActivity :
                 setOnClickListener {
                     val resolved = inputId
                     if (resolved.isNullOrBlank() || !TisInputIdResolver.isOwnInputId(this@SetupActivity, resolved)) {
-                        statusView.text = "不正な設定要求です。inputIdがないか、このTvInputServiceに属していません。"
+                        statusView.setText(R.string.invalid_setup_request)
                         setResult(RESULT_CANCELED)
                     } else {
                         setupGeneration = ChannelScanManager.startIfIdle(this@SetupActivity, resolved)
@@ -112,7 +113,7 @@ class SetupActivity :
                 is ScanState.Idle,
                 is ScanState.Running,
                 -> {
-                    Unit
+                    // 完了前の状態では通知しない。
                 }
             }
         }
@@ -165,7 +166,7 @@ class SetupActivity :
     private fun drainDirectBootPending(source: String) {
         val state = DirectBootGuard.pendingStateForTest(applicationContext)
         if (state.pending) {
-            statusView.text = "${statusView.text}\n起動後EPG同期は保留中です。設定画面の外で処理します。source=$source"
+            statusView.text = getString(R.string.boot_epg_sync_pending_status, statusView.text, source)
         }
     }
 

@@ -3,13 +3,10 @@ package com.maleicacid.tvinput.aribsi.generated
 
 sealed class BroadcastSystemDto {
 
-    object ISDB_T : BroadcastSystemDto() {
-    }
+    object IsdbT : BroadcastSystemDto()
 
-    object ISDB_S_BS : BroadcastSystemDto() {
-    }
+    object IsdbSBs : BroadcastSystemDto()
 
-    object ISDB_S_110CS : BroadcastSystemDto() {
-    }
+    object IsdbS110Cs : BroadcastSystemDto()
 }
 

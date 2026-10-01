@@ -155,9 +155,12 @@ object TunerSelectionPolicy {
         tracks: List<TunerController.TisTrack>,
     ): Boolean =
         when (type) {
-            TvTrackInfo.TYPE_AUDIO -> trackId != null && tracks.any { it.type == type && it.id == trackId }
+            TvTrackInfo.TYPE_AUDIO,
+            TvTrackInfo.TYPE_SUBTITLE,
+            -> trackId != null && tracks.any { it.type == type && it.id == trackId }
+
             TvTrackInfo.TYPE_VIDEO -> trackId != null && tracks.firstOrNull { it.type == type }?.id == trackId
-            TvTrackInfo.TYPE_SUBTITLE -> trackId != null && tracks.any { it.type == type && it.id == trackId }
+
             else -> false
         }
 

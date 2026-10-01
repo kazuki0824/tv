@@ -5,6 +5,5 @@ data class ServiceKeyDto(
     val originalNetworkId: Int,
     val transportStreamId: Int,
     val serviceId: Int
-) {
-}
+)
 

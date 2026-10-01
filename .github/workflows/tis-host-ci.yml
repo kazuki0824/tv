@@ -97,10 +97,22 @@ jobs:
         shell: bash
         run: |
           output_dir="$RUNNER_TEMP/tis-kotlin-production"
-          mkdir -p "$output_dir"
+          generated_dir="$RUNNER_TEMP/tis-kotlin-generated/com/maleicacid/tvinput"
+          mkdir -p "$output_dir" "$generated_dir"
+          cat > "$generated_dir/R.kt" <<'EOF'
+          package com.maleicacid.tvinput
+
+          object R {
+              object string {
+                  const val invalid_setup_request = 1
+                  const val boot_epg_sync_pending_status = 2
+              }
+          }
+          EOF
           mapfile -d '' -t sources < <(
             find tis/src tis/host_ci/kotlin/stubs/android -type f -name '*.kt' -print0 | sort -z
           )
+          sources+=("$generated_dir/R.kt")
           "$TIS_KOTLIN_HOME/bin/kotlinc" \
             -J-Xmx4g \
             -jvm-target 17 \
@@ -160,10 +172,22 @@ jobs:
         run: |
           production_dir="$RUNNER_TEMP/tis-kotlin-production"
           test_dir="$RUNNER_TEMP/tis-kotlin-tests"
-          mkdir -p "$production_dir" "$test_dir"
+          generated_dir="$RUNNER_TEMP/tis-kotlin-generated/com/maleicacid/tvinput"
+          mkdir -p "$production_dir" "$test_dir" "$generated_dir"
+          cat > "$generated_dir/R.kt" <<'EOF'
+          package com.maleicacid.tvinput
+
+          object R {
+              object string {
+                  const val invalid_setup_request = 1
+                  const val boot_epg_sync_pending_status = 2
+              }
+          }
+          EOF
           mapfile -d '' -t production_sources < <(
             find tis/src tis/host_ci/kotlin/stubs/android -type f -name '*.kt' -print0 | sort -z
           )
+          production_sources+=("$generated_dir/R.kt")
           "$TIS_KOTLIN_HOME/bin/kotlinc" \
             -J-Xmx4g \
             -jvm-target 17 \
@@ -222,7 +246,7 @@ jobs:
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
           # JUnitの成功だけでは試験数の減少を検知できない。試験追加/削除時に差分を確認して同じcommitで更新する。
-          grep --fixed-strings --line-regexp "OK (304 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings --line-regexp "OK (305 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest

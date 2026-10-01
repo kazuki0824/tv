@@ -8,6 +8,5 @@ data class AacAdtsConfigurationDto(
     val channelConfiguration: Int,
     val channelCount: Int,
     val audioSpecificConfigHex: String
-) {
-}
+)
 

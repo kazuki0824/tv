@@ -95,7 +95,7 @@ internal class EpgPublicationPolicy {
             current.filter { isProgramRow(profile, it) }.mapNotNull { event ->
                 runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }
                     .getOrNull()
-                    ?.takeIf { it > event.startTimeMillis && event.startTimeMillis > 0L }
+                    ?.takeIf { event.startTimeMillis in 1L until it }
                     ?.let { event.startTimeMillis to it }
             }
         return (timed + listOfNotNull(previous)).takeIf { it.isNotEmpty() }?.let { ranges ->

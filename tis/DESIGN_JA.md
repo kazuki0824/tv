@@ -450,11 +450,11 @@ SDT-other / NIT-other / BAT 由来で現在 candidate の actual transport に�
 
 ## provider-data 利用境界 / publish fingerprint
 
-`Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` の具体schema、正規化、安定キー抽出、保存上限は `arib_si_engine_rs/DESIGN_JA.md` の「provider-data / 診断情報 Rust SSOT」と `arib_si_engine_rs/schema/*.schema.json` を正とする。TIS は保存schemaを再定義しない。
+`Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` の具体schema、正規化、安定キー抽出、保存上限は `arib_si_engine_rs` のRust serde型・Rust validationと `arib_si_engine_rs/DESIGN_JA.md` を正とする。TIS は保存schemaを再定義しない。
 
 TIS Kotlin は provider-data JSON を `JSONObject.put()` や文字列連結で直接構築してはならない。TIS Kotlin は Rust JNI の build / 正規化 / key extraction API で得たbytesをTvProviderに書く。TIS が JNI へ渡す JSON は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。
 
-Program provider-data の top-level envelope、必須フィールド、検証規則、正規化、安定キー抽出は TIS では再定義しない。正本は `arib_si_engine_rs/DESIGN_JA.md`、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` とする。TIS instrumentation テスト用の期待値 JSON を置く場合は Rust 側テストデータとバイト単位で同一に保つ。
+Program provider-data の top-level envelope、必須フィールド、検証規則、正規化、安定キー抽出は TIS では再定義しない。正本は `arib_si_engine_rs` のRust serde型・Rust validationと `arib_si_engine_rs/DESIGN_JA.md` とする。JSON fixtureは回帰試験ベクトルであり、正本として扱わない。
 
 EIT文字列をTvProviderへ投影する際、TISはARIBの異なるlanguage codeを1つのtitle/descriptionへ連結しない。Rust snapshotが返す`shortEvents[] / extendedTexts[] / extendedItems[]`から`ARIB_SI_EPG_TvProvider投影方針.md`の単一言語選択規則に従って標準列用文字列を選び、候補列はprovider-data builderへ渡す。受信番組名が空の場合も`event-<eventId>`等の架空titleを生成しない。
 
@@ -527,7 +527,7 @@ Rust JNIのclosed envelopeは`arib_si_engine_rs/DESIGN_JA.md`を正とし、faca
 
 ### 診断情報 schema
 
-Descriptor診断の機械検証規則は `arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json` を正とする。TIS は `ProgramProviderDataV1.diagnostics.descriptorDiagnostics[]` 配下のオブジェクトを別 schema へ変換せず、Rust JNI が返した provider-data JSON 内の診断情報を保存する。ARIB視聴年齢制限は`ratings[]`にraw構造化値を残し、Android対応可否や写像結果はprovider-dataへ戻さない。TIS Kotlin は descriptor diagnostic JSON を独自生成しない。
+Descriptor診断の機械検証規則は `arib_si_engine_rs` のRust serde型・Rust validationを正とする。TIS は `ProgramProviderDataV1.diagnostics.descriptorDiagnostics[]` 配下のオブジェクトを別 schema へ変換せず、Rust JNI が返した provider-data JSON 内の診断情報を保存する。ARIB視聴年齢制限は`ratings[]`にraw構造化値を残し、Android対応可否や写像結果はprovider-dataへ戻さない。TIS Kotlin は descriptor diagnostic JSON を独自生成しない。
 
 ### provider-data 保存上限
 

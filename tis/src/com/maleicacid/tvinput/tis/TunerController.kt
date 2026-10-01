@@ -53,8 +53,8 @@ class TunerController(
     private val context: Context,
     private val inputId: String,
     private val useCase: Int = TvInputService.PRIORITY_HINT_USE_CASE_TYPE_LIVE,
-    private val sessionId: String? = null,
-    private val sessionContext: Context? = null,
+    sessionId: String? = null,
+    sessionContext: Context? = null,
 ) : AutoCloseable {
     interface SectionFilterHandle : AutoCloseable {
         val pid: TsPid
@@ -169,7 +169,7 @@ class TunerController(
             "TunerSectionFilterHandle(pid=$pid, generation=$generation, filters=${artifacts.size}, closing=$closing)"
     }
 
-    private inner class UnavailableSectionFilterHandle(
+    private class UnavailableSectionFilterHandle(
         override val pid: TsPid,
         private val reason: String,
     ) : SectionFilterHandle {
@@ -396,16 +396,19 @@ class TunerController(
     private fun armTuneEventListener(
         tunerInstance: Tuner,
         generation: Long,
-    ): Boolean {
-        if (onTuneEventCallback == null) return true
-        return runCatching {
-            tunerInstance.setOnTuneEventListener(sectionExecutor) { event ->
-                if (tunerInstance === tuner && !released) handleTuneEventOnController(generation, event)
-            }
-        }.onFailure { error ->
-            Log.w(LogTags.TIS, "frontend tune event listener 登録に失敗しました inputId=$inputId generation=$generation", error)
-        }.isSuccess
-    }
+    ): Boolean =
+        onTuneEventCallback == null ||
+            runCatching {
+                tunerInstance.setOnTuneEventListener(sectionExecutor) { event ->
+                    if (tunerInstance === tuner && !released) handleTuneEventOnController(generation, event)
+                }
+            }.onFailure { error ->
+                Log.w(
+                    LogTags.TIS,
+                    "frontend tune event listener 登録に失敗しました inputId=$inputId generation=$generation",
+                    error,
+                )
+            }.isSuccess
 
     private fun handleTuneEventOnController(
         generation: Long,
@@ -807,19 +810,6 @@ class TunerController(
         return tuneResolvedChannel(synthetic)
     }
 
-    @Suppress("MaxLineLength")
-    fun tuneAndBeginSiIngest(settings: FrontendSettings): Int = callOnController { tuneAndBeginSiIngestOnController(settings) }
-
-    private fun tuneAndBeginSiIngestOnController(settings: FrontendSettings): Int {
-        val tunerInstance = tuner ?: return Tuner.RESULT_UNAVAILABLE
-        resetBeforeTune()
-        val result = tunerInstance.tune(settings)
-        if (result == Tuner.RESULT_SUCCESS) {
-            initializeAcceptedTune(null, tuneGeneration + 1L)
-        }
-        return result
-    }
-
     @Suppress("ReturnCount", "MaxLineLength")
     private fun tuneResolvedChannel(channel: ResolvedChannel): TuneOutcome {
         resetBeforeTune()
@@ -913,27 +903,6 @@ class TunerController(
         )
     }
 
-    fun beginSiIngestAfterTune(): Boolean = callOnController { beginSiIngestAfterTuneOnController() }
-
-    private fun beginSiIngestAfterTuneOnController(): Boolean {
-        if (!tuneAccepted) {
-            Log.w(LogTags.TIS, "tune 要求未受付のため SI 取得を開始しません inputId=$inputId")
-            return false
-        }
-        openInitialSectionFilters(tuneGeneration)
-        return true
-    }
-
-    fun openInitialSectionFilters(generation: Long = tuneGeneration): Unit =
-        callOnController {
-            openInitialSectionFiltersOnController(generation)
-        }
-
-    private fun openInitialSectionFiltersOnController(generation: Long = tuneGeneration) {
-        if (!tuneAccepted) return
-        prepareInitialSectionFiltersOnController(generation)
-    }
-
     @Suppress("MaxLineLength")
     private fun prepareInitialSectionFiltersOnController(generation: Long) {
         listOf(
@@ -949,8 +918,6 @@ class TunerController(
         }
         Log.d(LogTags.TIS, "初期 section filter を開きます inputId=$inputId pids=${sectionFilterHandles.keys} generation=$generation")
     }
-
-    fun openSectionFilters() = openInitialSectionFilters()
 
     fun openProgramMapFilter(pmtPid: TsPid): SectionFilterHandle = openSectionFilter(pmtPid)
 
@@ -1016,7 +983,7 @@ class TunerController(
                             }
 
                             SectionFilterPolicy.DataLengthDecision.ACCEPT -> {
-                                Unit
+                                // 続けてsectionを読み込む。
                             }
                         }
                         val section = ByteArray(length.toInt())
@@ -1048,7 +1015,7 @@ class TunerController(
                             }
 
                             SectionFilterPolicy.ReadDecision.STALE_SOURCE -> {
-                                Unit
+                                // 現在の選局世代に属さない配送は破棄する。
                             }
                         }
                     }
@@ -1302,7 +1269,8 @@ class TunerController(
             WellKnownSectionPid.TDT,
         )
 
-    fun onSection(
+    @Suppress("unused")
+    internal fun onSection(
         pid: TsPid,
         section: ByteArray,
         generation: Long = tuneGeneration,
@@ -1632,8 +1600,8 @@ class TunerController(
                     -> {
                         Log.w(
                             LogTags.TIS,
-                            "Timing=10 superimposeのinvalid/未分類data-groupをfail-closedで破棄します pid=$pid gene" +
-                                "ration=$generation disposition=${facts?.disposition}",
+                            "Timing=10 superimposeのinvalid/未分類data-groupをfail-closedで破棄します pid=$pid " +
+                                "generation=$generation disposition=${facts?.disposition}",
                         )
                     }
                 }
@@ -1669,11 +1637,7 @@ class TunerController(
             expectedClockGeneration,
         )
 
-    fun currentResolvedChannel(): ResolvedChannel? = callOnController { currentTune }
-
     fun currentGeneration(): Long = callOnController { tuneGeneration }
-
-    fun isTuneRequestAccepted(): Boolean = callOnController { tuneAccepted }
 
     @Suppress("MagicNumber", "MaxLineLength")
     private fun resolveChannel(channelUri: Uri): Result<ResolvedChannel> =
@@ -1743,7 +1707,7 @@ class TunerController(
                         .apply {
                             when (channel.streamSelector.type) {
                                 StreamSelectorType.NONE -> {
-                                    Unit
+                                    // stream IDによる選択は不要。
                                 }
 
                                 StreamSelectorType.TSID -> {

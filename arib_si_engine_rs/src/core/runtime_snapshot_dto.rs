@@ -2,79 +2,54 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SiParseStatusDto {
-    #[serde(rename = "OK")]
     Ok,
-    #[serde(rename = "MalformedLength")]
     MalformedLength,
-    #[serde(rename = "TruncatedDescriptor")]
     TruncatedDescriptor,
-    #[serde(rename = "UnsupportedValue")]
     UnsupportedValue,
-    #[serde(rename = "InvalidSequence")]
     InvalidSequence,
-    #[serde(rename = "UNRESOLVED")]
     Unresolved,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum EitTimingStateDto {
-    #[serde(rename = "DEFINED")]
     Defined,
-    #[serde(rename = "UNDEFINED_TIME")]
     UndefinedTime,
-    #[serde(rename = "BOTH_TIMING_UNDEFINED")]
     BothTimingUndefined,
-    #[serde(rename = "MALFORMED_TIMING")]
     MalformedTiming,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ElementaryStreamKindDto {
-    #[serde(rename = "VIDEO")]
     Video,
-    #[serde(rename = "AUDIO")]
     Audio,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum BroadcastSystemDto {
-    #[serde(rename = "ISDB_T")]
     IsdbT,
-    #[serde(rename = "ISDB_S_BS")]
     IsdbSBs,
-    #[serde(rename = "ISDB_S_110CS")]
     IsdbS110Cs,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SmdSemanticStateDto {
-    #[serde(rename = "SUPPORTED_BROADCAST")]
     SupportedBroadcast,
-    #[serde(rename = "NON_BROADCAST")]
     NonBroadcast,
-    #[serde(rename = "UNDEFINED_BROADCAST_CLASS")]
     UndefinedBroadcastClass,
-    #[serde(rename = "UNSUPPORTED_BROADCAST_SYSTEM")]
     UnsupportedBroadcastSystem,
-    #[serde(rename = "UNDETERMINED_SMD")]
     UndeterminedSmd,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CaDescriptorScopeDto {
-    #[serde(rename = "PROGRAM")]
     Program,
-    #[serde(rename = "ES")]
     Es,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CaMetadataSourceDto {
-    #[serde(rename = "PROGRAM")]
     Program,
-    #[serde(rename = "ELEMENTARY_STREAM")]
     ElementaryStream,
-    #[serde(rename = "CAT")]
     Cat,
 }
 

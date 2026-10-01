@@ -3,16 +3,12 @@ package com.maleicacid.tvinput.aribsi.generated
 
 sealed class EitTimingStateDto {
 
-    object DEFINED : EitTimingStateDto() {
-    }
+    object Defined : EitTimingStateDto()
 
-    object UNDEFINED_TIME : EitTimingStateDto() {
-    }
+    object UndefinedTime : EitTimingStateDto()
 
-    object BOTH_TIMING_UNDEFINED : EitTimingStateDto() {
-    }
+    object BothTimingUndefined : EitTimingStateDto()
 
-    object MALFORMED_TIMING : EitTimingStateDto() {
-    }
+    object MalformedTiming : EitTimingStateDto()
 }
 

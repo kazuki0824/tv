@@ -17,12 +17,11 @@ data class AudioComponentDto(
     val main: Boolean?,
     val multiLingual: Boolean?,
     val qualityIndicator: Int?,
-    val parseStatus: com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto,
+    val parseStatus: SiParseStatusDto,
     val channelCount: Int?,
     val sampleRateHz: Int?,
     val audioDescription: Boolean?,
     val hardOfHearing: Boolean?,
     val dualMono: Boolean?
-) {
-}
+)
 

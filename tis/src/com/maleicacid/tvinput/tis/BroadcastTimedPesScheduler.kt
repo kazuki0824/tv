@@ -19,7 +19,7 @@ internal class BroadcastTimedPesScheduler(
     private val removeCallbacks: (Runnable) -> Unit,
     private val onDue: (String, ByteArray) -> Unit,
 ) {
-    private data class Pending(
+    private class Pending(
         val trackId: String,
         val pesData: ByteArray,
         val statementTime: AribBroadcastClock.StatementTime,

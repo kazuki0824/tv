@@ -7,10 +7,8 @@ import android.media.tv.TvContract
 import android.net.Uri
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
-import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
-import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
 import java.security.MessageDigest
@@ -414,26 +412,10 @@ class TvProviderWriter private constructor(
         return if (failures.isEmpty()) ExistingServiceKeysResult.Success(out) else ExistingServiceKeysResult.Failure(failures)
     }
 
-    fun existingServiceKeys(keys: Iterable<ServiceKey>): Set<ServiceKey> =
-        when (val result = existingServiceKeysResult(keys)) {
-            is ExistingServiceKeysResult.Success -> result.keys
-            is ExistingServiceKeysResult.Failure -> emptySet()
-        }
-
     fun existingChannelsResult(): Result<List<ChannelRecord>> =
         channelStore
             .listExistingChannels()
             .onFailure { error -> Log.w(LogTags.TIS, "既存channel復元に失敗しました inputId=$inputId", error) }
-
-    @Deprecated("TvProvider問い合わせ失敗を空のチャンネル一覧へ潰してはなりません", level = DeprecationLevel.ERROR)
-    fun existingChannelsForTestOnly(): List<ChannelRecord> = existingChannelsResult().getOrElse { emptyList() }
-
-    fun validateForTest(channel: ChannelRecord): Diagnostic? = validate(channel)
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    fun channelValuesForTest(channel: ChannelRecord): ContentValues =
-        channelValues(channel, (ProviderDataBridge.buildChannelProviderData(channel) as ProviderDataBridge.Success).bytes)
 
     fun programValuesForTest(
         channelId: Long,
@@ -945,7 +927,7 @@ class TvProviderWriter private constructor(
                 cursor.use { c ->
                     while (c.moveToNext()) {
                         val data = providerDataBytes(c, 1)
-                        val key = TvProviderWriter.parseProgramKey(data)
+                        val key = parseProgramKey(data)
                         if (key != null && key !in out) out[key] = c.getLong(0)
                     }
                 }
@@ -968,7 +950,7 @@ class TvProviderWriter private constructor(
                 cursor.use { c ->
                     while (c.moveToNext()) {
                         val data = providerDataBytes(c, 1)
-                        val key = TvProviderWriter.parseProgramKey(data)
+                        val key = parseProgramKey(data)
                         if (key != null && key !in out) out[key] = c.getLong(0)
                     }
                 }
@@ -1033,8 +1015,8 @@ class TvProviderWriter private constructor(
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(0)
                         val ownerPackage = cursor.getString(1)
-                        val key = TvProviderWriter.parseProgramKey(providerDataBytes(cursor, 2))
-                        if (TvProviderWriter.shouldDeleteOwnedObsoleteProgramRow(
+                        val key = parseProgramKey(providerDataBytes(cursor, 2))
+                        if (shouldDeleteOwnedObsoleteProgramRow(
                                 ownerPackage,
                                 context.packageName,
                                 key,

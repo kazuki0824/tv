@@ -8,22 +8,10 @@ import com.maleicacid.tvinput.common.TsPid
 
 object SiStatus {
     const val OK = 0
-    const val IGNORED_UNSUPPORTED_PID_OR_TABLE = 1
     const val INVALID_HANDLE = -1
-    const val INVALID_PID = -2
     const val INVALID_SECTION = -3
     const val MALFORMED_DESCRIPTOR = -4
-    const val INDEX_OUT_OF_RANGE = -5
-    const val JNI_ERROR = -6
     const val INTERNAL_ERROR = -7
-    const val INVALID_DISCOVERY_PROFILE = -8
-    const val COLLECTION_LIMIT_EXCEEDED = -9
-}
-
-object SiDiscoveryStage {
-    const val INCOMPLETE = 0
-    const val PARTIAL = 1
-    const val COMPLETE = 2
 }
 
 object SiDiscoveryProfile {
@@ -35,11 +23,6 @@ object SiDiscoveryProfile {
 data class SiIngestResult(
     val pid: TsPid,
     val status: Int,
-)
-
-data class PmtPidMapping(
-    val serviceKey: ServiceKey,
-    val pmtPid: TsPid,
 )
 
 enum class CaDescriptorScope { PROGRAM, ES }
@@ -93,7 +76,28 @@ data class AribAacConfiguration(
     val channelConfiguration: Int,
     val channelCount: Int,
     val audioSpecificConfig: ByteArray,
-)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is AribAacConfiguration) return false
+        return audioObjectType == other.audioObjectType &&
+            samplingFrequency == other.samplingFrequency &&
+            extensionSamplingFrequency == other.extensionSamplingFrequency &&
+            channelConfiguration == other.channelConfiguration &&
+            channelCount == other.channelCount &&
+            audioSpecificConfig.contentEquals(other.audioSpecificConfig)
+    }
+
+    override fun hashCode(): Int {
+        var result = audioObjectType
+        result = 31 * result + samplingFrequency
+        result = 31 * result + (extensionSamplingFrequency ?: 0)
+        result = 31 * result + channelConfiguration
+        result = 31 * result + channelCount
+        result = 31 * result + audioSpecificConfig.contentHashCode()
+        return result
+    }
+}
 
 data class AribCodecFacts(
     val avc: AribAvcSignaling? = null,
@@ -133,10 +137,6 @@ data class AribService(
     val streams: List<AribElementaryStream> = emptyList(),
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
 ) {
-    val hasProgramCaDescriptor: Boolean
-        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.PROGRAM }
-    val hasEsCaDescriptor: Boolean
-        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.ES }
     val requiresCas: Boolean get() = serviceScopedCaDescriptors.isNotEmpty()
 }
 
@@ -361,13 +361,6 @@ data class AribEvent(
     val descriptors: AribEventDescriptors = AribEventDescriptors(),
 )
 
-data class AribEventDiagnostic(
-    val serviceKey: ServiceKey,
-    val stableIdentity: String?,
-    val eventId: Int,
-    val diagnosticText: String,
-)
-
 data class DescriptorDiagnosticScope(
     val pid: TsPid?,
     val tableId: Int?,
@@ -414,7 +407,6 @@ data class AribEpgUpdateWindow(
 )
 
 typealias EpgUpdateWindow = AribEpgUpdateWindow
-typealias ProgramPublishability = ServicePublishabilityDiagnostic
 
 data class ParserDiagnostic(
     val code: String,
@@ -449,13 +441,11 @@ enum class SiParseStatus(
     UNRESOLVED("UNRESOLVED"),
 }
 
-enum class EitTimingState(
-    val wireValue: String,
-) {
-    DEFINED("DEFINED"),
-    UNDEFINED_TIME("UNDEFINED_TIME"),
-    BOTH_TIMING_UNDEFINED("BOTH_TIMING_UNDEFINED"),
-    MALFORMED_TIMING("MALFORMED_TIMING"),
+enum class EitTimingState {
+    DEFINED,
+    UNDEFINED_TIME,
+    BOTH_TIMING_UNDEFINED,
+    MALFORMED_TIMING,
 }
 
 enum class ElementaryStreamKind {
@@ -633,7 +623,7 @@ data class CaMetadata(
     }
 
     override fun hashCode(): Int {
-        var result = serviceKey?.hashCode() ?: 0
+        var result = serviceKey.hashCode()
         result = 31 * result + caSystemId
         result = 31 * result + (ecmPid?.value ?: 0)
         result = 31 * result + (emmPid?.value ?: 0)

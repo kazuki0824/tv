@@ -46,7 +46,6 @@ class NativeAribSiParserCasDiscoveryTest {
         NativeAribSiParser().use { parser ->
             for (name in listOf(
                 "nativeDecodeAribString",
-                "nativeDecodeAribStringDiagnosticSummary",
                 "nativeExtractProgramKeyResult",
                 "nativeDecodeChannelProviderData",
             )) {
@@ -74,7 +73,7 @@ class NativeAribSiParserCasDiscoveryTest {
                 ).apply { isAccessible = true }
         val result = method.invoke(null, ByteArray(0), null)
         check(result is com.maleicacid.tvinput.aribsi.generated.AacConfigurationProbeDto)
-        check(result.status == com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.PENDING)
+        check(result.status == com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Pending)
         check(result.reason == null && result.configuration == null)
     }
 

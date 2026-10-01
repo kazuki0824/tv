@@ -9,11 +9,10 @@ data class EitInstanceDto(
     val version: Int,
     val currentNextIndicator: Boolean,
     val lastSectionNumber: Int,
-    val receivedSections: kotlin.collections.List<Int>,
-    val missingSections: kotlin.collections.List<Int>,
-    val safeSections: kotlin.collections.List<Int>,
+    val receivedSections: List<Int>,
+    val missingSections: List<Int>,
+    val safeSections: List<Int>,
     val complete: Boolean,
     val inconsistent: Boolean
-) {
-}
+)
 

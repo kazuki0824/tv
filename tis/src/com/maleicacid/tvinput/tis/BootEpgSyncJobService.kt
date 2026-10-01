@@ -44,7 +44,7 @@ class BootEpgSyncJobService : JobService() {
             }
 
             DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> {
-                Unit
+                // 続けて番組表の同期を開始する。
             }
         }
         if (!ProgramUpgradeCleanup.ensure(applicationContext)) {
