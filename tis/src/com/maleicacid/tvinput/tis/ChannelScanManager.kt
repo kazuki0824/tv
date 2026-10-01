@@ -621,8 +621,8 @@ object ChannelScanManager {
         }
         Log.i(
             LogTags.TIS,
-            "background channel maintenance を開始しません source=$source reason=$reason active" +
-                "LiveSessions=${activeLiveSessions.size} sessionCreationsInProgress=" +
+            "background channel maintenance を開始しません source=$source reason=$reason " +
+                "activeLiveSessions=${activeLiveSessions.size} sessionCreationsInProgress=" +
                 "${sessionCreationsInProgress.get()} scanRunning=${isScanRunning()}",
         )
     }
