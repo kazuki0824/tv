@@ -37,8 +37,8 @@ internal object MediaSyncFirstOutputBridge {
         }.onFailure { error ->
             Log.i(
                 LogTags.TIS,
-                "MediaSync final-output private callback is unavailable; compatibility fallb" +
-                    "ack will be used: ${error.javaClass.simpleName}",
+                "MediaSync final-output private callback is unavailable; compatibility " +
+                    "fallback will be used: ${error.javaClass.simpleName}",
             )
         }.getOrNull()
     }
