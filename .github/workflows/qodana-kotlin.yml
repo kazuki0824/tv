@@ -50,7 +50,6 @@ jobs:
             --linter qodana-jvm-android
             --config qodana.yaml
             --fail-threshold 0
-          primary-cache-key: qodana-minsdk-repro-v1-${{ github.ref }}-${{ github.sha }}
-          additional-cache-key: qodana-minsdk-repro-v1-${{ github.ref }}
+          use-caches: false
           upload-result: true
           artifact-name: qodana-kotlin
