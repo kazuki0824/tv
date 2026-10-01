@@ -76,6 +76,30 @@ jobs:
           gradle wrapper --gradle-version 8.9 --distribution-type bin
           ./gradlew --version
 
+      - name: Qodana用manifestにminSdk 35を明示
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("tis/AndroidManifest.xml")
+          probe_manifest = Path("tis/host_ci/robolectric/qodana-AndroidManifest.xml")
+          text = manifest.read_text(encoding="utf-8")
+          marker = '    package="com.maleicacid.tvinput">'
+          replacement = marker + '\n\n    <uses-sdk android:minSdkVersion="35" />'
+          if marker not in text:
+              raise SystemExit("manifest marker not found")
+          probe_manifest.write_text(text.replace(marker, replacement, 1), encoding="utf-8")
+
+          gradle = Path("tis/host_ci/robolectric/build.gradle.kts")
+          gradle_text = gradle.read_text(encoding="utf-8")
+          old = 'manifest.srcFile("../../AndroidManifest.xml")'
+          new = 'manifest.srcFile("qodana-AndroidManifest.xml")'
+          if old not in gradle_text:
+              raise SystemExit("Gradle manifest source marker not found")
+          gradle.write_text(gradle_text.replace(old, new, 1), encoding="utf-8")
+          PY
+
       - name: TIS KotlinをQodanaで検査
         uses: JetBrains/qodana-action@v2026.2
         with:
