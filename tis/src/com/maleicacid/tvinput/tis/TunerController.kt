@@ -1134,7 +1134,8 @@ class TunerController(
 
     fun closeSectionFilters(): Unit = callOnController { closeSectionFiltersOnController() }
 
-    @Suppress("TooGenericExceptionCaught")
+    // 同一例外の再throw時に addSuppressed(self) が失敗しないよう同一性を検査する。
+    @Suppress("KotlinConstantConditions", "TooGenericExceptionCaught")
     private fun closeSectionFiltersOnController() {
         sectionFilters.clear()
         var failure: RuntimeException? = null

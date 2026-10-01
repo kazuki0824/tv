@@ -83,7 +83,8 @@ internal class SiCollectionRequirements(
             val rows = snapshot.tableRequirements.filter { it.component == component && it.required }
             if (rows.isEmpty()) require(Key(component, null, null, null), false)
         }
-        for (table in snapshot.tableRequirements.filter { it.required }) {
+        // 六つのSI項目は位置ではなく名前で読み、生成DTOのcomponentN順序に結合しない。
+        for (@Suppress("DestructuringDeclaration") table in snapshot.tableRequirements.filter { it.required }) {
             val scope = table.originalNetworkId to table.transportStreamId
             val pmtOutsideTargets =
                 table.component == "PMT" && table.serviceId != null && targets.isNotEmpty() &&

@@ -23,6 +23,8 @@ internal object MediaSyncFirstOutputBridge {
         val setter: java.lang.reflect.Method,
     )
 
+    // optionalなplatform-private callbackだけを探索し、不在時はpublic callbackへfallbackする。
+    @Suppress("AndroidLintPrivateApi")
     private val binding: Binding? by lazy(LazyThreadSafetyMode.PUBLICATION) {
         runCatching {
             val listenerClass = Class.forName(LISTENER_CLASS_NAME)
