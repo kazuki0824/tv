@@ -8,6 +8,7 @@ on:
       - "tis/AndroidManifest.xml"
       - "tis/host_ci/robolectric/**"
       - "qodana.yaml"
+      - "qodana-min-sdk-probe.yaml"
       - ".github/workflows/qodana-kotlin.yml"
   push:
     branches: [main]
@@ -16,6 +17,7 @@ on:
       - "tis/AndroidManifest.xml"
       - "tis/host_ci/robolectric/**"
       - "qodana.yaml"
+      - "qodana-min-sdk-probe.yaml"
       - ".github/workflows/qodana-kotlin.yml"
 
 permissions:
@@ -52,3 +54,86 @@ jobs:
             --fail-threshold 0
           upload-result: true
           artifact-name: qodana-kotlin
+
+
+  qodana-kotlin-min-sdk-project-root-probe:
+    name: Qodana minSdk project-root probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: TISを一時Gradle project rootにする
+        shell: bash
+        run: |
+          cat > tis/settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "tis-qodana-min-sdk-probe"
+          EOF
+
+          cat > tis/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.library") version "8.7.0"
+              kotlin("android") version "1.9.22"
+          }
+
+          android {
+              namespace = "com.maleicacid.tvinput"
+              compileSdk = 35
+
+              defaultConfig {
+                  minSdk = 35
+              }
+
+              sourceSets {
+                  getByName("main") {
+                      manifest.srcFile("AndroidManifest.xml")
+                      java.setSrcDirs(listOf("src"))
+                      res.setSrcDirs(listOf("res"))
+                  }
+              }
+          }
+
+          kotlin {
+              jvmToolchain(17)
+          }
+
+          val androidAll = "org.robolectric:android-all:15-robolectric-13954326"
+
+          dependencies {
+              compileOnly(androidAll)
+          }
+          EOF
+
+      - name: project内source rootでTIS KotlinをQodana検査
+        uses: JetBrains/qodana-action@v2026.2
+        with:
+          # 現行jobとの差はGradle project rootとsource rootの位置関係だけに限定する。
+          # production source自体はコピーせず、同じtis/srcをproject内sourceとして解析する。
+          pr-mode: false
+          post-pr-comment: false
+          args: >-
+            --linter qodana-jvm-android
+            --config qodana-min-sdk-probe.yaml
+            --fail-threshold 0
+          upload-result: true
+          artifact-name: qodana-kotlin-min-sdk-project-root-probe
