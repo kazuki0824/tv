@@ -1600,8 +1600,8 @@ class TunerController(
                     -> {
                         Log.w(
                             LogTags.TIS,
-                            "Timing=10 superimposeのinvalid/未分類data-groupをfail-closedで破棄します pid=$pid gene" +
-                                "ration=$generation disposition=${facts?.disposition}",
+                            "Timing=10 superimposeのinvalid/未分類data-groupをfail-closedで破棄します pid=$pid " +
+                                "generation=$generation disposition=${facts?.disposition}",
                         )
                     }
                 }
