@@ -1729,8 +1729,8 @@ class PlaybackPipeline(
             if (channelMask == null) {
                 errorSink(
                     PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                    "decoded PCM channel topology is inconsistent channelCount=$channelCount dec" +
-                        "oderMask=$decoderMask channelConfiguration=$channelConfiguration",
+                    "decoded PCM channel topology is inconsistent channelCount=$channelCount " +
+                        "decoderMask=$decoderMask channelConfiguration=$channelConfiguration",
                 )
                 return
             }
