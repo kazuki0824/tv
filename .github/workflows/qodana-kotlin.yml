@@ -6,6 +6,7 @@ on:
     paths:
       - "tis/src/**/*.kt"
       - "tis/AndroidManifest.xml"
+      - "tis/Android.bp"
       - "tis/host_ci/robolectric/**"
       - "qodana.yaml"
       - ".github/workflows/qodana-kotlin.yml"
@@ -14,6 +15,7 @@ on:
     paths:
       - "tis/src/**/*.kt"
       - "tis/AndroidManifest.xml"
+      - "tis/Android.bp"
       - "tis/host_ci/robolectric/**"
       - "qodana.yaml"
       - ".github/workflows/qodana-kotlin.yml"
@@ -38,6 +40,56 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Qodana用manifestへSoong minSdkを反映
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          bp_path = Path("tis/Android.bp")
+          manifest_path = Path("tis/AndroidManifest.xml")
+
+          bp = bp_path.read_text(encoding="utf-8")
+          start = bp.index("android_app {")
+          depth = 0
+          end = None
+          for index in range(start, len(bp)):
+              if bp[index] == "{":
+                  depth += 1
+              elif bp[index] == "}":
+                  depth -= 1
+                  if depth == 0:
+                      end = index + 1
+                      break
+          if end is None:
+              raise SystemExit("android_app block end not found")
+
+          app = bp[start:end]
+          if 'name: "MaleicacidTvInput"' not in app:
+              raise SystemExit("MaleicacidTvInput android_app not found")
+
+          match = re.search(r'min_sdk_version:\s*"([0-9]+)"', app)
+          if match is None:
+              raise SystemExit("MaleicacidTvInput min_sdk_version not found")
+          min_sdk = match.group(1)
+
+          manifest = manifest_path.read_text(encoding="utf-8")
+          if "<uses-sdk" in manifest:
+              raise SystemExit("production manifest already declares uses-sdk; remove this Qodana workaround")
+
+          manifest_open_end = manifest.find(">", manifest.find("<manifest"))
+          if manifest_open_end < 0:
+              raise SystemExit("manifest opening tag not found")
+
+          uses_sdk = f'\n\n    <uses-sdk android:minSdkVersion="{min_sdk}" />'
+          manifest_path.write_text(
+              manifest[: manifest_open_end + 1] + uses_sdk + manifest[manifest_open_end + 1 :],
+              encoding="utf-8",
+          )
+          print(f"Qodana manifest minSdk={min_sdk}")
+          PY
+
       - name: TIS KotlinをQodanaで検査
         uses: JetBrains/qodana-action@v2026.2
         with:
@@ -50,5 +102,7 @@ jobs:
             --linter qodana-jvm-android
             --config qodana.yaml
             --fail-threshold 0
+          # Qodana 2026.2.3では同一treeでもcache hit時に411件が0件へ消えるfalse greenを再現したため無効化する。
+          use-caches: false
           upload-result: true
           artifact-name: qodana-kotlin
