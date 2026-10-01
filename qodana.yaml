@@ -3,11 +3,13 @@ linter: qodana-jvm-android
 projectJDK: 17
 
 # Soongが製品buildを所有する。RobolectricのGradle modelでAndroidの
-# manifestとframeworkの入口を解決する。
+# manifestとframeworkの入口を解決する。Qodana実行時だけrec/srcも
+# project modelへ加え、TIS APIのconsumer参照をUnusedSymbol解析に含める。
 rootJavaProjects:
   - "./tis/host_ci/robolectric"
 
-# 検査対象はTIS製品Kotlinとし、ホスト試験とstubは対象外にする。
+# 問題の報告対象はTIS製品Kotlinだけに限定する。rec/srcはconsumer参照解決のため
+# project modelには含めるが、rec自身の診断はこのworkflowでは報告しない。
 onlyDirectory: tis/src
 
 profile:
