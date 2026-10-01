@@ -1,0 +1,18 @@
+version: "1.0"
+linter: qodana-jvm-android
+projectJDK: 17
+
+# 診断用model。production sourceをGradle標準source rootへ複製した後に解析する。
+# 現行の../../src参照だけを変数として除き、minSdk伝播への影響を切り分ける。
+rootJavaProjects:
+  - "./tis/host_ci/qodana_min_sdk_probe"
+
+onlyDirectory: tis/host_ci/qodana_min_sdk_probe/src/main/kotlin
+
+profile:
+  base:
+    name: qodana.recommended
+  inspections:
+    - inspection: UnusedSymbol
+      enabled: true
+      severity: ERROR

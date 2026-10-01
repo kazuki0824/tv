@@ -8,6 +8,8 @@ on:
       - "tis/AndroidManifest.xml"
       - "tis/host_ci/robolectric/**"
       - "qodana.yaml"
+      - "qodana-min-sdk-probe.yaml"
+      - "tis/host_ci/qodana_min_sdk_probe/**"
       - ".github/workflows/qodana-kotlin.yml"
   push:
     branches: [main]
@@ -16,6 +18,8 @@ on:
       - "tis/AndroidManifest.xml"
       - "tis/host_ci/robolectric/**"
       - "qodana.yaml"
+      - "qodana-min-sdk-probe.yaml"
+      - "tis/host_ci/qodana_min_sdk_probe/**"
       - ".github/workflows/qodana-kotlin.yml"
 
 permissions:
@@ -52,3 +56,40 @@ jobs:
             --fail-threshold 0
           upload-result: true
           artifact-name: qodana-kotlin
+
+
+  qodana-kotlin-min-sdk-source-root-probe:
+    name: Qodana minSdk source-root probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 製品sourceをGradle project内へ複製
+        shell: bash
+        run: |
+          probe="tis/host_ci/qodana_min_sdk_probe"
+          rm -rf "$probe/src"
+          mkdir -p "$probe/src/main/kotlin"
+          cp -a tis/src/. "$probe/src/main/kotlin/"
+          cp tis/AndroidManifest.xml "$probe/src/main/AndroidManifest.xml"
+          cp -a tis/res "$probe/src/main/res"
+
+      - name: 標準source rootでTIS KotlinをQodana検査
+        uses: JetBrains/qodana-action@v2026.2
+        with:
+          # 現行jobとの差はsource rootの配置だけに限定する。
+          # production sourceをGradle標準のsrc/main/kotlin配下へ複製し、
+          # Android facetのminSdk伝播に../../srcが影響しているかを切り分ける。
+          pr-mode: false
+          post-pr-comment: false
+          args: >-
+            --linter qodana-jvm-android
+            --config qodana-min-sdk-probe.yaml
+            --fail-threshold 0
+          upload-result: true
+          artifact-name: qodana-kotlin-min-sdk-source-root-probe
