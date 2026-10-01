@@ -1115,7 +1115,8 @@ class PlaybackPipeline(
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("MaxLineLength", "ReturnCount")
+    // Kotlin 1.9のAndroid 15入力ではMediaSyncのsetter-only APIをプロパティとして解決できない。
+    @Suppress("MaxLineLength", "ReturnCount", "UsePropertyAccessSyntax")
     private fun maybeStartMediaSync() {
         val sync = mediaSync ?: return
         if (mediaSyncStarted) return
@@ -2651,7 +2652,8 @@ class PlaybackPipeline(
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
+    // 停止時もsetter-only APIの明示呼出しを保持する。
+    @Suppress("MaxLineLength", "UsePropertyAccessSyntax")
     private fun stopOnPlaybackExecutor() {
         resourceCleanup.retry()
         playbackGeneration = Math.addExact(playbackGeneration, 1L)
