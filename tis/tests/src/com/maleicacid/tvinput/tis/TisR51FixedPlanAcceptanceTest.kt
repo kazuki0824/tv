@@ -55,6 +55,27 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test
+    fun scanSignalUnavailableDiagnosticDistinguishesNoSignalAndLostLock() {
+        val noSignal =
+            ChannelScanController.signalUnavailableDiagnosticForTest(
+                OnTuneEventListener.SIGNAL_NO_SIGNAL,
+                generation = 7,
+                elapsedMs = 8_000,
+            )
+        check("信号にロックできませんでした" in noSignal)
+        check("SIGNAL_NO_SIGNAL" in noSignal)
+
+        val lostLock =
+            ChannelScanController.signalUnavailableDiagnosticForTest(
+                OnTuneEventListener.SIGNAL_LOST_LOCK,
+                generation = 8,
+                elapsedMs = 1_500,
+            )
+        check("信号ロックを失いました" in lostLock)
+        check("SIGNAL_LOST_LOCK" in lostLock)
+    }
+
+    @Test
     fun scanSignalUnavailableIsGenerationFencedAndNotPublishable() {
         val fence = ChannelScanController.ScanGenerationFence()
         val generation = 41L
