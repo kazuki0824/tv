@@ -609,10 +609,22 @@ class ChannelScanController(
                             outcome = SiCollectionOutcome.SIGNAL_UNAVAILABLE
                             break
                         }
-                        refreshDynamicSectionFilters()
+                        val beforeSnapshot = android.os.SystemClock.elapsedRealtime()
+                        if (!shouldStartSiSnapshot(beforeSnapshot - startedAt, policy)) {
+                            outcome =
+                                if ((lastCounts?.registrationReady ?: 0) > 0) {
+                                    SiCollectionOutcome.TIMEOUT_PARTIAL
+                                } else {
+                                    SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
+                                }
+                            break
+                        }
                         if (resourceLostFor(tuneGeneration)) break
-                        val now = android.os.SystemClock.elapsedRealtime()
+                        // dynamic Section Filterの更新はsection ingest callbackが所有する。
+                        // scan pollからcontroller executorへ同期往復すると、BSのsection burstで
+                        // deadline判定そのものがexecutor待ちに巻き込まれるため重複refreshしない。
                         val counts = serviceCounts(candidate, requirements)
+                        val now = android.os.SystemClock.elapsedRealtime()
                         if (counts.discoveryStage != lastCounts?.discoveryStage || counts.signature != lastCounts?.signature ||
                             counts.collectionStatus != lastCounts?.collectionStatus
                         ) {
@@ -856,6 +868,11 @@ class ChannelScanController(
             validProgramKeysForUpdate(update)
 
         fun shouldContinueInitialScanAfterSynchronousTuneResult(success: Boolean): Boolean = success
+
+        internal fun shouldStartSiSnapshot(
+            elapsedMs: Long,
+            policy: SiCollectionPolicy,
+        ): Boolean = elapsedMs < policy.maxWaitMs
 
         private fun signalUnavailableEventName(event: Int?): String =
             when (event) {
