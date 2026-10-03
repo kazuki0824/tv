@@ -2982,6 +2982,24 @@ mod frontend_readback_tests {
     }
 
     #[test]
+    fn rolled_back_backend_submit_failure_does_not_become_worker_cleanup_failure() {
+        let error = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some("/dev/px4video0".into()),
+            op: "PTX_SET_CHANNEL",
+            errno: 11,
+        };
+        assert_eq!(
+            recorded_backend_submit_failure_worker_result(true, error.clone()),
+            Ok(())
+        );
+        assert_eq!(
+            recorded_backend_submit_failure_worker_result(false, error.clone()),
+            Err(error)
+        );
+    }
+
+    #[test]
     fn lock_transition_reports_loss_once_and_relock_once() {
         assert_eq!(
             frontend_lock_transition(
@@ -3015,6 +3033,17 @@ mod frontend_readback_tests {
             ),
             FrontendLockTransition::None
         );
+    }
+}
+
+fn recorded_backend_submit_failure_worker_result(
+    rollback_succeeded: bool,
+    public_error: HalError,
+) -> Result<(), HalError> {
+    if rollback_succeeded {
+        Ok(())
+    } else {
+        Err(public_error)
     }
 }
 
@@ -3079,12 +3108,13 @@ fn run_frontend_backend_tune_submit_worker(
     let session = match ticket.submit() {
         Ok(Ok(session)) => session,
         Ok(Err(failure)) => {
-            return Err(record_async_backend_submit_failure(
-                &runtime,
-                frontend_id,
-                generation,
-                failure,
-            ))
+            let rollback_succeeded = failure.rollback_succeeded;
+            let public_error =
+                record_async_backend_submit_failure(&runtime, frontend_id, generation, failure);
+            return recorded_backend_submit_failure_worker_result(
+                rollback_succeeded,
+                public_error,
+            );
         }
         Err(error) => {
             let public_error = {
@@ -4208,7 +4238,15 @@ fn run_frontend_backend_scan_session_worker(
                         mark_error,
                     ));
                 }
-                return Err(primary);
+                drop(guard);
+                deliver_committed_scan_notification(
+                    &runtime,
+                    &scan_notifier,
+                    ctx.frontend_id(),
+                    ctx.generation(),
+                    FrontendScanNotification::End,
+                )?;
+                return Ok(());
             }
             Ok(Err(failure)) => {
                 let primary_error = failure.error.clone();
