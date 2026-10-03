@@ -6,7 +6,7 @@ import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.common.ServiceKey
 
-/** 有限な走査操作の必要集合。放送由来の完成状態は同じservice-registration snapshotから取得する。 */
+/** 有限な走査操作の必要集合。放送由来の完成状態は同じSI collection snapshotから取得する。 */
 internal class SiCollectionRequirements(
     private val mode: ChannelScanController.PublishMode,
     private val profile: Int,
