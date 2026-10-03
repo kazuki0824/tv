@@ -314,7 +314,11 @@ fn build_collection_projection_facts(state: &mut ParserState) -> CollectionProje
 
     CollectionProjectionFacts {
         discovery_stage: discovery_stage_to_jint(discovery_stage),
-        table_requirements: facts.table_requirements,
+        table_requirements: collection_state
+            .table_requirements
+            .iter()
+            .map(runtime_snapshot_build::table_requirement)
+            .collect(),
         transport_semantic_facts: snapshot
             .transports
             .iter()
@@ -384,11 +388,7 @@ fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshotDto {
             mjd: i32::from(clock.mjd),
             millis_of_day: i64::from(clock.millis_of_day),
         }),
-        table_requirements: collection_state
-            .table_requirements
-            .iter()
-            .map(runtime_snapshot_build::table_requirement)
-            .collect(),
+        table_requirements: facts.table_requirements,
         cat_ca_metadata: snapshot
             .cat_ca
             .descriptors
