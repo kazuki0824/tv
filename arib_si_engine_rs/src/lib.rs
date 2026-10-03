@@ -21,8 +21,9 @@ use maleicacid_arib_si_engine_core::codec_probe_dto::AacConfigurationProbeDto;
 use maleicacid_arib_si_engine_core::eit_instances::EitInstances;
 use maleicacid_arib_si_engine_core::runtime_snapshot_build;
 use maleicacid_arib_si_engine_core::runtime_snapshot_dto::{
-    BroadcastClockDto, BulkSnapshotDto, MalformedCaDescriptorCountDto, ParserDiagnosticDto,
-    SiCollectionSnapshotDto,
+    BroadcastClockDto, BulkSnapshotDto, EitInstanceDto, MalformedCaDescriptorCountDto,
+    ParserDiagnosticDto, ServiceSemanticFactsDto, SiCollectionSnapshotDto, TableRequirementDto,
+    TransportSemanticFactsDto,
 };
 use provider_data as provider_data_api;
 use sections::{
@@ -289,7 +290,16 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
     }
 }
 
-fn build_si_collection_snapshot(state: &mut ParserState) -> SiCollectionSnapshotDto {
+struct CollectionProjectionFacts {
+    discovery_stage: i32,
+    table_requirements: Vec<TableRequirementDto>,
+    transport_semantic_facts: Vec<TransportSemanticFactsDto>,
+    eit_instances: Vec<EitInstanceDto>,
+    service_semantic_facts: Vec<ServiceSemanticFactsDto>,
+    parser_diagnostics: Vec<ParserDiagnosticDto>,
+}
+
+fn build_collection_projection_facts(state: &mut ParserState) -> CollectionProjectionFacts {
     state.expire_collection_at(Instant::now());
     let ingest_sequence = state.sections_seen;
     let last_status = state.last_status;
@@ -302,13 +312,9 @@ fn build_si_collection_snapshot(state: &mut ParserState) -> SiCollectionSnapshot
     }
     let actual_transport_keys = state.sdt_actual_transport_keys();
 
-    SiCollectionSnapshotDto {
+    CollectionProjectionFacts {
         discovery_stage: discovery_stage_to_jint(discovery_stage),
-        table_requirements: collection_state
-            .table_requirements
-            .iter()
-            .map(runtime_snapshot_build::table_requirement)
-            .collect(),
+        table_requirements: facts.table_requirements,
         transport_semantic_facts: snapshot
             .transports
             .iter()
@@ -335,18 +341,24 @@ fn build_si_collection_snapshot(state: &mut ParserState) -> SiCollectionSnapshot
     }
 }
 
-fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshotDto {
-    state.expire_collection_at(Instant::now());
-    let ingest_sequence = state.sections_seen;
-    let last_status = state.last_status;
-    let collection_state = state.collector.state();
-    let discovery_stage = collection_state.publish_stage();
-    let snapshot = &collection_state.snapshot;
-    let mut parser_diagnostics = parser_diagnostics(ingest_sequence, last_status, snapshot);
-    if let Some(reason) = state.invalid_section_reason {
-        parser_diagnostics.push(reason.diagnostic());
+fn build_si_collection_snapshot(state: &mut ParserState) -> SiCollectionSnapshotDto {
+    let facts = build_collection_projection_facts(state);
+    SiCollectionSnapshotDto {
+        discovery_stage: facts.discovery_stage,
+        table_requirements: facts.table_requirements,
+        transport_semantic_facts: facts.transport_semantic_facts,
+        eit_instances: facts.eit_instances,
+        service_semantic_facts: facts.service_semantic_facts,
+        parser_diagnostics: facts.parser_diagnostics,
     }
-    let actual_transport_keys = state.sdt_actual_transport_keys();
+}
+
+fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshotDto {
+    let facts = build_collection_projection_facts(state);
+    let collection_generation = state.collection_generation;
+    let ingest_sequence = state.sections_seen;
+    let collection_state = state.collector.state();
+    let snapshot = &collection_state.snapshot;
     let events = state
         .events()
         .iter()
@@ -364,9 +376,9 @@ fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshotDto {
         .collect();
 
     BulkSnapshotDto {
-        collection_generation: u64_to_i64_saturating(state.collection_generation),
+        collection_generation: u64_to_i64_saturating(collection_generation),
         ingest_sequence: u64_to_i64_saturating(ingest_sequence),
-        discovery_stage: discovery_stage_to_jint(discovery_stage),
+        discovery_stage: facts.discovery_stage,
         broadcast_clock: state.latest_broadcast_clock.map(|clock| BroadcastClockDto {
             table_id: i32::from(clock.table_id),
             mjd: i32::from(clock.mjd),
@@ -393,30 +405,11 @@ fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshotDto {
         malformed_ca_descriptor_counts: malformed_ca_descriptor_counts(
             &snapshot.malformed_ca_descriptor_diagnostics,
         ),
-        transport_semantic_facts: snapshot
-            .transports
-            .iter()
-            .map(|transport| {
-                runtime_snapshot_build::transport(
-                    transport,
-                    actual_transport_keys
-                        .contains(&(transport.transport_stream_id, transport.original_network_id)),
-                )
-            })
-            .collect(),
+        transport_semantic_facts: facts.transport_semantic_facts,
         events,
-        eit_instances: state
-            .eit_instances
-            .states()
-            .iter()
-            .map(runtime_snapshot_build::eit_instance)
-            .collect(),
-        service_semantic_facts: collection_state
-            .semantic_facts_by_service
-            .iter()
-            .map(runtime_snapshot_build::service_semantic_facts)
-            .collect(),
-        parser_diagnostics,
+        eit_instances: facts.eit_instances,
+        service_semantic_facts: facts.service_semantic_facts,
+        parser_diagnostics: facts.parser_diagnostics,
     }
 }
 
@@ -1259,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn si_collection_snapshot_keeps_collection_facts_without_program_event_projection() {
+    fn si_collection_snapshot_matches_bulk_collection_facts_without_program_event_projection() {
         let mut state = ParserState::default();
         state.collector.set_discovery_profile(DiscoveryProfile::Bs);
         let section = section_with_crc(vec![
@@ -1267,13 +1260,16 @@ mod tests {
         ]);
         assert_eq!(state.ingest_section(0x0012, &section), STATUS_OK);
 
-        let snapshot = build_si_collection_snapshot(&mut state);
+        let bounded = build_si_collection_snapshot(&mut state);
+        let full = build_bulk_snapshot(&mut state);
 
-        assert_eq!(snapshot.eit_instances.len(), 1);
-        assert!(snapshot
-            .parser_diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "PARSER_STATE"));
+        assert_eq!(bounded.discovery_stage, full.discovery_stage);
+        assert_eq!(bounded.table_requirements, full.table_requirements);
+        assert_eq!(bounded.transport_semantic_facts, full.transport_semantic_facts);
+        assert_eq!(bounded.eit_instances, full.eit_instances);
+        assert_eq!(bounded.service_semantic_facts, full.service_semantic_facts);
+        assert_eq!(bounded.parser_diagnostics, full.parser_diagnostics);
+        assert_eq!(bounded.eit_instances.len(), 1);
     }
 
     #[test]
