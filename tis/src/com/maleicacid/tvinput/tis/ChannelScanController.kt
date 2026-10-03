@@ -681,9 +681,7 @@ class ChannelScanController(
                 }
 
                 SiCollectionOutcome.SIGNAL_UNAVAILABLE -> {
-                    "scan候補の信号が利用不能になりました generation=$tuneGeneration " +
-                        "event=${signalUnavailableEventName(signalUnavailableEvent)}; " +
-                        "未完了SI snapshotはpublishへ使用しません elapsedMs=$elapsed"
+                    signalUnavailableDiagnostic(signalUnavailableEvent, tuneGeneration, elapsed)
                 }
 
                 else -> {
@@ -863,6 +861,27 @@ class ChannelScanController(
                 OnTuneEventListener.SIGNAL_LOST_LOCK -> "SIGNAL_LOST_LOCK"
                 else -> "UNKNOWN($event)"
             }
+
+        internal fun signalUnavailableDiagnosticForTest(
+            event: Int?,
+            generation: Long,
+            elapsedMs: Long,
+        ): String = signalUnavailableDiagnostic(event, generation, elapsedMs)
+
+        private fun signalUnavailableDiagnostic(
+            event: Int?,
+            generation: Long,
+            elapsedMs: Long,
+        ): String {
+            val reason =
+                when (event) {
+                    OnTuneEventListener.SIGNAL_NO_SIGNAL -> "scan候補の信号にロックできませんでした"
+                    OnTuneEventListener.SIGNAL_LOST_LOCK -> "scan候補の信号ロックを失いました"
+                    else -> "scan候補の信号状態が利用不能です"
+                }
+            return "$reason generation=$generation event=${signalUnavailableEventName(event)}; " +
+                "未完了SI snapshotはpublishへ使用しません elapsedMs=$elapsedMs"
+        }
 
         private fun validProgramKeysForUpdate(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
             update.validProgramStableIdentities.toSet()
