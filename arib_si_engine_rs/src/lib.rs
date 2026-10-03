@@ -22,6 +22,7 @@ use maleicacid_arib_si_engine_core::eit_instances::EitInstances;
 use maleicacid_arib_si_engine_core::runtime_snapshot_build;
 use maleicacid_arib_si_engine_core::runtime_snapshot_dto::{
     BroadcastClockDto, BulkSnapshotDto, MalformedCaDescriptorCountDto, ParserDiagnosticDto,
+    ServiceRegistrationSnapshotDto,
 };
 use provider_data as provider_data_api;
 use sections::{
@@ -285,6 +286,54 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
         i64::MAX
     } else {
         value as i64
+    }
+}
+
+fn build_service_registration_snapshot(
+    state: &mut ParserState,
+) -> ServiceRegistrationSnapshotDto {
+    state.expire_collection_at(Instant::now());
+    let ingest_sequence = state.sections_seen;
+    let last_status = state.last_status;
+    let collection_state = state.collector.state();
+    let discovery_stage = collection_state.publish_stage();
+    let snapshot = &collection_state.snapshot;
+    let mut parser_diagnostics = parser_diagnostics(ingest_sequence, last_status, snapshot);
+    if let Some(reason) = state.invalid_section_reason {
+        parser_diagnostics.push(reason.diagnostic());
+    }
+    let actual_transport_keys = state.sdt_actual_transport_keys();
+
+    ServiceRegistrationSnapshotDto {
+        discovery_stage: discovery_stage_to_jint(discovery_stage),
+        table_requirements: collection_state
+            .table_requirements
+            .iter()
+            .map(runtime_snapshot_build::table_requirement)
+            .collect(),
+        transport_semantic_facts: snapshot
+            .transports
+            .iter()
+            .map(|transport| {
+                runtime_snapshot_build::transport(
+                    transport,
+                    actual_transport_keys
+                        .contains(&(transport.transport_stream_id, transport.original_network_id)),
+                )
+            })
+            .collect(),
+        eit_instances: state
+            .eit_instances
+            .states()
+            .iter()
+            .map(runtime_snapshot_build::eit_instance)
+            .collect(),
+        service_semantic_facts: collection_state
+            .semantic_facts_by_service
+            .iter()
+            .map(runtime_snapshot_build::service_semantic_facts)
+            .collect(),
+        parser_diagnostics,
     }
 }
 
@@ -576,6 +625,31 @@ fn discovery_stage_to_jint(stage: DiscoveryPublishStage) -> jint {
     }
 }
 
+fn snapshot_service_registration_typed(
+    handle: jlong,
+) -> Result<ServiceRegistrationSnapshotDto, SiJniFailure> {
+    if !si_module_is_healthy() {
+        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
+    }
+    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return Err(SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME));
+        }
+    };
+    let Some(parser) = parser else {
+        return Err(SiJniFailureReason::InvalidHandle.failure(handle));
+    };
+    match parser.lock() {
+        Ok(mut guard) => Ok(build_service_registration_snapshot(&mut guard)),
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
+        }
+    }
+}
+
 fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshotDto, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
@@ -598,6 +672,22 @@ fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshotDto, SiJniFailure> {
         }
     };
     result
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeServiceRegistrationSnapshotTyped(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jobject {
+    let snapshot = match snapshot_service_registration_typed(handle) {
+        Ok(snapshot) => snapshot,
+        Err(failure) => return throw_si_failure(&mut env, failure) as jobject,
+    };
+    match jvm_snapshot_generated::service_registration_snapshot_to_java(&mut env, snapshot) {
+        Ok(value) => value.into_raw(),
+        Err(failure) => throw_si_failure(&mut env, failure) as jobject,
+    }
 }
 
 #[no_mangle]

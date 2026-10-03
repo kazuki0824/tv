@@ -23,6 +23,7 @@ import com.maleicacid.tvinput.aribsi.generated.LinkageDto
 import com.maleicacid.tvinput.aribsi.generated.ServiceCaDescriptorDto
 import com.maleicacid.tvinput.aribsi.generated.ServiceKeyDto
 import com.maleicacid.tvinput.aribsi.generated.ServiceSemanticFactsDto
+import com.maleicacid.tvinput.aribsi.generated.ServiceRegistrationSnapshotDto
 import com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
 import com.maleicacid.tvinput.aribsi.generated.SmdSemanticStateDto
 import com.maleicacid.tvinput.aribsi.generated.VideoComponentDto
@@ -385,6 +386,57 @@ private fun EventDto.toDomain(): AribEvent =
             ),
         descriptors = descriptors.toDomain(),
     )
+
+internal fun ServiceRegistrationSnapshotDto.toDomainServiceRegistrationSnapshot(): ServiceRegistrationSnapshot {
+    val semanticFacts = serviceSemanticFacts.map { it.toDomain() }
+    val transports =
+        transportSemanticFacts.map {
+            AribTransport(
+                originalNetwork = NetworkId16(it.originalNetworkId),
+                transportStream = TransportStreamId16(it.transportStreamId),
+                networkName = it.networkName,
+                transportStreamName = it.transportStreamName,
+                sdtActual = it.sdtActual,
+                remoteControlKeyId = it.remoteControlKeyId,
+            )
+        }
+    return ServiceRegistrationSnapshot(
+        discoveryStage = discoveryStage,
+        tableRequirements =
+            tableRequirements.map {
+                TableRequirementStatus(
+                    component = it.component,
+                    originalNetworkId = it.originalNetworkId,
+                    transportStreamId = it.transportStreamId,
+                    serviceId = it.serviceId,
+                    required = it.required,
+                    complete = it.complete,
+                )
+            },
+        services =
+            semanticFacts.map { facts ->
+                AribService(
+                    serviceKey = facts.serviceKey,
+                    name = facts.name,
+                    providerName = facts.providerName,
+                    serviceType = facts.serviceType,
+                    pmtPid = facts.pmtPid,
+                    pcrPid = facts.pcrPid,
+                    freeCaMode = facts.freeCaMode,
+                    streams = facts.elementaryStreams,
+                    serviceScopedCaDescriptors = facts.serviceScopedCaDescriptors,
+                )
+            },
+        actualTransports =
+            transports
+                .filter { it.sdtActual }
+                .mapTo(linkedSetOf()) { TransportKey(it.originalNetwork, it.transportStream) },
+        actualTransportMetadata = transports.filter { it.sdtActual },
+        semanticFactsByServiceKey = semanticFacts.associateBy { it.serviceKey },
+        diagnostics = parserDiagnostics.map { ParserDiagnostic(it.code, it.message, it.severity) },
+        eitInstances = eitInstances.map { it.toDomain() },
+    )
+}
 
 internal fun BulkSnapshotDto.toDomainSnapshot(): NativeSiSnapshot =
     NativeSiSnapshot(

@@ -543,3 +543,14 @@ pub struct BulkSnapshotDto {
     pub service_semantic_facts: Vec<ServiceSemanticFactsDto>,
     pub parser_diagnostics: Vec<ParserDiagnosticDto>,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceRegistrationSnapshotDto {
+    pub discovery_stage: i32,
+    pub table_requirements: Vec<TableRequirementDto>,
+    pub transport_semantic_facts: Vec<TransportSemanticFactsDto>,
+    pub eit_instances: Vec<EitInstanceDto>,
+    pub service_semantic_facts: Vec<ServiceSemanticFactsDto>,
+    pub parser_diagnostics: Vec<ParserDiagnosticDto>,
+}

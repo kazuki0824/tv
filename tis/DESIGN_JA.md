@@ -539,7 +539,7 @@ TIS の PSI/SI section path は allocation 前に `SectionEvent.dataLength` を�
 
 ### transaction DTO API
 
-`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。Rust→TIS runtime境界は`../開発規則.md`の同時更新不変条件に従い、Rust `BulkSnapshotDto`からcodegen生成Kotlin `BulkSnapshotDto` / nested DTOをJNIで直接構築し、`GeneratedSiSnapshotMapper.toDomainSnapshot()`でTIS側`NativeSiSnapshot`へ機械的に投影する同一product build内のtyped JNI境界とする。異なるRust/Kotlin版を組み合わせるための`schemaVersion` negotiation、旧snapshot DTO decoder、互換fallbackを持たない。DTO変更はRust/Kotlin/試験/設計を同一変更で更新する。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
+`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は用途別typed DTOを使う。Program/CAS等の完全snapshotはRust `BulkSnapshotDto`からcodegen生成Kotlin `BulkSnapshotDto` / nested DTOをJNIで直接構築する。scanの`serviceRegistrationSnapshot()`は同じRust collector stateから`ServiceRegistrationSnapshotDto`を一回で構築し、event本文・event descriptor・CAT詳細等の登録判定に不要な大容量factをJNI objectへ投影しない。`ServiceRegistrationSnapshotDto`はdiscovery stage / table requirements / transport facts / EIT instance / service semantic facts / parser diagnosticsだけを持つ。Rust→TIS runtime境界は`../開発規則.md`の同時更新不変条件に従い、異なるRust/Kotlin版を組み合わせるための`schemaVersion` negotiation、旧snapshot DTO decoder、互換fallbackを持たない。DTO変更はRust/Kotlin/試験/設計を同一変更で更新する。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
 
 ```kotlin
 data class ExcludedEventDescriptorFacts(
@@ -590,6 +590,8 @@ data class ServiceRegistrationSnapshot(
 
 fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot
 ```
+
+`serviceRegistrationSnapshot()`はscanのpoll deadline内で反復取得するため、full `BulkSnapshotDto`を経由しない。Rust `ServiceRegistrationSnapshotDto`を唯一のtransport shapeとし、EITの完成判定に必要な`eitInstances`は含めるが、Program公開用`events` / descriptor本文は含めない。snapshot作成中も同一parser state lockで一貫性を保ち、別readの合成やcached shadow stateを追加しない。
 
 ```kotlin
 data class CasDiscoverySnapshot(
