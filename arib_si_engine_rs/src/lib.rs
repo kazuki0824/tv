@@ -616,9 +616,7 @@ fn discovery_stage_to_jint(stage: DiscoveryPublishStage) -> jint {
     }
 }
 
-fn snapshot_si_collection_typed(
-    handle: jlong,
-) -> Result<SiCollectionSnapshotDto, SiJniFailure> {
+fn snapshot_si_collection_typed(handle: jlong) -> Result<SiCollectionSnapshotDto, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
@@ -1265,7 +1263,10 @@ mod tests {
 
         assert_eq!(bounded.discovery_stage, full.discovery_stage);
         assert_eq!(bounded.table_requirements, full.table_requirements);
-        assert_eq!(bounded.transport_semantic_facts, full.transport_semantic_facts);
+        assert_eq!(
+            bounded.transport_semantic_facts,
+            full.transport_semantic_facts
+        );
         assert_eq!(bounded.eit_instances, full.eit_instances);
         assert_eq!(bounded.service_semantic_facts, full.service_semantic_facts);
         assert_eq!(bounded.parser_diagnostics, full.parser_diagnostics);
