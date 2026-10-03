@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - "tis/**"
+      - "tuner_hal2/**"
+      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-robolectric-ci.yml"
   push:
     branches: [main]
     paths:
       - "tis/**"
+      - "tuner_hal2/**"
+      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-robolectric-ci.yml"
 
 permissions:
@@ -38,9 +42,48 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Rust 1.81.0を使用
+        uses: dtolnay/rust-toolchain@1.81.0
+
+      - name: HAL実TS実行器と製品SI解析JNIをビルド
+        run: |
+          cargo build --manifest-path tuner_hal2/host_ci/Cargo.toml --locked -p maleicacid-tuner-hal2-demux-host-ci --bin real_ts_sections
+          cargo build --manifest-path arib_si_engine_rs/host_ci/Cargo.toml --locked --lib
+
       - name: Android依存Kotlin契約をRobolectricで実行
         run: |
           gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest \
             --tests com.maleicacid.tvinput.tis.DirectBootGuardR51FixTest \
             --tests com.maleicacid.tvinput.tis.RecordingDisabledR51Test \
-            --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest
+            --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest \
+            --tests com.maleicacid.tvinput.tis.RealTsHalSiIntegrationTest
+
+      - name: 実TS試験と既存3クラスの実行結果を確認
+        run: |
+          python3 - <<'PYRESULT'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path("tis/host_ci/robolectric/build/test-results/testDebugUnitTest")
+          classes = ["DirectBootGuardR51FixTest", "RecordingDisabledR51Test",
+                     "TvProviderWriterDescriptorSchemaTest", "RealTsHalSiIntegrationTest"]
+          for name in classes:
+              suite = ET.parse(root / f"TEST-com.maleicacid.tvinput.tis.{name}.xml").getroot()
+              cases = suite.findall("testcase")
+              assert cases, f"{name}: 試験0件"
+              assert all(not any(case.find(tag) is not None for tag in
+                             ("skipped", "failure", "error")) for case in cases), name
+              if name == "RealTsHalSiIntegrationTest":
+                  assert len(cases) == 1, name
+                  assert cases[0].get("name") == "realTsProducesServiceAndProgramFacts", name
+              print(f"{name}: {len(cases)} passed")
+          PYRESULT
+
+      - name: 試験結果とHAL診断を保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tis-robolectric-results
+          path: |
+            tis/host_ci/robolectric/build/test-results/
+            tis/host_ci/robolectric/build/reports/tests/
+            tis/host_ci/robolectric/build/real-ts-diagnostics/

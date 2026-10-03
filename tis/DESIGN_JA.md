@@ -1,5 +1,42 @@
 # TIS 設計判断
 
+## 実TSによるホスト結合試験
+
+`RealTsHalSiIntegrationTest.realTsProducesServiceAndProgramFacts`を、保存した実TSを使う1件のRobolectric結合試験として設計する。入力は`tests/fixtures/real_ts/test.ts`、独立した期待値は同じ場所の`expected.json`とする。この節の全判定を同じ1件へ組み込み、一部だけを通して結合試験完了とはしない。
+
+### 接続する実処理
+
+入力からの経路は、HAL側のホスト実行器 → 完成したsectionと配送確認結果 → `SectionIngestController.onSection()` → `AribSiEngine` → `NativeAribSiParser` → 製品のRust JNI／SI解析 → `ServiceListBuilder`および`programStateSnapshot()`とする。HAL側の注入位置、実処理、置換する部分は`../tuner_hal2/DESIGN_JA.md`の「実TSホスト試験のHAL接続」を正とする。
+
+Robolectricの試験本体が、その実行時にHAL実行器へ`test.ts`を与える。実行器の出力を読み、PIDを`TsPid`へ検証変換して、記録順のまま`SectionIngestController`へ渡す。保存済みsection列、tsduckの実行時出力、模擬サービス一覧でHAL処理を代替しない。JNIは既存`arib_si_engine_rs/host_ci/Cargo.toml`の`cdylib`から生成した`libmaleicacid_arib_si_engine_jni.so`を読み込む。`NativeAribSiParser`のnative methodを模擬結果で置換せず、取得不能・リンク失敗は試験失敗にする。
+
+この1件では、受信機器とAndroidのプロセス間接続を必要としない、HAL内部の実TS処理とTISのSI受信以降の結合を確認する。`TunerController`の`Filter.read()`／世代検査、動的PMTフィルター追加、Tuner SDK、Binder、TRM、実FMQ／EventFlag、TvProviderへの永続化、実decoder／Surface出力を通過したという結果にはしない。これらの既存製品経路と実機確認条件は維持する。試験用のHAL接続を製品TISから呼び出す入口は追加しない。
+
+### データと判定
+
+期待値はTSDuckで元データを解析して固定し、試験対象のHAL／SI解析結果から自動更新しない。数値とsectionのSHA-256／出現回数の正本は`expected.json`に置く。TS入力自体と期待値の両方をレビュー対象とする。
+
+| 判定 | 確認内容 |
+|---|---|
+| 入力同一性 | ファイル全体のbyte数とSHA-256、188-byte TSの完全packet数、末尾byte数が一致する |
+| HAL配送 | PID／table IDごとのsection数、byte数、各sectionのSHA-256と出現回数が参照値に一致する。キューに確定したbyte列と配送eventのbyte列が一致し、予期しないoverflow・CRC破棄・配送失敗がない |
+| TIS取込み | 全sectionの取込み結果を確認し、負のstatus、例外、collection上限到達を成功へ変換しない。許容する非負の未対応table通知はPID／table IDと件数を明示して照合する |
+| サービス事実 | ONID／TSIDと、全4サービスのSID、名称、service type、PMT／PCR PID、ES PID／stream typeが一致する。service集合を非空判定だけで済ませない |
+| TIS採用判断 | ISDB-T profileで`ServiceListBuilder.registrationReadySnapshot()`がTBS1／TBS2を採用し、service typeが0xC0の2サービスを採用しない。受信した4サービスと登録可能な2サービスを区別する |
+| CA事実 | SDTのfree_CA_modeがfalseでも、PMTのCA descriptorを消去しない。TBS1／TBS2のsystem ID／ECM PIDを照合する。packetが平文であることをCAS不要・復号成功・ライブ再生成功の根拠にしない |
+| 番組 | 選択SIDのEIT p/f actualについて、event ID集合、開始時刻、継続時間を参照値と照合する。ARIBのJST時刻からUnix時刻への変換も照合し、試験実行日の壁時計で番組を落とさない。scheduleから補完しない |
+| 終了 | HAL終了報告、終了コード、全出力取込み、JNI closeを確認する。途中までの一致、欠落した終了報告、時間切れを成功にしない |
+
+`AribSiEngine`は入力前にISDB-T profileへ設定する。PAT／PMTがNIT／SDTより先に来る元の受信順を保存し、表を種類別に並べ替えて解析の依存不整合を隠さない。終了時にservice／program snapshotを取得して照合する。録画停止で生じた可能性がある末尾の短いpacketは補完せず、完全packetから得た事実を維持しながらHAL側の境界処理結果を確認する。原因そのものはTSだけから断定しない。
+
+### 試験実行の所有と失敗
+
+HAL実行器は1試験につき1プロセスとし、出力をその試験専用の一時ファイルへ、診断を別ファイルへ出す。section記録はPID、配送順序、長さ、byte列を持ち、最後に処理packet数・末尾byte数・キュー照合・停止解放結果を持つ終了報告を1個だけ出す。出力形式は試験専用とし、製品APIや別のSI意味モデルにしない。
+
+実行器出力は最大1MiB、section数は`expected.json`の合計数、個別section長は既存のTIS受信上限で検査する。記録順序の重複・逆行、終了報告後の追加データ、余分なPID、余分または不足したsectionを拒否する。出力をpipeへ溜めて子プロセス終了を待つ構造を避ける。実行器の待機は30秒、超過時は強制終了と回収まで行って試験を失敗させる。Robolectricのこの試験全体には60秒の期限を設ける。SI解析器はHAL実行器終了後に作成し、既存のcollection寿命をビルドや子プロセス待ちで消費しない。
+
+初期化の途中失敗でも、取得済みの実行器、ファイル、HALフィルター、JNI解析器を各所有者で解放する。主失敗と解放失敗の両方を試験結果へ残す。読めないfixture、欠けた実行器／JNI libraryを`assume`やskipで回避しない。
+
 ## AOSP 標準経路
 
 TIS は `TvInputService` としてシステムTVアプリから呼ばれ、Tuner HAL には Tuner SDK API 経由でアクセスする。HAL binder を直接呼ばない。
