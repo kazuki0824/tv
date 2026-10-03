@@ -5459,15 +5459,15 @@ fn close_frontend_workers_and_live_data_with_sink(
         (generation, tickets, fenced_demux_generations)
     };
 
-    let worker_reaper_deadline = {
+    let worker_io_deadline = {
         let guard = lock_runtime(
             &runtime,
             "service runtime lock poisoned while reading frontend close worker deadline",
         )?;
-        Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms)
+        Duration::from_millis(guard.capability_snapshot().worker_io_deadline_ms)
     };
     let wait_started_at = Instant::now();
-    let wait_outcome = match wait_started_at.checked_add(worker_reaper_deadline) {
+    let wait_outcome = match wait_started_at.checked_add(worker_io_deadline) {
         Some(deadline) => tickets.wait_until_deadline(deadline),
         None => FrontendWorkerStopWaitOutcome::Failed {
             tickets,
@@ -5478,7 +5478,7 @@ fn close_frontend_workers_and_live_data_with_sink(
         },
     };
 
-    match wait_outcome {
+    let (tickets, public_error) = match wait_outcome {
         FrontendWorkerStopWaitOutcome::Completed(outcomes) => {
             let mut report = FrontendWorkerCleanupExecutionReport::new();
             for (kind, outcome) in &outcomes {
@@ -5564,200 +5564,111 @@ fn close_frontend_workers_and_live_data_with_sink(
                 report,
                 public_error,
             ));
-            compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result)
+            return compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result);
         }
-        FrontendWorkerStopWaitOutcome::TimedOut(tickets) => {
-            let completion_sink = sink.clone();
-            let deadline_diagnostic_sink = sink.clone();
-            let job = FrontendWorkerReaperJob {
-                keys: vec![
-                    (frontend_id, FrontendWorkerKind::Tune),
-                    (frontend_id, FrontendWorkerKind::Scan),
-                ],
-                continuation_kind: None,
-                tickets,
-                transferred_at: wait_started_at,
-                deadline_action: Some(Box::new(move |runtime| {
-                    handle_frontend_worker_reaper_deadline(
-                        runtime,
-                        target,
-                        FrontendWorkerKind::Tune,
-                        generation,
-                        fenced_demux_generations,
-                        deadline_diagnostic_sink,
-                    );
-                })),
-                completion_action: Box::new(move |runtime, outcomes, _deadline_elapsed| {
-                    let terminal_acceptance_result =
-                        accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
-                    let close_result = close_frontend_live_data_and_unbind_after_worker_completion(
-                        runtime,
-                        frontend_id,
-                    );
-                    let fixed_power_result =
-                        FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
-                            runtime,
-                            crate::registry::FrontendRuntimeId(frontend_id),
-                        );
-                    let mut report = FrontendWorkerCleanupExecutionReport::new();
-                    for (kind, outcome) in outcomes {
-                        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
-                            target,
-                            kind,
-                            frontend_worker_stop_outcome_generation(&outcome),
-                            frontend_worker_stop_result_from_outcome(&outcome),
-                        ));
-                    }
-                    report.push(
-                        FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
-                            target,
-                            close_result.clone(),
-                        ),
-                    );
-                    let terminal_and_close_result = match (terminal_acceptance_result, close_result)
-                    {
-                        (Ok(()), Ok(())) => Ok(()),
-                        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                        (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                            "frontend terminal acceptance and live-data cleanup both failed",
-                            primary,
-                            cleanup,
-                        )),
-                    };
-                    let finalizer_result = match (terminal_and_close_result, fixed_power_result) {
-                        (Ok(()), Ok(())) => Ok(()),
-                        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                        (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                            "frontend terminal cleanup and fixed LNB power cleanup both failed",
-                            primary,
-                            cleanup,
-                        )),
-                    };
-                    if let Err(error) = finalizer_result {
-                        report.push(
-                            FrontendWorkerCleanupStepOutcome::close_frontend_workers_and_live_data(
-                                target,
-                                Err(error),
-                            ),
-                        );
-                    }
-                    let public_error = report.first_error();
-                    record_frontend_cleanup_diagnostic_after_terminal(
-                        &completion_sink,
-                        FrontendWorkerCleanupDiagnosticRecord::new(
-                            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
-                            target,
-                            report,
-                            public_error,
-                        ),
-                    );
-                }),
-            };
-            if let Err(error) = reaper.enqueue(job) {
-                TunerServiceRuntime::mark_shared_service_critical(&runtime);
-                return Err(error);
-            }
-
-            Err(HalError::cleanup_failed(
+        FrontendWorkerStopWaitOutcome::TimedOut(tickets) => (
+            tickets,
+            HalError::cleanup_failed(
                 "frontend worker cleanup pending",
-                "frontend worker did not exit before the close deadline",
-            ))
-        }
-        FrontendWorkerStopWaitOutcome::Failed { tickets, error: wait_error } => {
-            let completion_sink = sink.clone();
-            let deadline_diagnostic_sink = sink.clone();
-            let job = FrontendWorkerReaperJob {
-                keys: vec![
-                    (frontend_id, FrontendWorkerKind::Tune),
-                    (frontend_id, FrontendWorkerKind::Scan),
-                ],
-                continuation_kind: None,
-                tickets,
-                transferred_at: wait_started_at,
-                deadline_action: Some(Box::new(move |runtime| {
-                    handle_frontend_worker_reaper_deadline(
-                        runtime,
-                        target,
-                        FrontendWorkerKind::Tune,
-                        generation,
-                        fenced_demux_generations,
-                        deadline_diagnostic_sink,
-                    );
-                })),
-                completion_action: Box::new(move |runtime, outcomes, _deadline_elapsed| {
-                    let terminal_acceptance_result =
-                        accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
-                    let close_result = close_frontend_live_data_and_unbind_after_worker_completion(
-                        runtime,
-                        frontend_id,
-                    );
-                    let fixed_power_result =
-                        FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
-                            runtime,
-                            crate::registry::FrontendRuntimeId(frontend_id),
-                        );
-                    let mut report = FrontendWorkerCleanupExecutionReport::new();
-                    for (kind, outcome) in outcomes {
-                        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
-                            target,
-                            kind,
-                            frontend_worker_stop_outcome_generation(&outcome),
-                            frontend_worker_stop_result_from_outcome(&outcome),
-                        ));
-                    }
-                    report.push(
-                        FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
-                            target,
-                            close_result.clone(),
-                        ),
-                    );
-                    let terminal_and_close_result = match (terminal_acceptance_result, close_result)
-                    {
-                        (Ok(()), Ok(())) => Ok(()),
-                        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                        (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                            "frontend terminal acceptance and live-data cleanup both failed",
-                            primary,
-                            cleanup,
-                        )),
-                    };
-                    let finalizer_result = match (terminal_and_close_result, fixed_power_result) {
-                        (Ok(()), Ok(())) => Ok(()),
-                        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                        (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                            "frontend terminal cleanup and fixed LNB power cleanup both failed",
-                            primary,
-                            cleanup,
-                        )),
-                    };
-                    if let Err(error) = finalizer_result {
-                        report.push(
-                            FrontendWorkerCleanupStepOutcome::close_frontend_workers_and_live_data(
-                                target,
-                                Err(error),
-                            ),
-                        );
-                    }
-                    let public_error = report.first_error();
-                    record_frontend_cleanup_diagnostic_after_terminal(
-                        &completion_sink,
-                        FrontendWorkerCleanupDiagnosticRecord::new(
-                            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
-                            target,
-                            report,
-                            public_error,
-                        ),
-                    );
-                }),
-            };
-            if let Err(error) = reaper.enqueue(job) {
-                TunerServiceRuntime::mark_shared_service_critical(&runtime);
-                return Err(error);
-            }
+                "frontend worker did not exit before the worker I/O deadline",
+            ),
+        ),
+        FrontendWorkerStopWaitOutcome::Failed { tickets, error } => (tickets, error),
+    };
 
-            Err(wait_error)
-        }
+    let completion_sink = sink.clone();
+    let deadline_diagnostic_sink = sink.clone();
+    let job = FrontendWorkerReaperJob {
+        keys: vec![
+            (frontend_id, FrontendWorkerKind::Tune),
+            (frontend_id, FrontendWorkerKind::Scan),
+        ],
+        continuation_kind: None,
+        tickets,
+        transferred_at: Instant::now(),
+        deadline_action: Some(Box::new(move |runtime| {
+            handle_frontend_worker_reaper_deadline(
+                runtime,
+                target,
+                FrontendWorkerKind::Tune,
+                generation,
+                fenced_demux_generations,
+                deadline_diagnostic_sink,
+            );
+        })),
+        completion_action: Box::new(move |runtime, outcomes, _deadline_elapsed| {
+            let terminal_acceptance_result =
+                accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
+            let close_result = close_frontend_live_data_and_unbind_after_worker_completion(
+                runtime,
+                frontend_id,
+            );
+            let fixed_power_result =
+                FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
+                    runtime,
+                    crate::registry::FrontendRuntimeId(frontend_id),
+                );
+            let mut report = FrontendWorkerCleanupExecutionReport::new();
+            for (kind, outcome) in outcomes {
+                report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+                    target,
+                    kind,
+                    frontend_worker_stop_outcome_generation(&outcome),
+                    frontend_worker_stop_result_from_outcome(&outcome),
+                ));
+            }
+            report.push(
+                FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
+                    target,
+                    close_result.clone(),
+                ),
+            );
+            let terminal_and_close_result = match (terminal_acceptance_result, close_result)
+            {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+                    "frontend terminal acceptance and live-data cleanup both failed",
+                    primary,
+                    cleanup,
+                )),
+            };
+            let finalizer_result = match (terminal_and_close_result, fixed_power_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+                    "frontend terminal cleanup and fixed LNB power cleanup both failed",
+                    primary,
+                    cleanup,
+                )),
+            };
+            if let Err(error) = finalizer_result {
+                report.push(
+                    FrontendWorkerCleanupStepOutcome::close_frontend_workers_and_live_data(
+                        target,
+                        Err(error),
+                    ),
+                );
+            }
+            let public_error = report.first_error();
+            record_frontend_cleanup_diagnostic_after_terminal(
+                &completion_sink,
+                FrontendWorkerCleanupDiagnosticRecord::new(
+                    FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+                    target,
+                    report,
+                    public_error,
+                ),
+            );
+        }),
+    };
+    if let Err(error) = reaper.enqueue(job) {
+        TunerServiceRuntime::mark_shared_service_critical(&runtime);
+        return Err(error);
     }
+
+    Err(public_error)
+}
 
 #[cfg(test)]
 mod scan_contract_tests {
@@ -5773,7 +5684,7 @@ mod scan_contract_tests {
     fn frontend_close_keeps_demux_relation_until_worker_exit() {
         let frontend_id = 1_000_003;
         let mut capability = crate::CapabilitySnapshot::product_default();
-        capability.worker_reaper_deadline_ms = 20;
+        capability.worker_io_deadline_ms = 20;
         let runtime = Arc::new(Mutex::new(
             TunerServiceRuntime::from_capability_snapshot_for_test(capability),
         ));
@@ -5888,12 +5799,11 @@ mod scan_contract_tests {
         panic!("worker終了後もdemux relationが解除されませんでした: demux={demux_id}");
     }
 
-
     #[test]
     fn frontend_close_waits_for_prompt_worker_exit_before_returning() {
         let frontend_id = 1_000_004;
         let mut capability = crate::CapabilitySnapshot::product_default();
-        capability.worker_reaper_deadline_ms = 250;
+        capability.worker_io_deadline_ms = 250;
         let runtime = Arc::new(Mutex::new(
             TunerServiceRuntime::from_capability_snapshot_for_test(capability),
         ));
