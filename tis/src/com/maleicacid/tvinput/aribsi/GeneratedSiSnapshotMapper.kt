@@ -22,8 +22,8 @@ import com.maleicacid.tvinput.aribsi.generated.FreeCaModeDto
 import com.maleicacid.tvinput.aribsi.generated.LinkageDto
 import com.maleicacid.tvinput.aribsi.generated.ServiceCaDescriptorDto
 import com.maleicacid.tvinput.aribsi.generated.ServiceKeyDto
-import com.maleicacid.tvinput.aribsi.generated.ServiceSemanticFactsDto
 import com.maleicacid.tvinput.aribsi.generated.ServiceRegistrationSnapshotDto
+import com.maleicacid.tvinput.aribsi.generated.ServiceSemanticFactsDto
 import com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
 import com.maleicacid.tvinput.aribsi.generated.SmdSemanticStateDto
 import com.maleicacid.tvinput.aribsi.generated.VideoComponentDto

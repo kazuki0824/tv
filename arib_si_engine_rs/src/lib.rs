@@ -289,9 +289,7 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
     }
 }
 
-fn build_service_registration_snapshot(
-    state: &mut ParserState,
-) -> ServiceRegistrationSnapshotDto {
+fn build_service_registration_snapshot(state: &mut ParserState) -> ServiceRegistrationSnapshotDto {
     state.expire_collection_at(Instant::now());
     let ingest_sequence = state.sections_seen;
     let last_status = state.last_status;
@@ -641,13 +639,14 @@ fn snapshot_service_registration_typed(
     let Some(parser) = parser else {
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
-    match parser.lock() {
+    let result = match parser.lock() {
         Ok(mut guard) => Ok(build_service_registration_snapshot(&mut guard)),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
         }
-    }
+    };
+    result
 }
 
 fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshotDto, SiJniFailure> {
@@ -1257,6 +1256,24 @@ mod tests {
                 .descriptor_facts_canonical_json
                 .is_some());
         }
+    }
+
+    #[test]
+    fn service_registration_snapshot_keeps_scan_facts_without_program_event_projection() {
+        let mut state = ParserState::default();
+        state.collector.set_discovery_profile(DiscoveryProfile::Bs);
+        let section = section_with_crc(vec![
+            0x4e, 0xf0, 0x0f, 0, 1, 0xff, 0, 0, 0, 0x11, 0, 0x22, 0, 0x4e,
+        ]);
+        assert_eq!(state.ingest_section(0x0012, &section), STATUS_OK);
+
+        let snapshot = build_service_registration_snapshot(&mut state);
+
+        assert_eq!(snapshot.eit_instances.len(), 1);
+        assert!(snapshot
+            .parser_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "PARSER_STATE"));
     }
 
     #[test]
