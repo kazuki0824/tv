@@ -16,7 +16,6 @@ import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.common.TunerKeyToken
 import org.junit.Test
 import sun.misc.Unsafe
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -26,7 +25,7 @@ class PlaybackFailureCallbacksTest {
     @Suppress("LongMethod")
     @Test
     fun casFilterRejectRollbackKeepsProductionRetryMarker() {
-        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         try {
             val fixture =
                 executor
@@ -96,7 +95,7 @@ class PlaybackFailureCallbacksTest {
     @Suppress("LongMethod")
     @Test
     fun removedFailedPmtRetriesRetainedCleanupBeforeSingleReopen() {
-        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         try {
             val fixture =
                 executor
@@ -170,7 +169,7 @@ class PlaybackFailureCallbacksTest {
 
     @Suppress("LongMethod")
     private fun checkCasConnectionFailure(initializing: Boolean) {
-        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         val faults = MediaCas.Faults
         faults.reset()
         val delegate = FrameworkMediaCasBridgeFactory().create(5).getOrThrow()
@@ -287,7 +286,7 @@ class PlaybackFailureCallbacksTest {
     // 同じ配送から所有解放・再生通知までの因果関係を一続きに確認する。
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun checkCasInvalidation(failCleanup: Boolean) {
-        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         try {
             executor
                 .submit {
@@ -509,7 +508,7 @@ class PlaybackFailureCallbacksTest {
 
     @Test fun realCasLinkageReevaluatesLiveAndReachesGenericPlaybackStart() {
         MediaCas.Faults.reset()
-        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         val factory =
             object : CasController.MediaCasBridgeFactory {
                 override fun create(caSystemId: Int) =

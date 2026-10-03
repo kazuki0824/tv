@@ -21,7 +21,7 @@ internal class ControllerSerialExecutor(
         1,
         0L,
         TimeUnit.MILLISECONDS,
-        PriorityBlockingQueue(11, TASK_ORDER),
+        PriorityBlockingQueue(INITIAL_QUEUE_CAPACITY, TASK_ORDER),
         ThreadFactory { runnable ->
             Thread(runnable, threadName).apply { isDaemon = true }
         },
@@ -62,6 +62,7 @@ internal class ControllerSerialExecutor(
     }
 
     private companion object {
+        const val INITIAL_QUEUE_CAPACITY = 11
         const val CONTROL_QUEUE_CLASS = 0
         const val DATA_QUEUE_CLASS = 1
 
