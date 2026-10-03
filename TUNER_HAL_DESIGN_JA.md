@@ -599,6 +599,8 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 generic worker failureの隔離範囲と`ServiceCritical`昇格条件は0-S-3Bの`WorkerRuntime`を唯一の正本とし、failure categoryは`WorkerFailureClassifier`を正とする。各domain節は分類済みterminal resultをAPI固有状態・公開結果へ写像する責務だけを持ち、service-wide failure判定条件を再定義しない。
 
+`IFrontend.close()` はstop要求後のworker実終了を既存の `workerIoDeadlineMs` まで同期的に待つ。この期限内にTune/Scan workerが終了した場合はterminal acceptance、live-data unbind、固定LNB power cleanupまで確定してから公開成功を返す。期限超過または待機自体の失敗時だけworker ownershipをreaperへ移管し、cleanup pendingを公開失敗として返す。workerが未終了のままTRMへ解放成功を返してfrontendを再利用可能にしてはならない。
+
 
 - frontend source transitionでは、API成功時に要求したfrontend source assignmentが成立していることを公開意味として固定する。relation / stream boundaryのprepare、composite commit、rollback、post-commit cleanup、commit不明時処理は0-S-3Bの`DemuxFrontendSourceTxn` / `StreamBoundaryTxn`を唯一の正本とし、本節では再定義しない。
 
