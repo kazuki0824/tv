@@ -64,6 +64,8 @@ EITの通常bulk `eitInstances[]` はtable ID・ONID/TSID/SID・version・curren
 
 bulkの`collectionGeneration`は受信事実の失効・再収集を識別する値であり、collection reset時に更新する。Kotlinはこの値とprofileの変化で旧時刻境界を破棄する。Rust側に排出型の更新window queueを置かず、JNIのbulk snapshot入口は現在の放送事実だけを、Rustが直接構築した同一buildの型付き`NativeSiSnapshot`として返す。snapshotのrevision negotiationや旧DTO変換をこの入口の責務にしない。
 
+scanの収集完了判定はfull `BulkSnapshotDto`を経由せず、`ServiceRegistrationSnapshotDto`を専用JNI入口から返す。このDTOはdiscovery stage、table requirement、transport semantic facts、EIT instance、service semantic facts、parser diagnosticsだけを同一parser lock下で一回取得し、event / event descriptor / CA詳細 / broadcast clockを構築しない。これは放送factの正本を増やすものではなく、同一`ParserState`から用途別projectionを行う境界である。
+
 TIS向けJNI parserの一回のcollectionは単調時計で60秒、入力累計4MiB、入力8192sectionをそれぞれ上限とする。繰り返し・不正入力も入力資源を消費するため累計に含める。byte/section上限に達する次の入力は`COLLECTION_LIMIT_EXCEEDED`で拒否し、SI/EPG/時計の事実と未排出更新区間を全て破棄する。部分状態を正常完成として公開せず、上限診断をbulkへ返し、そのcollection中の後続入力も拒否する。60秒経過後の次の入力またはsnapshot要求でprofileを維持した空collectionへ切り替え、版番号を再同期する。raw入力量の上限を厳密なheap使用byte数の上限とは表現しない。一般SIの診断・表scope、EITの現在版・旧公開事実・未排出区間は同じcollection寿命に従う。選局・明示的reset・closeでも破棄する。この期限はTISの走査目的別終了条件の代用品ではない。
 
 本crateは、製品または個別操作が必要とするinstance集合そのものを決定せず、instance別の完成・更新・寿命状態をTISへ返す。どの集合の完成でfilterを停止するかはTISのruntime責務とする。

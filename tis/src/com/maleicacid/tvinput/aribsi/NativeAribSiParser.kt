@@ -97,20 +97,13 @@ class NativeAribSiParser : AutoCloseable {
     fun takeProgramPublishSnapshot(): ProgramPublishSnapshot = buildProgramPublishSnapshot(readNativeTransaction())
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
     @Synchronized
     fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot {
-        val snapshot = readNativeTransaction()
-        return ServiceRegistrationSnapshot(
-            discoveryStage = snapshot.discoveryStage,
-            tableRequirements = snapshot.tableRequirements,
-            services = snapshot.services,
-            actualTransports = snapshot.actualTransports.map { TransportKey(it.originalNetwork, it.transportStream) }.toSet(),
-            actualTransportMetadata = snapshot.actualTransports,
-            semanticFactsByServiceKey = snapshot.serviceSemanticFacts.associateBy { it.serviceKey },
-            diagnostics = snapshot.parserDiagnostics,
-            eitInstances = snapshot.eitInstances,
-        )
+        check(handle != 0L) { "ネイティブ解析器は終了済みです" }
+        val transport =
+            nativeSnapshotServiceRegistrationTyped(handle)
+                ?: throw NativeSiException("JNI_OUTPUT", "JNIがservice registration snapshotを返しませんでした")
+        return transport.toDomainServiceRegistrationSnapshot()
     }
 
     @Synchronized
@@ -268,6 +261,8 @@ class NativeAribSiParser : AutoCloseable {
     ): Int
 
     private external fun nativeSnapshotBulkTyped(handle: Long): com.maleicacid.tvinput.aribsi.generated.BulkSnapshotDto?
+
+    private external fun nativeSnapshotServiceRegistrationTyped(handle: Long): com.maleicacid.tvinput.aribsi.generated.ServiceRegistrationSnapshotDto?
 
     private external fun nativeSnapshotPmtPidsForSectionFilters(handle: Long): IntArray?
 
