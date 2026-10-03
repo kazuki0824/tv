@@ -3074,7 +3074,6 @@ fn record_async_backend_submit_failure(
     backend_submit_terminal_result(backend_stopped, public_error, record_result)
 }
 
-
 #[cfg(test)]
 mod backend_submit_terminal_policy_tests {
     use super::*;
@@ -3115,12 +3114,7 @@ fn run_frontend_backend_tune_submit_worker(
     let session = match ticket.submit() {
         Ok(Ok(session)) => session,
         Ok(Err(failure)) => {
-            return record_async_backend_submit_failure(
-                &runtime,
-                frontend_id,
-                generation,
-                failure,
-            )
+            return record_async_backend_submit_failure(&runtime, frontend_id, generation, failure)
         }
         Err(error) => {
             let public_error = {
