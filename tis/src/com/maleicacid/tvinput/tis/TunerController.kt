@@ -38,8 +38,6 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 
@@ -181,10 +179,7 @@ class TunerController(
         override fun toString(): String = "UnavailableSectionFilterHandle(pid=$pid, reason=$reason)"
     }
 
-    private val sectionExecutor: ExecutorService =
-        Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "maleicacid-tis-controller-$inputId").apply { isDaemon = true }
-        }
+    private val sectionExecutor = ControllerSerialExecutor("maleicacid-tis-controller-$inputId")
 
     @Volatile private var released = false
 
@@ -192,7 +187,7 @@ class TunerController(
         if (Thread.currentThread().name.startsWith("maleicacid-tis-controller-$inputId")) return block()
         check(!released) { "TunerController は解放済みです inputId=$inputId" }
         return try {
-            sectionExecutor.submit<T> { block() }.get()
+            sectionExecutor.submitControl(block).get()
         } catch (error: InterruptedException) {
             propagateControllerBlockingFailure(error)
         } catch (error: ExecutionException) {

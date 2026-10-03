@@ -5,7 +5,10 @@ package com.maleicacid.tvinput.tis
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.StreamSelectorType
 import com.maleicacid.tvinput.common.TransportStreamId16
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -14,6 +17,46 @@ import kotlin.test.assertTrue
 
 @Suppress("TooManyFunctions")
 class ScanPlanPolicyTest {
+    @Test
+    fun controllerControlBoundaryOvertakesQueuedSectionWorkWithoutReorderingControls() {
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-priority-test")
+        val firstStarted = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val order = Collections.synchronizedList(mutableListOf<String>())
+        try {
+            executor.execute {
+                order += "data-running"
+                firstStarted.countDown()
+                check(releaseFirst.await(1, TimeUnit.SECONDS))
+            }
+            check(firstStarted.await(1, TimeUnit.SECONDS))
+            executor.execute { order += "data-queued-1" }
+            val control1 = executor.submitControl { order += "control-1" }
+            val control2 = executor.submitControl { order += "control-2" }
+            executor.execute { order += "data-queued-2" }
+
+            releaseFirst.countDown()
+            control1.get(1, TimeUnit.SECONDS)
+            control2.get(1, TimeUnit.SECONDS)
+            executor.shutdown()
+            check(executor.awaitTermination(1, TimeUnit.SECONDS))
+
+            assertEquals(
+                listOf(
+                    "data-running",
+                    "control-1",
+                    "control-2",
+                    "data-queued-1",
+                    "data-queued-2",
+                ),
+                order,
+            )
+        } finally {
+            releaseFirst.countDown()
+            executor.shutdownNow()
+        }
+    }
+
     @Test
     fun bsLockContinuesTheSameScanExactlyOnceAndWaitsForStopped() {
         val operation = TunerController.StreamIdDiscoveryOperation(25L)
