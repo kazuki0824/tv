@@ -102,8 +102,8 @@ class NativeAribSiParser : AutoCloseable {
     fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot {
         check(handle != 0L) { "ネイティブ解析器は終了済みです" }
         val snapshot =
-            nativeServiceRegistrationSnapshotTyped(handle)
-                ?: throw NativeSiException("JNI_OUTPUT", "JNIがservice registration snapshotを返しませんでした")
+            nativeSiCollectionSnapshotTyped(handle)
+                ?: throw NativeSiException("JNI_OUTPUT", "JNIがSI collection snapshotを返しませんでした")
         return snapshot.toDomainServiceRegistrationSnapshot()
     }
 
@@ -263,9 +263,9 @@ class NativeAribSiParser : AutoCloseable {
 
     private external fun nativeSnapshotBulkTyped(handle: Long): com.maleicacid.tvinput.aribsi.generated.BulkSnapshotDto?
 
-    private external fun nativeServiceRegistrationSnapshotTyped(
+    private external fun nativeSiCollectionSnapshotTyped(
         handle: Long,
-    ): com.maleicacid.tvinput.aribsi.generated.ServiceRegistrationSnapshotDto?
+    ): com.maleicacid.tvinput.aribsi.generated.SiCollectionSnapshotDto?
 
     private external fun nativeSnapshotPmtPidsForSectionFilters(handle: Long): IntArray?
 

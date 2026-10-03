@@ -22,7 +22,7 @@ use maleicacid_arib_si_engine_core::eit_instances::EitInstances;
 use maleicacid_arib_si_engine_core::runtime_snapshot_build;
 use maleicacid_arib_si_engine_core::runtime_snapshot_dto::{
     BroadcastClockDto, BulkSnapshotDto, MalformedCaDescriptorCountDto, ParserDiagnosticDto,
-    ServiceRegistrationSnapshotDto,
+    SiCollectionSnapshotDto,
 };
 use provider_data as provider_data_api;
 use sections::{
@@ -289,7 +289,7 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
     }
 }
 
-fn build_service_registration_snapshot(state: &mut ParserState) -> ServiceRegistrationSnapshotDto {
+fn build_si_collection_snapshot(state: &mut ParserState) -> SiCollectionSnapshotDto {
     state.expire_collection_at(Instant::now());
     let ingest_sequence = state.sections_seen;
     let last_status = state.last_status;
@@ -302,7 +302,7 @@ fn build_service_registration_snapshot(state: &mut ParserState) -> ServiceRegist
     }
     let actual_transport_keys = state.sdt_actual_transport_keys();
 
-    ServiceRegistrationSnapshotDto {
+    SiCollectionSnapshotDto {
         discovery_stage: discovery_stage_to_jint(discovery_stage),
         table_requirements: collection_state
             .table_requirements
@@ -623,9 +623,9 @@ fn discovery_stage_to_jint(stage: DiscoveryPublishStage) -> jint {
     }
 }
 
-fn snapshot_service_registration_typed(
+fn snapshot_si_collection_typed(
     handle: jlong,
-) -> Result<ServiceRegistrationSnapshotDto, SiJniFailure> {
+) -> Result<SiCollectionSnapshotDto, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
@@ -640,7 +640,7 @@ fn snapshot_service_registration_typed(
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
     let result = match parser.lock() {
-        Ok(mut guard) => Ok(build_service_registration_snapshot(&mut guard)),
+        Ok(mut guard) => Ok(build_si_collection_snapshot(&mut guard)),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
@@ -674,16 +674,16 @@ fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshotDto, SiJniFailure> {
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeServiceRegistrationSnapshotTyped(
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSiCollectionSnapshotTyped(
     mut env: JNIEnv<'_>,
     _this: JObject<'_>,
     handle: jlong,
 ) -> jobject {
-    let snapshot = match snapshot_service_registration_typed(handle) {
+    let snapshot = match snapshot_si_collection_typed(handle) {
         Ok(snapshot) => snapshot,
         Err(failure) => return throw_si_failure(&mut env, failure) as jobject,
     };
-    match jvm_snapshot_generated::service_registration_snapshot_to_java(&mut env, snapshot) {
+    match jvm_snapshot_generated::si_collection_snapshot_to_java(&mut env, snapshot) {
         Ok(value) => value.into_raw(),
         Err(failure) => throw_si_failure(&mut env, failure) as jobject,
     }
@@ -1259,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn service_registration_snapshot_keeps_scan_facts_without_program_event_projection() {
+    fn si_collection_snapshot_keeps_collection_facts_without_program_event_projection() {
         let mut state = ParserState::default();
         state.collector.set_discovery_profile(DiscoveryProfile::Bs);
         let section = section_with_crc(vec![
@@ -1267,7 +1267,7 @@ mod tests {
         ]);
         assert_eq!(state.ingest_section(0x0012, &section), STATUS_OK);
 
-        let snapshot = build_service_registration_snapshot(&mut state);
+        let snapshot = build_si_collection_snapshot(&mut state);
 
         assert_eq!(snapshot.eit_instances.len(), 1);
         assert!(snapshot

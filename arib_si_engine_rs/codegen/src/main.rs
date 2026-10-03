@@ -3,7 +3,7 @@ use maleicacid_arib_si_engine_core::codec_probe_dto::{
 };
 use maleicacid_arib_si_engine_core::runtime_snapshot_dto::{
     BroadcastSystemDto, BulkSnapshotDto, CaDescriptorScopeDto, CaMetadataSourceDto,
-    EitTimingStateDto, ElementaryStreamKindDto, ServiceRegistrationSnapshotDto, SiParseStatusDto,
+    EitTimingStateDto, ElementaryStreamKindDto, SiCollectionSnapshotDto, SiParseStatusDto,
     SmdSemanticStateDto,
 };
 use serde_generate::{kotlin, CodeGeneratorConfig, SourceInstaller};
@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     tracer.trace_simple_type::<AacAdtsConfigurationDto>()?;
     tracer.trace_simple_type::<AacProbeStatusDto>()?;
     tracer.trace_simple_type::<BulkSnapshotDto>()?;
-    tracer.trace_simple_type::<ServiceRegistrationSnapshotDto>()?;
+    tracer.trace_simple_type::<SiCollectionSnapshotDto>()?;
     tracer.trace_simple_type::<SiParseStatusDto>()?;
     tracer.trace_simple_type::<EitTimingStateDto>()?;
     tracer.trace_simple_type::<ElementaryStreamKindDto>()?;

@@ -546,7 +546,7 @@ pub struct BulkSnapshotDto {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ServiceRegistrationSnapshotDto {
+pub struct SiCollectionSnapshotDto {
     pub discovery_stage: i32,
     pub table_requirements: Vec<TableRequirementDto>,
     pub transport_semantic_facts: Vec<TransportSemanticFactsDto>,

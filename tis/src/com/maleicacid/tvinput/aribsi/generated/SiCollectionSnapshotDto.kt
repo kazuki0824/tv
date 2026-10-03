@@ -1,7 +1,7 @@
 package com.maleicacid.tvinput.aribsi.generated
 
 
-data class ServiceRegistrationSnapshotDto(
+data class SiCollectionSnapshotDto(
     val discoveryStage: Int,
     val tableRequirements: List<TableRequirementDto>,
     val transportSemanticFacts: List<TransportSemanticFactsDto>,

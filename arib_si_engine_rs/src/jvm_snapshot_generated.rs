@@ -1654,9 +1654,9 @@ fn build_event<'local>(
     result
 }
 
-pub(super) fn service_registration_snapshot_to_java<'local>(
+pub(super) fn si_collection_snapshot_to_java<'local>(
     env: &mut JNIEnv<'local>,
-    snapshot: ServiceRegistrationSnapshotDto,
+    snapshot: SiCollectionSnapshotDto,
 ) -> Result<JObject<'local>, SiJniFailure> {
     let table_requirements =
         object_list(env, &snapshot.table_requirements, build_table_requirement)?;
@@ -1672,7 +1672,7 @@ pub(super) fn service_registration_snapshot_to_java<'local>(
         object_list(env, &snapshot.parser_diagnostics, build_parser_diagnostic)?;
     let result = new_generated(
         env,
-        "ServiceRegistrationSnapshotDto",
+        "SiCollectionSnapshotDto",
         "(ILjava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;)V",
         &[
             JValue::Int(snapshot.discovery_stage),

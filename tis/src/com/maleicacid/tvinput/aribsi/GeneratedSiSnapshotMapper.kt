@@ -22,7 +22,7 @@ import com.maleicacid.tvinput.aribsi.generated.FreeCaModeDto
 import com.maleicacid.tvinput.aribsi.generated.LinkageDto
 import com.maleicacid.tvinput.aribsi.generated.ServiceCaDescriptorDto
 import com.maleicacid.tvinput.aribsi.generated.ServiceKeyDto
-import com.maleicacid.tvinput.aribsi.generated.ServiceRegistrationSnapshotDto
+import com.maleicacid.tvinput.aribsi.generated.SiCollectionSnapshotDto
 import com.maleicacid.tvinput.aribsi.generated.ServiceSemanticFactsDto
 import com.maleicacid.tvinput.aribsi.generated.SiParseStatusDto
 import com.maleicacid.tvinput.aribsi.generated.SmdSemanticStateDto
@@ -387,7 +387,7 @@ private fun EventDto.toDomain(): AribEvent =
         descriptors = descriptors.toDomain(),
     )
 
-internal fun ServiceRegistrationSnapshotDto.toDomainServiceRegistrationSnapshot(): ServiceRegistrationSnapshot {
+internal fun SiCollectionSnapshotDto.toDomainServiceRegistrationSnapshot(): ServiceRegistrationSnapshot {
     val semanticFacts = serviceSemanticFacts.map { it.toDomain() }
     val transports =
         transportSemanticFacts.map {
