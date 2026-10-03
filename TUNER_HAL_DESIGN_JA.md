@@ -562,6 +562,8 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 
 ワーカー関連の失敗種別は`WorkerFailureClassifier`だけがtyped分類する。対象にはstop/wake/join/EventFlag/Reaper/backend-control/callback等の発生源を含めるが、分類器が所有するのは分類結果だけであり、停止順序、retry、cleanup、quarantine、公開状態遷移は各worker owner/API契約に残す。FMQ payload commit後のEventFlag起床失敗についても、payload保持・再起床というdata-path状態機械はqueue runtimeが所有し、classifierは失敗種別を分類するだけとする。
 
+backend submitの失敗でtransaction rollbackが完了し、workerの物理終了も確定した場合は、失敗事実をfrontend operation stateと診断へ保存するが、generic worker cleanup失敗へ昇格させずAIDL objectをquarantineしない。rollback、stop、join、reaper等のcleanup自体が未完了または失敗した場合だけ、そのcleanup ownershipに従って`CleanupPending` / `Quarantined`を判定する。operation失敗とcleanup失敗を同じworker terminal errorだけを理由に混同してはならない。
+
 
 | 失敗種別 | 例 | 戻り値 | 波及範囲 | 禁止事項 |
 |---|---|---|---|---|
