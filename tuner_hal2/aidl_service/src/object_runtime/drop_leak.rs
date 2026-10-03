@@ -1,13 +1,13 @@
 use super::{
-    execute_close_after_preflight_once, status_from_hal_error, status_unknown_error,
-    AidlObjectArtifactCleanupExecutor, AidlObjectCloseRuntimeExecutor,
-    AidlObjectDomainCleanupExecutor, AidlObjectHandle, BinderResult, ObjectCloseCleanupFailure,
+    execute_close_after_preflight_once, status_from_hal_error, AidlObjectArtifactCleanupExecutor,
+    AidlObjectCloseRuntimeExecutor, AidlObjectDomainCleanupExecutor, AidlObjectHandle,
+    BinderResult, ObjectCloseCleanupFailure,
 };
 use crate::service_context::SharedAidlServiceContext;
-use maleicacid_tuner_hal2_binder_adapter::{AidlMethodCall, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
+use maleicacid_tuner_hal2_domain_request::{AidlMethodCall, AidlObjectKind};
 use maleicacid_tuner_hal2_service_runtime::{
-    quarantine_object_drop_leak_use_case, ObjectCleanupDiagnosticRecord,
+    quarantine_object_drop_leak_use_case, ObjectCleanupDiagnosticRecord, TunerServiceRuntime,
 };
 
 pub(crate) fn drop_leak_object(
@@ -21,7 +21,8 @@ pub(crate) fn drop_leak_object(
         return Ok(());
     }
     let method = close_method_for_drop(handle.object_kind()).map_err(status_from_hal_error)?;
-    let result = execute_close_after_preflight_once(context, handle, method);
+    let result =
+        execute_close_after_preflight_once(context, handle, method).map_err(status_from_hal_error);
     if result.is_err() {
         context
             .enqueue_cleanup_retry(handle)
@@ -53,9 +54,8 @@ pub(crate) fn quarantine_drop_leak_object(
 ) -> BinderResult<()> {
     let runtime_handle = context.runtime();
     let quarantine_result = {
-        let mut runtime = runtime_handle.lock().map_err(|_| {
-            status_unknown_error("service runtime lock poisoned during drop leak quarantine")
-        })?;
+        let mut runtime = TunerServiceRuntime::lock_shared(&runtime_handle, "Drop漏れ隔離")
+            .map_err(status_from_hal_error)?;
         quarantine_object_drop_leak_use_case(&mut runtime, handle.object_id(), handle.generation())
     };
 
@@ -117,17 +117,17 @@ pub(crate) fn drop_leak_object_from_drop(
         return;
     }
     let runtime_handle = context.runtime();
-    let final_release_state_cleanup = runtime_handle
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned during final AV cleanup"))
-        .and_then(|mut runtime| {
-            runtime
-                .finalize_filter_av_release_state_after_last_reference(
-                    handle.object_id(),
-                    handle.generation(),
-                )
-                .map_err(status_from_hal_error)
-        });
+    let final_release_state_cleanup =
+        TunerServiceRuntime::lock_shared(&runtime_handle, "最終AV後片付け")
+            .map_err(status_from_hal_error)
+            .and_then(|mut runtime| {
+                runtime
+                    .finalize_filter_av_release_state_after_last_reference(
+                        handle.object_id(),
+                        handle.generation(),
+                    )
+                    .map_err(status_from_hal_error)
+            });
     if let Err(status) = final_release_state_cleanup {
         context.record_drop_leak_error(handle, &status);
     }

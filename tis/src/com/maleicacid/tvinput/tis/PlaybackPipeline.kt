@@ -187,7 +187,7 @@ class PlaybackPipeline(
         ;
 
         companion object {
-            fun fromStreamType(streamType: Int): VideoCodecKind? = values().firstOrNull { it.streamType == streamType }
+            fun fromStreamType(streamType: Int): VideoCodecKind? = entries.firstOrNull { it.streamType == streamType }
         }
     }
 
@@ -203,7 +203,7 @@ class PlaybackPipeline(
         ;
 
         companion object {
-            fun fromStreamType(streamType: Int): AudioCodecKind? = values().firstOrNull { it.streamType == streamType }
+            fun fromStreamType(streamType: Int): AudioCodecKind? = entries.firstOrNull { it.streamType == streamType }
         }
     }
 
@@ -302,13 +302,6 @@ class PlaybackPipeline(
 
     fun setOnPlaybackGenerationRestartedCallback(callback: (PlaybackGenerationRestart) -> Unit) {
         runOnPlaybackExecutorBlocking { onPlaybackGenerationRestarted = callback }
-    }
-
-    fun reportUnavailable(
-        reason: PlaybackUnavailableReason,
-        detail: String = "",
-    ) {
-        enqueuePlaybackAction { emitUnavailable(reason, detail) }
     }
 
     fun setVolume(volume: Float) {
@@ -498,8 +491,9 @@ class PlaybackPipeline(
             audioDecoder =
                 AudioDecoderPipeline(
                     audioKind!!,
-                    requireNotNull(audio),
-                    selection.audioComponentType ?: requireNotNull(audio).componentType,
+                    audio,
+                    selection.audioChannelConfiguration,
+                    selection.audioDualMono == true,
                     selection.dualMonoPresentation,
                     streamVolume,
                     startGeneration,
@@ -797,8 +791,7 @@ class PlaybackPipeline(
                                     val buffer = ByteArray(dataLength)
                                     val read = filter.read(buffer, 0, dataLength.toLong())
                                     check(read == buffer.size) { "字幕PESの読取りが不足しています expected=${buffer.size} actual=$read" }
-                                    val pes = buffer
-                                    val captionSample = captionSampleFromPes(pes, superimpose) ?: continue
+                                    val captionSample = captionSampleFromPes(buffer, superimpose) ?: continue
                                     if (!sourceIsCurrent(filter)) continue
                                     onSubtitlePes(
                                         filterGeneration,
@@ -891,7 +884,7 @@ class PlaybackPipeline(
                 codecCallbackHandler,
             )
             sync.setOnErrorListener(
-                MediaSync.OnErrorListener { callbackSync, what, extra ->
+                { callbackSync, what, extra ->
                     enqueuePlaybackAction { handleMediaSyncError(callbackSync, generation, what, extra) }
                 },
                 codecCallbackHandler,
@@ -1122,7 +1115,8 @@ class PlaybackPipeline(
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("MaxLineLength", "ReturnCount")
+    // Kotlin 1.9のAndroid 15入力ではMediaSyncのsetter-only APIをプロパティとして解決できない。
+    @Suppress("MaxLineLength", "ReturnCount", "UsePropertyAccessSyntax")
     private fun maybeStartMediaSync() {
         val sync = mediaSync ?: return
         if (mediaSyncStarted) return
@@ -1172,35 +1166,8 @@ class PlaybackPipeline(
         )
     }
 
-    fun currentPlaybackGenerationForTest(): Long = playbackGeneration
-
-    fun oversizedSamplesDroppedForDiagnostic(): Int = oversizedSamplesDropped
-
-    fun malformedSamplesDroppedForDiagnostic(): Int = malformedSamplesDropped
-
-    fun decoderBackpressureDropsForDiagnostic(): Int = decoderBackpressureDrops
-
-    fun subtitleMissingPtsSamplesForDiagnostic(): Int = subtitleMissingPtsSamples
-
-    fun simulateFirstFrameRenderedForTest(generation: Long) {
-        enqueuePlaybackAction {
-            val arm = waitingAvailabilityArm ?: return@enqueuePlaybackAction
-            when (videoAvailabilityMode) {
-                VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT -> {
-                    val sync = mediaSync ?: return@enqueuePlaybackAction
-                    commitVideoAvailability(sync, generation, arm.armSequence)
-                }
-
-                VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT -> {
-                    commitCompatibilityVideoAvailability(generation, arm.armedAtNanoTime)
-                }
-
-                null -> {
-                    Unit
-                }
-            }
-        }
-    }
+    @Suppress("unused")
+    internal fun currentPlaybackGenerationForTest(): Long = playbackGeneration
 
     private fun releaseMediaEvent(event: MediaEvent) {
         runCatching { event.release() }.onFailure { Log.w(LogTags.TIS, "MediaEvent の release に失敗しました", it) }
@@ -1596,7 +1563,7 @@ class PlaybackPipeline(
 
         override fun onDecoderPrepared(codec: MediaCodec) {
             codec.setOnFrameRenderedListener(
-                MediaCodec.OnFrameRenderedListener { callbackCodec, _, nanoTime ->
+                { callbackCodec, _, nanoTime ->
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration ||
                             this@VideoDecoderPipeline.codec !== callbackCodec
@@ -1680,7 +1647,8 @@ class PlaybackPipeline(
     private inner class AudioDecoderPipeline(
         private val kind: AudioCodecKind,
         private val stream: AribElementaryStream,
-        private val componentType: Int?,
+        private val channelConfiguration: String?,
+        dualMono: Boolean,
         initialDualMonoPresentation: DualMonoPresentation,
         initialVolume: Float,
         override val generation: Long,
@@ -1688,7 +1656,7 @@ class PlaybackPipeline(
     ) : DecoderPipeline() {
         private var volume: Float = initialVolume
         private var dualMonoPresentation: DualMonoPresentation = initialDualMonoPresentation
-        private val isDualMonoStream: Boolean = isAribDualMonoComponentType(componentType)
+        private val isDualMonoStream: Boolean = dualMono
         private var outputSampleRate: Int = DEFAULT_AUDIO_SAMPLE_RATE
         private var outputChannels: Int = DEFAULT_AUDIO_CHANNEL_COUNT
         private var outputPcmFormat: OutputPcmFormat? = null
@@ -1758,12 +1726,12 @@ class PlaybackPipeline(
                 } else {
                     null
                 }
-            val channelMask = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, componentType)
+            val channelMask = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, channelConfiguration)
             if (channelMask == null) {
                 errorSink(
                     PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                    "decoded PCM channel topology is inconsistent channelCount=$channelCount dec" +
-                        "oderMask=$decoderMask componentType=$componentType",
+                    "decoded PCM channel topology is inconsistent channelCount=$channelCount " +
+                        "decoderMask=$decoderMask channelConfiguration=$channelConfiguration",
                 )
                 return
             }
@@ -1866,7 +1834,7 @@ class PlaybackPipeline(
                 prepare = {
                     created.setVolume(volume)
                     check(!isDualMonoStream || created.setDualMonoMode(audioTrackDualMonoMode(dualMonoPresentation))) {
-                        "ARIB dual-mono presentationをAudioTrackへ設定できません componentType=$componentType"
+                        "ARIB dual-mono presentationをAudioTrackへ設定できません channelConfiguration=$channelConfiguration"
                     }
                     requireNotNull(mediaSync).setAudioTrack(created)
                     observeAudioRouting(created, generation)
@@ -1902,7 +1870,7 @@ class PlaybackPipeline(
 
     enum class MediaEventBoundsDecision { ACCEPT, MALFORMED, OVERSIZED, OUT_OF_BOUNDS }
 
-    private data class CaptionPesSample(
+    private class CaptionPesSample(
         val payload: ByteArray,
         val pts90k: Long?,
     )
@@ -2334,7 +2302,7 @@ class PlaybackPipeline(
                             } else {
                                 8
                             }
-                        ; repeat(count) { index -> if (bits.readBit() == 1) skipScalingList(bits, if (index < 6) 16 else 64) }
+                        repeat(count) { index -> if (bits.readBit() == 1) skipScalingList(bits, if (index < 6) 16 else 64) }
                     }
                 }
                 bits.readUE()
@@ -2399,7 +2367,7 @@ class PlaybackPipeline(
                         } else {
                             AVC_SAR_TABLE[aspectRatioIdc]
                         }
-                    ; if (sar != null && sar.first > 0 &&
+                    if (sar != null && sar.first > 0 &&
                         sar.second > 0
                     ) {
                         sarWidth = sar.first
@@ -2456,7 +2424,7 @@ class PlaybackPipeline(
                 ) {
                     nextScale = (lastScale + bits.readSE() + 256) % 256
                 }
-                ; lastScale = if (nextScale == 0) lastScale else nextScale
+                lastScale = if (nextScale == 0) lastScale else nextScale
             }
         }
 
@@ -2504,7 +2472,7 @@ class PlaybackPipeline(
                         base
                     }
                 }
-            ; val channels =
+            val channels =
                 if (channelMode ==
                     3
                 ) {
@@ -2512,7 +2480,7 @@ class PlaybackPipeline(
                 } else {
                     2
                 }
-            ; return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels)
+            return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels)
         }
 
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -2564,7 +2532,7 @@ class PlaybackPipeline(
                             continue
                         }
                     }
-                ; if (i + prefixLength >=
+                if (i + prefixLength >=
                     bytes.size
                 ) {
                     return null
@@ -2600,33 +2568,31 @@ class PlaybackPipeline(
         fun resolve(
             decoderMask: Int?,
             channelCount: Int,
-            componentType: Int?,
+            channelConfiguration: String?,
         ): Int? {
             if (channelCount <= 0) return null
             if (decoderMask != null) {
                 return decoderMask.takeIf { it != 0 && Integer.bitCount(it) == channelCount }
             }
-            val arib = fromAribComponentType(componentType)
+            val arib = fromChannelConfiguration(channelConfiguration)
             if (arib != null && Integer.bitCount(arib) == channelCount) return arib
             return canonicalForCount(channelCount)
         }
 
-        // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
-        fun fromAribComponentType(componentType: Int?): Int? =
-            when (componentType?.and(0x1f)) {
-                0x01 -> AudioFormat.CHANNEL_OUT_MONO
-                0x02, 0x03 -> AudioFormat.CHANNEL_OUT_STEREO
-                0x04 -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_BACK_CENTER
-                0x05 -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_FRONT_CENTER
-                0x06 -> AudioFormat.CHANNEL_OUT_QUAD
-                0x07 -> AudioFormat.CHANNEL_OUT_SURROUND
-                0x08 -> AudioFormat.CHANNEL_OUT_QUAD or AudioFormat.CHANNEL_OUT_FRONT_CENTER
-                0x09 -> AudioFormat.CHANNEL_OUT_5POINT1
+        fun fromChannelConfiguration(channelConfiguration: String?): Int? =
+            when (channelConfiguration) {
+                "1/0" -> AudioFormat.CHANNEL_OUT_MONO
+                "1/0+1/0", "2/0" -> AudioFormat.CHANNEL_OUT_STEREO
+                "2/1" -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_BACK_CENTER
+                "3/0" -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_FRONT_CENTER
+                "2/2" -> AudioFormat.CHANNEL_OUT_QUAD
+                "3/1" -> AudioFormat.CHANNEL_OUT_SURROUND
+                "3/2" -> AudioFormat.CHANNEL_OUT_QUAD or AudioFormat.CHANNEL_OUT_FRONT_CENTER
+                "3/2+LFE" -> AudioFormat.CHANNEL_OUT_5POINT1
                 else -> null
             }
 
-        // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         fun canonicalForCount(channelCount: Int): Int? =
             when (channelCount) {
@@ -2686,7 +2652,8 @@ class PlaybackPipeline(
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
+    // 停止時もsetter-only APIの明示呼出しを保持する。
+    @Suppress("MaxLineLength", "UsePropertyAccessSyntax")
     private fun stopOnPlaybackExecutor() {
         resourceCleanup.retry()
         playbackGeneration = Math.addExact(playbackGeneration, 1L)
@@ -2895,10 +2862,6 @@ class PlaybackPipeline(
             }
         }
 
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        private fun isAribDualMonoComponentType(componentType: Int?): Boolean = componentType != null && (componentType and 0x1f) == 0x02
-
         private fun audioTrackDualMonoMode(presentation: DualMonoPresentation): Int =
             when (presentation) {
                 DualMonoPresentation.MAIN -> AudioTrack.DUAL_MONO_MODE_LL
@@ -2906,9 +2869,7 @@ class PlaybackPipeline(
                 DualMonoPresentation.MAIN_SUB -> AudioTrack.DUAL_MONO_MODE_LR
             }
 
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun isAribDualMonoComponentTypeForTest(componentType: Int?): Boolean = isAribDualMonoComponentType(componentType)
+        fun isDualMonoSemanticForTest(dualMono: Boolean): Boolean = dualMono
 
         fun dualMonoModeForTest(presentation: DualMonoPresentation): Int = audioTrackDualMonoMode(presentation)
 
@@ -3024,24 +2985,14 @@ class PlaybackPipeline(
         @Suppress("MaxLineLength")
         fun channelMaskForPcmOutputForTest(channelCount: Int): Int? = PcmChannelMaskPolicy.canonicalForCount(channelCount)
 
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun aribChannelMaskForComponentTypeForTest(componentType: Int?): Int? = PcmChannelMaskPolicy.fromAribComponentType(componentType)
+        fun aribChannelMaskForConfigurationForTest(channelConfiguration: String?): Int? =
+            PcmChannelMaskPolicy.fromChannelConfiguration(channelConfiguration)
 
         fun resolvePcmChannelMaskForTest(
             decoderMask: Int?,
             channelCount: Int,
-            componentType: Int?,
-        ): Int? = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, componentType)
-
-        fun videoFormatInfoForTest(
-            streamType: Int,
-            spsWithStartCode: ByteArray,
-        ): VideoFormatInfo? {
-            val dimensions =
-                h264DimensionsForTest(spsWithStartCode) ?: return null
-            return VideoFormatInfo(streamType, MediaFormat.MIMETYPE_VIDEO_AVC, dimensions.first, dimensions.second)
-        }
+            channelConfiguration: String?,
+        ): Int? = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, channelConfiguration)
 
         private const val AV_FILTER_BUFFER_BYTES = 16 * 1024 * 1024L
         private const val SUBTITLE_FILTER_BUFFER_BYTES = 256 * 1024L

@@ -20,6 +20,23 @@ object ProviderDataBridge {
         val diagnosticsDroppedCount: Int,
     ) : ProviderDataResult {
         val json: String get() = bytes.toString(Charsets.UTF_8)
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is Success) return false
+            return bytes.contentEquals(other.bytes) &&
+                schemaVersion == other.schemaVersion &&
+                truncated == other.truncated &&
+                diagnosticsDroppedCount == other.diagnosticsDroppedCount
+        }
+
+        override fun hashCode(): Int {
+            var result = bytes.contentHashCode()
+            result = 31 * result + schemaVersion
+            result = 31 * result + truncated.hashCode()
+            result = 31 * result + diagnosticsDroppedCount
+            return result
+        }
     }
 
     data class Failure(
@@ -49,7 +66,26 @@ object ProviderDataBridge {
         val serviceKey: ServiceKey,
         val tune: ChannelTune,
         val requiresCas: Boolean,
-    )
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is ChannelProviderDataResult) return false
+            return canonicalBytes.contentEquals(other.canonicalBytes) &&
+                schemaVersion == other.schemaVersion &&
+                serviceKey == other.serviceKey &&
+                tune == other.tune &&
+                requiresCas == other.requiresCas
+        }
+
+        override fun hashCode(): Int {
+            var result = canonicalBytes.contentHashCode()
+            result = 31 * result + schemaVersion
+            result = 31 * result + serviceKey.hashCode()
+            result = 31 * result + tune.hashCode()
+            result = 31 * result + requiresCas.hashCode()
+            return result
+        }
+    }
 
     private val native by lazy { NativeAribSiParser() }
 
@@ -206,9 +242,10 @@ object ProviderDataBridge {
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("CyclomaticComplexMethod", "MaxLineLength", "ReturnCount")
     fun decodeChannelProviderData(providerData: ByteArray?): ChannelProviderDataResult? {
+        val raw = native.decodeChannelProviderData(providerData ?: ByteArray(0))
         val root =
             runCatching {
-                JSONObject(native.decodeChannelProviderData(providerData ?: ByteArray(0)))
+                JSONObject(raw)
             }.getOrNull() ?: return null
         val canonical = root.optString("canonical").takeIf { it.isNotBlank() } ?: return null
         val schemaVersion = root.optInt("schemaVersion", -1).takeIf { it == 1 } ?: return null
@@ -291,7 +328,7 @@ object ProviderDataBridge {
                 .put("episodeNumber", series.episodeNumber ?: JSONObject.NULL)
                 .put("lastEpisodeNumber", series.lastEpisodeNumber ?: JSONObject.NULL)
                 .put("name", series.name ?: JSONObject.NULL)
-                .put("parseStatus", series.parseStatus)
+                .put("parseStatus", series.parseStatus.wireValue)
         } ?: JSONObject.NULL
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
@@ -441,7 +478,7 @@ object ProviderDataBridge {
                         .put("codec", entry.codec?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                         .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                         .put("text", entry.text?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                        .put("parseStatus", entry.parseStatus)
+                        .put("parseStatus", entry.parseStatus.wireValue)
                 entry.resolution?.let { obj.put("resolution", it) }
                 entry.scan?.let { obj.put("scan", it) }
                 entry.aspect?.let { obj.put("aspect", it) }
@@ -472,7 +509,7 @@ object ProviderDataBridge {
                         .put("main", entry.main ?: JSONObject.NULL)
                         .put("multiLingual", entry.multiLingual ?: JSONObject.NULL)
                         .put("qualityIndicator", entry.qualityIndicator ?: JSONObject.NULL)
-                        .put("parseStatus", entry.parseStatus)
+                        .put("parseStatus", entry.parseStatus.wireValue)
                 entry.channelConfiguration?.let { obj.put("channelConfiguration", it) }
                 entry.samplingInfo?.let { obj.put("samplingInfo", it) }
                 entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
@@ -499,7 +536,7 @@ object ProviderDataBridge {
                             requireNotNull(entry.captionServiceKind?.takeIf { it.isNotBlank() }) {
                                 "subtitle captionServiceKind is required"
                             },
-                        ).put("parseStatus", entry.parseStatus),
+                        ).put("parseStatus", entry.parseStatus.wireValue),
                 )
             }
         }
@@ -513,7 +550,7 @@ object ProviderDataBridge {
                         .put("componentTag", entry.componentTag ?: JSONObject.NULL)
                         .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
                         .put("componentType", entry.componentType ?: JSONObject.NULL)
-                        .put("parseStatus", entry.parseStatus),
+                        .put("parseStatus", entry.parseStatus.wireValue),
                 )
             }
         }

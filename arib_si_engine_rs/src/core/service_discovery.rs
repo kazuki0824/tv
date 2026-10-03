@@ -76,6 +76,23 @@ impl SmdSemanticState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BroadcastSystem {
+    IsdbSBs,
+    IsdbT,
+    IsdbS110Cs,
+}
+
+impl BroadcastSystem {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IsdbSBs => "ISDB_S_BS",
+            Self::IsdbT => "ISDB_T",
+            Self::IsdbS110Cs => "ISDB_S_110CS",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SystemManagementFacts {
     pub descriptor_present: bool,
@@ -83,6 +100,7 @@ pub struct SystemManagementFacts {
     pub system_management_id: Option<u16>,
     pub broadcasting_flag: Option<u8>,
     pub broadcasting_identifier: Option<u8>,
+    pub broadcast_system: Option<BroadcastSystem>,
     pub additional_broadcasting_identification: Option<u8>,
     pub additional_identification_info: Vec<u8>,
     pub semantic_state: SmdSemanticState,
@@ -572,6 +590,18 @@ impl ServiceDiscoveryEngine {
         if resolved_onid != onid {
             return;
         }
+
+        // PMT PID は PMT 本文ではなく PAT で確定する。
+        // PAT が SDT より先に到着した場合も、service が一意に解決できた時点で
+        // filter bootstrap 用の PID を公開し、PMT 受信前の循環依存を作らない。
+        {
+            let entry = self.service_entry_mut(tsid, onid, service_id);
+            if entry.pmt_pid != Some(pmt_pid) {
+                Self::clear_pmt_state(entry);
+                entry.pmt_pid = Some(pmt_pid);
+            }
+        }
+
         let full_key = (onid, tsid, service_id, pmt_pid);
         if let std::collections::btree_map::Entry::Vacant(e) = self.pending_pmts.entry(full_key) {
             if let Some(parsed) = self
@@ -1730,10 +1760,14 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
                 u16::from_be_bytes([descriptors[body_start], descriptors[body_start + 1]]);
             let broadcasting_flag = ((system_management_id >> 14) & 0x03) as u8;
             let broadcasting_identifier = ((system_management_id >> 8) & 0x3f) as u8;
+            let broadcast_system = match (broadcasting_flag, broadcasting_identifier) {
+                (0, 0b000010) => Some(BroadcastSystem::IsdbSBs),
+                (0, 0b000011) => Some(BroadcastSystem::IsdbT),
+                (0, 0b000100) => Some(BroadcastSystem::IsdbS110Cs),
+                _ => None,
+            };
             let semantic_state = match broadcasting_flag {
-                0 if matches!(broadcasting_identifier, 0b000010..=0b000100) => {
-                    SmdSemanticState::SupportedBroadcast
-                }
+                0 if broadcast_system.is_some() => SmdSemanticState::SupportedBroadcast,
                 0 => SmdSemanticState::UnsupportedBroadcastSystem,
                 1 | 2 => SmdSemanticState::NonBroadcast,
                 _ => SmdSemanticState::UndefinedBroadcastClass,
@@ -1744,6 +1778,7 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
                 system_management_id: Some(system_management_id),
                 broadcasting_flag: Some(broadcasting_flag),
                 broadcasting_identifier: Some(broadcasting_identifier),
+                broadcast_system,
                 additional_broadcasting_identification: Some(system_management_id as u8),
                 additional_identification_info: descriptors[body_start + 2..body_end].to_vec(),
                 semantic_state,
@@ -2969,6 +3004,42 @@ mod current_version_tests {
         assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x0100]);
         assert!(collector.state().snapshot.pmt_pids_by_service.is_empty());
         assert!(collector.state().semantic_facts_by_service.is_empty());
+    }
+
+    #[test]
+    fn pat_before_sdt_exposes_pmt_pid_before_pmt_is_received() {
+        let pat = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
+        ]);
+        let sdt = section_with_crc(vec![
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x01, 0xfc,
+            0xf0, 0x07, 0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
+        ]);
+
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.push_section(0x0000, &pat);
+        collector.push_section(0x0011, &sdt);
+
+        let state = collector.state();
+        let facts = state
+            .semantic_facts_by_service
+            .iter()
+            .find(|facts| facts.service_id == 1)
+            .expect("サービス情報");
+
+        assert_eq!(facts.pmt_pid, Some(0x0100));
+        assert!(facts.pmt_pid_resolved);
+        assert!(!facts.pmt_parsed);
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x0100]);
+        assert_eq!(
+            state
+                .snapshot
+                .pmt_pids_by_service
+                .iter()
+                .find(|mapping| mapping.service_id == 1)
+                .map(|mapping| mapping.pmt_pid),
+            Some(0x0100)
+        );
     }
 
     #[test]

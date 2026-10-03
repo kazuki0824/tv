@@ -10,7 +10,6 @@ import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
 import android.media.tv.tuner.frontend.OnTuneEventListener
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.view.Surface
 import android.view.View
@@ -20,6 +19,7 @@ import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
+import com.maleicacid.tvinput.aribsi.SiParseStatus
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MaleicacidLiveSession(
     serviceContext: Context,
     private val sessionContext: Context,
-    private val inputId: String,
+    inputId: String,
     private val sessionId: String,
 ) : TvInputService.Session(sessionContext) {
     private val appContext = serviceContext.applicationContext
@@ -232,13 +232,10 @@ class MaleicacidLiveSession(
     }
 
     override fun onSetSurface(surface: Surface?): Boolean =
-        if (releaseOnce.get()) {
-            false
-        } else {
+        !releaseOnce.get() &&
             runOnSessionExecutorBlocking {
-                if (releaseOnce.get()) false else onSetSurfaceOnSessionExecutor(surface)
+                !releaseOnce.get() && onSetSurfaceOnSessionExecutor(surface)
             }
-        }
 
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
         this.surface = surface
@@ -255,7 +252,7 @@ class MaleicacidLiveSession(
         return true
     }
 
-    override fun onCreateOverlayView(): View? = captionOverlayView
+    override fun onCreateOverlayView(): View = captionOverlayView
 
     override fun onSetStreamVolume(volume: Float) {
         enqueueSessionAction { onSetStreamVolumeOnSessionExecutor(volume) }
@@ -279,14 +276,11 @@ class MaleicacidLiveSession(
     }
 
     override fun onTune(channelUri: Uri?): Boolean =
-        if (releaseOnce.get()) {
-            false
-        } else {
+        !releaseOnce.get() &&
             runOnSessionExecutorBlocking {
                 if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
                 onTuneOnSessionExecutor(channelUri)
             }
-        }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
@@ -470,11 +464,12 @@ class MaleicacidLiveSession(
                 defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey),
                 dualMonoPresentation = dualMonoPresentation,
             )
+        val currentAudioComponent =
+            currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)
         val selection =
             initialSelection.copy(
-                audioComponentType =
-                    currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)?.componentType
-                        ?: initialSelection.audio?.componentType,
+                audioChannelConfiguration = currentAudioComponent?.channelConfiguration,
+                audioDualMono = currentAudioComponent?.dualMono,
             )
         val audioOnly = PlaybackPolicy.isAudioOnlyService(service.serviceType)
         if (PlaybackPolicy.shouldRejectSelection(service.serviceType ?: -1, selection)) {
@@ -540,7 +535,14 @@ class MaleicacidLiveSession(
             audioPid = audio?.elementaryPid,
             audioStreamType = audio?.streamType,
             videoConfiguration = video?.let { DecoderConfigurationIdentity.from(it) },
-            audioConfiguration = audio?.let { DecoderConfigurationIdentity.from(it, selection.audioComponentType ?: it.componentType) },
+            audioConfiguration =
+                audio?.let {
+                    DecoderConfigurationIdentity.from(
+                        it,
+                        selection.audioChannelConfiguration,
+                        selection.audioDualMono,
+                    )
+                },
             subtitlePid = selection.subtitle?.elementaryPid,
             subtitleDataComponentId = selection.subtitle?.dataComponentId,
             subtitleLanguageId = selection.subtitleLanguageId,
@@ -574,14 +576,11 @@ class MaleicacidLiveSession(
         type: Int,
         trackId: String?,
     ): Boolean =
-        if (releaseOnce.get()) {
-            false
-        } else {
+        !releaseOnce.get() &&
             runOnSessionExecutorBlocking {
                 if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
                 onSelectTrackOnSessionExecutor(type, trackId)
             }
-        }
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
@@ -617,11 +616,12 @@ class MaleicacidLiveSession(
                         defaultComponentGroupTags = defaultComponentGroupTags,
                         dualMonoPresentation = dualMonoPresentation,
                     )
+                val currentAudioComponent =
+                    currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)
                 val selection =
                     initialSelection.copy(
-                        audioComponentType =
-                            currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)?.componentType
-                                ?: initialSelection.audio?.componentType,
+                        audioChannelConfiguration = currentAudioComponent?.channelConfiguration,
+                        audioDualMono = currentAudioComponent?.dualMono,
                     )
                 val signature =
                     playbackSignatureFor(service, selection) ?: run {
@@ -714,7 +714,7 @@ class MaleicacidLiveSession(
         componentTag ?: return null
         val currentEvent = currentProgramEvent(serviceKey, nowMillis) ?: return null
         return currentEvent.descriptors.components.audio
-            .firstOrNull { component -> component.parseStatus.equals("OK", ignoreCase = true) && component.componentTag == componentTag }
+            .firstOrNull { component -> component.parseStatus == SiParseStatus.OK && component.componentTag == componentTag }
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -728,7 +728,7 @@ class MaleicacidLiveSession(
         componentTag ?: return null
         val currentEvent = currentProgramEvent(serviceKey, nowMillis) ?: return null
         return currentEvent.descriptors.components.video
-            .firstOrNull { component -> component.parseStatus.equals("OK", ignoreCase = true) && component.componentTag == componentTag }
+            .firstOrNull { component -> component.parseStatus == SiParseStatus.OK && component.componentTag == componentTag }
     }
 
     private fun currentDefaultComponentGroupTags(
@@ -1329,12 +1329,7 @@ class MaleicacidLiveSession(
                 addAction(TvInputManager.ACTION_PARENTAL_CONTROLS_ENABLED_CHANGED)
             }
         runCatching {
-            if (Build.VERSION.SDK_INT >= 33) {
-                appContext.registerReceiver(parentalControlReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("DEPRECATION")
-                appContext.registerReceiver(parentalControlReceiver, filter)
-            }
+            appContext.registerReceiver(parentalControlReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
             parentalReceiverRegistered = true
         }
     }

@@ -2,21 +2,20 @@ package com.maleicacid.tvinput.tis
 
 import android.content.Context
 import android.media.tv.TvInputService
-import android.media.tv.tuner.Tuner
+import android.media.tv.tuner.frontend.OnTuneEventListener
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
+import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
-import com.maleicacid.tvinput.aribsi.SiDiscoveryStage
 import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
-import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -24,11 +23,11 @@ import java.util.concurrent.atomic.AtomicLong
 // 走査状態と公開処理の所有を一か所に保ち、関数数だけを理由に別の所有者へ分散しない。
 @Suppress("LargeClass", "TooManyFunctions")
 class ChannelScanController(
-    private val context: Context,
-    private val inputId: String,
+    context: Context,
+    inputId: String,
     private val engine: AribSiEngine,
     scanPurpose: ScanPurpose,
-    private val cancelRequested: AtomicBoolean = AtomicBoolean(false),
+    cancelRequested: AtomicBoolean = AtomicBoolean(false),
 ) : AutoCloseable {
     data class ScanDiagnostic(
         val candidate: ScanCandidate,
@@ -50,6 +49,7 @@ class ChannelScanController(
         STABLE_PARTIAL,
         TIMEOUT_PARTIAL,
         INCOMPLETE_NO_REGISTRATION_READY_SERVICE,
+        SIGNAL_UNAVAILABLE,
         CANCELLED,
         RESOURCE_LOST,
     }
@@ -64,6 +64,7 @@ class ChannelScanController(
             get() =
                 outcome != SiCollectionOutcome.CANCELLED &&
                     outcome != SiCollectionOutcome.RESOURCE_LOST &&
+                    outcome != SiCollectionOutcome.SIGNAL_UNAVAILABLE &&
                     outcome != SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE &&
                     registrationReadyServices > 0
     }
@@ -113,8 +114,8 @@ class ChannelScanController(
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
     private val cancelled = cancelRequested
     private var terminalCancelObserved: Boolean = false
-    private val resourceLossFence = ResourceLossFence()
-    private val terminalResourceLostObserved: Boolean get() = resourceLossFence.terminalObserved
+    private val scanGenerationFence = ScanGenerationFence()
+    private val terminalResourceLostObserved: Boolean get() = scanGenerationFence.terminalObserved
     private var skippedUnresolvedTransportCount: Int = 0
     private var currentCandidate: ScanCandidate? = null
 
@@ -122,7 +123,14 @@ class ChannelScanController(
         tunerController.setSectionIngestController(ingestController)
         tunerController.setOnSectionIngestedCallback { refreshDynamicSectionFilters() }
         tunerController.setOnTunerResourceLostCallback { lostGeneration ->
-            resourceLossFence.onLost(lostGeneration)
+            scanGenerationFence.onLost(lostGeneration)
+        }
+        tunerController.setOnTuneEventCallback { tuneGeneration, event ->
+            when (event) {
+                OnTuneEventListener.SIGNAL_NO_SIGNAL,
+                OnTuneEventListener.SIGNAL_LOST_LOCK,
+                -> scanGenerationFence.onSignalUnavailable(tuneGeneration, event)
+            }
         }
     }
 
@@ -149,7 +157,7 @@ class ChannelScanController(
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
                 diagnostics += ScanDiagnostic(candidate, "選局に失敗しました result=${tune.resultCode} ${tune.message}")
-                return true
+                return shouldContinueInitialScanAfterSynchronousTuneResult(false)
             }
             activateScanGeneration(tune.generation)
             try {
@@ -213,7 +221,7 @@ class ChannelScanController(
                             val discovery = tunerController.discoverIsdbsStreamIds(candidate)
                             discovery.generation?.let { activateScanGeneration(it) }
                             if (discovery.resourceLost || terminalResourceLostObserved) {
-                                discovery.generation?.let { resourceLossFence.onLost(it) }
+                                discovery.generation?.let { scanGenerationFence.onLost(it) }
                                 diagnostics +=
                                     ScanDiagnostic(
                                         candidate,
@@ -374,29 +382,10 @@ class ChannelScanController(
         terminalCancelObserved = true
     }
 
-    fun beginSiIngestAfterTune() {
-        if (tunerController.beginSiIngestAfterTune()) {
-            refreshDynamicSectionFilters()
-            publishCurrentServiceSnapshot(PublishMode.LIVE_TUNE_REFRESH)
-        }
-    }
-
-    /** 完全な section を受ける入口。byte array は 生 TS packet ではない。 */
-    fun onSection(
-        pid: Int,
-        section: ByteArray,
-    ) {
-        val tsPid = TsPid.fromOrNull(pid) ?: return
-        tunerController.onSection(tsPid, section)
-        refreshDynamicSectionFilters()
-        publishCurrentServiceSnapshot(PublishMode.LIVE_TUNE_REFRESH)
-    }
-
     fun refreshDynamicSectionFilters() {
         if (terminalResourceLostObserved) return
         val generation = tunerController.currentGeneration()
-        val transaction = engine.casDiscoverySnapshot()
-        val pmtPids = transaction.pmtPids.values.toSet()
+        val pmtPids = engine.pmtPidsForSectionFilters()
         tunerController.updateScanPmtFilters(pmtPids, generation)
     }
 
@@ -438,7 +427,7 @@ class ChannelScanController(
                     hasInternalTuneKey =
                         candidate.streamSelector.value != null ||
                             candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE,
-                    expectedSmdBroadcastingIdentifier = expectedSmdBroadcastingIdentifier(candidate),
+                    expectedSmdBroadcastSystem = expectedSmdBroadcastSystem(candidate),
                 )
             }
         val registrationReadyServices =
@@ -499,16 +488,15 @@ class ChannelScanController(
         services: List<AribService>,
         actualTransportKeys: Set<TransportKey>,
     ): List<AribService> {
-        val actualTransports = actualTransportKeys
-        if (actualTransports.size != 1) {
+        if (actualTransportKeys.size != 1) {
             skippedUnresolvedTransportCount += services.size
             Log.w(
                 LogTags.TIS,
-                "current candidate の SDT actual TransportKey が一意に確定していないため channel 登録を省略します actualTransports=$actualTransports",
+                "current candidate の SDT actual TransportKey が一意に確定していないため channel 登録を省略します actualTransports=$actualTransportKeys",
             )
             return emptyList()
         }
-        val actualTransport = actualTransports.single()
+        val actualTransport = actualTransportKeys.single()
         val filtered = services.filter { TransportKey(it.serviceKey.originalNetwork, it.serviceKey.transportStream) == actualTransport }
         skippedUnresolvedTransportCount += services.size - filtered.size
         return filtered
@@ -541,7 +529,7 @@ class ChannelScanController(
                         ServicePolicyEvaluator
                             .evaluate(
                                 facts = transaction.semanticFactsByServiceKey[instance.serviceKey],
-                                expectedSmdBroadcastingIdentifier = currentCandidate?.let(::expectedSmdBroadcastingIdentifier),
+                                expectedSmdBroadcastSystem = currentCandidate?.let(::expectedSmdBroadcastSystem),
                             ).registrationReady
                 }.mapTo(linkedSetOf()) { it.serviceKey }
         val result =
@@ -557,8 +545,8 @@ class ChannelScanController(
         return result
     }
 
-    private fun expectedSmdBroadcastingIdentifier(candidate: ScanCandidate): Int =
-        requireNotNull(ServicePolicyEvaluator.expectedSmdBroadcastingIdentifier(discoveryProfile(candidate.kind)))
+    private fun expectedSmdBroadcastSystem(candidate: ScanCandidate): BroadcastSystem =
+        requireNotNull(ServicePolicyEvaluator.expectedSmdBroadcastSystem(discoveryProfile(candidate.kind)))
 
     private fun discoveryProfile(kind: ScanCandidateKind): Int =
         when (kind) {
@@ -572,13 +560,13 @@ class ChannelScanController(
         requirements: SiCollectionRequirements,
     ): ServiceCounts {
         val transaction = engine.serviceRegistrationSnapshot()
-        val expectedSmdIdentifier = expectedSmdBroadcastingIdentifier(candidate)
+        val expectedSmdSystem = expectedSmdBroadcastSystem(candidate)
         val completeness =
             transaction.services.map { service ->
                 ServiceListBuilder.completenessForModel(
                     service = service,
                     facts = transaction.semanticFactsByServiceKey[service.serviceKey],
-                    expectedSmdBroadcastingIdentifier = expectedSmdIdentifier,
+                    expectedSmdBroadcastSystem = expectedSmdSystem,
                 )
             }
         val summary = ServiceListBuilder.ServiceSnapshotSummary(completeness)
@@ -609,11 +597,18 @@ class ChannelScanController(
         var lastCounts: ServiceCounts? = null
         var stableSince = startedAt
         var outcome = SiCollectionOutcome.TIMEOUT_PARTIAL
+        var signalUnavailableEvent: Int? = null
 
         val collectionFailure =
             runCatching {
                 SectionFilterPolicy.completeCleanup({
                     while (!cancelled.get() && !resourceLostFor(tuneGeneration)) {
+                        val unavailableEvent = scanGenerationFence.signalUnavailableEvent(tuneGeneration)
+                        if (unavailableEvent != null) {
+                            signalUnavailableEvent = unavailableEvent
+                            outcome = SiCollectionOutcome.SIGNAL_UNAVAILABLE
+                            break
+                        }
                         refreshDynamicSectionFilters()
                         if (resourceLostFor(tuneGeneration)) break
                         val now = android.os.SystemClock.elapsedRealtime()
@@ -651,7 +646,7 @@ class ChannelScanController(
                     }
                 }, { tunerController.closeSectionFilters() })
             }.exceptionOrNull()
-        if (resourceLossFence.finishCollection(tuneGeneration, collectionFailure) { failure ->
+        if (scanGenerationFence.finishCollection(tuneGeneration, collectionFailure) { failure ->
                 Log.w(LogTags.TIS, "resource-lost後のSI collection cleanupに失敗しました generation=$tuneGeneration", failure)
             } == SiCollectionOutcome.RESOURCE_LOST
         ) {
@@ -680,15 +675,23 @@ class ChannelScanController(
         }
         val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
         val message =
-            if (outcome == SiCollectionOutcome.COMPLETE) {
-                null
-            } else {
-                "SI 収集が完全完了していません outcome=$outcome stage=${finalCounts.discoveryStage} " +
-                    "services=${finalCounts.total} " +
-                    "clearLivePlaybackStaticallyEligibleServices=${finalCounts.clearLivePlaybackStaticallyEligible} " +
-                    "registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} " +
-                    "missingInstances=${finalCounts.collectionStatus.missing} " +
-                    "sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
+            when (outcome) {
+                SiCollectionOutcome.COMPLETE -> {
+                    null
+                }
+
+                SiCollectionOutcome.SIGNAL_UNAVAILABLE -> {
+                    signalUnavailableDiagnostic(signalUnavailableEvent, tuneGeneration, elapsed)
+                }
+
+                else -> {
+                    "SI 収集が完全完了していません outcome=$outcome stage=${finalCounts.discoveryStage} " +
+                        "services=${finalCounts.total} " +
+                        "clearLivePlaybackStaticallyEligibleServices=${finalCounts.clearLivePlaybackStaticallyEligible} " +
+                        "registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} " +
+                        "missingInstances=${finalCounts.collectionStatus.missing} " +
+                        "sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
+                }
             }
         Log.i(LogTags.TIS, "scan 候補の SI 収集結果 candidate=$candidate outcome=$outcome complete=$complete counts=$finalCounts message=$message")
         return SiCollectionResult(
@@ -720,53 +723,74 @@ class ChannelScanController(
         tunerController.release()
     }
 
-    fun terminalCancelObservedForLastTask(): Boolean = terminalCancelObserved
+    private fun resetResourceLostState() = scanGenerationFence.reset()
 
-    fun terminalResourceLostObservedForLastTask(): Boolean = terminalResourceLostObserved
+    private fun activateScanGeneration(generation: Long) = scanGenerationFence.activate(generation)
 
-    fun skippedUnresolvedTransportCountForDiagnostic(): Int = skippedUnresolvedTransportCount
+    private fun clearActiveScanGeneration(generation: Long) = scanGenerationFence.clearActive(generation)
 
-    private fun resetResourceLostState() = resourceLossFence.reset()
-
-    private fun activateScanGeneration(generation: Long) = resourceLossFence.activate(generation)
-
-    private fun clearActiveScanGeneration(generation: Long) = resourceLossFence.clearActive(generation)
-
-    private fun resourceLostFor(generation: Long): Boolean = resourceLossFence.isLost(generation)
+    private fun resourceLostFor(generation: Long): Boolean = scanGenerationFence.isLost(generation)
 
     private fun publishScanSnapshotIfCurrent(
         generation: Long,
         mode: PublishMode,
         allowedServiceKeys: Set<ServiceKey>? = null,
     ): PublishSnapshotResult? =
-        resourceLossFence.publishIfCurrent(generation) {
+        scanGenerationFence.publishIfCurrent(generation) {
             publishCurrentServiceSnapshot(mode, allowedServiceKeys)
         }
 
-    /** scanが既に所有していたgenerationと公開lockをまとめる。別の世代は作らない。 */
-    internal class ResourceLossFence {
+    /** scanが既に所有していたgeneration、信号終端、公開lockをまとめる。別の世代ownerは作らない。 */
+    internal class ScanGenerationFence {
+        internal data class SignalUnavailable(
+            val generation: Long,
+            val event: Int,
+        )
+
         @Volatile var terminalObserved = false
             private set
         private val activeGeneration = AtomicLong(-1L)
         private val lostGeneration = AtomicLong(-1L)
+
+        @Volatile private var signalUnavailable: SignalUnavailable? = null
         private val publicationLock = Any()
 
-        fun reset() {
-            terminalObserved = false
-            activeGeneration.set(-1L)
-            lostGeneration.set(-1L)
-        }
+        fun reset() =
+            synchronized(publicationLock) {
+                terminalObserved = false
+                activeGeneration.set(-1L)
+                lostGeneration.set(-1L)
+                signalUnavailable = null
+            }
 
-        fun activate(generation: Long) {
-            activeGeneration.set(generation)
-            if (isLost(generation)) terminalObserved = true
-        }
+        fun activate(generation: Long) =
+            synchronized(publicationLock) {
+                activeGeneration.set(generation)
+                signalUnavailable?.let { pending ->
+                    if (pending.generation < generation) signalUnavailable = null
+                }
+                if (isLost(generation)) terminalObserved = true
+            }
 
         fun clearActive(generation: Long) {
             activeGeneration.compareAndSet(generation, -1L)
         }
 
         fun isLost(generation: Long): Boolean = lostGeneration.get() == generation
+
+        @Suppress("MaxLineLength")
+        fun signalUnavailableEvent(generation: Long): Int? = signalUnavailable?.takeIf { it.generation == generation }?.event
+
+        fun onSignalUnavailable(
+            generation: Long,
+            event: Int,
+        ) = synchronized(publicationLock) {
+            val active = activeGeneration.get()
+            if (active != -1L && active != generation) return@synchronized
+            val pending = signalUnavailable
+            if (pending != null && generation < pending.generation) return@synchronized
+            signalUnavailable = SignalUnavailable(generation, event)
+        }
 
         fun onLost(generation: Long) =
             synchronized(publicationLock) {
@@ -828,6 +852,36 @@ class ChannelScanController(
 
         fun validProgramKeysForUpdateForTest(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
             validProgramKeysForUpdate(update)
+
+        fun shouldContinueInitialScanAfterSynchronousTuneResult(success: Boolean): Boolean = success
+
+        private fun signalUnavailableEventName(event: Int?): String =
+            when (event) {
+                OnTuneEventListener.SIGNAL_NO_SIGNAL -> "SIGNAL_NO_SIGNAL"
+                OnTuneEventListener.SIGNAL_LOST_LOCK -> "SIGNAL_LOST_LOCK"
+                else -> "UNKNOWN($event)"
+            }
+
+        internal fun signalUnavailableDiagnosticForTest(
+            event: Int?,
+            generation: Long,
+            elapsedMs: Long,
+        ): String = signalUnavailableDiagnostic(event, generation, elapsedMs)
+
+        private fun signalUnavailableDiagnostic(
+            event: Int?,
+            generation: Long,
+            elapsedMs: Long,
+        ): String {
+            val reason =
+                when (event) {
+                    OnTuneEventListener.SIGNAL_NO_SIGNAL -> "scan候補の信号にロックできませんでした"
+                    OnTuneEventListener.SIGNAL_LOST_LOCK -> "scan候補の信号ロックを失いました"
+                    else -> "scan候補の信号状態が利用不能です"
+                }
+            return "$reason generation=$generation event=${signalUnavailableEventName(event)}; " +
+                "未完了SI snapshotはpublishへ使用しません elapsedMs=$elapsedMs"
+        }
 
         private fun validProgramKeysForUpdate(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
             update.validProgramStableIdentities.toSet()

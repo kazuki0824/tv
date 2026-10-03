@@ -4,12 +4,154 @@
 package com.maleicacid.tvinput.aribsi
 
 import com.maleicacid.tvinput.common.TsPid
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Test
 
 // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
 @Suppress("LargeClass", "TooManyFunctions")
 class NativeAribSiParserCasDiscoveryTest {
+    @Test
+    fun patDerivedPmtPidIsAvailableBeforeServiceRegistrationAndPmtParsing() {
+        NativeAribSiParser().use { parser ->
+            check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
+            check(parser.pmtPidsForSectionFilters() == setOf(TsPid(PID_PMT)))
+            check(parser.casDiscoverySnapshot().pmtPids.isEmpty())
+        }
+    }
+
+    @Test
+    fun snapshotFailureKeepsItsReasonAndDoesNotBecomeEmptyFacts() {
+        NativeAribSiParser().use { parser ->
+            val method =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("nativeSnapshotBulkTyped", Long::class.javaPrimitiveType)
+                    .apply { isAccessible = true }
+            val thrown = runCatching { method.invoke(parser, -1L) }.exceptionOrNull()
+            check(thrown is java.lang.reflect.InvocationTargetException)
+            val failure = thrown.cause
+            check(failure is NativeSiException && failure.reason == NativeSiFailureReason.INVALID_HANDLE)
+            check(
+                parser
+                    .livePlaybackSnapshot()
+                    .programs
+                    .events
+                    .isEmpty(),
+            )
+        }
+    }
+
+    @Test
+    fun nativeByteInputFailuresDoNotBecomeEmptyValues() {
+        NativeAribSiParser().use { parser ->
+            for (name in listOf(
+                "nativeDecodeAribString",
+                "nativeExtractProgramKeyResult",
+                "nativeDecodeChannelProviderData",
+            )) {
+                val method = NativeAribSiParser::class.java.getDeclaredMethod(name, ByteArray::class.java)
+                method.isAccessible = true
+                val thrown = runCatching { method.invoke(parser, null) }.exceptionOrNull()
+                check(thrown is java.lang.reflect.InvocationTargetException)
+                val failure = thrown.cause
+                check(failure is NativeSiException && failure.reason == NativeSiFailureReason.JNI_INPUT)
+            }
+            check(parser.decodeAribString(ByteArray(0)).isEmpty())
+            check(parser.extractProgramKeyResult(ByteArray(0)).isEmpty())
+            check(parser.decodeChannelProviderData(ByteArray(0)).isEmpty())
+        }
+    }
+
+    @Test
+    fun codecProbeCrossesJniAsGeneratedTypedDto() {
+        val method =
+            NativeAribSiParser::class.java
+                .getDeclaredMethod(
+                    "nativeProbeAacConfiguration",
+                    ByteArray::class.java,
+                    ByteArray::class.java,
+                ).apply { isAccessible = true }
+        val result = method.invoke(null, ByteArray(0), null)
+        check(result is com.maleicacid.tvinput.aribsi.generated.AacConfigurationProbeDto)
+        check(result.status == com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Pending)
+        check(result.reason == null && result.configuration == null)
+    }
+
+    @Test
+    fun codecJniFailureDoesNotBecomeInvalidCodecData() {
+        val method =
+            NativeAribSiParser::class.java
+                .getDeclaredMethod(
+                    "nativeProbeAacConfiguration",
+                    ByteArray::class.java,
+                    ByteArray::class.java,
+                ).apply { isAccessible = true }
+        val thrown = runCatching { method.invoke(null, null, null) }.exceptionOrNull()
+        check(thrown is java.lang.reflect.InvocationTargetException)
+        val failure = thrown.cause
+        check(failure is NativeSiException && failure.reason == NativeSiFailureReason.JNI_INPUT)
+    }
+
+    @Test
+    fun providerJniInputFailureIsNotAnEmptyDomainValue() {
+        NativeAribSiParser().use { parser ->
+            for ((name, parameter) in listOf(
+                "nativeBuildChannelProviderData" to String::class.java,
+                "nativeBuildProgramProviderData" to String::class.java,
+                "nativeNormalizeProgramProviderData" to ByteArray::class.java,
+            )) {
+                val method = NativeAribSiParser::class.java.getDeclaredMethod(name, parameter)
+                method.isAccessible = true
+                val result = JSONObject(method.invoke(parser, null) as String)
+                check(!result.getBoolean("success"))
+                check(result.getString("bytes").isEmpty())
+                check(result.getString("errorCode") == "JNI_ERROR")
+                check(result.getString("errorMessage").isNotBlank())
+            }
+        }
+    }
+
+    @Test
+    fun snapshotCrossesJniAsTypedDtoWithoutDynamicJsonBoundary() {
+        NativeAribSiParser().use { parser ->
+            val handleField =
+                NativeAribSiParser::class.java
+                    .getDeclaredField("handle")
+                    .apply { isAccessible = true }
+            val snapshotMethod =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("nativeSnapshotBulkTyped", Long::class.javaPrimitiveType)
+                    .apply { isAccessible = true }
+            val snapshot = snapshotMethod.invoke(parser, handleField.getLong(parser))
+            check(snapshot is com.maleicacid.tvinput.aribsi.generated.BulkSnapshotDto)
+            check(snapshot.collectionGeneration >= 0L)
+            check(snapshot.serviceSemanticFacts.isEmpty())
+            check(
+                parser
+                    .livePlaybackSnapshot()
+                    .programs
+                    .events
+                    .isEmpty(),
+            )
+        }
+    }
+
+    @Test
+    fun failedDestroyKeepsHandleForOwnerRetry() {
+        NativeAribSiParser().use { parser ->
+            val handleField = NativeAribSiParser::class.java.getDeclaredField("handle").apply { isAccessible = true }
+            val original = handleField.getLong(parser)
+            try {
+                handleField.setLong(parser, -1L)
+                val failure = runCatching { parser.close() }.exceptionOrNull()
+                check(failure is NativeParserCleanupException && failure.status == SiStatus.INVALID_HANDLE)
+                check(handleField.getLong(parser) == -1L)
+            } finally {
+                handleField.setLong(parser, original)
+            }
+        }
+    }
+
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
@@ -25,8 +167,8 @@ class NativeAribSiParserCasDiscoveryTest {
                 val body = eitWithDescriptors(listOf(0x55, 4, 0x4a, 0x50, 0x4e, 0x0c))
                 for (index in undefinedRange) body[index] = 0xff
                 check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
-                val snapshot = parser.programStateSnapshot()
-                check(snapshot.events.single().timingState == "UNDEFINED_TIME")
+                val snapshot = parser.livePlaybackSnapshot().programs
+                check(snapshot.events.single().timingState == com.maleicacid.tvinput.aribsi.EitTimingState.UNDEFINED_TIME)
                 val authority = resolver.eitAuthority(snapshot, key)
                 check(authority is com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.PresentObserved)
                 check(authority.event?.eventId == 0x1234)
@@ -78,9 +220,9 @@ class NativeAribSiParserCasDiscoveryTest {
                         setSectionLength(it, 0xf0)
                     }.toIntArray()
             check(parser.ingestSection(TsPid(PID_EIT), section(following)) == SiStatus.OK)
-            check(resolver.eitAuthority(parser.programStateSnapshot(), key) == unknown)
+            check(resolver.eitAuthority(parser.livePlaybackSnapshot().programs, key) == unknown)
             check(parser.ingestSection(TsPid(PID_EIT), section(present)) == SiStatus.OK)
-            val gap = parser.programStateSnapshot()
+            val gap = parser.livePlaybackSnapshot().programs
             check(
                 gap.events
                     .single()
@@ -90,12 +232,12 @@ class NativeAribSiParserCasDiscoveryTest {
             check(resolver.eitAuthority(gap, key) == empty)
             val nextPresent = present.copyOf().also { it[5] = 0xc3 }
             check(parser.ingestSection(TsPid(PID_EIT), section(nextPresent)) == SiStatus.OK)
-            val partialFollowing = parser.programStateSnapshot()
+            val partialFollowing = parser.livePlaybackSnapshot().programs
             check(!partialFollowing.eitInstances.single().complete)
             check(resolver.eitAuthority(partialFollowing, key) == empty)
             val nextFollowing = following.copyOf().also { it[5] = 0xc5 }
             check(parser.ingestSection(TsPid(PID_EIT), section(nextFollowing)) == SiStatus.OK)
-            check(resolver.eitAuthority(parser.programStateSnapshot(), key) == unknown)
+            check(resolver.eitAuthority(parser.livePlaybackSnapshot().programs, key) == unknown)
         }
     }
 
@@ -522,7 +664,12 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(TsPid(PID_PMT), section(pmtWithComponentTagsBody())) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
 
-            val event = parser.programStateSnapshot().events.single()
+            val event =
+                parser
+                    .livePlaybackSnapshot()
+                    .programs
+                    .events
+                    .single()
             val video =
                 event.descriptors.components.video
                     .single()
@@ -545,7 +692,12 @@ class NativeAribSiParserCasDiscoveryTest {
             check(audio.language == "jpn")
             check(audio.secondLanguage == "eng")
             check(audio.channelConfiguration == "1/0+1/0")
+            check(audio.channelCount == 2)
             check(audio.samplingInfo == "48kHz")
+            check(audio.sampleRateHz == 48_000)
+            check(audio.audioDescription == false)
+            check(audio.hardOfHearing == false)
+            check(audio.dualMono == true)
             check(audio.sourceDescriptor == "audio_component_descriptor")
 
             check(event.descriptors.series?.expireDateValid == true)
@@ -603,11 +755,11 @@ class NativeAribSiParserCasDiscoveryTest {
         for (body in malformedBodies) {
             NativeAribSiParser().use { parser ->
                 check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(emptyList()))) == SiStatus.OK)
-                val valid = parser.programStateSnapshot()
+                val valid = parser.livePlaybackSnapshot().programs
                 check(EventModelMapper().toProgramRecords(valid.events, valid.discoveryProfile).size == 1)
                 body[5] = 0xc3
                 check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
-                val invalid = parser.programStateSnapshot()
+                val invalid = parser.livePlaybackSnapshot().programs
                 check(invalid.events.isEmpty())
                 check(EventModelMapper().toProgramRecords(invalid.events, invalid.discoveryProfile).isEmpty())
                 check(invalid.updateWindows.none { it.deletionAuthoritative })
@@ -641,7 +793,7 @@ class NativeAribSiParserCasDiscoveryTest {
             val excluded = snapshot.excludedEventDescriptorFacts.single()
             check(excluded.descriptors.parentalRatings == listOf(AribParentalRating("JPN", 12)))
             val loop = requireNotNull(excluded.descriptors.diagnostics.truncatedDescriptorLoop)
-            check(loop.declaredLength == declared && loop.parseStatus == "TruncatedDescriptor")
+            check(loop.declaredLength == declared && loop.parseStatus == SiParseStatus.TRUNCATED_DESCRIPTOR)
             check(loop.rawBytesHex == available.joinToString("") { it.toString(16).padStart(2, '0') })
             val facts = JSONObject(requireNotNull(excluded.descriptors.diagnostics.descriptorFactsCanonicalJson))
             val ratings = facts.getJSONArray("parentalRatingDescriptors")
@@ -672,7 +824,7 @@ class NativeAribSiParserCasDiscoveryTest {
                     "MALFORMED_TIMING" -> body[18] = 0xfa
                 }
                 check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
-                val snapshot = parser.programStateSnapshot()
+                val snapshot = parser.livePlaybackSnapshot().programs
                 val excluded = snapshot.excludedEventDescriptorFacts.single()
                 check(excluded.eventId == 0x1234)
                 check((excluded.stableIdentity != null) == (state == "DEFINED" || state == "UNDEFINED_TIME"))
@@ -690,7 +842,7 @@ class NativeAribSiParserCasDiscoveryTest {
             val malformed = listOf(0x55, 255) + (0 until 255).toList()
             val expectedHex = malformed.joinToString("") { it.toString(16).padStart(2, '0') }
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(valid + malformed))) == SiStatus.OK)
-            for (snapshot in listOf(parser.takeProgramPublishSnapshot(), parser.programStateSnapshot())) {
+            for (snapshot in listOf(parser.takeProgramPublishSnapshot(), parser.livePlaybackSnapshot().programs)) {
                 check(snapshot.events.isEmpty())
                 check(EventModelMapper().toProgramRecords(snapshot.events, snapshot.discoveryProfile).isEmpty())
                 check(snapshot.updateWindows.none { it.deletionAuthoritative })
@@ -727,7 +879,12 @@ class NativeAribSiParserCasDiscoveryTest {
             val unknown = listOf(0xfe, 80) + (0 until 80).toList()
             val body = eitWithDescriptors(valid + unsupported + unknown)
             check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
-            val event = parser.programStateSnapshot().events.single()
+            val event =
+                parser
+                    .livePlaybackSnapshot()
+                    .programs
+                    .events
+                    .single()
             check(event.descriptors.parentalRatings == listOf(AribParentalRating("JPN", 12)))
             val facts = JSONObject(requireNotNull(event.descriptors.diagnostics.descriptorFactsCanonicalJson))
             val ratings = facts.getJSONArray("parentalRatingDescriptors")
@@ -797,7 +954,12 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(TsPid(PID_PMT), section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
 
-            val event = parser.programStateSnapshot().events.single()
+            val event =
+                parser
+                    .livePlaybackSnapshot()
+                    .programs
+                    .events
+                    .single()
             val eitOnlyVideo =
                 event.descriptors.components.video
                     .single { it.componentTag == 0x10 }

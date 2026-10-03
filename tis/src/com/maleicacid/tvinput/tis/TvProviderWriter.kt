@@ -7,10 +7,8 @@ import android.media.tv.TvContract
 import android.net.Uri
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
-import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
-import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
 import java.security.MessageDigest
@@ -414,26 +412,10 @@ class TvProviderWriter private constructor(
         return if (failures.isEmpty()) ExistingServiceKeysResult.Success(out) else ExistingServiceKeysResult.Failure(failures)
     }
 
-    fun existingServiceKeys(keys: Iterable<ServiceKey>): Set<ServiceKey> =
-        when (val result = existingServiceKeysResult(keys)) {
-            is ExistingServiceKeysResult.Success -> result.keys
-            is ExistingServiceKeysResult.Failure -> emptySet()
-        }
-
     fun existingChannelsResult(): Result<List<ChannelRecord>> =
         channelStore
             .listExistingChannels()
             .onFailure { error -> Log.w(LogTags.TIS, "既存channel復元に失敗しました inputId=$inputId", error) }
-
-    @Deprecated("TvProvider問い合わせ失敗を空のチャンネル一覧へ潰してはなりません", level = DeprecationLevel.ERROR)
-    fun existingChannelsForTestOnly(): List<ChannelRecord> = existingChannelsResult().getOrElse { emptyList() }
-
-    fun validateForTest(channel: ChannelRecord): Diagnostic? = validate(channel)
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    fun channelValuesForTest(channel: ChannelRecord): ContentValues =
-        channelValues(channel, (ProviderDataBridge.buildChannelProviderData(channel) as ProviderDataBridge.Success).bytes)
 
     fun programValuesForTest(
         channelId: Long,
@@ -517,7 +499,8 @@ class TvProviderWriter private constructor(
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "SpreadOperator")
+    // 現行mapperの明示写像値をencodeする。未制約のProgramRecord値域は設計上の逸脱許可対象。
+    @Suppress("AndroidLintWrongConstant", "CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "SpreadOperator")
     private fun programValues(
         channelId: Long,
         program: ProgramRecord,
@@ -591,22 +574,46 @@ class TvProviderWriter private constructor(
                 null -> if (clearAbsentOptionalColumns) putNull(COLUMN_SCRAMBLED)
                 else -> put(COLUMN_SCRAMBLED, if (scrambled) 1 else 0)
             }
-            val seriesId = program.descriptors.series?.seriesId
-            if (seriesId == null) {
-                if (clearAbsentOptionalColumns) putNull(COLUMN_SERIES_ID)
-            } else {
-                put(COLUMN_SERIES_ID, seriesId)
-            }
-            // 投影契約は一意な単一series。複数記述子は根拠を保存し、ID・話数を選択しない。
-            if (clearAbsentOptionalColumns) putNull(COLUMN_MULTI_SERIES_ID)
-            val episodeNumber = program.descriptors.series?.episodeNumber
-            if (episodeNumber == null || episodeNumber <= 0) {
-                if (clearAbsentOptionalColumns) putNull(COLUMN_EPISODE_DISPLAY_NUMBER)
-            } else {
-                put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
-            }
+            putSeriesColumns(program, clearAbsentOptionalColumns)
             put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, providerData)
         }
+
+    private fun ContentValues.putSeriesColumns(
+        program: ProgramRecord,
+        clearAbsentOptionalColumns: Boolean,
+    ) {
+        val candidateSeriesIds =
+            program.descriptors.seriesCandidates
+                .asSequence()
+                .filter { it.parseStatus == com.maleicacid.tvinput.aribsi.SiParseStatus.OK }
+                .mapNotNull { it.seriesId }
+                .distinct()
+                .toList()
+        val singleSeriesId = program.descriptors.series?.seriesId ?: candidateSeriesIds.singleOrNull()
+        when {
+            candidateSeriesIds.size > 1 -> {
+                if (clearAbsentOptionalColumns) putNull(COLUMN_SERIES_ID)
+                put(COLUMN_MULTI_SERIES_ID, candidateSeriesIds.joinToString(","))
+            }
+
+            singleSeriesId != null -> {
+                put(COLUMN_SERIES_ID, singleSeriesId)
+                if (clearAbsentOptionalColumns) putNull(COLUMN_MULTI_SERIES_ID)
+            }
+
+            clearAbsentOptionalColumns -> {
+                putNull(COLUMN_SERIES_ID)
+                putNull(COLUMN_MULTI_SERIES_ID)
+            }
+        }
+
+        val episodeNumber = program.descriptors.series?.episodeNumber
+        if (episodeNumber == null || episodeNumber <= 0) {
+            if (clearAbsentOptionalColumns) putNull(COLUMN_EPISODE_DISPLAY_NUMBER)
+        } else {
+            put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
+        }
+    }
 
     private fun hasAuthoritativeOptionalColumnSnapshot(
         program: ProgramRecord,
@@ -921,7 +928,7 @@ class TvProviderWriter private constructor(
                 cursor.use { c ->
                     while (c.moveToNext()) {
                         val data = providerDataBytes(c, 1)
-                        val key = TvProviderWriter.parseProgramKey(data)
+                        val key = parseProgramKey(data)
                         if (key != null && key !in out) out[key] = c.getLong(0)
                     }
                 }
@@ -944,7 +951,7 @@ class TvProviderWriter private constructor(
                 cursor.use { c ->
                     while (c.moveToNext()) {
                         val data = providerDataBytes(c, 1)
-                        val key = TvProviderWriter.parseProgramKey(data)
+                        val key = parseProgramKey(data)
                         if (key != null && key !in out) out[key] = c.getLong(0)
                     }
                 }
@@ -1009,8 +1016,8 @@ class TvProviderWriter private constructor(
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(0)
                         val ownerPackage = cursor.getString(1)
-                        val key = TvProviderWriter.parseProgramKey(providerDataBytes(cursor, 2))
-                        if (TvProviderWriter.shouldDeleteOwnedObsoleteProgramRow(
+                        val key = parseProgramKey(providerDataBytes(cursor, 2))
+                        if (shouldDeleteOwnedObsoleteProgramRow(
                                 ownerPackage,
                                 context.packageName,
                                 key,

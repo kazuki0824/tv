@@ -53,12 +53,13 @@ class TunerController(
     private val context: Context,
     private val inputId: String,
     private val useCase: Int = TvInputService.PRIORITY_HINT_USE_CASE_TYPE_LIVE,
-    private val sessionId: String? = null,
-    private val sessionContext: Context? = null,
+    sessionId: String? = null,
+    sessionContext: Context? = null,
 ) : AutoCloseable {
     interface SectionFilterHandle : AutoCloseable {
         val pid: TsPid
         val isOpen: Boolean
+        val filterObjectCount: Int get() = if (isOpen) 1 else 0
     }
 
     data class ResolvedChannel(
@@ -92,7 +93,8 @@ class TunerController(
         val subtitle: AribElementaryStream? = null,
         val subtitleLanguageId: Int? = null,
         val superimpose: AribElementaryStream? = null,
-        val audioComponentType: Int? = null,
+        val audioChannelConfiguration: String? = null,
+        val audioDualMono: Boolean? = null,
         val dualMonoPresentation: PlaybackPipeline.DualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN,
     )
 
@@ -124,6 +126,7 @@ class TunerController(
         private var closing = false
         val isClosed: Boolean get() = artifacts.isEmpty()
         override val isOpen: Boolean get() = !closing && artifacts.isNotEmpty() && artifacts.all { it.started }
+        override val filterObjectCount: Int get() = artifacts.size
 
         override fun close(): Unit =
             callOnController {
@@ -166,11 +169,12 @@ class TunerController(
             "TunerSectionFilterHandle(pid=$pid, generation=$generation, filters=${artifacts.size}, closing=$closing)"
     }
 
-    private inner class UnavailableSectionFilterHandle(
+    private class UnavailableSectionFilterHandle(
         override val pid: TsPid,
         private val reason: String,
     ) : SectionFilterHandle {
         override val isOpen: Boolean get() = false
+        override val filterObjectCount: Int get() = 0
 
         override fun close() = Unit
 
@@ -232,6 +236,9 @@ class TunerController(
     private val dynamicPmtPids = linkedSetOf<TsPid>()
     private val dynamicEcmPids = linkedSetOf<TsPid>()
     private val dynamicEmmPids = linkedSetOf<TsPid>()
+    private val failedDynamicPmtPids = linkedSetOf<TsPid>()
+    private val failedDynamicEcmPids = linkedSetOf<TsPid>()
+    private val failedDynamicEmmPids = linkedSetOf<TsPid>()
     private val captionLanguagesByPid = ConcurrentHashMap<TsPid, List<NativeAribCaptionFactParser.Language>>()
     private val captionFactParsers = ConcurrentHashMap<TsPid, NativeAribCaptionFactParser>()
     private val superimposeTimingByPid = ConcurrentHashMap<TsPid, Int>()
@@ -389,16 +396,19 @@ class TunerController(
     private fun armTuneEventListener(
         tunerInstance: Tuner,
         generation: Long,
-    ): Boolean {
-        if (onTuneEventCallback == null) return true
-        return runCatching {
-            tunerInstance.setOnTuneEventListener(sectionExecutor) { event ->
-                if (tunerInstance === tuner && !released) handleTuneEventOnController(generation, event)
-            }
-        }.onFailure { error ->
-            Log.w(LogTags.TIS, "frontend tune event listener 登録に失敗しました inputId=$inputId generation=$generation", error)
-        }.isSuccess
-    }
+    ): Boolean =
+        onTuneEventCallback == null ||
+            runCatching {
+                tunerInstance.setOnTuneEventListener(sectionExecutor) { event ->
+                    if (tunerInstance === tuner && !released) handleTuneEventOnController(generation, event)
+                }
+            }.onFailure { error ->
+                Log.w(
+                    LogTags.TIS,
+                    "frontend tune event listener 登録に失敗しました inputId=$inputId generation=$generation",
+                    error,
+                )
+            }.isSuccess
 
     private fun handleTuneEventOnController(
         generation: Long,
@@ -800,19 +810,6 @@ class TunerController(
         return tuneResolvedChannel(synthetic)
     }
 
-    @Suppress("MaxLineLength")
-    fun tuneAndBeginSiIngest(settings: FrontendSettings): Int = callOnController { tuneAndBeginSiIngestOnController(settings) }
-
-    private fun tuneAndBeginSiIngestOnController(settings: FrontendSettings): Int {
-        val tunerInstance = tuner ?: return Tuner.RESULT_UNAVAILABLE
-        resetBeforeTune()
-        val result = tunerInstance.tune(settings)
-        if (result == Tuner.RESULT_SUCCESS) {
-            initializeAcceptedTune(null, tuneGeneration + 1L)
-        }
-        return result
-    }
-
     @Suppress("ReturnCount", "MaxLineLength")
     private fun tuneResolvedChannel(channel: ResolvedChannel): TuneOutcome {
         resetBeforeTune()
@@ -828,7 +825,7 @@ class TunerController(
         }
         val result =
             runCatching { tunerInstance.tune(settings) }.getOrElse { e ->
-                runCatching { tunerInstance.clearOnTuneEventListener() }
+                runCatching { tunerInstance.clearOnTuneEventListener() }.onFailure(e::addSuppressed)
                 Log.w(LogTags.TIS, "Tuner.tune が例外を返しました inputId=$inputId channel=$channel", e)
                 return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, e.message.orEmpty())
             }
@@ -836,17 +833,30 @@ class TunerController(
             initializeAcceptedTune(channel, nextGeneration)
             TuneOutcome(true, result, channel, tuneGeneration)
         } else {
-            runCatching { tunerInstance.clearOnTuneEventListener() }
+            val cleanupFailure = runCatching { tunerInstance.clearOnTuneEventListener() }.exceptionOrNull()
+            if (cleanupFailure != null) {
+                Log.w(LogTags.TIS, "Tune listener cleanup failed after tune result=$result", cleanupFailure)
+            }
             currentTune = null
             tuneAccepted = false
             playbackPipeline.stop()
-            TuneOutcome(false, result, channel, tuneGeneration, "Tuner.tune に失敗しました result=$result")
+            TuneOutcome(
+                false,
+                result,
+                channel,
+                tuneGeneration,
+                "Tuner.tune に失敗しました result=$result" +
+                    (cleanupFailure?.let { "; listener解除失敗=$it" } ?: ""),
+            )
         }
     }
 
     private fun invalidateTuneOnController() {
         currentTune = null
         tuneAccepted = false
+        failedDynamicPmtPids.clear()
+        failedDynamicEcmPids.clear()
+        failedDynamicEmmPids.clear()
         captionLanguagesByPid.clear()
         superimposeTimingByPid.clear()
         latestBroadcastClockAuthority = null
@@ -893,27 +903,6 @@ class TunerController(
         )
     }
 
-    fun beginSiIngestAfterTune(): Boolean = callOnController { beginSiIngestAfterTuneOnController() }
-
-    private fun beginSiIngestAfterTuneOnController(): Boolean {
-        if (!tuneAccepted) {
-            Log.w(LogTags.TIS, "tune 要求未受付のため SI 取得を開始しません inputId=$inputId")
-            return false
-        }
-        openInitialSectionFilters(tuneGeneration)
-        return true
-    }
-
-    fun openInitialSectionFilters(generation: Long = tuneGeneration): Unit =
-        callOnController {
-            openInitialSectionFiltersOnController(generation)
-        }
-
-    private fun openInitialSectionFiltersOnController(generation: Long = tuneGeneration) {
-        if (!tuneAccepted) return
-        prepareInitialSectionFiltersOnController(generation)
-    }
-
     @Suppress("MaxLineLength")
     private fun prepareInitialSectionFiltersOnController(generation: Long) {
         listOf(
@@ -929,8 +918,6 @@ class TunerController(
         }
         Log.d(LogTags.TIS, "初期 section filter を開きます inputId=$inputId pids=${sectionFilterHandles.keys} generation=$generation")
     }
-
-    fun openSectionFilters() = openInitialSectionFilters()
 
     fun openProgramMapFilter(pmtPid: TsPid): SectionFilterHandle = openSectionFilter(pmtPid)
 
@@ -955,12 +942,26 @@ class TunerController(
         return SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) { createSectionFilter(pid, generation) }
     }
 
+    private fun currentSectionFilterObjectCount(): Int = sectionFilterHandles.values.sumOf { it.filterObjectCount }
+
+    @Suppress("MaxLineLength")
+    private fun sectionFilterCapacity(tunerInstance: Tuner): Int = tunerInstance.demuxCapabilities?.sectionFilterCount ?: 0
+
     @Suppress("ReturnCount", "TooGenericExceptionCaught", "MaxLineLength")
     private fun createSectionFilter(
         pid: TsPid,
         generation: Long,
     ): SectionFilterHandle {
         val tunerInstance = tuner ?: return UnavailableSectionFilterHandle(pid, "Tuner利用不可")
+        val requestedObjects = sectionSettingsForPid(pid).size
+        val capacity = sectionFilterCapacity(tunerInstance)
+        val currentObjects = currentSectionFilterObjectCount()
+        if (capacity <= 0 || currentObjects > capacity - requestedObjects) {
+            val detail =
+                "section filter capacity不足 current=$currentObjects requested=$requestedObjects capacity=$capacity"
+            Log.w(LogTags.TIS, "$detail inputId=$inputId pid=$pid generation=$generation")
+            return UnavailableSectionFilterHandle(pid, detail)
+        }
         val callback =
             object : FilterCallback {
                 override fun onFilterEvent(
@@ -982,7 +983,7 @@ class TunerController(
                             }
 
                             SectionFilterPolicy.DataLengthDecision.ACCEPT -> {
-                                Unit
+                                // 続けてsectionを読み込む。
                             }
                         }
                         val section = ByteArray(length.toInt())
@@ -1014,7 +1015,7 @@ class TunerController(
                             }
 
                             SectionFilterPolicy.ReadDecision.STALE_SOURCE -> {
-                                Unit
+                                // 現在の選局世代に属さない配送は破棄する。
                             }
                         }
                     }
@@ -1133,7 +1134,8 @@ class TunerController(
 
     fun closeSectionFilters(): Unit = callOnController { closeSectionFiltersOnController() }
 
-    @Suppress("TooGenericExceptionCaught")
+    // 同一例外の再throw時に addSuppressed(self) が失敗しないよう同一性を検査する。
+    @Suppress("KotlinConstantConditions", "TooGenericExceptionCaught")
     private fun closeSectionFiltersOnController() {
         sectionFilters.clear()
         var failure: RuntimeException? = null
@@ -1163,13 +1165,13 @@ class TunerController(
     ) {
         if (!tuneAccepted || generation != tuneGeneration) return
         SectionFilterPolicy.completeCleanup(
-            { replaceDynamicPidSet(dynamicPmtPids, pmtPids) { openProgramMapFilter(it) } },
-            { replaceDynamicPidSet(dynamicEcmPids, ecmPids) { openEcmFilter(it) } },
-            { replaceDynamicPidSet(dynamicEmmPids, emmPids) { openEmmFilter(it) } },
+            { replaceDynamicPidSet(dynamicPmtPids, failedDynamicPmtPids, pmtPids) { openProgramMapFilter(it) } },
+            { replaceDynamicPidSet(dynamicEcmPids, failedDynamicEcmPids, ecmPids) { openEcmFilter(it) } },
+            { replaceDynamicPidSet(dynamicEmmPids, failedDynamicEmmPids, emmPids) { openEmmFilter(it) } },
         )
     }
 
-    @Suppress("MaxLineLength")
+    @Suppress("MaxLineLength", "TooGenericExceptionCaught")
     fun updateCasMetadataAndFilters(
         metadata: List<CaMetadata>,
         pmtPids: Set<TsPid>,
@@ -1179,6 +1181,8 @@ class TunerController(
         callOnController {
             val controller = casController ?: return@callOnController null
             updateCasIfCurrent(generation, tuneGeneration, tuneAccepted) {
+                val failedEcmRequestsToRetain = linkedSetOf<TsPid>()
+                val failedEmmRequestsToRetain = linkedSetOf<TsPid>()
                 SectionFilterPolicy.commitCasAndFilters(
                     updateCas = {
                         val acceptedMetadata = SectionFilterPolicy.metadataForCasDecision(casDecisionReady, metadata)
@@ -1194,16 +1198,26 @@ class TunerController(
                         )
                     },
                     commitFilters = { result ->
-                        updateDynamicSectionFiltersOnController(pmtPids, result.ecmPids, result.emmPids, generation)
-                        check((pmtPids + result.ecmPids + result.emmPids).all { sectionFilterHandles[it]?.isOpen == true }) {
-                            "CAS/SI filter集合を開始できません"
+                        try {
+                            updateDynamicSectionFiltersOnController(pmtPids, result.ecmPids, result.emmPids, generation)
+                            check((pmtPids + result.ecmPids + result.emmPids).all { sectionFilterHandles[it]?.isOpen == true }) {
+                                "CAS/SI filter集合を開始できません"
+                            }
+                            if (!casDecisionReady) playbackPipeline.stop()
+                        } catch (failure: RuntimeException) {
+                            failedEcmRequestsToRetain += failedDynamicEcmPids.intersect(result.ecmPids)
+                            failedEmmRequestsToRetain += failedDynamicEmmPids.intersect(result.emmPids)
+                            throw failure
                         }
-                        if (!casDecisionReady) playbackPipeline.stop()
                     },
                     reject = {
                         SectionFilterPolicy.completeCleanup(
                             { controller.clearForResourceLoss() },
                             { updateDynamicSectionFiltersOnController(pmtPids, emptySet(), emptySet(), generation) },
+                            {
+                                failedDynamicEcmPids += failedEcmRequestsToRetain
+                                failedDynamicEmmPids += failedEmmRequestsToRetain
+                            },
                             { playbackPipeline.stop() },
                         )
                     },
@@ -1232,6 +1246,7 @@ class TunerController(
 
     private fun replaceDynamicPidSet(
         current: MutableSet<TsPid>,
+        failedWhileRequested: MutableSet<TsPid>,
         next: Set<TsPid>,
         opener: (TsPid) -> SectionFilterHandle,
     ) {
@@ -1241,6 +1256,7 @@ class TunerController(
             close = { pid -> if (pid !in initialPids()) closeSectionFilter(pid) },
             open = { pid -> opener(pid).isOpen },
             isOpen = { pid -> sectionFilterHandles[pid]?.isOpen == true },
+            failedWhileRequested = failedWhileRequested,
         )
     }
 
@@ -1254,7 +1270,8 @@ class TunerController(
             WellKnownSectionPid.TDT,
         )
 
-    fun onSection(
+    @Suppress("unused")
+    internal fun onSection(
         pid: TsPid,
         section: ByteArray,
         generation: Long = tuneGeneration,
@@ -1410,7 +1427,8 @@ class TunerController(
             subtitle,
             selectedCaptionTrack?.captionLanguageId,
             superimpose,
-            audio?.componentType,
+            null,
+            null,
             dualMonoPresentation,
         )
     }
@@ -1583,8 +1601,8 @@ class TunerController(
                     -> {
                         Log.w(
                             LogTags.TIS,
-                            "Timing=10 superimposeのinvalid/未分類data-groupをfail-closedで破棄します pid=$pid gene" +
-                                "ration=$generation disposition=${facts?.disposition}",
+                            "Timing=10 superimposeのinvalid/未分類data-groupをfail-closedで破棄します pid=$pid " +
+                                "generation=$generation disposition=${facts?.disposition}",
                         )
                     }
                 }
@@ -1620,11 +1638,7 @@ class TunerController(
             expectedClockGeneration,
         )
 
-    fun currentResolvedChannel(): ResolvedChannel? = callOnController { currentTune }
-
     fun currentGeneration(): Long = callOnController { tuneGeneration }
-
-    fun isTuneRequestAccepted(): Boolean = callOnController { tuneAccepted }
 
     @Suppress("MagicNumber", "MaxLineLength")
     private fun resolveChannel(channelUri: Uri): Result<ResolvedChannel> =
@@ -1694,7 +1708,7 @@ class TunerController(
                         .apply {
                             when (channel.streamSelector.type) {
                                 StreamSelectorType.NONE -> {
-                                    Unit
+                                    // stream IDによる選択は不要。
                                 }
 
                                 StreamSelectorType.TSID -> {

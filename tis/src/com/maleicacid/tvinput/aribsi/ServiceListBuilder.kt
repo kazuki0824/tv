@@ -56,59 +56,17 @@ class ServiceListBuilder(
 
     fun snapshot(): List<AribService> = engine.serviceRegistrationSnapshot().services
 
-    fun completenessSummary(): ServiceSnapshotSummary {
-        val transaction = engine.serviceRegistrationSnapshot()
-        val completeness =
-            transaction.services.map {
-                completenessForModel(it, transaction.semanticFactsByServiceKey[it.serviceKey])
-            }
-        return ServiceSnapshotSummary(
-            completeness = completeness,
-        )
-    }
-
-    fun registrationReadySnapshot(): List<AribService> {
-        val transaction = engine.serviceRegistrationSnapshot()
-        return transaction.services.filter { service ->
-            ServicePolicyEvaluator
-                .evaluate(transaction.semanticFactsByServiceKey[service.serviceKey])
-                .registrationReady
-        }
-    }
-
-    fun clearLivePlaybackStaticallyEligibleSnapshot(): List<AribService> {
-        val transaction = engine.serviceRegistrationSnapshot()
-        return transaction.services.filter { service ->
-            ServicePolicyEvaluator
-                .evaluate(transaction.semanticFactsByServiceKey[service.serviceKey])
-                .clearLivePlaybackStaticallyEligible
-        }
-    }
-
-    fun incompleteReasons(): Map<ServiceKey, List<String>> {
-        val transaction = engine.serviceRegistrationSnapshot()
-        val completeness =
-            transaction.services.map {
-                completenessForModel(it, transaction.semanticFactsByServiceKey[it.serviceKey])
-            }
-        val reasons =
-            completeness
-                .filter { !it.registrationReady }
-                .associate { it.serviceKey to it.reasons }
-        return reasons
-    }
-
     companion object {
         fun completenessForModel(
             service: AribService,
             facts: ServiceSemanticFacts?,
-            expectedSmdBroadcastingIdentifier: Int? = null,
+            expectedSmdBroadcastSystem: BroadcastSystem? = null,
         ): ServiceCompleteness {
             val diagnostic =
                 ServicePolicyEvaluator.evaluate(
                     facts = facts,
                     fallbackKey = service.serviceKey,
-                    expectedSmdBroadcastingIdentifier = expectedSmdBroadcastingIdentifier,
+                    expectedSmdBroadcastSystem = expectedSmdBroadcastSystem,
                 )
             return ServiceCompleteness(diagnostic)
         }
@@ -118,7 +76,6 @@ class ServiceListBuilder(
 object ServicePolicyEvaluator {
     private const val SERVICE_TYPE_DIGITAL_TV = 0x01
     private const val SERVICE_TYPE_DIGITAL_AUDIO = 0x02
-    private const val SUPPORTED_SMD = "SUPPORTED_BROADCAST"
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
@@ -128,13 +85,11 @@ object ServicePolicyEvaluator {
     @Suppress("MagicNumber")
     private val RECOGNIZED_UNSUPPORTED_AUDIO_STREAM_TYPES = setOf(0x11)
 
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-    @Suppress("MagicNumber")
-    fun expectedSmdBroadcastingIdentifier(profile: Int): Int? =
+    fun expectedSmdBroadcastSystem(profile: Int): BroadcastSystem? =
         when (profile) {
-            SiDiscoveryProfile.ISDB_T -> 0b000011
-            SiDiscoveryProfile.BS -> 0b000010
-            SiDiscoveryProfile.CS110 -> 0b000100
+            SiDiscoveryProfile.ISDB_T -> BroadcastSystem.ISDB_T
+            SiDiscoveryProfile.BS -> BroadcastSystem.ISDB_S_BS
+            SiDiscoveryProfile.CS110 -> BroadcastSystem.ISDB_S_110CS
             else -> null
         }
 
@@ -147,7 +102,7 @@ object ServicePolicyEvaluator {
         evaluate(
             facts = snapshot?.semanticFactsByServiceKey?.get(key),
             fallbackKey = key,
-            expectedSmdBroadcastingIdentifier = snapshot?.programs?.discoveryProfile?.let(::expectedSmdBroadcastingIdentifier),
+            expectedSmdBroadcastSystem = snapshot?.programs?.discoveryProfile?.let(::expectedSmdBroadcastSystem),
         )
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
@@ -159,7 +114,7 @@ object ServicePolicyEvaluator {
         fallbackKey: ServiceKey? = facts?.serviceKey,
         hasPhysicalTune: Boolean = true,
         hasInternalTuneKey: Boolean = true,
-        expectedSmdBroadcastingIdentifier: Int? = null,
+        expectedSmdBroadcastSystem: BroadcastSystem? = null,
     ): ServicePublishabilityDiagnostic {
         val key = facts?.serviceKey ?: fallbackKey ?: ServiceKey(0, 0, 0)
         if (facts == null) {
@@ -214,11 +169,11 @@ object ServicePolicyEvaluator {
                 }
             }
         }
-        if (facts.smd.semanticState != SUPPORTED_SMD) {
-            registrationReasons += facts.smd.semanticState
+        if (facts.smd.semanticState != SmdSemanticState.SUPPORTED_BROADCAST) {
+            registrationReasons += facts.smd.semanticState.wireValue
         } else if (
-            expectedSmdBroadcastingIdentifier != null &&
-            facts.smd.broadcastingIdentifier != expectedSmdBroadcastingIdentifier
+            expectedSmdBroadcastSystem != null &&
+            facts.smd.broadcastSystem != expectedSmdBroadcastSystem
         ) {
             registrationReasons += "UNSUPPORTED_BROADCAST_SYSTEM"
         }

@@ -23,6 +23,128 @@ fn cleanup_failure() -> HalError {
 }
 
 #[test]
+fn runtime_poison_latches_critical_state_and_keeps_diagnostics_readable() {
+    let runtime = std::sync::Mutex::new(TunerServiceRuntime::new());
+    let failure_state = runtime.lock().unwrap().failure_state();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = runtime.lock().unwrap();
+        panic!("service runtimeを汚染");
+    }))
+    .is_err());
+    TunerServiceRuntime::mark_shared_service_critical(&runtime);
+    assert_eq!(
+        failure_state.snapshot(),
+        crate::ServiceFailureSnapshot {
+            service_critical: true,
+            runtime_lock_poison_count: 1,
+            diagnostic_counter_saturated: false,
+        }
+    );
+    assert!(matches!(
+        TunerServiceRuntime::lock_shared(&runtime, "retry"),
+        Err(HalError::ServiceRuntimeLockPoisoned { operation: "retry" })
+    ));
+    assert!(runtime.is_poisoned());
+    assert_eq!(failure_state.snapshot().runtime_lock_poison_count, 2);
+}
+
+#[test]
+fn critical_service_cannot_be_reopened_by_boot_reset() {
+    let mut runtime = TunerServiceRuntime::new();
+    runtime.mark_service_critical();
+    assert!(runtime
+        .boot_from_probe_results_with_diagnostic_clear_result([])
+        .1
+        .is_err());
+    assert_eq!(runtime.state(), crate::ServiceState::ServiceCritical);
+    assert_eq!(
+        runtime.failure_state().snapshot().runtime_lock_poison_count,
+        0
+    );
+}
+
+#[test]
+fn filter_delivery_wake_preserves_runtime_poison_state() {
+    let runtime = std::sync::Arc::new(std::sync::Mutex::new(TunerServiceRuntime::new()));
+    let failure_state = runtime.lock().unwrap().failure_state();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = runtime.lock().unwrap();
+        panic!("service runtimeを汚染");
+    }))
+    .is_err());
+    assert!(matches!(
+        crate::boot::notify_filter_delivery_change(&runtime),
+        Err(HalError::ServiceRuntimeLockPoisoned { .. })
+    ));
+    assert!(failure_state.snapshot().service_critical);
+    assert_eq!(failure_state.snapshot().runtime_lock_poison_count, 1);
+}
+
+#[test]
+fn probe_io_failure_is_retained_without_advertising_a_frontend() {
+    let mut runtime = TunerServiceRuntime::new();
+    let error = HalError::Io {
+        backend: "dvb",
+        operation: "driver link読取り",
+        path: Some("/sys/dvb/driver".into()),
+        errno: Some(13),
+        detail: maleicacid_tuner_hal2_common::HalErrorDetail::new("権限がありません"),
+    };
+    let outcome =
+        runtime.boot_from_probe_results([crate::FrontendProbeOutcome::DeviceProbeFailed {
+            backend: maleicacid_tuner_hal2_common::FrontendBackendKind::LinuxDvb,
+            path: "/dev/dvb/adapter0/frontend0".into(),
+            error: error.clone(),
+        }]);
+    assert_eq!(outcome, crate::ServiceBootOutcome::Degraded);
+    assert!(runtime.query().frontend_ids().is_empty());
+    assert!(runtime.startup_diagnostic_snapshot().records().iter().any(|record| matches!(record,
+        crate::StartupDiagnosticRecord::DeviceProbeFailed { error: recorded, .. } if recorded == &error)));
+}
+
+#[test]
+fn fmq_failure_and_rollback_keep_the_primary_delivery_kind() {
+    use maleicacid_tuner_hal2_common::FmqFailureKind;
+    use maleicacid_tuner_hal2_demux::DemuxRuntimeError;
+    for kind in [
+        FmqFailureKind::WriteFailed,
+        FmqFailureKind::ShortWrite,
+        FmqFailureKind::EventFlagWakeFailed,
+    ] {
+        let expected = HalError::FmqDeliveryFailed {
+            kind,
+            object_id: Some(17),
+        };
+        assert_eq!(
+            crate::boot::demux_runtime_error_to_hal(DemuxRuntimeError::fmq_delivery_failure(
+                17, kind
+            )),
+            expected
+        );
+        let rollback = maleicacid_tuner_hal2_demux::QueueRuntimeError {
+            kind: maleicacid_tuner_hal2_demux::QueueRuntimeErrorKind::DataPathFailure,
+            detail: "transaction解放中にDVR queue epochロックが汚染されました",
+        };
+        let failure = DemuxRuntimeError::fmq_delivery_rollback_failed(17, kind, rollback);
+        assert!(matches!(failure.kind,
+            maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed {
+                delivery, rollback: recorded,
+            } if delivery == kind && recorded == rollback));
+        let composed = crate::boot::demux_runtime_error_to_hal(failure);
+        assert_eq!(composed.primary_error(), &expected);
+        assert!(matches!(
+            composed.cleanup_error(),
+            Some(HalError::CleanupFailed { .. })
+        ));
+        assert!(composed
+            .cleanup_error()
+            .unwrap()
+            .to_string()
+            .contains(rollback.detail));
+    }
+}
+
+#[test]
 fn open_rollback_composes_object_and_runtime_cleanup_failure() {
     let result = finish_open_rollback(
         Err(primary_failure()),

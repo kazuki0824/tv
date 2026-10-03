@@ -3,17 +3,112 @@
 //! descriptorだけのlive readerモデルを置き換える実装である。pumpはread loopとTS packet再同期を所有する。
 //! 明示的なpacket sinkを必須とし、demux bindingなしで完了に見える無処理成功sinkは提供しない。
 
+use super::frontend_worker::FrontendWorkerContext;
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 use maleicacid_tuner_hal2_control_core::WorkerContext;
 use std::io::{self, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, HalError, HalErrorDetail, HalInternalKind,
-    TsPacketCompletionBuffer, TS_PACKET_SIZE,
+    HalError, HalErrorDetail, HalInternalKind, TsPacketCompletionBuffer, TS_PACKET_SIZE,
 };
 
 use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
+
+#[cfg(test)]
+type PrepareReadyTestBarrier = (
+    i32,
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
+#[cfg(test)]
+type PrepareTestSignal = (i32, std::sync::mpsc::Sender<()>);
+
+#[cfg(test)]
+static PREPARE_READY_TEST_BARRIER: std::sync::Mutex<Option<PrepareReadyTestBarrier>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+static PREPARE_WAIT_TEST_SIGNAL: std::sync::Mutex<Option<PrepareTestSignal>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+static PREPARE_CANCEL_BRANCH_TEST_SIGNAL: std::sync::Mutex<Option<PrepareTestSignal>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn install_prepare_ready_test_barrier(
+    frontend_id: i32,
+    entered: std::sync::mpsc::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+) {
+    *PREPARE_READY_TEST_BARRIER.lock().unwrap() = Some((frontend_id, entered, resume));
+}
+
+#[cfg(test)]
+fn install_prepare_wait_test_signal(frontend_id: i32, entered: std::sync::mpsc::Sender<()>) {
+    *PREPARE_WAIT_TEST_SIGNAL.lock().unwrap() = Some((frontend_id, entered));
+}
+
+#[cfg(test)]
+fn install_prepare_cancel_branch_test_signal(
+    frontend_id: i32,
+    entered: std::sync::mpsc::Sender<()>,
+) {
+    *PREPARE_CANCEL_BRANCH_TEST_SIGNAL.lock().unwrap() = Some((frontend_id, entered));
+}
+
+#[cfg(test)]
+fn wait_at_prepare_ready_test_barrier(frontend_id: i32) {
+    let mut slot = PREPARE_READY_TEST_BARRIER.lock().unwrap();
+    let Some((target_frontend_id, _, _)) = slot.as_ref() else {
+        return;
+    };
+    if *target_frontend_id != frontend_id {
+        return;
+    }
+    let Some((_, entered, resume)) = slot.take() else {
+        return;
+    };
+    drop(slot);
+    entered.send(()).unwrap();
+    resume.recv().unwrap();
+}
+
+#[cfg(test)]
+fn notify_prepare_wait_for_test(frontend_id: i32) {
+    let mut slot = PREPARE_WAIT_TEST_SIGNAL.lock().unwrap();
+    let Some((target_frontend_id, _)) = slot.as_ref() else {
+        return;
+    };
+    if *target_frontend_id != frontend_id {
+        return;
+    }
+    let Some((_, entered)) = slot.take() else {
+        return;
+    };
+    drop(slot);
+    entered.send(()).unwrap();
+}
+
+#[cfg(test)]
+fn notify_prepare_cancel_branch_for_test(frontend_id: i32) {
+    let mut slot = PREPARE_CANCEL_BRANCH_TEST_SIGNAL.lock().unwrap();
+    let Some((target_frontend_id, _)) = slot.as_ref() else {
+        return;
+    };
+    if *target_frontend_id != frontend_id {
+        return;
+    }
+    let Some((_, entered)) = slot.take() else {
+        return;
+    };
+    drop(slot);
+    entered.send(()).unwrap();
+}
 
 pub trait FrontendLivePacketSink: Send {
     fn deliver_ts_packet(&mut self, packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError>;
@@ -32,6 +127,7 @@ where
 pub struct FrontendLivePumpReport {
     pub packets_delivered: u64,
     pub malformed_bytes: u64,
+    pub malformed_byte_counter_saturated: bool,
     pub read_retries: u64,
     pub read_retry_counter_saturated: bool,
     pub stopped_by_cancel: bool,
@@ -47,8 +143,15 @@ impl FrontendLivePumpReport {
         Ok(())
     }
 
-    fn add_malformed(&mut self, amount: u64) {
+    fn add_malformed(&mut self, amount: u64, descriptor: &FrontendLiveReaderDescriptor) {
         self.malformed_bytes = self.malformed_bytes.saturating_add(amount);
+        if self.malformed_bytes == u64::MAX && !self.malformed_byte_counter_saturated {
+            self.malformed_byte_counter_saturated = true;
+            eprintln!(
+                "diagnostic_counter_saturated counter=malformed_bytes owner=frontend_live_pump frontend={} reader={:?}",
+                descriptor.frontend_id, descriptor.kind
+            );
+        }
     }
 }
 
@@ -70,6 +173,20 @@ pub struct FrontendLivePumpOwner {
     thread_result: ThreadResultOwner<FrontendLivePumpReport>,
 }
 
+#[must_use = "準備済みライブTSポンプはactivateまたはjoin_after_stopで消費してください"]
+pub struct PreparedFrontendLivePump {
+    thread_result: ThreadResultOwner<FrontendLivePumpReport>,
+    start_gate: Arc<AtomicBool>,
+}
+
+impl core::fmt::Debug for PreparedFrontendLivePump {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PreparedFrontendLivePump")
+            .field("thread_result", &self.thread_result)
+            .finish()
+    }
+}
+
 impl FrontendLivePumpOwner {
     pub fn start(
         descriptor: FrontendLiveReaderDescriptor,
@@ -83,8 +200,17 @@ impl FrontendLivePumpOwner {
         Ok(Self { thread_result })
     }
 
-    pub fn request_stop(&self) -> Result<(), HalError> {
-        self.thread_result.request_stop_and_wake()
+    pub fn prepare(
+        descriptor: FrontendLiveReaderDescriptor,
+        reader: Box<dyn Read + Send>,
+        sink: Box<dyn FrontendLivePacketSink>,
+        caller: &FrontendWorkerContext,
+    ) -> Result<Option<PreparedFrontendLivePump>, HalError> {
+        PreparedFrontendLivePump::start(descriptor, reader, sink, caller)
+    }
+
+    pub fn request_stop(&self) {
+        self.thread_result.request_stop()
     }
 
     pub fn collect_if_finished(&mut self) -> FrontendLivePumpJoinOutcome {
@@ -95,17 +221,87 @@ impl FrontendLivePumpOwner {
     }
 
     pub fn join_after_stop(self) -> Result<FrontendLivePumpReport, HalError> {
-        let stop = self.request_stop();
-        let result = self.thread_result.join_after_stop();
-        match (stop, result) {
-            (Ok(()), result) => result,
-            (Err(error), Ok(_)) => Err(error),
-            (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
-                "live pump stop and join failed",
-                primary,
-                cleanup,
-            )),
+        self.request_stop();
+        self.thread_result.join_after_stop()
+    }
+}
+
+impl PreparedFrontendLivePump {
+    fn start(
+        descriptor: FrontendLiveReaderDescriptor,
+        mut reader: Box<dyn Read + Send>,
+        mut sink: Box<dyn FrontendLivePacketSink>,
+        caller: &FrontendWorkerContext,
+    ) -> Result<Option<Self>, HalError> {
+        let caller_wake = caller.clone();
+        #[cfg(test)]
+        let frontend_id = descriptor.frontend_id;
+        let ready = Arc::new(AtomicBool::new(false));
+        let worker_ready = Arc::clone(&ready);
+        let start_gate = Arc::new(AtomicBool::new(false));
+        let worker_start_gate = Arc::clone(&start_gate);
+        let thread_result =
+            ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
+                #[cfg(test)]
+                wait_at_prepare_ready_test_barrier(frontend_id);
+
+                worker_ready.store(true, Ordering::Release);
+                caller_wake.wake();
+                loop {
+                    if control.stop_requested() {
+                        return Ok(FrontendLivePumpReport {
+                            stopped_by_cancel: true,
+                            ..FrontendLivePumpReport::default()
+                        });
+                    }
+                    if worker_start_gate.load(Ordering::Acquire) {
+                        break;
+                    }
+                    control.wait_until(None);
+                }
+                run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
+            })?;
+
+        if caller.cancel_requested() {
+            thread_result.request_stop();
+            let report = thread_result.join_after_stop()?;
+            debug_assert!(report.stopped_by_cancel);
+            return Ok(None);
         }
+
+        #[cfg(test)]
+        notify_prepare_wait_for_test(frontend_id);
+
+        while !ready.load(Ordering::Acquire) {
+            if caller.cancel_requested() {
+                #[cfg(test)]
+                notify_prepare_cancel_branch_for_test(frontend_id);
+
+                thread_result.request_stop();
+                let report = thread_result.join_after_stop()?;
+                debug_assert!(report.stopped_by_cancel);
+                return Ok(None);
+            }
+            caller.wait_until(None);
+        }
+
+        Ok(Some(Self {
+            thread_result,
+            start_gate,
+        }))
+    }
+
+    pub fn activate(self) -> FrontendLivePumpOwner {
+        self.start_gate.store(true, Ordering::Release);
+        self.thread_result.wake();
+        FrontendLivePumpOwner {
+            thread_result: self.thread_result,
+        }
+    }
+
+    pub fn join_after_stop(self) -> Result<FrontendLivePumpReport, HalError> {
+        self.thread_result.request_stop();
+        self.thread_result.join_after_stop()
     }
 }
 
@@ -153,7 +349,7 @@ where
                             "live read retry deadline overflow",
                         )
                     })?;
-                control.wait_until(Some(deadline))?;
+                control.wait_until(Some(deadline));
                 continue;
             }
             Err(error) => return Err(io_error_to_hal(descriptor, "read", error)),
@@ -165,7 +361,10 @@ where
         }
 
         let drain = completion.push(&buf[..read_len]);
-        report.add_malformed(u64::try_from(drain.malformed_bytes).unwrap_or(u64::MAX));
+        report.add_malformed(
+            u64::try_from(drain.malformed_bytes).unwrap_or(u64::MAX),
+            descriptor,
+        );
         for packet in &drain.packets {
             sink.deliver_ts_packet(packet)?;
         }
@@ -173,7 +372,10 @@ where
     }
 
     let boundary = completion.drain_for_boundary();
-    report.add_malformed(u64::try_from(boundary.malformed_bytes).unwrap_or(u64::MAX));
+    report.add_malformed(
+        u64::try_from(boundary.malformed_bytes).unwrap_or(u64::MAX),
+        descriptor,
+    );
     if !report.stopped_by_cancel {
         for packet in &boundary.packets {
             sink.deliver_ts_packet(packet)?;
@@ -207,6 +409,153 @@ fn io_error_to_hal(
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::sync::mpsc;
+
+    fn prepare_for_test<R, S>(reader: R, sink: S) -> PreparedFrontendLivePump
+    where
+        R: Read + Send + 'static,
+        S: FrontendLivePacketSink + Send + 'static,
+    {
+        use crate::runtime::frontend_worker::{
+            FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStopOutcome,
+        };
+
+        let mut registry = FrontendWorkerRegistry::default();
+        let (prepared_tx, prepared_rx) = mpsc::channel();
+        registry
+            .start(1, FrontendWorkerKind::Tune, 1, move |ctx| {
+                let prepared = FrontendLivePumpOwner::prepare(
+                    descriptor(),
+                    Box::new(reader),
+                    Box::new(sink),
+                    &ctx,
+                )?
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用の準備済みライブTSポンプが取消されました",
+                    )
+                })?;
+                prepared_tx.send(prepared).map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用の準備済みライブTSポンプを返却できませんでした",
+                    )
+                })
+            })
+            .unwrap();
+
+        let prepared = prepared_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("準備済みライブTSポンプを受信できませんでした");
+        for _ in 0..100 {
+            if let Some(outcome) = registry.take_completed(1, FrontendWorkerKind::Tune) {
+                assert!(matches!(
+                    outcome,
+                    FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
+                ));
+                return prepared;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("準備親ワーカーが終了していません");
+    }
+
+    #[test]
+    fn caller_cancel_while_waiting_for_child_ready_stops_child_and_returns_none() {
+        use crate::runtime::frontend_worker::{
+            FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry,
+            FrontendWorkerStopOutcome,
+        };
+
+        let frontend_id = 9;
+        let (child_entered_tx, child_entered_rx) = mpsc::channel();
+        let (child_resume_tx, child_resume_rx) = mpsc::channel();
+        install_prepare_ready_test_barrier(frontend_id, child_entered_tx, child_resume_rx);
+        let (wait_entered_tx, wait_entered_rx) = mpsc::channel();
+        install_prepare_wait_test_signal(frontend_id, wait_entered_tx);
+        let (cancel_branch_tx, cancel_branch_rx) = mpsc::channel();
+        install_prepare_cancel_branch_test_signal(frontend_id, cancel_branch_tx);
+
+        let mut registry = FrontendWorkerRegistry::default();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        registry
+            .start(frontend_id, FrontendWorkerKind::Tune, 1, move |ctx| {
+                let prepared = FrontendLivePumpOwner::prepare(
+                    FrontendLiveReaderDescriptor::dvb_dvr_device(
+                        frontend_id,
+                        maleicacid_tuner_hal2_common::FrontendDevicePath::new(
+                            "/dev/dvb/adapter0/dvr9",
+                        ),
+                    ),
+                    Box::new(Cursor::new(Vec::<u8>::new())),
+                    Box::new(VecSink::default()),
+                    &ctx,
+                )?;
+                result_tx.send(prepared.is_none()).map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用の準備結果を送信できませんでした",
+                    )
+                })
+            })
+            .unwrap();
+
+        child_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        wait_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert!(matches!(
+            registry.request_stop(
+                frontend_id,
+                FrontendWorkerKind::Tune,
+                FrontendWorkerCancelReason::StopRequested,
+            ),
+            FrontendWorkerStopOutcome::CancelRequested { .. }
+        ));
+        cancel_branch_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        child_resume_tx.send(()).unwrap();
+
+        assert!(result_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+
+        for _ in 0..100 {
+            if let Some(outcome) = registry.take_completed(frontend_id, FrontendWorkerKind::Tune) {
+                assert!(matches!(
+                    outcome,
+                    FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
+                ));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("取消し済み準備ワーカーが終了していません");
+    }
+
+    #[test]
+    fn malformed_counter_saturation_is_retained_without_failing_the_pump() {
+        for amount in [1, 2, u64::MAX] {
+            let mut report = FrontendLivePumpReport {
+                malformed_bytes: u64::MAX - 1,
+                ..FrontendLivePumpReport::default()
+            };
+            report.add_malformed(0, &descriptor());
+            assert!(!report.malformed_byte_counter_saturated);
+            report.add_malformed(amount, &descriptor());
+            assert_eq!(report.malformed_bytes, u64::MAX);
+            assert!(report.malformed_byte_counter_saturated);
+            report.add_malformed(1, &descriptor());
+            report.add_packets(1).unwrap();
+            assert_eq!(report.malformed_bytes, u64::MAX);
+            assert_eq!(report.packets_delivered, 1);
+            assert!(!report.stopped_by_cancel);
+            assert!(!report.reached_eof);
+        }
+    }
 
     fn descriptor() -> FrontendLiveReaderDescriptor {
         FrontendLiveReaderDescriptor::dvb_dvr_device(
@@ -328,7 +677,7 @@ mod tests {
         )
         .unwrap();
         ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        owner.request_stop().unwrap();
+        owner.request_stop();
         assert!(owner
             .thread_result
             .wait_until_finished(Some(Instant::now() + Duration::from_secs(1)))
@@ -336,6 +685,116 @@ mod tests {
         let report = owner.join_after_stop().unwrap();
         assert!(report.stopped_by_cancel);
         assert!(!report.reached_eof);
+    }
+
+    #[test]
+    fn prepared_pump_does_not_read_until_activated() {
+        let (read_tx, read_rx) = mpsc::channel();
+        struct ObservedReader {
+            read_tx: mpsc::Sender<()>,
+        }
+        impl Read for ObservedReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                self.read_tx.send(()).unwrap();
+                Ok(0)
+            }
+        }
+
+        let owner = prepare_for_test(ObservedReader { read_tx }, VecSink::default());
+        assert!(read_rx.try_recv().is_err());
+        let owner = owner.activate();
+        read_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let report = owner.join_after_stop().unwrap();
+        assert!(report.reached_eof || report.stopped_by_cancel);
+    }
+
+    #[test]
+    fn prepared_pump_can_be_stopped_before_activation_without_reading() {
+        let (read_tx, read_rx) = mpsc::channel();
+        struct ObservedReader {
+            read_tx: mpsc::Sender<()>,
+        }
+        impl Read for ObservedReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                self.read_tx.send(()).unwrap();
+                Ok(0)
+            }
+        }
+
+        let owner = prepare_for_test(ObservedReader { read_tx }, VecSink::default());
+        let report = owner.join_after_stop().unwrap();
+        assert!(report.stopped_by_cancel);
+        assert!(read_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn prepared_pump_delivers_first_packets_after_activation() {
+        struct ChannelSink {
+            packet_tx: mpsc::Sender<[u8; TS_PACKET_SIZE]>,
+        }
+        impl FrontendLivePacketSink for ChannelSink {
+            fn deliver_ts_packet(&mut self, packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError> {
+                self.packet_tx.send(*packet).unwrap();
+                Ok(())
+            }
+        }
+
+        let first = packet(0x11);
+        let second = packet(0x22);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&first);
+        bytes.extend_from_slice(&second);
+        let (packet_tx, packet_rx) = mpsc::channel();
+        let owner = prepare_for_test(Cursor::new(bytes), ChannelSink { packet_tx });
+        assert!(packet_rx.try_recv().is_err());
+
+        let owner = owner.activate();
+        assert_eq!(
+            packet_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            first
+        );
+        assert_eq!(
+            packet_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            second
+        );
+        let report = owner.join_after_stop().unwrap();
+        assert!(report.reached_eof || report.stopped_by_cancel);
+    }
+
+    #[test]
+    fn prepared_pump_start_gates_are_independent() {
+        struct ObservedReader {
+            read_tx: mpsc::Sender<u8>,
+            id: u8,
+        }
+        impl Read for ObservedReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                self.read_tx.send(self.id).unwrap();
+                Ok(0)
+            }
+        }
+
+        let (read_tx, read_rx) = mpsc::channel();
+        let first = prepare_for_test(
+            ObservedReader {
+                read_tx: read_tx.clone(),
+                id: 1,
+            },
+            VecSink::default(),
+        );
+        let second = prepare_for_test(ObservedReader { read_tx, id: 2 }, VecSink::default());
+
+        let first = first.activate();
+        assert_eq!(read_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
+        assert!(read_rx.try_recv().is_err());
+
+        let second = second.activate();
+        assert_eq!(read_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
+
+        let first_report = first.join_after_stop().unwrap();
+        let second_report = second.join_after_stop().unwrap();
+        assert!(first_report.reached_eof || first_report.stopped_by_cancel);
+        assert!(second_report.reached_eof || second_report.stopped_by_cancel);
     }
 
     #[test]

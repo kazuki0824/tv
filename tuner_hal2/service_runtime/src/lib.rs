@@ -44,7 +44,7 @@ pub use boot::{
     FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
     FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome,
     OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome, ServiceBootOutcome,
-    TunerServiceRuntime,
+    ServiceFailureSnapshot, ServiceFailureState, TunerServiceRuntime,
 };
 pub use capability_profile::{
     configure_ip_cid_result, configure_monitor_event_result, failure_domain,
@@ -65,20 +65,22 @@ pub use diagnostics::{
     CallbackArtifactRuntimeSplitPhase, CallbackArtifactRuntimeSplitTarget,
     CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord,
     ChildOpenRollbackDiagnosticSnapshot, ChildOpenRollbackKind, ChildOpenRollbackOutcome,
-    ChildOpenRollbackPhase, DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticKind,
-    DemuxTransactionDiagnosticRecord, DemuxTransactionDiagnosticSnapshot,
-    DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
-    DescramblerDiagnosticSnapshot, DiagnosticSnapshot, DvrPostCommitNotificationDiagnosticRecord,
-    DvrPostCommitNotificationDiagnosticSnapshot, DvrPostCommitNotificationFailureKind,
-    DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
-    DvrStatusNotifierCleanupDiagnosticSnapshot, FilterCallbackDeliveryDiagnosticPhase,
-    FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
+    ChildOpenRollbackPhase, ClassifiedWorkerTerminalResult, DemuxTransactionDiagnosticId,
+    DemuxTransactionDiagnosticKind, DemuxTransactionDiagnosticRecord,
+    DemuxTransactionDiagnosticSnapshot, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
+    DescramblerDiagnosticRecord, DescramblerDiagnosticSnapshot, DiagnosticSnapshot,
+    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationDiagnosticSnapshot,
+    DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
+    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusNotifierCleanupDiagnosticSnapshot,
+    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
+    FilterCallbackDeliveryDiagnosticSnapshot, FrontendBackendDiagnosticSnapshot,
     FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
-    FrontendCallbackDeliveryDiagnosticSnapshot, QueueDescriptorQueryDiagnosticRecord,
-    QueueDescriptorQueryDiagnosticSnapshot, SharedCallbackArtifactRuntimeSplitDiagnostics,
-    SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
-    StartupDiagnosticKind, StartupDiagnosticPhase, StartupDiagnosticRecord,
-    StartupDiagnosticSnapshot,
+    FrontendCallbackDeliveryDiagnosticSnapshot, FrontendDiagnosticSnapshot, LnbBackendFailureClass,
+    LnbBackendFailureDiagnosticRecord, PacketPipelineDiagnosticRecord,
+    QueueDescriptorQueryDiagnosticRecord, QueueDescriptorQueryDiagnosticSnapshot,
+    SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
+    SharedDvrStatusNotifierCleanupDiagnostics, StartupDiagnosticKind, StartupDiagnosticPhase,
+    StartupDiagnosticRecord, StartupDiagnosticSnapshot, WorkerFailureCategory,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use frontend_ops::{
@@ -132,10 +134,13 @@ pub use root_method_txn::{
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
 };
 pub use root_object_ops::RootOpenTxn;
-pub use worker_failure_classifier::{ClassifiedWorkerTerminalResult, WorkerFailureCategory};
+pub use worker_failure_classifier::WorkerFailureClassifier;
 pub use worker_runtime::{
-    join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue,
-    WorkerRuntimeSupervisor, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
+    join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperPending,
+    WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction,
+    WorkerRuntimeSupervisorActiveEntry, WorkerRuntimeSupervisorReapingEntry,
+    WorkerRuntimeSupervisorStartDisposition, WorkerRuntimeSupervisorStartOperation,
+    WorkerRuntimeSupervisorStopDisposition, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
     CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
 };
 #[cfg(test)]
@@ -154,7 +159,6 @@ pub enum ServiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_binder_adapter::{AidlApi, AidlMethodCall};
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_demux::{
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PacketPid, PesSettings,
@@ -166,9 +170,10 @@ mod tests {
         DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
-        AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
-        DvrDataFormat, DvrOpenKind, FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest,
-        RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+        AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+        DvrConfigureKind, DvrConfigureRequest, DvrDataFormat, DvrOpenKind, FilterDelayHintKind,
+        FilterDelayHintRequest, OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName,
+        AIDL_TRANSACTION_TABLE,
     };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -1124,6 +1129,93 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn frontend_close_keeps_demux_relation_until_worker_terminal_completion() {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let (cancel_seen_tx, cancel_seen_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let demux_id = {
+            let mut guard = runtime.lock().unwrap();
+            guard.boot_from_probe_results([available(
+                1_000_000,
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbT,
+                "/dev/px4video0",
+                None,
+            )]);
+            guard
+                .install_filter_event_dispatcher(Arc::new(NoopFilterEventDispatcher))
+                .unwrap();
+            let demux = guard.allocate_demux_runtime().unwrap();
+            guard
+                .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+                .unwrap();
+            let generation = guard
+                .frontend_txn()
+                .prepare_frontend_worker_generation(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                )
+                .unwrap();
+            guard
+                .frontend_txn()
+                .install_frontend_live_reader_descriptor_for_generation(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                    generation,
+                )
+                .unwrap();
+            guard
+                .frontend_txn()
+                .start_worker(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                    generation,
+                    move |ctx| {
+                        while !ctx.cancel_requested() {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        cancel_seen_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            demux.id
+        };
+
+        let close_result = crate::frontend_worker_txn::close_frontend_workers_and_live_data(
+            Arc::clone(&runtime),
+            1_000_000,
+            maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::FrontendClosing,
+        );
+        assert!(close_result.is_err());
+        cancel_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            runtime
+                .lock()
+                .unwrap()
+                .registry()
+                .frontend_bound_to_demux(demux_id),
+            Some(FrontendRuntimeId(1_000_000)),
+        );
+
+        release_tx.send(()).unwrap();
+        for _ in 0..100 {
+            if runtime
+                .lock()
+                .unwrap()
+                .registry()
+                .frontend_bound_to_demux(demux_id)
+                .is_none()
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("worker terminal completion後にDemux-Frontend relationが解除されませんでした");
     }
 
     #[test]

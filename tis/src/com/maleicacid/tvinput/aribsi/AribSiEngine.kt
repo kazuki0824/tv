@@ -28,19 +28,21 @@ class AribSiEngine(
             nativeParser.takeProgramPublishSnapshot()
         }
 
-    fun programStateSnapshot(): ProgramPublishSnapshot =
-        synchronized(lock) {
-            nativeParser.programStateSnapshot()
-        }
-
     fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot =
         synchronized(lock) {
             nativeParser.serviceRegistrationSnapshot()
         }
 
+    // CAS discovery APIは設計契約として保持する。利用側の変更だけを理由に削除しない。
+    @Suppress("unused")
     fun casDiscoverySnapshot(): CasDiscoverySnapshot =
         synchronized(lock) {
             nativeParser.casDiscoverySnapshot()
+        }
+
+    fun pmtPidsForSectionFilters(): Set<TsPid> =
+        synchronized(lock) {
+            nativeParser.pmtPidsForSectionFilters()
         }
 
     fun livePlaybackSnapshot(): LivePlaybackSnapshot =
@@ -51,13 +53,6 @@ class AribSiEngine(
     fun broadcastClockSnapshot(): AribBroadcastClockFact? =
         synchronized(lock) {
             nativeParser.broadcastClockSnapshot()
-        }
-
-    fun decodeAribString(bytes: ByteArray): String = synchronized(lock) { nativeParser.decodeAribString(bytes) }
-
-    fun decodeAribStringDiagnosticSummary(bytes: ByteArray): String =
-        synchronized(lock) {
-            nativeParser.decodeAribStringDiagnosticSummary(bytes)
         }
 
     fun reset(discoveryProfile: Int = SiDiscoveryProfile.ISDB_T) =

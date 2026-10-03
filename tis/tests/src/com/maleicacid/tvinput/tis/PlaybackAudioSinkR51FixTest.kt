@@ -42,9 +42,9 @@ class PlaybackAudioSinkR51FixTest {
         check(!PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x11))
         check(PlaybackPipeline.normalizedAudioStreamTypeForTest(0x0f) == AvSettings.AUDIO_STREAM_TYPE_AAC_ADTS)
         check(PlaybackPipeline.normalizedAudioStreamTypeForTest(0x11) == AvSettings.AUDIO_STREAM_TYPE_UNDEFINED)
-        check(PlaybackPipeline.isAribDualMonoComponentTypeForTest(0x02))
-        check(PlaybackPipeline.isAribDualMonoComponentTypeForTest(0x22))
-        check(!PlaybackPipeline.isAribDualMonoComponentTypeForTest(0x03))
+        check(PlaybackPipeline.isDualMonoSemanticForTest(true))
+        check(PlaybackPipeline.isDualMonoSemanticForTest(true))
+        check(!PlaybackPipeline.isDualMonoSemanticForTest(false))
         check(PlaybackPipeline.dualMonoModeForTest(PlaybackPipeline.DualMonoPresentation.MAIN) == AudioTrack.DUAL_MONO_MODE_LL)
         check(PlaybackPipeline.dualMonoModeForTest(PlaybackPipeline.DualMonoPresentation.SUB) == AudioTrack.DUAL_MONO_MODE_RR)
         check(PlaybackPipeline.dualMonoModeForTest(PlaybackPipeline.DualMonoPresentation.MAIN_SUB) == AudioTrack.DUAL_MONO_MODE_LR)
@@ -58,23 +58,23 @@ class PlaybackAudioSinkR51FixTest {
                 (android.media.AudioFormat.CHANNEL_OUT_QUAD or android.media.AudioFormat.CHANNEL_OUT_FRONT_CENTER),
         )
         check(
-            PlaybackPipeline.aribChannelMaskForComponentTypeForTest(0x04) ==
+            PlaybackPipeline.aribChannelMaskForConfigurationForTest("2/1") ==
                 (android.media.AudioFormat.CHANNEL_OUT_STEREO or android.media.AudioFormat.CHANNEL_OUT_BACK_CENTER),
         )
         check(
-            PlaybackPipeline.aribChannelMaskForComponentTypeForTest(0x05) ==
+            PlaybackPipeline.aribChannelMaskForConfigurationForTest("3/0") ==
                 (android.media.AudioFormat.CHANNEL_OUT_STEREO or android.media.AudioFormat.CHANNEL_OUT_FRONT_CENTER),
         )
-        check(PlaybackPipeline.aribChannelMaskForComponentTypeForTest(0x06) == android.media.AudioFormat.CHANNEL_OUT_QUAD)
-        check(PlaybackPipeline.aribChannelMaskForComponentTypeForTest(0x07) == android.media.AudioFormat.CHANNEL_OUT_SURROUND)
+        check(PlaybackPipeline.aribChannelMaskForConfigurationForTest("2/2") == android.media.AudioFormat.CHANNEL_OUT_QUAD)
+        check(PlaybackPipeline.aribChannelMaskForConfigurationForTest("3/1") == android.media.AudioFormat.CHANNEL_OUT_SURROUND)
         check(
-            PlaybackPipeline.resolvePcmChannelMaskForTest(android.media.AudioFormat.CHANNEL_OUT_5POINT1, 6, 0x08) ==
+            PlaybackPipeline.resolvePcmChannelMaskForTest(android.media.AudioFormat.CHANNEL_OUT_5POINT1, 6, "3/2") ==
                 android.media.AudioFormat.CHANNEL_OUT_5POINT1,
         )
         check(
-            PlaybackPipeline.resolvePcmChannelMaskForTest(null, 3, 0x04) ==
+            PlaybackPipeline.resolvePcmChannelMaskForTest(null, 3, "2/1") ==
                 (android.media.AudioFormat.CHANNEL_OUT_STEREO or android.media.AudioFormat.CHANNEL_OUT_BACK_CENTER),
         )
-        check(PlaybackPipeline.resolvePcmChannelMaskForTest(android.media.AudioFormat.CHANNEL_OUT_STEREO, 6, 0x09) == null)
+        check(PlaybackPipeline.resolvePcmChannelMaskForTest(android.media.AudioFormat.CHANNEL_OUT_STEREO, 6, "3/2+LFE") == null)
     }
 }

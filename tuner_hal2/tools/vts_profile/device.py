@@ -174,7 +174,7 @@ class _AgentSession:
             raise
         if ready.get("status") != "ready" or int(ready.get("frequency_hz", 0)) != frequency:
             self._terminate()
-            raise ProfileError("VTS device agent did not establish the requested tune session")
+            raise ProfileError("VTS device agentが要求されたdevice sessionを確立できませんでした")
 
     def _read_stdout(self) -> None:
         assert self._process.stdout is not None

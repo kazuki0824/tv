@@ -85,7 +85,10 @@ fn finish_frontend_scan_end_delivery_failure(
 ) -> Result<(), HalError> {
     // 登録照合と失敗確定をruntime→store順で行い、外部診断への移行前には両方を解放する。
     let runtime = context.runtime();
-    let runtime_lock = runtime.lock();
+    let runtime_lock = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+        &runtime,
+        "frontend scan終了callback失敗",
+    );
     let store = context.callback_store_lock().map_err(|error| {
         maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
             "callback結果の世代照合",
@@ -129,8 +132,13 @@ fn finish_frontend_scan_end_delivery_failure(
                 primary,
             ),
         ),
-        Err(_) => {
+        Err(lock_error) => {
             drop(store);
+            let primary = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                "frontend scan終了失敗時のruntimeロック",
+                primary,
+                lock_error,
+            );
             let record = frontend_scan_end_fallback_record(
                 handle,
                 frontend_id,
@@ -191,8 +199,7 @@ fn deliver_scan_callback(
                 None,
             );
         }
-        Err(_) => {
-            let primary = HalError::callback_failed(method, "callback store lock poisoned");
+        Err(primary) => {
             return finish_frontend_scan_end_delivery_failure(
                 context,
                 handle,
@@ -244,7 +251,10 @@ fn finish_frontend_event_delivery_failure(
     };
     // 登録照合と失敗確定をruntime→store順で行い、外部診断への移行前には両方を解放する。
     let runtime = context.runtime();
-    let runtime_lock = runtime.lock();
+    let runtime_lock = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+        &runtime,
+        "frontend callback失敗",
+    );
     let store = context.callback_store_lock().map_err(|error| {
         maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
             "callback結果の世代照合",
@@ -288,8 +298,13 @@ fn finish_frontend_event_delivery_failure(
                 primary,
             ),
         ),
-        Err(_) => {
+        Err(lock_error) => {
             drop(store);
+            let primary = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                "frontend callback失敗時のruntimeロック",
+                primary,
+                lock_error,
+            );
             let record = if artifact_lookup {
                 FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
                     handle.object_id(),
@@ -354,14 +369,14 @@ fn deliver_tune_event_callback(
                 None,
             );
         }
-        Err(_) => {
+        Err(primary) => {
             return finish_frontend_event_delivery_failure(
                 context,
                 handle,
                 frontend_id,
                 generation,
                 true,
-                HalError::callback_failed(method, "callback store lock poisoned"),
+                primary,
                 None,
             );
         }

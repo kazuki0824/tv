@@ -13,9 +13,9 @@ use super::{
     ObjectQueryRequest, ObjectQueryResponse, ParcelFileDescriptor, Strong, TunerNativeHandle,
     TunerQueueDesc,
 };
-use maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_demux::{AvFileIdentity, AvHandleReleaseDescriptor};
+use maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest;
 
 impl FilterAidlObject {
     pub(crate) fn set_data_source_nullable_for_aidl(
@@ -102,7 +102,7 @@ impl IFilter for FilterAidlObject {
             &self.runtime(),
             self.handle(),
             AidlMethodCall::FilterConfigure(
-                maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::ConfigureFilterByCurrentOpenType,
+                maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest::ConfigureFilterByCurrentOpenType,
             ),
             |runtime, handle, dispatch_proof| {
                 runtime.configure_filter_runtime_for_object_with_current_open_type(

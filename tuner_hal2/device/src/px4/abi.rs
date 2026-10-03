@@ -66,6 +66,7 @@ pub const ERRNO_EINVAL: i32 = 22;
 pub const ERRNO_ENOTTY: i32 = 25;
 pub const ERRNO_ENOSYS: i32 = 38;
 pub const ERRNO_EOPNOTSUPP: i32 = 95;
+pub const ERRNO_EALREADY: i32 = 114;
 
 pub const PTX_ISDB_T_SYSTEM: u32 = 0x0000_0010;
 pub const PTX_ISDB_S_SYSTEM: u32 = 0x0000_0020;

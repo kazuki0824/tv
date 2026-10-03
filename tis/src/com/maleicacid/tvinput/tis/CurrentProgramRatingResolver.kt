@@ -6,6 +6,7 @@ import android.media.tv.TvContract
 import android.net.Uri
 import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
+import com.maleicacid.tvinput.aribsi.EitTimingState
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.ServiceKey
 
@@ -112,21 +113,9 @@ class CurrentProgramRatingResolver internal constructor(
     @Volatile
     private var currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
 
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
+    // process-local診断を試験から観測する契約。未使用警告のためにruntimeログを増やさない。
+    @Suppress("MaxLineLength", "unused")
     fun currentProgramResolutionDiagnosticForTest(): CurrentProgramResolutionDiagnostic = currentProgramResolutionDiagnostic
-
-    fun resolve(
-        channelUri: Uri?,
-        serviceKey: ServiceKey?,
-        latestEvents: List<AribEvent>,
-        ratingProfile: AribRatingMapper.BroadcastProfile,
-        nowMillis: Long = System.currentTimeMillis(),
-    ): CurrentProgramRatingSet =
-        when (val result = resolveDetailed(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)) {
-            is ResolveResult.Ratings -> result.ratingSet
-            is ResolveResult.ProviderQueryFailed -> unresolvedRatingFallback(channelUri, serviceKey)
-        }
 
     sealed class EitAuthority {
         object Unconfirmed : EitAuthority()
@@ -168,7 +157,7 @@ class CurrentProgramRatingResolver internal constructor(
         // 診断専用eventや複数presentから現在番組を推測しないが、欠測にも戻さない。
         return EitAuthority.PresentObserved(
             events.singleOrNull()?.takeIf {
-                !excluded && (it.timingState == "DEFINED" || it.timingState == "UNDEFINED_TIME")
+                !excluded && (it.timingState == EitTimingState.DEFINED || it.timingState == EitTimingState.UNDEFINED_TIME)
             },
         )
     }
@@ -358,13 +347,13 @@ class CurrentProgramRatingResolver internal constructor(
         val selected =
             latestEvents
                 .mapNotNull { event ->
-                    if (event.timingState != "DEFINED") return@mapNotNull null
+                    if (event.timingState != EitTimingState.DEFINED) return@mapNotNull null
                     val end =
                         runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
                             ?: return@mapNotNull null
                     (event to end).takeIf { event.serviceKey == key && nowMillis >= event.startTimeMillis && nowMillis < end }
                 }.sortedWith(
-                    compareByDescending<Pair<com.maleicacid.tvinput.aribsi.AribEvent, Long>> { it.first.startTimeMillis }
+                    compareByDescending<Pair<AribEvent, Long>> { it.first.startTimeMillis }
                         .thenBy { it.second }
                         .thenByDescending { it.first.eventId },
                 ).firstOrNull() ?: return null
@@ -379,7 +368,7 @@ class CurrentProgramRatingResolver internal constructor(
         ratingProfile: AribRatingMapper.BroadcastProfile,
     ): CurrentProgramRatingSet {
         val end =
-            if (event.timingState == "DEFINED" && event.durationMillis > 0L) {
+            if (event.timingState == EitTimingState.DEFINED && event.durationMillis > 0L) {
                 runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
             } else {
                 null

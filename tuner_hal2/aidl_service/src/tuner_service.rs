@@ -56,7 +56,7 @@ use maleicacid_tuner_hal2_binder_adapter::{
     build_dvr_open_request, build_filter_av_stream_type_request, build_filter_delay_hint_request,
     build_filter_summary_for_open_type, build_lnb_satellite_position_request,
     build_lnb_tone_request, build_lnb_voltage_request, build_open_filter_request, AidlApi,
-    AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrFilterLinkRequest,
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrFilterLinkRequest,
     FilterSetDataSourceRequest,
 };
 use maleicacid_tuner_hal2_common::{
@@ -64,6 +64,7 @@ use maleicacid_tuner_hal2_common::{
     HalInvalidArgumentKind,
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot;
+use maleicacid_tuner_hal2_domain_request::AidlMethodCall;
 use maleicacid_tuner_hal2_service_runtime::{
     apply_lnb_satellite_position_object_use_case, apply_lnb_tone_object_use_case,
     apply_lnb_voltage_object_use_case, close_lnb_after_root_open_rollback_use_case,
@@ -121,7 +122,22 @@ pub struct TunerAidlService {
     context: SharedAidlServiceContext,
 }
 
-impl Interface for TunerAidlService {}
+impl Interface for TunerAidlService {
+    fn dump(
+        &self,
+        writer: &mut dyn std::io::Write,
+        _args: &[&std::ffi::CStr],
+    ) -> Result<(), binder::StatusCode> {
+        // 取得入口から戻る時点でruntimeのロックは解放済み。出力先へのI/Oは保持中に行わない。
+        let snapshot = self.context.diagnostic_snapshot();
+        writeln!(writer, "{snapshot:#?}").map_err(|_| binder::StatusCode::FAILED_TRANSACTION)?;
+        if snapshot.retrieval_failed() {
+            Err(binder::StatusCode::FAILED_TRANSACTION)
+        } else {
+            Ok(())
+        }
+    }
+}
 
 fn tuner_hal2_demux_capabilities_from_snapshot(
     snapshot: RootDemuxCapabilitiesSnapshot,
@@ -196,12 +212,11 @@ impl TunerAidlService {
     pub fn from_context(context: SharedAidlServiceContext) -> Result<Self, HalError> {
         {
             let runtime_handle = context.runtime();
-            let mut runtime = runtime_handle.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
+            let mut runtime =
+                maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+                    runtime_handle.as_ref(),
                     "service runtime lock poisoned while installing filter event dispatcher",
-                )
-            })?;
+                )?;
             runtime.install_filter_event_dispatcher(std::sync::Arc::new(
                 AidlFilterEventDispatcher::new(&context)?,
             ))?;
@@ -231,12 +246,11 @@ impl TunerAidlService {
     ) -> Result<(), HalError> {
         let runtime = self.context.runtime();
         let lnb_cleanup_id = {
-            let mut guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
+            let mut guard =
+                maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+                    runtime.as_ref(),
                     "service runtime lock poisoned",
-                )
-            })?;
+                )?;
             guard
                 .root_open_txn()
                 .rollback_root_object_entry_after_aidl_failure(entry, unregister_runtime)?
@@ -699,8 +713,229 @@ impl ITuner for TunerAidlService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_binder_adapter::{DvrOpenKind, OpenDvrRequest};
+    use maleicacid_tuner_hal2_domain_request::{DvrOpenKind, OpenDvrRequest};
     use maleicacid_tuner_hal2_service_runtime::{ObjectMethodUseCase, RuntimeOwnerRelation};
+
+    #[test]
+    fn binder_dump_writes_the_canonical_snapshot_after_unlocking() {
+        struct UnlockedWriter {
+            runtime: crate::service_context::SharedTunerRuntime,
+            bytes: Vec<u8>,
+        }
+        impl std::io::Write for UnlockedWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                assert!(
+                    self.runtime.try_lock().is_ok(),
+                    "runtimeロック保持中にdump出力が行われました"
+                );
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        use maleicacid_tuner_hal2_service_runtime::{
+            FrontendCapabilitySnapshot, FrontendProbeOutcome, FrontendRuntimeId,
+            FrontendScalarCapability, IsdbtSegmentCapability, SatellitePowerTopology,
+            ServiceBootOutcome,
+        };
+        let mut runtime = TunerServiceRuntime::new();
+        assert_eq!(
+            runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+                id: FrontendRuntimeId(7),
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                path: "/dev/null".into(),
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 110_642_857,
+                        max_frequency_hz: 767_642_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 0x1000_0000,
+                    isdbt_segment: Some(IsdbtSegmentCapability {
+                        is_segment_auto: true,
+                        is_full_segment: true,
+                    }),
+                },
+            }]),
+            ServiceBootOutcome::Ready
+        );
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(runtime);
+        let expected = service.context.diagnostic_snapshot();
+        assert!(!expected.frontend_backend.as_ref().unwrap().is_empty());
+        assert_eq!(expected.frontend.as_ref().unwrap()[0].frontend_id, 7);
+        assert!(!expected.retrieval_failed());
+        let mut writer = UnlockedWriter {
+            runtime: service.context.runtime(),
+            bytes: Vec::new(),
+        };
+        Interface::dump(&service, &mut writer, &[]).unwrap();
+        assert_eq!(
+            String::from_utf8(writer.bytes).unwrap(),
+            format!("{expected:#?}\n")
+        );
+    }
+
+    #[test]
+    fn binder_dump_retains_fmq_worker_and_callback_failures() {
+        use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FmqFailureKind};
+        use maleicacid_tuner_hal2_device::FrontendWorkerKind;
+        use maleicacid_tuner_hal2_service_runtime::{
+            FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
+            FrontendCallbackDeliveryDiagnosticRecord, FrontendWorkerCleanupDiagnosticKind,
+            FrontendWorkerCleanupDiagnosticRecord, FrontendWorkerCleanupExecutionReport,
+            FrontendWorkerCleanupStepOutcome, FrontendWorkerCleanupTarget,
+            FrontendWorkerCleanupWorkerGeneration, WorkerFailureCategory,
+        };
+        for kind in [
+            FmqFailureKind::WriteFailed,
+            FmqFailureKind::ShortWrite,
+            FmqFailureKind::EventFlagWakeFailed,
+        ] {
+            let failure = compose_primary_cleanup_failure(
+                "FMQ配送巻戻し",
+                HalError::FmqDeliveryFailed {
+                    kind,
+                    object_id: Some(17),
+                },
+                HalError::cleanup_failed("rollback", "queue解放失敗"),
+            );
+            let runtime = TunerServiceRuntime::new();
+            let target =
+                FrontendWorkerCleanupTarget::object(7, AidlObjectId(17), AidlObjectGeneration(2));
+            let mut report = FrontendWorkerCleanupExecutionReport::new();
+            report.push(FrontendWorkerCleanupStepOutcome::WorkerTerminal {
+                target,
+                worker_kind: FrontendWorkerKind::Tune,
+                worker_generation: FrontendWorkerCleanupWorkerGeneration::Known(3),
+                category: WorkerFailureCategory::Fmq,
+                result: Err(failure.clone()),
+            });
+            runtime
+                .frontend_worker_cleanup_diagnostic_sink()
+                .record(FrontendWorkerCleanupDiagnosticRecord::new(
+                    FrontendWorkerCleanupDiagnosticKind::WorkerTerminal,
+                    target,
+                    report,
+                    Some(failure.clone()),
+                ))
+                .unwrap();
+            let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(runtime);
+            let filter_record = FilterCallbackDeliveryDiagnosticRecord::new(
+                FilterCallbackDeliveryDiagnosticPhase::EventDelivery,
+                AidlObjectId(17),
+                AidlObjectGeneration(2),
+                failure.clone(),
+            );
+            service
+                .context
+                .record_filter_callback_delivery_failure_fallback(filter_record.clone())
+                .unwrap();
+            let frontend_record = FrontendCallbackDeliveryDiagnosticRecord::frontend_event_delivery(
+                AidlObjectId(17),
+                AidlObjectGeneration(2),
+                7,
+                3,
+                HalError::callback_failed("onEvent", "Binder transactionに失敗しました"),
+            );
+            service
+                .context
+                .record_frontend_callback_delivery_failure_fallback(frontend_record.clone())
+                .unwrap();
+            let snapshot = service.context.diagnostic_snapshot();
+            assert!(!snapshot.retrieval_failed());
+            assert_eq!(
+                snapshot.filter_callback.as_ref().unwrap().records(),
+                &[filter_record]
+            );
+            assert_eq!(
+                snapshot.frontend_callback.as_ref().unwrap().records(),
+                &[frontend_record]
+            );
+            let cleanup = snapshot.frontend_worker_cleanup.as_ref().unwrap();
+            assert_eq!(cleanup.records()[0].target(), target);
+            assert_eq!(cleanup.records()[0].public_error(), Some(&failure));
+            assert_eq!(
+                cleanup.records()[0].report().outcomes()[0].result(),
+                Err(failure)
+            );
+            assert_eq!(cleanup.dropped_count(), 0);
+            assert_eq!(cleanup.record_failure_count(), 0);
+            let mut bytes = Vec::new();
+            Interface::dump(&service, &mut bytes, &[]).unwrap();
+            assert_eq!(
+                String::from_utf8(bytes).unwrap(),
+                format!("{snapshot:#?}\n")
+            );
+        }
+    }
+
+    #[test]
+    fn binder_dump_preserves_fallback_when_runtime_query_fails() {
+        use maleicacid_tuner_hal2_service_runtime::FrontendCallbackDeliveryDiagnosticRecord;
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(
+            TunerServiceRuntime::new(),
+        );
+        let record = FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
+            AidlObjectId(17),
+            AidlObjectGeneration(2),
+            HalError::callback_failed("onEvent", "callback検索に失敗しました"),
+        );
+        service
+            .context
+            .record_frontend_callback_delivery_failure_fallback(record.clone())
+            .unwrap();
+        let runtime = service.context.runtime();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = runtime.lock().unwrap();
+            panic!("診断取得用runtimeを汚染");
+        }));
+        let snapshot = service.context.diagnostic_snapshot();
+        assert!(snapshot.retrieval_failed());
+        assert!(matches!(
+            &snapshot.frontend,
+            Err(HalError::ServiceRuntimeLockPoisoned { .. })
+        ));
+        let callbacks = snapshot.frontend_callback.as_ref().unwrap();
+        assert!(callbacks.runtime_snapshot_missing());
+        assert_eq!(callbacks.records(), &[record]);
+        assert_eq!(callbacks.fallback_record_count(), 1);
+        let mut bytes = Vec::new();
+        assert_eq!(
+            Interface::dump(&service, &mut bytes, &[]),
+            Err(binder::StatusCode::FAILED_TRANSACTION)
+        );
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            format!("{snapshot:#?}\n")
+        );
+    }
+
+    #[test]
+    fn binder_dump_reports_output_failure() {
+        struct BrokenWriter;
+        impl std::io::Write for BrokenWriter {
+            fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(
+            TunerServiceRuntime::new(),
+        );
+        assert_eq!(
+            Interface::dump(&service, &mut BrokenWriter, &[]),
+            Err(binder::StatusCode::FAILED_TRANSACTION)
+        );
+    }
 
     #[test]
     fn unsupported_frontend_system_never_falls_back_to_isdbt() {

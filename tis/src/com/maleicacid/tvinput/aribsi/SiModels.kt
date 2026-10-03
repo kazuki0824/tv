@@ -8,22 +8,10 @@ import com.maleicacid.tvinput.common.TsPid
 
 object SiStatus {
     const val OK = 0
-    const val IGNORED_UNSUPPORTED_PID_OR_TABLE = 1
     const val INVALID_HANDLE = -1
-    const val INVALID_PID = -2
     const val INVALID_SECTION = -3
     const val MALFORMED_DESCRIPTOR = -4
-    const val INDEX_OUT_OF_RANGE = -5
-    const val JNI_ERROR = -6
     const val INTERNAL_ERROR = -7
-    const val INVALID_DISCOVERY_PROFILE = -8
-    const val COLLECTION_LIMIT_EXCEEDED = -9
-}
-
-object SiDiscoveryStage {
-    const val INCOMPLETE = 0
-    const val PARTIAL = 1
-    const val COMPLETE = 2
 }
 
 object SiDiscoveryProfile {
@@ -35,11 +23,6 @@ object SiDiscoveryProfile {
 data class SiIngestResult(
     val pid: TsPid,
     val status: Int,
-)
-
-data class PmtPidMapping(
-    val serviceKey: ServiceKey,
-    val pmtPid: TsPid,
 )
 
 enum class CaDescriptorScope { PROGRAM, ES }
@@ -93,7 +76,28 @@ data class AribAacConfiguration(
     val channelConfiguration: Int,
     val channelCount: Int,
     val audioSpecificConfig: ByteArray,
-)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is AribAacConfiguration) return false
+        return audioObjectType == other.audioObjectType &&
+            samplingFrequency == other.samplingFrequency &&
+            extensionSamplingFrequency == other.extensionSamplingFrequency &&
+            channelConfiguration == other.channelConfiguration &&
+            channelCount == other.channelCount &&
+            audioSpecificConfig.contentEquals(other.audioSpecificConfig)
+    }
+
+    override fun hashCode(): Int {
+        var result = audioObjectType
+        result = 31 * result + samplingFrequency
+        result = 31 * result + (extensionSamplingFrequency ?: 0)
+        result = 31 * result + channelConfiguration
+        result = 31 * result + channelCount
+        result = 31 * result + audioSpecificConfig.contentHashCode()
+        return result
+    }
+}
 
 data class AribCodecFacts(
     val avc: AribAvcSignaling? = null,
@@ -118,7 +122,7 @@ data class AribElementaryStream(
     val isCaption: Boolean = false,
     val isSuperimpose: Boolean = false,
     val codec: String? = null,
-    val codecKind: String? = null,
+    val codecKind: ElementaryStreamKind? = null,
     val codecFacts: AribCodecFacts = AribCodecFacts(),
 )
 
@@ -133,10 +137,6 @@ data class AribService(
     val streams: List<AribElementaryStream> = emptyList(),
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
 ) {
-    val hasProgramCaDescriptor: Boolean
-        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.PROGRAM }
-    val hasEsCaDescriptor: Boolean
-        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.ES }
     val requiresCas: Boolean get() = serviceScopedCaDescriptors.isNotEmpty()
 }
 
@@ -168,19 +168,19 @@ data class AribShortEventText(
     val languageCode: String,
     val title: String,
     val text: String,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribExtendedEventText(
     val languageCode: String,
     val text: String,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribParentalRating(
     val countryCode: String,
     val rawRatingByte: Int,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribContentGenre(
@@ -188,7 +188,7 @@ data class AribContentGenre(
     val level2: Int,
     val userNibble: Int = 0,
     val aribName: String = "",
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribEventGroupReference(
@@ -214,7 +214,7 @@ data class AribEventGroup(
     val events: List<AribEventGroupReference> = emptyList(),
     val otherNetworkEvents: List<AribOtherNetworkEventGroupReference> = emptyList(),
     val privateDataHex: String = "",
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribComponentGroup(
@@ -225,14 +225,14 @@ data class AribComponentGroup(
 data class AribComponentGroupDescriptor(
     val componentGroupType: Int,
     val groups: List<AribComponentGroup> = emptyList(),
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribLinkage(
     val linkageType: Int,
     val serviceKey: ServiceKey,
     val privateDataPrefixHex: String = "",
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 ) {
     val originalNetworkId: Int get() = serviceKey.originalNetworkId
     val transportStreamId: Int get() = serviceKey.transportStreamId
@@ -242,7 +242,7 @@ data class AribLinkage(
 data class AribFreeCaMode(
     val raw: Int?,
     val scrambled: Boolean?,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribSeries(
@@ -254,7 +254,7 @@ data class AribSeries(
     val episodeNumber: Int?,
     val lastEpisodeNumber: Int?,
     val name: String?,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
 )
 
 data class AribComponentEntry(
@@ -284,7 +284,12 @@ data class AribComponentEntry(
     val main: Boolean? = null,
     val multiLingual: Boolean? = null,
     val qualityIndicator: Int? = null,
-    val parseStatus: String = "OK",
+    val parseStatus: SiParseStatus = SiParseStatus.OK,
+    val channelCount: Int? = null,
+    val sampleRateHz: Int? = null,
+    val audioDescription: Boolean? = null,
+    val hardOfHearing: Boolean? = null,
+    val dualMono: Boolean? = null,
 )
 
 data class AribComponents(
@@ -297,11 +302,12 @@ data class AribComponents(
 data class AribTruncatedDescriptorLoop(
     val declaredLength: Int,
     val rawBytesHex: String,
-    val parseStatus: String,
+    val parseStatus: SiParseStatus,
 )
 
 data class AribEventDiagnostics(
     val summary: String = "",
+    val descriptorDiagnostics: List<DescriptorDiagnostic> = emptyList(),
     val descriptorDiagnosticsCanonicalJson: String = "[]",
     val descriptorFactsCanonicalJson: String? = null,
     val textDiagnostics: List<String> = emptyList(),
@@ -331,6 +337,7 @@ data class AribEventDescriptors(
     val scrambled: Boolean? = null,
     val freeCaMode: AribFreeCaMode? = null,
     val series: AribSeries? = null,
+    val seriesCandidates: List<AribSeries> = emptyList(),
     val seriesCandidatesCanonicalJson: String? = null,
     val parentalRatings: List<AribParentalRating> = emptyList(),
     val components: AribComponents = AribComponents(),
@@ -341,7 +348,7 @@ data class AribEvent(
     val serviceKey: ServiceKey,
     val stableIdentity: String?,
     val eventId: Int,
-    val timingState: String = "DEFINED",
+    val timingState: EitTimingState = EitTimingState.DEFINED,
     val rawStartTimeHex: String = "",
     val rawDurationHex: String = "",
     val startTimeMillis: Long,
@@ -352,13 +359,6 @@ data class AribEvent(
     val eventScope: String = "present_following",
     val source: AribProgramSource = AribProgramSource(),
     val descriptors: AribEventDescriptors = AribEventDescriptors(),
-)
-
-data class AribEventDiagnostic(
-    val serviceKey: ServiceKey,
-    val stableIdentity: String?,
-    val eventId: Int,
-    val diagnosticText: String,
 )
 
 data class DescriptorDiagnosticScope(
@@ -395,7 +395,6 @@ data class DescriptorDiagnostic(
     val scope: DescriptorDiagnosticScope,
     val descriptor: DescriptorDiagnosticDescriptor,
     val message: String,
-    val rawJson: String,
 )
 
 data class AribEpgUpdateWindow(
@@ -408,7 +407,6 @@ data class AribEpgUpdateWindow(
 )
 
 typealias EpgUpdateWindow = AribEpgUpdateWindow
-typealias ProgramPublishability = ServicePublishabilityDiagnostic
 
 data class ParserDiagnostic(
     val code: String,
@@ -416,15 +414,55 @@ data class ParserDiagnostic(
     val severity: String? = null,
 )
 
+enum class BroadcastSystem {
+    ISDB_T,
+    ISDB_S_BS,
+    ISDB_S_110CS,
+}
+
+enum class SmdSemanticState(
+    val wireValue: String,
+) {
+    SUPPORTED_BROADCAST("SUPPORTED_BROADCAST"),
+    NON_BROADCAST("NON_BROADCAST"),
+    UNDEFINED_BROADCAST_CLASS("UNDEFINED_BROADCAST_CLASS"),
+    UNSUPPORTED_BROADCAST_SYSTEM("UNSUPPORTED_BROADCAST_SYSTEM"),
+    UNDETERMINED_SMD("UNDETERMINED_SMD"),
+}
+
+enum class SiParseStatus(
+    val wireValue: String,
+) {
+    OK("OK"),
+    MALFORMED_LENGTH("MalformedLength"),
+    TRUNCATED_DESCRIPTOR("TruncatedDescriptor"),
+    UNSUPPORTED_VALUE("UnsupportedValue"),
+    INVALID_SEQUENCE("InvalidSequence"),
+    UNRESOLVED("UNRESOLVED"),
+}
+
+enum class EitTimingState {
+    DEFINED,
+    UNDEFINED_TIME,
+    BOTH_TIMING_UNDEFINED,
+    MALFORMED_TIMING,
+}
+
+enum class ElementaryStreamKind {
+    VIDEO,
+    AUDIO,
+}
+
 data class SmdSemanticFacts(
     val descriptorPresent: Boolean,
     val syntaxValid: Boolean,
     val systemManagementId: Int?,
     val broadcastingFlag: Int?,
     val broadcastingIdentifier: Int?,
+    val broadcastSystem: BroadcastSystem? = null,
     val additionalBroadcastingIdentification: Int?,
     val additionalIdentificationInfoHex: String,
-    val semanticState: String,
+    val semanticState: SmdSemanticState,
     val diagnostic: String?,
 )
 
@@ -585,7 +623,7 @@ data class CaMetadata(
     }
 
     override fun hashCode(): Int {
-        var result = serviceKey?.hashCode() ?: 0
+        var result = serviceKey.hashCode()
         result = 31 * result + caSystemId
         result = 31 * result + (ecmPid?.value ?: 0)
         result = 31 * result + (emmPid?.value ?: 0)
