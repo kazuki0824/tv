@@ -5599,10 +5599,8 @@ fn close_frontend_workers_and_live_data_with_sink(
         completion_action: Box::new(move |runtime, outcomes, _deadline_elapsed| {
             let terminal_acceptance_result =
                 accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
-            let close_result = close_frontend_live_data_and_unbind_after_worker_completion(
-                runtime,
-                frontend_id,
-            );
+            let close_result =
+                close_frontend_live_data_and_unbind_after_worker_completion(runtime, frontend_id);
             let fixed_power_result =
                 FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
                     runtime,
@@ -5623,8 +5621,7 @@ fn close_frontend_workers_and_live_data_with_sink(
                     close_result.clone(),
                 ),
             );
-            let terminal_and_close_result = match (terminal_acceptance_result, close_result)
-            {
+            let terminal_and_close_result = match (terminal_acceptance_result, close_result) {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
                 (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
