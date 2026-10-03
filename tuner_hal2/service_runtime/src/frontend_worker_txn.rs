@@ -3111,10 +3111,7 @@ fn run_frontend_backend_tune_submit_worker(
             let rollback_succeeded = failure.rollback_succeeded;
             let public_error =
                 record_async_backend_submit_failure(&runtime, frontend_id, generation, failure);
-            return recorded_backend_submit_failure_worker_result(
-                rollback_succeeded,
-                public_error,
-            );
+            return recorded_backend_submit_failure_worker_result(rollback_succeeded, public_error);
         }
         Err(error) => {
             let public_error = {
