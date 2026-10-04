@@ -33,7 +33,7 @@ use service_discovery::{DiscoveryPublishStage, ServiceDiscoveryCollector};
 use std::collections::BTreeMap;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 const STATUS_OK: jint = 0;
@@ -640,6 +640,53 @@ fn snapshot_si_collection_typed(handle: jlong) -> Result<SiCollectionSnapshotDto
     result
 }
 
+fn try_snapshot_si_collection_typed(
+    handle: jlong,
+) -> Result<Option<SiCollectionSnapshotDto>, SiJniFailure> {
+    if !si_module_is_healthy() {
+        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
+    }
+    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return Err(SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME));
+        }
+    };
+    let Some(parser) = parser else {
+        return Err(SiJniFailureReason::InvalidHandle.failure(handle));
+    };
+    match parser.try_lock() {
+        Ok(mut guard) => Ok(Some(build_si_collection_snapshot(&mut guard))),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Poisoned(_)) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
+        }
+    }
+}
+
+#[cfg(test)]
+mod nonblocking_collection_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn try_snapshot_reports_busy_without_waiting_or_poisoning_parser() {
+        let handle = registry().lock().unwrap().create();
+        let parser = registry().lock().unwrap().get(handle).unwrap();
+        let guard = parser.lock().unwrap();
+
+        assert!(matches!(try_snapshot_si_collection_typed(handle), Ok(None)));
+
+        drop(guard);
+        assert!(matches!(
+            try_snapshot_si_collection_typed(handle),
+            Ok(Some(_))
+        ));
+        assert!(registry().lock().unwrap().remove(handle));
+    }
+}
+
 fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshotDto, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
@@ -662,6 +709,23 @@ fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshotDto, SiJniFailure> {
         }
     };
     result
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeTrySiCollectionSnapshotTyped(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jobject {
+    let snapshot = match try_snapshot_si_collection_typed(handle) {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => return ptr::null_mut(),
+        Err(failure) => return throw_si_failure(&mut env, failure) as jobject,
+    };
+    match jvm_snapshot_generated::si_collection_snapshot_to_java(&mut env, snapshot) {
+        Ok(value) => value.into_raw(),
+        Err(failure) => throw_si_failure(&mut env, failure) as jobject,
+    }
 }
 
 #[no_mangle]

@@ -555,11 +555,11 @@ class ChannelScanController(
             ScanCandidateKind.ISDB_S_110CS -> SiDiscoveryProfile.CS110
         }
 
-    private fun serviceCounts(
+    private fun serviceCountsFromSnapshot(
         candidate: ScanCandidate,
         requirements: SiCollectionRequirements,
+        transaction: com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot,
     ): ServiceCounts {
-        val transaction = engine.serviceRegistrationSnapshot()
         val expectedSmdSystem = expectedSmdBroadcastSystem(candidate)
         val completeness =
             transaction.services.map { service ->
@@ -583,6 +583,20 @@ class ChannelScanController(
                     .associate { it.serviceKey to it.reasons },
         )
     }
+
+    private fun serviceCounts(
+        candidate: ScanCandidate,
+        requirements: SiCollectionRequirements,
+    ): ServiceCounts =
+        serviceCountsFromSnapshot(candidate, requirements, engine.serviceRegistrationSnapshot())
+
+    private fun tryServiceCounts(
+        candidate: ScanCandidate,
+        requirements: SiCollectionRequirements,
+    ): ServiceCounts? =
+        engine.tryServiceRegistrationSnapshot()?.let { snapshot ->
+            serviceCountsFromSnapshot(candidate, requirements, snapshot)
+        }
 
     // 安定待ち・期限・取消し・資源喪失の優先順位と、終了後のfilter解放を同じ収集処理で保持する。
     // 各breakは異なる終了理由を確定する。部分完了の4条件はEIT不要・最短待機・登録可能・安定待機の全てを要求する。
@@ -623,7 +637,22 @@ class ChannelScanController(
                         // dynamic Section Filterの更新はsection ingest callbackが所有する。
                         // scan pollからcontroller executorへ同期往復すると、BSのsection burstで
                         // deadline判定そのものがexecutor待ちに巻き込まれるため重複refreshしない。
-                        val counts = serviceCounts(candidate, requirements)
+                        val counts = tryServiceCounts(candidate, requirements)
+                        if (counts == null) {
+                            val remainingMs =
+                                policy.maxWaitMs - (android.os.SystemClock.elapsedRealtime() - startedAt)
+                            if (remainingMs <= 0L) {
+                                outcome =
+                                    if ((lastCounts?.registrationReady ?: 0) > 0) {
+                                        SiCollectionOutcome.TIMEOUT_PARTIAL
+                                    } else {
+                                        SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
+                                    }
+                                break
+                            }
+                            runCatching { Thread.sleep(minOf(policy.pollIntervalMs, remainingMs)) }
+                            continue
+                        }
                         val now = android.os.SystemClock.elapsedRealtime()
                         if (counts.discoveryStage != lastCounts?.discoveryStage || counts.signature != lastCounts?.signature ||
                             counts.collectionStatus != lastCounts?.collectionStatus
