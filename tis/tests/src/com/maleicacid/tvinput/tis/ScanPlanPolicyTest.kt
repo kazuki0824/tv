@@ -76,6 +76,24 @@ class ScanPlanPolicyTest {
     }
 
     @Test
+    fun bsStoppedDiscoveryCleanupDoesNotCancelNativeScanAgain() {
+        val operation = TunerController.StreamIdDiscoveryOperation(28L)
+        operation.reportIds(intArrayOf(16400))
+        operation.complete()
+        val stopped = operation.result(true)
+        var cancelCalls = 0
+
+        operation.cancel {
+            cancelCalls++
+            android.media.tv.tuner.Tuner.RESULT_INVALID_STATE
+        }
+
+        assertEquals(0, cancelCalls)
+        assertEquals(stopped, operation.result(true))
+        assertEquals(setOf(16400), stopped.streamIds)
+    }
+
+    @Test
     fun bsContinuationFailureIsTerminalAndKeepsTheFailureCode() {
         val operation = TunerController.StreamIdDiscoveryOperation(26L)
         operation.continueAfterLock { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE }
