@@ -200,11 +200,11 @@ class ScanPlanPolicyTest {
             if (prior == "timeout") {
                 operation.result(false)
             }
-            check(
+            val firstCancel =
                 runCatching {
                     operation.cancel { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE }
-                }.isFailure,
-            )
+                }
+            check(firstCancel.isSuccess == (prior == "stopped"))
             check(operation.acceptsResourceLoss)
             var notifications = 0
 
@@ -227,7 +227,8 @@ class ScanPlanPolicyTest {
                     },
                 )
 
-            check(runCatching { lose() }.isFailure)
+            val firstLoss = runCatching { lose() }
+            check(firstLoss.isSuccess == (prior == "stopped"))
             lose()
             check(notifications == 1 && fence.terminalObserved && operation.await(1))
             val result = operation.result(true)
