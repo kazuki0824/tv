@@ -715,7 +715,11 @@ class TunerController(
         }
 
         fun cancel(stopScan: () -> Int) {
-            // 非SUCCESS/例外では結果もownerも解放済みにしない。
+            // onScanStopped()でSTOPPEDへ到達した時点でframework scanは既に終了済み。
+            // その後のowner解放でcancelScanning()を再発行するとRESULT_INVALID_STATEになり得るため、
+            // native cancelは未停止のoperationだけに実行する。
+            if (outcome == Outcome.STOPPED || outcome == Outcome.CANCELLED) return
+            // 非SUCCESS/例外ではresultもownerも解放済みにしない。
             val result = stopScan()
             check(result == Tuner.RESULT_SUCCESS) { "BS scanの解放に失敗しました result=$result" }
             finish(Outcome.CANCELLED)
