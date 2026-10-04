@@ -1654,6 +1654,47 @@ fn build_event<'local>(
     result
 }
 
+pub(super) fn si_collection_snapshot_to_java<'local>(
+    env: &mut JNIEnv<'local>,
+    snapshot: SiCollectionSnapshotDto,
+) -> Result<JObject<'local>, SiJniFailure> {
+    let table_requirements =
+        object_list(env, &snapshot.table_requirements, build_table_requirement)?;
+    let transport_semantic_facts =
+        object_list(env, &snapshot.transport_semantic_facts, build_transport)?;
+    let eit_instances = object_list(env, &snapshot.eit_instances, build_eit_instance)?;
+    let service_semantic_facts = object_list(
+        env,
+        &snapshot.service_semantic_facts,
+        build_service_semantic_facts,
+    )?;
+    let parser_diagnostics =
+        object_list(env, &snapshot.parser_diagnostics, build_parser_diagnostic)?;
+    let result = new_generated(
+        env,
+        "SiCollectionSnapshotDto",
+        "(ILjava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;)V",
+        &[
+            JValue::Int(snapshot.discovery_stage),
+            JValue::Object(&table_requirements),
+            JValue::Object(&transport_semantic_facts),
+            JValue::Object(&eit_instances),
+            JValue::Object(&service_semantic_facts),
+            JValue::Object(&parser_diagnostics),
+        ],
+    );
+    for object in [
+        table_requirements,
+        transport_semantic_facts,
+        eit_instances,
+        service_semantic_facts,
+        parser_diagnostics,
+    ] {
+        jni_result(env.delete_local_ref(object))?;
+    }
+    result
+}
+
 pub(super) fn snapshot_to_java<'local>(
     env: &mut JNIEnv<'local>,
     snapshot: BulkSnapshotDto,
