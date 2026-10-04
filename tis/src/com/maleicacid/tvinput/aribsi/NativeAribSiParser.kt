@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.aribsi.generated.SiCollectionSnapshotDto
 import com.maleicacid.tvinput.common.TsPid
 
 class NativeParserCleanupException(
@@ -263,9 +264,7 @@ class NativeAribSiParser : AutoCloseable {
 
     private external fun nativeSnapshotBulkTyped(handle: Long): com.maleicacid.tvinput.aribsi.generated.BulkSnapshotDto?
 
-    private external fun nativeSiCollectionSnapshotTyped(
-        handle: Long,
-    ): com.maleicacid.tvinput.aribsi.generated.SiCollectionSnapshotDto?
+    private external fun nativeSiCollectionSnapshotTyped(handle: Long): SiCollectionSnapshotDto?
 
     private external fun nativeSnapshotPmtPidsForSectionFilters(handle: Long): IntArray?
 
