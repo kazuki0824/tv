@@ -656,14 +656,15 @@ fn try_snapshot_si_collection_typed(
     let Some(parser) = parser else {
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
-    match parser.try_lock() {
+    let result = match parser.try_lock() {
         Ok(mut guard) => Ok(Some(build_si_collection_snapshot(&mut guard))),
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Poisoned(_)) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
         }
-    }
+    };
+    result
 }
 
 #[cfg(test)]

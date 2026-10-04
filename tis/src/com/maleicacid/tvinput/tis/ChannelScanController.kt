@@ -593,10 +593,10 @@ class ChannelScanController(
     private fun tryServiceCounts(
         candidate: ScanCandidate,
         requirements: SiCollectionRequirements,
-    ): ServiceCounts? =
-        engine.tryServiceRegistrationSnapshot()?.let { snapshot ->
-            serviceCountsFromSnapshot(candidate, requirements, snapshot)
-        }
+    ): ServiceCounts? {
+        val snapshot = engine.tryServiceRegistrationSnapshot() ?: return null
+        return serviceCountsFromSnapshot(candidate, requirements, snapshot)
+    }
 
     // 安定待ち・期限・取消し・資源喪失の優先順位と、終了後のfilter解放を同じ収集処理で保持する。
     // 各breakは異なる終了理由を確定する。部分完了の4条件はEIT不要・最短待機・登録可能・安定待機の全てを要求する。
