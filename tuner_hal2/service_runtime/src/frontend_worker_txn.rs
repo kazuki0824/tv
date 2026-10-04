@@ -4188,8 +4188,6 @@ fn run_frontend_backend_scan_session_worker(
             Ok(Ok(session)) => session,
             Ok(Err(failure)) if failure.rollback_succeeded => {
                 let primary = failure.error.clone();
-                let step = failure.step;
-                let rollback_failure = failure.rollback_failure.clone();
                 let mut guard = match lock_runtime(
                     &runtime,
                     "service runtime lock poisoned while recording rejected scan submission",
@@ -4208,38 +4206,18 @@ fn run_frontend_backend_scan_session_worker(
                         return Err(error);
                     }
                 };
-                if let Err(diagnostic_error) = guard
+                if let Err(record_error) = guard
                     .frontend_txn()
-                    .record_frontend_backend_failure_diagnostic(
-                        ctx.frontend_id(),
-                        ctx.generation(),
-                        step,
-                        primary.clone(),
-                        rollback_failure,
-                    )
+                    .record_completed_frontend_scan_submit_failure(ctx.frontend_id(), failure)
                 {
                     return Err(compose_frontend_cleanup_error(
-                        "frontend scan submission failure diagnostic record failed",
+                        "frontend scan submission failure record failed",
                         primary,
-                        diagnostic_error,
+                        record_error,
                     ));
                 }
-                if let Err(mark_error) = guard
-                    .frontend_txn()
-                    .mark_frontend_scan_submit_rejected_after_boundary(
-                        ctx.frontend_id(),
-                        ctx.generation(),
-                        primary.clone(),
-                    )
-                {
-                    return Err(compose_frontend_cleanup_error(
-                        "frontend scan submission failure marking failed",
-                        primary,
-                        mark_error,
-                    ));
-                }
-                // backend transactionはrollback済みで、失敗事実もruntimeへ記録済み。
-                // worker cleanup自体は完了として扱い、次のstop/closeでobjectをquarantineしない。
+                // rollback済みbackend submit失敗が旧generationから遅延到着した場合は、
+                // historical diagnosticだけを保存し、現generationの状態やcleanup ownershipを変更しない。
                 return Ok(());
             }
             Ok(Err(failure)) => {
