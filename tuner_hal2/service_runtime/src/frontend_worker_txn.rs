@@ -3018,12 +3018,28 @@ mod frontend_readback_tests {
     }
 }
 
+fn backend_submit_terminal_result(
+    backend_stopped: bool,
+    public_error: HalError,
+    record_result: Result<(), HalError>,
+) -> Result<(), HalError> {
+    match record_result {
+        Ok(()) if backend_stopped => Ok(()),
+        Ok(()) => Err(public_error),
+        Err(record_error) => Err(compose_frontend_cleanup_error(
+            "async backend submit failure state record failed",
+            public_error,
+            record_error,
+        )),
+    }
+}
+
 fn record_async_backend_submit_failure(
     runtime: &SharedRuntime,
     frontend_id: i32,
     generation: u64,
     failure: FrontendBackendSubmitFailure,
-) -> HalError {
+) -> Result<(), HalError> {
     let backend_stopped = failure.rollback_succeeded;
     let step = failure.step;
     let primary_error = failure.error.clone();
@@ -3035,14 +3051,14 @@ fn record_async_backend_submit_failure(
     ) {
         Ok(guard) => guard,
         Err(lock_error) => {
-            return compose_frontend_cleanup_error(
+            return Err(compose_frontend_cleanup_error(
                 "async backend submit failure record lock failed",
                 public_error,
                 lock_error,
-            )
+            ))
         }
     };
-    match guard
+    let record_result = guard
         .frontend_txn()
         .record_frontend_backend_activation_failure_after_commit_context(
             frontend_id,
@@ -3052,13 +3068,32 @@ fn record_async_backend_submit_failure(
             step,
             primary_error,
             rollback_failure,
-        ) {
-        Ok(()) => public_error,
-        Err(record_error) => compose_frontend_cleanup_error(
-            "async backend submit failure state record failed",
-            public_error,
-            record_error,
-        ),
+        );
+    // rollback済みのbackend submit失敗はoperation失敗としてruntimeへ記録済みであり、
+    // 物理終了済みworkerのcleanup失敗へ昇格させない。
+    backend_submit_terminal_result(backend_stopped, public_error, record_result)
+}
+
+#[cfg(test)]
+mod backend_submit_terminal_policy_tests {
+    use super::*;
+
+    #[test]
+    fn rollback_completed_backend_submit_failure_is_not_worker_cleanup_failure() {
+        let primary = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some("/dev/px4video0".into()),
+            op: "PTX_SET_CHANNEL",
+            errno: 11,
+        };
+        assert_eq!(
+            backend_submit_terminal_result(true, primary.clone(), Ok(())),
+            Ok(())
+        );
+        assert_eq!(
+            backend_submit_terminal_result(false, primary.clone(), Ok(())),
+            Err(primary)
+        );
     }
 }
 
@@ -3079,12 +3114,7 @@ fn run_frontend_backend_tune_submit_worker(
     let session = match ticket.submit() {
         Ok(Ok(session)) => session,
         Ok(Err(failure)) => {
-            return Err(record_async_backend_submit_failure(
-                &runtime,
-                frontend_id,
-                generation,
-                failure,
-            ))
+            return record_async_backend_submit_failure(&runtime, frontend_id, generation, failure)
         }
         Err(error) => {
             let public_error = {
@@ -4208,7 +4238,9 @@ fn run_frontend_backend_scan_session_worker(
                         mark_error,
                     ));
                 }
-                return Err(primary);
+                // backend transactionはrollback済みで、失敗事実もruntimeへ記録済み。
+                // worker cleanup自体は完了として扱い、次のstop/closeでobjectをquarantineしない。
+                return Ok(());
             }
             Ok(Err(failure)) => {
                 let primary_error = failure.error.clone();

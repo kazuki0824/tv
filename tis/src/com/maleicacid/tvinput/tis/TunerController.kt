@@ -38,8 +38,6 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 
@@ -181,10 +179,7 @@ class TunerController(
         override fun toString(): String = "UnavailableSectionFilterHandle(pid=$pid, reason=$reason)"
     }
 
-    private val sectionExecutor: ExecutorService =
-        Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "maleicacid-tis-controller-$inputId").apply { isDaemon = true }
-        }
+    private val sectionExecutor = ControllerSerialExecutor("maleicacid-tis-controller-$inputId")
 
     @Volatile private var released = false
 
@@ -192,7 +187,7 @@ class TunerController(
         if (Thread.currentThread().name.startsWith("maleicacid-tis-controller-$inputId")) return block()
         check(!released) { "TunerController は解放済みです inputId=$inputId" }
         return try {
-            sectionExecutor.submit<T> { block() }.get()
+            sectionExecutor.submitControl(block).get()
         } catch (error: InterruptedException) {
             propagateControllerBlockingFailure(error)
         } catch (error: ExecutionException) {
@@ -720,7 +715,11 @@ class TunerController(
         }
 
         fun cancel(stopScan: () -> Int) {
-            // 非SUCCESS/例外では結果もownerも解放済みにしない。
+            // onScanStopped()でSTOPPEDへ到達した時点でframework scanは既に終了済み。
+            // その後のowner解放でcancelScanning()を再発行するとRESULT_INVALID_STATEになり得るため、
+            // native cancelは未停止のoperationだけに実行する。
+            if (outcome == Outcome.STOPPED || outcome == Outcome.CANCELLED) return
+            // 非SUCCESS/例外ではresultもownerも解放済みにしない。
             val result = stopScan()
             check(result == Tuner.RESULT_SUCCESS) { "BS scanの解放に失敗しました result=$result" }
             finish(Outcome.CANCELLED)
