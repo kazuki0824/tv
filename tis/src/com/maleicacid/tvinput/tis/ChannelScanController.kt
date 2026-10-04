@@ -587,8 +587,9 @@ class ChannelScanController(
     private fun serviceCounts(
         candidate: ScanCandidate,
         requirements: SiCollectionRequirements,
-    ): ServiceCounts =
-        serviceCountsFromSnapshot(candidate, requirements, engine.serviceRegistrationSnapshot())
+    ): ServiceCounts {
+        return serviceCountsFromSnapshot(candidate, requirements, engine.serviceRegistrationSnapshot())
+    }
 
     private fun tryServiceCounts(
         candidate: ScanCandidate,
