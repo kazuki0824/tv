@@ -59,6 +59,7 @@ class ChannelScanController(
         val diagnostic: ScanDiagnostic?,
         val clearLivePlaybackStaticallyEligibleServices: Int,
         val registrationReadyServices: Int = clearLivePlaybackStaticallyEligibleServices,
+        val finalRegistrationSnapshot: com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? = null,
     ) {
         val mayPublishChannels: Boolean
             get() =
@@ -178,7 +179,12 @@ class ChannelScanController(
                     )
                     return collection.outcome != SiCollectionOutcome.RESOURCE_LOST
                 }
-                val publishResult = publishScanSnapshotIfCurrent(tune.generation, PublishMode.SETUP_SCAN)
+                val publishResult =
+                    publishScanSnapshotIfCurrent(
+                        tune.generation,
+                        PublishMode.SETUP_SCAN,
+                        registrationSnapshot = collection.finalRegistrationSnapshot,
+                    )
                 if (publishResult == null) {
                     diagnostics += resourceLostDiagnostic(candidate, tune.generation)
                     return false
@@ -346,7 +352,13 @@ class ChannelScanController(
                     if (collection.outcome == SiCollectionOutcome.RESOURCE_LOST) break
                     continue
                 }
-                val publishResult = publishScanSnapshotIfCurrent(tune.generation, mode, allowedServiceKeys)
+                val publishResult =
+                    publishScanSnapshotIfCurrent(
+                        tune.generation,
+                        mode,
+                        allowedServiceKeys,
+                        collection.finalRegistrationSnapshot,
+                    )
                 if (publishResult == null) {
                     diagnostics += resourceLostDiagnostic(candidate, tune.generation)
                     break
@@ -394,6 +406,7 @@ class ChannelScanController(
     private fun publishCurrentServiceSnapshot(
         mode: PublishMode,
         allowedServiceKeys: Set<ServiceKey>? = null,
+        registrationSnapshot: com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? = null,
     ): PublishSnapshotResult {
         if (mode == PublishMode.DIAGNOSTIC_ONLY) return PublishSnapshotResult(0)
         if (mode == PublishMode.LIVE_TUNE_REFRESH || mode == PublishMode.BOOT_EPG_SYNC ||
@@ -413,7 +426,7 @@ class ChannelScanController(
             )
         }
         val candidate = currentCandidate ?: return PublishSnapshotResult(0)
-        val transaction = engine.serviceRegistrationSnapshot()
+        val transaction = registrationSnapshot ?: engine.serviceRegistrationSnapshot()
         val transportRemoteKeys =
             transaction.actualTransportMetadata.associate { transport ->
                 TransportKey(transport.originalNetwork, transport.transportStream) to transport.remoteControlKeyId
@@ -584,11 +597,6 @@ class ChannelScanController(
         )
     }
 
-    private fun serviceCounts(
-        candidate: ScanCandidate,
-        requirements: SiCollectionRequirements,
-    ): ServiceCounts = serviceCountsFromSnapshot(candidate, requirements, engine.serviceRegistrationSnapshot())
-
     private fun tryServiceCounts(
         candidate: ScanCandidate,
         requirements: SiCollectionRequirements,
@@ -704,15 +712,15 @@ class ChannelScanController(
             terminalCancelObserved = true
             outcome = SiCollectionOutcome.CANCELLED
         }
-        val finalCounts = serviceCounts(candidate, requirements)
+        val finalSnapshot = engine.serviceRegistrationSnapshot()
+        val finalCounts = serviceCountsFromSnapshot(candidate, requirements, finalSnapshot)
         val complete = finalCounts.collectionStatus.complete
-        if (outcome == SiCollectionOutcome.COMPLETE && !complete) outcome = SiCollectionOutcome.TIMEOUT_PARTIAL
-        val finalRegistrationReadySnapshotAvailable = finalCounts.registrationReady > 0
-        if (outcome == SiCollectionOutcome.TIMEOUT_PARTIAL &&
-            !finalRegistrationReadySnapshotAvailable
-        ) {
-            outcome = SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
-        }
+        outcome =
+            finalizeSiCollectionOutcome(
+                outcome = outcome,
+                finalSnapshotComplete = complete,
+                finalRegistrationReadyServices = finalCounts.registrationReady,
+            )
         val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
         val message =
             when (outcome) {
@@ -739,6 +747,7 @@ class ChannelScanController(
             diagnostic = message?.let { ScanDiagnostic(candidate, it) },
             clearLivePlaybackStaticallyEligibleServices = finalCounts.clearLivePlaybackStaticallyEligible,
             registrationReadyServices = finalCounts.registrationReady,
+            finalRegistrationSnapshot = finalSnapshot,
         )
     }
 
@@ -775,9 +784,10 @@ class ChannelScanController(
         generation: Long,
         mode: PublishMode,
         allowedServiceKeys: Set<ServiceKey>? = null,
+        registrationSnapshot: com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? = null,
     ): PublishSnapshotResult? =
         scanGenerationFence.publishIfCurrent(generation) {
-            publishCurrentServiceSnapshot(mode, allowedServiceKeys)
+            publishCurrentServiceSnapshot(mode, allowedServiceKeys, registrationSnapshot)
         }
 
     /** scanが既に所有していたgeneration、信号終端、公開lockをまとめる。別の世代ownerは作らない。 */
@@ -894,6 +904,46 @@ class ChannelScanController(
             validProgramKeysForUpdate(update)
 
         fun shouldContinueInitialScanAfterSynchronousTuneResult(success: Boolean): Boolean = success
+
+        internal fun finalizeSiCollectionOutcome(
+            outcome: SiCollectionOutcome,
+            finalSnapshotComplete: Boolean,
+            finalRegistrationReadyServices: Int,
+        ): SiCollectionOutcome =
+            when (outcome) {
+                SiCollectionOutcome.CANCELLED,
+                SiCollectionOutcome.RESOURCE_LOST,
+                SiCollectionOutcome.SIGNAL_UNAVAILABLE,
+                -> {
+                    outcome
+                }
+
+                SiCollectionOutcome.COMPLETE -> {
+                    when {
+                        finalSnapshotComplete -> SiCollectionOutcome.COMPLETE
+                        finalRegistrationReadyServices > 0 -> SiCollectionOutcome.TIMEOUT_PARTIAL
+                        else -> SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
+                    }
+                }
+
+                SiCollectionOutcome.STABLE_PARTIAL -> {
+                    when {
+                        finalSnapshotComplete -> SiCollectionOutcome.COMPLETE
+                        finalRegistrationReadyServices > 0 -> SiCollectionOutcome.STABLE_PARTIAL
+                        else -> SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
+                    }
+                }
+
+                SiCollectionOutcome.TIMEOUT_PARTIAL,
+                SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE,
+                -> {
+                    if (finalRegistrationReadyServices > 0) {
+                        SiCollectionOutcome.TIMEOUT_PARTIAL
+                    } else {
+                        SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
+                    }
+                }
+            }
 
         internal fun shouldStartSiSnapshot(
             elapsedMs: Long,
