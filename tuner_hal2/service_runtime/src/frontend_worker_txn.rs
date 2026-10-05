@@ -559,6 +559,29 @@ impl FrontendWorkerReaperHandle {
             .map(|value| value.is_some())
     }
 
+    fn wait_until_frontend_released(
+        &self,
+        frontend_id: i32,
+        deadline: Instant,
+    ) -> Result<bool, HalError> {
+        loop {
+            let tune_pending = self.is_pending(frontend_id, FrontendWorkerKind::Tune)?;
+            let scan_pending = self.is_pending(frontend_id, FrontendWorkerKind::Scan)?;
+            if !tune_pending && !scan_pending {
+                return Ok(true);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(
+                deadline
+                    .saturating_duration_since(now)
+                    .min(Duration::from_millis(10)),
+            );
+        }
+    }
+
     fn pending_state(
         &self,
         frontend_id: i32,
@@ -3817,10 +3840,36 @@ pub(crate) fn start_frontend_backend_tune_worker(
     if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
         || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
     {
-        return Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "frontend endpoint remains owned by the worker reaper",
-        ));
+        let wait_deadline = Instant::now()
+            .checked_add(Duration::from_millis(
+                guard.capability_snapshot().worker_reaper_deadline_ms,
+            ))
+            .ok_or_else(|| {
+                HalError::cleanup_failed(
+                    "frontend worker reaper admission",
+                    "frontend reaper wait deadline overflow",
+                )
+            })?;
+        drop(guard);
+        if !reaper.wait_until_frontend_released(frontend_id, wait_deadline)? {
+            return Err(HalError::cleanup_failed(
+                "frontend worker reaper admission",
+                "previous frontend worker cleanup did not finish before the reaper deadline",
+            ));
+        }
+        guard = lock_runtime(
+            &runtime,
+            "service runtime lock poisoned after frontend reaper admission wait",
+        )?;
+        ensure_frontend_object_still_live(&guard, object_id, object_generation)?;
+        let (revalidated_frontend_id, _) =
+            resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
+        if revalidated_frontend_id != frontend_id {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend endpoint changed while waiting for worker reaper completion",
+            ));
+        }
     }
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
     if guard
@@ -4618,10 +4667,36 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
     if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
         || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
     {
-        return Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "frontend endpoint remains owned by the worker reaper",
-        ));
+        let wait_deadline = Instant::now()
+            .checked_add(Duration::from_millis(
+                guard.capability_snapshot().worker_reaper_deadline_ms,
+            ))
+            .ok_or_else(|| {
+                HalError::cleanup_failed(
+                    "frontend worker reaper admission",
+                    "frontend reaper wait deadline overflow",
+                )
+            })?;
+        drop(guard);
+        if !reaper.wait_until_frontend_released(frontend_id, wait_deadline)? {
+            return Err(HalError::cleanup_failed(
+                "frontend worker reaper admission",
+                "previous frontend worker cleanup did not finish before the reaper deadline",
+            ));
+        }
+        guard = lock_runtime(
+            &runtime,
+            "service runtime lock poisoned after frontend reaper admission wait",
+        )?;
+        ensure_frontend_object_still_live(&guard, object_id, object_generation)?;
+        let (revalidated_frontend_id, _) =
+            resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
+        if revalidated_frontend_id != frontend_id {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend endpoint changed while waiting for worker reaper completion",
+            ));
+        }
     }
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
     let candidates = guard.scan_candidates_for_frontend_entry(&entry, &request, scan_mode)?;
