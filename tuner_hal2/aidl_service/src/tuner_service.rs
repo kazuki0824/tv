@@ -96,12 +96,11 @@ use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::{
     close_object_after_close_preflight, execute_filter_av_handle_release_use_case,
-    retry_cleanup_from_reaper,
     execute_object_query_use_case, execute_object_query_use_case_with_aidl_input_conversion,
     execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
     execute_shared_object_runtime_use_case,
     execute_shared_object_runtime_use_case_with_request_builder,
-    plan_unavailable_object_method_use_case,
+    plan_unavailable_object_method_use_case, retry_cleanup_from_reaper,
 };
 use crate::service_context::{AidlServiceContext, SharedAidlServiceContext};
 
