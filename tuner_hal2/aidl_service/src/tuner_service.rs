@@ -73,7 +73,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse,
     RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse, RuntimeObjectEntry,
-    TunerServiceRuntime,
+    RuntimeObjectLifecycle, TunerServiceRuntime,
 };
 
 use crate::child_object_open::{
@@ -96,6 +96,7 @@ use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::{
     close_object_after_close_preflight, execute_filter_av_handle_release_use_case,
+    retry_cleanup_from_reaper,
     execute_object_query_use_case, execute_object_query_use_case_with_aidl_input_conversion,
     execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
     execute_shared_object_runtime_use_case,
@@ -484,6 +485,51 @@ fn frontend_info_from_snapshot(
     })
 }
 
+fn retry_pending_frontend_cleanup_before_open(
+    context: &SharedAidlServiceContext,
+    frontend_id: i32,
+) {
+    let handle = {
+        let runtime = context.runtime();
+        let guard = match TunerServiceRuntime::lock_shared(
+            &runtime,
+            "frontend再open前のcleanup確認",
+        ) {
+            Ok(guard) => guard,
+            Err(error) => {
+                log::error!("frontend再open前のcleanup確認に失敗しました: {error:?}");
+                return;
+            }
+        };
+        guard
+            .object_table()
+            .active_entry_for_runtime(
+                AidlObjectKind::Frontend,
+                maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(frontend_id)),
+            )
+            .filter(|entry| {
+                matches!(
+                    entry.lifecycle(),
+                    RuntimeObjectLifecycle::Closing { .. }
+                        | RuntimeObjectLifecycle::CleanupPending { .. }
+                )
+            })
+            .and_then(|entry| {
+                AidlObjectHandle::new(
+                    AidlObjectKind::Frontend,
+                    entry.object_id(),
+                    entry.generation(),
+                )
+                .ok()
+            })
+    };
+    if let Some(handle) = handle {
+        // Drop/owner-lossが既にObjectCloseTxnへ移したcleanupだけを一度進める。
+        // Live occupantやQuarantined occupantをここでcloseしない。
+        let _ = retry_cleanup_from_reaper(context, handle, AidlMethodCall::FrontendClose);
+    }
+}
+
 impl ITuner for TunerAidlService {
     fn getFrontendIds(&self) -> BinderResult<Vec<i32>> {
         match self
@@ -499,6 +545,7 @@ impl ITuner for TunerAidlService {
     }
 
     fn openFrontendById(&self, frontend_id: i32) -> BinderResult<Strong<dyn IFrontend>> {
+        retry_pending_frontend_cleanup_before_open(&self.context, frontend_id);
         let open_result = self
             .lock_runtime()?
             .root_open_txn()
