@@ -1116,7 +1116,7 @@ class TunerController(
         pid: TsPid,
         generation: Long,
         section: ByteArray,
-        read: Long,
+        read: Int,
     ) {
         runCatching {
             callOnControllerData {
