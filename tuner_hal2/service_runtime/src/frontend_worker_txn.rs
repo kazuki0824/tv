@@ -1346,15 +1346,33 @@ fn record_frontend_cleanup_diagnostic(
     let projection = record.clone();
     sink.record(record)?;
     #[cfg(target_os = "android")]
-    log::error!(
-        "frontend worker cleanup diagnostic: kind={:?} frontend_id={} object_id={:?} object_generation={:?} public_error={:?} report={:?}",
-        projection.kind(),
-        projection.frontend_id(),
-        projection.object_id(),
-        projection.object_generation(),
-        projection.public_error(),
-        projection.report()
-    );
+    {
+        let successful_reaper_completion =
+            projection.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion
+                && projection.public_error().is_none()
+                && projection.report().first_error().is_none();
+        if successful_reaper_completion {
+            log::debug!(
+                "frontend worker cleanup diagnostic: kind={:?} frontend_id={} object_id={:?} object_generation={:?} public_error={:?} report={:?}",
+                projection.kind(),
+                projection.frontend_id(),
+                projection.object_id(),
+                projection.object_generation(),
+                projection.public_error(),
+                projection.report()
+            );
+        } else {
+            log::error!(
+                "frontend worker cleanup diagnostic: kind={:?} frontend_id={} object_id={:?} object_generation={:?} public_error={:?} report={:?}",
+                projection.kind(),
+                projection.frontend_id(),
+                projection.object_id(),
+                projection.object_generation(),
+                projection.public_error(),
+                projection.report()
+            );
+        }
+    }
     Ok(())
 }
 

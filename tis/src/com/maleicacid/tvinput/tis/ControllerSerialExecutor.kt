@@ -9,7 +9,6 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -18,7 +17,6 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class ControllerSerialExecutor(
     threadName: String,
-    private val onDataDrop: (Long) -> Unit = {},
 ) : ThreadPoolExecutor(
         1,
         1,
@@ -52,8 +50,6 @@ internal class ControllerSerialExecutor(
     }
 
     private val nextSequence = AtomicLong()
-    private val pendingDataTasks = AtomicInteger()
-    private val droppedDataTasks = AtomicLong()
 
     override fun execute(command: Runnable) {
         if (command is ControlTask) {
@@ -67,26 +63,8 @@ internal class ControllerSerialExecutor(
         enqueue(CONTROL_QUEUE_CLASS, command)
     }
 
-    fun executeData(command: Runnable): Boolean {
-        while (true) {
-            val current = pendingDataTasks.get()
-            if (current >= MAX_PENDING_DATA_TASKS) {
-                val dropped = droppedDataTasks.incrementAndGet()
-                onDataDrop(dropped)
-                return false
-            }
-            if (pendingDataTasks.compareAndSet(current, current + 1)) break
-        }
-        return try {
-            enqueue(DATA_QUEUE_CLASS, command) { pendingDataTasks.decrementAndGet() }
-            true
-        } catch (error: RejectedExecutionException) {
-            pendingDataTasks.decrementAndGet()
-            throw error
-        } catch (error: IllegalStateException) {
-            pendingDataTasks.decrementAndGet()
-            throw error
-        }
+    fun executeData(command: Runnable) {
+        enqueue(DATA_QUEUE_CLASS, command)
     }
 
     private fun enqueue(
@@ -112,9 +90,14 @@ internal class ControllerSerialExecutor(
         return task
     }
 
+    fun <T> submitData(block: () -> T): Future<T> {
+        val task = FutureTask(Callable(block))
+        executeData(task)
+        return task
+    }
+
     private companion object {
         const val INITIAL_QUEUE_CAPACITY = 11
-        const val MAX_PENDING_DATA_TASKS = 256
         const val CONTROL_QUEUE_CLASS = 0
         const val DATA_QUEUE_CLASS = 1
 
