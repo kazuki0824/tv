@@ -994,5 +994,4 @@ mod qg_object_lifecycle_tests {
             .active_entry_for_runtime(AidlObjectKind::Frontend, ledger_id)
             .is_none());
     }
-
 }
