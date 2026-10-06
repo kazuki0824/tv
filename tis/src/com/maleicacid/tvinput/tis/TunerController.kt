@@ -179,7 +179,12 @@ class TunerController(
         override fun toString(): String = "UnavailableSectionFilterHandle(pid=$pid, reason=$reason)"
     }
 
-    private val sectionExecutor = ControllerSerialExecutor("maleicacid-tis-controller-$inputId")
+    private val sectionExecutor =
+        ControllerSerialExecutor("maleicacid-tis-controller-$inputId") { dropped ->
+            Log.w(LogTags.TIS, "controller data callback backlog上限によりcallbackを破棄しました inputId=$inputId dropped=$dropped")
+        }
+    private val controllerControlExecutor = java.util.concurrent.Executor(sectionExecutor::executeControl)
+    private val controllerDataExecutor = java.util.concurrent.Executor { task -> sectionExecutor.executeData(task) }
 
     @Volatile private var released = false
 
@@ -262,7 +267,7 @@ class TunerController(
         var created: Tuner? = null
         return try {
             created = Tuner(context, tvInputSessionId, useCase)
-            created.setResourceLostListener(sectionExecutor) { callbackTuner ->
+            created.setResourceLostListener(controllerControlExecutor) { callbackTuner ->
                 if (callbackTuner === tuner && !released) handleTunerResourceLostOnController()
             }
             created
@@ -286,7 +291,7 @@ class TunerController(
             casController = controller
             controller?.setOwnerDispatcher { action ->
                 try {
-                    sectionExecutor.execute {
+                    sectionExecutor.executeControl {
                         if (!released && casController === controller) action()
                     }
                 } catch (failure: RejectedExecutionException) {
@@ -394,7 +399,7 @@ class TunerController(
     ): Boolean =
         onTuneEventCallback == null ||
             runCatching {
-                tunerInstance.setOnTuneEventListener(sectionExecutor) { event ->
+                tunerInstance.setOnTuneEventListener(controllerControlExecutor) { event ->
                     if (tunerInstance === tuner && !released) handleTuneEventOnController(generation, event)
                 }
             }.onFailure { error ->
@@ -584,7 +589,7 @@ class TunerController(
                 override fun onLocked() {
                     if (streamIdDiscovery === operation) {
                         operation.continueAfterLock {
-                            tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, sectionExecutor, this)
+                            tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, controllerControlExecutor, this)
                         }
                     }
                 }
@@ -634,7 +639,7 @@ class TunerController(
 
                 override fun onDvbtCellIdsReported(dvbtCellIds: IntArray) = Unit
             }
-        operation.start { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, sectionExecutor, callback) }
+        operation.start { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, controllerControlExecutor, callback) }
         return operation
     }
 
@@ -1033,7 +1038,7 @@ class TunerController(
         try {
             for (settings in sectionSettingsForPid(pid)) {
                 val filter =
-                    tunerInstance.openFilter(Filter.TYPE_TS, Filter.SUBTYPE_SECTION, SECTION_FILTER_BUFFER_BYTES, sectionExecutor, callback)
+                    tunerInstance.openFilter(Filter.TYPE_TS, Filter.SUBTYPE_SECTION, SECTION_FILTER_BUFFER_BYTES, controllerDataExecutor, callback)
                         ?: error("section openFilterがnullを返しました pid=$pid")
                 artifacts += SectionFilterArtifact(filter)
                 val config =

@@ -8,6 +8,7 @@ import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -16,6 +17,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class ControllerSerialExecutor(
     threadName: String,
+    private val onDataDrop: (Long) -> Unit = {},
 ) : ThreadPoolExecutor(
         1,
         1,
@@ -37,32 +39,82 @@ internal class ControllerSerialExecutor(
         val queueClass: Int,
         val sequence: Long,
         val delegate: Runnable,
+        val onFinished: (() -> Unit)? = null,
     ) : Runnable {
-        override fun run() = delegate.run()
+        override fun run() {
+            try {
+                delegate.run()
+            } finally {
+                onFinished?.invoke()
+            }
+        }
     }
 
     private val nextSequence = AtomicLong()
+    private val pendingDataTasks = AtomicInteger()
+    private val droppedDataTasks = AtomicLong()
 
     override fun execute(command: Runnable) {
+        if (command is ControlTask) {
+            executeControl(command)
+        } else {
+            executeData(command)
+        }
+    }
+
+    fun executeControl(command: Runnable) {
+        enqueue(CONTROL_QUEUE_CLASS, command)
+    }
+
+    fun executeData(command: Runnable): Boolean {
+        while (true) {
+            val current = pendingDataTasks.get()
+            if (current >= MAX_PENDING_DATA_TASKS) {
+                val dropped = droppedDataTasks.incrementAndGet()
+                onDataDrop(dropped)
+                return false
+            }
+            if (pendingDataTasks.compareAndSet(current, current + 1)) break
+        }
+        return try {
+            enqueue(DATA_QUEUE_CLASS, command) { pendingDataTasks.decrementAndGet() }
+            true
+        } catch (error: RuntimeException) {
+            pendingDataTasks.decrementAndGet()
+            throw error
+        }
+    }
+
+    private fun enqueue(
+        queueClass: Int,
+        command: Runnable,
+        onFinished: (() -> Unit)? = null,
+    ) {
         val sequence = nextSequence.getAndIncrement()
         check(sequence >= 0L) { "TunerController task sequence exhausted" }
         super.execute(
             QueuedTask(
-                queueClass = if (command is ControlTask) CONTROL_QUEUE_CLASS else DATA_QUEUE_CLASS,
+                queueClass = queueClass,
                 sequence = sequence,
                 delegate = command,
+                onFinished = onFinished,
             ),
         )
     }
 
     fun <T> submitControl(block: () -> T): Future<T> {
         val task = ControlFutureTask(Callable(block))
-        execute(task)
+        executeControl(task)
         return task
     }
 
+    internal fun pendingDataTaskCountForTest(): Int = pendingDataTasks.get()
+
+    internal fun droppedDataTaskCountForTest(): Long = droppedDataTasks.get()
+
     private companion object {
         const val INITIAL_QUEUE_CAPACITY = 11
+        const val MAX_PENDING_DATA_TASKS = 256
         const val CONTROL_QUEUE_CLASS = 0
         const val DATA_QUEUE_CLASS = 1
 
