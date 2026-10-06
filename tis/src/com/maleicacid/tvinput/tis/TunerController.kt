@@ -183,7 +183,7 @@ class TunerController(
         ControllerSerialExecutor("maleicacid-tis-controller-$inputId") { dropped ->
             Log.w(LogTags.TIS, "controller data callback backlog上限によりcallbackを破棄しました inputId=$inputId dropped=$dropped")
         }
-    private val controllerControlExecutor = java.util.concurrent.Executor(sectionExecutor::executeControl)
+    private val controllerControlExecutor = java.util.concurrent.Executor { task -> sectionExecutor.executeControl(task) }
     private val controllerDataExecutor = java.util.concurrent.Executor { task -> sectionExecutor.executeData(task) }
 
     @Volatile private var released = false
