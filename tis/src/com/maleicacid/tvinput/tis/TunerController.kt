@@ -182,7 +182,8 @@ class TunerController(
     private val sectionExecutor = ControllerSerialExecutor("maleicacid-tis-controller-$inputId")
     private val controllerControlExecutor =
         java.util.concurrent.Executor { task -> sectionExecutor.executeControl(task) }
-    // Framework callbackはここで即時実行し、SectionEventのpayloadを先にdrainする。
+
+    // Framework callbackはここで即時実行し、SectionEventのpayloadを先にdrainする.
     // parser/state mutationだけをcontroller data classへ同期handoffして、未読eventをqueueへ残さない。
     private val filterCallbackExecutor = java.util.concurrent.Executor { task -> task.run() }
 
@@ -1014,7 +1015,9 @@ class TunerController(
                                 return@forEach
                             }
 
-                            SectionFilterPolicy.DataLengthDecision.ACCEPT -> Unit
+                            SectionFilterPolicy.DataLengthDecision.ACCEPT -> {
+                                Unit
+                            }
                         }
 
                         val section = ByteArray(length.toInt())
@@ -1042,19 +1045,24 @@ class TunerController(
                                         sourceIsCurrent = sourceIsCurrent,
                                     )
                                 ) {
-                                    SectionFilterPolicy.ReadDecision.INGEST ->
+                                    SectionFilterPolicy.ReadDecision.INGEST -> {
                                         onSectionFromFilter(pid, section, generation, filter)
+                                    }
 
-                                    SectionFilterPolicy.ReadDecision.SHORT_READ ->
+                                    SectionFilterPolicy.ReadDecision.SHORT_READ -> {
                                         recordSectionShortRead(pid, expected = section.size, actual = read)
+                                    }
 
-                                    SectionFilterPolicy.ReadDecision.READ_ERROR ->
+                                    SectionFilterPolicy.ReadDecision.READ_ERROR -> {
                                         recordSectionReadError(
                                             pid,
                                             "read=$read expected=${section.size}",
                                         )
+                                    }
 
-                                    SectionFilterPolicy.ReadDecision.STALE_SOURCE -> Unit
+                                    SectionFilterPolicy.ReadDecision.STALE_SOURCE -> {
+                                        Unit
+                                    }
                                 }
                             }
                         }.onFailure { error ->
@@ -1137,12 +1145,16 @@ class TunerController(
         val buffer = ByteArray(SECTION_FILTER_BUFFER_BYTES.toInt())
         var remaining = dataLength
         var drained = 0L
-        while (remaining > 0L) {
+        var continueDraining = true
+        while (remaining > 0L && continueDraining) {
             val requested = minOf(remaining, buffer.size.toLong())
-            val read = runCatching { filter.read(buffer, 0, requested) }.getOrElse { return drained }
-            if (read <= 0L) return drained
-            drained += read
-            remaining -= read
+            val read = runCatching { filter.read(buffer, 0, requested) }.getOrNull()
+            if (read == null || read <= 0L) {
+                continueDraining = false
+            } else {
+                drained += read
+                remaining -= read
+            }
         }
         return drained
     }
