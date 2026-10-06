@@ -490,16 +490,14 @@ fn retry_pending_frontend_cleanup_before_open(
 ) {
     let handle = {
         let runtime = context.runtime();
-        let guard = match TunerServiceRuntime::lock_shared(
-            &runtime,
-            "frontend再open前のcleanup確認",
-        ) {
-            Ok(guard) => guard,
-            Err(error) => {
-                log::error!("frontend再open前のcleanup確認に失敗しました: {error:?}");
-                return;
-            }
-        };
+        let guard =
+            match TunerServiceRuntime::lock_shared(&runtime, "frontend再open前のcleanup確認") {
+                Ok(guard) => guard,
+                Err(error) => {
+                    log::error!("frontend再open前のcleanup確認に失敗しました: {error:?}");
+                    return;
+                }
+            };
         guard
             .object_table()
             .active_entry_for_runtime(
