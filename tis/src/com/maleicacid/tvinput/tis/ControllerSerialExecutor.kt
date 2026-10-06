@@ -76,7 +76,10 @@ internal class ControllerSerialExecutor(
         }
         try {
             enqueue(DATA_QUEUE_CLASS, command) { pendingDataSlots.release() }
-        } catch (error: RuntimeException) {
+        } catch (error: RejectedExecutionException) {
+            pendingDataSlots.release()
+            throw error
+        } catch (error: IllegalStateException) {
             pendingDataSlots.release()
             throw error
         }
