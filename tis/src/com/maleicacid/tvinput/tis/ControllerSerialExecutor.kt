@@ -67,6 +67,7 @@ internal class ControllerSerialExecutor(
         enqueue(CONTROL_QUEUE_CLASS, command)
     }
 
+    @Suppress("ThrowsCount")
     fun executeData(command: Runnable) {
         try {
             pendingDataSlots.acquire()
