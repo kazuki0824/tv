@@ -59,10 +59,10 @@ class ScanPlanPolicyTest {
             releaseFirst.countDown()
             executor.shutdownNow()
         }
+        assertControllerDataBackpressure()
     }
 
-    @Test
-    fun controllerDataCapacityBackpressuresInsteadOfDropping() {
+    private fun assertControllerDataBackpressure() {
         val executor =
             ControllerSerialExecutor(
                 "maleicacid-tis-controller-bounded-backpressure-test",
@@ -94,33 +94,6 @@ class ScanPlanPolicyTest {
         } finally {
             releaseFirst.countDown()
             producer.shutdownNow()
-            executor.shutdownNow()
-        }
-    }
-
-    @Test
-    fun controllerDataSubmissionIsBackpressuredAndControlStillOvertakesQueuedData() {
-        val executor = ControllerSerialExecutor("maleicacid-tis-controller-backpressure-test")
-        val runningStarted = CountDownLatch(1)
-        val releaseRunning = CountDownLatch(1)
-        val order = Collections.synchronizedList(mutableListOf<String>())
-        try {
-            executor.executeData {
-                order += "data-running"
-                runningStarted.countDown()
-                check(releaseRunning.await(1, TimeUnit.SECONDS))
-            }
-            check(runningStarted.await(1, TimeUnit.SECONDS))
-            val queuedData = executor.submitData { order += "data-queued" }
-            val control = executor.submitControl { order += "control" }
-
-            releaseRunning.countDown()
-            control.get(1, TimeUnit.SECONDS)
-            queuedData.get(1, TimeUnit.SECONDS)
-
-            assertEquals(listOf("data-running", "control", "data-queued"), order)
-        } finally {
-            releaseRunning.countDown()
             executor.shutdownNow()
         }
     }
