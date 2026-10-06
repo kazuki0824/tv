@@ -181,14 +181,16 @@ pub fn aidl_object_entry_for_close_cleanup(
         | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(entry.clone()),
         RuntimeObjectLifecycle::Prepared => Err(HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
-            "AIDL object is not live for close cleanup",
+            "AIDL object is Prepared and was never published Live",
         )),
-        RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {
-            Err(HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "AIDL object is terminal",
-            ))
-        }
+        RuntimeObjectLifecycle::Closed => Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object is already Closed",
+        )),
+        RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object is Quarantined and requires fail-closed handling",
+        )),
     }
 }
 

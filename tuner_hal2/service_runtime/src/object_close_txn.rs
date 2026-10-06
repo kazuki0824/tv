@@ -1104,8 +1104,7 @@ impl ObjectCloseTxn {
                 "AIDL object identity changed during close preflight",
             ));
         }
-        Ok(entry.lifecycle == crate::RuntimeObjectLifecycle::Closed
-            && matches!(object_kind, AidlObjectKind::Frontend | AidlObjectKind::Lnb))
+        Ok(entry.lifecycle == crate::RuntimeObjectLifecycle::Closed)
     }
 
     pub fn begin(
@@ -1751,6 +1750,37 @@ mod tests {
         assert!(finish_object_close_use_case(&mut runtime, stale_completion, Ok(())).is_err());
         finish_object_close_use_case(&mut runtime, retry.completion, Ok(()))
             .expect("current cleanup attempt can finish");
+    }
+
+    #[test]
+    fn closed_child_close_is_idempotent_but_quarantined_is_not() {
+        let mut runtime = runtime_with_filter_for_close_attempt(41);
+        let close_plan = begin_filter_close_plan(&mut runtime, 41);
+        let cleanup_attempt = close_plan
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("cleanup attempt begins");
+        finish_object_close_use_case(&mut runtime, cleanup_attempt.completion, Ok(()))
+            .expect("filter close succeeds");
+        assert!(ObjectCloseTxn::is_idempotent_complete(
+            &runtime,
+            AidlObjectId(41),
+            AidlObjectGeneration(1),
+            AidlObjectKind::Filter,
+        )
+        .expect("closed child close is idempotent"));
+
+        let mut quarantined = runtime_with_filter_for_close_attempt(42);
+        quarantined
+            .object_table_mut()
+            .quarantine_cascade(AidlObjectId(42), AidlObjectGeneration(1))
+            .expect("quarantine succeeds");
+        assert!(!ObjectCloseTxn::is_idempotent_complete(
+            &quarantined,
+            AidlObjectId(42),
+            AidlObjectGeneration(1),
+            AidlObjectKind::Filter,
+        )
+        .expect("quarantined object is not idempotent complete"));
     }
 
     #[test]

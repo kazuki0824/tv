@@ -113,6 +113,10 @@ impl RuntimeObjectEntry {
     pub const fn public_runtime_id(&self) -> LedgerId {
         self.ledger_id
     }
+
+    pub const fn lifecycle(&self) -> RuntimeObjectLifecycle {
+        self.lifecycle
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -587,6 +591,21 @@ impl RuntimeObjectTable {
             .cloned()
     }
 
+    pub fn active_entry_for_runtime(
+        &self,
+        kind: AidlObjectKind,
+        ledger_id: LedgerId,
+    ) -> Option<RuntimeObjectEntry> {
+        self.entries
+            .values()
+            .find(|entry| {
+                entry.object_kind == kind
+                    && entry.ledger_id == ledger_id
+                    && !matches!(entry.lifecycle, RuntimeObjectLifecycle::Closed)
+            })
+            .cloned()
+    }
+
     pub fn active_public_runtime_ids(&self, kind: AidlObjectKind) -> Vec<LedgerId> {
         self.entries
             .values()
@@ -941,4 +960,39 @@ mod qg_object_lifecycle_tests {
             }
         );
     }
+    #[test]
+    fn active_runtime_entry_exposes_nonterminal_identity_and_releases_closed_binding() {
+        let mut table = RuntimeObjectTable::default();
+        let object_id = AidlObjectId(700);
+        let generation = AidlObjectGeneration(3);
+        let ledger_id = LedgerId(17);
+        table
+            .insert(RuntimeObjectEntry {
+                object_kind: AidlObjectKind::Frontend,
+                object_id,
+                generation,
+                ledger_id,
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("insert succeeds");
+        let active = table
+            .active_entry_for_runtime(AidlObjectKind::Frontend, ledger_id)
+            .expect("active occupant is visible");
+        assert_eq!(active.object_id(), object_id);
+        assert_eq!(active.generation(), generation);
+        assert_eq!(active.lifecycle(), RuntimeObjectLifecycle::Live);
+
+        table
+            .begin_close_cascade(object_id, generation, CleanupStep::UnregisterRuntime)
+            .expect("begin close succeeds");
+        table
+            .commit_close_cascade(object_id, generation)
+            .expect("close commit succeeds");
+        assert!(table
+            .active_entry_for_runtime(AidlObjectKind::Frontend, ledger_id)
+            .is_none());
+    }
+
 }

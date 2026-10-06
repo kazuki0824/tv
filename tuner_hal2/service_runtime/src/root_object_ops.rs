@@ -103,9 +103,18 @@ impl RootOpenTxn<'_> {
                 "frontend id is not published by the capability snapshot",
             ));
         };
-        if self.runtime.has_active_frontend_lease(frontend_id) {
-            return Err(HalError::Unsupported(
-                "frontend id is already leased by a live object",
+        if let Some(occupant) = self.runtime.object_table().active_entry_for_runtime(
+            AidlObjectKind::Frontend,
+            maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(frontend_id)),
+        ) {
+            return Err(HalError::invalid_state(
+                maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                format!(
+                    "frontend lease occupied: frontend_id={frontend_id} object_id={} generation={} lifecycle={:?}",
+                    occupant.object_id().0,
+                    occupant.generation().0,
+                    occupant.lifecycle(),
+                ),
             ));
         }
         if self
