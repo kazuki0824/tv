@@ -112,10 +112,6 @@ internal class ControllerSerialExecutor(
         return task
     }
 
-    internal fun pendingDataTaskCountForTest(): Int = pendingDataTasks.get()
-
-    internal fun droppedDataTaskCountForTest(): Long = droppedDataTasks.get()
-
     private companion object {
         const val INITIAL_QUEUE_CAPACITY = 11
         const val MAX_PENDING_DATA_TASKS = 256
