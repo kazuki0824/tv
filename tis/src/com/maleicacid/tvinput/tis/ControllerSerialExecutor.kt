@@ -5,6 +5,7 @@ import java.util.concurrent.Callable
 import java.util.concurrent.Future
 import java.util.concurrent.FutureTask
 import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -79,7 +80,10 @@ internal class ControllerSerialExecutor(
         return try {
             enqueue(DATA_QUEUE_CLASS, command) { pendingDataTasks.decrementAndGet() }
             true
-        } catch (error: RuntimeException) {
+        } catch (error: RejectedExecutionException) {
+            pendingDataTasks.decrementAndGet()
+            throw error
+        } catch (error: IllegalStateException) {
             pendingDataTasks.decrementAndGet()
             throw error
         }
