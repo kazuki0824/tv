@@ -83,12 +83,12 @@ class ScanPlanPolicyTest {
                 producer.submit {
                     val queued = executor.submitData { secondExecuted.countDown() }
                     submitReturned.countDown()
-                    queued
+                    queued.get(1, TimeUnit.SECONDS)
                 }
 
             assertFalse(submitReturned.await(50, TimeUnit.MILLISECONDS))
             releaseFirst.countDown()
-            producerFuture.get(1, TimeUnit.SECONDS).get(1, TimeUnit.SECONDS)
+            producerFuture.get(1, TimeUnit.SECONDS)
             assertTrue(submitReturned.await(1, TimeUnit.SECONDS))
             assertTrue(secondExecuted.await(1, TimeUnit.SECONDS))
         } finally {
