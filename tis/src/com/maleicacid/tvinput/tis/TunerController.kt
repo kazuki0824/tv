@@ -1057,7 +1057,7 @@ class TunerController(
             SectionFilterPolicy.DataLengthDecision.MALFORMED -> {
                 runCatching {
                     callOnControllerData {
-                        recordSectionMalformedDrop(pid, "dataLength=${length}")
+                        recordSectionMalformedDrop(pid, "dataLength=$length")
                     }
                 }
             }
@@ -1070,7 +1070,7 @@ class TunerController(
                         if (drained != length) {
                             recordSectionReadError(
                                 pid,
-                                "oversized payload drain=${drained} expected=${length}",
+                                "oversized payload drain=$drained expected=$length",
                             )
                         }
                     }
@@ -1139,7 +1139,7 @@ class TunerController(
                     SectionFilterPolicy.ReadDecision.READ_ERROR -> {
                         recordSectionReadError(
                             pid,
-                            "read=${read} expected=${section.size}",
+                            "read=$read expected=${section.size}",
                         )
                     }
 
@@ -1152,7 +1152,7 @@ class TunerController(
             if (!released) {
                 Log.w(
                     LogTags.TIS,
-                    "section payloadをcontrollerへ配送できません inputId=${inputId} pid=${pid} generation=${generation}",
+                    "section payloadをcontrollerへ配送できません inputId=$inputId pid=$pid generation=$generation",
                     error,
                 )
             }
