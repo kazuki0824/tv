@@ -1338,9 +1338,8 @@ pub(crate) fn record_frontend_worker_terminal_failure(
     )
 }
 
-fn frontend_cleanup_diagnostic_is_error(
-    record: &FrontendWorkerCleanupDiagnosticRecord,
-) -> bool {
+#[cfg(any(target_os = "android", test))]
+fn frontend_cleanup_diagnostic_is_error(record: &FrontendWorkerCleanupDiagnosticRecord) -> bool {
     record.kind() != FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion
         || record.public_error().is_some()
         || record.report().first_error().is_some()
