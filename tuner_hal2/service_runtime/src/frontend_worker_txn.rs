@@ -1338,6 +1338,14 @@ pub(crate) fn record_frontend_worker_terminal_failure(
     )
 }
 
+fn frontend_cleanup_diagnostic_is_error(
+    record: &FrontendWorkerCleanupDiagnosticRecord,
+) -> bool {
+    record.kind() != FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion
+        || record.public_error().is_some()
+        || record.report().first_error().is_some()
+}
+
 fn record_frontend_cleanup_diagnostic(
     sink: &SharedFrontendWorkerCleanupDiagnostics,
     record: FrontendWorkerCleanupDiagnosticRecord,
@@ -1347,11 +1355,7 @@ fn record_frontend_cleanup_diagnostic(
     sink.record(record)?;
     #[cfg(target_os = "android")]
     {
-        let successful_reaper_completion =
-            projection.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion
-                && projection.public_error().is_none()
-                && projection.report().first_error().is_none();
-        if successful_reaper_completion {
+        if !frontend_cleanup_diagnostic_is_error(&projection) {
             log::debug!(
                 "frontend worker cleanup diagnostic: kind={:?} frontend_id={} object_id={:?} object_generation={:?} public_error={:?} report={:?}",
                 projection.kind(),
@@ -5779,6 +5783,41 @@ mod scan_contract_tests {
         SatellitePowerTopology,
     };
     use std::collections::VecDeque;
+
+    #[test]
+    fn successful_worker_reaper_completion_is_not_error_severity() {
+        let target = FrontendWorkerCleanupTarget::frontend(7);
+        let mut success_report = FrontendWorkerCleanupExecutionReport::new();
+        success_report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+            target,
+            FrontendWorkerKind::Tune,
+            Some(3),
+            Ok(()),
+        ));
+        let success = FrontendWorkerCleanupDiagnosticRecord::new(
+            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+            target,
+            success_report,
+            None,
+        );
+        assert!(!frontend_cleanup_diagnostic_is_error(&success));
+
+        let failure = HalError::Unsupported("forced cleanup failure");
+        let mut failed_report = FrontendWorkerCleanupExecutionReport::new();
+        failed_report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+            target,
+            FrontendWorkerKind::Tune,
+            Some(3),
+            Err(failure.clone()),
+        ));
+        let failed = FrontendWorkerCleanupDiagnosticRecord::new(
+            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+            target,
+            failed_report,
+            Some(failure),
+        );
+        assert!(frontend_cleanup_diagnostic_is_error(&failed));
+    }
 
     #[test]
     fn frontend_close_keeps_demux_relation_until_worker_exit() {

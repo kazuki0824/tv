@@ -19,7 +19,11 @@ import kotlin.test.assertTrue
 class ScanPlanPolicyTest {
     @Test
     fun controllerControlBoundaryOvertakesQueuedSectionWorkWithoutReorderingControls() {
-        val executor = ControllerSerialExecutor("maleicacid-tis-controller-priority-test")
+        val executor =
+            ControllerSerialExecutor(
+                "maleicacid-tis-controller-priority-test",
+                maxPendingDataTasks = 3,
+            )
         val firstStarted = CountDownLatch(1)
         val releaseFirst = CountDownLatch(1)
         val order = Collections.synchronizedList(mutableListOf<String>())
@@ -66,7 +70,8 @@ class ScanPlanPolicyTest {
             )
         val firstStarted = CountDownLatch(1)
         val releaseFirst = CountDownLatch(1)
-        val secondSubmitted = CountDownLatch(1)
+        val submitReturned = CountDownLatch(1)
+        val secondExecuted = CountDownLatch(1)
         val producer = Executors.newSingleThreadExecutor()
         try {
             executor.executeData {
@@ -76,13 +81,16 @@ class ScanPlanPolicyTest {
             check(firstStarted.await(1, TimeUnit.SECONDS))
             val producerFuture =
                 producer.submit {
-                    executor.submitData { secondSubmitted.countDown() }
+                    val queued = executor.submitData { secondExecuted.countDown() }
+                    submitReturned.countDown()
+                    queued
                 }
 
-            assertFalse(secondSubmitted.await(50, TimeUnit.MILLISECONDS))
+            assertFalse(submitReturned.await(50, TimeUnit.MILLISECONDS))
             releaseFirst.countDown()
             producerFuture.get(1, TimeUnit.SECONDS).get(1, TimeUnit.SECONDS)
-            assertTrue(secondSubmitted.await(1, TimeUnit.SECONDS))
+            assertTrue(submitReturned.await(1, TimeUnit.SECONDS))
+            assertTrue(secondExecuted.await(1, TimeUnit.SECONDS))
         } finally {
             releaseFirst.countDown()
             producer.shutdownNow()

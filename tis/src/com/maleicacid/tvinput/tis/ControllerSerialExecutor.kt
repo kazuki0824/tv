@@ -113,7 +113,7 @@ internal class ControllerSerialExecutor(
 
     private companion object {
         const val INITIAL_QUEUE_CAPACITY = 11
-        const val DEFAULT_MAX_PENDING_DATA_TASKS = 256
+        const val DEFAULT_MAX_PENDING_DATA_TASKS = 1
         const val CONTROL_QUEUE_CLASS = 0
         const val DATA_QUEUE_CLASS = 1
 
