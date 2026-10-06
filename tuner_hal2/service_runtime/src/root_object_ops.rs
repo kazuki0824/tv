@@ -103,10 +103,20 @@ impl RootOpenTxn<'_> {
                 "frontend id is not published by the capability snapshot",
             ));
         };
-        if let Some(occupant) = self.runtime.object_table().active_entry_for_runtime(
-            AidlObjectKind::Frontend,
-            maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(frontend_id)),
-        ) {
+        if self.runtime.has_active_frontend_lease(frontend_id) {
+            let occupant = self
+                .runtime
+                .object_table()
+                .active_entry_for_runtime(
+                    AidlObjectKind::Frontend,
+                    maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(frontend_id)),
+                )
+                .ok_or_else(|| {
+                    HalError::internal(
+                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                        "active frontend lease has no runtime object occupant",
+                    )
+                })?;
             return Err(HalError::invalid_state(
                 maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
                 format!(
