@@ -58,6 +58,39 @@ class ScanPlanPolicyTest {
     }
 
     @Test
+    fun controllerDataCapacityBackpressuresInsteadOfDropping() {
+        val executor =
+            ControllerSerialExecutor(
+                "maleicacid-tis-controller-bounded-backpressure-test",
+                maxPendingDataTasks = 1,
+            )
+        val firstStarted = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val secondSubmitted = CountDownLatch(1)
+        val producer = Executors.newSingleThreadExecutor()
+        try {
+            executor.executeData {
+                firstStarted.countDown()
+                check(releaseFirst.await(1, TimeUnit.SECONDS))
+            }
+            check(firstStarted.await(1, TimeUnit.SECONDS))
+            val producerFuture =
+                producer.submit {
+                    executor.submitData { secondSubmitted.countDown() }
+                }
+
+            assertFalse(secondSubmitted.await(50, TimeUnit.MILLISECONDS))
+            releaseFirst.countDown()
+            producerFuture.get(1, TimeUnit.SECONDS).get(1, TimeUnit.SECONDS)
+            assertTrue(secondSubmitted.await(1, TimeUnit.SECONDS))
+        } finally {
+            releaseFirst.countDown()
+            producer.shutdownNow()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun controllerDataSubmissionIsBackpressuredAndControlStillOvertakesQueuedData() {
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-backpressure-test")
         val runningStarted = CountDownLatch(1)

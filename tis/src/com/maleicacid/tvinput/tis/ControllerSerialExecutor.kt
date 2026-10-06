@@ -6,6 +6,7 @@ import java.util.concurrent.Future
 import java.util.concurrent.FutureTask
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.Semaphore
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class ControllerSerialExecutor(
     threadName: String,
+    maxPendingDataTasks: Int = DEFAULT_MAX_PENDING_DATA_TASKS,
 ) : ThreadPoolExecutor(
         1,
         1,
@@ -50,6 +52,8 @@ internal class ControllerSerialExecutor(
     }
 
     private val nextSequence = AtomicLong()
+    private val pendingDataSlots =
+        Semaphore(maxPendingDataTasks.also { require(it > 0) { "maxPendingDataTasks must be positive" } })
 
     override fun execute(command: Runnable) {
         if (command is ControlTask) {
@@ -64,7 +68,18 @@ internal class ControllerSerialExecutor(
     }
 
     fun executeData(command: Runnable) {
-        enqueue(DATA_QUEUE_CLASS, command)
+        try {
+            pendingDataSlots.acquire()
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw RejectedExecutionException("controller data enqueue interrupted", error)
+        }
+        try {
+            enqueue(DATA_QUEUE_CLASS, command) { pendingDataSlots.release() }
+        } catch (error: RuntimeException) {
+            pendingDataSlots.release()
+            throw error
+        }
     }
 
     private fun enqueue(
@@ -98,6 +113,7 @@ internal class ControllerSerialExecutor(
 
     private companion object {
         const val INITIAL_QUEUE_CAPACITY = 11
+        const val DEFAULT_MAX_PENDING_DATA_TASKS = 256
         const val CONTROL_QUEUE_CLASS = 0
         const val DATA_QUEUE_CLASS = 1
 
