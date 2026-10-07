@@ -382,10 +382,14 @@ class TvProviderWriter private constructor(
                     val programEnd: Long,
                     val existingId: Long?,
                 )
-                val newKeys = linkedSetOf<String>()
+                val publicationKeys = linkedSetOf<String>()
                 val writes =
                     sortedPrograms.mapNotNull { (program, values) ->
                         val key = programIdentity(program)
+                        if (!publicationKeys.add(key)) {
+                            failures += Diagnostic(serviceKey, "program-batch", "同一publication内に重複program keyがあります key=$key")
+                            return@mapNotNull null
+                        }
                         val programEnd = checkNotNull(checkedProgramEndTimeMillis(program))
                         val guardStart =
                             runCatching { Math.subtractExact(program.startTimeMillis, EVENT_ID_REUSE_GUARD_MS) }
@@ -400,12 +404,7 @@ class TvProviderWriter private constructor(
                                     entry.endTimeMillis > guardStart && entry.startTimeMillis < guardEnd
                                 }.maxByOrNull { it.programId }
                                 ?.programId
-                        if (existingId == null && !newKeys.add(key)) {
-                            failures += Diagnostic(serviceKey, "program-batch", "同一publication内に重複program keyがあります key=$key")
-                            null
-                        } else {
-                            PendingWrite(program, values, key, programEnd, existingId)
-                        }
+                        PendingWrite(program, values, key, programEnd, existingId)
                     }
                 if (failures.size == failureCountBeforeService) {
                     val batch =

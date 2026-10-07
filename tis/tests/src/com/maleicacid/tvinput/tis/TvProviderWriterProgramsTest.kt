@@ -88,6 +88,33 @@ class TvProviderWriterProgramsTest {
         check(store.programWindowQueryCount == 1) { "queries=${store.programWindowQueryCount}" }
     }
 
+    @Test
+    fun duplicateExistingProgramKeyRejectsEntireServiceBatch() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        writer.upsertChannels(
+            listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts(false))),
+        )
+        val program =
+            ProgramRecord(
+                key,
+                10,
+                "existing-event",
+                1_700_000_000_000L,
+                1_800_000L,
+                "original",
+                "original",
+                casFactsCanonicalJson = testCasFacts(false),
+            )
+        check(writer.upsertPrograms(listOf(program)).inserted == 1)
+        val before = ContentValues(store.programs.values.single())
+        val result = writer.upsertPrograms(listOf(program.copy(title = "first"), program.copy(title = "second")))
+        check(result.failures.any { it.operation == "program-batch" })
+        check(result.inserted == 0 && result.updated == 0)
+        check(store.programUpdateCount == 0)
+        check(store.programs.values.single() == before)
+    }
+
     private val key = ServiceKey(4, 16625, 101)
 
     // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
@@ -908,6 +935,7 @@ class TvProviderWriterProgramsTest {
         val channels = LinkedHashMap<Long, ContentValues>()
         val programs = LinkedHashMap<Long, ContentValues>()
         var programWindowQueryCount = 0
+        var programUpdateCount = 0
 
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
             Result.success(
@@ -986,6 +1014,7 @@ class TvProviderWriterProgramsTest {
             programId: Long,
             values: ContentValues,
         ): Result<Int> {
+            programUpdateCount++
             programs[programId] = ContentValues(values)
             return Result.success(1)
         }

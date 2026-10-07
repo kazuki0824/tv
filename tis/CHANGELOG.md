@@ -29,6 +29,10 @@
 - SectionEventはcallback入口でdrainし、parser更新は既存controllerへ非同期・有限・待機なしで投入する。飽和は診断付き拒否とし、世代・Filter identity fenceと順序を維持する。
 - Android 15の実Filter callback lockと優先closeを競合させるホスト試験をCIへ追加する。試験実行はCIに委ね、Soong/VTS/実機適合は未確認。
 
+# 同一publicationの既存Program重複key拒否
+
+- existing/new分岐前に全program keyを検査し、重複時はservice batch全体を書き込まない。既存rowありの重複入力試験を追加した。新しいownerやcacheは追加しない。
+
 # 不要な例示設定の削除
 
 - 正式な製品組込み設定を継承するだけだった未参照の例示makefileを削除した。
