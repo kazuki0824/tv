@@ -487,17 +487,10 @@ fn frontend_info_from_snapshot(
 fn retry_pending_frontend_cleanup_before_open(
     context: &SharedAidlServiceContext,
     frontend_id: i32,
-) {
+) -> Result<(), HalError> {
     let handle = {
         let runtime = context.runtime();
-        let guard =
-            match TunerServiceRuntime::lock_shared(&runtime, "frontend再open前のcleanup確認") {
-                Ok(guard) => guard,
-                Err(error) => {
-                    log::error!("frontend再open前のcleanup確認に失敗しました: {error:?}");
-                    return;
-                }
-            };
+        let guard = TunerServiceRuntime::lock_shared(&runtime, "frontend再open前のcleanup確認")?;
         guard
             .object_table()
             .active_entry_for_runtime(
@@ -523,8 +516,9 @@ fn retry_pending_frontend_cleanup_before_open(
     if let Some(handle) = handle {
         // Drop/owner-lossが既にObjectCloseTxnへ移したcleanupだけを一度進める。
         // Live occupantやQuarantined occupantをここでcloseしない。
-        let _ = retry_cleanup_from_reaper(context, handle, AidlMethodCall::FrontendClose);
+        retry_cleanup_from_reaper(context, handle, AidlMethodCall::FrontendClose)?;
     }
+    Ok(())
 }
 
 impl ITuner for TunerAidlService {
@@ -542,7 +536,8 @@ impl ITuner for TunerAidlService {
     }
 
     fn openFrontendById(&self, frontend_id: i32) -> BinderResult<Strong<dyn IFrontend>> {
-        retry_pending_frontend_cleanup_before_open(&self.context, frontend_id);
+        retry_pending_frontend_cleanup_before_open(&self.context, frontend_id)
+            .map_err(status_from_hal_error)?;
         let open_result = self
             .lock_runtime()?
             .root_open_txn()
