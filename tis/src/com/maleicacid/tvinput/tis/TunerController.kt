@@ -182,7 +182,8 @@ class TunerController(
     private val sectionExecutor = ControllerSerialExecutor("maleicacid-tis-controller-$inputId")
     private val controllerControlExecutor =
         java.util.concurrent.Executor { task -> sectionExecutor.executeControl(task) }
-    // Framework callbackはここで即時実行し、SectionEventのpayloadを先にdrainする。
+
+    // Framework callbackはここで即時実行し、SectionEventのpayloadを先にdrainする.
     // parser/state mutationだけをcontroller data classへ同期handoffして、未読eventをqueueへ残さない。
     private val filterCallbackExecutor = java.util.concurrent.Executor { task -> task.run() }
 
@@ -987,85 +988,7 @@ class TunerController(
                     events: Array<FilterEvent>,
                 ) {
                     events.filterIsInstance<SectionEvent>().forEach { event ->
-                        val length = event.dataLength.toLong()
-                        when (SectionFilterPolicy.dataLengthDecision(length)) {
-                            SectionFilterPolicy.DataLengthDecision.MALFORMED -> {
-                                runCatching {
-                                    callOnControllerData {
-                                        recordSectionMalformedDrop(pid, "dataLength=$length")
-                                    }
-                                }
-                                return@forEach
-                            }
-
-                            SectionFilterPolicy.DataLengthDecision.OVERSIZED -> {
-                                val drained = drainSectionEventPayload(filter, length)
-                                runCatching {
-                                    callOnControllerData {
-                                        recordSectionOversizedDrop(pid, length)
-                                        if (drained != length) {
-                                            recordSectionReadError(
-                                                pid,
-                                                "oversized payload drain=$drained expected=$length",
-                                            )
-                                        }
-                                    }
-                                }
-                                return@forEach
-                            }
-
-                            SectionFilterPolicy.DataLengthDecision.ACCEPT -> Unit
-                        }
-
-                        val section = ByteArray(length.toInt())
-                        val readResult = runCatching { filter.read(section, 0, section.size.toLong()) }
-                        if (readResult.isFailure) {
-                            runCatching {
-                                callOnControllerData {
-                                    recordSectionReadError(
-                                        pid,
-                                        "exception=${readResult.exceptionOrNull()?.message}",
-                                    )
-                                }
-                            }
-                            return@forEach
-                        }
-
-                        val read = readResult.getOrThrow()
-                        runCatching {
-                            callOnControllerData {
-                                val sourceIsCurrent = isCurrentSectionFilter(pid, generation, filter)
-                                when (
-                                    SectionFilterPolicy.readDecision(
-                                        expected = section.size,
-                                        actual = read,
-                                        sourceIsCurrent = sourceIsCurrent,
-                                    )
-                                ) {
-                                    SectionFilterPolicy.ReadDecision.INGEST ->
-                                        onSectionFromFilter(pid, section, generation, filter)
-
-                                    SectionFilterPolicy.ReadDecision.SHORT_READ ->
-                                        recordSectionShortRead(pid, expected = section.size, actual = read)
-
-                                    SectionFilterPolicy.ReadDecision.READ_ERROR ->
-                                        recordSectionReadError(
-                                            pid,
-                                            "read=$read expected=${section.size}",
-                                        )
-
-                                    SectionFilterPolicy.ReadDecision.STALE_SOURCE -> Unit
-                                }
-                            }
-                        }.onFailure { error ->
-                            if (!released) {
-                                Log.w(
-                                    LogTags.TIS,
-                                    "section payloadをcontrollerへ配送できません inputId=$inputId pid=$pid generation=$generation",
-                                    error,
-                                )
-                            }
-                        }
+                        handleSectionFilterEvent(filter, event, pid, generation)
                     }
                 }
 
@@ -1123,6 +1046,119 @@ class TunerController(
         }
     }
 
+    private fun handleSectionFilterEvent(
+        filter: Filter,
+        event: SectionEvent,
+        pid: TsPid,
+        generation: Long,
+    ) {
+        val length = event.dataLength.toLong()
+        when (SectionFilterPolicy.dataLengthDecision(length)) {
+            SectionFilterPolicy.DataLengthDecision.MALFORMED -> {
+                runCatching {
+                    callOnControllerData {
+                        recordSectionMalformedDrop(pid, "dataLength=$length")
+                    }
+                }
+            }
+
+            SectionFilterPolicy.DataLengthDecision.OVERSIZED -> {
+                val drained = drainSectionEventPayload(filter, length)
+                runCatching {
+                    callOnControllerData {
+                        recordSectionOversizedDrop(pid, length)
+                        if (drained != length) {
+                            recordSectionReadError(
+                                pid,
+                                "oversized payload drain=$drained expected=$length",
+                            )
+                        }
+                    }
+                }
+            }
+
+            SectionFilterPolicy.DataLengthDecision.ACCEPT -> {
+                readAndIngestSectionEvent(filter, pid, generation, length)
+            }
+        }
+    }
+
+    private fun readAndIngestSectionEvent(
+        filter: Filter,
+        pid: TsPid,
+        generation: Long,
+        length: Long,
+    ) {
+        val section = ByteArray(length.toInt())
+        val readResult = runCatching { filter.read(section, 0, section.size.toLong()) }
+        if (readResult.isFailure) {
+            runCatching {
+                callOnControllerData {
+                    recordSectionReadError(
+                        pid,
+                        "exception=${readResult.exceptionOrNull()?.message}",
+                    )
+                }
+            }
+            return
+        }
+        deliverSectionRead(
+            filter = filter,
+            pid = pid,
+            generation = generation,
+            section = section,
+            read = readResult.getOrThrow(),
+        )
+    }
+
+    private fun deliverSectionRead(
+        filter: Filter,
+        pid: TsPid,
+        generation: Long,
+        section: ByteArray,
+        read: Int,
+    ) {
+        runCatching {
+            callOnControllerData {
+                val sourceIsCurrent = isCurrentSectionFilter(pid, generation, filter)
+                when (
+                    SectionFilterPolicy.readDecision(
+                        expected = section.size,
+                        actual = read,
+                        sourceIsCurrent = sourceIsCurrent,
+                    )
+                ) {
+                    SectionFilterPolicy.ReadDecision.INGEST -> {
+                        onSectionFromFilter(pid, section, generation, filter)
+                    }
+
+                    SectionFilterPolicy.ReadDecision.SHORT_READ -> {
+                        recordSectionShortRead(pid, expected = section.size, actual = read)
+                    }
+
+                    SectionFilterPolicy.ReadDecision.READ_ERROR -> {
+                        recordSectionReadError(
+                            pid,
+                            "read=$read expected=${section.size}",
+                        )
+                    }
+
+                    SectionFilterPolicy.ReadDecision.STALE_SOURCE -> {
+                        Unit
+                    }
+                }
+            }
+        }.onFailure { error ->
+            if (!released) {
+                Log.w(
+                    LogTags.TIS,
+                    "section payloadをcontrollerへ配送できません inputId=$inputId pid=$pid generation=$generation",
+                    error,
+                )
+            }
+        }
+    }
+
     private fun isCurrentSectionFilter(
         pid: TsPid,
         generation: Long,
@@ -1137,12 +1173,16 @@ class TunerController(
         val buffer = ByteArray(SECTION_FILTER_BUFFER_BYTES.toInt())
         var remaining = dataLength
         var drained = 0L
-        while (remaining > 0L) {
+        var continueDraining = true
+        while (remaining > 0L && continueDraining) {
             val requested = minOf(remaining, buffer.size.toLong())
-            val read = runCatching { filter.read(buffer, 0, requested) }.getOrElse { return drained }
-            if (read <= 0L) return drained
-            drained += read
-            remaining -= read
+            val read = runCatching { filter.read(buffer, 0, requested) }.getOrNull()
+            if (read == null || read <= 0L) {
+                continueDraining = false
+            } else {
+                drained += read
+                remaining -= read
+            }
         }
         return drained
     }
