@@ -5415,7 +5415,7 @@ fn close_frontend_workers_and_live_data_with_sink(
     {
         return Err(HalError::cleanup_failed(
             "フロントエンドワーカーの後片付け未完了",
-            "frontend worker exit is still owned by the reaper",
+            "フロントエンドワーカーの終了処理は回収処理が引き続き所有しています",
         ));
     }
     let sink = cleanup_diagnostic_sink?;
