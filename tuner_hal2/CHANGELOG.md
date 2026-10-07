@@ -3419,3 +3419,7 @@
 - `common`、`descrambler`、`frontend_px4` の再利用断片を追加した。
 - 旧制御層をコピーせず、`control` crate に worker / lifecycle / FMQ delivery / stream boundary の型付き骨格を追加した。
 - r50ed 時点では Binder service / AIDL HAL 実装は未達である。
+
+# px4 ueventd patternの文字クラス契約訂正
+
+- AOSP fnmatch契約に従い数値で始まるsuffixのpatternへ戻し、誤ったprefix最適化の説明を削除した。ueventd/file_contexts/probe prefix整合試験を復元した。DMA-BUF heap権限のplatform所有は維持する。

@@ -48,7 +48,7 @@ include vendor/maleicacid/tv/tuner_hal2/config/BoardConfigVendorSePolicy.mk
 import /vendor/etc/ueventd.tuner_hal2.rc
 ```
 
-`ueventd.tuner_hal2.rc` はDVB / px4のdevice node permissionだけを設定する。`/dev/dma_heap/system`はplatformのueventd / sepolicyが所有する共有device nodeであり、Tuner HAL統合からpermissionを上書きしない。px4系のflat device nodeは末尾`*`だけのprefix pattern（例: `/dev/px4video*`）で記述する。`/dev/px4video[0-9]*`のように文字クラスの後ろへ末尾`*`を置く形は、ueventdのprefix最適化で`[0-9]`を文字通り扱って実device nodeへ一致しないため使用しない。
+`ueventd.tuner_hal2.rc` はDVB / px4のdevice node permissionだけを設定する。`/dev/dma_heap/system`はplatformのueventd / sepolicyが所有する共有device nodeであり、Tuner HAL統合からpermissionを上書きしない。px4系のflat device nodeは数値で始まるsuffixを要求するpattern（例: `/dev/px4video[0-9]*`）で記述する。AOSP Android 15のueventdは末尾に唯一の`*`がある場合も`fnmatch(entry_path, incoming_path, 0)`を使用し、`[0-9]`は文字クラスとして解釈される。`*`自体は任意文字列なので全suffixが数字だけであることをglobで保証するものではないが、driverが生成する数値suffix nodeに一致し、非数値で始まるnodeへpermission対象を広げない。
 
 ## 3.1 px4_drv readback ABI のproduct前提
 

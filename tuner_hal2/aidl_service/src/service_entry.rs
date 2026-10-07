@@ -755,6 +755,58 @@ mod tests {
         );
     }
 
+    fn collect_prefixes_from_ueventd(text: &str) -> std::collections::BTreeSet<String> {
+        text.lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .filter_map(|path| path.strip_prefix("/dev/"))
+            .filter_map(|name| name.split("[0-9]").next())
+            .filter(|name| super::PX4_PROBE_PREFIXES.contains(name))
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn collect_prefixes_from_file_contexts(text: &str) -> std::collections::BTreeSet<String> {
+        text.lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .filter_map(|path| path.strip_prefix("/dev/"))
+            .filter_map(|name| name.split("[0-9]").next())
+            .filter(|name| super::PX4_PROBE_PREFIXES.contains(name))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn px4_probe_prefixes_match_ueventd_and_file_contexts() {
+        let expected: std::collections::BTreeSet<String> = super::PX4_PROBE_PREFIXES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let ueventd = include_str!("../../config/ueventd.tuner_hal2.rc");
+        let file_contexts = include_str!("../../sepolicy/file_contexts");
+        assert_eq!(collect_prefixes_from_ueventd(ueventd), expected);
+        assert_eq!(collect_prefixes_from_file_contexts(file_contexts), expected);
+        for prefix in super::PX4_PROBE_PREFIXES {
+            let ueventd_prefix = format!("/dev/{prefix}[0-9]*");
+            let ueventd_line = ueventd
+                .lines()
+                .find(|line| line.starts_with(ueventd_prefix.as_str()))
+                .unwrap();
+            assert!(
+                ueventd_line.ends_with("0660 media system"),
+                "{ueventd_line}"
+            );
+            let fc_prefix = format!("/dev/{prefix}[0-9]+");
+            let fc_line = file_contexts
+                .lines()
+                .find(|line| line.starts_with(fc_prefix.as_str()))
+                .unwrap();
+            assert!(
+                fc_line.ends_with("u:object_r:px4_tuner_device:s0"),
+                "{fc_line}"
+            );
+        }
+    }
+
     #[test]
     fn dvb_frontend_id_bitpack_avoids_adapter_frontend_collision() {
         let adapter0_frontend5 = dvb_export_frontend_id(0, 5, FrontendSystem::IsdbT).unwrap();
