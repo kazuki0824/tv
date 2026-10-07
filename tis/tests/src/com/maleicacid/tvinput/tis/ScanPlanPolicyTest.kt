@@ -5,7 +5,10 @@ package com.maleicacid.tvinput.tis
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.StreamSelectorType
 import com.maleicacid.tvinput.common.TransportStreamId16
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -14,6 +17,87 @@ import kotlin.test.assertTrue
 
 @Suppress("TooManyFunctions")
 class ScanPlanPolicyTest {
+    @Test
+    fun controllerControlBoundaryOvertakesQueuedSectionWorkWithoutReorderingControls() {
+        val executor =
+            ControllerSerialExecutor(
+                "maleicacid-tis-controller-priority-test",
+                maxPendingDataTasks = 3,
+            )
+        val firstStarted = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val order = Collections.synchronizedList(mutableListOf<String>())
+        try {
+            executor.execute {
+                order += "data-running"
+                firstStarted.countDown()
+                check(releaseFirst.await(1, TimeUnit.SECONDS))
+            }
+            check(firstStarted.await(1, TimeUnit.SECONDS))
+            executor.execute { order += "data-queued-1" }
+            val control1 = executor.submitControl { order += "control-1" }
+            val control2 = executor.submitControl { order += "control-2" }
+            executor.execute { order += "data-queued-2" }
+
+            releaseFirst.countDown()
+            control1.get(1, TimeUnit.SECONDS)
+            control2.get(1, TimeUnit.SECONDS)
+            executor.shutdown()
+            check(executor.awaitTermination(1, TimeUnit.SECONDS))
+
+            assertEquals(
+                listOf(
+                    "data-running",
+                    "control-1",
+                    "control-2",
+                    "data-queued-1",
+                    "data-queued-2",
+                ),
+                order,
+            )
+        } finally {
+            releaseFirst.countDown()
+            executor.shutdownNow()
+        }
+        assertControllerDataBackpressure()
+    }
+
+    private fun assertControllerDataBackpressure() {
+        val executor =
+            ControllerSerialExecutor(
+                "maleicacid-tis-controller-bounded-backpressure-test",
+                maxPendingDataTasks = 1,
+            )
+        val firstStarted = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val submitReturned = CountDownLatch(1)
+        val secondExecuted = CountDownLatch(1)
+        val producer = Executors.newSingleThreadExecutor()
+        try {
+            executor.executeData {
+                firstStarted.countDown()
+                check(releaseFirst.await(1, TimeUnit.SECONDS))
+            }
+            check(firstStarted.await(1, TimeUnit.SECONDS))
+            val producerFuture =
+                producer.submit {
+                    val queued = executor.submitData { secondExecuted.countDown() }
+                    submitReturned.countDown()
+                    queued.get(1, TimeUnit.SECONDS)
+                }
+
+            assertFalse(submitReturned.await(50, TimeUnit.MILLISECONDS))
+            releaseFirst.countDown()
+            producerFuture.get(1, TimeUnit.SECONDS)
+            assertTrue(submitReturned.await(1, TimeUnit.SECONDS))
+            assertTrue(secondExecuted.await(1, TimeUnit.SECONDS))
+        } finally {
+            releaseFirst.countDown()
+            producer.shutdownNow()
+            executor.shutdownNow()
+        }
+    }
+
     @Test
     fun bsLockContinuesTheSameScanExactlyOnceAndWaitsForStopped() {
         val operation = TunerController.StreamIdDiscoveryOperation(25L)
@@ -30,6 +114,24 @@ class ScanPlanPolicyTest {
         operation.complete()
         assertTrue(operation.await(1))
         assertEquals(setOf(16400), operation.result(true).streamIds)
+    }
+
+    @Test
+    fun bsStoppedDiscoveryCleanupDoesNotCancelNativeScanAgain() {
+        val operation = TunerController.StreamIdDiscoveryOperation(28L)
+        operation.reportIds(intArrayOf(16400))
+        operation.complete()
+        val stopped = operation.result(true)
+        var cancelCalls = 0
+
+        operation.cancel {
+            cancelCalls++
+            android.media.tv.tuner.Tuner.RESULT_INVALID_STATE
+        }
+
+        assertEquals(0, cancelCalls)
+        assertEquals(stopped, operation.result(true))
+        assertEquals(setOf(16400), stopped.streamIds)
     }
 
     @Test
@@ -139,11 +241,11 @@ class ScanPlanPolicyTest {
             if (prior == "timeout") {
                 operation.result(false)
             }
-            check(
+            val firstCancel =
                 runCatching {
                     operation.cancel { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE }
-                }.isFailure,
-            )
+                }
+            check(firstCancel.isSuccess == (prior == "stopped"))
             check(operation.acceptsResourceLoss)
             var notifications = 0
 
@@ -166,7 +268,8 @@ class ScanPlanPolicyTest {
                     },
                 )
 
-            check(runCatching { lose() }.isFailure)
+            val firstLoss = runCatching { lose() }
+            check(firstLoss.isSuccess == (prior == "stopped"))
             lose()
             check(notifications == 1 && fence.terminalObserved && operation.await(1))
             val result = operation.result(true)

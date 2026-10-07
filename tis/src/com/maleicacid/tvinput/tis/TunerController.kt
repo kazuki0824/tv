@@ -38,8 +38,6 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 
@@ -181,18 +179,35 @@ class TunerController(
         override fun toString(): String = "UnavailableSectionFilterHandle(pid=$pid, reason=$reason)"
     }
 
-    private val sectionExecutor: ExecutorService =
-        Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "maleicacid-tis-controller-$inputId").apply { isDaemon = true }
-        }
+    private val sectionExecutor = ControllerSerialExecutor("maleicacid-tis-controller-$inputId")
+    private val controllerControlExecutor =
+        java.util.concurrent.Executor { task -> sectionExecutor.executeControl(task) }
+
+    // Framework callbackはここで即時実行し、SectionEventのpayloadを先にdrainする.
+    // parser/state mutationだけをcontroller data classへ同期handoffして、未読eventをqueueへ残さない。
+    private val filterCallbackExecutor = java.util.concurrent.Executor { task -> task.run() }
 
     @Volatile private var released = false
 
     private fun <T> callOnController(block: () -> T): T {
-        if (Thread.currentThread().name.startsWith("maleicacid-tis-controller-$inputId")) return block()
+        if (sectionExecutor.isOwnerThread()) return block()
         check(!released) { "TunerController は解放済みです inputId=$inputId" }
         return try {
-            sectionExecutor.submit<T> { block() }.get()
+            sectionExecutor.submitControl(block).get()
+        } catch (error: InterruptedException) {
+            propagateControllerBlockingFailure(error)
+        } catch (error: ExecutionException) {
+            propagateControllerBlockingFailure(error)
+        } catch (error: RejectedExecutionException) {
+            propagateControllerBlockingFailure(error)
+        }
+    }
+
+    private fun <T> callOnControllerData(block: () -> T): T {
+        if (sectionExecutor.isOwnerThread()) return block()
+        check(!released) { "TunerController は解放済みです inputId=$inputId" }
+        return try {
+            sectionExecutor.submitData(block).get()
         } catch (error: InterruptedException) {
             propagateControllerBlockingFailure(error)
         } catch (error: ExecutionException) {
@@ -267,7 +282,7 @@ class TunerController(
         var created: Tuner? = null
         return try {
             created = Tuner(context, tvInputSessionId, useCase)
-            created.setResourceLostListener(sectionExecutor) { callbackTuner ->
+            created.setResourceLostListener(controllerControlExecutor) { callbackTuner ->
                 if (callbackTuner === tuner && !released) handleTunerResourceLostOnController()
             }
             created
@@ -291,7 +306,7 @@ class TunerController(
             casController = controller
             controller?.setOwnerDispatcher { action ->
                 try {
-                    sectionExecutor.execute {
+                    sectionExecutor.executeControl {
                         if (!released && casController === controller) action()
                     }
                 } catch (failure: RejectedExecutionException) {
@@ -399,7 +414,7 @@ class TunerController(
     ): Boolean =
         onTuneEventCallback == null ||
             runCatching {
-                tunerInstance.setOnTuneEventListener(sectionExecutor) { event ->
+                tunerInstance.setOnTuneEventListener(controllerControlExecutor) { event ->
                     if (tunerInstance === tuner && !released) handleTuneEventOnController(generation, event)
                 }
             }.onFailure { error ->
@@ -547,7 +562,7 @@ class TunerController(
         seed: ScanCandidate,
         timeoutMs: Long = BS_STREAM_ID_SCAN_TIMEOUT_MS,
     ): StreamIdDiscoveryResult {
-        check(!Thread.currentThread().name.startsWith("maleicacid-tis-controller-$inputId")) {
+        check(!sectionExecutor.isOwnerThread()) {
             "BS探索の待機はcontroller executor外で実行する必要があります"
         }
         val operation = callOnController { startStreamIdDiscoveryOnController(seed) }
@@ -589,7 +604,7 @@ class TunerController(
                 override fun onLocked() {
                     if (streamIdDiscovery === operation) {
                         operation.continueAfterLock {
-                            tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, sectionExecutor, this)
+                            tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, controllerControlExecutor, this)
                         }
                     }
                 }
@@ -639,7 +654,7 @@ class TunerController(
 
                 override fun onDvbtCellIdsReported(dvbtCellIds: IntArray) = Unit
             }
-        operation.start { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, sectionExecutor, callback) }
+        operation.start { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, controllerControlExecutor, callback) }
         return operation
     }
 
@@ -720,7 +735,11 @@ class TunerController(
         }
 
         fun cancel(stopScan: () -> Int) {
-            // 非SUCCESS/例外では結果もownerも解放済みにしない。
+            // onScanStopped()でSTOPPEDへ到達した時点でframework scanは既に終了済み。
+            // その後のowner解放でcancelScanning()を再発行するとRESULT_INVALID_STATEになり得るため、
+            // native cancelは未停止のoperationだけに実行する。
+            if (outcome == Outcome.STOPPED || outcome == Outcome.CANCELLED) return
+            // 非SUCCESS/例外ではresultもownerも解放済みにしない。
             val result = stopScan()
             check(result == Tuner.RESULT_SUCCESS) { "BS scanの解放に失敗しました result=$result" }
             finish(Outcome.CANCELLED)
@@ -968,56 +987,8 @@ class TunerController(
                     filter: Filter,
                     events: Array<FilterEvent>,
                 ) {
-                    if (!isCurrentSectionFilter(pid, generation, filter)) return
                     events.filterIsInstance<SectionEvent>().forEach { event ->
-                        val length = event.dataLength.toLong()
-                        when (SectionFilterPolicy.dataLengthDecision(length)) {
-                            SectionFilterPolicy.DataLengthDecision.MALFORMED -> {
-                                recordSectionMalformedDrop(pid, "dataLength=$length")
-                                return@forEach
-                            }
-
-                            SectionFilterPolicy.DataLengthDecision.OVERSIZED -> {
-                                recordSectionOversizedDrop(pid, length)
-                                return@forEach
-                            }
-
-                            SectionFilterPolicy.DataLengthDecision.ACCEPT -> {
-                                // 続けてsectionを読み込む。
-                            }
-                        }
-                        val section = ByteArray(length.toInt())
-                        val readResult = runCatching { filter.read(section, 0, section.size.toLong()) }
-                        if (readResult.isFailure) {
-                            recordSectionReadError(pid, "exception=${readResult.exceptionOrNull()?.message}")
-                            return@forEach
-                        }
-                        val read = readResult.getOrThrow()
-                        val sourceIsCurrent = isCurrentSectionFilter(pid, generation, filter)
-                        when (SectionFilterPolicy.readDecision(expected = section.size, actual = read, sourceIsCurrent = sourceIsCurrent)) {
-                            SectionFilterPolicy.ReadDecision.INGEST -> {
-                                onSectionFromFilter(pid, section, generation, filter)
-                            }
-
-                            SectionFilterPolicy.ReadDecision.SHORT_READ -> {
-                                recordSectionShortRead(
-                                    pid,
-                                    expected = section.size,
-                                    actual = read,
-                                )
-                            }
-
-                            SectionFilterPolicy.ReadDecision.READ_ERROR -> {
-                                recordSectionReadError(
-                                    pid,
-                                    "read=$read expected=${section.size}",
-                                )
-                            }
-
-                            SectionFilterPolicy.ReadDecision.STALE_SOURCE -> {
-                                // 現在の選局世代に属さない配送は破棄する。
-                            }
-                        }
+                        handleSectionFilterEvent(filter, event, pid, generation)
                     }
                 }
 
@@ -1025,7 +996,10 @@ class TunerController(
                     filter: Filter,
                     status: Int,
                 ) {
-                    Log.d(LogTags.TIS, "section filter 状態 inputId=$inputId pid=$pid status=$status generation=$generation")
+                    Log.d(
+                        LogTags.TIS,
+                        "section filter 状態 inputId=$inputId pid=$pid status=$status generation=$generation",
+                    )
                 }
             }
         val artifacts = mutableListOf<SectionFilterArtifact>()
@@ -1034,7 +1008,13 @@ class TunerController(
         try {
             for (settings in sectionSettingsForPid(pid)) {
                 val filter =
-                    tunerInstance.openFilter(Filter.TYPE_TS, Filter.SUBTYPE_SECTION, SECTION_FILTER_BUFFER_BYTES, sectionExecutor, callback)
+                    tunerInstance.openFilter(
+                        Filter.TYPE_TS,
+                        Filter.SUBTYPE_SECTION,
+                        SECTION_FILTER_BUFFER_BYTES,
+                        filterCallbackExecutor,
+                        callback,
+                    )
                         ?: error("section openFilterがnullを返しました pid=$pid")
                 artifacts += SectionFilterArtifact(filter)
                 val config =
@@ -1066,11 +1046,146 @@ class TunerController(
         }
     }
 
+    private fun handleSectionFilterEvent(
+        filter: Filter,
+        event: SectionEvent,
+        pid: TsPid,
+        generation: Long,
+    ) {
+        val length = event.dataLength.toLong()
+        when (SectionFilterPolicy.dataLengthDecision(length)) {
+            SectionFilterPolicy.DataLengthDecision.MALFORMED -> {
+                runCatching {
+                    callOnControllerData {
+                        recordSectionMalformedDrop(pid, "dataLength=$length")
+                    }
+                }
+            }
+
+            SectionFilterPolicy.DataLengthDecision.OVERSIZED -> {
+                val drained = drainSectionEventPayload(filter, length)
+                runCatching {
+                    callOnControllerData {
+                        recordSectionOversizedDrop(pid, length)
+                        if (drained != length) {
+                            recordSectionReadError(
+                                pid,
+                                "oversized payload drain=$drained expected=$length",
+                            )
+                        }
+                    }
+                }
+            }
+
+            SectionFilterPolicy.DataLengthDecision.ACCEPT -> {
+                readAndIngestSectionEvent(filter, pid, generation, length)
+            }
+        }
+    }
+
+    private fun readAndIngestSectionEvent(
+        filter: Filter,
+        pid: TsPid,
+        generation: Long,
+        length: Long,
+    ) {
+        val section = ByteArray(length.toInt())
+        val readResult = runCatching { filter.read(section, 0, section.size.toLong()) }
+        if (readResult.isFailure) {
+            runCatching {
+                callOnControllerData {
+                    recordSectionReadError(
+                        pid,
+                        "exception=${readResult.exceptionOrNull()?.message}",
+                    )
+                }
+            }
+            return
+        }
+        deliverSectionRead(
+            filter = filter,
+            pid = pid,
+            generation = generation,
+            section = section,
+            read = readResult.getOrThrow(),
+        )
+    }
+
+    private fun deliverSectionRead(
+        filter: Filter,
+        pid: TsPid,
+        generation: Long,
+        section: ByteArray,
+        read: Int,
+    ) {
+        runCatching {
+            callOnControllerData {
+                val sourceIsCurrent = isCurrentSectionFilter(pid, generation, filter)
+                when (
+                    SectionFilterPolicy.readDecision(
+                        expected = section.size,
+                        actual = read,
+                        sourceIsCurrent = sourceIsCurrent,
+                    )
+                ) {
+                    SectionFilterPolicy.ReadDecision.INGEST -> {
+                        onSectionFromFilter(pid, section, generation, filter)
+                    }
+
+                    SectionFilterPolicy.ReadDecision.SHORT_READ -> {
+                        recordSectionShortRead(pid, expected = section.size, actual = read)
+                    }
+
+                    SectionFilterPolicy.ReadDecision.READ_ERROR -> {
+                        recordSectionReadError(
+                            pid,
+                            "read=$read expected=${section.size}",
+                        )
+                    }
+
+                    SectionFilterPolicy.ReadDecision.STALE_SOURCE -> {
+                        Unit
+                    }
+                }
+            }
+        }.onFailure { error ->
+            if (!released) {
+                Log.w(
+                    LogTags.TIS,
+                    "section payloadをcontrollerへ配送できません inputId=$inputId pid=$pid generation=$generation",
+                    error,
+                )
+            }
+        }
+    }
+
     private fun isCurrentSectionFilter(
         pid: TsPid,
         generation: Long,
         filter: Filter,
     ): Boolean = tuneAccepted && generation == tuneGeneration && sectionFilters[pid].orEmpty().any { it === filter }
+
+    private fun drainSectionEventPayload(
+        filter: Filter,
+        dataLength: Long,
+    ): Long {
+        if (dataLength <= 0L) return 0L
+        val buffer = ByteArray(SECTION_FILTER_BUFFER_BYTES.toInt())
+        var remaining = dataLength
+        var drained = 0L
+        var continueDraining = true
+        while (remaining > 0L && continueDraining) {
+            val requested = minOf(remaining, buffer.size.toLong())
+            val read = runCatching { filter.read(buffer, 0, requested) }.getOrNull()
+            if (read == null || read <= 0L) {
+                continueDraining = false
+            } else {
+                drained += read
+                remaining -= read
+            }
+        }
+        return drained
+    }
 
     @Suppress("MaxLineLength")
     private fun recordSectionShortRead(
@@ -1732,7 +1847,7 @@ class TunerController(
 
     fun release() {
         if (released) return
-        if (Thread.currentThread().name.startsWith("maleicacid-tis-controller-$inputId")) {
+        if (sectionExecutor.isOwnerThread()) {
             releaseOnController()
             sectionExecutor.shutdownNow()
             return

@@ -85,6 +85,10 @@ pub(crate) struct ServiceDiagnosticSnapshot {
         maleicacid_tuner_hal2_service_runtime::FrontendWorkerCleanupDiagnosticSnapshot,
         HalError,
     >,
+    pub(crate) runtime_objects: Result<
+        Vec<maleicacid_tuner_hal2_service_runtime::RuntimeObjectDiagnosticSnapshot>,
+        HalError,
+    >,
     pub(crate) demux:
         Result<maleicacid_tuner_hal2_service_runtime::DemuxTransactionDiagnosticSnapshot, HalError>,
     pub(crate) packet_pipeline: Result<
@@ -119,6 +123,7 @@ impl ServiceDiagnosticSnapshot {
             || self.frontend_backend.is_err()
             || self.frontend.is_err()
             || self.frontend_worker_cleanup.is_err()
+            || self.runtime_objects.is_err()
             || self.demux.is_err()
             || self.packet_pipeline.is_err()
             || self
@@ -432,16 +437,25 @@ impl AidlServiceContext {
     }
 
     pub(crate) fn diagnostic_snapshot(&self) -> ServiceDiagnosticSnapshot {
-        let (frontend_backend, frontend, frontend_worker_cleanup, demux, packet_pipeline) = {
+        let (
+            frontend_backend,
+            frontend,
+            frontend_worker_cleanup,
+            runtime_objects,
+            demux,
+            packet_pipeline,
+        ) = {
             match TunerServiceRuntime::lock_shared(&self.runtime, "診断取得") {
                 Ok(runtime) => (
                     runtime.frontend_backend_diagnostic_snapshots(),
                     runtime.frontend_diagnostic_snapshots(),
                     runtime.frontend_worker_cleanup_diagnostics(),
+                    Ok(runtime.runtime_object_diagnostic_snapshots()),
                     Ok(runtime.demux_transaction_diagnostics()),
                     Ok(runtime.packet_pipeline_diagnostics()),
                 ),
                 Err(error) => (
+                    Err(error.clone()),
                     Err(error.clone()),
                     Err(error.clone()),
                     Err(error.clone()),
@@ -462,6 +476,7 @@ impl AidlServiceContext {
             frontend_backend,
             frontend,
             frontend_worker_cleanup,
+            runtime_objects,
             demux,
             packet_pipeline,
             filter_callback: self.filter_callback_delivery_diagnostic_snapshot(),

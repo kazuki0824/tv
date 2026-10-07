@@ -1754,12 +1754,31 @@ mod tests {
     }
 
     #[test]
+    fn closed_filter_is_not_idempotent_complete() {
+        let mut runtime = runtime_with_filter_for_close_attempt(41);
+        let close_plan = begin_filter_close_plan(&mut runtime, 41);
+        let cleanup_attempt = close_plan
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("cleanup試行開始が成功する");
+        finish_object_close_use_case(&mut runtime, cleanup_attempt.completion, Ok(()))
+            .expect("filter closeが成功する");
+
+        assert!(!ObjectCloseTxn::is_idempotent_complete(
+            &runtime,
+            AidlObjectId(41),
+            AidlObjectGeneration(1),
+            AidlObjectKind::Filter,
+        )
+        .expect("Closed filterのidentityを引き続き読める"));
+    }
+
+    #[test]
     fn finish_close_use_case_commits_after_successful_cleanup_report() {
         let mut runtime = runtime_with_filter_for_close_attempt(4);
         let close_plan = begin_filter_close_plan(&mut runtime, 4);
         let cleanup_attempt = close_plan
             .begin_cleanup_attempt(&mut runtime)
-            .expect("cleanup attempt begins");
+            .expect("cleanup試行開始が成功する");
         let completion = cleanup_attempt.completion;
 
         finish_object_close_use_case(&mut runtime, completion, Ok(())).expect("finish succeeds");
@@ -1780,7 +1799,7 @@ mod tests {
         let close_plan = begin_filter_close_plan(&mut runtime, 5);
         let cleanup_attempt = close_plan
             .begin_cleanup_attempt(&mut runtime)
-            .expect("cleanup attempt begins");
+            .expect("cleanup試行開始が成功する");
         let completion = cleanup_attempt.completion;
 
         let result = finish_object_close_use_case(

@@ -267,6 +267,124 @@ mod tests {
     use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId};
 
     #[test]
+    fn cleanup_pending_frontend_reaper_reaches_closed_and_allows_reopen() {
+        use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
+        use maleicacid_tuner_hal2_domain_request::AidlApi;
+        use maleicacid_tuner_hal2_service_runtime::{
+            close_object_use_case, finish_object_close_use_case, FrontendCapabilitySnapshot,
+            FrontendProbeOutcome, FrontendRuntimeId, FrontendScalarCapability,
+            ObjectCloseCleanupFailure, SatellitePowerTopology, ServiceBootOutcome,
+            TunerServiceRuntime,
+        };
+        use std::sync::Mutex;
+
+        let frontend_id = 7;
+        let mut runtime = TunerServiceRuntime::new();
+        assert_eq!(
+            runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+                id: FrontendRuntimeId(frontend_id),
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                path: "/dev/null".into(),
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 473_142_857,
+                        max_frequency_hz: 473_142_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 7,
+                    isdbt_segment: None,
+                },
+            }]),
+            ServiceBootOutcome::Ready
+        );
+        let first = runtime
+            .root_open_txn()
+            .open_frontend_root_object_for_id(
+                frontend_id,
+                AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenFrontendById,
+                },
+            )
+            .expect("最初のfrontend openが成功する");
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Frontend,
+            first.object_id(),
+            first.generation(),
+        );
+
+        let close = close_object_use_case(
+            &mut runtime,
+            first.object_id(),
+            first.generation(),
+            AidlObjectKind::Frontend,
+            AidlMethodCall::FrontendClose,
+        )
+        .expect("frontend close plan開始が成功する");
+        let attempt = close
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("最初のcleanup試行開始が成功する");
+        finish_object_close_use_case(
+            &mut runtime,
+            attempt.completion,
+            Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::ReleaseBackend,
+                HalError::cleanup_failed(
+                    "Issue #181の遅延cleanup",
+                    "worker cleanupは引き続きreaperが所有しています",
+                ),
+            )),
+        )
+        .expect_err("最初のcleanupがpendingのまま残る");
+
+        let runtime = Arc::new(Mutex::new(runtime));
+        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
+        context
+            .enqueue_cleanup_retry(handle)
+            .expect("cleanup retryがqueueへ登録される");
+
+        for _ in 0..200 {
+            if context
+                .cleanup_is_terminal_for_handle(handle)
+                .expect("cleanup terminal stateを引き続き読める")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            context
+                .cleanup_is_terminal_for_handle(handle)
+                .expect("cleanupがterminal stateへ到達する"),
+            "cleanup reaperがterminal object stateへ到達しませんでした"
+        );
+
+        let mut runtime = runtime.lock().expect("runtime lockが健全なままである");
+        assert!(
+            runtime
+                .runtime_object_diagnostic_snapshots()
+                .iter()
+                .all(|snapshot| snapshot.object_id() != first.object_id()),
+            "cleanup成功時はQuarantinedではなくClosedへ到達しなければなりません"
+        );
+        runtime
+            .root_open_txn()
+            .open_frontend_root_object_for_id(
+                frontend_id,
+                AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenFrontendById,
+                },
+            )
+            .expect("cleanup reaperがClosedへ到達した後にfrontendを再openできる");
+    }
+
+    #[test]
     fn cleanup_job_key_is_identity_only() {
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Filter,

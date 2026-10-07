@@ -16,27 +16,11 @@ import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
 import sun.misc.Unsafe
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class TisReviewBoundaryTest {
-    private val unsafe =
-        Unsafe::class.java
-            .getDeclaredField("theUnsafe")
-            .apply { isAccessible = true }
-            .get(null) as Unsafe
-
-    private fun <T> allocate(type: Class<T>): T = type.cast(unsafe.allocateInstance(type))
-
-    private fun set(
-        target: Any,
-        name: String,
-        value: Any,
-    ) {
-        target.javaClass
-            .getDeclaredField(name)
-            .apply { isAccessible = true }
-            .set(target, value)
-    }
-
     @Test fun captionManagementAloneDeterminesAdvertisedLanguages() {
         val controller = allocate(TunerController::class.java)
         val languages = ConcurrentHashMap<TsPid, List<NativeAribCaptionFactParser.Language>>()

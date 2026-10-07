@@ -1,6 +1,8 @@
 use maleicacid_tuner_hal2_common::WorkerCleanupFailureKind;
 use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 
+const WORKER_REAPER_WAIT_POLL_MS: u64 = 10;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerRuntimeOwnerFailure {
     ThreadPanic,
@@ -740,6 +742,34 @@ where
             .map(|state| state.entries.get(key).cloned())
     }
 
+    pub fn pending_values<const N: usize>(
+        &self,
+        keys: [&K; N],
+    ) -> Result<[Option<V>; N], maleicacid_tuner_hal2_common::HalError> {
+        let state = self.lock_state()?;
+        Ok(std::array::from_fn(|index| {
+            state.entries.get(keys[index]).cloned()
+        }))
+    }
+
+    pub fn any_pending<const N: usize>(
+        &self,
+        keys: [&K; N],
+    ) -> Result<bool, maleicacid_tuner_hal2_common::HalError> {
+        self.pending_values(keys)
+            .map(|pending| pending.into_iter().any(|value| value.is_some()))
+    }
+
+    pub fn wait_until_released<const N: usize>(
+        &self,
+        keys: [&K; N],
+    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        while self.any_pending(keys)? {
+            std::thread::sleep(std::time::Duration::from_millis(WORKER_REAPER_WAIT_POLL_MS));
+        }
+        Ok(())
+    }
+
     pub fn update_value(
         &self,
         key: &K,
@@ -1095,6 +1125,27 @@ where
         key: &K,
     ) -> Result<Option<V>, maleicacid_tuner_hal2_common::HalError> {
         self.pending.pending_value(key)
+    }
+
+    pub fn pending_values<const N: usize>(
+        &self,
+        keys: [&K; N],
+    ) -> Result<[Option<V>; N], maleicacid_tuner_hal2_common::HalError> {
+        self.pending.pending_values(keys)
+    }
+
+    pub fn any_pending<const N: usize>(
+        &self,
+        keys: [&K; N],
+    ) -> Result<bool, maleicacid_tuner_hal2_common::HalError> {
+        self.pending.any_pending(keys)
+    }
+
+    pub fn wait_until_released<const N: usize>(
+        &self,
+        keys: [&K; N],
+    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        self.pending.wait_until_released(keys)
     }
 }
 

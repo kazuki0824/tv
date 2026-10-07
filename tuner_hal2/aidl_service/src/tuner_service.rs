@@ -938,6 +938,47 @@ mod tests {
     }
 
     #[test]
+    fn dropped_frontend_object_releases_lease_for_reopen() {
+        use maleicacid_tuner_hal2_service_runtime::{
+            FrontendCapabilitySnapshot, FrontendProbeOutcome, FrontendRuntimeId,
+            FrontendScalarCapability, SatellitePowerTopology, ServiceBootOutcome,
+        };
+
+        let mut runtime = TunerServiceRuntime::new();
+        assert_eq!(
+            runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+                id: FrontendRuntimeId(7),
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                path: "/dev/null".into(),
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 473_142_857,
+                        max_frequency_hz: 473_142_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 7,
+                    isdbt_segment: None,
+                },
+            }]),
+            ServiceBootOutcome::Ready
+        );
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(runtime);
+
+        let first = service.openFrontendById(7).expect("最初のopenが成功する");
+        assert!(service.openFrontendById(7).is_err());
+        drop(first);
+
+        service
+            .openFrontendById(7)
+            .expect("owner Drop cleanup後にfrontendを再openできる");
+    }
+
+    #[test]
     fn unsupported_frontend_system_never_falls_back_to_isdbt() {
         for system in [FrontendSystem::IsdbS3, FrontendSystem::DvbS] {
             assert!(matches!(

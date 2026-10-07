@@ -124,7 +124,10 @@ pub use object_method_use_case::{
     ObjectMethodUseCase, ObjectMethodUseCaseBuildError, ObjectQueryRequest, ObjectQueryResponse,
 };
 pub(crate) use object_table::RuntimeObjectLifecycle;
-pub use object_table::{RuntimeObjectEntry, RuntimeObjectTableError, RuntimeOwnerRelation};
+pub use object_table::{
+    RuntimeObjectDiagnosticSnapshot, RuntimeObjectEntry, RuntimeObjectLifecycleSnapshot,
+    RuntimeObjectTableError, RuntimeOwnerRelation,
+};
 pub use registry::{
     FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
     IsdbtSegmentCapability, LnbRegistry, LnbRegistryProfile, SatellitePowerTopology,

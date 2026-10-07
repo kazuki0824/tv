@@ -559,6 +559,18 @@ impl FrontendWorkerReaperHandle {
             .map(|value| value.is_some())
     }
 
+    fn has_pending_frontend(&self, frontend_id: i32) -> Result<bool, HalError> {
+        let tune = (frontend_id, FrontendWorkerKind::Tune);
+        let scan = (frontend_id, FrontendWorkerKind::Scan);
+        self.runtime.any_pending([&tune, &scan])
+    }
+
+    fn wait_until_frontend_released(&self, frontend_id: i32) -> Result<(), HalError> {
+        let tune = (frontend_id, FrontendWorkerKind::Tune);
+        let scan = (frontend_id, FrontendWorkerKind::Scan);
+        self.runtime.wait_until_released([&tune, &scan])
+    }
+
     fn pending_state(
         &self,
         frontend_id: i32,
@@ -1315,6 +1327,13 @@ pub(crate) fn record_frontend_worker_terminal_failure(
     )
 }
 
+#[cfg(any(target_os = "android", test))]
+fn frontend_cleanup_diagnostic_is_error(record: &FrontendWorkerCleanupDiagnosticRecord) -> bool {
+    record.kind() != FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion
+        || record.public_error().is_some()
+        || record.report().first_error().is_some()
+}
+
 fn record_frontend_cleanup_diagnostic(
     sink: &SharedFrontendWorkerCleanupDiagnostics,
     record: FrontendWorkerCleanupDiagnosticRecord,
@@ -1323,15 +1342,29 @@ fn record_frontend_cleanup_diagnostic(
     let projection = record.clone();
     sink.record(record)?;
     #[cfg(target_os = "android")]
-    log::error!(
-        "frontend worker cleanup diagnostic: kind={:?} frontend_id={} object_id={:?} object_generation={:?} public_error={:?} report={:?}",
-        projection.kind(),
-        projection.frontend_id(),
-        projection.object_id(),
-        projection.object_generation(),
-        projection.public_error(),
-        projection.report()
-    );
+    {
+        if !frontend_cleanup_diagnostic_is_error(&projection) {
+            log::debug!(
+                "frontend worker cleanup diagnostic: kind={:?} frontend_id={} object_id={:?} object_generation={:?} public_error={:?} report={:?}",
+                projection.kind(),
+                projection.frontend_id(),
+                projection.object_id(),
+                projection.object_generation(),
+                projection.public_error(),
+                projection.report()
+            );
+        } else {
+            log::error!(
+                "frontend worker cleanup diagnostic: kind={:?} frontend_id={} object_id={:?} object_generation={:?} public_error={:?} report={:?}",
+                projection.kind(),
+                projection.frontend_id(),
+                projection.object_id(),
+                projection.object_generation(),
+                projection.public_error(),
+                projection.report()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -3018,12 +3051,28 @@ mod frontend_readback_tests {
     }
 }
 
+fn backend_submit_terminal_result(
+    backend_stopped: bool,
+    public_error: HalError,
+    record_result: Result<(), HalError>,
+) -> Result<(), HalError> {
+    match record_result {
+        Ok(()) if backend_stopped => Ok(()),
+        Ok(()) => Err(public_error),
+        Err(record_error) => Err(compose_frontend_cleanup_error(
+            "非同期backend submit失敗状態の記録に失敗しました",
+            public_error,
+            record_error,
+        )),
+    }
+}
+
 fn record_async_backend_submit_failure(
     runtime: &SharedRuntime,
     frontend_id: i32,
     generation: u64,
     failure: FrontendBackendSubmitFailure,
-) -> HalError {
+) -> Result<(), HalError> {
     let backend_stopped = failure.rollback_succeeded;
     let step = failure.step;
     let primary_error = failure.error.clone();
@@ -3035,14 +3084,14 @@ fn record_async_backend_submit_failure(
     ) {
         Ok(guard) => guard,
         Err(lock_error) => {
-            return compose_frontend_cleanup_error(
+            return Err(compose_frontend_cleanup_error(
                 "async backend submit failure record lock failed",
                 public_error,
                 lock_error,
-            )
+            ))
         }
     };
-    match guard
+    let record_result = guard
         .frontend_txn()
         .record_frontend_backend_activation_failure_after_commit_context(
             frontend_id,
@@ -3052,13 +3101,32 @@ fn record_async_backend_submit_failure(
             step,
             primary_error,
             rollback_failure,
-        ) {
-        Ok(()) => public_error,
-        Err(record_error) => compose_frontend_cleanup_error(
-            "async backend submit failure state record failed",
-            public_error,
-            record_error,
-        ),
+        );
+    // rollback済みのbackend submit失敗はoperation失敗としてruntimeへ記録済みであり、
+    // 物理終了済みworkerのcleanup失敗へ昇格させない。
+    backend_submit_terminal_result(backend_stopped, public_error, record_result)
+}
+
+#[cfg(test)]
+mod backend_submit_terminal_policy_tests {
+    use super::*;
+
+    #[test]
+    fn rollback_completed_backend_submit_failure_is_not_worker_cleanup_failure() {
+        let primary = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some("/dev/px4video0".into()),
+            op: "PTX_SET_CHANNEL",
+            errno: 11,
+        };
+        assert_eq!(
+            backend_submit_terminal_result(true, primary.clone(), Ok(())),
+            Ok(())
+        );
+        assert_eq!(
+            backend_submit_terminal_result(false, primary.clone(), Ok(())),
+            Err(primary)
+        );
     }
 }
 
@@ -3079,12 +3147,7 @@ fn run_frontend_backend_tune_submit_worker(
     let session = match ticket.submit() {
         Ok(Ok(session)) => session,
         Ok(Err(failure)) => {
-            return Err(record_async_backend_submit_failure(
-                &runtime,
-                frontend_id,
-                generation,
-                failure,
-            ))
+            return record_async_backend_submit_failure(&runtime, frontend_id, generation, failure)
         }
         Err(error) => {
             let public_error = {
@@ -3784,13 +3847,28 @@ pub(crate) fn start_frontend_backend_tune_worker(
     )?;
     let (frontend_id, _) =
         resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
-    if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
-        || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
-    {
-        return Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "frontend endpoint remains owned by the worker reaper",
-        ));
+    if reaper.has_pending_frontend(frontend_id)? {
+        drop(guard);
+        reaper.wait_until_frontend_released(frontend_id)?;
+        guard = lock_runtime(
+            &runtime,
+            "frontend reaper受付待機後にservice runtime lockが汚染されています",
+        )?;
+        ensure_frontend_object_still_live(&guard, object_id, object_generation)?;
+        let (revalidated_frontend_id, _) =
+            resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
+        if revalidated_frontend_id != frontend_id {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "worker reaper完了待機中にfrontend endpointが変更されました",
+            ));
+        }
+        if reaper.has_pending_frontend(frontend_id)? {
+            return Err(HalError::cleanup_failed(
+                "frontend worker reaperの受付",
+                "runtime再取得中に新しいfrontend reaper ownershipが開始されました",
+            ));
+        }
     }
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
     if guard
@@ -4158,8 +4236,6 @@ fn run_frontend_backend_scan_session_worker(
             Ok(Ok(session)) => session,
             Ok(Err(failure)) if failure.rollback_succeeded => {
                 let primary = failure.error.clone();
-                let step = failure.step;
-                let rollback_failure = failure.rollback_failure.clone();
                 let mut guard = match lock_runtime(
                     &runtime,
                     "service runtime lock poisoned while recording rejected scan submission",
@@ -4178,37 +4254,19 @@ fn run_frontend_backend_scan_session_worker(
                         return Err(error);
                     }
                 };
-                if let Err(diagnostic_error) = guard
+                if let Err(record_error) = guard
                     .frontend_txn()
-                    .record_frontend_backend_failure_diagnostic(
-                        ctx.frontend_id(),
-                        ctx.generation(),
-                        step,
-                        primary.clone(),
-                        rollback_failure,
-                    )
+                    .record_completed_frontend_scan_submit_failure(ctx.frontend_id(), failure)
                 {
                     return Err(compose_frontend_cleanup_error(
-                        "frontend scan submission failure diagnostic record failed",
+                        "frontend scan submit失敗の記録に失敗しました",
                         primary,
-                        diagnostic_error,
+                        record_error,
                     ));
                 }
-                if let Err(mark_error) = guard
-                    .frontend_txn()
-                    .mark_frontend_scan_submit_rejected_after_boundary(
-                        ctx.frontend_id(),
-                        ctx.generation(),
-                        primary.clone(),
-                    )
-                {
-                    return Err(compose_frontend_cleanup_error(
-                        "frontend scan submission failure marking failed",
-                        primary,
-                        mark_error,
-                    ));
-                }
-                return Err(primary);
+                // rollback済みbackend submit失敗が旧generationから遅延到着した場合は、
+                // historical diagnosticだけを保存し、現generationの状態やcleanup ownershipを変更しない。
+                return Ok(());
             }
             Ok(Err(failure)) => {
                 let primary_error = failure.error.clone();
@@ -4605,13 +4663,28 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
     )?;
     let (frontend_id, _) =
         resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
-    if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
-        || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
-    {
-        return Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "frontend endpoint remains owned by the worker reaper",
-        ));
+    if reaper.has_pending_frontend(frontend_id)? {
+        drop(guard);
+        reaper.wait_until_frontend_released(frontend_id)?;
+        guard = lock_runtime(
+            &runtime,
+            "frontend reaper受付待機後にservice runtime lockが汚染されています",
+        )?;
+        ensure_frontend_object_still_live(&guard, object_id, object_generation)?;
+        let (revalidated_frontend_id, _) =
+            resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
+        if revalidated_frontend_id != frontend_id {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "worker reaper完了待機中にfrontend endpointが変更されました",
+            ));
+        }
+        if reaper.has_pending_frontend(frontend_id)? {
+            return Err(HalError::cleanup_failed(
+                "frontend worker reaperの受付",
+                "runtime再取得中に新しいfrontend reaper ownershipが開始されました",
+            ));
+        }
     }
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
     let candidates = guard.scan_candidates_for_frontend_entry(&entry, &request, scan_mode)?;
@@ -5676,6 +5749,41 @@ mod scan_contract_tests {
         SatellitePowerTopology,
     };
     use std::collections::VecDeque;
+
+    #[test]
+    fn successful_worker_reaper_completion_is_not_error_severity() {
+        let target = FrontendWorkerCleanupTarget::frontend(7);
+        let mut success_report = FrontendWorkerCleanupExecutionReport::new();
+        success_report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+            target,
+            FrontendWorkerKind::Tune,
+            Some(3),
+            Ok(()),
+        ));
+        let success = FrontendWorkerCleanupDiagnosticRecord::new(
+            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+            target,
+            success_report,
+            None,
+        );
+        assert!(!frontend_cleanup_diagnostic_is_error(&success));
+
+        let failure = HalError::Unsupported("強制したcleanup失敗");
+        let mut failed_report = FrontendWorkerCleanupExecutionReport::new();
+        failed_report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+            target,
+            FrontendWorkerKind::Tune,
+            Some(3),
+            Err(failure.clone()),
+        ));
+        let failed = FrontendWorkerCleanupDiagnosticRecord::new(
+            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+            target,
+            failed_report,
+            Some(failure),
+        );
+        assert!(frontend_cleanup_diagnostic_is_error(&failed));
+    }
 
     #[test]
     fn frontend_close_keeps_demux_relation_until_worker_exit() {
