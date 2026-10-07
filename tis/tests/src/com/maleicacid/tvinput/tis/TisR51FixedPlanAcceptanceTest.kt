@@ -1486,6 +1486,14 @@ class TisR51FixedPlanAcceptanceTest {
         check(retained == setOf(key))
     }
 
+    @Test
+    fun scanDeadlineDoesNotStartAnotherSiSnapshotAtMaxWait() {
+        val policy = ChannelScanController.SiCollectionPolicy(maxWaitMs = 1_000)
+        check(ChannelScanController.shouldStartSiSnapshot(999, policy))
+        check(!ChannelScanController.shouldStartSiSnapshot(1_000, policy))
+        check(!ChannelScanController.shouldStartSiSnapshot(1_001, policy))
+    }
+
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
