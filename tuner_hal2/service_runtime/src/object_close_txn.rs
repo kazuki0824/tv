@@ -1104,7 +1104,13 @@ impl ObjectCloseTxn {
                 "AIDL object identity changed during close preflight",
             ));
         }
-        Ok(entry.lifecycle == crate::RuntimeObjectLifecycle::Closed)
+        Ok(
+            entry.lifecycle == crate::RuntimeObjectLifecycle::Closed
+                && matches!(
+                    object_kind,
+                    AidlObjectKind::Frontend | AidlObjectKind::Lnb | AidlObjectKind::Filter
+                ),
+        )
     }
 
     pub fn begin(
