@@ -324,8 +324,9 @@ class TvProviderWriterR51FixTest {
         check(coordinator.publish(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program), null).updated == 1)
         check(coordinator.publish(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program), null).skippedUnchanged == 1)
         store.channels[17L] = requireNotNull(store.channels.remove(1L))
+        store.removeProgramsForChannel(1L)
         check(writer.prepareProgramPublication(listOf(program), listOf(window)).fingerprint != plan.fingerprint)
-        check(coordinator.publish(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program), null).updated == 1)
+        check(coordinator.publish(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program), null).inserted == 1)
         check(
             store.programs.values
                 .single()
@@ -341,6 +342,16 @@ class TvProviderWriterR51FixTest {
         var genreReadback: Result<String?> = Result.success(null)
 
         override fun readCanonicalGenre(programId: Long): Result<String?> = genreReadback
+
+        fun removeProgramsForChannel(channelId: Long) {
+            val ids =
+                programs
+                    .filterValues { values ->
+                        values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId
+                    }.keys
+                    .toList()
+            ids.forEach(programs::remove)
+        }
 
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(channels.keys.firstOrNull())
 
@@ -373,6 +384,26 @@ class TvProviderWriterR51FixTest {
                                 ?: return@mapNotNull null
                         key to id
                     }.toMap(),
+            )
+
+        override fun indexExistingProgramEntriesForWindow(
+            channelId: Long,
+            windowStartMs: Long,
+            windowEndMs: Long,
+        ): Result<Map<String, List<TvProviderWriter.ExistingProgramIndexEntry>>> =
+            Result.success(
+                programs.entries
+                    .mapNotNull { (id, values) ->
+                        if (values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
+                        val start = values.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                        val end = values.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                        if (end <= windowStartMs || start >= windowEndMs) return@mapNotNull null
+                        val key =
+                            TvProviderWriter.parseProgramKey(
+                                values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
+                            ) ?: return@mapNotNull null
+                        key to TvProviderWriter.ExistingProgramIndexEntry(id, start, end)
+                    }.groupBy({ it.first }, { it.second }),
             )
 
         override fun insertProgram(values: ContentValues): Result<Long?> {

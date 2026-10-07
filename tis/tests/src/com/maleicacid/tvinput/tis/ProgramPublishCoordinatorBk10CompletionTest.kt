@@ -578,14 +578,23 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             )
         check(publish().hasCommittedTarget)
         val before = store.deleteCalls
+        val changedProgram = program.copy(description = "provider失敗確認")
+
+        fun publishChanged() =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                listOf(changedProgram),
+                listOf(window),
+                setOf(key),
+            )
         store.failChannelQuery = true
-        check(publish().failures.isNotEmpty() && coordinator.retryWindowCountForTest() == 1)
+        check(publishChanged().failures.isNotEmpty() && coordinator.retryWindowCountForTest() == 1)
         store.failChannelQuery = false
         now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
-        val recovered = publish()
+        val recovered = publishChanged()
         check(recovered.hasCommittedTarget && recovered.skippedUnchanged == 0)
         check(store.deleteCalls == before + 1 && coordinator.retryWindowCountForTest() == 0)
-        check(publish().skippedUnchanged > 0 && store.deleteCalls == before + 1)
+        check(publishChanged().skippedUnchanged > 0 && store.deleteCalls == before + 1)
     }
 
     private class FakeStore(
@@ -643,9 +652,34 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         ): Result<Map<String, Long>> {
             if (failWindowIndexOnce) {
                 failWindowIndexOnce = false
-                return Result.failure(IllegalStateException("null cursor"))
+                return Result.failure(IllegalStateException("null cursor確認"))
             }
             return Result.success(programIndex())
+        }
+
+        override fun indexExistingProgramEntriesForWindow(
+            channelId: Long,
+            windowStartMs: Long,
+            windowEndMs: Long,
+        ): Result<Map<String, List<TvProviderWriter.ExistingProgramIndexEntry>>> {
+            if (failWindowIndexOnce) {
+                failWindowIndexOnce = false
+                return Result.failure(IllegalStateException("null cursor確認"))
+            }
+            return Result.success(
+                programs.entries
+                    .mapNotNull { (id, values) ->
+                        if (values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
+                        val start = values.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                        val end = values.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                        if (end <= windowStartMs || start >= windowEndMs) return@mapNotNull null
+                        val key =
+                            TvProviderWriter.parseProgramKey(
+                                values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
+                            ) ?: return@mapNotNull null
+                        key to TvProviderWriter.ExistingProgramIndexEntry(id, start, end)
+                    }.groupBy({ it.first }, { it.second }),
+            )
         }
 
         override fun insertProgram(values: ContentValues): Result<Long?> {

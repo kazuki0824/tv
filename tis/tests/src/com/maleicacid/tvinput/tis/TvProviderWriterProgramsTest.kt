@@ -29,12 +29,127 @@ import com.maleicacid.tvinput.db.ProgramRecord
 import org.junit.Test
 
 // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
-@Suppress("LargeClass")
+@Suppress("LargeClass", "TooManyFunctions")
 class TvProviderWriterProgramsTest {
+    @Test
+    fun untimedProgramIndexFallbackFailsClosed() {
+        val store =
+            object : TvProviderWriter.ChannelStore {
+                override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(1L)
+
+                override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(1L)
+
+                override fun updateChannel(
+                    channelId: Long,
+                    values: ContentValues,
+                ): Result<Int> = Result.success(1)
+            }
+        check(store.indexExistingProgramEntriesForWindow(1L, 0L, 1L).isFailure)
+    }
+
+    @Suppress("MaxLineLength")
+    @Test
+    fun multipleProgramsUseOneProviderIndexQueryPerService() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson = testCasFacts(false),
+                ),
+            ),
+        )
+        val first =
+            ProgramRecord(
+                key,
+                10,
+                "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}",
+                1_700_000_000_000L,
+                1_800_000L,
+                "first",
+                "first",
+                casFactsCanonicalJson = testCasFacts(false),
+            )
+        val second =
+            first.copy(
+                eventId = 11,
+                stableIdentity =
+                    "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":11}",
+                startTimeMillis = first.startTimeMillis + first.durationMillis,
+                title = "second",
+            )
+        val result = writer.upsertPrograms(listOf(first, second))
+        check(result.inserted == 2) { result.toString() }
+        check(store.programWindowQueryCount == 1) { "queries=${store.programWindowQueryCount}" }
+    }
+
     private val key = ServiceKey(4, 16625, 101)
 
     // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun serviceUnionQueryPreservesPerProgramEventReuseGuard() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson = testCasFacts(false),
+                ),
+            ),
+        )
+        val secondStart = 1_700_100_000_000L
+        val old =
+            ProgramRecord(
+                key,
+                11,
+                "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":11}",
+                secondStart - 25L * 60L * 60L * 1_000L,
+                30L * 60L * 1_000L,
+                "old",
+                "old",
+                casFactsCanonicalJson = testCasFacts(false),
+            )
+        check(writer.upsertPrograms(listOf(old)).inserted == 1)
+        store.programWindowQueryCount = 0
+
+        val first =
+            old.copy(
+                eventId = 10,
+                stableIdentity =
+                    "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}",
+                startTimeMillis = secondStart - 2L * 60L * 60L * 1_000L,
+                title = "first",
+            )
+        val second =
+            old.copy(
+                startTimeMillis = secondStart,
+                title = "second",
+            )
+
+        val result = writer.upsertPrograms(listOf(first, second))
+
+        check(result.inserted == 2 && result.updated == 0) { result.toString() }
+        check(store.programWindowQueryCount == 1)
+        check(store.programs.size == 3)
+        check(
+            store.programs.values.count {
+                it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == 11
+            } == 2,
+        )
+    }
+
     @Suppress("LongMethod", "MaxLineLength")
     @Test
     fun insertAndUpdateProgram() {
@@ -792,6 +907,7 @@ class TvProviderWriterProgramsTest {
         private var nextProgramId = 100L
         val channels = LinkedHashMap<Long, ContentValues>()
         val programs = LinkedHashMap<Long, ContentValues>()
+        var programWindowQueryCount = 0
 
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
             Result.success(
@@ -815,6 +931,28 @@ class TvProviderWriterProgramsTest {
         ): Result<Int> {
             channels[channelId] = ContentValues(values)
             return Result.success(1)
+        }
+
+        override fun indexExistingProgramEntriesForWindow(
+            channelId: Long,
+            windowStartMs: Long,
+            windowEndMs: Long,
+        ): Result<Map<String, List<TvProviderWriter.ExistingProgramIndexEntry>>> {
+            programWindowQueryCount++
+            val out = linkedMapOf<String, MutableList<TvProviderWriter.ExistingProgramIndexEntry>>()
+            programs.entries.forEach { (id, values) ->
+                if (values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@forEach
+                val start = values.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                val end = values.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                if (end <= windowStartMs || start >= windowEndMs) return@forEach
+                val key =
+                    TvProviderWriter.parseProgramKey(
+                        values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
+                    ) ?: return@forEach
+                out.getOrPut(key) { mutableListOf() } +=
+                    TvProviderWriter.ExistingProgramIndexEntry(id, start, end)
+            }
+            return Result.success(out)
         }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

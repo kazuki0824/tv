@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.tis
 
+import android.content.ContentProviderOperation
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
@@ -50,8 +51,34 @@ class TvProviderWriter private constructor(
         val genreDiagnostics: List<GenreReadbackDiagnostic> = emptyList(),
     )
 
+    data class ExistingProgramIndexEntry(
+        val programId: Long,
+        val startTimeMillis: Long,
+        val endTimeMillis: Long,
+    )
+
+    data class ProgramUpsertRequest(
+        val existingProgramId: Long?,
+        val values: ContentValues,
+    )
+
+    data class ProgramUpsertOutcome(
+        val programId: Long?,
+        val updated: Boolean,
+    )
+
     interface ChannelStore {
         fun findExistingChannelId(key: ServiceKey): Result<Long?>
+
+        fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            runCatching {
+                keys
+                    .mapNotNull { key ->
+                        findExistingChannelId(key)
+                            .getOrThrow()
+                            ?.let { id -> key to id }
+                    }.toMap()
+            }
 
         fun insertChannel(values: ContentValues): Result<Long?>
 
@@ -65,6 +92,17 @@ class TvProviderWriter private constructor(
             windowStartMs: Long,
             windowEndMs: Long,
         ): Result<Map<String, Long>> = Result.success(emptyMap())
+
+        fun indexExistingProgramEntriesForWindow(
+            channelId: Long,
+            windowStartMs: Long,
+            windowEndMs: Long,
+        ): Result<Map<String, List<ExistingProgramIndexEntry>>> =
+            Result.failure(
+                UnsupportedOperationException(
+                    "この store は時刻付き program index に対応しません",
+                ),
+            )
 
         /**
          * channel 全体の既存 Program row を stable programKey で引ける形で返す。
@@ -82,9 +120,30 @@ class TvProviderWriter private constructor(
             values: ContentValues,
         ): Result<Int> = Result.failure(UnsupportedOperationException("この store は program update に対応しません"))
 
+        fun upsertProgramsBatch(requests: List<ProgramUpsertRequest>): Result<List<ProgramUpsertOutcome>> =
+            runCatching {
+                requests.map { request ->
+                    val existingId = request.existingProgramId
+                    if (existingId == null) {
+                        ProgramUpsertOutcome(insertProgram(request.values).getOrThrow(), updated = false)
+                    } else {
+                        val count = updateProgram(existingId, request.values).getOrThrow()
+                        ProgramUpsertOutcome(existingId.takeIf { count > 0 }, updated = count > 0)
+                    }
+                }
+            }
+
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
         fun readCanonicalGenre(programId: Long): Result<String?> = Result.failure(UnsupportedOperationException("この store はジャンル読戻しに対応しません"))
+
+        fun readCanonicalGenres(
+            channelId: Long,
+            programIds: Set<Long>,
+        ): Result<Map<Long, String?>> =
+            runCatching {
+                programIds.associateWith { id -> readCanonicalGenre(id).getOrThrow() }
+            }
 
         fun deleteObsoletePrograms(
             channelId: Long,
@@ -103,6 +162,14 @@ class TvProviderWriter private constructor(
         var inserted = 0
         var updated = 0
         val failures = mutableListOf<Diagnostic>()
+        val existingIds =
+            channelStore.indexExistingChannelIds(channels.mapTo(linkedSetOf()) { it.serviceKey }).getOrElse { error ->
+                return UpsertResult(
+                    inserted = 0,
+                    updated = 0,
+                    failures = channels.map { Diagnostic(it.serviceKey, "query", error.message.orEmpty()) },
+                )
+            }
         channels.forEach { channel ->
             val validation = validate(channel)
             if (validation != null) {
@@ -121,13 +188,7 @@ class TvProviderWriter private constructor(
                     }
                 }
             val values = channelValues(channel, providerData)
-            val existingIdResult = channelStore.findExistingChannelId(channel.serviceKey)
-            if (existingIdResult.isFailure) {
-                failures +=
-                    Diagnostic(channel.serviceKey, "query", existingIdResult.exceptionOrNull()?.message.orEmpty())
-                return@forEach
-            }
-            val existingId = existingIdResult.getOrNull()
+            val existingId = existingIds[channel.serviceKey]
             if (existingId == null) {
                 val insertedIdResult = channelStore.insertChannel(values)
                 if (insertedIdResult.isFailure) {
@@ -205,13 +266,17 @@ class TvProviderWriter private constructor(
         val failures = mutableListOf<Diagnostic>()
         val programsByService = programs.groupBy { it.serviceKey }
         val windowsByService = windows.groupBy { it.serviceKey }
+        val targetKeys = programsByService.keys + windowsByService.keys + verifiedEmptyServiceKeys
+        val channelIds =
+            channelStore.indexExistingChannelIds(targetKeys).getOrElse { error ->
+                return PreparedProgramPublication(
+                    emptyList(),
+                    targetKeys.map { key -> Diagnostic(key, "program-channel-query", error.message.orEmpty()) },
+                )
+            }
         val services =
-            (programsByService.keys + windowsByService.keys + verifiedEmptyServiceKeys).mapNotNull { key ->
-                val channelId =
-                    channelStore.findExistingChannelId(key).getOrElse { error ->
-                        failures += Diagnostic(key, "program-channel-query", error.message.orEmpty())
-                        return@mapNotNull null
-                    }
+            targetKeys.mapNotNull { key ->
+                val channelId = channelIds[key]
                 if (channelId == null) {
                     failures += Diagnostic(key, "program-channel-query", "program 登録対象 channel がありません")
                     return@mapNotNull null
@@ -285,53 +350,121 @@ class TvProviderWriter private constructor(
                 }
                 // 完成した空EITでも区間を捏造しない。所有channelとProgram問い合わせだけを確認し、既存行を保持する。
             }
-            service.programs.sortedBy { it.first.startTimeMillis }.forEach { (program, values) ->
-                val key = programIdentity(program)
-                val programEnd = checkedProgramEndTimeMillis(program)
-                if (programEnd == null) {
-                    failures += Diagnostic(serviceKey, "program-index-window", "program end time overflow eventId=${program.eventId}")
-                    return@forEach
-                }
-                val guardStart =
-                    runCatching { Math.subtractExact(program.startTimeMillis, EVENT_ID_REUSE_GUARD_MS) }
-                        .getOrDefault(Long.MIN_VALUE)
-                val guardEnd =
-                    runCatching { Math.addExact(programEnd, EVENT_ID_REUSE_GUARD_MS) }
-                        .getOrDefault(Long.MAX_VALUE)
-                val indexResult = channelStore.indexExistingProgramsForWindow(channelId, guardStart, guardEnd)
-                if (indexResult.isFailure) {
-                    failures += Diagnostic(serviceKey, "program-index-query", indexResult.exceptionOrNull()?.message.orEmpty())
-                    return@forEach
-                }
-                // event_idは終了後24時間を越えて再利用できるため、service全履歴ではなく
-                // 対象event近傍のguard window内だけでstable programKeyを照合する。
-                val existingId = indexResult.getOrThrow()[key]
-                if (existingId == null) {
-                    val insertResult = channelStore.insertProgram(values)
-                    if (insertResult.isFailure) {
-                        failures +=
-                            Diagnostic(serviceKey, "program-insert", insertResult.exceptionOrNull()?.message.orEmpty())
-                        return@forEach
-                    }
-                    val insertedId = insertResult.getOrNull()
-                    if (insertedId == null) {
-                        failures += Diagnostic(serviceKey, "program-insert", "provider が null URI を返しました")
-                    } else {
-                        inserted++
-                        genreDiagnostics += recordGenreReadback(serviceKey, insertedId, values)
-                    }
+            val sortedPrograms = service.programs.sortedBy { it.first.startTimeMillis }
+            val existingPrograms: MutableMap<String, MutableList<ExistingProgramIndexEntry>>? =
+                if (sortedPrograms.isEmpty()) {
+                    linkedMapOf()
                 } else {
-                    val updateResult = channelStore.updateProgram(existingId, values)
-                    if (updateResult.isFailure) {
-                        failures +=
-                            Diagnostic(serviceKey, "program-update", updateResult.exceptionOrNull()?.message.orEmpty())
-                        return@forEach
-                    }
-                    if ((updateResult.getOrNull() ?: 0) <= 0) {
-                        failures += Diagnostic(serviceKey, "program-update", "provider 更新対象行なし id=$existingId")
+                    val guardStart =
+                        sortedPrograms.minOf { (program, _) ->
+                            runCatching { Math.subtractExact(program.startTimeMillis, EVENT_ID_REUSE_GUARD_MS) }
+                                .getOrDefault(Long.MIN_VALUE)
+                        }
+                    val guardEnd =
+                        sortedPrograms.maxOf { (program, _) ->
+                            val programEnd = checkNotNull(checkedProgramEndTimeMillis(program))
+                            runCatching { Math.addExact(programEnd, EVENT_ID_REUSE_GUARD_MS) }
+                                .getOrDefault(Long.MAX_VALUE)
+                        }
+                    val indexResult = channelStore.indexExistingProgramEntriesForWindow(channelId, guardStart, guardEnd)
+                    if (indexResult.isFailure) {
+                        failures += Diagnostic(serviceKey, "program-index-query", indexResult.exceptionOrNull()?.message.orEmpty())
+                        null
                     } else {
-                        updated++
-                        genreDiagnostics += recordGenreReadback(serviceKey, existingId, values)
+                        indexResult.getOrThrow().mapValuesTo(linkedMapOf()) { (_, entries) -> entries.toMutableList() }
+                    }
+                }
+            if (existingPrograms != null) {
+                data class PendingWrite(
+                    val program: ProgramRecord,
+                    val values: ContentValues,
+                    val key: String,
+                    val programEnd: Long,
+                    val existingId: Long?,
+                )
+                val newKeys = linkedSetOf<String>()
+                val writes =
+                    sortedPrograms.mapNotNull { (program, values) ->
+                        val key = programIdentity(program)
+                        val programEnd = checkNotNull(checkedProgramEndTimeMillis(program))
+                        val guardStart =
+                            runCatching { Math.subtractExact(program.startTimeMillis, EVENT_ID_REUSE_GUARD_MS) }
+                                .getOrDefault(Long.MIN_VALUE)
+                        val guardEnd =
+                            runCatching { Math.addExact(programEnd, EVENT_ID_REUSE_GUARD_MS) }
+                                .getOrDefault(Long.MAX_VALUE)
+                        val existingId =
+                            existingPrograms[key]
+                                .orEmpty()
+                                .filter { entry ->
+                                    entry.endTimeMillis > guardStart && entry.startTimeMillis < guardEnd
+                                }.maxByOrNull { it.programId }
+                                ?.programId
+                        if (existingId == null && !newKeys.add(key)) {
+                            failures += Diagnostic(serviceKey, "program-batch", "同一publication内に重複program keyがあります key=$key")
+                            null
+                        } else {
+                            PendingWrite(program, values, key, programEnd, existingId)
+                        }
+                    }
+                if (failures.size == failureCountBeforeService) {
+                    val batch =
+                        channelStore.upsertProgramsBatch(
+                            writes.map { ProgramUpsertRequest(it.existingId, it.values) },
+                        )
+                    if (batch.isFailure) {
+                        val operation =
+                            when {
+                                writes.all { it.existingId == null } -> "program-insert"
+                                writes.all { it.existingId != null } -> "program-update"
+                                else -> "program-batch"
+                            }
+                        failures += Diagnostic(serviceKey, operation, batch.exceptionOrNull()?.message.orEmpty())
+                    } else {
+                        val outcomes = batch.getOrThrow()
+                        if (outcomes.size != writes.size) {
+                            failures += Diagnostic(serviceKey, "program-batch", "provider batch結果数が一致しません")
+                        } else {
+                            val genreTargets = linkedMapOf<Long, ContentValues>()
+                            writes.zip(outcomes).forEach { (write, outcome) ->
+                                val programId = outcome.programId
+                                if (programId == null) {
+                                    failures +=
+                                        Diagnostic(
+                                            serviceKey,
+                                            if (write.existingId == null) "program-insert" else "program-update",
+                                            "provider batchが対象rowを確定できませんでした",
+                                        )
+                                } else {
+                                    if (write.existingId == null) {
+                                        inserted++
+                                        existingPrograms.getOrPut(write.key) { mutableListOf() } +=
+                                            ExistingProgramIndexEntry(
+                                                programId,
+                                                write.program.startTimeMillis,
+                                                write.programEnd,
+                                            )
+                                    } else {
+                                        updated++
+                                    }
+                                    genreTargets[programId] = write.values
+                                }
+                            }
+                            if (genreTargets.isNotEmpty()) {
+                                val readback = channelStore.readCanonicalGenres(channelId, genreTargets.keys)
+                                genreTargets.forEach { (programId, values) ->
+                                    val directlySet = values.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE)
+                                    genreDiagnostics +=
+                                        GenreReadbackDiagnostic(
+                                            serviceKey,
+                                            programId,
+                                            directlySet,
+                                            readback.getOrNull()?.get(programId),
+                                            readback.exceptionOrNull()?.message,
+                                        )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -366,26 +499,6 @@ class TvProviderWriter private constructor(
         )
     }
 
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    private fun recordGenreReadback(
-        serviceKey: ServiceKey,
-        programId: Long,
-        values: ContentValues,
-    ): GenreReadbackDiagnostic {
-        val directlySet = values.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE)
-        val readBack = channelStore.readCanonicalGenre(programId)
-        val diagnostic =
-            GenreReadbackDiagnostic(serviceKey, programId, directlySet, readBack.getOrNull(), readBack.exceptionOrNull()?.message)
-        // 読戻し値から補完理由を推測せず、実際に設定した値と観測結果を独立して残す。
-        Log.i(
-            LogTags.TIS,
-            "program genre readback id=$programId directlySet=$directlySet readBack=" +
-                "${diagnostic.readBackCanonicalGenre} failure=${diagnostic.readFailure}",
-        )
-        return diagnostic
-    }
-
     sealed class ExistingServiceKeysResult {
         data class Success(
             val keys: Set<ServiceKey>,
@@ -399,17 +512,14 @@ class TvProviderWriter private constructor(
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     fun existingServiceKeysResult(keys: Iterable<ServiceKey>): ExistingServiceKeysResult {
-        val out = linkedSetOf<ServiceKey>()
-        val failures = mutableListOf<Diagnostic>()
-        keys.forEach { key ->
-            val result = channelStore.findExistingChannelId(key)
-            if (result.isFailure) {
-                failures += Diagnostic(key, "channel-query", result.exceptionOrNull()?.message.orEmpty())
-            } else if (result.getOrNull() != null) {
-                out += key
-            }
+        val requested = keys.toSet()
+        val indexed = channelStore.indexExistingChannelIds(requested)
+        return if (indexed.isSuccess) {
+            ExistingServiceKeysResult.Success(indexed.getOrThrow().keys)
+        } else {
+            val message = indexed.exceptionOrNull()?.message.orEmpty()
+            ExistingServiceKeysResult.Failure(requested.map { key -> Diagnostic(key, "channel-query", message) })
         }
-        return if (failures.isEmpty()) ExistingServiceKeysResult.Success(out) else ExistingServiceKeysResult.Failure(failures)
     }
 
     fun existingChannelsResult(): Result<List<ChannelRecord>> =
@@ -427,6 +537,31 @@ class TvProviderWriter private constructor(
             clearAbsentOptionalColumns = true,
             providerData = (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).bytes,
         )
+
+    internal fun publicationInputSignature(
+        program: ProgramRecord,
+        windows: List<ProgramPublishCoordinator.EpgUpdateWindow>,
+    ): Result<String> =
+        runCatching {
+            val providerData =
+                when (val built = ProviderDataBridge.buildProgramProviderData(program)) {
+                    is ProviderDataBridge.Success -> {
+                        built.bytes
+                    }
+
+                    is ProviderDataBridge.Failure -> {
+                        error("${built.errorCode}: ${built.errorMessage}")
+                    }
+                }
+            signatureForContentValues(
+                programValues(
+                    channelId = PUBLICATION_INPUT_SENTINEL_CHANNEL_ID,
+                    program = program,
+                    clearAbsentOptionalColumns = hasAuthoritativeOptionalColumnSnapshot(program, windows),
+                    providerData = providerData,
+                ),
+            )
+        }
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
@@ -641,6 +776,7 @@ class TvProviderWriter private constructor(
          */
         const val PROGRAM_KEY_FIELD = "programKey"
         internal const val EVENT_ID_REUSE_GUARD_MS = 24L * 60L * 60L * 1_000L
+        private const val PUBLICATION_INPUT_SENTINEL_CHANNEL_ID = 0L
         const val COLUMN_SCRAMBLED = "scrambled"
         const val COLUMN_SERIES_ID = "series_id"
         const val COLUMN_MULTI_SERIES_ID = "multi_series_id"
@@ -807,6 +943,11 @@ class TvProviderWriter private constructor(
             const val ORIGINAL_NETWORK_ID_COLUMN_INDEX = 1
             const val TRANSPORT_STREAM_ID_COLUMN_INDEX = 2
             const val SERVICE_ID_COLUMN_INDEX = 3
+            const val PROGRAM_ID_COLUMN_INDEX = 0
+            const val PROGRAM_PROVIDER_DATA_COLUMN_INDEX = 1
+            const val PROGRAM_START_TIME_COLUMN_INDEX = 2
+            const val PROGRAM_END_TIME_COLUMN_INDEX = 3
+            const val PROGRAM_PROVIDER_BATCH_SIZE = 64
         }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -838,6 +979,40 @@ class TvProviderWriter private constructor(
                     found
                 }
             }.onFailure { Log.w(LogTags.TIS, "既存 channel 検索に失敗しました key=$key", it) }
+
+        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            runCatching {
+                if (keys.isEmpty()) return@runCatching emptyMap()
+                val projection =
+                    arrayOf(
+                        TvContract.Channels._ID,
+                        TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID,
+                        TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID,
+                        TvContract.Channels.COLUMN_SERVICE_ID,
+                    )
+                val wanted = keys.toHashSet()
+                val out = linkedMapOf<ServiceKey, Long>()
+                val cursor =
+                    context.contentResolver.query(
+                        TvContract.buildChannelsUriForInput(inputId),
+                        projection,
+                        null,
+                        null,
+                        null,
+                    ) ?: error("TvProviderのチャンネル索引照会がnull cursorを返しました")
+                cursor.use { rows ->
+                    while (rows.moveToNext()) {
+                        val key =
+                            ServiceKey(
+                                rows.getInt(ORIGINAL_NETWORK_ID_COLUMN_INDEX),
+                                rows.getInt(TRANSPORT_STREAM_ID_COLUMN_INDEX),
+                                rows.getInt(SERVICE_ID_COLUMN_INDEX),
+                            )
+                        if (key in wanted) out[key] = rows.getLong(0)
+                    }
+                }
+                out
+            }
 
         override fun insertChannel(values: ContentValues): Result<Long?> =
             runCatching {
@@ -923,13 +1098,60 @@ class TvProviderWriter private constructor(
                         null,
                         null,
                         "${TvContract.Programs._ID} DESC",
-                    ) ?: error("TvProvider program index query returned null cursor")
+                    ) ?: error("TvProvider program index queryがnull cursorを返しました")
                 val out = linkedMapOf<String, Long>()
                 cursor.use { c ->
                     while (c.moveToNext()) {
                         val data = providerDataBytes(c, 1)
                         val key = parseProgramKey(data)
                         if (key != null && key !in out) out[key] = c.getLong(0)
+                    }
+                }
+                out
+            }
+
+        override fun indexExistingProgramEntriesForWindow(
+            channelId: Long,
+            windowStartMs: Long,
+            windowEndMs: Long,
+        ): Result<Map<String, List<ExistingProgramIndexEntry>>> =
+            runCatching {
+                val projection =
+                    arrayOf(
+                        TvContract.Programs._ID,
+                        TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
+                        TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS,
+                        TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS,
+                    )
+                val uri = TvContract.buildProgramsUriForChannel(channelId, windowStartMs, windowEndMs)
+                val cursor =
+                    context.contentResolver.query(
+                        uri,
+                        projection,
+                        null,
+                        null,
+                        "${TvContract.Programs._ID} DESC",
+                    ) ?: error("TvProvider program index queryがnull cursorを返しました")
+                val out = linkedMapOf<String, MutableList<ExistingProgramIndexEntry>>()
+                cursor.use { rows ->
+                    while (rows.moveToNext()) {
+                        val key =
+                            parseProgramKey(
+                                providerDataBytes(rows, PROGRAM_PROVIDER_DATA_COLUMN_INDEX),
+                            ) ?: continue
+                        val hasDefinedTiming =
+                            !rows.isNull(PROGRAM_START_TIME_COLUMN_INDEX) &&
+                                !rows.isNull(PROGRAM_END_TIME_COLUMN_INDEX)
+                        check(hasDefinedTiming) {
+                            "TvProvider program index rowの時刻が未定義です " +
+                                "id=${rows.getLong(PROGRAM_ID_COLUMN_INDEX)}"
+                        }
+                        out.getOrPut(key) { mutableListOf() } +=
+                            ExistingProgramIndexEntry(
+                                programId = rows.getLong(PROGRAM_ID_COLUMN_INDEX),
+                                startTimeMillis = rows.getLong(PROGRAM_START_TIME_COLUMN_INDEX),
+                                endTimeMillis = rows.getLong(PROGRAM_END_TIME_COLUMN_INDEX),
+                            )
                     }
                 }
                 out
@@ -946,7 +1168,7 @@ class TvProviderWriter private constructor(
                         null,
                         null,
                         "${TvContract.Programs._ID} DESC",
-                    ) ?: error("TvProvider service program index query returned null cursor")
+                    ) ?: error("TvProvider service program index queryがnull cursorを返しました")
                 val out = linkedMapOf<String, Long>()
                 cursor.use { c ->
                     while (c.moveToNext()) {
@@ -978,6 +1200,50 @@ class TvProviderWriter private constructor(
                 context.contentResolver.update(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, programId), values, null, null)
             }
 
+        override fun upsertProgramsBatch(requests: List<ProgramUpsertRequest>): Result<List<ProgramUpsertOutcome>> =
+            runCatching {
+                if (requests.isEmpty()) return@runCatching emptyList()
+                val outcomes = mutableListOf<ProgramUpsertOutcome>()
+                requests.chunked(PROGRAM_PROVIDER_BATCH_SIZE).forEach { chunk ->
+                    val operations =
+                        chunk.map { request ->
+                            val existingId = request.existingProgramId
+                            if (existingId == null) {
+                                ContentProviderOperation
+                                    .newInsert(TvContract.Programs.CONTENT_URI)
+                                    .withValues(request.values)
+                                    .build()
+                            } else {
+                                ContentProviderOperation
+                                    .newUpdate(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, existingId))
+                                    .withValues(request.values)
+                                    .build()
+                            }
+                        }
+                    val results =
+                        context.contentResolver.applyBatch(
+                            TvContract.AUTHORITY,
+                            ArrayList(operations),
+                        )
+                    check(results.size == chunk.size) { "TvProvider program batch結果数が一致しません" }
+                    chunk.zip(results).forEach { (request, result) ->
+                        outcomes +=
+                            if (request.existingProgramId == null) {
+                                ProgramUpsertOutcome(
+                                    result.uri?.let { uri -> ContentUris.parseId(uri) },
+                                    updated = false,
+                                )
+                            } else {
+                                ProgramUpsertOutcome(
+                                    request.existingProgramId.takeIf { (result.count ?: 0) > 0 },
+                                    updated = (result.count ?: 0) > 0,
+                                )
+                            }
+                    }
+                }
+                outcomes
+            }
+
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
         override fun readCanonicalGenre(programId: Long): Result<String?> =
@@ -990,6 +1256,31 @@ class TvProviderWriter private constructor(
                     check(it.moveToFirst()) { "TvProvider ジャンル読戻しの対象行がありません" }
                     it.getString(0)
                 }
+            }
+
+        override fun readCanonicalGenres(
+            channelId: Long,
+            programIds: Set<Long>,
+        ): Result<Map<Long, String?>> =
+            runCatching {
+                if (programIds.isEmpty()) return@runCatching emptyMap()
+                val wanted = programIds.toHashSet()
+                val out = linkedMapOf<Long, String?>()
+                val cursor =
+                    context.contentResolver.query(
+                        TvContract.buildProgramsUriForChannel(channelId),
+                        arrayOf(TvContract.Programs._ID, TvContract.Programs.COLUMN_CANONICAL_GENRE),
+                        null,
+                        null,
+                        null,
+                    ) ?: error("TvProvider ジャンル一括読戻しが null cursor を返しました")
+                cursor.use { rows ->
+                    while (rows.moveToNext()) {
+                        val id = rows.getLong(0)
+                        if (id in wanted) out[id] = rows.getString(1)
+                    }
+                }
+                out
             }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -1011,7 +1302,8 @@ class TvProviderWriter private constructor(
                 val uri = TvContract.buildProgramsUriForChannel(channelId, windowStartMs, windowEndMs)
                 val cursor =
                     context.contentResolver.query(uri, projection, null, null, null)
-                        ?: error("TvProvider obsolete program query returned null cursor")
+                        ?: error("TvProvider obsolete program queryがnull cursorを返しました")
+                val deleteIds = mutableListOf<Long>()
                 cursor.use { cursor ->
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(0)
@@ -1024,12 +1316,28 @@ class TvProviderWriter private constructor(
                                 validProgramKeys,
                             )
                         ) {
-                            deleted +=
-                                context.contentResolver.delete(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, id), null, null)
+                            deleteIds += id
                         } else if (key == null) {
-                            Log.w(LogTags.TIS, "所有元を確認できないProgram provider-data破損行は保持します id=$id owner=$ownerPackage")
+                            Log.w(
+                                LogTags.TIS,
+                                "所有元を確認できないProgram provider-data破損行は保持します id=$id owner=$ownerPackage",
+                            )
                         }
                     }
+                }
+                deleteIds.chunked(PROGRAM_PROVIDER_BATCH_SIZE).forEach { ids ->
+                    val operations =
+                        ids.map { id ->
+                            ContentProviderOperation
+                                .newDelete(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, id))
+                                .build()
+                        }
+                    val results =
+                        context.contentResolver.applyBatch(
+                            TvContract.AUTHORITY,
+                            ArrayList(operations),
+                        )
+                    deleted += results.sumOf { it.count ?: 0 }
                 }
                 deleted
             }
