@@ -555,11 +555,11 @@ class ChannelScanController(
             ScanCandidateKind.ISDB_S_110CS -> SiDiscoveryProfile.CS110
         }
 
-    private fun serviceCounts(
+    private fun serviceCountsFromSnapshot(
         candidate: ScanCandidate,
         requirements: SiCollectionRequirements,
+        transaction: com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot,
     ): ServiceCounts {
-        val transaction = engine.serviceRegistrationSnapshot()
         val expectedSmdSystem = expectedSmdBroadcastSystem(candidate)
         val completeness =
             transaction.services.map { service ->
@@ -582,6 +582,38 @@ class ChannelScanController(
                     .filter { !it.registrationReady }
                     .associate { it.serviceKey to it.reasons },
         )
+    }
+
+    private fun tryServiceCounts(
+        candidate: ScanCandidate,
+        requirements: SiCollectionRequirements,
+    ): ServiceCounts? {
+        val snapshot = engine.tryServiceRegistrationSnapshot() ?: return null
+        return serviceCountsFromSnapshot(candidate, requirements, snapshot)
+    }
+
+    private fun acquireFinalRegistrationSnapshot(
+        policy: SiCollectionPolicy,
+        finalizationStartedAt: Long,
+    ): com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot {
+        val finalDeadline = finalizationStartedAt + policy.maxWaitMs
+        while (true) {
+            val beforeAttempt = android.os.SystemClock.elapsedRealtime()
+            check(shouldStartFinalSiSnapshot(beforeAttempt, finalDeadline)) {
+                "section filter停止後の最終SI snapshotを有限期限内に取得できません"
+            }
+            engine.tryServiceRegistrationSnapshot()?.let { return it }
+            val sleepMs =
+                finalSiSnapshotRetrySleepMs(
+                    android.os.SystemClock.elapsedRealtime(),
+                    finalDeadline,
+                    policy.pollIntervalMs,
+                )
+            check(sleepMs != null) {
+                "section filter停止後の最終SI snapshotを有限期限内に取得できません"
+            }
+            runCatching { Thread.sleep(sleepMs) }
+        }
     }
 
     // 安定待ち・期限・取消し・資源喪失の優先順位と、終了後のfilter解放を同じ収集処理で保持する。
@@ -623,7 +655,22 @@ class ChannelScanController(
                         // dynamic Section Filterの更新はsection ingest callbackが所有する。
                         // scan pollからcontroller executorへ同期往復すると、BSのsection burstで
                         // deadline判定そのものがexecutor待ちに巻き込まれるため重複refreshしない。
-                        val counts = serviceCounts(candidate, requirements)
+                        val counts = tryServiceCounts(candidate, requirements)
+                        if (counts == null) {
+                            val remainingMs =
+                                policy.maxWaitMs - (android.os.SystemClock.elapsedRealtime() - startedAt)
+                            if (remainingMs <= 0L) {
+                                outcome =
+                                    if ((lastCounts?.registrationReady ?: 0) > 0) {
+                                        SiCollectionOutcome.TIMEOUT_PARTIAL
+                                    } else {
+                                        SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
+                                    }
+                                break
+                            }
+                            runCatching { Thread.sleep(minOf(policy.pollIntervalMs, remainingMs)) }
+                            continue
+                        }
                         val now = android.os.SystemClock.elapsedRealtime()
                         if (counts.discoveryStage != lastCounts?.discoveryStage || counts.signature != lastCounts?.signature ||
                             counts.collectionStatus != lastCounts?.collectionStatus
@@ -676,7 +723,9 @@ class ChannelScanController(
             terminalCancelObserved = true
             outcome = SiCollectionOutcome.CANCELLED
         }
-        val finalCounts = serviceCounts(candidate, requirements)
+        val finalizationStartedAt = android.os.SystemClock.elapsedRealtime()
+        val finalSnapshot = acquireFinalRegistrationSnapshot(policy, finalizationStartedAt)
+        val finalCounts = serviceCountsFromSnapshot(candidate, requirements, finalSnapshot)
         val complete = finalCounts.collectionStatus.complete
         if (outcome == SiCollectionOutcome.COMPLETE && !complete) outcome = SiCollectionOutcome.TIMEOUT_PARTIAL
         val finalRegistrationReadySnapshotAvailable = finalCounts.registrationReady > 0
@@ -871,6 +920,20 @@ class ChannelScanController(
             elapsedMs: Long,
             policy: SiCollectionPolicy,
         ): Boolean = elapsedMs < policy.maxWaitMs
+
+        internal fun shouldStartFinalSiSnapshot(
+            nowMs: Long,
+            finalDeadlineMs: Long,
+        ): Boolean = nowMs < finalDeadlineMs
+
+        internal fun finalSiSnapshotRetrySleepMs(
+            nowMs: Long,
+            finalDeadlineMs: Long,
+            pollIntervalMs: Long,
+        ): Long? {
+            val remainingMs = finalDeadlineMs - nowMs
+            return remainingMs.takeIf { it > 0L }?.let { minOf(pollIntervalMs, it) }
+        }
 
         private fun signalUnavailableEventName(event: Int?): String =
             when (event) {

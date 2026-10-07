@@ -33,7 +33,7 @@ use service_discovery::{DiscoveryPublishStage, ServiceDiscoveryCollector};
 use std::collections::BTreeMap;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 const STATUS_OK: jint = 0;
@@ -639,16 +639,77 @@ fn lock_snapshot_parser(
     })
 }
 
+fn try_lock_snapshot_parser(
+    parser: &Mutex<ParserState>,
+) -> Result<Option<MutexGuard<'_, ParserState>>, SiJniFailure> {
+    match parser.try_lock() {
+        Ok(guard) => Ok(Some(guard)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Poisoned(_)) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
+        }
+    }
+}
+
 fn snapshot_si_collection_typed(handle: jlong) -> Result<SiCollectionSnapshotDto, SiJniFailure> {
     let parser = snapshot_parser(handle)?;
     let mut guard = lock_snapshot_parser(&parser)?;
     Ok(build_si_collection_snapshot(&mut guard))
 }
 
+fn try_snapshot_si_collection_typed(
+    handle: jlong,
+) -> Result<Option<SiCollectionSnapshotDto>, SiJniFailure> {
+    let parser = snapshot_parser(handle)?;
+    let Some(mut guard) = try_lock_snapshot_parser(&parser)? else {
+        return Ok(None);
+    };
+    Ok(Some(build_si_collection_snapshot(&mut guard)))
+}
+
+#[cfg(test)]
+mod nonblocking_collection_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn try_snapshot_reports_busy_without_waiting_or_poisoning_parser() {
+        let handle = registry().lock().unwrap().create();
+        let parser = registry().lock().unwrap().get(handle).unwrap();
+        let guard = parser.lock().unwrap();
+
+        assert!(matches!(try_snapshot_si_collection_typed(handle), Ok(None)));
+
+        drop(guard);
+        assert!(matches!(
+            try_snapshot_si_collection_typed(handle),
+            Ok(Some(_))
+        ));
+        assert!(registry().lock().unwrap().remove(handle));
+    }
+}
+
 fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshotDto, SiJniFailure> {
     let parser = snapshot_parser(handle)?;
     let mut guard = lock_snapshot_parser(&parser)?;
     Ok(build_bulk_snapshot(&mut guard))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeTrySiCollectionSnapshotTyped(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jobject {
+    let snapshot = match try_snapshot_si_collection_typed(handle) {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => return ptr::null_mut(),
+        Err(failure) => return throw_si_failure(&mut env, failure) as jobject,
+    };
+    match jvm_snapshot_generated::si_collection_snapshot_to_java(&mut env, snapshot) {
+        Ok(value) => value.into_raw(),
+        Err(failure) => throw_si_failure(&mut env, failure) as jobject,
+    }
 }
 
 #[no_mangle]

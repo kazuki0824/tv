@@ -4,6 +4,8 @@
 
 本crateの`src/core/eit.rs`はEITのraw識別子・時刻状態・記述子・構文診断を解析し、`src/core/eit_instances.rs`が同一collectionの表ごとの受信事実を保持する。共通`SectionTracker`を用い、TIS固有の公開scope、永続キーの採用可否、旧Program保護、更新・削除区間は算出しない。`ServiceDiscoveryEngine` / `ServiceDiscoveryCollector`へEPG保存stateや公開gateを置かない。JNIは同じ放送事実を、Rust所有のtyped snapshot DTOからcodegen生成Kotlin DTOおよびnested DTOへ直接構築して渡す。完全snapshotは`BulkSnapshotDto`、反復参照する有限collection factは`SiCollectionSnapshotDto`とし、両者で共有する意味factは同じRust projection helperから生成する。Kotlinの`GeneratedSiSnapshotMapper`はこれらをTIS側domain snapshotへ機械的に投影する。Rust側のSI意味型・snapshot型をfield集合、意味、値域、nullable条件、enum、cross-field不変条件のSSOTとし、codegen生成Kotlin DTOと`GeneratedSiSnapshotMapper`は同一build内の機械的bindingに限定する。Kotlin側で同じ意味契約をvalidatorとして再定義しない。`../開発規則.md`の同時更新不変条件に従い、Rust→TISのruntime境界を異なるproduct build間で相互運用するversioned wire protocolにしない。Rust側DTOとKotlin側DTOは同一変更・同一buildで更新し、`schemaVersion` negotiation、旧snapshot DTO受理、片側差し替え互換を設けない。JSON Schemaを試験・診断用に保持する場合もruntime互換の規範正本にはしない。TISの公開判断の唯一のownerはKotlin `EpgPublicationPolicy` / `EpgSectionPolicy`であり、具体契約は`../tis/DESIGN_JA.md`の「TIS / EPG 公開境界」を正とする。
 
+collection snapshotにはblocking版とnon-blocking版を用意する。non-blocking版はparser state mutexを待たず、取得中なら「snapshot未取得」を返すだけとし、別cache・shadow state・別parserを作らない。mutex poison、invalid handle、JNI変換失敗はbusyへ丸めず従来どおりtyped failureにする。どのruntime phaseでblocking/non-blocking entryを使うかはTIS側の有限走査policyであり、本crateでは重複定義しない。scanでの利用方針は`../tis/DESIGN_JA.md`を正とする。
+
 両時刻未定義でもraw event_idを捨てない。JNIのidentity表現とprovider-dataのcanonical key生成は放送識別子の符号化に限定し、保存用identityへ採用するかを判断しない。
 
 ## 責務

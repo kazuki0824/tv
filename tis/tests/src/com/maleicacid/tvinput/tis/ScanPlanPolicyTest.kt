@@ -20,6 +20,23 @@ import kotlin.test.assertTrue
 @Suppress("TooManyFunctions")
 class ScanPlanPolicyTest {
     @Test
+    fun finalSiSnapshotAttemptMayStartImmediatelyBeforeDeadline() {
+        assertTrue(ChannelScanController.shouldStartFinalSiSnapshot(999L, 1_000L))
+    }
+
+    @Test
+    fun finalSiSnapshotAttemptCannotStartAtOrAfterDeadline() {
+        assertFalse(ChannelScanController.shouldStartFinalSiSnapshot(1_000L, 1_000L))
+        assertFalse(ChannelScanController.shouldStartFinalSiSnapshot(1_001L, 1_000L))
+    }
+
+    @Test
+    fun finalSiSnapshotBusyAtDeadlineDoesNotSleepOrRetry() {
+        assertEquals(null, ChannelScanController.finalSiSnapshotRetrySleepMs(1_000L, 1_000L, 200L))
+        assertEquals(1L, ChannelScanController.finalSiSnapshotRetrySleepMs(999L, 1_000L, 200L))
+    }
+
+    @Test
     fun controllerControlBoundaryOvertakesQueuedSectionWorkWithoutReorderingControls() {
         val executor =
             ControllerSerialExecutor(

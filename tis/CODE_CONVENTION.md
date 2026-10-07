@@ -6,8 +6,8 @@
 
 - `NativeAribSiParser` の文字列を返す provider-data 補助 `external` 宣言は `String?` とし、戻り値は `requireNativeString` を通して受け取る。呼出し先ごとにnull検査を複製しない。
 - AAC codec probe は Rust の `AacConfigurationProbeDto` を SSOT とし、SI snapshot と同じ host-only codegen で生成した Kotlin DTO を JNI から直接返す。`JSONObject` / JSON文字列 / field-name lookup を transport contract にしない。
-- SI runtime snapshotは full用途で `nativeSnapshotBulkTyped(): com.maleicacid.tvinput.aribsi.generated.BulkSnapshotDto?`、有限collection用途で `nativeSiCollectionSnapshotTyped(): com.maleicacid.tvinput.aribsi.generated.SiCollectionSnapshotDto?` を使用し、いずれも `JSONObject` / `JSONArray` / JSON文字列として受け取らない。blocking入口のnullは `JNI_OUTPUT` として失敗させる。
-- codegen生成 `BulkSnapshotDto` / `SiCollectionSnapshotDto` とnested DTOはRust snapshotのsame-build JNI bindingであり、各mapperはTIS側domain型へ機械的に投影する。両経路ともKotlin側でfield集合、値域、nullable条件、enum解釈、cross-field不変条件を再検証して第二contractを作らない。
+- SI runtime snapshotはfull用途で `nativeSnapshotBulkTyped()`、有限collection用途でblocking `nativeSiCollectionSnapshotTyped()` とnon-blocking `nativeTrySiCollectionSnapshotTyped()` を使用し、いずれもsame-build typed JNI bindingとする。JSON/field-name lookupへ戻さない。blocking入口のnullは `JNI_OUTPUT`、try入口のnullだけはlock busyによる未取得を表す。
+- codegen生成 `BulkSnapshotDto` / `SiCollectionSnapshotDto` とnested DTOはRust snapshotのsame-build JNI bindingであり、各mapperはTIS domain型へ機械的に投影する。Kotlin側でfield集合、値域、nullable条件、enum解釈、cross-field不変条件を再検証して第二contractを作らない。
 - TIS固有のpolicy投影、たとえばservice stream factとevent component factのmergeはKotlin責務としてtyped object受領後に行い、Rust SI意味解析の再実装と混同しない。
 - PMT section-filter bootstrapは `nativeSnapshotPmtPidsForSectionFilters(): IntArray?` を使用し、JSON parseを行わない。
 - `NativeSiException` はコンストラクターで受け取った失敗理由の識別子を `NativeSiFailureReason` へ厳密に変換する。
