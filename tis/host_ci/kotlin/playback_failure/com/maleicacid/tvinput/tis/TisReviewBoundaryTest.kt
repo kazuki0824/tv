@@ -170,8 +170,15 @@ class TisReviewBoundaryTest {
                 listOf("NO_CURRENT_SERVICE_SEMANTIC_FACTS"),
                 com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING,
             )
-        check(MaleicacidLiveSession.initialLiveSiPending(false, pending))
-        check(!MaleicacidLiveSession.initialLiveSiPending(true, pending))
+        check(MaleicacidLiveSession.initialLiveSiPending(pending))
+        // serviceが既に観測済みでも、PMT/PCR/ES等の未完成factは待機を継続する。
+        check(MaleicacidLiveSession.initialLiveSiPending(pending.copy(reasons = listOf("NO_VALID_PMT"))))
+        check(MaleicacidLiveSession.initialLiveSiPending(pending.copy(reasons = listOf("NO_PCR_PID"))))
+        check(
+            !MaleicacidLiveSession.initialLiveSiPending(
+                pending.copy(state = com.maleicacid.tvinput.aribsi.ServicePolicyState.UNSUPPORTED),
+            ),
+        )
     }
 
     private val unsafe =

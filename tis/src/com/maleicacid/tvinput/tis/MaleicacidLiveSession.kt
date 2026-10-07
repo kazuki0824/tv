@@ -215,6 +215,8 @@ class MaleicacidLiveSession(
         if (releaseOnce.get()) return
         runCatching {
             sessionExecutor.executeData {
+                // 投入後から実行までの解放を観測し、解放済みownerへ遅延操作を適用しない。
+                @Suppress("RedundantIf")
                 if (!releaseOnce.get()) action()
             }
         }
@@ -228,9 +230,13 @@ class MaleicacidLiveSession(
             sessionExecutor.executeData {
                 try {
                     siRefreshDirty.set(false)
+                    // 投入後の解放を再確認し、解放済み資源へSI更新を適用しない。
+                    @Suppress("RedundantIf")
                     if (!releaseOnce.get()) refreshDynamicSiAndCasFilters()
                 } finally {
                     siRefreshQueued.set(false)
+                    // 更新中の解放を終了時にも観測し、解放済みownerへ再投入しない。
+                    @Suppress("RedundantIf")
                     if (siRefreshDirty.get() && !releaseOnce.get()) requestSiRefresh()
                 }
             }
@@ -1523,11 +1529,8 @@ class MaleicacidLiveSession(
 
     companion object {
         internal fun initialLiveSiPending(
-            servicePresent: Boolean,
             decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision,
-        ): Boolean =
-            !servicePresent &&
-                decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING
+        ): Boolean = decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING
 
         internal fun commitPlaybackStartResult(
             next: PlaybackStartState,

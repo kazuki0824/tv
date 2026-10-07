@@ -3,7 +3,6 @@ package com.maleicacid.tvinput.tis
 import java.util.Comparator
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.Future
 import java.util.concurrent.FutureTask
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.RejectedExecutionException
@@ -47,6 +46,8 @@ internal class LifecycleSerialExecutor(
         private val phase = AtomicInteger(CONTROL_QUEUED)
 
         override fun run() {
+            // 取消しと開始が競合するため、取消し済みtaskの遅延実行をCASで拒否する。
+            @Suppress("RedundantIf")
             if (!phase.compareAndSet(CONTROL_QUEUED, CONTROL_RUNNING)) return
             try {
                 super.run()
@@ -158,12 +159,6 @@ internal class LifecycleSerialExecutor(
             pendingDataSlots.release()
             throw error
         }
-    }
-
-    fun <T> submitControl(block: () -> T): Future<T> {
-        val task = ControlFutureTask(Callable(block))
-        executeControl(task)
-        return task
     }
 
     // 未開始の取消しと開始済みの結果不明を混同せず、有限待機の終了理由を保持する。
