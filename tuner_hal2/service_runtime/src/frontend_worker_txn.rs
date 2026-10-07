@@ -5879,7 +5879,7 @@ mod scan_contract_tests {
             frontend_id,
             FrontendWorkerCancelReason::ExplicitClose,
         )
-        .expect("prompt worker exit must complete frontend close without reaper-visible failure");
+        .expect("ワーカーが速やかに終了した場合、回収処理へ失敗を残さずフロントエンドのcloseが完了しなければなりません");
 
         assert!(runtime
             .lock()
