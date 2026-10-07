@@ -57,6 +57,23 @@ class ScanPlanPolicyTest {
     }
 
     @Test
+    fun setupScanResultCarriesFatalSynchronousTuneFailure() {
+        val result =
+            ChannelScanController.ScanResult(
+                scanned = 1,
+                published = 0,
+                diagnostics = emptyList(),
+                terminal =
+                    ChannelScanController.ScanTerminal(
+                        ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED,
+                        "選局に失敗しました result=3 InvalidLifecycle",
+                    ),
+            )
+        check(result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED)
+        check(result.terminal.detail.contains("InvalidLifecycle"))
+    }
+
+    @Test
     fun finalSiSnapshotAttemptMayStartImmediatelyBeforeDeadline() {
         assertTrue(ChannelScanController.shouldStartFinalSiSnapshot(999L, 1_000L))
     }

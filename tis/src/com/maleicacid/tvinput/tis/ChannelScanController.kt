@@ -35,13 +35,25 @@ class ChannelScanController(
         val message: String,
     )
 
+    enum class ScanTerminalOutcome {
+        COMPLETED,
+        CANCELLED,
+        RESOURCE_LOST,
+        TUNE_REJECTED,
+        INTERNAL_FAILURE,
+    }
+
+    data class ScanTerminal(
+        val outcome: ScanTerminalOutcome,
+        val detail: String = "",
+    )
+
     data class ScanResult(
         val scanned: Int,
         val published: Int,
         val diagnostics: List<ScanDiagnostic>,
         val successfulCandidates: Int = 0,
-        val terminalCancelObserved: Boolean = false,
-        val terminalResourceLostObserved: Boolean = false,
+        val terminal: ScanTerminal = ScanTerminal(ScanTerminalOutcome.COMPLETED),
         val committedServiceKeys: Set<ServiceKey> = emptySet(),
     )
 
@@ -138,7 +150,15 @@ class ChannelScanController(
 
     // 候補展開から収集・公開まで同じ走査状態を使うため、分岐数と長さによる機械的分割を避ける。
     // 入れ子はBS候補展開と世代のfinallyを表し、各breakは後続候補を止める異なる終端理由を保持する。
-    @Suppress("LongMethod", "CyclomaticComplexMethod", "NestedBlockDepth", "LoopWithTooManyJumpStatements", "MaxLineLength")
+    // 走査中の例外を単一の失敗終端へ変換し、完了処理を必ず実行する境界で捕捉する。
+    @Suppress(
+        "TooGenericExceptionCaught",
+        "LongMethod",
+        "CyclomaticComplexMethod",
+        "NestedBlockDepth",
+        "LoopWithTooManyJumpStatements",
+        "MaxLineLength",
+    )
     fun startInitialScan(candidates: List<ScanCandidate> = JapanIsdbScanPlan.defaultInitialScan()): ScanResult {
         if (!cancelled.get()) cancelled.set(false)
         terminalCancelObserved = cancelled.get()
@@ -148,6 +168,7 @@ class ChannelScanController(
         var published = 0
         var successfulCandidates = 0
         var scannedCandidates = 0
+        var terminalFailure: ScanTerminal? = null
         var bsCandidateSource: BsCandidateSource? = null
 
         // 選局失敗、公開不可、資源喪失を発生点で返し、finallyによる世代の後始末を共通に保つ。
@@ -158,8 +179,10 @@ class ChannelScanController(
             currentCandidate = candidate
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
-                diagnostics += ScanDiagnostic(candidate, "選局に失敗しました result=${tune.resultCode} ${tune.message}")
-                return shouldContinueInitialScanAfterSynchronousTuneResult(false)
+                val message = "選局に失敗しました result=${tune.resultCode} ${tune.message}"
+                diagnostics += ScanDiagnostic(candidate, message)
+                terminalFailure = ScanTerminal(ScanTerminalOutcome.TUNE_REJECTED, message)
+                return false
             }
             activateScanGeneration(tune.generation)
             try {
@@ -204,77 +227,88 @@ class ChannelScanController(
             }
         }
 
-        scanLoop@ for (candidate in candidates) {
-            if (cancelled.get() || terminalResourceLostObserved) break
-            val executionCandidates =
-                if (
-                    candidate.kind == ScanCandidateKind.ISDB_S_BS &&
-                    candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE
-                ) {
-                    if (bsCandidateSource == null) {
-                        val selection = tunerController.prepareBsCandidateSource()
-                        if (!selection.success) {
-                            diagnostics +=
-                                ScanDiagnostic(
-                                    candidate,
-                                    "BS frontend選択に失敗しました result=${selection.resultCode} message=${selection.message}",
-                                )
-                            break@scanLoop
-                        }
-                        bsCandidateSource = requireNotNull(selection.source)
-                    }
-                    when (bsCandidateSource) {
-                        BsCandidateSource.DYNAMIC_STREAM_ID_LIST -> {
-                            val discovery = tunerController.discoverIsdbsStreamIds(candidate)
-                            discovery.generation?.let { activateScanGeneration(it) }
-                            if (discovery.resourceLost || terminalResourceLostObserved) {
-                                discovery.generation?.let { scanGenerationFence.onLost(it) }
-                                diagnostics +=
-                                    ScanDiagnostic(
-                                        candidate,
-                                        "BS探索中のTUNER_RESOURCE_LOSTにより後続選局を停止します",
-                                    )
+        try {
+            scanLoop@ for (candidate in candidates) {
+                if (cancelled.get() || terminalResourceLostObserved) break
+                val executionCandidates =
+                    if (
+                        candidate.kind == ScanCandidateKind.ISDB_S_BS &&
+                        candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE
+                    ) {
+                        if (bsCandidateSource == null) {
+                            val selection = tunerController.prepareBsCandidateSource()
+                            if (!selection.success) {
+                                val message =
+                                    "BS frontend選択に失敗しました result=${selection.resultCode} message=${selection.message}"
+                                diagnostics += ScanDiagnostic(candidate, message)
+                                terminalFailure = ScanTerminal(ScanTerminalOutcome.TUNE_REJECTED, message)
                                 break@scanLoop
                             }
-                            discovery.generation?.let { clearActiveScanGeneration(it) }
-                            val discovered = discovery.candidatesFor(candidate)
-                            if (discovery.success && discovered.isNotEmpty()) {
-                                discovered
-                            } else {
-                                diagnostics +=
-                                    ScanDiagnostic(
-                                        candidate,
-                                        "BS dynamic stream-ID discovery失敗 result=${discovery.resultCode} " +
-                                            "message=${discovery.message}",
-                                    )
-                                emptyList()
+                            bsCandidateSource = requireNotNull(selection.source)
+                        }
+                        when (bsCandidateSource) {
+                            BsCandidateSource.DYNAMIC_STREAM_ID_LIST -> {
+                                val discovery = tunerController.discoverIsdbsStreamIds(candidate)
+                                discovery.generation?.let { activateScanGeneration(it) }
+                                if (discovery.resourceLost || terminalResourceLostObserved) {
+                                    discovery.generation?.let { scanGenerationFence.onLost(it) }
+                                    diagnostics +=
+                                        ScanDiagnostic(
+                                            candidate,
+                                            "BS探索中のTUNER_RESOURCE_LOSTにより後続選局を停止します",
+                                        )
+                                    break@scanLoop
+                                }
+                                discovery.generation?.let { clearActiveScanGeneration(it) }
+                                val discovered = discovery.candidatesFor(candidate)
+                                if (discovery.success && discovered.isNotEmpty()) {
+                                    discovered
+                                } else {
+                                    diagnostics +=
+                                        ScanDiagnostic(
+                                            candidate,
+                                            "BS dynamic stream-ID discovery失敗 result=${discovery.resultCode} " +
+                                                "message=${discovery.message}",
+                                        )
+                                    emptyList()
+                                }
+                            }
+
+                            BsCandidateSource.STATIC_TSID_TABLE -> {
+                                JapanIsdbScanPlan.staticBsCandidatesFor(candidate)
+                            }
+
+                            null -> {
+                                error("BS候補sourceが確定していません")
                             }
                         }
-
-                        BsCandidateSource.STATIC_TSID_TABLE -> {
-                            JapanIsdbScanPlan.staticBsCandidatesFor(candidate)
-                        }
-
-                        null -> {
-                            error("BS候補sourceが確定していません")
-                        }
+                    } else {
+                        listOf(candidate)
                     }
-                } else {
-                    listOf(candidate)
+                scannedCandidates += executionCandidates.size
+                for (executionCandidate in executionCandidates) {
+                    if (!scanExecutionCandidate(executionCandidate)) break@scanLoop
                 }
-            scannedCandidates += executionCandidates.size
-            for (executionCandidate in executionCandidates) {
-                if (!scanExecutionCandidate(executionCandidate)) break@scanLoop
             }
+        } catch (error: Exception) {
+            val message = "setup scan内部処理に失敗しました: ${error.message ?: error::class.java.simpleName}"
+            currentCandidate?.let { diagnostics += ScanDiagnostic(it, message) }
+            Log.w(LogTags.TIS, message, error)
+            terminalFailure = ScanTerminal(ScanTerminalOutcome.INTERNAL_FAILURE, message)
+        } finally {
+            currentCandidate = null
         }
-        currentCandidate = null
         return ScanResult(
             scannedCandidates,
             published,
             diagnostics,
             successfulCandidates = successfulCandidates,
-            terminalCancelObserved = terminalCancelObserved,
-            terminalResourceLostObserved = terminalResourceLostObserved,
+            terminal =
+                when {
+                    terminalCancelObserved -> ScanTerminal(ScanTerminalOutcome.CANCELLED)
+                    terminalResourceLostObserved -> ScanTerminal(ScanTerminalOutcome.RESOURCE_LOST)
+                    else -> terminalFailure ?: ScanTerminal(ScanTerminalOutcome.COMPLETED)
+                },
         )
     }
 
@@ -384,8 +418,12 @@ class ChannelScanController(
             updated,
             diagnostics,
             successfulCandidates = successfulCandidates,
-            terminalCancelObserved = terminalCancelObserved,
-            terminalResourceLostObserved = terminalResourceLostObserved,
+            terminal =
+                when {
+                    terminalCancelObserved -> ScanTerminal(ScanTerminalOutcome.CANCELLED)
+                    terminalResourceLostObserved -> ScanTerminal(ScanTerminalOutcome.RESOURCE_LOST)
+                    else -> ScanTerminal(ScanTerminalOutcome.COMPLETED)
+                },
             committedServiceKeys = committedServiceKeys,
         )
     }
