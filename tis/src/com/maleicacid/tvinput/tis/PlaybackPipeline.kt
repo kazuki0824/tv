@@ -34,10 +34,6 @@ import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.PesPts90k
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
-import java.util.concurrent.Callable
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 // 同じ所有者の状態と解放順を維持し、行数だけを理由に責務を分割しない。
@@ -48,14 +44,11 @@ class PlaybackPipeline(
     private val sessionId: String?,
     private val sessionContext: Context? = null,
 ) : AutoCloseable {
-    @Volatile private var playbackExecutorThread: Thread? = null
-    private val executor: ExecutorService =
-        Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "maleicacid-playback-$inputId").also { thread ->
-                thread.isDaemon = true
-                playbackExecutorThread = thread
-            }
-        }
+    private val executor =
+        LifecycleSerialExecutor(
+            "maleicacid-playback-$inputId",
+            maxPendingDataTasks = PLAYBACK_MAX_PENDING_DATA_TASKS,
+        )
     private val mainHandler = Handler(Looper.getMainLooper())
     private val codecCallbackThread = HandlerThread("maleicacid-codec-$inputId").apply { start() }
     private val codecCallbackHandler = Handler(codecCallbackThread.looper)
@@ -244,35 +237,39 @@ class PlaybackPipeline(
         val clockRate: Float,
     )
 
-    // 失敗の発生点ごとに既存の例外種別と原因を保ち、判定順を変えない。
-    // 同期executor境界ではRuntimeException/Errorを再送し、それ以外の原因だけを既存のRuntimeExceptionへ包む。
-    @Suppress("TooGenericExceptionThrown")
-    private fun <T> runOnPlaybackExecutorBlocking(action: () -> T): T {
-        if (Thread.currentThread() == playbackExecutorThread) return action()
-        val future = executor.submit(Callable<T> { action() })
-        return try {
-            future.get()
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw RuntimeException("playback executor interrupted", e)
-        } catch (e: ExecutionException) {
-            val cause = e.cause ?: e
-            throw when (cause) {
-                is RuntimeException -> cause
-                is Error -> cause
-                else -> RuntimeException(cause)
+    @Suppress("MaxLineLength")
+    private fun <T> runOnPlaybackExecutorBlocking(
+        cleanup: Boolean = false,
+        action: () -> T,
+    ): T =
+        try {
+            executor.callControl(PLAYBACK_CONTROL_WAIT_MS) {
+                check(cleanup || !released.get()) { "解放中のownerへ通常controlを実行できません" }
+                action()
+            }
+        } catch (error: ControlResultUnknownException) {
+            released.set(true)
+            executor.executeControl {
+                runCatching { release() }.onFailure {
+                    Log.w(LogTags.TIS, "結果未確定controlの後片付けを再試行まで保持します", it)
+                }
+            }
+            throw error
+        }
+
+    private fun enqueuePlaybackAction(action: () -> Unit) {
+        if (released.get()) return
+        runCatching {
+            executor.executeData {
+                if (!released.get()) action()
             }
         }
     }
 
-    private fun enqueuePlaybackAction(action: () -> Unit) {
+    private fun enqueuePlaybackControl(action: () -> Unit) {
         if (released.get()) return
-        if (Thread.currentThread() == playbackExecutorThread) {
-            action()
-            return
-        }
         runCatching {
-            executor.execute {
+            executor.executeControl {
                 if (!released.get()) action()
             }
         }
@@ -305,7 +302,7 @@ class PlaybackPipeline(
     }
 
     fun setVolume(volume: Float) {
-        enqueuePlaybackAction { setVolumeOnPlaybackExecutor(volume) }
+        enqueuePlaybackControl { setVolumeOnPlaybackExecutor(volume) }
     }
 
     fun setDualMonoPresentation(presentation: DualMonoPresentation): Boolean =
@@ -319,7 +316,7 @@ class PlaybackPipeline(
     }
 
     fun setSurface(newSurface: Surface?) {
-        enqueuePlaybackAction { setSurfaceOnPlaybackExecutor(newSurface) }
+        enqueuePlaybackControl { setSurfaceOnPlaybackExecutor(newSurface) }
     }
 
     private fun setSurfaceOnPlaybackExecutor(newSurface: Surface?) {
@@ -2754,7 +2751,7 @@ class PlaybackPipeline(
     fun release() {
         if (executor.isShutdown) return
         released.set(true)
-        runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
+        runOnPlaybackExecutorBlocking(cleanup = true) { stopOnPlaybackExecutor() }
         executor.shutdownNow()
         codecCallbackThread.quitSafely()
     }
@@ -2764,6 +2761,9 @@ class PlaybackPipeline(
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
     @Suppress("TooManyFunctions")
     companion object {
+        private const val PLAYBACK_CONTROL_WAIT_MS = 5_000L
+        private const val PLAYBACK_MAX_PENDING_DATA_TASKS = 64
+
         internal fun decodedVideoFormatInfo(
             kind: VideoCodecKind,
             format: MediaFormat,

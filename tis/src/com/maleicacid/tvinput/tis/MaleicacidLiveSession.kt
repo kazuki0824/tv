@@ -23,10 +23,6 @@ import com.maleicacid.tvinput.aribsi.SiParseStatus
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
-import java.util.concurrent.Callable
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 // 同じ所有者の状態と解放順を維持し、行数だけを理由に責務を分割しない。
@@ -59,14 +55,16 @@ class MaleicacidLiveSession(
     private var releaseCleanup: ResourceCleanup? = null
     private var parentalReceiverRegistered = false
 
-    @Volatile private var sessionExecutorThread: Thread? = null
-    private val sessionExecutor: ExecutorService =
-        Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "maleicacid-live-session-$sessionId").also { thread ->
-                thread.isDaemon = true
-                sessionExecutorThread = thread
-            }
-        }
+    private val sessionExecutor =
+        LifecycleSerialExecutor(
+            "maleicacid-live-session-$sessionId",
+            maxPendingDataTasks = SESSION_MAX_PENDING_DATA_TASKS,
+        )
+    private val siRefreshQueued = AtomicBoolean(false)
+    private val siRefreshDirty = AtomicBoolean(false)
+    private val tuneRequestLock = Any()
+    private var pendingTuneUri: Uri? = null
+    private var tuneRequestQueued = false
     private var surface: Surface? = null
     private var currentChannelUri: Uri? = null
     private var currentService: ServiceKey? = null
@@ -142,7 +140,7 @@ class MaleicacidLiveSession(
     init {
         tunerController.setSectionIngestController(sectionIngestController)
         tunerController.setCasController(casController)
-        tunerController.setOnSectionIngestedCallback { enqueueSessionAction { refreshDynamicSiAndCasFilters() } }
+        tunerController.setOnSectionIngestedCallback { requestSiRefresh() }
         tunerController.setPlaybackCallbacks(
             onVideoAvailable = { generation -> enqueueSessionAction { handleFirstFrameAvailable(generation) } },
             onVideoUnavailable = { reason -> enqueueSessionAction { handlePlaybackUnavailable(reason) } },
@@ -197,45 +195,58 @@ class MaleicacidLiveSession(
         registerParentalControlReceiver()
     }
 
-    // 失敗の発生点ごとに既存の例外種別と原因を保ち、判定順を変えない。
-    // 同期executor境界ではRuntimeException/Errorを再送し、それ以外の原因だけを既存のRuntimeExceptionへ包む。
-    @Suppress("TooGenericExceptionThrown")
-    private fun <T> runOnSessionExecutorBlocking(action: () -> T): T {
-        if (Thread.currentThread() == sessionExecutorThread) return action()
-        val future = sessionExecutor.submit(Callable<T> { action() })
-        return try {
-            future.get()
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw RuntimeException("session executor interrupted", e)
-        } catch (e: ExecutionException) {
-            val cause = e.cause ?: e
-            throw when (cause) {
-                is RuntimeException -> cause
-                is Error -> cause
-                else -> RuntimeException(cause)
+    @Suppress("MaxLineLength")
+    private fun <T> runOnSessionExecutorBlocking(
+        cleanup: Boolean = false,
+        action: () -> T,
+    ): T =
+        try {
+            sessionExecutor.callControl(SESSION_CONTROL_WAIT_MS) {
+                check(cleanup || !releaseOnce.get()) { "解放中のownerへ通常controlを実行できません" }
+                action()
             }
+        } catch (error: ControlResultUnknownException) {
+            releaseOnce.set(true)
+            sessionExecutor.executeControl { onRelease() }
+            throw error
         }
-    }
 
     private fun enqueueSessionAction(action: () -> Unit) {
         if (releaseOnce.get()) return
-        if (Thread.currentThread() == sessionExecutorThread) {
-            action()
-            return
-        }
         runCatching {
-            sessionExecutor.execute {
+            sessionExecutor.executeData {
                 if (!releaseOnce.get()) action()
             }
         }
     }
 
-    override fun onSetSurface(surface: Surface?): Boolean =
-        !releaseOnce.get() &&
-            runOnSessionExecutorBlocking {
-                !releaseOnce.get() && onSetSurfaceOnSessionExecutor(surface)
+    private fun requestSiRefresh() {
+        if (releaseOnce.get()) return
+        siRefreshDirty.set(true)
+        if (!siRefreshQueued.compareAndSet(false, true)) return
+        runCatching {
+            sessionExecutor.executeData {
+                try {
+                    siRefreshDirty.set(false)
+                    if (!releaseOnce.get()) refreshDynamicSiAndCasFilters()
+                } finally {
+                    siRefreshQueued.set(false)
+                    if (siRefreshDirty.get() && !releaseOnce.get()) requestSiRefresh()
+                }
             }
+        }.onFailure { siRefreshQueued.set(false) }
+    }
+
+    override fun onSetSurface(surface: Surface?): Boolean =
+        if (releaseOnce.get()) {
+            false
+        } else {
+            runCatching {
+                runOnSessionExecutorBlocking {
+                    if (releaseOnce.get()) false else onSetSurfaceOnSessionExecutor(surface)
+                }
+            }.getOrDefault(false)
+        }
 
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
         this.surface = surface
@@ -275,12 +286,80 @@ class MaleicacidLiveSession(
         }
     }
 
-    override fun onTune(channelUri: Uri?): Boolean =
-        !releaseOnce.get() &&
-            runOnSessionExecutorBlocking {
-                if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
-                onTuneOnSessionExecutor(channelUri)
+    override fun onTune(channelUri: Uri?): Boolean {
+        if (channelUri == null || releaseOnce.get()) return false
+        synchronized(tuneRequestLock) {
+            pendingTuneUri = channelUri
+            return scheduleLatestTuneRequestLocked()
+        }
+    }
+
+    private fun scheduleLatestTuneRequestLocked(): Boolean {
+        val released = releaseOnce.get()
+        if (released) {
+            pendingTuneUri = null
+        }
+        val queued =
+            when {
+                released -> {
+                    false
+                }
+
+                tuneRequestQueued -> {
+                    true
+                }
+
+                else -> {
+                    tuneRequestQueued = true
+                    runCatching {
+                        sessionExecutor.executeControl { processLatestTuneRequest() }
+                        true
+                    }.onFailure {
+                        tuneRequestQueued = false
+                        pendingTuneUri = null
+                    }.getOrDefault(false)
+                }
             }
+        return queued
+    }
+
+    private fun processLatestTuneRequest() {
+        val channelUri =
+            synchronized(tuneRequestLock) {
+                pendingTuneUri.also { pendingTuneUri = null }
+            }
+        try {
+            if (channelUri != null && !releaseOnce.get()) {
+                runCatching { onTuneOnSessionExecutor(channelUri) }
+                    .onFailure { failure -> handleAcceptedTuneFailure(channelUri, failure) }
+            }
+        } finally {
+            val reschedule =
+                synchronized(tuneRequestLock) {
+                    tuneRequestQueued = false
+                    pendingTuneUri != null && !releaseOnce.get()
+                }
+            if (reschedule) {
+                synchronized(tuneRequestLock) {
+                    scheduleLatestTuneRequestLocked()
+                }
+            }
+        }
+    }
+
+    private fun handleAcceptedTuneFailure(
+        channelUri: Uri,
+        failure: Throwable,
+    ) {
+        playbackState = PlaybackStartState.Stopped
+        beginCaptionPresentationGeneration(-1L, false)
+        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+        android.util.Log.w(
+            com.maleicacid.tvinput.common.LogTags.TIS,
+            "accepted live tuneの非同期初期化に失敗しました uri=$channelUri",
+            failure,
+        )
+    }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
@@ -582,10 +661,11 @@ class MaleicacidLiveSession(
         trackId: String?,
     ): Boolean =
         !releaseOnce.get() &&
-            runOnSessionExecutorBlocking {
-                if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
-                onSelectTrackOnSessionExecutor(type, trackId)
-            }
+            runCatching {
+                runOnSessionExecutorBlocking {
+                    if (releaseOnce.get()) false else onSelectTrackOnSessionExecutor(type, trackId)
+                }
+            }.getOrDefault(false)
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
@@ -1405,7 +1485,7 @@ class MaleicacidLiveSession(
         if (sessionExecutor.isShutdown) return
         releaseOnce.set(true)
         runCatching {
-            runOnSessionExecutorBlocking { releaseOnSessionExecutor() }
+            runOnSessionExecutorBlocking(cleanup = true) { releaseOnSessionExecutor() }
             sessionExecutor.shutdown()
         }.onFailure { error ->
             // Managerのlive集合とexecutorを保持し、次の既存受付契機でも再試行する。
@@ -1420,6 +1500,7 @@ class MaleicacidLiveSession(
     private fun releaseOnSessionExecutor() {
         surface = null
         currentChannelUri = null
+        synchronized(tuneRequestLock) { pendingTuneUri = null }
         captionEnabled = false
         selectedSubtitleTrackId = null
         playbackState = PlaybackStartState.Stopped
@@ -1441,8 +1522,12 @@ class MaleicacidLiveSession(
     }
 
     companion object {
-        internal fun initialLiveSiPending(decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision): Boolean =
-            decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING
+        internal fun initialLiveSiPending(
+            servicePresent: Boolean,
+            decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision,
+        ): Boolean =
+            !servicePresent &&
+                decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING
 
         internal fun commitPlaybackStartResult(
             next: PlaybackStartState,
@@ -1484,6 +1569,8 @@ class MaleicacidLiveSession(
         }
 
         private const val ENABLE_CAS_ORCHESTRATION = true
+        private const val SESSION_CONTROL_WAIT_MS = 1_500L
+        private const val SESSION_MAX_PENDING_DATA_TASKS = 64
         const val ACTION_SET_DUAL_MONO_PRESENTATION = "com.maleicacid.tvinput.tis.action.SET_DUAL_MONO_PRESENTATION"
         const val EXTRA_DUAL_MONO_PRESENTATION = "presentation"
         const val DUAL_MONO_MAIN = "main"

@@ -1081,7 +1081,7 @@ class PlaybackFailureCallbacksTest {
 
         init {
             set("inputId", "test")
-            set("playbackExecutorThread", Thread.currentThread())
+            set("executor", LifecycleSerialExecutor("playback-fixture"))
             set("playbackGeneration", 7L)
             set("released", AtomicBoolean(false))
             set("videoAvailableNotified", AtomicBoolean(!waiting))

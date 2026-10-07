@@ -170,15 +170,8 @@ class TisReviewBoundaryTest {
                 listOf("NO_CURRENT_SERVICE_SEMANTIC_FACTS"),
                 com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING,
             )
-        check(MaleicacidLiveSession.initialLiveSiPending(pending))
-        check(
-            MaleicacidLiveSession.initialLiveSiPending(
-                pending.copy(
-                    reasons = listOf("NO_PMT_PID"),
-                    state = com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING,
-                ),
-            ),
-        )
+        check(MaleicacidLiveSession.initialLiveSiPending(false, pending))
+        check(!MaleicacidLiveSession.initialLiveSiPending(true, pending))
     }
 
     private val unsafe =
