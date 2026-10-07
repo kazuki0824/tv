@@ -6,6 +6,7 @@ data class ServiceSemanticFactsDto(
     val transportStreamId: Int,
     val serviceId: Int,
     val serviceType: Int?,
+    val partialReception: Boolean,
     val pmtPidResolved: Boolean,
     val pmtParsed: Boolean,
     val pcrPidResolved: Boolean,

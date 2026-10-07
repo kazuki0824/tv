@@ -76,6 +76,7 @@ class ServiceListBuilder(
 object ServicePolicyEvaluator {
     private const val SERVICE_TYPE_DIGITAL_TV = 0x01
     private const val SERVICE_TYPE_DIGITAL_AUDIO = 0x02
+    private const val SERVICE_TYPE_DATA = 0xc0
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
@@ -135,7 +136,10 @@ object ServicePolicyEvaluator {
         if (facts.serviceType == null) {
             pending = true
             registrationReasons += "SERVICE_TYPE_UNRESOLVED"
-        } else if (facts.serviceType !in setOf(SERVICE_TYPE_DIGITAL_TV, SERVICE_TYPE_DIGITAL_AUDIO)) {
+        } else if (
+            facts.serviceType !in setOf(SERVICE_TYPE_DIGITAL_TV, SERVICE_TYPE_DIGITAL_AUDIO) &&
+            !(facts.serviceType == SERVICE_TYPE_DATA && facts.partialReception)
+        ) {
             unsupported = true
             registrationReasons += "UNSUPPORTED_SERVICE_TYPE"
         }
@@ -153,7 +157,7 @@ object ServicePolicyEvaluator {
         }
         val streamTypes = facts.elementaryStreams.map { it.streamType }.toSet()
         when (facts.serviceType) {
-            SERVICE_TYPE_DIGITAL_TV -> {
+            SERVICE_TYPE_DIGITAL_TV, SERVICE_TYPE_DATA -> {
                 if (facts.elementaryStreams.none(com.maleicacid.tvinput.tis.TunerSelectionPolicy::isSupportedVideoStream)) {
                     registrationReasons +=
                         if (streamTypes.any {

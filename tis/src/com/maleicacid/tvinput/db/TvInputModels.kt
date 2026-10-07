@@ -29,6 +29,7 @@ data class ChannelRecord(
     val remoteControlKeyId: Int? = null,
     val requiresCas: Boolean = false,
     val casFactsCanonicalJson: String? = null,
+    val partialReception: Boolean = false,
 ) {
     companion object {
         const val DELIVERY_SYSTEM_ISDB_T = "ISDB_T"

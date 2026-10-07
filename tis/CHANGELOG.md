@@ -90,6 +90,17 @@
 
 - existing/new分岐前に全program keyを検査し、重複時はservice batch全体を書き込まない。既存rowありの重複入力試験を追加した。新しいownerやcacheは追加しない。
 
+# setup scanの新規channel可視性transaction
+
+- 実機でscan後52 channelがTvProviderへ存在する一方、大半が`browsable=0`のためstock Live TVの一覧に出ない事象を、setup終了時の初期可視性commit欠落として修正した。
+- 通常channel新規rowは`COLUMN_INTERNAL_PROVIDER_FLAG1=1`かつhiddenでstagingし、setup terminalが`COMPLETED`のときだけ、そのscanで正常に再確認したpending rowを`browsable=1, flag1=0`へcommitする。one-segは`TYPE_1SEG`、flag1=0、browsable=0を維持する。
+- 既存確定rowのbrowsableは再scanで変更しない。process終了等でfinalizeされなかったpending rowは次の正常setupで同serviceを再確認した場合に回収する。
+- setup失敗/cancel/resource-lost/tune-rejectedでは今回新規insertしたrowだけをrollbackする。可視化commit失敗も`INTERNAL_FAILURE`として扱い、今回新規insert分をrollbackする。
+- `ACCESS_ALL_EPG_DATA`はplatform署名priv-appへ付与するが、実装上の利用を自package channelの初期可視性確定へ限定し、既存queryは所有row URI制約を維持する。
+- 通常/one-segのcommit差、既存hidden保持、失敗rollback、commit failure rollback、process再起動後pending回収の回帰試験を追加した。
+
+# 不要な例示設定の削除
+
 # 不要な例示設定の削除
 
 - 正式な製品組込み設定を継承するだけだった未参照の例示makefileを削除した。

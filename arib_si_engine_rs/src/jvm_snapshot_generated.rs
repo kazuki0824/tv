@@ -709,12 +709,13 @@ fn build_service_semantic_facts<'local>(
     let result = new_generated(
         env,
         "ServiceSemanticFactsDto",
-        "(IIILjava/lang/Integer;ZZZLjava/util/List;ZLjava/lang/String;ZLjava/lang/Boolean;Lcom/maleicacid/tvinput/aribsi/generated/SmdSemanticFactsDto;Ljava/util/List;Ljava/util/List;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/util/List;)V",
+        "(IIILjava/lang/Integer;ZZZZLjava/util/List;ZLjava/lang/String;ZLjava/lang/Boolean;Lcom/maleicacid/tvinput/aribsi/generated/SmdSemanticFactsDto;Ljava/util/List;Ljava/util/List;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/util/List;)V",
         &[
             JValue::Int(value.original_network_id),
             JValue::Int(value.transport_stream_id),
             JValue::Int(value.service_id),
             JValue::Object(&service_type),
+            JValue::Bool(u8::from(value.partial_reception)),
             JValue::Bool(u8::from(value.pmt_pid_resolved)),
             JValue::Bool(u8::from(value.pmt_parsed)),
             JValue::Bool(u8::from(value.pcr_pid_resolved)),

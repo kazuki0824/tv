@@ -17,8 +17,9 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
 import java.security.MessageDigest
 
-// 同じ状態・境界を扱う操作群を一つの所有者に保つ。
-@Suppress("TooManyFunctions")
+// channel/program投影、setup visibility commit、rollbackは同一TvProvider transaction ownerで扱う。
+// ownerを分割するとinsert/update/finalize間の部分成功を別objectへ跨がせるため、ここでは責務を分散しない。
+@Suppress("TooManyFunctions", "LargeClass")
 class TvProviderWriter private constructor(
     private val inputId: String,
     private val channelStore: ChannelStore,
@@ -52,6 +53,8 @@ class TvProviderWriter private constructor(
         val deleted: Int = 0,
         val succeededServiceKeys: Set<ServiceKey> = emptySet(),
         val genreDiagnostics: List<GenreReadbackDiagnostic> = emptyList(),
+        val insertedChannelIds: Map<ServiceKey, Long> = emptyMap(),
+        val initialBrowsablePendingChannelIds: Map<ServiceKey, Long> = emptyMap(),
     )
 
     data class ExistingProgramIndexEntry(
@@ -79,6 +82,23 @@ class TvProviderWriter private constructor(
             values: ContentValues,
         ): Result<Int>
 
+        @Suppress("MaxLineLength")
+        fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> = Result.success(emptyMap())
+
+        fun commitInitialBrowsable(channelIds: Set<Long>): Result<Int> =
+            if (channelIds.isEmpty()) {
+                Result.success(0)
+            } else {
+                Result.failure(UnsupportedOperationException("この store は channel初期可視化commitに対応しません"))
+            }
+
+        fun deleteChannels(channelIds: Set<Long>): Result<Int> =
+            if (channelIds.isEmpty()) {
+                Result.success(0)
+            } else {
+                Result.failure(UnsupportedOperationException("この store は channel rollback に対応しません"))
+            }
+
         fun indexExistingProgramEntriesForWindow(
             channelId: Long,
             windowStartMs: Long,
@@ -101,6 +121,7 @@ class TvProviderWriter private constructor(
         fun upsertProgramsBatch(requests: List<ProgramUpsertRequest>): Result<List<ProgramUpsertOutcome>> =
             Result.failure(UnsupportedOperationException("この store は program batch書込みに対応しません"))
 
+        @Suppress("MaxLineLength")
         fun readCanonicalGenres(
             channelId: Long,
             programIds: Set<Long>,
@@ -118,19 +139,31 @@ class TvProviderWriter private constructor(
 
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("LongMethod", "MaxLineLength")
+    @Suppress("LongMethod", "MaxLineLength", "NestedBlockDepth", "ReturnCount")
     fun upsertChannels(channels: List<ChannelRecord>): UpsertResult {
         var inserted = 0
         var updated = 0
         val failures = mutableListOf<Diagnostic>()
+        val insertedChannelIds = linkedMapOf<ServiceKey, Long>()
+        val successfulServiceKeys = linkedSetOf<ServiceKey>()
+        val requestedServiceKeys = channels.mapTo(linkedSetOf()) { it.serviceKey }
         val existingIds =
-            channelStore.indexExistingChannelIds(channels.mapTo(linkedSetOf()) { it.serviceKey }).getOrElse { error ->
+            channelStore.indexExistingChannelIds(requestedServiceKeys).getOrElse { error ->
                 return UpsertResult(
                     inserted = 0,
                     updated = 0,
                     failures = channels.map { Diagnostic(it.serviceKey, "query", error.message.orEmpty()) },
                 )
             }
+        val existingPendingIds =
+            channelStore.indexInitialBrowsablePendingChannelIds(requestedServiceKeys).getOrElse { error ->
+                return UpsertResult(
+                    inserted = 0,
+                    updated = 0,
+                    failures = channels.map { Diagnostic(it.serviceKey, "channel-visibility-query", error.message.orEmpty()) },
+                )
+            }
+        val pendingIds = linkedMapOf<ServiceKey, Long>()
         channels.forEach { channel ->
             val validation = validate(channel)
             if (validation != null) {
@@ -157,15 +190,20 @@ class TvProviderWriter private constructor(
                         Diagnostic(channel.serviceKey, "insert", insertedIdResult.exceptionOrNull()?.message.orEmpty())
                     return@forEach
                 }
-                if (insertedIdResult.getOrNull() ==
-                    null
-                ) {
+                val insertedId = insertedIdResult.getOrNull()
+                if (insertedId == null) {
                     failures += Diagnostic(channel.serviceKey, "insert", "provider が null URI を返しました")
                 } else {
                     inserted++
+                    insertedChannelIds[channel.serviceKey] = insertedId
+                    successfulServiceKeys += channel.serviceKey
+                    if (!channel.partialReception) {
+                        pendingIds[channel.serviceKey] = insertedId
+                    }
                 }
             } else {
                 values.remove(TvContract.Channels.COLUMN_TYPE)
+                values.remove(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1)
                 val updateResult = channelStore.updateChannel(existingId, values)
                 if (updateResult.isFailure) {
                     failures +=
@@ -178,11 +216,42 @@ class TvProviderWriter private constructor(
                     failures += Diagnostic(channel.serviceKey, "update", "provider 更新対象行なし id=$existingId")
                 } else {
                     updated++
+                    successfulServiceKeys += channel.serviceKey
+                    if (!channel.partialReception) {
+                        existingPendingIds[channel.serviceKey]?.let { pendingIds[channel.serviceKey] = it }
+                    }
                 }
             }
         }
         Log.i(LogTags.TIS, "channel登録結果 inputId=$inputId inserted=$inserted updated=$updated failures=${failures.size}")
-        return UpsertResult(inserted, updated, failures)
+        return UpsertResult(
+            inserted = inserted,
+            updated = updated,
+            failures = failures,
+            insertedChannelIds = insertedChannelIds,
+            initialBrowsablePendingChannelIds = pendingIds.filterKeys(successfulServiceKeys::contains),
+        )
+    }
+
+    // setup全体の成功/失敗と可視性commitを同じtransaction境界で早期終了させる。
+    @Suppress("ReturnCount")
+    fun finalizeSetupChannels(
+        completed: Boolean,
+        insertedChannelIds: Set<Long>,
+        initialBrowsablePendingChannelIds: Set<Long>,
+    ): Result<Unit> {
+        if (!completed) {
+            return channelStore.deleteChannels(insertedChannelIds).map {}
+        }
+        if (initialBrowsablePendingChannelIds.isEmpty()) return Result.success(Unit)
+        val committed = channelStore.commitInitialBrowsable(initialBrowsablePendingChannelIds)
+        if (committed.isSuccess) return Result.success(Unit)
+        val primary =
+            committed.exceptionOrNull()
+                ?: IllegalStateException("setup channel初期可視化に失敗しました")
+        val rollbackFailure = channelStore.deleteChannels(insertedChannelIds).exceptionOrNull()
+        if (rollbackFailure != null) primary.addSuppressed(rollbackFailure)
+        return Result.failure(primary)
     }
 
     fun upsertPrograms(programs: List<ProgramRecord>): UpsertResult =
@@ -570,7 +639,7 @@ class TvProviderWriter private constructor(
     ): ContentValues =
         ContentValues().apply {
             put(TvContract.Channels.COLUMN_INPUT_ID, inputId)
-            put(TvContract.Channels.COLUMN_TYPE, channelType(channel.deliverySystem))
+            put(TvContract.Channels.COLUMN_TYPE, channelType(channel))
             put(TvContract.Channels.COLUMN_SERVICE_TYPE, channel.serviceType.toString())
             put(TvContract.Channels.COLUMN_DISPLAY_NUMBER, channel.displayNumber.ifBlank { channel.serviceKey.serviceId.toString() })
             put(TvContract.Channels.COLUMN_DISPLAY_NAME, channel.displayName.ifBlank { fallbackName(channel.serviceKey) })
@@ -578,6 +647,10 @@ class TvProviderWriter private constructor(
             put(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID, channel.serviceKey.transportStreamId)
             put(TvContract.Channels.COLUMN_SERVICE_ID, channel.serviceKey.serviceId)
             put(TvContract.Channels.COLUMN_SEARCHABLE, 1)
+            put(
+                TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1,
+                if (channel.partialReception) 0L else INITIAL_BROWSABLE_PENDING,
+            )
             put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, providerData)
         }
 
@@ -775,6 +848,7 @@ class TvProviderWriter private constructor(
         const val PROGRAM_KEY_FIELD = "programKey"
         internal const val EVENT_ID_REUSE_GUARD_MS = 24L * 60L * 60L * 1_000L
         private const val PUBLICATION_INPUT_SENTINEL_CHANNEL_ID = 0L
+        private const val INITIAL_BROWSABLE_PENDING = 1L
         const val COLUMN_SCRAMBLED = "scrambled"
         const val COLUMN_SERIES_ID = "series_id"
         const val COLUMN_MULTI_SERIES_ID = "multi_series_id"
@@ -924,11 +998,23 @@ class TvProviderWriter private constructor(
     @Suppress("MaxLineLength")
     private fun fallbackName(key: ServiceKey): String = "service-${key.originalNetworkId}-${key.transportStreamId}-${key.serviceId}"
 
-    private fun channelType(deliverySystem: String): String =
-        when (deliverySystem) {
-            ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> TvContract.Channels.TYPE_ISDB_T
-            ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> TvContract.Channels.TYPE_ISDB_S
-            else -> TvContract.Channels.TYPE_OTHER
+    private fun channelType(channel: ChannelRecord): String =
+        when {
+            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T && channel.partialReception -> {
+                TvContract.Channels.TYPE_1SEG
+            }
+
+            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> {
+                TvContract.Channels.TYPE_ISDB_T
+            }
+
+            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> {
+                TvContract.Channels.TYPE_ISDB_S
+            }
+
+            else -> {
+                TvContract.Channels.TYPE_OTHER
+            }
         }
 
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
@@ -942,6 +1028,7 @@ class TvProviderWriter private constructor(
             const val ORIGINAL_NETWORK_ID_COLUMN_INDEX = 1
             const val TRANSPORT_STREAM_ID_COLUMN_INDEX = 2
             const val SERVICE_ID_COLUMN_INDEX = 3
+            const val INITIAL_BROWSABLE_PENDING_COLUMN_INDEX = 4
             const val PROGRAM_ID_COLUMN_INDEX = 0
             const val PROGRAM_PROVIDER_DATA_COLUMN_INDEX = 1
             const val PROGRAM_START_TIME_COLUMN_INDEX = 2
@@ -982,6 +1069,46 @@ class TvProviderWriter private constructor(
                 out
             }
 
+        override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            runCatching {
+                if (keys.isEmpty()) return@runCatching emptyMap()
+                val projection =
+                    arrayOf(
+                        TvContract.Channels._ID,
+                        TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID,
+                        TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID,
+                        TvContract.Channels.COLUMN_SERVICE_ID,
+                        TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1,
+                    )
+                val wanted = keys.toHashSet()
+                val out = linkedMapOf<ServiceKey, Long>()
+                val cursor =
+                    context.contentResolver.query(
+                        TvContract.buildChannelsUriForInput(inputId),
+                        projection,
+                        null,
+                        null,
+                        null,
+                    ) ?: error("TvProvider channel visibility queryがnull cursorを返しました")
+                cursor.use { rows ->
+                    while (rows.moveToNext()) {
+                        val key =
+                            ServiceKey(
+                                rows.getInt(ORIGINAL_NETWORK_ID_COLUMN_INDEX),
+                                rows.getInt(TRANSPORT_STREAM_ID_COLUMN_INDEX),
+                                rows.getInt(SERVICE_ID_COLUMN_INDEX),
+                            )
+                        if (
+                            key in wanted &&
+                            rows.getLong(INITIAL_BROWSABLE_PENDING_COLUMN_INDEX) == INITIAL_BROWSABLE_PENDING
+                        ) {
+                            out[key] = rows.getLong(CHANNEL_ID_COLUMN_INDEX)
+                        }
+                    }
+                }
+                out
+            }
+
         override fun insertChannel(values: ContentValues): Result<Long?> =
             runCatching {
                 val uri: Uri? = context.contentResolver.insert(TvContract.Channels.CONTENT_URI, values)
@@ -998,6 +1125,48 @@ class TvProviderWriter private constructor(
                 context.contentResolver.update(ContentUris.withAppendedId(TvContract.Channels.CONTENT_URI, channelId), values, null, null)
             }
 
+        override fun commitInitialBrowsable(channelIds: Set<Long>): Result<Int> =
+            runCatching {
+                if (channelIds.isEmpty()) return@runCatching 0
+                val values =
+                    ContentValues().apply {
+                        put(TvContract.Channels.COLUMN_BROWSABLE, 1)
+                        put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1, 0L)
+                    }
+                val operations =
+                    channelIds.sorted().map { channelId ->
+                        ContentProviderOperation
+                            .newUpdate(ContentUris.withAppendedId(TvContract.Channels.CONTENT_URI, channelId))
+                            .withValues(values)
+                            .build()
+                    }
+                val results = context.contentResolver.applyBatch(TvContract.AUTHORITY, ArrayList(operations))
+                check(results.size == operations.size) { "TvProvider初期可視化結果数が一致しません" }
+                val updated = results.sumOf { it.count ?: 0 }
+                check(updated == channelIds.size) {
+                    "TvProvider初期可視化対象数が一致しません expected=${channelIds.size} actual=$updated"
+                }
+                updated
+            }
+
+        override fun deleteChannels(channelIds: Set<Long>): Result<Int> =
+            runCatching {
+                if (channelIds.isEmpty()) return@runCatching 0
+                val operations =
+                    channelIds.sorted().map { channelId ->
+                        ContentProviderOperation
+                            .newDelete(ContentUris.withAppendedId(TvContract.Channels.CONTENT_URI, channelId))
+                            .build()
+                    }
+                val results = context.contentResolver.applyBatch(TvContract.AUTHORITY, ArrayList(operations))
+                check(results.size == operations.size) { "TvProvider channel rollback結果数が一致しません" }
+                val deleted = results.sumOf { it.count ?: 0 }
+                check(deleted == channelIds.size) {
+                    "TvProvider channel rollback対象数が一致しません expected=${channelIds.size} actual=$deleted"
+                }
+                deleted
+            }
+
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         override fun listExistingChannels(): Result<List<ChannelRecord>> =
@@ -1011,6 +1180,7 @@ class TvProviderWriter private constructor(
                         TvContract.Channels.COLUMN_DISPLAY_NUMBER,
                         TvContract.Channels.COLUMN_DISPLAY_NAME,
                         TvContract.Channels.COLUMN_SERVICE_TYPE,
+                        TvContract.Channels.COLUMN_TYPE,
                         TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA,
                     )
                 val out = mutableListOf<ChannelRecord>()
@@ -1020,8 +1190,9 @@ class TvProviderWriter private constructor(
                         ?: error("TvProvider channel list query returned null cursor")
                 cursor.use { cursor ->
                     while (cursor.moveToNext()) {
-                        val stored = ProviderDataBridge.decodeChannelProviderData(providerDataBytes(cursor, 7))
+                        val stored = ProviderDataBridge.decodeChannelProviderData(providerDataBytes(cursor, 8))
                         val serviceType = cursor.getString(6)?.toIntOrNull()?.takeIf { it in 0..0xff }
+                        val partialReception = cursor.getString(7) == TvContract.Channels.TYPE_1SEG
                         val rowServiceKey = ServiceKey(cursor.getInt(1), cursor.getInt(2), cursor.getInt(3))
                         if (stored == null || stored.serviceKey != rowServiceKey || serviceType == null) {
                             error("既存 channel の物理選局情報を復元できません id=${cursor.getLong(0)}")
@@ -1044,6 +1215,7 @@ class TvProviderWriter private constructor(
                                     satelliteBand = stored.tune.satelliteBand,
                                     remoteControlKeyId = stored.tune.remoteControlKeyId,
                                     requiresCas = stored.requiresCas,
+                                    partialReception = partialReception,
                                 )
                         }
                     }

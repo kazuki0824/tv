@@ -553,7 +553,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(missingSmd.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
     }
 
-    @Test fun registrationAndSelectionShareStaticCodecFacts() {
+    @Test fun registrationSelectionAndOneSegProjectionShareStaticFacts() {
         val video = es(TsPid(0x101), 0x1b)
         val audio = es(TsPid(0x102), 0x0f)
         val badAudio =
@@ -597,7 +597,44 @@ class TisR51FixedPlanAcceptanceTest {
                 .evaluate(semanticFacts(0x02, listOf(audio)))
                 .registrationReady,
         )
+        assertOneSegRegistrationAndProjection(video, audio)
         check(TunerSelectionPolicy.selectVideo(listOf(video)) == video) // descriptor不在時はSPS到着後にruntime検証
+    }
+
+    private fun assertOneSegRegistrationAndProjection(
+        video: AribElementaryStream,
+        audio: AribElementaryStream,
+    ) {
+        val oneSegFacts = semanticFacts(0xc0, listOf(video, audio)).copy(partialReception = true)
+        check(
+            com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+                .evaluate(oneSegFacts)
+                .registrationReady,
+        )
+        check(
+            !com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+                .evaluate(oneSegFacts.copy(partialReception = false))
+                .registrationReady,
+        )
+        val oneSegChannel =
+            ChannelRecord(
+                key,
+                0xc0,
+                "101",
+                "1seg",
+                FrequencyHz(473_142_857L),
+                casFactsCanonicalJson = testCasFacts(false),
+                partialReception = true,
+            )
+        val store = FakeStore()
+        val publication =
+            TvProviderWriter("input.test", store, testOnly = true)
+                .upsertChannels(listOf(oneSegChannel))
+        check(publication.failures.isEmpty())
+        check(publication.inserted == 1)
+        val oneSegValues = store.channels.values.single()
+        check(oneSegValues.getAsString(TvContract.Channels.COLUMN_TYPE) == TvContract.Channels.TYPE_1SEG)
+        check(!oneSegValues.containsKey(TvContract.Channels.COLUMN_BROWSABLE))
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

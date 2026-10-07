@@ -1,3 +1,9 @@
+# Partial Reception Descriptorをtyped snapshotへ接続
+
+- 地上デジタルNITのPartial Reception Descriptor (0xFB)を解析し、列挙SIDだけを`ServiceSemanticFacts.partialReception=true`とする。service_type=0xC0単独では推定しない。
+- Rust runtime snapshot DTO、JNI object生成、生成Kotlin DTO、Kotlin mapperまで同じtyped factを接続した。
+- TISがこのfactをone-seg登録可否と`TYPE_1SEG`投影に利用できるようにした。
+
 # collection registry取得の待機拒否
 
 - Make collection try-snapshot registry acquisition non-blocking while preserving typed poison and invalid-handle failures.

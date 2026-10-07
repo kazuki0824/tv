@@ -90,6 +90,175 @@ class TvProviderWriterUpsertTest {
         )
     }
 
+    @Test fun setupCompletionMarksOnlyNewNonOneSegBrowsable() {
+        val store = FakeChannelStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val oneSegKey = ServiceKey(originalNetworkId = 4, transportStreamId = 16625, serviceId = 102)
+        val result =
+            writer.upsertChannels(
+                listOf(
+                    ChannelRecord(
+                        key,
+                        serviceType = 0x01,
+                        displayNumber = "101",
+                        displayName = "NHK",
+                        frequencyHz = FrequencyHz(473_142_857L),
+                        casFactsCanonicalJson = testCasFacts(false),
+                    ),
+                    ChannelRecord(
+                        oneSegKey,
+                        serviceType = 0xc0,
+                        displayNumber = "102",
+                        displayName = "1seg",
+                        frequencyHz = FrequencyHz(473_142_857L),
+                        casFactsCanonicalJson = testCasFacts(false),
+                        partialReception = true,
+                    ),
+                ),
+            )
+        val normalId = requireNotNull(result.insertedChannelIds[key])
+        val oneSegId = requireNotNull(result.insertedChannelIds[oneSegKey])
+        check(
+            writer
+                .finalizeSetupChannels(
+                    completed = true,
+                    insertedChannelIds = setOf(normalId, oneSegId),
+                    initialBrowsablePendingChannelIds = result.initialBrowsablePendingChannelIds.values.toSet(),
+                ).isSuccess,
+        )
+        check(store.rows.getValue(normalId).getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 1)
+        check(store.rows.getValue(oneSegId).get(TvContract.Channels.COLUMN_BROWSABLE) == null)
+    }
+
+    @Test fun rescanPreservesExistingHiddenChannel() {
+        val store = FakeChannelStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val first =
+            writer.upsertChannels(
+                listOf(
+                    ChannelRecord(
+                        key,
+                        serviceType = 0x01,
+                        displayNumber = "101",
+                        displayName = "NHK",
+                        frequencyHz = FrequencyHz(473_142_857L),
+                        casFactsCanonicalJson = testCasFacts(false),
+                    ),
+                ),
+            )
+        val channelId = requireNotNull(first.insertedChannelIds[key])
+        check(
+            writer
+                .finalizeSetupChannels(
+                    completed = true,
+                    insertedChannelIds = setOf(channelId),
+                    initialBrowsablePendingChannelIds = first.initialBrowsablePendingChannelIds.values.toSet(),
+                ).isSuccess,
+        )
+        store.rows.getValue(channelId).put(TvContract.Channels.COLUMN_BROWSABLE, 0)
+
+        val rescan =
+            writer.upsertChannels(
+                listOf(
+                    ChannelRecord(
+                        key,
+                        serviceType = 0x01,
+                        displayNumber = "101",
+                        displayName = "NHK G",
+                        frequencyHz = FrequencyHz(473_142_857L),
+                        casFactsCanonicalJson = testCasFacts(false),
+                    ),
+                ),
+            )
+        check(rescan.insertedChannelIds.isEmpty())
+        check(
+            writer
+                .finalizeSetupChannels(
+                    completed = true,
+                    insertedChannelIds = emptySet(),
+                    initialBrowsablePendingChannelIds = rescan.initialBrowsablePendingChannelIds.values.toSet(),
+                ).isSuccess,
+        )
+        check(store.rows.getValue(channelId).getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 0)
+        check(store.rows.getValue(channelId).getAsString(TvContract.Channels.COLUMN_DISPLAY_NAME) == "NHK G")
+    }
+
+    @Test fun browsableCommitFailureIsReportedWithoutExposingChannel() {
+        val store = FakeChannelStore(failBrowsable = true)
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val result =
+            writer.upsertChannels(
+                listOf(
+                    ChannelRecord(
+                        key,
+                        serviceType = 0x01,
+                        displayNumber = "101",
+                        displayName = "NHK",
+                        frequencyHz = FrequencyHz(473_142_857L),
+                        casFactsCanonicalJson = testCasFacts(false),
+                    ),
+                ),
+            )
+        val insertedId = requireNotNull(result.insertedChannelIds[key])
+        check(
+            writer
+                .finalizeSetupChannels(
+                    completed = true,
+                    insertedChannelIds = setOf(insertedId),
+                    initialBrowsablePendingChannelIds = result.initialBrowsablePendingChannelIds.values.toSet(),
+                ).isFailure,
+        )
+        check(!store.rows.containsKey(insertedId))
+    }
+
+    @Test fun unfinishedSetupPendingChannelIsRecoveredByNextSuccessfulScan() {
+        val store = FakeChannelStore()
+        val firstWriter = TvProviderWriter("input.test", store, testOnly = true)
+        val first =
+            firstWriter.upsertChannels(
+                listOf(
+                    ChannelRecord(
+                        key,
+                        serviceType = 0x01,
+                        displayNumber = "101",
+                        displayName = "NHK",
+                        frequencyHz = FrequencyHz(473_142_857L),
+                        casFactsCanonicalJson = testCasFacts(false),
+                    ),
+                ),
+            )
+        val channelId = requireNotNull(first.insertedChannelIds[key])
+        check(first.initialBrowsablePendingChannelIds[key] == channelId)
+        check(store.rows.getValue(channelId).get(TvContract.Channels.COLUMN_BROWSABLE) == null)
+
+        val nextWriter = TvProviderWriter("input.test", store, testOnly = true)
+        val next =
+            nextWriter.upsertChannels(
+                listOf(
+                    ChannelRecord(
+                        key,
+                        serviceType = 0x01,
+                        displayNumber = "101",
+                        displayName = "NHK",
+                        frequencyHz = FrequencyHz(473_142_857L),
+                        casFactsCanonicalJson = testCasFacts(false),
+                    ),
+                ),
+            )
+        check(next.insertedChannelIds.isEmpty())
+        check(next.initialBrowsablePendingChannelIds[key] == channelId)
+        check(
+            nextWriter
+                .finalizeSetupChannels(
+                    completed = true,
+                    insertedChannelIds = emptySet(),
+                    initialBrowsablePendingChannelIds = next.initialBrowsablePendingChannelIds.values.toSet(),
+                ).isSuccess,
+        )
+        check(store.rows.getValue(channelId).getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 1)
+        check(store.rows.getValue(channelId).getAsLong(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1) == 0L)
+    }
+
     @Test fun invalidServiceKeyIsRejectedBeforeChannelRecordConstruction() {
         check(ServiceKey.fromOrNull(originalNetworkId = -1, transportStreamId = 16625, serviceId = 101) == null)
     }
@@ -118,6 +287,7 @@ class TvProviderWriterUpsertTest {
 
     private class FakeChannelStore(
         private val failInsert: Boolean = false,
+        private val failBrowsable: Boolean = false,
     ) : TvProviderWriter.ChannelStore {
         private var nextId = 1L
         val rows = LinkedHashMap<Long, ContentValues>()
@@ -150,9 +320,51 @@ class TvProviderWriterUpsertTest {
             channelId: Long,
             values: ContentValues,
         ): Result<Int> {
-            if (!rows.containsKey(channelId)) return Result.success(0)
-            rows[channelId] = ContentValues(values)
+            val existing = rows[channelId] ?: return Result.success(0)
+            existing.putAll(values)
             return Result.success(1)
+        }
+
+        override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            Result.success(
+                rows.entries
+                    .mapNotNull { (id, values) ->
+                        val rowKey =
+                            ServiceKey(
+                                values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                            )
+                        if (
+                            rowKey in keys &&
+                            values.getAsLong(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1) == 1L
+                        ) {
+                            rowKey to id
+                        } else {
+                            null
+                        }
+                    }.toMap(),
+            )
+
+        override fun commitInitialBrowsable(channelIds: Set<Long>): Result<Int> {
+            if (failBrowsable) return Result.failure(IllegalStateException("browsable更新失敗"))
+            var updated = 0
+            channelIds.forEach { channelId ->
+                rows[channelId]?.let { values ->
+                    values.put(TvContract.Channels.COLUMN_BROWSABLE, 1)
+                    values.put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1, 0L)
+                    updated++
+                }
+            }
+            return Result.success(updated)
+        }
+
+        override fun deleteChannels(channelIds: Set<Long>): Result<Int> {
+            var deleted = 0
+            channelIds.forEach { channelId ->
+                if (rows.remove(channelId) != null) deleted++
+            }
+            return Result.success(deleted)
         }
     }
 }

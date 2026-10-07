@@ -143,6 +143,7 @@ private fun ServiceSemanticFactsDto.toDomain(): ServiceSemanticFacts =
     ServiceSemanticFacts(
         serviceKey = ServiceKey(originalNetworkId, transportStreamId, serviceId),
         serviceType = serviceType,
+        partialReception = partialReception,
         pmtPidResolved = pmtPidResolved,
         pmtParsed = pmtParsed,
         pcrPidResolved = pcrPidResolved,
