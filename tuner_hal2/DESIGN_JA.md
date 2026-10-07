@@ -140,7 +140,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | object method | サービス調停のobject method use-case | AIDL methodからbackend、registry、低水準dispatchを直接呼ばない |
 | `RootOpenTxn` | サービス調停のルートオープン手順所有者 | AIDL層で実行時資源割当、オブジェクト表、巻戻し補助処理を直接扱わない |
 | `ChildOpenTxn` | サービス調停の子オープン手順所有者 | AIDL補助処理で台帳IDを再解釈せず、`Filter` / `DVR` / `TimeFilter`等が別の子オープン所有者を持たない |
-Owner cascadeでchild objectが先に`Closed`へ到達した後に同じgenerationの公開`close()`が到着した場合は、既存`ObjectCloseTxn`の完了済み状態として冪等SUCCESSを返す。これはcleanupを再実行しないterminal readであり、`Prepared`または`Quarantined`をSUCCESSへ丸めない。frontend再open拒否時は占有object ID・generation・`RuntimeObjectLifecycle`をruntime entryから診断へ投影し、active frontend lease check自体は維持する。 `openFrontendById()`は既存occupantが`Closing`または`CleanupPending`の場合だけ、既に`ObjectCloseTxn`へ移管済みのcleanupを正規retry入口から一度進めてから再度open判定する。retry自体が失敗した場合はそのtyped `HalError` を呼出元へ返し、lease競合へ丸めて続行しない。`Live`は現所有者として維持し、`Quarantined`はfail-closedのまま再openを拒否する。
+Owner cascadeでFilterが先に`Closed`へ到達した後に同じgenerationの公開`close()`が到着した場合は、既存`ObjectCloseTxn`の完了済み状態として冪等SUCCESSを返す。既存契約で冪等closeを許可しているFrontend/Lnbは維持するが、Dvr/Demux/Descramblerまで一律にClosed再close成功へ拡大しない。これはcleanupを再実行しないterminal readであり、`Prepared`または`Quarantined`をSUCCESSへ丸めない。frontend再open拒否時は占有object ID・generation・`RuntimeObjectLifecycle`をruntime entryから診断へ投影し、active frontend lease check自体は維持する。 `openFrontendById()`は既存occupantが`Closing`または`CleanupPending`の場合だけ、既に`ObjectCloseTxn`へ移管済みのcleanupを正規retry入口から一度進めてから再度open判定する。retry自体が失敗した場合はそのtyped `HalError` を呼出元へ返し、lease競合へ丸めて続行しない。`Live`は現所有者として維持し、`Quarantined`はfail-closedのまま再openを拒否する。
 
 | public close / owner loss / Drop | `ObjectCloseTxn` | AIDL、Drop、Reaper、個別objectが別のclose ownerを持たない |
 | descrambler key | `DescramblerKeyTxn` | callerがkey台帳を直接変更しない |
