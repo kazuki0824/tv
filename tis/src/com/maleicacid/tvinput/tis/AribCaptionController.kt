@@ -474,7 +474,7 @@ class AribCaptionController(
             recordPendingOverflow(CaptionDiagnostic.Reason.PRESENTATION_QUEUE_OVERFLOW)
             return
         }
-        val token = ++nextFrameToken
+        val token = allocateFrameToken()
         boundaries.removeAll(replaced.toSet())
         boundaries += Boundary.Display(pts, token, frame, currentViewport)
         clearAt?.let { boundaries += Boundary.Clear(it, token) }
@@ -517,6 +517,36 @@ class AribCaptionController(
         repeat(expiredTokens.size) { recordPendingOverflow(CaptionDiagnostic.Reason.PRESENTATION_HORIZON_EXCEEDED) }
     }
 
+    private fun allocateFrameToken(): Long {
+        val live =
+            boundaries
+                .mapTo(linkedSetOf()) { it.frameToken }
+                .apply { displayedFrameToken?.let(::add) }
+        val next =
+            RuntimeIdentity.nextReusablePositiveLong(
+                current = nextFrameToken,
+                live = live,
+                label = "字幕frame token",
+            )
+        nextFrameToken = next
+        return next
+    }
+
+    private fun nextPresentationEpoch(): Long {
+        while (true) {
+            val current = presentationEpoch.get()
+            check(current != EXHAUSTED_PRESENTATION_EPOCH) { "字幕presentation epochは既に枯渇しています" }
+            val next =
+                try {
+                    RuntimeIdentity.nextLong(current, "字幕presentation epoch")
+                } catch (error: IllegalStateException) {
+                    presentationEpoch.compareAndSet(current, EXHAUSTED_PRESENTATION_EPOCH)
+                    throw error
+                }
+            if (presentationEpoch.compareAndSet(current, next)) return next
+        }
+    }
+
     private fun recordPendingOverflow(reason: CaptionDiagnostic.Reason) {
         pendingOverflowCount++
         onDiagnostic(
@@ -535,7 +565,7 @@ class AribCaptionController(
     ) {
         cancelScheduledBoundary()
         boundaries.clear()
-        val token = ++nextFrameToken
+        val token = allocateFrameToken()
         displayedFrameToken = token
         postFrame(frame, currentViewport)
         frame.durationMillis?.let { duration ->
@@ -617,6 +647,7 @@ class AribCaptionController(
         frameViewport: CaptionViewport,
     ) {
         val epoch = presentationEpoch.get()
+        if (epoch == EXHAUSTED_PRESENTATION_EPOCH) return
         mainHandler.post {
             if (presentationEpoch.get() != epoch) return@post
             if (frame.images.isEmpty()) {
@@ -639,7 +670,7 @@ class AribCaptionController(
     }
 
     private fun postClear() {
-        val epoch = presentationEpoch.incrementAndGet()
+        val epoch = nextPresentationEpoch()
         mainHandler.post { if (presentationEpoch.get() == epoch) overlayView.clearCaptionLayer(overlayLayerId) }
     }
 
@@ -647,22 +678,26 @@ class AribCaptionController(
         if (executor.isShutdown) return
         released.set(true)
         runBlocking(cleanup = true) {
-            SectionFilterPolicy.completeCleanup(
-                { cancelScheduledBoundary() },
-                { broadcastTimedPesScheduler.cancelAll() },
-                { boundaries.clear() },
-                { renderer?.flush() },
-                {
-                    renderer?.close()
-                    renderer = null
-                },
-                { postClear() },
-            )
+            try {
+                SectionFilterPolicy.completeCleanup(
+                    { cancelScheduledBoundary() },
+                    { broadcastTimedPesScheduler.cancelAll() },
+                    { boundaries.clear() },
+                    { renderer?.flush() },
+                    {
+                        renderer?.close()
+                        renderer = null
+                    },
+                    { postClear() },
+                )
+            } finally {
+                executor.shutdownNow()
+            }
         }
-        executor.shutdownNow()
     }
 
     companion object {
+        private const val EXHAUSTED_PRESENTATION_EPOCH = -1L
         private const val ARIB_PROFILE_A_COMPONENT_ID = 0x0008
         private const val CAPTION_CONTROL_WAIT_MS = 2_000L
         private const val CAPTION_MAX_PENDING_DATA_TASKS = 64

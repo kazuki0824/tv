@@ -76,10 +76,11 @@ struct ParserState {
     collection_bytes: usize,
     collection_sections: usize,
     collection_limit_exceeded: bool,
-    collection_generation: u64,
+    collection_generation: i64,
+    identity_exhausted: bool,
     collector: ServiceDiscoveryCollector,
     eit_instances: EitInstances,
-    sections_seen: u64,
+    sections_seen: i64,
     last_status: jint,
     invalid_section_reason: Option<InvalidSectionReason>,
     latest_broadcast_clock: Option<BroadcastClockFact>,
@@ -120,6 +121,7 @@ impl Default for ParserState {
             collection_sections: 0,
             collection_limit_exceeded: false,
             collection_generation: 0,
+            identity_exhausted: false,
             eit_instances: EitInstances::default(),
             collector: ServiceDiscoveryCollector::default(),
             sections_seen: 0,
@@ -131,27 +133,52 @@ impl Default for ParserState {
 }
 
 impl ParserState {
-    fn clear_collection_facts(&mut self) {
+    fn mark_identity_exhausted(&mut self) {
+        self.identity_exhausted = true;
         self.collector.reset_collection();
         self.eit_instances = EitInstances::default();
-        self.collection_generation = self.collection_generation.saturating_add(1);
         self.latest_broadcast_clock = None;
         self.invalid_section_reason = None;
+        self.collection_bytes = 0;
+        self.collection_sections = 0;
+        self.collection_limit_exceeded = false;
+        self.last_status = STATUS_INTERNAL_ERROR;
+    }
+
+    fn clear_collection_facts(&mut self) -> bool {
+        self.collector.reset_collection();
+        self.eit_instances = EitInstances::default();
+        self.latest_broadcast_clock = None;
+        self.invalid_section_reason = None;
+        let Some(next_generation) = self.collection_generation.checked_add(1) else {
+            self.mark_identity_exhausted();
+            return false;
+        };
+        self.collection_generation = next_generation;
+        true
     }
 
     fn expire_collection_at(&mut self, now: Instant) {
+        if self.identity_exhausted {
+            self.last_status = STATUS_INTERNAL_ERROR;
+            return;
+        }
         if now.saturating_duration_since(self.collection_started_at) >= MAX_COLLECTION_AGE {
-            self.clear_collection_facts();
+            let advanced = self.clear_collection_facts();
             self.collection_started_at = now;
             self.collection_bytes = 0;
             self.collection_sections = 0;
             self.collection_limit_exceeded = false;
-            self.last_status = STATUS_OK;
+            self.last_status = if advanced {
+                STATUS_OK
+            } else {
+                STATUS_INTERNAL_ERROR
+            };
         }
     }
 
     fn admit_section(&mut self, length: usize) -> bool {
-        if self.collection_limit_exceeded {
+        if self.identity_exhausted || self.collection_limit_exceeded {
             return false;
         }
         let Some(total_bytes) = self
@@ -161,7 +188,9 @@ impl ParserState {
             .filter(|_| self.collection_sections < MAX_COLLECTION_SECTIONS)
         else {
             self.collection_limit_exceeded = true;
-            self.clear_collection_facts();
+            if !self.clear_collection_facts() {
+                return false;
+            }
             return false;
         };
         self.collection_bytes = total_bytes;
@@ -176,8 +205,14 @@ impl ParserState {
 
     fn ingest_section(&mut self, pid: u16, section: &[u8]) -> jint {
         self.expire_collection_at(Instant::now());
+        if self.identity_exhausted {
+            return STATUS_INTERNAL_ERROR;
+        }
         self.invalid_section_reason = None;
         if !self.admit_section(section.len()) {
+            if self.identity_exhausted {
+                return STATUS_INTERNAL_ERROR;
+            }
             self.last_status = STATUS_COLLECTION_LIMIT_EXCEEDED;
             return self.last_status;
         }
@@ -195,7 +230,11 @@ impl ParserState {
         if pid == 0x0012 {
             self.eit_instances.ingest(section);
         }
-        self.sections_seen = self.sections_seen.saturating_add(1);
+        let Some(next_sections_seen) = self.sections_seen.checked_add(1) else {
+            self.mark_identity_exhausted();
+            return STATUS_INTERNAL_ERROR;
+        };
+        self.sections_seen = next_sections_seen;
         let table_id = header.table_id;
         if pid == 0x0014 && matches!(table_id, 0x70 | 0x73) {
             let Some(clock) = parse_broadcast_clock(section, &header) else {
@@ -280,14 +319,6 @@ fn malformed_ca_descriptor_counts(
             count: i32::try_from(count).unwrap_or(i32::MAX),
         })
         .collect()
-}
-
-fn u64_to_i64_saturating(value: u64) -> i64 {
-    if value > i64::MAX as u64 {
-        i64::MAX
-    } else {
-        value as i64
-    }
 }
 
 struct CollectionProjectionFacts {
@@ -380,8 +411,8 @@ fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshotDto {
         .collect();
 
     BulkSnapshotDto {
-        collection_generation: u64_to_i64_saturating(collection_generation),
-        ingest_sequence: u64_to_i64_saturating(ingest_sequence),
+        collection_generation,
+        ingest_sequence,
         discovery_stage: facts.discovery_stage,
         broadcast_clock: state.latest_broadcast_clock.map(|clock| BroadcastClockDto {
             table_id: i32::from(clock.table_id),
@@ -414,7 +445,7 @@ fn build_bulk_snapshot(state: &mut ParserState) -> BulkSnapshotDto {
 }
 
 fn parser_diagnostics(
-    sections_seen: u64,
+    sections_seen: i64,
     last_status: jint,
     snapshot: &service_discovery::DiscoverySnapshot,
 ) -> Vec<ParserDiagnosticDto> {
@@ -489,12 +520,22 @@ struct ParserRegistry {
 }
 
 impl ParserRegistry {
-    fn create(&mut self) -> jlong {
-        self.next_handle = self.next_handle.saturating_add(1).max(1);
-        let handle = self.next_handle;
-        self.parsers
-            .insert(handle, Arc::new(Mutex::new(ParserState::default())));
-        handle
+    fn create(&mut self) -> Option<jlong> {
+        let mut candidate = self.next_handle;
+        for _ in 0..=self.parsers.len() {
+            candidate = if candidate == jlong::MAX {
+                1
+            } else {
+                candidate + 1
+            };
+            if candidate > 0 && !self.parsers.contains_key(&candidate) {
+                self.next_handle = candidate;
+                self.parsers
+                    .insert(candidate, Arc::new(Mutex::new(ParserState::default())));
+                return Some(candidate);
+            }
+        }
+        None
     }
 
     fn remove(&mut self, handle: jlong) -> bool {
@@ -531,7 +572,13 @@ fn with_state_mut(
         return default_value;
     };
     let result = match parser.lock() {
-        Ok(mut guard) => f(&mut guard),
+        Ok(mut guard) => {
+            if guard.identity_exhausted {
+                STATUS_INTERNAL_ERROR
+            } else {
+                f(&mut guard)
+            }
+        }
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             STATUS_INTERNAL_ERROR
@@ -546,6 +593,7 @@ enum SiJniFailureReason {
     RegistryPoisoned,
     ParserPoisoned,
     InvalidHandle,
+    IdentityExhausted,
     JniInput,
     JniOutput,
 }
@@ -557,6 +605,7 @@ impl SiJniFailureReason {
             Self::RegistryPoisoned => "REGISTRY_POISONED",
             Self::ParserPoisoned => "PARSER_POISONED",
             Self::InvalidHandle => "INVALID_HANDLE",
+            Self::IdentityExhausted => "IDENTITY_EXHAUSTED",
             Self::JniInput => "JNI_INPUT",
             Self::JniOutput => "JNI_OUTPUT",
         }
@@ -669,7 +718,18 @@ fn try_lock_snapshot_parser(
 fn snapshot_si_collection_typed(handle: jlong) -> Result<SiCollectionSnapshotDto, SiJniFailure> {
     let parser = snapshot_parser(handle)?;
     let mut guard = lock_snapshot_parser(&parser)?;
-    Ok(build_si_collection_snapshot(&mut guard))
+    if guard.identity_exhausted {
+        return Err(
+            SiJniFailureReason::IdentityExhausted.failure("SI runtime identityが枯渇しました")
+        );
+    }
+    let snapshot = build_si_collection_snapshot(&mut guard);
+    if guard.identity_exhausted {
+        return Err(
+            SiJniFailureReason::IdentityExhausted.failure("SI runtime identityが枯渇しました")
+        );
+    }
+    Ok(snapshot)
 }
 
 fn try_snapshot_si_collection_typed(
@@ -684,7 +744,18 @@ fn try_snapshot_si_collection_typed(
     let Some(mut guard) = try_lock_snapshot_parser(&parser)? else {
         return Ok(None);
     };
-    Ok(Some(build_si_collection_snapshot(&mut guard)))
+    if guard.identity_exhausted {
+        return Err(
+            SiJniFailureReason::IdentityExhausted.failure("SI runtime identityが枯渇しました")
+        );
+    }
+    let snapshot = build_si_collection_snapshot(&mut guard);
+    if guard.identity_exhausted {
+        return Err(
+            SiJniFailureReason::IdentityExhausted.failure("SI runtime identityが枯渇しました")
+        );
+    }
+    Ok(Some(snapshot))
 }
 
 #[cfg(test)]
@@ -715,7 +786,7 @@ mod nonblocking_collection_snapshot_tests {
 
     #[test]
     fn try_snapshot_reports_busy_without_waiting_or_poisoning_parser() {
-        let handle = registry().lock().unwrap().create();
+        let handle = registry().lock().unwrap().create().unwrap();
         let parser = registry().lock().unwrap().get(handle).unwrap();
         let guard = parser.lock().unwrap();
 
@@ -734,7 +805,18 @@ mod nonblocking_collection_snapshot_tests {
 fn snapshot_bulk_typed(handle: jlong) -> Result<BulkSnapshotDto, SiJniFailure> {
     let parser = snapshot_parser(handle)?;
     let mut guard = lock_snapshot_parser(&parser)?;
-    Ok(build_bulk_snapshot(&mut guard))
+    if guard.identity_exhausted {
+        return Err(
+            SiJniFailureReason::IdentityExhausted.failure("SI runtime identityが枯渇しました")
+        );
+    }
+    let snapshot = build_bulk_snapshot(&mut guard);
+    if guard.identity_exhausted {
+        return Err(
+            SiJniFailureReason::IdentityExhausted.failure("SI runtime identityが枯渇しました")
+        );
+    }
+    Ok(snapshot)
 }
 
 #[no_mangle]
@@ -832,6 +914,9 @@ fn snapshot_pmt_pids_for_section_filters(handle: jlong) -> Result<Vec<jint>, SiJ
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
     let result = match parser.lock() {
+        Ok(guard) if guard.identity_exhausted => {
+            Err(SiJniFailureReason::IdentityExhausted.failure("SI runtime identityが枯渇しました"))
+        }
         Ok(guard) => Ok(guard
             .collector
             .pmt_pids_for_section_filters()
@@ -1026,16 +1111,34 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 
 #[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeCreate(
-    _env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _this: JObject<'_>,
 ) -> jlong {
     if !si_module_is_healthy() {
+        let _ = throw_si_failure(
+            &mut env,
+            SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"),
+        );
         return 0;
     }
     match registry().lock() {
-        Ok(mut guard) => guard.create(),
+        Ok(mut guard) => match guard.create() {
+            Some(handle) => handle,
+            None => {
+                let _ = throw_si_failure(
+                    &mut env,
+                    SiJniFailureReason::IdentityExhausted
+                        .failure("SI parser handle空間が枯渇しました"),
+                );
+                0
+            }
+        },
         Err(_) => {
             record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            let _ = throw_si_failure(
+                &mut env,
+                SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME),
+            );
             0
         }
     }
@@ -1513,8 +1616,67 @@ mod tests {
     }
 
     #[test]
+    fn parser_registry_wraps_only_to_a_free_live_handle() {
+        let mut registry = ParserRegistry {
+            next_handle: jlong::MAX,
+            ..ParserRegistry::default()
+        };
+        registry
+            .parsers
+            .insert(1, Arc::new(Mutex::new(ParserState::default())));
+        let handle = registry.create().expect("空きhandleが残っている");
+        assert_eq!(handle, 2);
+        assert!(registry.parsers.contains_key(&1));
+        assert!(registry.parsers.contains_key(&2));
+    }
+
+    #[test]
+    fn collection_generation_exhaustion_fences_parser_state() {
+        let mut state = ParserState {
+            collection_generation: i64::MAX,
+            ..ParserState::default()
+        };
+        assert!(!state.clear_collection_facts());
+        assert!(state.identity_exhausted);
+        assert_eq!(state.last_status, STATUS_INTERNAL_ERROR);
+        assert_eq!(
+            state.ingest_section(0x0010, &[0x7f, 0x30, 0]),
+            STATUS_INTERNAL_ERROR
+        );
+    }
+
+    #[test]
+    fn ingest_sequence_exhaustion_fences_parser_state() {
+        let mut state = ParserState {
+            sections_seen: i64::MAX,
+            ..ParserState::default()
+        };
+        let section = [0x7f, 0x30, 0x00];
+        assert_eq!(
+            state.ingest_section(0x0010, &section),
+            STATUS_INTERNAL_ERROR
+        );
+        assert!(state.identity_exhausted);
+    }
+
+    #[test]
+    fn typed_snapshot_rejects_identity_exhausted_parser() {
+        let handle = registry().lock().unwrap().create().unwrap();
+        let parser = registry().lock().unwrap().get(handle).unwrap();
+        parser.lock().unwrap().identity_exhausted = true;
+        assert!(matches!(
+            snapshot_si_collection_typed(handle),
+            Err(SiJniFailure {
+                reason: SiJniFailureReason::IdentityExhausted,
+                ..
+            })
+        ));
+        assert!(registry().lock().unwrap().remove(handle));
+    }
+
+    #[test]
     fn registry_rejects_destroyed_handles_without_raw_pointer_exposure() {
-        let handle = registry().lock().unwrap().create();
+        let handle = registry().lock().unwrap().create().unwrap();
         assert!(handle > 0);
         assert!(registry().lock().unwrap().get(handle).is_some());
         assert!(registry().lock().unwrap().remove(handle));

@@ -5,6 +5,14 @@
 TIS は `TvInputService` としてシステムTVアプリから呼ばれ、Tuner HAL には Tuner SDK API 経由でアクセスする。HAL binder を直接呼ばない。
 TIS の setup / boot EPG sync / user unlock drain は、固定文字列や package 名を inputId とみなしてはならない。`TvInputManager.tvInputList` から自 `MaleicacidTvInputService` に一致する `TvInputInfo.id` を一意に解決し、その inputId だけを scan / sync / TvProvider writer へ渡す。解決不能または複数一致の場合、boot EPG sync は pending のまま延期し、setup scan は開始しない。
 
+### Runtime identity / generation の枯渇契約
+
+TISがstale callback fence、owner世代、runtime tokenとして使用するgeneration / IDは、silent wrap、saturating increment、live identityとの無検査reuseを行わない。単調世代（Tuner tune generation、scan generation、playback generation、broadcast-clock discontinuity generation、caption presentation epoch）はchecked incrementを使い、最大値到達時は現在のowner/stateをfail-closedにfenceして新しい世代を発行しない。枯渇後のsentinelを有効世代としてcallback比較・publish・playback開始へ使用しない。
+
+有限live-set内で再利用可能なtoken（MediaSync audio buffer ID、caption frame token、Timing=10 pending/arm token）は正数空間を明示的に巡回してよいが、再利用候補が現在のlive-setに存在しないことを発行時に検査する。使用中tokenとの衝突がない候補を取得できなければ発行を失敗させる。wrapそのものをgeneration更新の代替にしない。
+
+SI parser内部のcollection generation / ingest sequence / parser handleは `../arib_si_engine_rs/DESIGN_JA.md` の枯渇契約を正とし、TISは `IDENTITY_EXHAUSTED` / internal failureを空snapshot、未観測SI、通常のcollection timeoutへ読み替えない。
+
 ### SI収集の期限と失敗境界
 
 JNIの実行失敗と正常な空値の契約は`../arib_si_engine_rs/DESIGN_JA.md`の「実行失敗と正常な空値の区別」を正とする。TISはJNIの実行失敗を呼出し元へ伝え、SI事実なし・番組キーなし・JSON内容不正へ変換しない。走査・番組更新では当該操作の失敗として扱い、失敗したスナップショットを登録・更新・削除判断へ使用しない。具体的な呼出しと受取補助関数の使用規則は、`CODE_CONVENTION.md`を正とする。

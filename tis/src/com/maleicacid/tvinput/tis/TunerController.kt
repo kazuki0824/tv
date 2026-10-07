@@ -275,6 +275,7 @@ class TunerController(
 
     @Volatile private var latestBroadcastClockAuthority: AribBroadcastClock.AuthoritySample? = null
 
+    @Volatile private var broadcastClockGenerationExhausted = false
     @Volatile private var sectionIngestController: SectionIngestController? = null
     private var casController: CasController? = null
     private var onSectionIngestedCallback: (() -> Unit)? = null
@@ -609,7 +610,9 @@ class TunerController(
     private fun startStreamIdDiscoveryOnController(seed: ScanCandidate): StreamIdDiscoveryOperation {
         require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector == StreamSelector.NONE)
         resetBeforeTune()
-        val operation = StreamIdDiscoveryOperation(++tuneGeneration)
+        val generation = nextTuneGenerationOrFence()
+        tuneGeneration = generation
+        val operation = StreamIdDiscoveryOperation(generation)
         val tunerInstance = tuner
         if (tunerInstance == null) {
             operation.startFailed(Tuner.RESULT_UNAVAILABLE, "Tunerを利用できません")
@@ -857,7 +860,16 @@ class TunerController(
                 Log.w(LogTags.TIS, "frontend settings 構築に失敗しました channel=$channel", e)
                 return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, channel, tuneGeneration, e.message.orEmpty())
             }
-        val nextGeneration = tuneGeneration + 1L
+        val nextGeneration =
+            runCatching { nextTuneGenerationOrFence() }.getOrElse { error ->
+                return TuneOutcome(
+                    false,
+                    Tuner.RESULT_UNKNOWN_ERROR,
+                    channel,
+                    tuneGeneration,
+                    error.message.orEmpty(),
+                )
+            }
         if (!armTuneEventListener(tunerInstance, nextGeneration)) {
             return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "frontend tune event listenerを登録できません")
         }
@@ -888,6 +900,15 @@ class TunerController(
             )
         }
     }
+
+    private fun nextTuneGenerationOrFence(): Long =
+        try {
+            RuntimeIdentity.nextLong(tuneGeneration, "tuner選局generation")
+        } catch (error: IllegalStateException) {
+            tuneGeneration = EXHAUSTED_TUNE_GENERATION
+            invalidateTuneOnController()
+            throw error
+        }
 
     private fun invalidateTuneOnController() {
         currentTune = null
@@ -1441,29 +1462,14 @@ class TunerController(
                 val result = sectionIngestController?.onSection(pid, section)
                 if (pid == WellKnownSectionPid.TDT && result?.status == com.maleicacid.tvinput.aribsi.SiStatus.OK) {
                     sectionIngestController?.broadcastClockSnapshot()?.let { fact ->
-                        val update =
-                            AribBroadcastClock.updateAuthority(
-                                latestBroadcastClockAuthority,
-                                AribBroadcastClock.SourceSample(
-                                    tableId = fact.tableId,
-                                    mjd = fact.mjd,
-                                    millisOfDay = fact.millisOfDay,
-                                    receivedNanoTime = receivedNanoTime,
-                                ),
-                            )
-                        if (update == null) {
-                            latestBroadcastClockAuthority = null
-                            Log.w(LogTags.TIS, "TDT/TOT clock factをauthorityへ昇格できないためfail-closedにします inputId=$inputId")
-                        } else {
-                            latestBroadcastClockAuthority = update.authority
-                            if (update.discontinuity) {
-                                Log.w(
-                                    LogTags.TIS,
-                                    "TDT/TOT clock discontinuityを検出しました inputId=$inputId generation=${update.authority.generation}",
-                                )
-                            }
-                        }
-                        onBroadcastClockUpdatedCallback?.invoke()
+                        updateBroadcastClockAuthority(
+                            AribBroadcastClock.SourceSample(
+                                tableId = fact.tableId,
+                                mjd = fact.mjd,
+                                millisOfDay = fact.millisOfDay,
+                                receivedNanoTime = receivedNanoTime,
+                            ),
+                        )
                     }
                 }
                 onSectionIngestedCallback?.invoke()
@@ -1478,6 +1484,48 @@ class TunerController(
                 }
             },
         )
+    }
+
+    // 無効入力と世代枯渇を発生点で終端し、authorityの不可逆fenceを同じownerに保持する。
+    @Suppress("ReturnCount")
+    private fun updateBroadcastClockAuthority(source: AribBroadcastClock.SourceSample) {
+        if (broadcastClockGenerationExhausted) return
+        val update =
+            try {
+                AribBroadcastClock.updateAuthority(latestBroadcastClockAuthority, source)
+            } catch (error: IllegalStateException) {
+                broadcastClockGenerationExhausted = true
+                latestBroadcastClockAuthority = null
+                Log.w(
+                    LogTags.TIS,
+                    "TDT/TOT clock generationが枯渇したためauthorityを不可逆にfail-closed化します inputId=$inputId",
+                    error,
+                )
+                onBroadcastClockUpdatedCallback?.invoke()
+                return
+            } catch (error: IllegalArgumentException) {
+                latestBroadcastClockAuthority = null
+                Log.w(
+                    LogTags.TIS,
+                    "TDT/TOT clock authority更新に失敗したためfail-closedにします inputId=$inputId",
+                    error,
+                )
+                onBroadcastClockUpdatedCallback?.invoke()
+                return
+            }
+        if (update == null) {
+            latestBroadcastClockAuthority = null
+            Log.w(LogTags.TIS, "TDT/TOT clock factをauthorityへ昇格できないためfail-closedにします inputId=$inputId")
+        } else {
+            latestBroadcastClockAuthority = update.authority
+            if (update.discontinuity) {
+                Log.w(
+                    LogTags.TIS,
+                    "TDT/TOT clock discontinuityを検出しました inputId=$inputId generation=${update.authority.generation}",
+                )
+            }
+        }
+        onBroadcastClockUpdatedCallback?.invoke()
     }
 
     private fun handleEcmSectionOnController(
@@ -1998,6 +2046,7 @@ class TunerController(
             SectionFilterPolicy.completeCleanup(cleanup, notifyLost)
         }
 
+        private const val EXHAUSTED_TUNE_GENERATION = -1L
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 

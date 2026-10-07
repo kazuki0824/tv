@@ -124,6 +124,22 @@ class PlaybackResourceCleanupTest {
         check(!owned && !cleanup.hasPending && calls == 2)
     }
 
+    @Test
+    fun playbackGenerationExhaustionStillUnregistersBeforeFailure() {
+        val order = mutableListOf<String>()
+        val generationFailure = IllegalStateException("再生generationが枯渇しました")
+        val failure =
+            runCatching {
+                PlaybackPipeline.completeStopAfterResourceRelease(
+                    unregister = { order += "登録解除" },
+                    requireCleanupComplete = { order += "cleanup完了確認" },
+                    generationFailure = generationFailure,
+                )
+            }.exceptionOrNull()
+        check(order == listOf("登録解除", "cleanup完了確認"))
+        check(failure === generationFailure)
+    }
+
     @Test fun codecRecoveryIsBoundedAndReclaimedAlwaysTerminates() {
         check(PlaybackPipeline.codecRecoveryDelay(false, true, false, false) == 0L)
         check(PlaybackPipeline.codecRecoveryDelay(false, false, true, false) == 100L)

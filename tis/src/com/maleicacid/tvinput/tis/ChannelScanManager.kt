@@ -17,6 +17,8 @@ import java.util.concurrent.atomic.AtomicReference
 @Suppress("TooManyFunctions", "LargeClass")
 object ChannelScanManager {
     private const val TUNER_RESOURCE_LOST = "TUNER_RESOURCE_LOST"
+    private const val SCAN_GENERATION_EXHAUSTED = "SCAN_GENERATION_EXHAUSTED"
+    private const val EXHAUSTED_SCAN_GENERATION = -1
 
     interface Listener {
         fun onScanStateChanged(state: ScanState)
@@ -124,7 +126,7 @@ object ChannelScanManager {
 
     fun beginLiveSessionCreation() {
         retryPendingRelease()
-        sessionCreationsInProgress.incrementAndGet()
+        sessionCreationsInProgress.updateAndGet { Math.addExact(it, 1) }
         preemptBootOrBackgroundScanForLiveSessionCreation()
     }
 
@@ -270,7 +272,10 @@ object ChannelScanManager {
         }
         val task = beginScan(ScanPurpose.BOOT_EPG_SYNC, appContext)
         if (task == null) {
-            markBootEpgSyncDeferred(appContext, "SCAN_RUNNING")
+            markBootEpgSyncDeferred(
+                appContext,
+                if (isScanRunning()) "SCAN_RUNNING" else SCAN_GENERATION_EXHAUSTED,
+            )
             return null
         }
         val generation = task.generation
@@ -397,7 +402,10 @@ object ChannelScanManager {
         }
         val task = beginScan(ScanPurpose.BACKGROUND_MAINTENANCE, appContext)
         if (task == null) {
-            markBackgroundMaintenanceSkipped("SCAN_RUNNING", source)
+            markBackgroundMaintenanceSkipped(
+                if (isScanRunning()) "SCAN_RUNNING" else SCAN_GENERATION_EXHAUSTED,
+                source,
+            )
             return false
         }
         val generation = task.generation
@@ -551,11 +559,35 @@ object ChannelScanManager {
         }
     }
 
+    private fun allocateScanGeneration(): Int? {
+        while (true) {
+            val current = nextGeneration.get()
+            val next =
+                runCatching { RuntimeIdentity.nextInt(current, "channel scan世代") }
+                    .getOrNull()
+                    ?: return null
+            if (nextGeneration.compareAndSet(current, next)) return next
+        }
+    }
+
+    @Synchronized
+    @Suppress("ReturnCount")
     private fun beginScan(
         purpose: ScanPurpose,
         context: Context,
     ): ActiveScanTask? {
-        val generation = nextGeneration.incrementAndGet()
+        if (activeTask.get() != null) return null
+        val generation = allocateScanGeneration()
+        if (generation == null) {
+            setState(
+                ScanState.Failed(
+                    SCAN_GENERATION_EXHAUSTED,
+                    EXHAUSTED_SCAN_GENERATION,
+                    purpose,
+                ),
+            )
+            return null
+        }
         val task = ActiveScanTask(generation, purpose, context.applicationContext)
         if (!activeTask.compareAndSet(null, task)) return null
         setState(ScanState.Running(System.currentTimeMillis(), generation, purpose))

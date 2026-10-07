@@ -336,6 +336,12 @@ pub struct DescriptorDiagnosticV1 {
 
 canonical JSON は Rust `serde_json` で生成し、struct フィールド順序と`BTreeMap`により出力順序を固定する。これは保存bytesの決定性、32 KiB上限制御、回帰試験データとのbyte比較のために必要である。provider-data単体の同一内容判定には、TISがTvProvider更新抑止用に計算する行全体のpublish fingerprintが既にprovider-data bytesを含むため、別のSHA-256値を生成・返却・保存しない。provider-dataの暗号学的署名、MAC、真正性、送信者認証、改ざん防止も要件としない。
 
+### Runtime identity / collection generation の枯渇契約
+
+parserの `collection_generation` と `sections_seen` はsnapshotの世代・ingest順序を識別するruntime identityであり、`saturating_add`による最大値固定やwrap/reuseを行わない。checked incrementに失敗した時点で当該parserをidentity-exhaustedへ不可逆にfenceし、collection semantic facts / broadcast clockを破棄して以後のingestを `STATUS_INTERNAL_ERROR` とする。snapshot取得は空collectionを返さず `NativeSiException(reason=IDENTITY_EXHAUSTED)` として失敗する。
+
+JNI parser handleはprocess-local live object identityである。handle空間の末尾に達した場合は正数空間を巡回してよいが、registry内のlive handleとの衝突検査を必須とし、既存parserを上書きしない。空きhandleを得られない場合はcreateを失敗させる。parser handle、collection generation、ingest sequenceの再利用可否を相互に混同しない。
+
 ### JNI boundary
 
 #### 実行失敗と正常な空値の区別
@@ -350,6 +356,7 @@ canonical JSON は Rust `serde_json` で生成し、struct フィールド順序
 | `REGISTRY_POISONED` | 解析器登録表のロック汚染 |
 | `PARSER_POISONED` | 解析器状態のロック汚染 |
 | `INVALID_HANDLE` | 存在しない解析器handle |
+| `IDENTITY_EXHAUSTED` | parserのcollection generationまたはingest sequenceが枯渇し、当該parserをfail-closedにした状態 |
 | `JNI_INPUT` | Java文字列・配列の取得や変換の失敗 |
 | `JNI_OUTPUT` | Java結果の生成失敗、例外なしの不正なnull戻り値 |
 

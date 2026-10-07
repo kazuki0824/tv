@@ -242,6 +242,36 @@ class AribBroadcastClockTest {
         check(timers.posted.size == 1)
     }
 
+    @Test
+    fun timedPesArmSequenceExhaustionRollsBackPendingOwnership() {
+        val scheduler =
+            BroadcastTimedPesScheduler(
+                resolveDeadline = { _, _ -> AribBroadcastClock.Deadline(1L, 1_000L) },
+                currentPlaybackGeneration = { 1L },
+                currentTrackId = { "文字スーパー:1" },
+                dispatch = { action -> action() },
+                postDelayed = { _, _ -> },
+                removeCallbacks = { _ -> },
+                onDue = { _, _ -> },
+            )
+        scheduler.javaClass
+            .getDeclaredField("nextArmSequence")
+            .apply { isAccessible = true }
+            .setLong(scheduler, Long.MAX_VALUE)
+
+        val failure =
+            runCatching {
+                scheduler.submit(
+                    "文字スーパー:1",
+                    byteArrayOf(1),
+                    AribBroadcastClock.StatementTime(1L),
+                )
+            }.exceptionOrNull()
+
+        check(failure is IllegalStateException)
+        check(pendingCount(scheduler) == 0)
+    }
+
     private fun assertTiming10PendingIsBoundedByCountBytesAndHorizon() {
         val drops = mutableListOf<String>()
         val statement = AribBroadcastClock.StatementTime(1L)

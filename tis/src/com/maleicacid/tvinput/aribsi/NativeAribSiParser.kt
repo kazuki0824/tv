@@ -12,6 +12,7 @@ enum class NativeSiFailureReason {
     REGISTRY_POISONED,
     PARSER_POISONED,
     INVALID_HANDLE,
+    IDENTITY_EXHAUSTED,
     JNI_INPUT,
     JNI_OUTPUT,
 }
