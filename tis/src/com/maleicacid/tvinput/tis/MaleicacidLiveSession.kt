@@ -359,6 +359,7 @@ class MaleicacidLiveSession(
         val service = transaction.services.firstOrNull { it.serviceKey == serviceKey }
         val pmtPids = transaction.pmtPidsFor(serviceKey)
         val decision = currentServicePolicy()
+        if (initialLiveSiPending(decision)) return
         val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
         val serviceScopedCa =
             allCaMetadata.filter {
@@ -1436,6 +1437,9 @@ class MaleicacidLiveSession(
     }
 
     companion object {
+        internal fun initialLiveSiPending(decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision): Boolean =
+            decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING
+
         internal fun commitPlaybackStartResult(
             next: PlaybackStartState,
             accept: (PlaybackStartState) -> Unit,

@@ -124,6 +124,7 @@ object ServicePolicyEvaluator {
                 requiresCas = false,
                 caDescriptorsResolved = false,
                 reasons = listOf("NO_CURRENT_SERVICE_SEMANTIC_FACTS"),
+                state = ServicePolicyState.PENDING,
             )
         }
 
@@ -181,11 +182,30 @@ object ServicePolicyEvaluator {
         if (!hasInternalTuneKey) registrationReasons += "NO_INTERNAL_TUNE_KEY"
         val normalizedRegistrationReasons = registrationReasons.distinct().sorted()
         val registrationReady = normalizedRegistrationReasons.isEmpty()
+        val state =
+            when {
+                registrationReady -> ServicePolicyState.READY
+
+                normalizedRegistrationReasons.any {
+                    it == "UNSUPPORTED_OR_UNRESOLVED_SERVICE_TYPE" ||
+                        it == "NO_SUPPORTED_VIDEO_CODEC" ||
+                        it == "NO_SUPPORTED_AUDIO_CODEC" ||
+                        it == "UNSUPPORTED_BROADCAST_SYSTEM" ||
+                        it == SmdSemanticState.NON_BROADCAST.wireValue
+                } -> ServicePolicyState.UNSUPPORTED
+
+                normalizedRegistrationReasons.any {
+                    it == SmdSemanticState.UNDEFINED_BROADCAST_CLASS.wireValue
+                } -> ServicePolicyState.INVALID
+
+                else -> ServicePolicyState.PENDING
+            }
         return ServicePolicyDecision(
             serviceKey = key,
             registrationReady = registrationReady,
             requiresCas = facts.requiresCas,
             caDescriptorsResolved = facts.caDescriptorsResolved,
+            state = state,
             reasons =
                 (
                     normalizedRegistrationReasons +

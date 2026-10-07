@@ -579,12 +579,21 @@ data class LivePlaybackSnapshot(
     fun pmtPidsFor(key: ServiceKey): Set<TsPid> = listOfNotNull(pmtPids[key]).toSet()
 }
 
+enum class ServicePolicyState {
+    PENDING,
+    READY,
+    UNSUPPORTED,
+    INVALID,
+}
+
 data class ServicePolicyDecision(
     val serviceKey: ServiceKey,
     val registrationReady: Boolean,
     val requiresCas: Boolean,
     val caDescriptorsResolved: Boolean,
     val reasons: List<String>,
+    val state: ServicePolicyState =
+        if (registrationReady) ServicePolicyState.READY else ServicePolicyState.INVALID,
 ) {
     val casDecisionReady: Boolean get() = registrationReady && caDescriptorsResolved
     val clearLivePlaybackStaticallyEligible: Boolean get() = casDecisionReady && !requiresCas
