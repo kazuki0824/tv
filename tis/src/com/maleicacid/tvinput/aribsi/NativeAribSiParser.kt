@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.aribsi.generated.SiCollectionSnapshotDto
 import com.maleicacid.tvinput.common.TsPid
 
 class NativeParserCleanupException(
@@ -100,17 +101,11 @@ class NativeAribSiParser : AutoCloseable {
     @Suppress("MaxLineLength")
     @Synchronized
     fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot {
-        val snapshot = readNativeTransaction()
-        return ServiceRegistrationSnapshot(
-            discoveryStage = snapshot.discoveryStage,
-            tableRequirements = snapshot.tableRequirements,
-            services = snapshot.services,
-            actualTransports = snapshot.actualTransports.map { TransportKey(it.originalNetwork, it.transportStream) }.toSet(),
-            actualTransportMetadata = snapshot.actualTransports,
-            semanticFactsByServiceKey = snapshot.serviceSemanticFacts.associateBy { it.serviceKey },
-            diagnostics = snapshot.parserDiagnostics,
-            eitInstances = snapshot.eitInstances,
-        )
+        check(handle != 0L) { "ネイティブ解析器は終了済みです" }
+        val snapshot =
+            nativeSiCollectionSnapshotTyped(handle)
+                ?: throw NativeSiException("JNI_OUTPUT", "JNIがSI collection snapshotを返しませんでした")
+        return snapshot.toDomainServiceRegistrationSnapshot()
     }
 
     @Synchronized
@@ -268,6 +263,8 @@ class NativeAribSiParser : AutoCloseable {
     ): Int
 
     private external fun nativeSnapshotBulkTyped(handle: Long): com.maleicacid.tvinput.aribsi.generated.BulkSnapshotDto?
+
+    private external fun nativeSiCollectionSnapshotTyped(handle: Long): SiCollectionSnapshotDto?
 
     private external fun nativeSnapshotPmtPidsForSectionFilters(handle: Long): IntArray?
 
