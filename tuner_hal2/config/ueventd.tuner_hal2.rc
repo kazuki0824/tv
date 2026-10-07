@@ -10,4 +10,3 @@
 /dev/pxm1urvideo*                0660 media system
 /dev/pxs1urvideo*                0660 media system
 /dev/isdbt2071video*             0660 media system
-/dev/dma_heap/system                  0660 media system
