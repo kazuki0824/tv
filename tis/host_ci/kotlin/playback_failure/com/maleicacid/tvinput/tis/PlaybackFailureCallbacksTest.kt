@@ -1244,6 +1244,7 @@ class PlaybackFailureCallbacksTest {
             set("videoAvailableNotified", AtomicBoolean(!waiting))
             set("resourceCleanup", cleanup)
             set("outstandingAudioOutputs", linkedMapOf<Int, Any>())
+            set("pendingAudioOutputReleases", mutableSetOf<Int>())
             val ptsType = field("ptsEpochCoordinator").type
             set("ptsEpochCoordinator", ptsType.getDeclaredConstructor().apply { isAccessible = true }.newInstance())
             set("activeTuner", tuner)

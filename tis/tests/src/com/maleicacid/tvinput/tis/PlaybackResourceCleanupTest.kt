@@ -67,6 +67,23 @@ class PlaybackResourceCleanupTest {
         cleanup.requireComplete()
         check(!cleanup.hasPending)
         check(calls == listOf("decoder", "filter", "decoder"))
+
+        val owned = linkedMapOf(7 to "codec-output")
+        val ownedCleanup = ResourceCleanup()
+        var rejectOwnedRelease = true
+        val releaseOwned = {
+            val value = requireNotNull(owned[7])
+            ownedCleanup.release(value) {
+                if (rejectOwnedRelease) error("codec出力のreleaseに失敗しました")
+                owned.remove(7)
+            }
+        }
+        releaseOwned()
+        check(owned[7] == "codec-output" && ownedCleanup.hasPending)
+        rejectOwnedRelease = false
+        ownedCleanup.retry()
+        ownedCleanup.requireComplete()
+        check(owned.isEmpty())
     }
 
     @Test fun retuneCleanupInvalidatesBeforeEveryFailureAndBlocksNextTuneUntilRetry() {

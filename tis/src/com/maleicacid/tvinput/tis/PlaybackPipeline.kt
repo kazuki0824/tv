@@ -92,6 +92,7 @@ class PlaybackPipeline(
     private var videoAvailabilityMode: VideoAvailabilityMode? = null
     private val ptsEpochCoordinator = PtsEpochCoordinator()
     private val outstandingAudioOutputs = linkedMapOf<Int, AudioOutput>()
+    private val pendingAudioOutputReleases = mutableSetOf<Int>()
     private var nextAudioBufferId = 1
     private var audioOutputBackpressureStartedAtMs: Long? = null
     private val videoAvailableNotified = AtomicBoolean(false)
@@ -1111,11 +1112,23 @@ class PlaybackPipeline(
         generation: Long,
         bufferId: Int,
     ) {
-        val output = outstandingAudioOutputs.remove(bufferId) ?: return
-        runCatching { output.codec.releaseOutputBuffer(output.index, false) }
-            .onFailure { Log.w(LogTags.TIS, "consumed audio outputのreleaseに失敗しました bufferId=$bufferId", it) }
-        audioOutputBackpressureStartedAtMs = null
+        releaseAudioOutput(bufferId)
+        if (outstandingAudioOutputs.isEmpty()) {
+            audioOutputBackpressureStartedAtMs = null
+        }
         if (sync !== mediaSync || generation != playbackGeneration) return
+    }
+
+    private fun releaseAudioOutput(bufferId: Int) {
+        val output = outstandingAudioOutputs[bufferId] ?: return
+        if (!pendingAudioOutputReleases.add(bufferId)) return
+        resourceCleanup.release("audio codec出力 bufferId=$bufferId index=${output.index}") {
+            output.codec.releaseOutputBuffer(output.index, false)
+            if (outstandingAudioOutputs[bufferId] === output) {
+                outstandingAudioOutputs.remove(bufferId)
+            }
+            pendingAudioOutputReleases.remove(bufferId)
+        }
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -1290,7 +1303,7 @@ class PlaybackPipeline(
     internal fun currentPlaybackGenerationForTest(): Long = playbackGeneration
 
     private fun releaseMediaEvent(event: MediaEvent) {
-        runCatching { event.release() }.onFailure { Log.w(LogTags.TIS, "MediaEvent の release に失敗しました", it) }
+        resourceCleanup.release("MediaEvent") { event.release() }
     }
 
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
@@ -1934,9 +1947,10 @@ class PlaybackPipeline(
             try {
                 requireNotNull(mediaSync).queueAudio(bytes, bufferId, info.presentationTimeUs)
             } catch (error: RuntimeException) {
-                outstandingAudioOutputs.remove(bufferId)
-                audioOutputBackpressureStartedAtMs = null
-                codec.releaseOutputBuffer(index, false)
+                releaseAudioOutput(bufferId)
+                if (outstandingAudioOutputs.isEmpty()) {
+                    audioOutputBackpressureStartedAtMs = null
+                }
                 errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.message.orEmpty())
             }
         }
@@ -2851,14 +2865,10 @@ class PlaybackPipeline(
     }
 
     private fun releaseOutstandingAudioOutputs() {
-        outstandingAudioOutputs.values.forEach { output ->
-            runCatching {
-                output.codec.releaseOutputBuffer(output.index, false)
-            }.onFailure { Log.w(LogTags.TIS, "audio outputの回収に失敗しました index=${output.index}", it) }
+        outstandingAudioOutputs.keys.toList().forEach(::releaseAudioOutput)
+        if (outstandingAudioOutputs.isEmpty()) {
+            audioOutputBackpressureStartedAtMs = null
         }
-        outstandingAudioOutputs.clear()
-        audioOutputBackpressureStartedAtMs =
-            null
     }
 
     private fun closeFilter(filter: Filter?) {
