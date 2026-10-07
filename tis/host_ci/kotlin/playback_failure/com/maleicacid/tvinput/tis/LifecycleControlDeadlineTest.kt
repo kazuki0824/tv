@@ -29,10 +29,14 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
                 executor.executeData { order += "data-second" }
                 secondReturned.countDown()
             }
-        val control = executor.submitControl { order += "control" }
+        val control = CountDownLatch(1)
+        executor.executeControl {
+            order += "control"
+            control.countDown()
+        }
         check(!secondReturned.await(50, TimeUnit.MILLISECONDS))
         releaseFirst.countDown()
-        control.get(1, TimeUnit.SECONDS)
+        check(control.await(1, TimeUnit.SECONDS))
         producerFuture.get(1, TimeUnit.SECONDS)
         executor.shutdown()
         check(executor.awaitTermination(1, TimeUnit.SECONDS))
@@ -173,7 +177,7 @@ class LifecycleControlDeadlineTest {
             val failure = runCatching { executor.callControl(50L) { executed.set(true) } }.exceptionOrNull()
             check(failure is IllegalStateException && failure !is ControlResultUnknownException)
             release.countDown()
-            executor.submitControl {}.get(1, TimeUnit.SECONDS)
+            executor.callControl(1_000L) {}
             check(!executed.get())
         } finally {
             release.countDown()

@@ -26,6 +26,10 @@
 
 - 挿入成功時に既存scanのrollback集合へIDを直接渡し、upsert途中と後続Program snapshot取得の例外でも新規行を既存finalizationで削除可能にした。別owner・scheduler・migrationは追加しない。回帰試験は既存CIへ委ね、Soong/VTS/実機は未実施。
 
+# 同一publicationの既存Program重複key拒否
+
+- existing/new分岐前に全program keyを検査し、重複時はservice batch全体を書き込まない。既存rowありの重複入力試験を追加した。新しいownerやcacheは追加しない。
+
 - レビュー再確認により、現行製品の必要条件を立証できないchannel型移行transactionを撤去した。通常rescanは既存IDとユーザー可視性を保持し、immutable列をupdateから除外する。
 
 ## レビュー対応: immutable型を保つupsertの必須semantics
@@ -114,11 +118,16 @@
 - 実ContentProviderOperationとSQLite transactionを使うRobolectric試験を追加し、中間・末尾行の消失、既存行と新規行の混在、正常commitを検査する。製品の新しいowner・retry・migrationは追加しない。
 - Kotlin build ownership検査へRobolectric専用試験のsource setを登録し、通常host・製品sourceへ混入させずに型照合・実行・品質検査を行う。
 
-# 同一publicationの既存Program重複key拒否
+# stacked PR直線化時のレビュー残件
 
 - #186レビュー本文で指摘された既存channel一覧queryの未実装defaultを、空集合成功ではなくUnsupportedOperationExceptionのResult.failureへ変更した。writer公開入口で未実装失敗と明示実装の取得結果を既存試験へ追加した。productionの所有input別query、boot/backgroundの失敗伝播、試験数は維持。Soong/device atest/VTS/実機確認は未実施。
 
-- existing/new分岐前に全program keyを検査し、重複時はservice batch全体を書き込まない。既存rowありの重複入力試験を追加した。新しいownerやcacheは追加しない。
+- #166の既存試験で使用するreflection helperを試験class内へ復元し、controller専用試験との重複は再導入しない。
+- #183のlive初期判定はservice観測有無に依存させず、typed PENDINGを待機として保持する。PMT/PCR未完成とterminal stateの反例を境界試験へ追加した。
+- 未使用のLifecycleSerialExecutor.submitControlを削除し、試験は既存executeControl/callControlへ接続した。
+- queued→runningのCASとSI更新時のrelease再確認を維持し、取消し競合・投入後解放の理由を付けてRedundantIfを対象式だけ抑制した。
+- #161からの両系統を各PRの差分を保持して直線化し、setup/one-segの変更をlive owner以降にも継承した。
+
 
 # setup scanの新規channel可視性transaction
 

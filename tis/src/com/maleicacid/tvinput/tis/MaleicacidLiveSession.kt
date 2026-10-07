@@ -1528,9 +1528,8 @@ class MaleicacidLiveSession(
     }
 
     companion object {
-        internal fun initialLiveSiPending(
-            decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision,
-        ): Boolean = decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING
+        internal fun initialLiveSiPending(decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision): Boolean =
+            decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING
 
         internal fun commitPlaybackStartResult(
             next: PlaybackStartState,
