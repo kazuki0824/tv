@@ -121,6 +121,7 @@
 # stacked PR直線化時のレビュー残件
 
 - #186レビュー本文で指摘された既存channel一覧queryの未実装defaultを、空集合成功ではなくUnsupportedOperationExceptionのResult.failureへ変更した。writer公開入口で未実装失敗と明示実装の取得結果を既存試験へ追加した。productionの所有input別query、boot/backgroundの失敗伝播、試験数は維持。Soong/device atest/VTS/実機確認は未実施。
+- Qodanaの追加4件は取消しCASおよびsurface/track選択のrelease判定を短絡評価へ同値変換して対処し、失効時の後続処理拒否と評価順を保持した。
 
 - #166の既存試験で使用するreflection helperを試験class内へ復元し、controller専用試験との重複は再導入しない。
 - #183のlive初期判定はservice観測有無に依存させず、typed PENDINGを待機として保持する。PMT/PCR未完成とterminal stateの反例を境界試験へ追加した。

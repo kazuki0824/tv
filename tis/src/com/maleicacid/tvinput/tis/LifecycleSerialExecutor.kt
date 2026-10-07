@@ -56,10 +56,7 @@ internal class LifecycleSerialExecutor(
             }
         }
 
-        fun cancelBeforeStart(): Boolean {
-            if (!phase.compareAndSet(CONTROL_QUEUED, CONTROL_CANCELLED)) return false
-            return super.cancel(false)
-        }
+        fun cancelBeforeStart(): Boolean = phase.compareAndSet(CONTROL_QUEUED, CONTROL_CANCELLED) && super.cancel(false)
     }
 
     private data class QueuedTask(

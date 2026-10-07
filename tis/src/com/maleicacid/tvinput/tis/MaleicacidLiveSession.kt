@@ -244,15 +244,12 @@ class MaleicacidLiveSession(
     }
 
     override fun onSetSurface(surface: Surface?): Boolean =
-        if (releaseOnce.get()) {
-            false
-        } else {
+        !releaseOnce.get() &&
             runCatching {
                 runOnSessionExecutorBlocking {
-                    if (releaseOnce.get()) false else onSetSurfaceOnSessionExecutor(surface)
+                    !releaseOnce.get() && onSetSurfaceOnSessionExecutor(surface)
                 }
             }.getOrDefault(false)
-        }
 
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
         this.surface = surface
@@ -669,7 +666,7 @@ class MaleicacidLiveSession(
         !releaseOnce.get() &&
             runCatching {
                 runOnSessionExecutorBlocking {
-                    if (releaseOnce.get()) false else onSelectTrackOnSessionExecutor(type, trackId)
+                    !releaseOnce.get() && onSelectTrackOnSessionExecutor(type, trackId)
                 }
             }.getOrDefault(false)
 
