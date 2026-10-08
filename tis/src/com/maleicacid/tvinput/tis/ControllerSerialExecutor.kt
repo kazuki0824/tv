@@ -65,7 +65,7 @@ internal class ControllerSerialExecutor(
         thread: Thread,
         runnable: Runnable,
     ) {
-        ownerThread.compareAndSet(null, thread)
+        ownerThread.set(thread)
         super.beforeExecute(thread, runnable)
     }
 

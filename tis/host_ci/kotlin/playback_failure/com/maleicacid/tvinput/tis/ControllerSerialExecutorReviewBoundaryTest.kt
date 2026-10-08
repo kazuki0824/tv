@@ -1,11 +1,50 @@
 package com.maleicacid.tvinput.tis
 
 import org.junit.Test
+import sun.misc.Unsafe
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class ControllerSerialExecutorReviewBoundaryTest {
+    @Test
+    fun replacementWorkerReentersControllerWithoutSelfQueueWait() {
+        val executor = ControllerSerialExecutor("交換worker試験")
+        val previous = AtomicReference<Thread>()
+        val unsafe =
+            Unsafe::class.java
+                .getDeclaredField("theUnsafe")
+                .apply { isAccessible = true }
+                .get(null) as Unsafe
+        val controller = unsafe.allocateInstance(TunerController::class.java) as TunerController
+        TunerController::class.java
+            .getDeclaredField("sectionExecutor")
+            .apply { isAccessible = true }
+            .set(controller, executor)
+        val dataCall =
+            TunerController::class.java
+                .getDeclaredMethod("callOnControllerData", Function0::class.java)
+                .apply { isAccessible = true }
+        try {
+            executor.executeControl {
+                previous.set(Thread.currentThread())
+                error("worker交換を起こす試験用例外")
+            }
+            val result =
+                executor
+                    .submitControl {
+                        check(Thread.currentThread() !== previous.get())
+                        check(executor.isOwnerThread())
+                        check(controller.currentGeneration() == 0L)
+                        dataCall.invoke(controller, { 7 })
+                    }.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            check(result == 7)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
     @Test
     fun controllerExecutorOwnerUsesThreadIdentityNotName() {
         val executor = ControllerSerialExecutor("owner-identity-test")
