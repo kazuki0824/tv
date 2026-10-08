@@ -64,6 +64,7 @@ internal class LifecycleSerialExecutor(
         val sequence: Long,
         val delegate: Runnable,
         val onFinished: (() -> Unit)? = null,
+        val onDiscarded: (() -> Unit)? = null,
     ) : Runnable {
         override fun run() {
             try {
@@ -74,13 +75,14 @@ internal class LifecycleSerialExecutor(
         }
 
         fun discardBeforeRun() {
-            onFinished?.invoke()
+            onDiscarded?.invoke()
         }
     }
 
     private val ownerThread = AtomicReference<Thread?>()
     private val nextSequence = AtomicLong()
     private val deferredOwnerData = ArrayDeque<Runnable>()
+    private var stoppingData = false
     private val pendingDataSlots =
         Semaphore(maxPendingDataTasks.also { require(it > 0) { "maxPendingDataTasksは正でなければなりません" } })
 
@@ -95,8 +97,14 @@ internal class LifecycleSerialExecutor(
     fun isOwnerThread(): Boolean = Thread.currentThread() === ownerThread.get()
 
     override fun shutdownNow(): MutableList<Runnable> {
+        val deferred =
+            synchronized(deferredOwnerData) {
+                stoppingData = true
+                deferredOwnerData.toList().also { deferredOwnerData.clear() }
+            }
         val dropped = super.shutdownNow()
         dropped.filterIsInstance<QueuedTask>().forEach(QueuedTask::discardBeforeRun)
+        dropped.addAll(deferred)
         return dropped
     }
 
@@ -112,10 +120,13 @@ internal class LifecycleSerialExecutor(
 
     fun executeData(command: Runnable) {
         if (isOwnerThread()) {
-            check(deferredOwnerData.size < maxPendingDataTasks) {
-                "$threadName のowner-thread data再投入数が上限に達しました"
+            synchronized(deferredOwnerData) {
+                if (stoppingData || isShutdown) throw RejectedExecutionException("$threadName はshutdown済みです")
+                check(deferredOwnerData.size < maxPendingDataTasks) {
+                    "$threadName のowner-thread data再投入数が上限に達しました"
+                }
+                deferredOwnerData.addLast(command)
             }
-            deferredOwnerData.addLast(command)
             return
         }
         acquireDataSlotAndEnqueue(command)
@@ -131,7 +142,7 @@ internal class LifecycleSerialExecutor(
             throw RejectedExecutionException("$threadName data enqueue待機が割り込まれました", error)
         }
         try {
-            enqueue(DATA_QUEUE_CLASS, command, ::finishDataTask)
+            enqueue(DATA_QUEUE_CLASS, command, ::finishDataTask, pendingDataSlots::release)
         } catch (error: RejectedExecutionException) {
             pendingDataSlots.release()
             throw error
@@ -141,22 +152,31 @@ internal class LifecycleSerialExecutor(
         }
     }
 
-    private fun finishDataTask() {
-        val deferred = deferredOwnerData.removeFirstOrNull()
-        if (deferred == null) {
-            pendingDataSlots.release()
-            return
+    private fun finishDataTask() =
+        synchronized(deferredOwnerData) {
+            val deferred =
+                if (stoppingData || isShutdown) {
+                    deferredOwnerData.clear()
+                    null
+                } else {
+                    deferredOwnerData.removeFirstOrNull()
+                }
+            if (deferred == null) {
+                pendingDataSlots.release()
+                return@synchronized
+            }
+            try {
+                enqueue(DATA_QUEUE_CLASS, deferred, ::finishDataTask, pendingDataSlots::release)
+            } catch (error: RejectedExecutionException) {
+                deferredOwnerData.clear()
+                pendingDataSlots.release()
+                if (!isShutdown) throw error
+            } catch (error: IllegalStateException) {
+                deferredOwnerData.clear()
+                pendingDataSlots.release()
+                throw error
+            }
         }
-        try {
-            enqueue(DATA_QUEUE_CLASS, deferred, ::finishDataTask)
-        } catch (error: RejectedExecutionException) {
-            pendingDataSlots.release()
-            throw error
-        } catch (error: IllegalStateException) {
-            pendingDataSlots.release()
-            throw error
-        }
-    }
 
     // 未開始の取消しと開始済みの結果不明を混同せず、有限待機の終了理由を保持する。
     @Suppress("ThrowsCount")
@@ -195,6 +215,7 @@ internal class LifecycleSerialExecutor(
         queueClass: Int,
         command: Runnable,
         onFinished: (() -> Unit)? = null,
+        onDiscarded: (() -> Unit)? = null,
     ) {
         val sequence = nextSequence.getAndIncrement()
         check(sequence >= 0L) { "$threadName task sequenceが枯渇しました" }
@@ -204,6 +225,7 @@ internal class LifecycleSerialExecutor(
                 sequence = sequence,
                 delegate = command,
                 onFinished = onFinished,
+                onDiscarded = onDiscarded,
             ),
         )
     }

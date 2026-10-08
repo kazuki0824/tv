@@ -50,6 +50,52 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
 
 class LifecycleControlDeadlineTest {
     @Test
+    fun shutdownFromOtherThreadDiscardsDeferredDataAndReturnsAllPermits() {
+        val executor = LifecycleSerialExecutor("並行shutdown試験", maxPendingDataTasks = 2)
+        val deferredReady = CountDownLatch(1)
+        val releaseOwner = CountDownLatch(1)
+        val shutdownDone = CountDownLatch(1)
+        val failure =
+            java.util.concurrent.atomic
+                .AtomicReference<Throwable?>()
+        try {
+            executor.executeData {
+                executor.executeData { error("deferred dataが実行されました") }
+                executor.executeData { error("deferred dataが実行されました") }
+                deferredReady.countDown()
+                while (releaseOwner.count > 0) {
+                    runCatching { releaseOwner.await() }
+                }
+            }
+            check(deferredReady.await(1, TimeUnit.SECONDS))
+            executor.executeData { error("queued dataが実行されました") }
+            val shutdownThread =
+                Thread {
+                    try {
+                        check(executor.shutdownNow().size == 3)
+                    } catch (error: Throwable) {
+                        failure.set(error)
+                    } finally {
+                        shutdownDone.countDown()
+                    }
+                }
+            shutdownThread.start()
+            check(shutdownDone.await(1, TimeUnit.SECONDS))
+            check(failure.get() == null) { failure.get().toString() }
+            releaseOwner.countDown()
+            check(executor.awaitTermination(1, TimeUnit.SECONDS))
+            val field = LifecycleSerialExecutor::class.java.getDeclaredField("pendingDataSlots").apply { isAccessible = true }
+            val slots = field.get(executor) as java.util.concurrent.Semaphore
+            check(slots.availablePermits() == 2)
+            check(runCatching { executor.executeData {} }.exceptionOrNull() is java.util.concurrent.RejectedExecutionException)
+            check(slots.availablePermits() == 2)
+        } finally {
+            releaseOwner.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun lifecycleShutdownReturnsDiscardedDataPermit() {
         val executor = LifecycleSerialExecutor("lifecycle-shutdown試験", maxPendingDataTasks = 1)
         val controlStarted = CountDownLatch(1)

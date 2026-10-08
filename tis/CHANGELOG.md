@@ -20,6 +20,10 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# shutdown時のdeferred dataとpermit回収
+
+- discard callbackを通常finishから分離し、shutdown時は再enqueueしない。既存deferred queueを同じmonitorで排他回収し、実行中dataとqueued dataのpermitを一度ずつ返す。別thread shutdownとowner再入の競合試験を追加した。
+
 # PR #119 channel挿入直後のrollback ID引渡し
 
 - 未初期化native ownerを使用する例外注入試験をhost専用ソースへ置き、Android/SoongとRobolectric共用ソースにsun.misc.Unsafe依存を持ち込まない。
