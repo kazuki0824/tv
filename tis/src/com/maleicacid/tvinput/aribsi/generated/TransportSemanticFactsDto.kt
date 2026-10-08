@@ -9,4 +9,3 @@ data class TransportSemanticFactsDto(
     val remoteControlKeyId: Int?,
     val sdtActual: Boolean
 )
-

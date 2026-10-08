@@ -9,4 +9,3 @@ data class SiCollectionSnapshotDto(
     val serviceSemanticFacts: List<ServiceSemanticFactsDto>,
     val parserDiagnostics: List<ParserDiagnosticDto>
 )
-

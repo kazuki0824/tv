@@ -5,4 +5,3 @@ data class MalformedCaDescriptorCountDto(
     val serviceId: Int,
     val count: Int
 )
-

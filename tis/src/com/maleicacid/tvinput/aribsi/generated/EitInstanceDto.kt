@@ -15,4 +15,3 @@ data class EitInstanceDto(
     val complete: Boolean,
     val inconsistent: Boolean
 )
-

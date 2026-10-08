@@ -23,4 +23,3 @@ data class ServiceSemanticFactsDto(
     val pcrPid: Int?,
     val serviceScopedCaDescriptors: List<ServiceCaDescriptorDto>
 )
-

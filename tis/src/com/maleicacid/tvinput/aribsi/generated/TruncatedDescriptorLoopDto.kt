@@ -6,4 +6,3 @@ data class TruncatedDescriptorLoopDto(
     val rawBytesHex: String,
     val parseStatus: SiParseStatusDto
 )
-

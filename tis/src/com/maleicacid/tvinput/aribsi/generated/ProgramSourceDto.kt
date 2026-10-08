@@ -8,4 +8,3 @@ data class ProgramSourceDto(
     val sectionNumber: Int,
     val lastSectionNumber: Int
 )
-

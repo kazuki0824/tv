@@ -6,4 +6,3 @@ data class BroadcastClockDto(
     val mjd: Int,
     val millisOfDay: Long
 )
-

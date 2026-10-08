@@ -67,9 +67,8 @@ fn normalize_generated_kotlin(dir: &Path) -> Result<(), Box<dyn Error>> {
             content.push('\n');
             index += 1;
         }
-        if !content.ends_with("\n\n") {
-            content.push('\n');
-        }
+        content.truncate(content.trim_end_matches('\n').len());
+        content.push('\n');
         fs::write(path, content)?;
     }
     Ok(())

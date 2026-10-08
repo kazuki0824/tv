@@ -14,4 +14,3 @@ data class VideoComponentDto(
     val profileLevel: String?,
     val parseStatus: SiParseStatusDto
 )
-

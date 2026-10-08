@@ -9,4 +9,3 @@ sealed class AacProbeStatusDto {
 
     object Ready : AacProbeStatusDto()
 }
-

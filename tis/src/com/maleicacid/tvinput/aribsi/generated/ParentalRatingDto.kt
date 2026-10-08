@@ -6,4 +6,3 @@ data class ParentalRatingDto(
     val rawRatingByte: Int,
     val parseStatus: SiParseStatusDto
 )
-

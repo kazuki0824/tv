@@ -6,4 +6,3 @@ data class AacConfigurationProbeDto(
     val reason: String?,
     val configuration: AacAdtsConfigurationDto?
 )
-

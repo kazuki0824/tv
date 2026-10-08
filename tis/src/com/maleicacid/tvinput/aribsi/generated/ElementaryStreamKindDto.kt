@@ -7,4 +7,3 @@ sealed class ElementaryStreamKindDto {
 
     object Audio : ElementaryStreamKindDto()
 }
-

@@ -6,4 +6,3 @@ data class AvcSignalingDto(
     val constraintFlags: Int,
     val levelIdc: Int
 )
-

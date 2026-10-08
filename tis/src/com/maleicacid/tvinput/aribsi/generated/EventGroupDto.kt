@@ -8,4 +8,3 @@ data class EventGroupDto(
     val privateDataHex: String,
     val parseStatus: SiParseStatusDto
 )
-

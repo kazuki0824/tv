@@ -9,4 +9,3 @@ data class AudioConfigHeaderDto(
     val coreAudioObjectType: Int?,
     val channelCount: Int?
 )
-

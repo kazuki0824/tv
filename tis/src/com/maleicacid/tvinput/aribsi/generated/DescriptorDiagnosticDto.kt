@@ -10,4 +10,3 @@ data class DescriptorDiagnosticDto(
     val descriptor: DescriptorDiagnosticDescriptorDto,
     val message: String
 )
-

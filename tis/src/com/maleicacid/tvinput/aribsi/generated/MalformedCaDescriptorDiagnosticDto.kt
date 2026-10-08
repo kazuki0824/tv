@@ -14,4 +14,3 @@ data class MalformedCaDescriptorDiagnosticDto(
     val reason: String,
     val rawPrefixHex: String
 )
-

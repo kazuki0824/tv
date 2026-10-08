@@ -6,4 +6,3 @@ data class ComponentGroupDescriptorDto(
     val groups: List<ComponentGroupDto>,
     val parseStatus: SiParseStatusDto
 )
-

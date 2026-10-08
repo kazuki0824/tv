@@ -9,4 +9,3 @@ data class CodecFactsDto(
     val profileLevel: String?,
     val resolved: Boolean
 )
-

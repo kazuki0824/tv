@@ -13,4 +13,3 @@ sealed class SmdSemanticStateDto {
 
     object UndeterminedSmd : SmdSemanticStateDto()
 }
-

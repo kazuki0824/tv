@@ -6,4 +6,3 @@ data class ParserDiagnosticDto(
     val message: String,
     val severity: String?
 )
-

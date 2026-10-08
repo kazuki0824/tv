@@ -16,4 +16,3 @@ data class BulkSnapshotDto(
     val serviceSemanticFacts: List<ServiceSemanticFactsDto>,
     val parserDiagnostics: List<ParserDiagnosticDto>
 )
-

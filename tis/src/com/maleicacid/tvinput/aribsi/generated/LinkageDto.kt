@@ -9,4 +9,3 @@ data class LinkageDto(
     val privateDataPrefixHex: String,
     val parseStatus: SiParseStatusDto
 )
-
