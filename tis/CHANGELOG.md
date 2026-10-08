@@ -20,6 +20,11 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+## レビュー対応: 必須pending問い合わせのfail-closed
+
+- 未対応ChannelStoreのpending問い合わせdefaultを失敗へ変更し、既存pending rowなしと混同しない。
+- 必要なtest storeだけ明示query実装とし、default未実装では書込みなしで失敗する反例を固定する。
+
 # 既存channelのone-seg方式移行
 
 - 型変更時だけProvider batchで新規row作成と旧row削除を行い、通常updateでimmutable COLUMN_TYPEを変更しない。one-segはhidden/non-pendingへ再投影する。upgradeと再作成失敗の反例試験を追加した。

@@ -100,7 +100,8 @@ class TvProviderWriter private constructor(
             }
 
         @Suppress("MaxLineLength")
-        fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> = Result.success(emptyMap())
+        fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            Result.failure(UnsupportedOperationException("この store は channel初期可視化pending問い合わせに対応しません"))
 
         fun commitInitialBrowsable(channelIds: Set<Long>): Result<Int> =
             if (channelIds.isEmpty()) {

@@ -14,6 +14,42 @@ import org.junit.Test
 class TvProviderWriterUpsertTest {
     private val key = ServiceKey(originalNetworkId = 4, transportStreamId = 16625, serviceId = 101)
 
+    @Test
+    fun missingPendingQueryImplementationFailsClosedBeforeWrites() {
+        var writes = 0
+        val store =
+            object : TvProviderWriter.ChannelStore {
+                override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(1L)
+
+                override fun insertChannel(values: ContentValues): Result<Long?> {
+                    writes++
+                    return Result.success(2L)
+                }
+
+                override fun updateChannel(
+                    channelId: Long,
+                    values: ContentValues,
+                ): Result<Int> {
+                    writes++
+                    return Result.success(1)
+                }
+            }
+        check(store.indexInitialBrowsablePendingChannelIds(setOf(key)).exceptionOrNull() is UnsupportedOperationException)
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val channel =
+            ChannelRecord(
+                key,
+                0x01,
+                "101",
+                "NHK",
+                FrequencyHz(473_142_857L),
+                casFactsCanonicalJson = testCasFacts(false),
+            )
+        val result = writer.upsertChannels(listOf(channel))
+        check(result.inserted == 0 && result.updated == 0 && writes == 0)
+        check(result.failures.single().operation == "channel-visibility-query")
+    }
+
     @Test fun insertNewChannel() {
         val store = FakeChannelStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
