@@ -1122,7 +1122,7 @@ class PlaybackPipeline(
     private fun releaseAudioOutput(bufferId: Int) {
         val output = outstandingAudioOutputs[bufferId] ?: return
         if (!pendingAudioOutputReleases.add(bufferId)) return
-        resourceCleanup.release("audio codec出力 bufferId=$bufferId index=${output.index}") {
+        resourceCleanup.releaseOwned("audio codec出力 bufferId=$bufferId index=${output.index}", output.codec) {
             output.codec.releaseOutputBuffer(output.index, false)
             if (outstandingAudioOutputs[bufferId] === output) {
                 outstandingAudioOutputs.remove(bufferId)
@@ -1384,10 +1384,11 @@ class PlaybackPipeline(
     @Suppress("TooManyFunctions")
     private abstract inner class DecoderPipeline : AutoCloseable {
         protected fun releaseCurrentDecoderOutput(release: () -> Unit) {
-            check(releaseDecoderOutput(resourceCleanup, release)) { "MediaCodec出力bufferの解放が未完了です" }
+            check(releaseDecoderOutput(resourceCleanup, codec, release)) { "MediaCodec出力bufferの解放が未完了です" }
         }
 
         protected var codec: MediaCodec? = null
+        private var decoderReleased = false
         private val configBytes = ByteArrayOutputStream()
         private val pendingSamples = java.util.ArrayDeque<MediaSample>()
         private val availableInputIndexes = java.util.ArrayDeque<Int>()
@@ -1552,8 +1553,10 @@ class PlaybackPipeline(
                         ) {
                             enqueuePlaybackAction {
                                 if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) {
-                                    releaseDecoderOutput(resourceCleanup) {
-                                        codec.releaseOutputBuffer(index, false)
+                                    if (!decoderReleased) {
+                                        releaseDecoderOutput(resourceCleanup, codec) {
+                                            codec.releaseOutputBuffer(index, false)
+                                        }
                                     }
                                     return@enqueuePlaybackAction
                                 }
@@ -1702,7 +1705,14 @@ class PlaybackPipeline(
             codec = null
             if (decoder != null) {
                 runCatching { decoder.stop() }.onFailure { Log.w(LogTags.TIS, "decoder stop に失敗しました", it) }
-                resourceCleanup.release("decoder") { decoder.release() }
+                completeDecoderRelease(resourceCleanup, decoder, decoder::release) {
+                    decoderReleased = true
+                    val retired = outstandingAudioOutputs.filterValues { it.codec === decoder }.keys.toList()
+                    retired.forEach { bufferId ->
+                        outstandingAudioOutputs.remove(bufferId)
+                        pendingAudioOutputReleases.remove(bufferId)
+                    }
+                }
             }
         }
     }
@@ -2964,12 +2974,26 @@ class PlaybackPipeline(
             }
         }
 
+        internal fun completeDecoderRelease(
+            cleanup: ResourceCleanup,
+            owner: Any,
+            release: () -> Unit,
+            completeOutputs: () -> Unit,
+        ) {
+            cleanup.release("decoder") {
+                release()
+                completeOutputs()
+                cleanup.completeOwnedBy(owner)
+            }
+        }
+
         internal fun releaseDecoderOutput(
             cleanup: ResourceCleanup,
+            owner: Any? = null,
             release: () -> Unit,
         ): Boolean {
             var completed = false
-            cleanup.release("MediaCodec出力buffer") {
+            cleanup.releaseOwned("MediaCodec出力buffer", owner) {
                 release()
                 completed = true
             }

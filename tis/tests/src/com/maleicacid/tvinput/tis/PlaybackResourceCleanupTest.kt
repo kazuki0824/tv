@@ -11,6 +11,37 @@ import java.util.concurrent.TimeUnit
 @Suppress("TooManyFunctions")
 class PlaybackResourceCleanupTest {
     @Test
+    fun successfulParentCodecReleaseRetiresFailedOutputBeforeRetry() {
+        for (failParentFirst in listOf(false, true)) {
+            val cleanup = ResourceCleanup()
+            val codecOwner = Any()
+            var codecClosed = false
+            var outputAttempts = 0
+            var rejectParent = failParentFirst
+            var childReferencesRetained = true
+            PlaybackPipeline.releaseDecoderOutput(cleanup, codecOwner) {
+                check(!codecClosed)
+                outputAttempts++
+                error("output解放失敗")
+            }
+            PlaybackPipeline.completeDecoderRelease(cleanup, codecOwner, release = {
+                if (rejectParent) error("codec解放失敗")
+                codecClosed = true
+            }) { childReferencesRetained = false }
+            if (failParentFirst) {
+                check(cleanup.hasPending && !codecClosed && childReferencesRetained)
+                rejectParent = false
+                cleanup.retry()
+            }
+            check(codecClosed && !childReferencesRetained && !cleanup.hasPending)
+            val attemptsAtParentRelease = outputAttempts
+            cleanup.retry()
+            cleanup.requireComplete()
+            check(outputAttempts == attemptsAtParentRelease)
+        }
+    }
+
+    @Test
     fun currentOutputReleaseFailureNotifiesSessionAndCompletesDataTask() {
         val cleanup = ResourceCleanup()
         val notifications = mutableListOf<PlaybackPipeline.PlaybackUnavailable>()
@@ -63,7 +94,7 @@ class PlaybackResourceCleanupTest {
         }
         val failure =
             runCatching {
-                check(PlaybackPipeline.releaseDecoderOutput(cleanup, release)) { "解放未完了" }
+                check(PlaybackPipeline.releaseDecoderOutput(cleanup, release = release)) { "解放未完了" }
             }.exceptionOrNull()
         check(failure is IllegalStateException && owned && cleanup.hasPending && calls == 1)
         reject = false

@@ -51,6 +51,12 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+## レビュー対応: MediaCodec親子cleanupの確定
+
+- codec release成功時に同codec配下のoutput解放義務とaudio参照を完了し、閉鎖済みcodecへのretryを残さない。
+- pending actionに既存codec ownerを紐付け、retry中に親成功で完了した子actionも再実行しない。
+- output失敗→parent成功→retry、parentも初回失敗する順序の反例を固定する。
+
 ## レビュー対応: current decoder output失敗の通知
 
 - current outputのruntime例外を既存onDecoderFailure/errorSinkへ渡し、data workerからの未捕捉終了を防ぐ。
