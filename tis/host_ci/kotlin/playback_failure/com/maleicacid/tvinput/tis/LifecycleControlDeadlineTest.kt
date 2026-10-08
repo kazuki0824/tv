@@ -53,6 +53,54 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
 
 class LifecycleControlDeadlineTest {
     @Test
+    fun replacementLifecycleWorkerReentersControlAndData() {
+        val executor = LifecycleSerialExecutor("交換lifecycle worker試験", maxPendingDataTasks = 1)
+        val previous = AtomicReference<Thread>()
+        val completed = CountDownLatch(1)
+        val order = Collections.synchronizedList(mutableListOf<String>())
+        try {
+            executor.executeControl {
+                previous.set(Thread.currentThread())
+                error("worker交換を起こす試験用例外")
+            }
+            executor.executeControl {
+                check(Thread.currentThread() !== previous.get() && executor.isOwnerThread())
+                check(executor.callControl(100L) { 7 } == 7)
+                executor.executeData {
+                    order += "data"
+                    completed.countDown()
+                }
+                order += "control終了"
+            }
+            check(completed.await(1, TimeUnit.SECONDS))
+            check(order == listOf("control終了", "data"))
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun controlDataReentryDrainsWithoutAnotherExternalDataTask() {
+        val executor = LifecycleSerialExecutor("control data再入試験", maxPendingDataTasks = 1)
+        val completed = CountDownLatch(1)
+        val order = Collections.synchronizedList(mutableListOf<String>())
+        try {
+            executor.executeControl {
+                order += "control開始"
+                executor.executeData {
+                    order += "data"
+                    completed.countDown()
+                }
+                order += "control終了"
+            }
+            check(completed.await(1, TimeUnit.SECONDS))
+            check(order == listOf("control開始", "control終了", "data"))
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun shutdownFromOtherThreadDiscardsDeferredDataAndReturnsAllPermits() {
         val executor = LifecycleSerialExecutor("並行shutdown試験", maxPendingDataTasks = 2)
         val deferredReady = CountDownLatch(1)

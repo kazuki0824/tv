@@ -90,7 +90,7 @@ internal class LifecycleSerialExecutor(
         thread: Thread,
         runnable: Runnable,
     ) {
-        ownerThread.compareAndSet(null, thread)
+        ownerThread.set(thread)
         super.beforeExecute(thread, runnable)
     }
 
@@ -116,7 +116,7 @@ internal class LifecycleSerialExecutor(
         }
     }
 
-    fun executeControl(command: Runnable) = enqueue(CONTROL_QUEUE_CLASS, command)
+    fun executeControl(command: Runnable) = enqueue(CONTROL_QUEUE_CLASS, command, { finishOwnerTask(hasDataSlot = false) })
 
     fun executeData(command: Runnable) {
         if (isOwnerThread()) {
@@ -142,7 +142,7 @@ internal class LifecycleSerialExecutor(
             throw RejectedExecutionException("$threadName data enqueue待機が割り込まれました", error)
         }
         try {
-            enqueue(DATA_QUEUE_CLASS, command, ::finishDataTask, pendingDataSlots::release)
+            enqueue(DATA_QUEUE_CLASS, command, { finishOwnerTask(hasDataSlot = true) }, pendingDataSlots::release)
         } catch (error: RejectedExecutionException) {
             pendingDataSlots.release()
             throw error
@@ -152,21 +152,18 @@ internal class LifecycleSerialExecutor(
         }
     }
 
-    private fun finishDataTask() =
+    private fun finishOwnerTask(hasDataSlot: Boolean) =
         synchronized(deferredOwnerData) {
-            val deferred =
-                if (stoppingData || isShutdown) {
-                    deferredOwnerData.clear()
-                    null
-                } else {
-                    deferredOwnerData.removeFirstOrNull()
-                }
-            if (deferred == null) {
-                pendingDataSlots.release()
+            if (stoppingData || isShutdown) deferredOwnerData.clear()
+            if (deferredOwnerData.isEmpty()) {
+                if (hasDataSlot) pendingDataSlots.release()
                 return@synchronized
             }
+            // control完了はpermitを待たない。dataが満杯なら既存dataの完了が同じqueueをdrainする。
+            if (!hasDataSlot && !pendingDataSlots.tryAcquire()) return@synchronized
+            val deferred = deferredOwnerData.removeFirst()
             try {
-                enqueue(DATA_QUEUE_CLASS, deferred, ::finishDataTask, pendingDataSlots::release)
+                enqueue(DATA_QUEUE_CLASS, deferred, { finishOwnerTask(hasDataSlot = true) }, pendingDataSlots::release)
             } catch (error: RejectedExecutionException) {
                 deferredOwnerData.clear()
                 pendingDataSlots.release()
