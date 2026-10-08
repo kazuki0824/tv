@@ -40,6 +40,8 @@ class TvProviderWriterUpsertTest {
             }
         val pendingFailure = store.indexInitialBrowsablePendingChannelIds(setOf(key)).exceptionOrNull()
         check(pendingFailure is UnsupportedOperationException)
+        val upsertFailure = store.upsertExistingChannel(1L, ContentValues()).exceptionOrNull()
+        check(upsertFailure is UnsupportedOperationException)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val channel =
             ChannelRecord(

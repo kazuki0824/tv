@@ -91,13 +91,7 @@ class TvProviderWriter private constructor(
             channelId: Long,
             values: ContentValues,
         ): Result<ExistingChannelUpsertOutcome> =
-            runCatching {
-                val update = ContentValues(values)
-                update.remove(TvContract.Channels.COLUMN_TYPE)
-                update.remove(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1)
-                check(updateChannel(channelId, update).getOrThrow() > 0) { "provider更新対象行がありません" }
-                ExistingChannelUpsertOutcome(channelId, recreated = false)
-            }
+            Result.failure(UnsupportedOperationException("この store はimmutable channel型を保つupsertに対応しません"))
 
         @Suppress("MaxLineLength")
         fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
