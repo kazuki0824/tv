@@ -128,16 +128,29 @@ object ServicePolicyEvaluator {
             )
         }
 
+        var pending = facts.missingComponents.isNotEmpty()
+        var unsupported = false
         val registrationReasons = mutableListOf<String>()
         registrationReasons += facts.missingComponents
         if (facts.serviceType == null) {
+            pending = true
             registrationReasons += "SERVICE_TYPE_UNRESOLVED"
         } else if (facts.serviceType !in setOf(SERVICE_TYPE_DIGITAL_TV, SERVICE_TYPE_DIGITAL_AUDIO)) {
+            unsupported = true
             registrationReasons += "UNSUPPORTED_SERVICE_TYPE"
         }
-        if (!facts.pmtPidResolved) registrationReasons += "NO_PMT_PID"
-        if (!facts.pmtParsed) registrationReasons += "NO_VALID_PMT"
-        if (!facts.pcrPidResolved) registrationReasons += "NO_PCR_PID"
+        if (!facts.pmtPidResolved) {
+            pending = true
+            registrationReasons += "NO_PMT_PID"
+        }
+        if (!facts.pmtParsed) {
+            pending = true
+            registrationReasons += "NO_VALID_PMT"
+        }
+        if (!facts.pcrPidResolved) {
+            pending = true
+            registrationReasons += "NO_PCR_PID"
+        }
         val streamTypes = facts.elementaryStreams.map { it.streamType }.toSet()
         when (facts.serviceType) {
             SERVICE_TYPE_DIGITAL_TV -> {
@@ -149,8 +162,10 @@ object ServicePolicyEvaluator {
                                     it in RECOGNIZED_UNSUPPORTED_VIDEO_STREAM_TYPES
                             }
                         ) {
+                            unsupported = true
                             "NO_SUPPORTED_VIDEO_CODEC"
                         } else {
+                            pending = true
                             "NO_VIDEO_ES"
                         }
                 }
@@ -165,8 +180,10 @@ object ServicePolicyEvaluator {
                                     it in RECOGNIZED_UNSUPPORTED_AUDIO_STREAM_TYPES
                             }
                         ) {
+                            unsupported = true
                             "NO_SUPPORTED_AUDIO_CODEC"
                         } else {
+                            pending = true
                             "NO_AUDIO_ES"
                         }
                 }
@@ -178,30 +195,24 @@ object ServicePolicyEvaluator {
             expectedSmdBroadcastSystem != null &&
             facts.smd.broadcastSystem != expectedSmdBroadcastSystem
         ) {
+            unsupported = true
             registrationReasons += "UNSUPPORTED_BROADCAST_SYSTEM"
         }
         if (!hasPhysicalTune) registrationReasons += "NO_PHYSICAL_TUNE"
         if (!hasInternalTuneKey) registrationReasons += "NO_INTERNAL_TUNE_KEY"
         val normalizedRegistrationReasons = registrationReasons.distinct().sorted()
-        val registrationReady = normalizedRegistrationReasons.isEmpty()
         val state =
             when {
-                registrationReady -> ServicePolicyState.READY
+                unsupported || facts.smd.semanticState == SmdSemanticState.NON_BROADCAST -> ServicePolicyState.UNSUPPORTED
 
-                normalizedRegistrationReasons.any {
-                    it == "UNSUPPORTED_SERVICE_TYPE" ||
-                        it == "NO_SUPPORTED_VIDEO_CODEC" ||
-                        it == "NO_SUPPORTED_AUDIO_CODEC" ||
-                        it == "UNSUPPORTED_BROADCAST_SYSTEM" ||
-                        it == SmdSemanticState.NON_BROADCAST.wireValue
-                } -> ServicePolicyState.UNSUPPORTED
+                facts.smd.semanticState == SmdSemanticState.UNDEFINED_BROADCAST_CLASS -> ServicePolicyState.INVALID
 
-                normalizedRegistrationReasons.any {
-                    it == SmdSemanticState.UNDEFINED_BROADCAST_CLASS.wireValue
-                } -> ServicePolicyState.INVALID
+                pending || !hasPhysicalTune || !hasInternalTuneKey ||
+                    facts.smd.semanticState != SmdSemanticState.SUPPORTED_BROADCAST -> ServicePolicyState.PENDING
 
-                else -> ServicePolicyState.PENDING
+                else -> ServicePolicyState.READY
             }
+        val registrationReady = state == ServicePolicyState.READY
         return ServicePolicyDecision(
             serviceKey = key,
             registrationReady = registrationReady,

@@ -527,6 +527,16 @@ class TisR51FixedPlanAcceptanceTest {
         check(pending.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
         check(!pending.registrationReady && "SERVICE_TYPE_UNRESOLVED" in pending.reasons)
         check("UNSUPPORTED_SERVICE_TYPE" !in pending.reasons)
+        val renamedDiagnostic =
+            policy.evaluate(
+                incomplete.copy(missingComponents = listOf("UNSUPPORTED_SERVICE_TYPE", "UNDEFINED_BROADCAST_CLASS")),
+            )
+        check(renamedDiagnostic.state == pending.state)
+        check(
+            policy.evaluate(ready.copy(semanticDiagnostics = renamedDiagnostic.reasons)).state ==
+                com.maleicacid.tvinput.aribsi.ServicePolicyState.READY,
+        )
+
         val resolved = policy.evaluate(ready)
         check(resolved.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY)
         val unsupported = policy.evaluate(ready.copy(serviceType = 0xa1))
