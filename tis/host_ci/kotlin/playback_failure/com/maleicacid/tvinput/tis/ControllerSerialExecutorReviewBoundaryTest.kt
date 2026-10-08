@@ -27,7 +27,7 @@ class ControllerSerialExecutorReviewBoundaryTest {
             .set(controller, executor)
         val dataCall =
             TunerController::class.java
-                .getDeclaredMethod("callOnControllerData", Function0::class.java)
+                .getDeclaredMethod("postOnControllerData", Function0::class.java)
                 .apply { isAccessible = true }
         try {
             executor.executeControl {
@@ -40,7 +40,8 @@ class ControllerSerialExecutorReviewBoundaryTest {
                         check(Thread.currentThread() !== previous.get())
                         check(executor.isOwnerThread())
                         check(controller.currentGeneration() == 0L)
-                        dataCall.invoke(controller, { 7 })
+                        dataCall.invoke(controller, { Unit })
+                        7
                     }.get(WAIT_SECONDS, TimeUnit.SECONDS)
             check(result == 7)
         } finally {
@@ -85,7 +86,7 @@ class ControllerSerialExecutorReviewBoundaryTest {
                 runCatching { executor.executeData {} }
                 secondReturned.countDown()
             }
-            check(!secondReturned.await(BLOCKED_PROBE_MS, TimeUnit.MILLISECONDS))
+            check(secondReturned.await(WAIT_SECONDS, TimeUnit.SECONDS))
             executor.shutdownNow()
             check(secondReturned.await(WAIT_SECONDS, TimeUnit.SECONDS))
         } finally {
@@ -98,6 +99,5 @@ class ControllerSerialExecutorReviewBoundaryTest {
     private companion object {
         const val WAIT_SECONDS = 1L
         const val JOIN_WAIT_MS = 1_000L
-        const val BLOCKED_PROBE_MS = 50L
     }
 }

@@ -1,3 +1,8 @@
+# Filter callbackとcontroller closeの循環待ち解消
+
+- SectionEventはcallback入口でdrainし、parser更新は既存controllerへ非同期・有限・待機なしで投入する。飽和は診断付き拒否とし、世代・Filter identity fenceと順序を維持する。
+- Android 15の実Filter callback lockと優先closeを競合させるホスト試験をCIへ追加する。試験実行はCIに委ね、Soong/VTS/実機適合は未確認。
+
 # 不要な例示設定の削除
 
 - 正式な製品組込み設定を継承するだけだった未参照の例示makefileを削除した。

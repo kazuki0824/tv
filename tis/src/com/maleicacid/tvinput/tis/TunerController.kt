@@ -184,7 +184,7 @@ class TunerController(
         java.util.concurrent.Executor { task -> sectionExecutor.executeControl(task) }
 
     // Framework callbackはここで即時実行し、SectionEventのpayloadを先にdrainする.
-    // parser/state mutationだけをcontroller data classへ同期handoffして、未読eventをqueueへ残さない。
+    // parser/state mutationだけをcontroller data classへ非同期に渡して、未読eventをqueueへ残さない。
     private val filterCallbackExecutor = java.util.concurrent.Executor { task -> task.run() }
 
     @Volatile private var released = false
@@ -203,17 +203,18 @@ class TunerController(
         }
     }
 
-    private fun <T> callOnControllerData(block: () -> T): T {
-        if (sectionExecutor.isOwnerThread()) return block()
-        check(!released) { "TunerController は解放済みです inputId=$inputId" }
-        return try {
-            sectionExecutor.submitData(block).get()
-        } catch (error: InterruptedException) {
-            propagateControllerBlockingFailure(error)
-        } catch (error: ExecutionException) {
-            propagateControllerBlockingFailure(error)
-        } catch (error: RejectedExecutionException) {
-            propagateControllerBlockingFailure(error)
+    private fun postOnControllerData(block: () -> Unit) {
+        if (released) return
+        runCatching {
+            sectionExecutor.executeData {
+                if (!released) {
+                    runCatching(block).onFailure { error ->
+                        Log.w(LogTags.TIS, "section data処理に失敗しました inputId=$inputId", error)
+                    }
+                }
+            }
+        }.onFailure { error ->
+            if (!released) Log.w(LogTags.TIS, "drain済みsection dataの投入を拒否しました inputId=$inputId", error)
         }
     }
 
@@ -1056,7 +1057,7 @@ class TunerController(
         when (SectionFilterPolicy.dataLengthDecision(length)) {
             SectionFilterPolicy.DataLengthDecision.MALFORMED -> {
                 runCatching {
-                    callOnControllerData {
+                    postOnControllerData {
                         recordSectionMalformedDrop(pid, "dataLength=$length")
                     }
                 }
@@ -1065,7 +1066,7 @@ class TunerController(
             SectionFilterPolicy.DataLengthDecision.OVERSIZED -> {
                 val drained = drainSectionEventPayload(filter, length)
                 runCatching {
-                    callOnControllerData {
+                    postOnControllerData {
                         recordSectionOversizedDrop(pid, length)
                         if (drained != length) {
                             recordSectionReadError(
@@ -1093,7 +1094,7 @@ class TunerController(
         val readResult = runCatching { filter.read(section, 0, section.size.toLong()) }
         if (readResult.isFailure) {
             runCatching {
-                callOnControllerData {
+                postOnControllerData {
                     recordSectionReadError(
                         pid,
                         "exception=${readResult.exceptionOrNull()?.message}",
@@ -1119,7 +1120,7 @@ class TunerController(
         read: Int,
     ) {
         runCatching {
-            callOnControllerData {
+            postOnControllerData {
                 val sourceIsCurrent = isCurrentSectionFilter(pid, generation, filter)
                 when (
                     SectionFilterPolicy.readDecision(

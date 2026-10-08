@@ -91,11 +91,8 @@ internal class ControllerSerialExecutor(
 
     @Suppress("ThrowsCount")
     fun executeData(command: Runnable) {
-        try {
-            pendingDataSlots.acquire()
-        } catch (error: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw RejectedExecutionException("controller dataのenqueue待機が割り込まれました", error)
+        if (!pendingDataSlots.tryAcquire()) {
+            throw RejectedExecutionException("controller dataの未処理数が上限に達しました")
         }
         try {
             enqueue(DATA_QUEUE_CLASS, command) { pendingDataSlots.release() }
