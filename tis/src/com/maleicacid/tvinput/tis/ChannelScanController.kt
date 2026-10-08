@@ -160,7 +160,6 @@ class ChannelScanController(
         "MaxLineLength",
     )
     fun startInitialScan(candidates: List<ScanCandidate> = JapanIsdbScanPlan.defaultInitialScan()): ScanResult {
-        if (!cancelled.get()) cancelled.set(false)
         terminalCancelObserved = cancelled.get()
         resetResourceLostState()
         skippedUnresolvedTransportCount = 0
@@ -353,7 +352,6 @@ class ChannelScanController(
                     scanCandidateFromChannel(channel)?.let { it to channel.serviceKey }
                 }.groupBy { it.first.tuneKey }
         val candidates = targetsByTune.values.map { it.first().first }
-        if (!cancelled.get()) cancelled.set(false)
         terminalCancelObserved = cancelled.get()
         resetResourceLostState()
         skippedUnresolvedTransportCount = 0

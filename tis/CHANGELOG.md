@@ -20,6 +20,11 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# scan開始時の取消し保持
+
+- initial/maintenance scan入口の不要なcancelled=false代入を除去し、別threadで受付済みのcancelを上書きしない。task生成時の初期化と既存fence/loop/publication gateを維持する。
+- 既存取消し・公開gate試験の実行はCIへ委ねる。新しい状態・lock・試験fixtureは追加しない。
+
 - Keep the JVM-only blocking-provider cancellation fixture in the host test target; update class discovery guards without changing test coverage.
 
 - scan取消し受付をProvider公開lockから分離し、最終commit前の受付確定とUIの有限returnを維持。公開中・最終commit中の競合試験を追加。
