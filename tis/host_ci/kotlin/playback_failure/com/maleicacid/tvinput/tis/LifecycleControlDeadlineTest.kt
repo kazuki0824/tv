@@ -89,6 +89,24 @@ class LifecycleControlDeadlineTest {
                 cleanup.requireComplete()
             }
             check(attempts == 2 && !cleanup.hasPending)
+            released.set(false)
+            val failed = CountDownLatch(1)
+            var notifications = 0
+            executor.executeCallback(
+                isReleased = released::get,
+                onFailure = {
+                    check(executor.isOwnerThread())
+                    notifications++
+                    released.set(true)
+                    executor.executeTerminalCleanup {
+                        cleanup.release("開始済みevent") { attempts++ }
+                        failed.countDown()
+                    }
+                },
+                onDiscard = { error("開始済み入力を再び破棄しました") },
+            ) { error("実行開始後のcallback失敗") }
+            check(failed.await(1, TimeUnit.SECONDS))
+            check(released.get() && notifications == 1 && attempts == 3 && !cleanup.hasPending)
         } finally {
             unblock.countDown()
             executor.shutdownNow()

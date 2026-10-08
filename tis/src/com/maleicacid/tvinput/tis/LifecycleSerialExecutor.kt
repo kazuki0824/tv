@@ -69,8 +69,18 @@ internal class LifecycleSerialExecutor(
             java.util.concurrent.atomic
                 .AtomicBoolean(false)
 
+        // 開始済み入力の所有権はaction側にある。失敗通知でもonDiscardを重ねない。
+        @Suppress("TooGenericExceptionCaught")
         override fun run() {
-            if (isReleased()) discard() else action()
+            if (isReleased()) {
+                discard()
+                return
+            }
+            try {
+                action()
+            } catch (error: RuntimeException) {
+                if (!isReleased()) onFailure(error)
+            }
         }
 
         fun discard() {
