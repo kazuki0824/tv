@@ -7,12 +7,36 @@ import org.junit.Test
 
 class PlaybackResourceCleanupTest {
     @Test
+    fun currentDecoderOutputReleaseFailuresRemainOwnedAndRejectCompletion() {
+        val cleanup = ResourceCleanup()
+        var owned = true
+        var reject = true
+        var calls = 0
+        val release = {
+            calls++
+            if (reject) error("current output解放失敗")
+            owned = false
+        }
+        val failure =
+            runCatching {
+                check(PlaybackPipeline.releaseDecoderOutput(cleanup, release)) { "解放未完了" }
+            }.exceptionOrNull()
+        check(failure is IllegalStateException && owned && cleanup.hasPending && calls == 1)
+        reject = false
+        cleanup.retry()
+        cleanup.requireComplete()
+        check(!owned && calls == 2)
+        check(PlaybackPipeline.releaseDecoderOutput(cleanup) { calls++ })
+        check(calls == 3 && !cleanup.hasPending)
+    }
+
+    @Test
     fun staleDecoderOutputReleaseRetainsCallbackOwnershipUntilStopRetry() {
         val cleanup = ResourceCleanup()
         var owned = true
         var reject = true
         var calls = 0
-        PlaybackPipeline.releaseStaleDecoderOutput(cleanup) {
+        PlaybackPipeline.releaseDecoderOutput(cleanup) {
             calls++
             if (reject) error("stale output release失敗")
             owned = false

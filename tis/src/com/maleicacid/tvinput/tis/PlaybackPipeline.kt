@@ -1383,6 +1383,10 @@ class PlaybackPipeline(
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
     @Suppress("TooManyFunctions")
     private abstract inner class DecoderPipeline : AutoCloseable {
+        protected fun releaseCurrentDecoderOutput(release: () -> Unit) {
+            check(releaseDecoderOutput(resourceCleanup, release)) { "MediaCodec出力bufferの解放が未完了です" }
+        }
+
         protected var codec: MediaCodec? = null
         private val configBytes = ByteArrayOutputStream()
         private val pendingSamples = java.util.ArrayDeque<MediaSample>()
@@ -1548,7 +1552,7 @@ class PlaybackPipeline(
                         ) {
                             enqueuePlaybackAction {
                                 if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) {
-                                    releaseStaleDecoderOutput(resourceCleanup) {
+                                    releaseDecoderOutput(resourceCleanup) {
                                         codec.releaseOutputBuffer(index, false)
                                     }
                                     return@enqueuePlaybackAction
@@ -1784,15 +1788,15 @@ class PlaybackPipeline(
             info: MediaCodec.BufferInfo,
         ) {
             if (info.size <= 0) {
-                codec.releaseOutputBuffer(index, false)
+                releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, false) }
                 return
             }
             if (!outputSurface.isValid) {
-                codec.releaseOutputBuffer(index, false)
+                releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, false) }
                 errorSink(PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "video output Surface が無効です")
                 return
             }
-            codec.releaseOutputBuffer(index, info.presentationTimeUs * 1_000L)
+            releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, info.presentationTimeUs * 1_000L) }
         }
     }
 
@@ -1918,20 +1922,20 @@ class PlaybackPipeline(
             info: MediaCodec.BufferInfo,
         ) {
             if (info.size <= 0) {
-                codec.releaseOutputBuffer(index, false)
+                releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, false) }
                 return
             }
             val frame = codec.getOutputFrame(index)
             val block =
                 frame.linearBlock ?: run {
-                    codec.releaseOutputBuffer(index, false)
+                    releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, false) }
                     errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "block model audio outputにLinearBlockがありません")
                     return
                 }
             val mapped = block.map().duplicate()
             val end = info.offset.toLong() + info.size.toLong()
             if (info.offset < 0 || info.size <= 0 || end > mapped.capacity().toLong()) {
-                codec.releaseOutputBuffer(index, false)
+                releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, false) }
                 errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "audio OutputFrame rangeが不正です")
                 return
             }
@@ -1940,7 +1944,7 @@ class PlaybackPipeline(
             val bytes = mapped.slice().asReadOnlyBuffer()
             val outputClaim = claimAudioOutput(info.size, info.presentationTimeUs, budget.pending, budget.steadyBackpressureDeadlineMs)
             if (!outputClaim.accepted) {
-                codec.releaseOutputBuffer(index, false)
+                releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, false) }
                 if (outputClaim.deadlineReached) errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, outputClaim.detail)
                 return
             }
@@ -2947,11 +2951,16 @@ class PlaybackPipeline(
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
         @Suppress("TooGenericExceptionCaught")
-        internal fun releaseStaleDecoderOutput(
+        internal fun releaseDecoderOutput(
             cleanup: ResourceCleanup,
             release: () -> Unit,
-        ) {
-            cleanup.release("遅延callbackのMediaCodec出力buffer", release)
+        ): Boolean {
+            var completed = false
+            cleanup.release("MediaCodec出力buffer") {
+                release()
+                completed = true
+            }
+            return completed
         }
 
         internal fun completePlaybackFailureAction(
