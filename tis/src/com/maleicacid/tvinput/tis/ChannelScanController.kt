@@ -298,18 +298,21 @@ class ChannelScanController(
         } finally {
             currentCandidate = null
         }
-        return ScanResult(
-            scannedCandidates,
-            published,
-            diagnostics,
-            successfulCandidates = successfulCandidates,
-            terminal =
-                when {
-                    terminalCancelObserved -> ScanTerminal(ScanTerminalOutcome.CANCELLED)
-                    terminalResourceLostObserved -> ScanTerminal(ScanTerminalOutcome.RESOURCE_LOST)
-                    else -> terminalFailure ?: ScanTerminal(ScanTerminalOutcome.COMPLETED)
-                },
-        )
+        return scanGenerationFence.finishScan {
+            terminalCancelObserved = terminalCancelObserved || cancelled.get()
+            ScanResult(
+                scannedCandidates,
+                published,
+                diagnostics,
+                successfulCandidates = successfulCandidates,
+                terminal =
+                    when {
+                        terminalCancelObserved -> ScanTerminal(ScanTerminalOutcome.CANCELLED)
+                        terminalResourceLostObserved -> ScanTerminal(ScanTerminalOutcome.RESOURCE_LOST)
+                        else -> terminalFailure ?: ScanTerminal(ScanTerminalOutcome.COMPLETED)
+                    },
+            )
+        }
     }
 
     fun startBootEpgSync(targetChannels: List<ChannelRecord>): ScanResult =
@@ -413,25 +416,32 @@ class ChannelScanController(
             }
         }
         currentCandidate = null
-        return ScanResult(
-            candidates.size,
-            updated,
-            diagnostics,
-            successfulCandidates = successfulCandidates,
-            terminal =
-                when {
-                    terminalCancelObserved -> ScanTerminal(ScanTerminalOutcome.CANCELLED)
-                    terminalResourceLostObserved -> ScanTerminal(ScanTerminalOutcome.RESOURCE_LOST)
-                    else -> ScanTerminal(ScanTerminalOutcome.COMPLETED)
-                },
-            committedServiceKeys = committedServiceKeys,
-        )
+        return scanGenerationFence.finishScan {
+            terminalCancelObserved = terminalCancelObserved || cancelled.get()
+            ScanResult(
+                candidates.size,
+                updated,
+                diagnostics,
+                successfulCandidates = successfulCandidates,
+                terminal =
+                    when {
+                        terminalCancelObserved -> ScanTerminal(ScanTerminalOutcome.CANCELLED)
+                        terminalResourceLostObserved -> ScanTerminal(ScanTerminalOutcome.RESOURCE_LOST)
+                        else -> ScanTerminal(ScanTerminalOutcome.COMPLETED)
+                    },
+                committedServiceKeys = committedServiceKeys,
+            )
+        }
     }
 
     fun cancelScan() {
-        scanGenerationFence.cancel()
-        terminalCancelObserved = true
+        requestCancelScan()
     }
+
+    internal fun requestCancelScan(): Boolean =
+        scanGenerationFence.cancel().also { accepted ->
+            if (accepted) terminalCancelObserved = true
+        }
 
     fun refreshDynamicSectionFilters() {
         if (terminalResourceLostObserved) return
@@ -884,11 +894,27 @@ class ChannelScanController(
 
         @Volatile private var signalUnavailable: SignalUnavailable? = null
 
-        fun cancel() = synchronized(publicationLock) { cancelled.set(true) }
+        private var scanFinished = false
+
+        fun cancel(): Boolean =
+            synchronized(publicationLock) {
+                if (scanFinished) {
+                    false
+                } else {
+                    cancelled.set(true)
+                    true
+                }
+            }
+
+        fun <T> finishScan(result: () -> T): T =
+            synchronized(publicationLock) {
+                result().also { scanFinished = true }
+            }
 
         fun reset() =
             synchronized(publicationLock) {
                 terminalObserved = false
+                scanFinished = false
                 activeGeneration.set(-1L)
                 lostGeneration.set(-1L)
                 signalUnavailable = null

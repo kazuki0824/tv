@@ -52,7 +52,16 @@ object ChannelScanManager {
         val cancelRequested = AtomicBoolean(false)
         val publicationLock = Any()
 
-        fun requestCancel() = synchronized(publicationLock) { cancelRequested.set(true) }
+        fun requestCancel(): Boolean =
+            synchronized(publicationLock) {
+                val scan = controller as? ChannelScanController
+                if (scan != null) {
+                    scan.requestCancelScan()
+                } else {
+                    cancelRequested.set(true)
+                    true
+                }
+            }
 
         @Volatile var controller: AutoCloseable? = null
 
@@ -180,8 +189,7 @@ object ChannelScanManager {
                 .onSuccess { scanResult ->
                     if (scanResult != null) {
                         when {
-                            isCancelledGeneration(generation) ||
-                                scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED -> {
+                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED -> {
                                 setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
                             }
 
@@ -304,8 +312,7 @@ object ChannelScanManager {
                 .onSuccess { scanResult ->
                     if (scanResult != null) {
                         val terminalCancel =
-                            isCancelledGeneration(generation) ||
-                                scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED
+                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED
                         val terminalResourceLost =
                             scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST
                         val allRequiredTargetsCommitted =
@@ -430,7 +437,6 @@ object ChannelScanManager {
                 .onSuccess { scanResult ->
                     if (scanResult != null) {
                         if (
-                            isCancelledGeneration(generation) ||
                             scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED
                         ) {
                             setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BACKGROUND_MAINTENANCE))
@@ -465,7 +471,7 @@ object ChannelScanManager {
 
     fun cancel() {
         val task = activeTask.get() ?: return
-        task.requestCancel()
+        if (!task.requestCancel()) return
         setTerminalStateIfCurrent(
             task.generation,
             ScanState.Cancelled(task.generation, task.purpose),
@@ -480,7 +486,7 @@ object ChannelScanManager {
     ): Boolean {
         val task = activeTask.get() ?: return false
         if (task.generation != generation || task.purpose != purpose) return false
-        task.requestCancel()
+        if (!task.requestCancel()) return
         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, purpose))
         return true
     }
@@ -504,7 +510,7 @@ object ChannelScanManager {
             BackgroundChannelMaintenanceDiagnostics.lastSkippedReason =
                 decision.diagnosticReason ?: "LIVE_SESSION_PREEMPTED_RUNNING_BACKGROUND_MAINTENANCE"
         }
-        task.requestCancel()
+        if (!task.requestCancel()) return
         setTerminalStateIfCurrent(
             task.generation,
             ScanState.Cancelled(task.generation, task.purpose),

@@ -22,6 +22,35 @@ import kotlin.test.assertTrue
 @Suppress("TooManyFunctions", "LargeClass")
 class ScanPlanPolicyTest {
     @Test
+    fun finalizedScanTerminalRejectsLateCancelWithoutRewritingCommit() {
+        val cancelled = AtomicBoolean(false)
+        val fence = ChannelScanController.ScanGenerationFence(Any(), cancelled)
+        var committed = false
+        val terminal =
+            fence.finishScan {
+                committed = true
+                ChannelScanController.ScanTerminal(ChannelScanController.ScanTerminalOutcome.COMPLETED)
+            }
+        assertFalse(fence.cancel())
+        assertFalse(cancelled.get())
+        assertTrue(committed)
+        assertEquals(ChannelScanController.ScanTerminalOutcome.COMPLETED, terminal.outcome)
+        val before = ChannelScanController.ScanGenerationFence(Any(), cancelled)
+        assertTrue(before.cancel())
+        val cancelledTerminal =
+            before.finishScan {
+                ChannelScanController.ScanTerminal(
+                    if (cancelled.get()) {
+                        ChannelScanController.ScanTerminalOutcome.CANCELLED
+                    } else {
+                        ChannelScanController.ScanTerminalOutcome.COMPLETED
+                    },
+                )
+            }
+        assertEquals(ChannelScanController.ScanTerminalOutcome.CANCELLED, cancelledTerminal.outcome)
+    }
+
+    @Test
     fun cancellationDuringFinalSnapshotRetryStopsAcquisitionAndPublication() {
         val cancelled = AtomicBoolean(false)
         var attempts = 0
