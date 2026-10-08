@@ -1548,7 +1548,7 @@ class PlaybackPipeline(
                         ) {
                             enqueuePlaybackAction {
                                 if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) {
-                                    runCatching { codec.releaseOutputBuffer(index, false) }
+                                    releaseStaleDecoderOutput(resourceCleanup) { codec.releaseOutputBuffer(index, false) }
                                     return@enqueuePlaybackAction
                                 }
                                 if (info.size > 0) {
@@ -2945,6 +2945,13 @@ class PlaybackPipeline(
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
         @Suppress("TooGenericExceptionCaught")
+        internal fun releaseStaleDecoderOutput(
+            cleanup: ResourceCleanup,
+            release: () -> Unit,
+        ) {
+            cleanup.release("stale MediaCodec output buffer", release)
+        }
+
         internal fun completePlaybackFailureAction(
             originGeneration: Long,
             onUnavailable: (PlaybackUnavailable) -> Unit,

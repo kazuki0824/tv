@@ -6,6 +6,25 @@ package com.maleicacid.tvinput.tis
 import org.junit.Test
 
 class PlaybackResourceCleanupTest {
+    @Test
+    fun staleDecoderOutputReleaseRetainsCallbackOwnershipUntilStopRetry() {
+        val cleanup = ResourceCleanup()
+        var owned = true
+        var reject = true
+        var calls = 0
+        PlaybackPipeline.releaseStaleDecoderOutput(cleanup) {
+            calls++
+            if (reject) error("stale output release失敗")
+            owned = false
+        }
+        check(owned && cleanup.hasPending && calls == 1)
+        check(runCatching { cleanup.requireComplete() }.isFailure)
+        reject = false
+        cleanup.retry()
+        cleanup.requireComplete()
+        check(!owned && !cleanup.hasPending && calls == 2)
+    }
+
     @Test fun codecRecoveryIsBoundedAndReclaimedAlwaysTerminates() {
         check(PlaybackPipeline.codecRecoveryDelay(false, true, false, false) == 0L)
         check(PlaybackPipeline.codecRecoveryDelay(false, false, true, false) == 100L)

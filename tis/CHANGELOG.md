@@ -51,6 +51,10 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# stale decoder outputの回収所有権保持
+
+- generation/codec identity不一致の遅延callbackも既存ResourceCleanupへ接続し、release失敗を保持してstop/release時にretryする。audio outstanding集合へ登録前のbufferも回収対象にし、新しいcleanup ownerは追加しない。
+
 # serial executorの到達しないcontrol分類の削除
 
 - 両executorの未使用ControlTask markerとexecute振分けを削除し、controlは既存の明示入口、executeはdataに限定した。
