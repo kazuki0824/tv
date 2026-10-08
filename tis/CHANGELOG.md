@@ -102,6 +102,11 @@
 - SectionEventはcallback入口でdrainし、parser更新は既存controllerへ非同期・有限・待機なしで投入する。飽和は診断付き拒否とし、世代・Filter identity fenceと順序を維持する。
 - Android 15の実Filter callback lockと優先closeを競合させるホスト試験をCIへ追加する。試験実行はCIに委ね、Soong/VTS/実機適合は未確認。
 
+# setup可視化batchの件数不一致をtransaction内で拒否
+
+- 初期可視化の各updateへexpected count 1を指定し、対象行消失をProvider transactionのcommit前に失敗させる。既存pending行のhidden状態とmarkerを保持し、今回insertした行だけを既存rollback入口で削除する。
+- 実ContentProviderOperationとSQLite transactionを使うRobolectric試験を追加し、中間・末尾行の消失、既存行と新規行の混在、正常commitを検査する。製品の新しいowner・retry・migrationは追加しない。
+
 # 同一publicationの既存Program重複key拒否
 
 - #186レビュー本文で指摘された既存channel一覧queryの未実装defaultを、空集合成功ではなくUnsupportedOperationExceptionのResult.failureへ変更した。writer公開入口で未実装失敗と明示実装の取得結果を既存試験へ追加した。productionの所有input別query、boot/backgroundの失敗伝播、試験数は維持。Soong/device atest/VTS/実機確認は未実施。

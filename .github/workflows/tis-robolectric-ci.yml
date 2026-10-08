@@ -45,7 +45,8 @@ jobs:
             --tests com.maleicacid.tvinput.tis.RecordingDisabledR51Test \
             --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest \
             --tests com.maleicacid.tvinput.tis.FrameworkTunerScanBoundaryTest \
-            --tests com.maleicacid.tvinput.tis.ProgramBatchIpcBudgetTest
+            --tests com.maleicacid.tvinput.tis.ProgramBatchIpcBudgetTest \
+            --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest
 
       - name: 実SDK scan境界試験の実行結果を確認
         run: |

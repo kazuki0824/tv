@@ -1136,6 +1136,7 @@ class TvProviderWriter private constructor(
                         ContentProviderOperation
                             .newUpdate(ContentUris.withAppendedId(TvContract.Channels.CONTENT_URI, channelId))
                             .withValues(values)
+                            .withExpectedCount(1)
                             .build()
                     }
                 val results = context.contentResolver.applyBatch(TvContract.AUTHORITY, ArrayList(operations))
