@@ -1145,7 +1145,7 @@ class TunerController(
                     }
 
                     SectionFilterPolicy.ReadDecision.STALE_SOURCE -> {
-                        Unit
+                        return@postOnControllerData
                     }
                 }
             }
