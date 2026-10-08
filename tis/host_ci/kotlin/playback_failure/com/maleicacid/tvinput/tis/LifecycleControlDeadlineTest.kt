@@ -167,7 +167,7 @@ class LifecycleControlDeadlineTest {
             val cleaned = CountDownLatch(1)
             try {
                 val sequence =
-                    LifecycleSerialExecutor::class.java
+                    PrioritySerialExecutor::class.java
                         .getDeclaredField("nextSequence")
                         .apply { isAccessible = true }
                 (sequence.get(executor) as AtomicLong).set(Long.MIN_VALUE)
@@ -208,7 +208,7 @@ class LifecycleControlDeadlineTest {
                     }
                 }) { error("枯渇後のdeferred callbackを実行しました") }
                 val sequence =
-                    LifecycleSerialExecutor::class.java
+                    PrioritySerialExecutor::class.java
                         .getDeclaredField("nextSequence")
                         .apply { isAccessible = true }
                 (sequence.get(executor) as AtomicLong).set(Long.MIN_VALUE)
@@ -346,7 +346,7 @@ class LifecycleControlDeadlineTest {
             releaseOwner.countDown()
             check(executor.awaitTermination(1, TimeUnit.SECONDS))
             val field =
-                LifecycleSerialExecutor::class.java
+                PrioritySerialExecutor::class.java
                     .getDeclaredField("pendingDataSlots")
                     .apply { isAccessible = true }
             val slots = field.get(executor) as Semaphore

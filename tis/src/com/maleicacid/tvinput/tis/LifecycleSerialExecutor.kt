@@ -1,19 +1,12 @@
 package com.maleicacid.tvinput.tis
 
-import java.util.Comparator
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.FutureTask
-import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.Semaphore
-import java.util.concurrent.ThreadFactory
-import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 /** 開始済み操作の結果は未確定であり、同じownerによる後片付けが必要。 */
 internal class ControlResultUnknownException(
@@ -27,16 +20,7 @@ internal class ControlResultUnknownException(
 internal class LifecycleSerialExecutor(
     private val threadName: String,
     private val maxPendingDataTasks: Int = DEFAULT_MAX_PENDING_DATA_TASKS,
-) : ThreadPoolExecutor(
-        1,
-        1,
-        0L,
-        TimeUnit.MILLISECONDS,
-        PriorityBlockingQueue(INITIAL_QUEUE_CAPACITY, TASK_ORDER),
-        ThreadFactory { runnable ->
-            Thread(runnable, threadName).apply { isDaemon = true }
-        },
-    ) {
+) : PrioritySerialExecutor(threadName, maxPendingDataTasks) {
     private interface ControlTask
 
     private class ControlFutureTask<T>(
@@ -96,42 +80,8 @@ internal class LifecycleSerialExecutor(
         }
     }
 
-    private data class QueuedTask(
-        val queueClass: Int,
-        val sequence: Long,
-        val delegate: Runnable,
-        val onFinished: (() -> Unit)? = null,
-        val onDiscarded: (() -> Unit)? = null,
-    ) : Runnable {
-        override fun run() {
-            try {
-                delegate.run()
-            } finally {
-                onFinished?.invoke()
-            }
-        }
-
-        fun discardBeforeRun() {
-            onDiscarded?.invoke()
-        }
-    }
-
-    private val ownerThread = AtomicReference<Thread?>()
-    private val nextSequence = AtomicLong()
     private val deferredOwnerData = ArrayDeque<Runnable>()
     private var stoppingData = false
-    private val pendingDataSlots =
-        Semaphore(maxPendingDataTasks.also { require(it > 0) { "maxPendingDataTasksは正でなければなりません" } })
-
-    override fun beforeExecute(
-        thread: Thread,
-        runnable: Runnable,
-    ) {
-        ownerThread.set(thread)
-        super.beforeExecute(thread, runnable)
-    }
-
-    fun isOwnerThread(): Boolean = Thread.currentThread() === ownerThread.get()
 
     override fun shutdownNow(): MutableList<Runnable> {
         val deferred =
@@ -140,7 +90,6 @@ internal class LifecycleSerialExecutor(
                 deferredOwnerData.toList().also { deferredOwnerData.clear() }
             }
         val dropped = super.shutdownNow()
-        dropped.filterIsInstance<QueuedTask>().forEach(QueuedTask::discardBeforeRun)
         deferred.forEach(::discardCallback)
         dropped.addAll(deferred)
         return dropped
@@ -169,7 +118,7 @@ internal class LifecycleSerialExecutor(
 
     // terminal cleanupだけは通常task identityを消費しない。同じownerで枯渇後も解放を完了する。
     fun executeCleanupControl(command: Runnable) {
-        super.execute(QueuedTask(CLEANUP_QUEUE_CLASS, 0L, command))
+        enqueueUnsequenced(CLEANUP_QUEUE_CLASS, command)
     }
 
     fun executeTerminalCleanup(command: Runnable) {
@@ -216,27 +165,10 @@ internal class LifecycleSerialExecutor(
             }
             return
         }
-        acquireDataSlotAndEnqueue(command)
-    }
-
-    // Framework callback lock内でも待機せず、受理した入力だけがpermitを所有する。
-    @Suppress("ThrowsCount")
-    private fun acquireDataSlotAndEnqueue(command: Runnable) {
-        if (!pendingDataSlots.tryAcquire()) {
-            throw RejectedExecutionException("$threadName のdata未処理数が上限に達しました")
-        }
-        try {
-            enqueue(DATA_QUEUE_CLASS, command, { finishOwnerTask(hasDataSlot = true) }, {
-                pendingDataSlots.release()
-                discardCallback(command)
-            })
-        } catch (error: RejectedExecutionException) {
+        acquireDataSlotAndEnqueue(command, { finishOwnerTask(hasDataSlot = true) }, {
             pendingDataSlots.release()
-            throw error
-        } catch (error: IllegalStateException) {
-            pendingDataSlots.release()
-            throw error
-        }
+            discardCallback(command)
+        })
     }
 
     private fun finishOwnerTask(hasDataSlot: Boolean): Unit =
@@ -316,46 +248,12 @@ internal class LifecycleSerialExecutor(
         }
     }
 
-    private fun enqueue(
-        queueClass: Int,
-        command: Runnable,
-        onFinished: (() -> Unit)? = null,
-        onDiscarded: (() -> Unit)? = null,
-    ) {
-        val sequence = nextSequence.getAndIncrement()
-        check(sequence >= 0L) { "$threadName task sequenceが枯渇しました" }
-        super.execute(
-            QueuedTask(
-                queueClass = queueClass,
-                sequence = sequence,
-                delegate = command,
-                onFinished = onFinished,
-                onDiscarded = onDiscarded,
-            ),
-        )
-    }
-
     private companion object {
-        const val INITIAL_QUEUE_CAPACITY = 11
         const val DEFAULT_MAX_PENDING_DATA_TASKS = 64
         const val CLEANUP_QUEUE_CLASS = -1
-        const val CONTROL_QUEUE_CLASS = 0
-        const val DATA_QUEUE_CLASS = 1
         const val CONTROL_QUEUED = 0
         const val CONTROL_RUNNING = 1
         const val CONTROL_DONE = 2
         const val CONTROL_CANCELLED = 3
-
-        val TASK_ORDER: Comparator<Runnable> =
-            Comparator { left, right ->
-                val leftTask = left as QueuedTask
-                val rightTask = right as QueuedTask
-                val classOrder = leftTask.queueClass.compareTo(rightTask.queueClass)
-                if (classOrder != 0) {
-                    classOrder
-                } else {
-                    leftTask.sequence.compareTo(rightTask.sequence)
-                }
-            }
     }
 }
