@@ -1557,13 +1557,15 @@ class PlaybackPipeline(
                                     }
                                     return@enqueuePlaybackAction
                                 }
-                                if (info.size > 0) {
-                                    startupDeadline?.onFirstOutput()
-                                    startupTimeout?.let(mainHandler::removeCallbacks)
-                                    startupTimeout = null
-                                    backpressureStartedAtMs = null
+                                completeCurrentDecoderOutputAction(::onDecoderFailure) {
+                                    if (info.size > 0) {
+                                        startupDeadline?.onFirstOutput()
+                                        startupTimeout?.let(mainHandler::removeCallbacks)
+                                        startupTimeout = null
+                                        backpressureStartedAtMs = null
+                                    }
+                                    onOutput(codec, index, info)
                                 }
-                                onOutput(codec, index, info)
                             }
                         }
 
@@ -2951,6 +2953,19 @@ class PlaybackPipeline(
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
         @Suppress("TooGenericExceptionCaught")
+        // current outputのruntime失敗を既存decoder失敗通知へ渡し、data workerへ漏らさない。
+        @Suppress("TooGenericExceptionCaught")
+        internal fun completeCurrentDecoderOutputAction(
+            onFailure: (RuntimeException) -> Unit,
+            action: () -> Unit,
+        ) {
+            try {
+                action()
+            } catch (error: RuntimeException) {
+                onFailure(error)
+            }
+        }
+
         internal fun releaseDecoderOutput(
             cleanup: ResourceCleanup,
             release: () -> Unit,

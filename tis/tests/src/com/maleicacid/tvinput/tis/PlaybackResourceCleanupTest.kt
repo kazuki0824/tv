@@ -4,8 +4,50 @@
 package com.maleicacid.tvinput.tis
 
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class PlaybackResourceCleanupTest {
+    @Test
+    fun currentOutputReleaseFailureNotifiesSessionAndCompletesDataTask() {
+        val cleanup = ResourceCleanup()
+        val notifications = mutableListOf<PlaybackPipeline.PlaybackUnavailable>()
+        val executor = LifecycleSerialExecutor("output失敗試験")
+        val completed = CountDownLatch(1)
+        var reject = true
+        var owned = true
+        try {
+            executor.executeData {
+                PlaybackPipeline.completeCurrentDecoderOutputAction(
+                    onFailure = { error ->
+                        check(error is IllegalStateException)
+                        PlaybackPipeline.completePlaybackFailureAction(7L, notifications::add) {
+                            cleanup.requireComplete()
+                        }
+                    },
+                ) {
+                    check(
+                        PlaybackPipeline.releaseDecoderOutput(cleanup) {
+                            if (reject) error("output解放失敗")
+                            owned = false
+                        },
+                    ) { "解放未完了" }
+                }
+                completed.countDown()
+            }
+            check(completed.await(1, TimeUnit.SECONDS))
+            check(owned && cleanup.hasPending)
+            check(notifications.single().generation == 7L)
+            check(notifications.single().reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
+            reject = false
+            cleanup.retry()
+            cleanup.requireComplete()
+            check(!owned)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
     @Test
     fun currentDecoderOutputReleaseFailuresRemainOwnedAndRejectCompletion() {
         val cleanup = ResourceCleanup()

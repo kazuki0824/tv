@@ -51,6 +51,11 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+## レビュー対応: current decoder output失敗の通知
+
+- current outputのruntime例外を既存onDecoderFailure/errorSinkへ渡し、data workerからの未捕捉終了を防ぐ。
+- cleanup所有を保持したままSessionへtyped failureを通知しdata taskが完了する回帰試験を追加。stale出力は通知せず所有保持を継続。
+
 # MediaCodec出力buffer全release経路の回収所有権
 
 - stale callbackに加え、current videoの空buffer・Surface拒否・時刻指定render、current audioの空buffer・LinearBlock欠落・range拒否・backpressure拒否も共通の既存ResourceCleanupへ接続した。失敗時はclosureがcodec/indexを保持し、current処理では解放完了扱いせず既存失敗通知へ伝播する。audio outstanding集合の解放成功まで保持する経路は維持した。
