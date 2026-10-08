@@ -11,6 +11,8 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import org.junit.Test
 
 /** AndroidJUnitRunner から実行する TvProviderWriter チャンネル更新テスト。 */
+// channel更新・pending復帰・commit拒否を同じstore契約群で検証する。
+@Suppress("TooManyFunctions")
 class TvProviderWriterUpsertTest {
     private val key = ServiceKey(originalNetworkId = 4, transportStreamId = 16625, serviceId = 101)
 
@@ -34,7 +36,8 @@ class TvProviderWriterUpsertTest {
                     return Result.success(1)
                 }
             }
-        check(store.indexInitialBrowsablePendingChannelIds(setOf(key)).exceptionOrNull() is UnsupportedOperationException)
+        val pendingFailure = store.indexInitialBrowsablePendingChannelIds(setOf(key)).exceptionOrNull()
+        check(pendingFailure is UnsupportedOperationException)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val channel =
             ChannelRecord(
