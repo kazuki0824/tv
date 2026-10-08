@@ -62,6 +62,7 @@ class TvProviderWriterProgramsTest {
         check(store.indexExistingProgramEntriesForWindow(1L, 0L, 1L).isFailure)
         check(store.upsertProgramsBatch(emptyList()).isFailure)
         check(store.readCanonicalGenres(1L, setOf(1L)).isFailure)
+        check(store.deleteObsoletePrograms(1L, emptySet(), 0L, 1L).isFailure)
     }
 
     @Suppress("MaxLineLength")

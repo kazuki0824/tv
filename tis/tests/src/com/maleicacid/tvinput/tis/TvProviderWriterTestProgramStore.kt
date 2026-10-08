@@ -35,3 +35,28 @@ internal fun testUpsertProgramsBatch(
         }
         outcomes
     }
+
+internal fun testDeleteObsoletePrograms(
+    rows: MutableMap<Long, ContentValues>,
+    channelId: Long,
+    validKeys: Set<String>,
+    startMs: Long,
+    endMs: Long,
+): Result<Int> =
+    runCatching {
+        val obsolete =
+            rows
+                .filterValues { values ->
+                    val start = values.getAsLong(android.media.tv.TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                    val end = values.getAsLong(android.media.tv.TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                    val key =
+                        TvProviderWriter.parseProgramKey(
+                            values.getAsByteArray(android.media.tv.TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
+                        )
+                    values.getAsLong(android.media.tv.TvContract.Programs.COLUMN_CHANNEL_ID) == channelId &&
+                        end > startMs && start < endMs && key !in validKeys
+                }.keys
+                .toList()
+        obsolete.forEach(rows::remove)
+        obsolete.size
+    }

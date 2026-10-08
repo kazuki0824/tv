@@ -125,7 +125,7 @@ class TvProviderWriter private constructor(
             validProgramKeys: Set<String>,
             windowStartMs: Long,
             windowEndMs: Long,
-        ): Result<Int> = Result.success(0)
+        ): Result<Int> = Result.failure(UnsupportedOperationException("この store はobsolete program削除に対応しません"))
 
         fun listExistingChannels(): Result<List<ChannelRecord>> = Result.success(emptyList())
     }

@@ -2612,6 +2612,13 @@ class TisR51FixedPlanAcceptanceTest {
                     }.groupBy({ it.first }, { it.second }),
             )
 
+        override fun deleteObsoletePrograms(
+            channelId: Long,
+            validProgramKeys: Set<String>,
+            windowStartMs: Long,
+            windowEndMs: Long,
+        ): Result<Int> = testDeleteObsoletePrograms(programs, channelId, validProgramKeys, windowStartMs, windowEndMs)
+
         override fun upsertProgramsBatch(
             requests: List<TvProviderWriter.ProgramUpsertRequest>,
         ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> =

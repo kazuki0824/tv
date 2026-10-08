@@ -966,3 +966,5 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 
 - 旧単数Program insert/update/genre読戻しAPIとoverrideを削除し、未対応bulk/batch storeをfail-closedにする。
 - test storeも64操作単位でstage/commitし、batch途中失敗で先行操作が残らない反例を固定する。
+
+- レビュー対応: authoritative windowのobsolete Program削除未実装をfailureへ変更。必要test storeだけwindow削除を明示実装。
