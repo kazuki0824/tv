@@ -897,7 +897,7 @@ class ChannelScanController(
         private var scanFinished = false
 
         fun cancel(): Boolean =
-            synchronized(publicationLock) {
+            synchronized(cancelled) {
                 if (scanFinished) {
                     false
                 } else {
@@ -908,13 +908,15 @@ class ChannelScanController(
 
         fun <T> finishScan(result: () -> T): T =
             synchronized(publicationLock) {
-                result().also { scanFinished = true }
+                // 取消し受付だけを短い区間で閉じ、Provider I/O中にUIを待たせない。
+                synchronized(cancelled) { scanFinished = true }
+                result()
             }
 
         fun reset() =
             synchronized(publicationLock) {
                 terminalObserved = false
-                scanFinished = false
+                synchronized(cancelled) { scanFinished = false }
                 activeGeneration.set(-1L)
                 lostGeneration.set(-1L)
                 signalUnavailable = null

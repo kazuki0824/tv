@@ -53,7 +53,7 @@ object ChannelScanManager {
         val publicationLock = Any()
 
         fun requestCancel(): Boolean =
-            synchronized(publicationLock) {
+            synchronized(cancelRequested) {
                 val scan = controller as? ChannelScanController
                 if (scan != null) {
                     scan.requestCancelScan()

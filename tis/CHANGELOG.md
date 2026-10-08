@@ -20,6 +20,8 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+- scan取消し受付をProvider公開lockから分離し、最終commit前の受付確定とUIの有限returnを維持。公開中・最終commit中の競合試験を追加。
+
 - Localize the background channel maintenance diagnostic prefix.
 
 ## レビュー対応: scan terminalの単一正本
