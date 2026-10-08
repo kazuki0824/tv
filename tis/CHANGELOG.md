@@ -915,3 +915,5 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 # controller worker交換後のowner判定
 
 - beforeExecuteで現在実行するworker identityへ更新する。未捕捉例外による交換後も単一thread ownerとcontroller/data再入を維持する試験を追加した。thread数やexecutorは増やさない。
+
+- Localize TunerController runtime failure details without changing scan outcomes.

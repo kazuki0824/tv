@@ -222,7 +222,7 @@ class TunerController(
         val failure =
             when (error) {
                 is InterruptedException -> {
-                    RuntimeException("TunerController executor interrupted inputId=$inputId", error)
+                    RuntimeException("TunerControllerのexecutor待機が割り込まれました inputId=$inputId", error)
                 }
 
                 is ExecutionException -> {
@@ -779,7 +779,7 @@ class TunerController(
                 }
 
                 Outcome.CANCELLED -> {
-                    StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "BS scan cancelled", generation)
+                    StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "BSスキャンは取消されました", generation)
                 }
 
                 Outcome.START_FAILED -> {
@@ -797,11 +797,11 @@ class TunerController(
                 }
 
                 Outcome.TIMED_OUT -> {
-                    StreamIdDiscoveryResult(false, emptySet(), resultCode, "scan callback timeout", generation)
+                    StreamIdDiscoveryResult(false, emptySet(), resultCode, "スキャンcallback待機が期限を超過しました", generation)
                 }
 
                 Outcome.SCANNING -> {
-                    error("unreachable")
+                    error("到達不能なスキャン結果です")
                 }
             }
         }
