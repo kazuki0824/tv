@@ -377,7 +377,6 @@ class TvProviderWriterR51FixTest {
                     }.toMap(),
             )
 
-
         fun removeProgramsForChannel(channelId: Long) {
             val ids =
                 programs
