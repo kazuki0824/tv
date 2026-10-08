@@ -7,8 +7,11 @@ import org.junit.Test
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
     val executor = LifecycleSerialExecutor("lifecycle-test", maxPendingDataTasks = 1)
@@ -55,9 +58,7 @@ class LifecycleControlDeadlineTest {
         val deferredReady = CountDownLatch(1)
         val releaseOwner = CountDownLatch(1)
         val shutdownDone = CountDownLatch(1)
-        val failure =
-            java.util.concurrent.atomic
-                .AtomicReference<Throwable?>()
+        val failure = AtomicReference<Throwable?>()
         try {
             executor.executeData {
                 executor.executeData { error("deferred dataが実行されました") }
@@ -71,23 +72,22 @@ class LifecycleControlDeadlineTest {
             executor.executeData { error("queued dataが実行されました") }
             val shutdownThread =
                 Thread {
-                    try {
-                        check(executor.shutdownNow().size == 3)
-                    } catch (error: Throwable) {
-                        failure.set(error)
-                    } finally {
-                        shutdownDone.countDown()
-                    }
+                    failure.set(runCatching { check(executor.shutdownNow().size == 3) }.exceptionOrNull())
+                    shutdownDone.countDown()
                 }
             shutdownThread.start()
             check(shutdownDone.await(1, TimeUnit.SECONDS))
             check(failure.get() == null) { failure.get().toString() }
             releaseOwner.countDown()
             check(executor.awaitTermination(1, TimeUnit.SECONDS))
-            val field = LifecycleSerialExecutor::class.java.getDeclaredField("pendingDataSlots").apply { isAccessible = true }
-            val slots = field.get(executor) as java.util.concurrent.Semaphore
+            val field =
+                LifecycleSerialExecutor::class.java
+                    .getDeclaredField("pendingDataSlots")
+                    .apply { isAccessible = true }
+            val slots = field.get(executor) as Semaphore
             check(slots.availablePermits() == 2)
-            check(runCatching { executor.executeData {} }.exceptionOrNull() is java.util.concurrent.RejectedExecutionException)
+            val rejected = runCatching { executor.executeData {} }.exceptionOrNull()
+            check(rejected is RejectedExecutionException)
             check(slots.availablePermits() == 2)
         } finally {
             releaseOwner.countDown()
