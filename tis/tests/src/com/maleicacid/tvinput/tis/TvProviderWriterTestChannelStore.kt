@@ -12,7 +12,9 @@ internal fun testUpsertExistingChannel(
 ): Result<TvProviderWriter.ExistingChannelUpsertOutcome> =
     runCatching {
         val current = rows.getValue(channelId)
-        if (current.getAsString(TvContract.Channels.COLUMN_TYPE) == values.getAsString(TvContract.Channels.COLUMN_TYPE)) {
+        val currentType = current.getAsString(TvContract.Channels.COLUMN_TYPE)
+        val requestedType = values.getAsString(TvContract.Channels.COLUMN_TYPE)
+        if (currentType == requestedType) {
             val update = ContentValues(values)
             update.remove(TvContract.Channels.COLUMN_TYPE)
             update.remove(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1)

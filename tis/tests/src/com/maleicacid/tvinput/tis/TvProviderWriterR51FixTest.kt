@@ -334,6 +334,8 @@ class TvProviderWriterR51FixTest {
         )
     }
 
+    // 必須store操作を一つのrow所有者へ明示実装し、fixtureの状態を分散しない。
+    @Suppress("TooManyFunctions")
     private class MergeStore : TvProviderWriter.ChannelStore {
         private var nextChannelId = 1L
         private var nextProgramId = 100L
@@ -349,7 +351,9 @@ class TvProviderWriterR51FixTest {
         override fun upsertExistingChannel(
             channelId: Long,
             values: ContentValues,
-        ): Result<TvProviderWriter.ExistingChannelUpsertOutcome> = testUpsertExistingChannel(channels, channelId, values, ::insertChannel)
+        ): Result<TvProviderWriter.ExistingChannelUpsertOutcome> {
+            return testUpsertExistingChannel(channels, channelId, values, ::insertChannel)
+        }
 
         override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
             Result.success(
