@@ -20,6 +20,8 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+- Localize the background channel maintenance diagnostic prefix.
+
 ## レビュー対応: scan terminalの単一正本
 
 - 終端確定をpublication fenceへ接続し、確定後cancelを拒否する。Managerは正常returnのtyped terminalだけを写像する。

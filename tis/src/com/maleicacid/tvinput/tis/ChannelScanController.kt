@@ -327,7 +327,7 @@ class ChannelScanController(
         return runMaintenanceScan(
             targetChannels = channels,
             mode = PublishMode.BACKGROUND_CHANNEL_MAINTENANCE,
-            failurePrefix = "background channel maintenance",
+            failurePrefix = "バックグラウンドチャンネル保守",
         )
     }
 
