@@ -359,7 +359,10 @@ class MaleicacidLiveSession(
         val service = transaction.services.firstOrNull { it.serviceKey == serviceKey }
         val pmtPids = transaction.pmtPidsFor(serviceKey)
         val decision = currentServicePolicy()
-        if (initialLiveSiPending(decision)) return
+        if (initialLiveSiPending(decision)) {
+            tunerController.updatePmtFilters(pmtPids, currentGeneration)
+            return
+        }
         val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
         val serviceScopedCa =
             allCaMetadata.filter {

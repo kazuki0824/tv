@@ -20,7 +20,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 // 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
-// 同じ本番資源とfixtureを再利用し、試験数だけを理由に所有者を分割しない。
 @Suppress("TooManyFunctions", "LargeClass")
 class PlaybackFailureCallbacksTest {
     @Suppress("LongMethod")
@@ -623,6 +622,91 @@ class PlaybackFailureCallbacksTest {
         fixture.rejectRelease = false
         fixture.cleanup.retry()
         fixture.cleanup.requireComplete()
+    }
+
+    // 実JNIのPAT/SDTから本番session refreshとcontrollerのFilter開始までを通す。
+    @Suppress("LongMethod")
+    @Test
+    fun pendingLiveSiBootstrapsPmtFilterAndBecomesReadyAfterPmtReception() {
+        val executor = ControllerSerialExecutor("live PMT bootstrap試験")
+        val fixture = Fixture(false, false, failCleanup = false)
+        val controller = fixture.allocate(TunerController::class.java)
+        val session = fixture.allocate(MaleicacidLiveSession::class.java)
+        val engine =
+            com.maleicacid.tvinput.aribsi
+                .AribSiEngine(android.content.ContextWrapper(null))
+
+        fun set(
+            target: Any,
+            name: String,
+            value: Any,
+        ) {
+            target.javaClass
+                .getDeclaredField(name)
+                .apply { isAccessible = true }
+                .set(target, value)
+        }
+
+        fun ingest(
+            pid: Int,
+            hex: String,
+        ) {
+            val bytes = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            check(engine.ingestSection(TsPid(pid), bytes).status == com.maleicacid.tvinput.aribsi.SiStatus.OK)
+        }
+        set(controller, "sectionExecutor", executor)
+        set(controller, "tuneAccepted", true)
+        set(controller, "tuneGeneration", 7L)
+        set(controller, "tuner", fixture.tuner)
+        for (name in listOf(
+            "dynamicPmtPids",
+            "dynamicEcmPids",
+            "dynamicEmmPids",
+            "failedDynamicPmtPids",
+            "failedDynamicEcmPids",
+            "failedDynamicEmmPids",
+        )) {
+            set(controller, name, linkedSetOf<TsPid>())
+        }
+        set(controller, "sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
+        set(controller, "sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+        set(session, "currentService", ServiceKey(0x22, 0x11, 1))
+        set(session, "currentGeneration", 7L)
+        set(session, "tunerController", controller)
+        set(session, "aribSiEngine", engine)
+        val filter = fixture.allocate(Filter::class.java)
+        Tuner::class.java.getField("nextFilter").set(null, filter)
+        val refresh =
+            MaleicacidLiveSession::class.java
+                .getDeclaredMethod("refreshDynamicSiAndCasFilters")
+                .apply { isAccessible = true }
+        try {
+            engine.setDiscoveryProfile(com.maleicacid.tvinput.aribsi.SiDiscoveryProfile.ISDB_T)
+            ingest(0, "00b00d0011c100000001e1004521f9b6")
+            ingest(0x11, "42f0180011c100000022000001fc80074805010002543128d78c81")
+            ingest(0x10, "40b01c0022c10000f004fe020300f00b00110022f0054103000101ab293465")
+            val key = ServiceKey(0x22, 0x11, 1)
+            check(
+                com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+                    .evaluateLive(engine.livePlaybackSnapshot(), key)
+                    .state ==
+                    com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING,
+            )
+            refresh.invoke(session)
+            check(Filter::class.java.getField("starts").getInt(filter) == 1)
+            refresh.invoke(session)
+            check(Filter::class.java.getField("starts").getInt(filter) == 1)
+            ingest(0x100, "02b0170001c10000e101f0001be101f0000fe102f0009e28c6dd")
+            val ready =
+                com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+                    .evaluateLive(engine.livePlaybackSnapshot(), key)
+            check(ready.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY && ready.casDecisionReady)
+            controller.closeSectionFilter(TsPid(0x100))
+        } finally {
+            Tuner::class.java.getField("nextFilter").set(null, null)
+            engine.close()
+            executor.shutdownNow()
+        }
     }
 
     // 本番callback/readから実JNIまで、正常集合・有限飽和・retune失効を同じfixtureで検査する。

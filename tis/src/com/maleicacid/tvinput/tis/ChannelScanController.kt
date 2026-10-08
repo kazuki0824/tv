@@ -399,7 +399,7 @@ class ChannelScanController(
         if (terminalResourceLostObserved) return
         val generation = tunerController.currentGeneration()
         val pmtPids = engine.pmtPidsForSectionFilters()
-        tunerController.updateScanPmtFilters(pmtPids, generation)
+        tunerController.updatePmtFilters(pmtPids, generation)
     }
 
     // 一つの受信snapshotから登録・公開する経路と早期終了を維持する。長い型・診断項目だけ行長を許容する。
