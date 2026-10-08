@@ -152,7 +152,7 @@ internal class LifecycleSerialExecutor(
         }
     }
 
-    private fun finishOwnerTask(hasDataSlot: Boolean) =
+    private fun finishOwnerTask(hasDataSlot: Boolean): Unit =
         synchronized(deferredOwnerData) {
             if (stoppingData || isShutdown) deferredOwnerData.clear()
             if (deferredOwnerData.isEmpty()) {
