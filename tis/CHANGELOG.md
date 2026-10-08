@@ -51,6 +51,14 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# callback実行失敗と複数MediaEventの解放保持
+
+- TvProviderの単一/一覧チャンネル照会のnull cursor診断を日本語へ統一した。失敗を空結果の成功に置き換えない。
+- LifecycleSerialExecutorで開始済みcallbackのRuntimeExceptionを既存onFailureへ渡し、失敗通知・release fence・同一ownerのterminal cleanupへ接続した。開始済み入力へonDiscardを重ねない。
+- AV callback配列の途中例外では現在の未移譲eventと残余eventを既存releaseMediaEventへ渡す。処理済み/decoder所有eventは再解放せず、解放失敗は既存ResourceCleanupが保持する。
+- 恒久設計を投入・実行失敗と配列残余回収へ追従した。既存executor試験を実行開始後の失敗まで拡張し、実AV callback入口への3イベント入力と残余解放retryの試験・ホスト境界fixtureを追加した。CIの検出期待値はPR185で360、PR186で372に更新した。
+- ローカルでは整形・lint・差分を確認し、テスト実行はCIへ委ねる。Soong/VTS/実機検証は未実施。
+
 - Move upgrade Program cleanup I/O to its single owner worker; keep live/setup/EPG admission closed until success and retry on the next request after failure. Test blocked ContentResolver, 10,000 rows, partial delete and retry without migration.
 
 - Update host test discovery guards for the additional caption cleanup test class and two tests.
