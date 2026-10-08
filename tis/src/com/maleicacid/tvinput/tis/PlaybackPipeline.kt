@@ -1548,7 +1548,9 @@ class PlaybackPipeline(
                         ) {
                             enqueuePlaybackAction {
                                 if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) {
-                                    releaseStaleDecoderOutput(resourceCleanup) { codec.releaseOutputBuffer(index, false) }
+                                    releaseStaleDecoderOutput(resourceCleanup) {
+                                        codec.releaseOutputBuffer(index, false)
+                                    }
                                     return@enqueuePlaybackAction
                                 }
                                 if (info.size > 0) {
@@ -2949,7 +2951,7 @@ class PlaybackPipeline(
             cleanup: ResourceCleanup,
             release: () -> Unit,
         ) {
-            cleanup.release("stale MediaCodec output buffer", release)
+            cleanup.release("遅延callbackのMediaCodec出力buffer", release)
         }
 
         internal fun completePlaybackFailureAction(
