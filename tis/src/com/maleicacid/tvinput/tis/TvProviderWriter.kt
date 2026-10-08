@@ -1106,7 +1106,10 @@ class TvProviderWriter private constructor(
                 val replacement = ContentValues(values).apply { put(TvContract.Channels.COLUMN_BROWSABLE, 0) }
                 val operations =
                     arrayListOf(
-                        ContentProviderOperation.newInsert(TvContract.Channels.CONTENT_URI).withValues(replacement).build(),
+                        ContentProviderOperation
+                            .newInsert(TvContract.Channels.CONTENT_URI)
+                            .withValues(replacement)
+                            .build(),
                         ContentProviderOperation.newDelete(uri).withExpectedCount(1).build(),
                     )
                 val results = context.contentResolver.applyBatch(TvContract.AUTHORITY, operations)
