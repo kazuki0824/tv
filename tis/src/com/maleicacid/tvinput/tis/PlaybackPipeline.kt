@@ -3000,6 +3000,8 @@ class PlaybackPipeline(
             return completed
         }
 
+        // codec/framework実行失敗を元generationの再生不可通知へ変換する境界。
+        @Suppress("TooGenericExceptionCaught")
         internal fun completePlaybackFailureAction(
             originGeneration: Long,
             onUnavailable: (PlaybackUnavailable) -> Unit,

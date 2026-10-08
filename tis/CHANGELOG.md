@@ -51,6 +51,8 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+- #185: playback recoveryのruntime例外境界へ理由付き局所抑制を配置し、親PR自身のdetekt gateを満たす。current output境界の既存抑制は維持。
+
 ## レビュー対応: MediaCodec親子cleanupの確定
 
 - codec release成功時に同codec配下のoutput解放義務とaudio参照を完了し、閉鎖済みcodecへのretryを残さない。
