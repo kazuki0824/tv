@@ -939,3 +939,7 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 - beforeExecuteで現在実行するworker identityへ更新する。未捕捉例外による交換後も単一thread ownerとcontroller/data再入を維持する試験を追加した。thread数やexecutorは増やさない。
 
 - Localize TunerController runtime failure details without changing scan outcomes.
+## レビュー対応: scan cancelの公開境界
+
+- cancel確定とTvProvider公開を既存scan ownerのpublication lockへ直列化し、最終snapshot retry中の取消しもCANCELLEDで終了する。
+- retry中・publish gate直前の取消しを副作用なしの回帰試験で固定する。

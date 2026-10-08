@@ -28,6 +28,7 @@ class ChannelScanController(
     private val engine: AribSiEngine,
     scanPurpose: ScanPurpose,
     cancelRequested: AtomicBoolean = AtomicBoolean(false),
+    publicationLock: Any = Any(),
 ) : AutoCloseable {
     data class ScanDiagnostic(
         val candidate: ScanCandidate,
@@ -114,7 +115,7 @@ class ChannelScanController(
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
     private val cancelled = cancelRequested
     private var terminalCancelObserved: Boolean = false
-    private val scanGenerationFence = ScanGenerationFence()
+    private val scanGenerationFence = ScanGenerationFence(publicationLock, cancelled)
     private val terminalResourceLostObserved: Boolean get() = scanGenerationFence.terminalObserved
     private var skippedUnresolvedTransportCount: Int = 0
     private var currentCandidate: ScanCandidate? = null
@@ -378,7 +379,7 @@ class ChannelScanController(
     }
 
     fun cancelScan() {
-        cancelled.set(true)
+        scanGenerationFence.cancel()
         terminalCancelObserved = true
     }
 
@@ -595,30 +596,34 @@ class ChannelScanController(
     private fun acquireFinalRegistrationSnapshot(
         policy: SiCollectionPolicy,
         finalizationStartedAt: Long,
-    ): com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot {
+    ): com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? {
         val finalDeadline = finalizationStartedAt + policy.maxWaitMs
-        while (true) {
-            val beforeAttempt = android.os.SystemClock.elapsedRealtime()
-            check(shouldStartFinalSiSnapshot(beforeAttempt, finalDeadline)) {
-                "section filter停止後の最終SI snapshotを有限期限内に取得できません"
-            }
-            engine.tryServiceRegistrationSnapshot()?.let { return it }
-            val sleepMs =
-                finalSiSnapshotRetrySleepMs(
-                    android.os.SystemClock.elapsedRealtime(),
-                    finalDeadline,
-                    policy.pollIntervalMs,
-                )
-            check(sleepMs != null) {
-                "section filter停止後の最終SI snapshotを有限期限内に取得できません"
-            }
-            runCatching { Thread.sleep(sleepMs) }
-        }
+        return acquireFinalSnapshotUnlessCancelled(
+            cancelled,
+            attempt = {
+                check(shouldStartFinalSiSnapshot(android.os.SystemClock.elapsedRealtime(), finalDeadline)) {
+                    "section filter停止後の最終SI snapshotを有限期限内に取得できません"
+                }
+                engine.tryServiceRegistrationSnapshot()
+            },
+            waitForRetry = {
+                val sleepMs =
+                    finalSiSnapshotRetrySleepMs(
+                        android.os.SystemClock.elapsedRealtime(),
+                        finalDeadline,
+                        policy.pollIntervalMs,
+                    )
+                check(sleepMs != null) {
+                    "section filter停止後の最終SI snapshotを有限期限内に取得できません"
+                }
+                runCatching { Thread.sleep(sleepMs) }
+            },
+        )
     }
 
     // 安定待ち・期限・取消し・資源喪失の優先順位と、終了後のfilter解放を同じ収集処理で保持する。
     // 各breakは異なる終了理由を確定する。部分完了の4条件はEIT不要・最短待機・登録可能・安定待機の全てを要求する。
-    @Suppress("LongMethod", "CyclomaticComplexMethod", "LoopWithTooManyJumpStatements", "MaxLineLength")
+    @Suppress("LongMethod", "CyclomaticComplexMethod", "LoopWithTooManyJumpStatements", "MaxLineLength", "ReturnCount")
     private fun collectSiForCandidate(
         candidate: ScanCandidate,
         requirements: SiCollectionRequirements,
@@ -725,6 +730,15 @@ class ChannelScanController(
         }
         val finalizationStartedAt = android.os.SystemClock.elapsedRealtime()
         val finalSnapshot = acquireFinalRegistrationSnapshot(policy, finalizationStartedAt)
+        if (finalSnapshot == null || cancelled.get()) {
+            terminalCancelObserved = true
+            return SiCollectionResult(
+                outcome = SiCollectionOutcome.CANCELLED,
+                diagnostic = ScanDiagnostic(candidate, "最終SI snapshot待機中にscanを取消しました"),
+                clearLivePlaybackStaticallyEligibleServices = lastCounts?.clearLivePlaybackStaticallyEligible ?: 0,
+                registrationReadyServices = lastCounts?.registrationReady ?: 0,
+            )
+        }
         val finalCounts = serviceCountsFromSnapshot(candidate, requirements, finalSnapshot)
         val complete = finalCounts.collectionStatus.complete
         if (outcome == SiCollectionOutcome.COMPLETE && !complete) outcome = SiCollectionOutcome.TIMEOUT_PARTIAL
@@ -802,7 +816,10 @@ class ChannelScanController(
         }
 
     /** scanが既に所有していたgeneration、信号終端、公開lockをまとめる。別の世代ownerは作らない。 */
-    internal class ScanGenerationFence {
+    internal class ScanGenerationFence(
+        private val publicationLock: Any = Any(),
+        private val cancelled: AtomicBoolean = AtomicBoolean(false),
+    ) {
         internal data class SignalUnavailable(
             val generation: Long,
             val event: Int,
@@ -814,7 +831,8 @@ class ChannelScanController(
         private val lostGeneration = AtomicLong(-1L)
 
         @Volatile private var signalUnavailable: SignalUnavailable? = null
-        private val publicationLock = Any()
+
+        fun cancel() = synchronized(publicationLock) { cancelled.set(true) }
 
         fun reset() =
             synchronized(publicationLock) {
@@ -880,6 +898,7 @@ class ChannelScanController(
             publish: () -> T,
         ): T? =
             synchronized(publicationLock) {
+                if (cancelled.get()) return@synchronized null
                 if (isLost(generation)) {
                     terminalObserved = true
                     return@synchronized null
@@ -899,6 +918,19 @@ class ChannelScanController(
         ScanDiagnostic(candidate, "Tuner resource lostによりscan generationを失効しました generation=$generation; TvProvider publishを拒否します")
 
     companion object {
+        internal fun <T> acquireFinalSnapshotUnlessCancelled(
+            cancelled: AtomicBoolean,
+            attempt: () -> T?,
+            waitForRetry: () -> Unit,
+        ): T? {
+            while (!cancelled.get()) {
+                val snapshot = attempt()
+                if (snapshot != null || cancelled.get()) return snapshot.takeUnless { cancelled.get() }
+                waitForRetry()
+            }
+            return null
+        }
+
         private val DEFAULT_SI_POLICY = SiCollectionPolicy()
 
         // 公開方針の既存入口への委譲を一つの式に保つ。

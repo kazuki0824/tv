@@ -792,3 +792,5 @@ TIS は保存データの型、正規化、必須項目判定、欠落補完、�
 `DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS は `DescriptorDiagnosticV1` を項目ごとに再構築してはならない。TIS が保持する場合は、Rust 生成の正規 JSON を不透明な文字列として透過保持する。
 
 TIS の試験は、受け渡し用 JSON の細部を保存形式として検査しない。検査対象は Rust provider-data builder が返した保存用JSON、識別子、拒否診断に寄せる。
+
+scan cancelの確定とTvProvider publishは、ActiveScanTaskが所有しScanGenerationFenceと共有する同じpublication lockで直列化する。cancelが先に確定した場合、最終SI snapshotのretryを終端として停止し、channel/program公開を拒否する。publishが先にlockを取得した場合はその公開完了後にcancelを確定する。cancel flagだけをlock外で書き換えて公開と競合させない。

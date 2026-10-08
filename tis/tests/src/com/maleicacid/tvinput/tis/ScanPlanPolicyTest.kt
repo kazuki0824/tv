@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -19,6 +20,41 @@ import kotlin.test.assertTrue
 
 @Suppress("TooManyFunctions")
 class ScanPlanPolicyTest {
+    @Test
+    fun cancellationDuringFinalSnapshotRetryStopsAcquisitionAndPublication() {
+        val cancelled = AtomicBoolean(false)
+        var attempts = 0
+        val snapshot =
+            ChannelScanController.acquireFinalSnapshotUnlessCancelled<String>(
+                cancelled,
+                attempt = {
+                    attempts++
+                    null
+                },
+                waitForRetry = { cancelled.set(true) },
+            )
+        assertEquals(1, attempts)
+        assertEquals(null, snapshot)
+        val result =
+            ChannelScanController.SiCollectionResult(
+                ChannelScanController.SiCollectionOutcome.CANCELLED,
+                null,
+                1,
+            )
+        assertFalse(result.mayPublishChannels)
+    }
+
+    @Test
+    fun cancellationBeforePublicationGatePreventsProviderSideEffects() {
+        val cancelled = AtomicBoolean(false)
+        val lock = Any()
+        val fence = ChannelScanController.ScanGenerationFence(lock, cancelled)
+        synchronized(lock) { cancelled.set(true) }
+        var writes = 0
+        assertEquals(null, fence.publishIfCurrent(1L) { writes++ })
+        assertEquals(0, writes)
+    }
+
     @Test
     fun finalSiSnapshotAttemptMayStartImmediatelyBeforeDeadline() {
         assertTrue(ChannelScanController.shouldStartFinalSiSnapshot(999L, 1_000L))
