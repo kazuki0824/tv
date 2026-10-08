@@ -1,3 +1,6 @@
+// 試験の入力・期待値を本体定数から独立した具体値で固定する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import org.junit.Test
