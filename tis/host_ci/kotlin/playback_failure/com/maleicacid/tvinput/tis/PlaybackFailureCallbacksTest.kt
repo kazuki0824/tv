@@ -8,6 +8,9 @@ import android.media.MediaCas
 import android.media.MediaSync
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.filter.Filter
+import android.media.tv.tuner.filter.FilterCallback
+import android.media.tv.tuner.filter.FilterEvent
+import android.media.tv.tuner.filter.MediaEvent
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.ServicePolicyDecision
@@ -1051,6 +1054,41 @@ class PlaybackFailureCallbacksTest {
         } finally {
             if (registration.getBoolean(fixture.pipeline)) ChannelScanManager.unregisterPlaybackPipeline(null)
             unblock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun mediaArrayFailureReleasesOnlyUnprocessedInputsAndRetainsReleaseFailure() {
+        val fixture = Fixture(false, false, false)
+        val executor = LifecycleSerialExecutor("複数MediaEvent失敗試験")
+        fixture.set("executor", executor)
+        val filter = fixture.allocate(Filter::class.java)
+        val events = Array(3) { fixture.allocate(MediaEvent::class.java) }
+        val releases = MediaEvent::class.java.getField("releases")
+        MediaEvent::class.java.getField("rejectRead").setBoolean(events[1], true)
+        MediaEvent::class.java.getField("rejectRelease").setBoolean(events[2], true)
+        Tuner::class.java.getField("nextFilter").set(null, filter)
+        try {
+            executor.callControl(5_000L) {
+                fixture.invoke("createAndStartAvFilter", fixture.tuner, fixture.selection.audio!!, true)
+            }
+            val callback = Tuner::class.java.getField("lastCallback").get(null) as FilterCallback
+            callback.onFilterEvent(filter, Array<FilterEvent>(3) { events[it] })
+            val processed = java.util.concurrent.CountDownLatch(1)
+            executor.executeData { processed.countDown() }
+            check(processed.await(5, TimeUnit.SECONDS))
+            executor.callControl(5_000L) {
+                check(events.all { releases.getInt(it) == 1 })
+                check(fixture.cleanup.hasPending)
+                MediaEvent::class.java.getField("rejectRelease").setBoolean(events[2], false)
+                fixture.cleanup.retry()
+                fixture.cleanup.requireComplete()
+                check(releases.getInt(events[0]) == 1 && releases.getInt(events[1]) == 1)
+                check(releases.getInt(events[2]) == 2 && !fixture.cleanup.hasPending)
+            }
+        } finally {
+            Tuner::class.java.getField("nextFilter").set(null, null)
             executor.shutdownNow()
         }
     }

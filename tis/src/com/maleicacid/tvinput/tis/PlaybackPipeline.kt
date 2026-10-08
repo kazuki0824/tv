@@ -729,34 +729,37 @@ class PlaybackPipeline(
                                 return
                             }
                             enqueuePlaybackFilterEvents(events, { reportCapacityLoss(filter) }) {
+                                var nextEvent = 0
                                 runCatching {
-                                    for (event in events) {
-                                        if (event is RestartEvent) {
-                                            if (inputIsCurrent()) {
-                                                (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                                    try {
+                                        while (nextEvent < events.size) {
+                                            val event = events[nextEvent++]
+                                            if (event is RestartEvent) {
+                                                if (inputIsCurrent()) {
+                                                    (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                                                }
+                                                continue
                                             }
-                                            continue
+                                            if (event !is MediaEvent) continue
+                                            var decoderOwnsEvent = false
+                                            try {
+                                                if (!inputIsCurrent()) continue
+                                                val sample = sampleFromEvent(event, isAudio) ?: continue
+                                                if (!inputIsCurrent()) continue
+                                                val target = (if (isAudio) targetAudioDecoder else targetVideoDecoder) ?: continue
+                                                // queueは受理・拒否とも入力を所有し、自身の失敗時にも解放を保持する。
+                                                decoderOwnsEvent = true
+                                                target.queue(sample)
+                                            } finally {
+                                                if (!decoderOwnsEvent) releaseMediaEvent(event)
+                                            }
                                         }
-                                        if (event !is MediaEvent) continue
-                                        if (!inputIsCurrent()) {
-                                            releaseMediaEvent(event)
-                                            continue
+                                    } finally {
+                                        // 途中失敗でも未処理分を回収する。処理済み・decoder所有分には触れない。
+                                        while (nextEvent < events.size) {
+                                            val event = events[nextEvent++]
+                                            if (event is MediaEvent) releaseMediaEvent(event)
                                         }
-                                        val sample = sampleFromEvent(event, isAudio)
-                                        if (sample == null) {
-                                            releaseMediaEvent(event)
-                                            continue
-                                        }
-                                        if (!inputIsCurrent()) {
-                                            releaseMediaEvent(event)
-                                            continue
-                                        }
-                                        val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
-                                        if (target == null) {
-                                            releaseMediaEvent(event)
-                                            continue
-                                        }
-                                        target.queue(sample)
                                     }
                                 }.onFailure { error ->
                                     if (isAudio) {

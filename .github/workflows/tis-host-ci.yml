@@ -216,7 +216,8 @@ jobs:
           javac -classpath "$TIS_ANDROID_ALL_JAR" -d "$test_dir" \
             tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/DemuxCapabilities.java \
             tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/Tuner.java \
-            tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/filter/Filter.java
+            tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/filter/Filter.java \
+            tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/filter/MediaEvent.java
 
       - name: ホスト互換Kotlinテストを実行
         shell: bash
