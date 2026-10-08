@@ -1,11 +1,14 @@
 package com.maleicacid.tvinput.tis
 
+import android.content.AttributionSource
 import android.content.ContentProviderOperation
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.media.tv.TvContract
 import android.net.Uri
+import android.os.IBinder
+import android.os.Parcel
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.LogTags
@@ -103,7 +106,8 @@ class TvProviderWriter private constructor(
          * EPG 更新区間 より意図的に広く取得し、start / end time が現在 window の外へ
          * 移動した event も、duplicate insert ではなく stable ONID / TSID / SID / event identity で更新する。
          */
-        fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> = Result.success(emptyMap())
+        fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
+            Result.failure(UnsupportedOperationException("この store はサービス単位の必須Program照会に対応しません"))
 
         fun upsertProgramsBatch(requests: List<ProgramUpsertRequest>): Result<List<ProgramUpsertOutcome>> =
             Result.failure(UnsupportedOperationException("この store は program batch書込みに対応しません"))
@@ -728,6 +732,52 @@ class TvProviderWriter private constructor(
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
     @Suppress("TooManyFunctions")
     companion object {
+        private const val PROGRAM_PROVIDER_BATCH_SIZE = 64
+
+        // 公開推奨値の半分を使用し、共有bufferや未観測の付加情報へ余裕を残す。
+        // 実Binder容量・現在空き容量の取得値ではない。
+        @Suppress("MagicNumber", "LongMethod")
+        internal fun programOperationBatches(
+            operations: List<ContentProviderOperation>,
+            attributionSource: AttributionSource,
+            suggestedMaxIpcSizeBytes: Int = IBinder.getSuggestedMaxIpcSizeBytes(),
+        ): List<List<ContentProviderOperation>> {
+            if (operations.isEmpty()) return emptyList()
+            val budgetBytes = suggestedMaxIpcSizeBytes / 2
+            check(budgetBytes > 0) { "TvProviderの推奨IPCサイズが不正です suggested=$suggestedMaxIpcSizeBytes" }
+            val parcel = Parcel.obtain()
+            try {
+                // Android 15 ContentProviderProxy.applyBatchと同じrequest envelopeを計測する。
+                parcel.writeInterfaceToken("android.content.IContentProvider")
+                attributionSource.writeToParcel(parcel, 0)
+                parcel.writeString(TvContract.AUTHORITY)
+                parcel.writeInt(0)
+                val headerBytes = parcel.dataSize()
+                val batches = mutableListOf<List<ContentProviderOperation>>()
+                var batch = mutableListOf<ContentProviderOperation>()
+                for (operation in operations) {
+                    val previousBytes = parcel.dataSize()
+                    operation.writeToParcel(parcel, 0)
+                    val singleBytes = headerBytes.toLong() + parcel.dataSize() - previousBytes
+                    check(singleBytes <= budgetBytes) {
+                        "単一Program operationがIPC予算を超えます bytes=$singleBytes budget=$budgetBytes"
+                    }
+                    if (batch.isNotEmpty() && (batch.size == PROGRAM_PROVIDER_BATCH_SIZE || parcel.dataSize() > budgetBytes)) {
+                        batches += batch
+                        batch = mutableListOf()
+                        parcel.setDataSize(headerBytes)
+                        parcel.setDataPosition(headerBytes)
+                        operation.writeToParcel(parcel, 0)
+                    }
+                    batch += operation
+                }
+                if (batch.isNotEmpty()) batches += batch
+                return batches
+            } finally {
+                parcel.recycle()
+            }
+        }
+
         /**
          * テスト専用 assertion 用に維持する フィールド 名。本番 provider-data は
          * ProviderDataBridge / Rust だけが生成・正規化する。
@@ -905,7 +955,6 @@ class TvProviderWriter private constructor(
             const val PROGRAM_PROVIDER_DATA_COLUMN_INDEX = 1
             const val PROGRAM_START_TIME_COLUMN_INDEX = 2
             const val PROGRAM_END_TIME_COLUMN_INDEX = 3
-            const val PROGRAM_PROVIDER_BATCH_SIZE = 64
         }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -1120,26 +1169,29 @@ class TvProviderWriter private constructor(
             runCatching {
                 if (requests.isEmpty()) return@runCatching emptyList()
                 val outcomes = mutableListOf<ProgramUpsertOutcome>()
-                requests.chunked(PROGRAM_PROVIDER_BATCH_SIZE).forEach { chunk ->
-                    val operations =
-                        chunk.map { request ->
-                            val existingId = request.existingProgramId
-                            if (existingId == null) {
-                                ContentProviderOperation
-                                    .newInsert(TvContract.Programs.CONTENT_URI)
-                                    .withValues(request.values)
-                                    .build()
-                            } else {
-                                ContentProviderOperation
-                                    .newUpdate(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, existingId))
-                                    .withValues(request.values)
-                                    .build()
-                            }
+                val operations =
+                    requests.map { request ->
+                        val existingId = request.existingProgramId
+                        if (existingId == null) {
+                            ContentProviderOperation
+                                .newInsert(TvContract.Programs.CONTENT_URI)
+                                .withValues(request.values)
+                                .build()
+                        } else {
+                            ContentProviderOperation
+                                .newUpdate(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, existingId))
+                                .withValues(request.values)
+                                .build()
                         }
+                    }
+                var nextRequest = 0
+                programOperationBatches(operations, context.attributionSource).forEach { batch ->
+                    val chunk = requests.subList(nextRequest, nextRequest + batch.size)
+                    nextRequest += batch.size
                     val results =
                         context.contentResolver.applyBatch(
                             TvContract.AUTHORITY,
-                            ArrayList(operations),
+                            ArrayList(batch),
                         )
                     check(results.size == chunk.size) { "TvProvider program batch結果数が一致しません" }
                     chunk.zip(results).forEach { (request, result) ->
@@ -1229,17 +1281,17 @@ class TvProviderWriter private constructor(
                         }
                     }
                 }
-                deleteIds.chunked(PROGRAM_PROVIDER_BATCH_SIZE).forEach { ids ->
-                    val operations =
-                        ids.map { id ->
-                            ContentProviderOperation
-                                .newDelete(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, id))
-                                .build()
-                        }
+                val operations =
+                    deleteIds.map { id ->
+                        ContentProviderOperation
+                            .newDelete(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, id))
+                            .build()
+                    }
+                programOperationBatches(operations, context.attributionSource).forEach { batch ->
                     val results =
                         context.contentResolver.applyBatch(
                             TvContract.AUTHORITY,
-                            ArrayList(operations),
+                            ArrayList(batch),
                         )
                     deleted += results.sumOf { it.count ?: 0 }
                 }

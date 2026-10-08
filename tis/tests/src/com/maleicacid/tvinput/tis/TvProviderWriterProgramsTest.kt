@@ -59,6 +59,12 @@ class TvProviderWriterProgramsTest {
                     values: ContentValues,
                 ): Result<Int> = Result.success(1)
             }
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val publication = writer.prepareProgramPublication(emptyList(), emptyList(), setOf(key))
+        val outcome = writer.upsertPreparedPrograms(publication)
+        check(outcome.succeededServiceKeys.isEmpty())
+        check(outcome.failures.single().operation == "program-index-query")
+        check(store.indexExistingProgramsForService(1L).isFailure)
         check(store.indexExistingProgramEntriesForWindow(1L, 0L, 1L).isFailure)
         check(store.upsertProgramsBatch(emptyList()).isFailure)
         check(store.readCanonicalGenres(1L, setOf(1L)).isFailure)

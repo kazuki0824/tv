@@ -156,6 +156,7 @@ jobs:
               tis/host_ci/robolectric/src/test/kotlin/*.kt|\
               tis/host_ci/robolectric/build.gradle.kts|\
               tis/host_ci/robolectric/settings.gradle.kts|\
+              tis/host_ci/robolectric/src/test/kotlin/*.kt|\
               rec/tests/src/*.kt|\
               rec/src/com/maleicacid/tvinput/db/TvInputDatabase.kt|\
               rec/src/com/maleicacid/tvinput/reservation/ReservationPolicy.kt)
