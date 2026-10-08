@@ -18,7 +18,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-@Suppress("TooManyFunctions")
+// scanの終端と公開拒否を同じ契約群で検証し、取消しの反例を別fixtureへ分散しない。
+@Suppress("TooManyFunctions", "LargeClass")
 class ScanPlanPolicyTest {
     @Test
     fun cancellationDuringFinalSnapshotRetryStopsAcquisitionAndPublication() {
