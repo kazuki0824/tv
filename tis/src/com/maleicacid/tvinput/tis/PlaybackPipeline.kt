@@ -2951,8 +2951,6 @@ class PlaybackPipeline(
                 VideoFormatInfo(kind.streamType, kind.mime, right - left + 1, bottom - top + 1)
             }.getOrNull()
 
-        // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-        @Suppress("TooGenericExceptionCaught")
         // current outputのruntime失敗を既存decoder失敗通知へ渡し、data workerへ漏らさない。
         @Suppress("TooGenericExceptionCaught")
         internal fun completeCurrentDecoderOutputAction(

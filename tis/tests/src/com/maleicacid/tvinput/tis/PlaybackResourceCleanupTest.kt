@@ -7,6 +7,8 @@ import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+// callback失敗通知とstop時の所有解放を同じ資源寿命の契約群で検証する。
+@Suppress("TooManyFunctions")
 class PlaybackResourceCleanupTest {
     @Test
     fun currentOutputReleaseFailureNotifiesSessionAndCompletesDataTask() {
