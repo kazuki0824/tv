@@ -3423,3 +3423,7 @@
 # px4 ueventd patternの文字クラス契約訂正
 
 - AOSP fnmatch契約に従い数値で始まるsuffixのpatternへ戻し、誤ったprefix最適化の説明を削除した。ueventd/file_contexts/probe prefix整合試験を復元した。DMA-BUF heap権限のplatform所有は維持する。
+
+# Android 15実装におけるueventd wildcard一致
+
+- READMEとdevices.cppの末尾wildcard最適化差を確認した。末尾以外のwildcardと末尾数字の文字クラスを組み合わせ、実装でもfnmatchを使用するpatternへ固定した。driver node、suffixなし、非数字末尾の一致/不一致を実fnmatchで試験する。
