@@ -3,6 +3,7 @@
 
 package com.maleicacid.tvinput.tis
 
+import android.content.ContentValues
 import android.media.MediaCas
 import android.media.MediaSync
 import android.media.tv.tuner.Tuner
@@ -872,11 +873,11 @@ class PlaybackFailureCallbacksTest {
                 object : TvProviderWriter.ChannelStore {
                     override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(null)
 
-                    override fun insertChannel(values: android.content.ContentValues): Result<Long?> = Result.success(null)
+                    override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(null)
 
                     override fun updateChannel(
                         channelId: Long,
-                        values: android.content.ContentValues,
+                        values: ContentValues,
                     ): Result<Int> = Result.success(0)
                 },
                 testOnly = true,
