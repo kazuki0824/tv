@@ -763,9 +763,19 @@ where
     pub fn wait_until_released<const N: usize>(
         &self,
         keys: [&K; N],
+        budget: std::time::Duration,
     ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        let started = std::time::Instant::now();
         while self.any_pending(keys)? {
-            std::thread::sleep(std::time::Duration::from_millis(WORKER_REAPER_WAIT_POLL_MS));
+            let Some(remaining) = budget.checked_sub(started.elapsed()) else {
+                return Err(maleicacid_tuner_hal2_common::HalError::cleanup_failed(
+                    "ワーカー回収の受付待機",
+                    "既存の回収期限内に保留所有権が解放されませんでした",
+                ));
+            };
+            std::thread::sleep(
+                remaining.min(std::time::Duration::from_millis(WORKER_REAPER_WAIT_POLL_MS)),
+            );
         }
         Ok(())
     }
@@ -1144,8 +1154,9 @@ where
     pub fn wait_until_released<const N: usize>(
         &self,
         keys: [&K; N],
+        budget: std::time::Duration,
     ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        self.pending.wait_until_released(keys)
+        self.pending.wait_until_released(keys, budget)
     }
 }
 
@@ -2158,6 +2169,27 @@ mod tests {
             supervisor.worker_terminal_result().unwrap(),
             Some(WorkerTerminalResult::PanicOrJoinFailure)
         );
+    }
+
+    #[test]
+    fn reaper_admission_timeout_keeps_both_endpoint_reservations() {
+        use std::time::{Duration, Instant};
+        let pending = super::WorkerRuntimeReaperPending::new(1);
+        let group = pending.reserve_group([(1, 1), (2, 2)]).unwrap();
+        for key in [1, 2] {
+            let started = Instant::now();
+            assert!(matches!(
+                pending.wait_until_released([&key], Duration::from_millis(5)),
+                Err(maleicacid_tuner_hal2_common::HalError::CleanupFailed { .. })
+            ));
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert_eq!(pending.pending_value(&key).unwrap(), Some(key));
+            assert!(pending.reserve_group([(key, key)]).is_err());
+        }
+        pending.release_group(group).unwrap();
+        assert!(pending
+            .wait_until_released([&1, &2], Duration::ZERO)
+            .is_ok());
     }
 
     #[test]

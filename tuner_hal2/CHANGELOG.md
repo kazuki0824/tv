@@ -3393,3 +3393,5 @@
 - `common`、`descrambler`、`frontend_px4` の再利用断片を追加した。
 - 旧制御層をコピーせず、`control` crate に worker / lifecycle / FMQ delivery / stream boundary の型付き骨格を追加した。
 - r50ed 時点では Binder service / AIDL HAL 実装は未達である。
+
+- Bound frontend tune/scan reaper-admission waits by the existing workerReaperDeadlineMs capability; retain pending ownership and return typed cleanup failure on timeout.

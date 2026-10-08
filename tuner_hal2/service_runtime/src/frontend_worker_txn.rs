@@ -565,10 +565,14 @@ impl FrontendWorkerReaperHandle {
         self.runtime.any_pending([&tune, &scan])
     }
 
-    fn wait_until_frontend_released(&self, frontend_id: i32) -> Result<(), HalError> {
+    fn wait_until_frontend_released(
+        &self,
+        frontend_id: i32,
+        budget: Duration,
+    ) -> Result<(), HalError> {
         let tune = (frontend_id, FrontendWorkerKind::Tune);
         let scan = (frontend_id, FrontendWorkerKind::Scan);
-        self.runtime.wait_until_released([&tune, &scan])
+        self.runtime.wait_until_released([&tune, &scan], budget)
     }
 
     fn pending_state(
@@ -3848,8 +3852,9 @@ pub(crate) fn start_frontend_backend_tune_worker(
     let (frontend_id, _) =
         resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
     if reaper.has_pending_frontend(frontend_id)? {
+        let budget = Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms);
         drop(guard);
-        reaper.wait_until_frontend_released(frontend_id)?;
+        reaper.wait_until_frontend_released(frontend_id, budget)?;
         guard = lock_runtime(
             &runtime,
             "frontend reaper受付待機後にservice runtime lockが汚染されています",
@@ -4664,8 +4669,9 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
     let (frontend_id, _) =
         resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
     if reaper.has_pending_frontend(frontend_id)? {
+        let budget = Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms);
         drop(guard);
-        reaper.wait_until_frontend_released(frontend_id)?;
+        reaper.wait_until_frontend_released(frontend_id, budget)?;
         guard = lock_runtime(
             &runtime,
             "frontend reaper受付待機後にservice runtime lockが汚染されています",
@@ -5749,6 +5755,38 @@ mod scan_contract_tests {
         SatellitePowerTopology,
     };
     use std::collections::VecDeque;
+
+    #[test]
+    fn frontend_admission_budget_retains_pending_tune_and_scan_ownership() {
+        let mut capability = crate::CapabilitySnapshot::product_default();
+        capability.worker_reaper_deadline_ms = 5;
+        let runtime = Arc::new(Mutex::new(
+            TunerServiceRuntime::from_capability_snapshot_for_test(capability),
+        ));
+        let reaper = ensure_frontend_worker_reaper(&runtime).unwrap();
+        for kind in [FrontendWorkerKind::Tune, FrontendWorkerKind::Scan] {
+            let reservation = reaper.reserve_replacement(7, kind).unwrap();
+            let budget = Duration::from_millis(
+                runtime
+                    .lock()
+                    .unwrap()
+                    .capability_snapshot()
+                    .worker_reaper_deadline_ms,
+            );
+            let started = Instant::now();
+            assert!(matches!(
+                reaper.wait_until_frontend_released(7, budget),
+                Err(HalError::CleanupFailed { .. })
+            ));
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(reaper.has_pending_frontend(7).unwrap());
+            assert!(reaper.reserve_replacement(7, kind).is_err());
+            reaper.release_replacement_reservation(reservation).unwrap();
+            assert!(reaper
+                .wait_until_frontend_released(7, Duration::ZERO)
+                .is_ok());
+        }
+    }
 
     #[test]
     fn successful_worker_reaper_completion_is_not_error_severity() {
