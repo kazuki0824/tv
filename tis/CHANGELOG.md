@@ -20,6 +20,13 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# Filter callback容量拒否と字幕置換の所有保持
+
+- LifecycleSerialExecutorのdata投入を待機なしの有限受理/拒否にし、Framework callback lockと優先closeの循環待ちを除去した。
+- playbackのAV/PES callbackは即時入口から同じownerへ渡す。拒否・失効・未実行破棄のMediaEventを解放し、失敗は既存ResourceCleanupへ保持する。Filter close後の未実行event回収と解放完了をexecutor停止の前提にした。別queue・cleanup ownerは追加しない。
+- 同一PTS字幕の置換後容量を無変更で検査し、token確保後だけqueueへcommitする。拒否時に既存Display/Clearを保持する。
+- 実Android 15 Filter lockの64枠飽和、callback資源破棄と解放retry、字幕bytes/境界数拒否をCI回帰試験へ接続する。Soong/VTS/実機試験は未実施。
+
 - accepted tune初期化失敗を既存session release fenceとResourceCleanupへ接続し、旧playbackを停止する。解放失敗と通知失敗は主原因へ保持し、同じownerによる再試行を残す。
 
 - #183: current callback投入失敗は原因を保持してterminal fence・診断・同一owner解放へ接続。通常identity枯渇後もcleanup専用controlで再試行し、shutdown競合だけを無視する。

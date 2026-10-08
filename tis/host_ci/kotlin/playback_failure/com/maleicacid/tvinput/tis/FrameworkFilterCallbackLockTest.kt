@@ -84,6 +84,69 @@ class FrameworkFilterCallbackLockTest {
         }
     }
 
+    @Test
+    fun sixtyFourQueuedDataTasksDoNotBlockFrameworkCallbackOrPriorityClose() {
+        val executor = LifecycleSerialExecutor("Framework容量試験")
+        val ownerStarted = CountDownLatch(1)
+        val releaseOwner = CountDownLatch(1)
+        val returned = CountDownLatch(1)
+        val rejected =
+            java.util.concurrent.atomic
+                .AtomicReference<Throwable>()
+        val filter =
+            frameworkFilter(
+                object : FilterCallback {
+                    override fun onFilterEvent(
+                        filter: Filter,
+                        events: Array<FilterEvent>,
+                    ) = Unit
+
+                    override fun onFilterStatusChanged(
+                        filter: Filter,
+                        status: Int,
+                    ) = Unit
+                },
+                Executor { task ->
+                    runCatching { executor.execute(task) }.onFailure(rejected::set)
+                },
+            )
+        val delivery =
+            Filter::class.java
+                .getDeclaredMethod("onFilterEvent", Array<FilterEvent>::class.java)
+                .apply { isAccessible = true }
+        val producer =
+            Thread {
+                try {
+                    delivery.invoke(filter, emptyArray<FilterEvent>())
+                } finally {
+                    returned.countDown()
+                }
+            }
+        try {
+            executor.executeControl {
+                ownerStarted.countDown()
+                releaseOwner.await()
+            }
+            check(ownerStarted.await(1, TimeUnit.SECONDS))
+            repeat(64) { executor.executeData {} }
+            producer.start()
+            check(returned.await(1, TimeUnit.SECONDS))
+            check(rejected.get() is java.util.concurrent.RejectedExecutionException)
+            val close = CountDownLatch(1)
+            executor.executeControl {
+                filter.close()
+                close.countDown()
+            }
+            releaseOwner.countDown()
+            check(close.await(1, TimeUnit.SECONDS))
+        } finally {
+            releaseOwner.countDown()
+            executor.shutdownNow()
+            producer.interrupt()
+            producer.join(1_000)
+        }
+    }
+
     private fun frameworkFilter(
         callback: FilterCallback,
         executor: Executor,

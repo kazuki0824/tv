@@ -63,13 +63,26 @@ internal class LifecycleSerialExecutor(
         private val isReleased: () -> Boolean,
         private val onFailure: (RuntimeException) -> Unit,
         private val action: () -> Unit,
+        private val onDiscard: () -> Unit,
     ) : Runnable {
+        private val discarded =
+            java.util.concurrent.atomic
+                .AtomicBoolean(false)
+
         override fun run() {
-            if (!isReleased()) action()
+            if (isReleased()) discard() else action()
+        }
+
+        fun discard() {
+            if (discarded.compareAndSet(false, true)) onDiscard()
         }
 
         fun fail(error: RuntimeException) {
-            if (!isReleased()) onFailure(error)
+            try {
+                if (!isReleased()) onFailure(error)
+            } finally {
+                discard()
+            }
         }
     }
 
@@ -118,8 +131,22 @@ internal class LifecycleSerialExecutor(
             }
         val dropped = super.shutdownNow()
         dropped.filterIsInstance<QueuedTask>().forEach(QueuedTask::discardBeforeRun)
+        deferred.forEach(::discardCallback)
         dropped.addAll(deferred)
         return dropped
+    }
+
+    // Filterを閉じたownerが、未実行eventの解放を確認してからexecutorを停止する。
+    fun discardDataCallbacks() {
+        synchronized(deferredOwnerData) {
+            deferredOwnerData.filterIsInstance<CallbackTask>().forEach(CallbackTask::discard)
+            deferredOwnerData.removeAll { it is CallbackTask }
+        }
+        queue.filterIsInstance<QueuedTask>().forEach { task ->
+            if (task.queueClass == DATA_QUEUE_CLASS && task.delegate is CallbackTask && remove(task)) {
+                task.discardBeforeRun()
+            }
+        }
     }
 
     override fun execute(command: Runnable) {
@@ -147,16 +174,20 @@ internal class LifecycleSerialExecutor(
         control: Boolean = false,
         isReleased: () -> Boolean,
         onFailure: (RuntimeException) -> Unit,
+        onDiscard: () -> Unit = {},
         action: () -> Unit,
     ) {
-        if (isReleased()) return
-        val task = CallbackTask(isReleased, onFailure, action)
+        if (isReleased()) {
+            onDiscard()
+            return
+        }
+        val task = CallbackTask(isReleased, onFailure, action, onDiscard)
         try {
             if (control) executeControl(task) else executeData(task)
         } catch (error: RejectedExecutionException) {
-            if (!isShutdown) task.fail(error)
+            if (isShutdown) task.discard() else task.fail(error)
         } catch (error: IllegalStateException) {
-            if (!isShutdown) task.fail(error)
+            if (isShutdown) task.discard() else task.fail(error)
         }
     }
 
@@ -178,17 +209,17 @@ internal class LifecycleSerialExecutor(
         acquireDataSlotAndEnqueue(command)
     }
 
-    // 割込み・投入拒否・識別子枯渇でpermitを返し、それぞれの失敗を保持する。
+    // Framework callback lock内でも待機せず、受理した入力だけがpermitを所有する。
     @Suppress("ThrowsCount")
     private fun acquireDataSlotAndEnqueue(command: Runnable) {
-        try {
-            pendingDataSlots.acquire()
-        } catch (error: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw RejectedExecutionException("$threadName data enqueue待機が割り込まれました", error)
+        if (!pendingDataSlots.tryAcquire()) {
+            throw RejectedExecutionException("$threadName のdata未処理数が上限に達しました")
         }
         try {
-            enqueue(DATA_QUEUE_CLASS, command, { finishOwnerTask(hasDataSlot = true) }, pendingDataSlots::release)
+            enqueue(DATA_QUEUE_CLASS, command, { finishOwnerTask(hasDataSlot = true) }, {
+                pendingDataSlots.release()
+                discardCallback(command)
+            })
         } catch (error: RejectedExecutionException) {
             pendingDataSlots.release()
             throw error
@@ -200,7 +231,7 @@ internal class LifecycleSerialExecutor(
 
     private fun finishOwnerTask(hasDataSlot: Boolean): Unit =
         synchronized(deferredOwnerData) {
-            if (stoppingData || isShutdown) deferredOwnerData.clear()
+            if (stoppingData || isShutdown) discardDeferredCallbacks()
             if (deferredOwnerData.isEmpty()) {
                 if (hasDataSlot) pendingDataSlots.release()
                 return@synchronized
@@ -209,17 +240,30 @@ internal class LifecycleSerialExecutor(
             if (!hasDataSlot && !pendingDataSlots.tryAcquire()) return@synchronized
             val deferred = deferredOwnerData.removeFirst()
             try {
-                enqueue(DATA_QUEUE_CLASS, deferred, { finishOwnerTask(hasDataSlot = true) }, pendingDataSlots::release)
+                enqueue(DATA_QUEUE_CLASS, deferred, { finishOwnerTask(hasDataSlot = true) }, {
+                    pendingDataSlots.release()
+                    discardCallback(deferred)
+                })
             } catch (error: RejectedExecutionException) {
-                deferredOwnerData.clear()
+                discardDeferredCallbacks()
                 pendingDataSlots.release()
                 if (!isShutdown) reportDeferredFailure(deferred, error)
             } catch (error: IllegalStateException) {
-                deferredOwnerData.clear()
+                discardDeferredCallbacks()
                 pendingDataSlots.release()
                 if (!isShutdown) reportDeferredFailure(deferred, error)
             }
         }
+
+    private fun discardCallback(task: Runnable) {
+        if (task is CallbackTask) task.discard()
+    }
+
+    private fun discardDeferredCallbacks() {
+        val discarded = deferredOwnerData.toList()
+        deferredOwnerData.clear()
+        discarded.forEach(::discardCallback)
+    }
 
     private fun reportDeferredFailure(
         task: Runnable,

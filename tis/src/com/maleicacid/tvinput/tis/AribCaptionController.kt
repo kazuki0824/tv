@@ -411,17 +411,19 @@ class AribCaptionController(
             return
         }
         val clearAt = timing.clearAt
-        boundaries.removeIf { boundary -> boundary.mediaTimeMillis == pts && boundary is Boundary.Display }
+        val replaced = boundaries.filter { boundary -> boundary.mediaTimeMillis == pts && boundary is Boundary.Display }
+        val remainingCount = boundaries.size - replaced.size
         val incomingCount = if (clearAt == null) 1 else 2
         val queuedBytes =
             boundaries
                 .asSequence()
                 .filterIsInstance<Boundary.Display>()
+                .filterNot { it in replaced }
                 .sumOf { boundary -> boundary.frame.images.sumOf { image -> image.rgba8888.size.toLong() } }
         val incomingBytes = frame.images.sumOf { image -> image.rgba8888.size.toLong() }
         if (
             incomingBytes > CAPTION_MAX_PENDING_BYTES ||
-            boundaries.size > CAPTION_MAX_BOUNDARIES - incomingCount ||
+            remainingCount > CAPTION_MAX_BOUNDARIES - incomingCount ||
             queuedBytes > CAPTION_MAX_PENDING_BYTES - incomingBytes
         ) {
             recordPendingOverflow(CaptionDiagnostic.Reason.PRESENTATION_QUEUE_OVERFLOW)

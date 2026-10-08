@@ -30,7 +30,8 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
         check(firstStarted.await(1, TimeUnit.SECONDS))
         val producerFuture =
             producer.submit {
-                executor.executeData { order += "data-second" }
+                val failure = runCatching { executor.executeData { order += "data-second" } }.exceptionOrNull()
+                check(failure is RejectedExecutionException)
                 secondReturned.countDown()
             }
         val control = CountDownLatch(1)
@@ -38,13 +39,13 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
             order += "control"
             control.countDown()
         }
-        check(!secondReturned.await(50, TimeUnit.MILLISECONDS))
+        check(secondReturned.await(1, TimeUnit.SECONDS))
         releaseFirst.countDown()
         check(control.await(1, TimeUnit.SECONDS))
         producerFuture.get(1, TimeUnit.SECONDS)
         executor.shutdown()
         check(executor.awaitTermination(1, TimeUnit.SECONDS))
-        check(order == listOf("data-running", "control", "data-second")) { order.toString() }
+        check(order == listOf("data-running", "control")) { order.toString() }
     } finally {
         releaseFirst.countDown()
         producer.shutdownNow()
@@ -55,6 +56,90 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
 // 同じexecutorの投入・期限・shutdown・cleanup境界を一緒に試験する。
 @Suppress("TooManyFunctions")
 class LifecycleControlDeadlineTest {
+    @Test
+    fun rejectedCallbackDisposesInputAndRetainsFailedReleaseForOwnerRetry() {
+        val executor = LifecycleSerialExecutor("拒否資源試験", maxPendingDataTasks = 1)
+        val started = CountDownLatch(1)
+        val unblock = CountDownLatch(1)
+        val released = AtomicBoolean(false)
+        val cleanup = ResourceCleanup()
+        var attempts = 0
+        try {
+            executor.executeControl {
+                started.countDown()
+                unblock.await()
+            }
+            check(started.await(1, TimeUnit.SECONDS))
+            executor.executeData {}
+            executor.executeCallback(
+                isReleased = released::get,
+                onFailure = { released.set(true) },
+                onDiscard = {
+                    cleanup.release("拒否event") {
+                        attempts++
+                        check(attempts > 1)
+                    }
+                },
+                action = { error("拒否eventを受理しました") },
+            )
+            check(released.get() && attempts == 1 && cleanup.hasPending)
+            unblock.countDown()
+            executor.callControl(1_000) {
+                cleanup.retry()
+                cleanup.requireComplete()
+            }
+            check(attempts == 2 && !cleanup.hasPending)
+        } finally {
+            unblock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun ownerDiscardsAcceptedInputsOnceBeforeShutdownAndKeepsFailedCleanup() {
+        val executor = LifecycleSerialExecutor("未実行event回収試験")
+        val started = CountDownLatch(1)
+        val unblock = CountDownLatch(1)
+        val released = AtomicBoolean(false)
+        val cleanup = ResourceCleanup()
+        val cleanupDone = CountDownLatch(1)
+        var attempts = 0
+        try {
+            executor.executeControl {
+                started.countDown()
+                unblock.await()
+            }
+            check(started.await(1, TimeUnit.SECONDS))
+            executor.executeCallback(
+                isReleased = released::get,
+                onFailure = { throw IllegalStateException("受理済みeventの投入が失敗しました", it) },
+                onDiscard = {
+                    cleanup.release("未実行event") {
+                        attempts++
+                        check(attempts > 1)
+                    }
+                },
+                action = { error("閉鎖後のeventを実行しました") },
+            )
+            released.set(true)
+            executor.executeCleanupControl {
+                executor.discardDataCallbacks()
+                check(cleanup.hasPending && !executor.isShutdown && attempts == 1)
+                executor.discardDataCallbacks()
+                check(attempts == 1)
+                cleanup.retry()
+                cleanup.requireComplete()
+                cleanupDone.countDown()
+            }
+            unblock.countDown()
+            check(cleanupDone.await(1, TimeUnit.SECONDS))
+            check(attempts == 2 && !cleanup.hasPending)
+        } finally {
+            unblock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
     @Test
     fun exhaustedCallbackIdentityFencesBothDataAndControlAndRetainsOwnerCleanup() {
         listOf(false, true).forEach { control ->
@@ -275,7 +360,7 @@ class LifecycleControlDeadlineTest {
                 runCatching { executor.executeData {} }
                 secondReturned.countDown()
             }
-            check(!secondReturned.await(50, TimeUnit.MILLISECONDS))
+            check(secondReturned.await(1, TimeUnit.SECONDS))
             executor.shutdownNow()
             check(secondReturned.await(1, TimeUnit.SECONDS))
         } finally {

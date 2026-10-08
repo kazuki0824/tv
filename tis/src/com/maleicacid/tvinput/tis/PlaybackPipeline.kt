@@ -257,6 +257,21 @@ class PlaybackPipeline(
             throw error
         }
 
+    // Frameworkのcallback lock内では配送だけを行い、ownerやpermitを待たない。
+    private val filterCallbackExecutor = java.util.concurrent.Executor { task -> task.run() }
+
+    private fun enqueuePlaybackFilterEvents(
+        events: Array<FilterEvent>,
+        action: () -> Unit,
+    ) {
+        executor.executeCallback(
+            isReleased = released::get,
+            onFailure = ::handleSubmissionFailure,
+            onDiscard = { events.filterIsInstance<MediaEvent>().forEach(::releaseMediaEvent) },
+            action = action,
+        )
+    }
+
     private fun enqueuePlaybackAction(action: () -> Unit) {
         executor.executeCallback(isReleased = released::get, onFailure = ::handleSubmissionFailure, action = action)
     }
@@ -652,7 +667,7 @@ class PlaybackPipeline(
                     Filter.TYPE_TS,
                     subtype,
                     AV_FILTER_BUFFER_BYTES,
-                    executor,
+                    filterCallbackExecutor,
                     object : FilterCallback {
                         // 対象外入力の継続と処理終了を各発生点で明示し、追加の終了状態を持たない。
                         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -661,44 +676,46 @@ class PlaybackPipeline(
                             filter: Filter,
                             events: Array<FilterEvent>,
                         ) {
-                            runCatching {
-                                for (event in events) {
-                                    if (event is RestartEvent) {
-                                        if (sourceIsCurrent(filter)) {
-                                            (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                            enqueuePlaybackFilterEvents(events) {
+                                runCatching {
+                                    for (event in events) {
+                                        if (event is RestartEvent) {
+                                            if (sourceIsCurrent(filter)) {
+                                                (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                                            }
+                                            continue
                                         }
-                                        continue
+                                        if (event !is MediaEvent) continue
+                                        if (!sourceIsCurrent(filter)) {
+                                            releaseMediaEvent(event)
+                                            continue
+                                        }
+                                        val sample = sampleFromEvent(event, isAudio)
+                                        if (sample == null) {
+                                            releaseMediaEvent(event)
+                                            continue
+                                        }
+                                        if (!sourceIsCurrent(filter)) {
+                                            releaseMediaEvent(event)
+                                            continue
+                                        }
+                                        val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
+                                        if (target == null) {
+                                            releaseMediaEvent(event)
+                                            continue
+                                        }
+                                        target.queue(sample)
                                     }
-                                    if (event !is MediaEvent) continue
-                                    if (!sourceIsCurrent(filter)) {
-                                        releaseMediaEvent(event)
-                                        continue
+                                }.onFailure { error ->
+                                    if (isAudio) {
+                                        logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.message.orEmpty())
+                                    } else {
+                                        emitUnavailableForGeneration(
+                                            filterGeneration,
+                                            PlaybackUnavailableReason.VIDEO_CODEC_ERROR,
+                                            error.message.orEmpty(),
+                                        )
                                     }
-                                    val sample = sampleFromEvent(event, isAudio)
-                                    if (sample == null) {
-                                        releaseMediaEvent(event)
-                                        continue
-                                    }
-                                    if (!sourceIsCurrent(filter)) {
-                                        releaseMediaEvent(event)
-                                        continue
-                                    }
-                                    val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
-                                    if (target == null) {
-                                        releaseMediaEvent(event)
-                                        continue
-                                    }
-                                    target.queue(sample)
-                                }
-                            }.onFailure { error ->
-                                if (isAudio) {
-                                    logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.message.orEmpty())
-                                } else {
-                                    emitUnavailableForGeneration(
-                                        filterGeneration,
-                                        PlaybackUnavailableReason.VIDEO_CODEC_ERROR,
-                                        error.message.orEmpty(),
-                                    )
                                 }
                             }
                         }
@@ -707,16 +724,21 @@ class PlaybackPipeline(
                             filter: Filter,
                             status: Int,
                         ) {
-                            Log.d(LogTags.TIS, "AV filter 状態 inputId=$inputId pid=$pid isAudio=$isAudio status=$status")
-                            if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
-                                (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
-                                val result = filter.flush()
-                                if (result != Tuner.RESULT_SUCCESS) {
-                                    emitUnavailableForGeneration(
-                                        filterGeneration,
-                                        PlaybackUnavailableReason.UNKNOWN,
-                                        "AV filter flush failed result=$result",
-                                    )
+                            enqueuePlaybackAction {
+                                Log.d(
+                                    LogTags.TIS,
+                                    "AV filter 状態 inputId=$inputId pid=$pid isAudio=$isAudio status=$status",
+                                )
+                                if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
+                                    (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                                    val result = filter.flush()
+                                    if (result != Tuner.RESULT_SUCCESS) {
+                                        emitUnavailableForGeneration(
+                                            filterGeneration,
+                                            PlaybackUnavailableReason.UNKNOWN,
+                                            "AV filter flush failed result=$result",
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -781,7 +803,7 @@ class PlaybackPipeline(
                     Filter.TYPE_TS,
                     Filter.SUBTYPE_PES,
                     SUBTITLE_FILTER_BUFFER_BYTES,
-                    executor,
+                    filterCallbackExecutor,
                     object : FilterCallback {
                         // 対象外入力の継続と処理終了を各発生点で明示し、追加の終了状態を持たない。
                         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -790,39 +812,41 @@ class PlaybackPipeline(
                             filter: Filter,
                             events: Array<FilterEvent>,
                         ) {
-                            runCatching {
-                                if (!sourceIsCurrent(filter)) return
-                                for (event in events) {
-                                    if (!sourceIsCurrent(filter)) continue
-                                    if (event is RestartEvent) {
-                                        onSubtitleContinuityLost(filterGeneration, trackId)
-                                        continue
+                            enqueuePlaybackFilterEvents(events) {
+                                runCatching {
+                                    if (!sourceIsCurrent(filter)) return@enqueuePlaybackFilterEvents
+                                    for (event in events) {
+                                        if (!sourceIsCurrent(filter)) continue
+                                        if (event is RestartEvent) {
+                                            onSubtitleContinuityLost(filterGeneration, trackId)
+                                            continue
+                                        }
+                                        if (event !is PesEvent) continue
+                                        val dataLength = event.dataLength
+                                        require(dataLength in 1..MAX_SUBTITLE_PES_BYTES) { "字幕PES長が不正です length=$dataLength" }
+                                        val buffer = ByteArray(dataLength)
+                                        val read = filter.read(buffer, 0, dataLength.toLong())
+                                        check(read == buffer.size) { "字幕PESの読取りが不足しています expected=${buffer.size} actual=$read" }
+                                        val captionSample = captionSampleFromPes(buffer, superimpose) ?: continue
+                                        if (!sourceIsCurrent(filter)) continue
+                                        onSubtitlePes(
+                                            filterGeneration,
+                                            trackId,
+                                            captionSample.payload,
+                                            captionTimestampFrom(captionSample.pts90k, superimpose),
+                                        )
                                     }
-                                    if (event !is PesEvent) continue
-                                    val dataLength = event.dataLength
-                                    require(dataLength in 1..MAX_SUBTITLE_PES_BYTES) { "字幕PES長が不正です length=$dataLength" }
-                                    val buffer = ByteArray(dataLength)
-                                    val read = filter.read(buffer, 0, dataLength.toLong())
-                                    check(read == buffer.size) { "字幕PESの読取りが不足しています expected=${buffer.size} actual=$read" }
-                                    val captionSample = captionSampleFromPes(buffer, superimpose) ?: continue
-                                    if (!sourceIsCurrent(filter)) continue
-                                    onSubtitlePes(
-                                        filterGeneration,
-                                        trackId,
-                                        captionSample.payload,
-                                        captionTimestampFrom(captionSample.pts90k, superimpose),
+                                }.onFailure { error ->
+                                    Log.w(
+                                        LogTags.TIS,
+                                        "caption PES filter callback に失敗しました inputId=$inputId pid=$pid superimpose=$superimpose",
+                                        error,
                                     )
-                                }
-                            }.onFailure { error ->
-                                Log.w(
-                                    LogTags.TIS,
-                                    "caption PES filter callback に失敗しました inputId=$inputId pid=$pid superimpose=$superimpose",
-                                    error,
-                                )
-                                if (sourceIsCurrent(filter)) {
-                                    onSubtitleContinuityLost(filterGeneration, trackId)
-                                    runCatching { check(filter.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
-                                        .onFailure { cleanup -> Log.w(LogTags.TIS, "字幕Filterの入力回収に失敗しました", cleanup) }
+                                    if (sourceIsCurrent(filter)) {
+                                        onSubtitleContinuityLost(filterGeneration, trackId)
+                                        runCatching { check(filter.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
+                                            .onFailure { cleanup -> Log.w(LogTags.TIS, "字幕Filterの入力回収に失敗しました", cleanup) }
+                                    }
                                 }
                             }
                         }
@@ -833,11 +857,16 @@ class PlaybackPipeline(
                             filter: Filter,
                             status: Int,
                         ) {
-                            Log.d(LogTags.TIS, "caption PES filter 状態 inputId=$inputId pid=$pid superimpose=$superimpose status=$status")
-                            if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
-                                onSubtitleContinuityLost(filterGeneration, trackId)
-                                runCatching { check(filter.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
-                                    .onFailure { error -> Log.w(LogTags.TIS, "字幕Filterのoverflow回収に失敗しました", error) }
+                            enqueuePlaybackAction {
+                                Log.d(
+                                    LogTags.TIS,
+                                    "caption PES filter 状態 inputId=$inputId pid=$pid superimpose=$superimpose status=$status",
+                                )
+                                if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
+                                    onSubtitleContinuityLost(filterGeneration, trackId)
+                                    runCatching { check(filter.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
+                                        .onFailure { error -> Log.w(LogTags.TIS, "字幕Filterのoverflow回収に失敗しました", error) }
+                                }
                             }
                         }
                     },
