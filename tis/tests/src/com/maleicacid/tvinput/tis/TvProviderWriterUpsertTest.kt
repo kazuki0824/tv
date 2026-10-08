@@ -40,8 +40,6 @@ class TvProviderWriterUpsertTest {
             }
         val pendingFailure = store.indexInitialBrowsablePendingChannelIds(setOf(key)).exceptionOrNull()
         check(pendingFailure is UnsupportedOperationException)
-        val upsertFailure = store.upsertExistingChannel(1L, ContentValues()).exceptionOrNull()
-        check(upsertFailure is UnsupportedOperationException)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         check(writer.existingChannelsResult().exceptionOrNull() is UnsupportedOperationException)
         val channel =
@@ -336,25 +334,26 @@ class TvProviderWriterUpsertTest {
     }
 
     @Test
-    fun upgradeNormalChannelToOneSegRecreatesImmutableTypeAndClearsPending() {
+    fun rescanOneSegPreservesChannelIdentityAndHiddenState() {
         val store = FakeChannelStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val normal =
             ChannelRecord(
                 key,
-                0x01,
+                0xc0,
                 "101",
                 "NHK",
                 FrequencyHz(473_142_857L),
                 casFactsCanonicalJson = testCasFacts(false),
+                partialReception = true,
             )
         val first = writer.upsertChannels(listOf(normal))
         val oldId = first.insertedChannelIds.getValue(key)
-        store.rows.getValue(oldId).put(TvContract.Channels.COLUMN_BROWSABLE, 1)
-        val upgraded = writer.upsertChannels(listOf(normal.copy(serviceType = 0xc0, partialReception = true)))
+        store.rows.getValue(oldId).put(TvContract.Channels.COLUMN_BROWSABLE, 0)
+        val upgraded = writer.upsertChannels(listOf(normal.copy(displayName = "更新後")))
         check(upgraded.updated == 1 && upgraded.failures.isEmpty())
         check(upgraded.insertedChannelIds.isEmpty() && upgraded.initialBrowsablePendingChannelIds.isEmpty())
-        check(oldId !in store.rows)
+        check(store.rows.keys == setOf(oldId))
         val replacement = store.rows.values.single()
         check(replacement.getAsString(TvContract.Channels.COLUMN_TYPE) == TvContract.Channels.TYPE_1SEG)
         check(replacement.getAsLong(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1) == 0L)
@@ -362,8 +361,8 @@ class TvProviderWriterUpsertTest {
     }
 
     @Test
-    fun failedTypeRecreationPreservesOldChannel() {
-        val store = FakeChannelStore(failRecreate = true)
+    fun failedRescanUpdatePreservesOldChannel() {
+        val store = FakeChannelStore(failUpdate = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val normal =
             ChannelRecord(
@@ -377,7 +376,7 @@ class TvProviderWriterUpsertTest {
         val first = writer.upsertChannels(listOf(normal))
         val oldId = first.insertedChannelIds.getValue(key)
         val before = ContentValues(store.rows.getValue(oldId))
-        val result = writer.upsertChannels(listOf(normal.copy(serviceType = 0xc0, partialReception = true)))
+        val result = writer.upsertChannels(listOf(normal.copy(displayName = "更新後")))
         check(result.updated == 0 && result.failures.single().operation == "update")
         check(store.rows.getValue(oldId) == before)
         check(store.rows.size == 1)
@@ -386,7 +385,7 @@ class TvProviderWriterUpsertTest {
     private class FakeChannelStore(
         private val failInsert: Boolean = false,
         private val failBrowsable: Boolean = false,
-        private val failRecreate: Boolean = false,
+        private val failUpdate: Boolean = false,
     ) : TvProviderWriter.ChannelStore {
         private var nextId = 1L
         val rows = LinkedHashMap<Long, ContentValues>()
@@ -419,28 +418,11 @@ class TvProviderWriterUpsertTest {
             channelId: Long,
             values: ContentValues,
         ): Result<Int> {
+            if (failUpdate) return Result.failure(IllegalStateException("更新失敗"))
+            check(!values.containsKey(TvContract.Channels.COLUMN_TYPE))
             val existing = rows[channelId] ?: return Result.success(0)
             existing.putAll(values)
             return Result.success(1)
-        }
-
-        override fun upsertExistingChannel(
-            channelId: Long,
-            values: ContentValues,
-        ): Result<TvProviderWriter.ExistingChannelUpsertOutcome> {
-            val old = rows.getValue(channelId)
-            val oldType = old.getAsString(TvContract.Channels.COLUMN_TYPE)
-            val nextType = values.getAsString(TvContract.Channels.COLUMN_TYPE)
-            return if (oldType == nextType) {
-                testUpsertExistingChannel(rows, channelId, values, ::insertChannel)
-            } else if (failRecreate) {
-                Result.failure(IllegalStateException("再作成失敗"))
-            } else {
-                val id = nextId++
-                rows[id] = ContentValues(values).apply { put(TvContract.Channels.COLUMN_BROWSABLE, 0) }
-                rows.remove(channelId)
-                Result.success(TvProviderWriter.ExistingChannelUpsertOutcome(id, recreated = true))
-            }
         }
 
         override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =

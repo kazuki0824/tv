@@ -20,6 +20,8 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+- レビュー再確認により、現行製品の必要条件を立証できないchannel型移行transactionを撤去した。通常rescanは既存IDとユーザー可視性を保持し、immutable列をupdateから除外する。
+
 ## レビュー対応: immutable型を保つupsertの必須semantics
 
 - 型を捨てるdefault updateを未対応failureへ変更し、storeごとに型比較と再作成を明示する。

@@ -2578,17 +2578,6 @@ class TisR51FixedPlanAcceptanceTest {
                     }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
             )
 
-        override fun upsertExistingChannel(
-            channelId: Long,
-            values: ContentValues,
-        ): Result<TvProviderWriter.ExistingChannelUpsertOutcome> =
-            testUpsertExistingChannel(
-                channels,
-                channelId,
-                values,
-                ::insertChannel,
-            )
-
         override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
             Result.success(
                 channels.entries
@@ -2632,7 +2621,7 @@ class TisR51FixedPlanAcceptanceTest {
             channelId: Long,
             values: ContentValues,
         ): Result<Int> {
-            channels[channelId] = ContentValues(values)
+            channels.getValue(channelId).putAll(values)
             return Result.success(1)
         }
 

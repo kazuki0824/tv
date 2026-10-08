@@ -72,11 +72,6 @@ class TvProviderWriter private constructor(
         val programId: Long?,
     )
 
-    data class ExistingChannelUpsertOutcome(
-        val channelId: Long,
-        val recreated: Boolean,
-    )
-
     interface ChannelStore {
         fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>>
 
@@ -86,12 +81,6 @@ class TvProviderWriter private constructor(
             channelId: Long,
             values: ContentValues,
         ): Result<Int>
-
-        fun upsertExistingChannel(
-            channelId: Long,
-            values: ContentValues,
-        ): Result<ExistingChannelUpsertOutcome> =
-            Result.failure(UnsupportedOperationException("この store はimmutable channel型を保つupsertに対応しません"))
 
         @Suppress("MaxLineLength")
         fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
@@ -214,20 +203,21 @@ class TvProviderWriter private constructor(
                     }
                 }
             } else {
-                val updateResult = channelStore.upsertExistingChannel(existingId, values)
+                values.remove(TvContract.Channels.COLUMN_TYPE)
+                values.remove(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1)
+                val updateResult = channelStore.updateChannel(existingId, values)
                 if (updateResult.isFailure) {
                     failures += Diagnostic(channel.serviceKey, "update", updateResult.exceptionOrNull()?.message.orEmpty())
                     return@forEach
                 }
-                val outcome = updateResult.getOrThrow()
+                if (updateResult.getOrThrow() <= 0) {
+                    failures += Diagnostic(channel.serviceKey, "update", "provider更新対象行なし id=$existingId")
+                    return@forEach
+                }
                 updated++
                 successfulServiceKeys += channel.serviceKey
                 if (!channel.partialReception) {
-                    if (outcome.recreated) {
-                        pendingIds[channel.serviceKey] = outcome.channelId
-                    } else {
-                        existingPendingIds[channel.serviceKey]?.let { pendingIds[channel.serviceKey] = it }
-                    }
+                    existingPendingIds[channel.serviceKey]?.let { pendingIds[channel.serviceKey] = it }
                 }
             }
         }
@@ -1075,46 +1065,6 @@ class TvProviderWriter private constructor(
                     }
                 }
                 out
-            }
-
-        override fun upsertExistingChannel(
-            channelId: Long,
-            values: ContentValues,
-        ): Result<ExistingChannelUpsertOutcome> =
-            runCatching {
-                val uri = ContentUris.withAppendedId(TvContract.Channels.CONTENT_URI, channelId)
-                val type =
-                    context.contentResolver
-                        .query(
-                            uri,
-                            arrayOf(TvContract.Channels.COLUMN_TYPE),
-                            null,
-                            null,
-                            null,
-                        )?.use { cursor ->
-                            check(cursor.moveToFirst()) { "再登録対象channelがありません" }
-                            cursor.getString(0)
-                        } ?: error("TvProvider channel type queryがnullを返しました")
-                if (type == values.getAsString(TvContract.Channels.COLUMN_TYPE)) {
-                    val update = ContentValues(values)
-                    update.remove(TvContract.Channels.COLUMN_TYPE)
-                    update.remove(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1)
-                    check(updateChannel(channelId, update).getOrThrow() > 0) { "provider更新対象行がありません" }
-                    return@runCatching ExistingChannelUpsertOutcome(channelId, recreated = false)
-                }
-                val replacement = ContentValues(values).apply { put(TvContract.Channels.COLUMN_BROWSABLE, 0) }
-                val operations =
-                    arrayListOf(
-                        ContentProviderOperation
-                            .newInsert(TvContract.Channels.CONTENT_URI)
-                            .withValues(replacement)
-                            .build(),
-                        ContentProviderOperation.newDelete(uri).withExpectedCount(1).build(),
-                    )
-                val results = context.contentResolver.applyBatch(TvContract.AUTHORITY, operations)
-                check(results.size == operations.size) { "channel再登録のbatch結果数が一致しません" }
-                val newUri = checkNotNull(results.first().uri) { "channel再登録がURIを返しませんでした" }
-                ExistingChannelUpsertOutcome(ContentUris.parseId(newUri), recreated = true)
             }
 
         override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
