@@ -8,10 +8,12 @@ import com.maleicacid.tvinput.common.TransportStreamId16
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -70,30 +72,24 @@ class ScanPlanPolicyTest {
             )
         val firstStarted = CountDownLatch(1)
         val releaseFirst = CountDownLatch(1)
-        val submitReturned = CountDownLatch(1)
         val secondExecuted = CountDownLatch(1)
-        val producer = Executors.newSingleThreadExecutor()
         try {
             executor.executeData {
                 firstStarted.countDown()
                 check(releaseFirst.await(1, TimeUnit.SECONDS))
             }
             check(firstStarted.await(1, TimeUnit.SECONDS))
-            val producerFuture =
-                producer.submit {
-                    val queued = executor.submitData { secondExecuted.countDown() }
-                    submitReturned.countDown()
-                    queued.get(1, TimeUnit.SECONDS)
-                }
-
-            assertFalse(submitReturned.await(50, TimeUnit.MILLISECONDS))
+            assertFailsWith<RejectedExecutionException> {
+                executor.submitData { secondExecuted.countDown() }
+            }
+            assertEquals(1L, secondExecuted.count)
             releaseFirst.countDown()
-            producerFuture.get(1, TimeUnit.SECONDS)
-            assertTrue(submitReturned.await(1, TimeUnit.SECONDS))
+            // Future.getより後のdata枠返却までownerのcontrol境界で待つ。
+            executor.submitControl {}.get(1, TimeUnit.SECONDS)
+            executor.submitData { secondExecuted.countDown() }.get(1, TimeUnit.SECONDS)
             assertTrue(secondExecuted.await(1, TimeUnit.SECONDS))
         } finally {
             releaseFirst.countDown()
-            producer.shutdownNow()
             executor.shutdownNow()
         }
     }

@@ -29,7 +29,7 @@ class PlaybackFailureCallbacksTest {
         try {
             val fixture =
                 executor
-                    .submit<Fixture> { Fixture(false, false, failCleanup = false) }
+                    .submitControl<Fixture> { Fixture(false, false, failCleanup = false) }
                     .get(5, TimeUnit.SECONDS)
             val controller = fixture.allocate(TunerController::class.java)
             val cas = CasController()
@@ -99,7 +99,7 @@ class PlaybackFailureCallbacksTest {
         try {
             val fixture =
                 executor
-                    .submit<Fixture> { Fixture(false, false, failCleanup = false) }
+                    .submitControl<Fixture> { Fixture(false, false, failCleanup = false) }
                     .get(5, TimeUnit.SECONDS)
             val controller = fixture.allocate(TunerController::class.java)
             val pid = TsPid(0x1004)
@@ -203,7 +203,7 @@ class PlaybackFailureCallbacksTest {
                 }
                 val fixture =
                     executor
-                        .submit<Fixture> { Fixture(false, false, failCleanup = true) }
+                        .submitControl<Fixture> { Fixture(false, false, failCleanup = true) }
                         .get(5, TimeUnit.SECONDS)
                 val controller = fixture.allocate(TunerController::class.java)
                 val ecm = TestSectionHandle(TsPid(0x123), rejectClose = true)
@@ -240,7 +240,7 @@ class PlaybackFailureCallbacksTest {
                 controller.setOnTunerResourceLostCallback { lostGeneration = it }
                 faults.pluginFailure = true
                 if (initializing) connectionListener.onCapacity(0) else connectionListener.onResourceLost()
-                executor.submit { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
+                executor.submitControl { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
                 check(lostGeneration == null)
                 check(pmt.isOpen)
                 check(pmt.closes == 0)
@@ -266,14 +266,14 @@ class PlaybackFailureCallbacksTest {
                 check(cas.lastDiagnostic().errorCode == expectedError)
                 check(cas.updateFromCaMetadata(metadata, 7L).ecmPids.isEmpty())
                 if (initializing) connectionListener.onCapacity(0) else connectionListener.onResourceLost()
-                executor.submit { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
+                executor.submitControl { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
                 check(fixture.notifications == 1 && faults.pluginCloses == attempts)
                 faults.pluginFailure = false
                 cas.clearForResourceLoss()
                 ecm.rejectClose = false
                 controller.closeSectionFilters()
                 fixture.rejectRelease = false
-                executor.submit { fixture.pipeline.stop() }.get(5, TimeUnit.SECONDS)
+                executor.submitControl { fixture.pipeline.stop() }.get(5, TimeUnit.SECONDS)
                 check(faults.pluginCloses == attempts + 1 && faults.sessionCloses == 0)
                 check(ecm.closes == 2)
             }
@@ -518,7 +518,7 @@ class PlaybackFailureCallbacksTest {
             }
         try {
             CasController(mediaCasFactory = factory).use { cas ->
-                val fixture = executor.submit<Fixture> { Fixture(false, false, false) }.get(5, TimeUnit.SECONDS)
+                val fixture = executor.submitControl<Fixture> { Fixture(false, false, false) }.get(5, TimeUnit.SECONDS)
                 val controller = fixture.allocate(TunerController::class.java)
 
                 fun set(
@@ -569,7 +569,7 @@ class PlaybackFailureCallbacksTest {
                 check(controller.startPlayback(fixture.selection, requiresCas = true, generation = 7L) == null)
                 check(fixture.pipeline.currentPlaybackGenerationForTest() == 7L)
                 cas.onEcmSection(TsPid(0x123), byteArrayOf(1))
-                executor.submit {}.get(5, TimeUnit.SECONDS)
+                executor.submitControl {}.get(5, TimeUnit.SECONDS)
                 check(decisions == listOf(true))
                 val result = controller.startPlayback(fixture.selection, requiresCas = true, generation = 7L)
                 check(result != null && result.generation > 7L)
