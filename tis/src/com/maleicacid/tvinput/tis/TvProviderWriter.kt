@@ -1186,7 +1186,7 @@ class TvProviderWriter private constructor(
                 val uri = TvContract.buildChannelsUriForInput(inputId)
                 val cursor =
                     context.contentResolver.query(uri, projection, null, null, null)
-                        ?: error("TvProvider channel list query returned null cursor")
+                        ?: error("TvProviderのチャンネル一覧照会がnull cursorを返しました")
                 cursor.use { cursor ->
                     while (cursor.moveToNext()) {
                         val stored = ProviderDataBridge.decodeChannelProviderData(providerDataBytes(cursor, 8))
