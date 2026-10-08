@@ -795,7 +795,7 @@ mod tests {
                 ueventd_line.ends_with("0660 media system"),
                 "{ueventd_line}"
             );
-            // 文字列はNUL終端CStringで保持し、fnmatchはポインターを呼出し後に保持しない。
+            // SAFETY: 文字列はNUL終端CStringで保持し、fnmatchはポインターを呼出し後に保持しない。
             extern "C" {
                 fn fnmatch(
                     pattern: *const std::ffi::c_char,
@@ -812,6 +812,7 @@ mod tests {
                 ("0extra", false),
             ] {
                 let path = std::ffi::CString::new(format!("/dev/{prefix}{suffix}")).unwrap();
+                // SAFETY: 両CStringは呼出し中も生存し、NUL終端であり、fnmatchはポインターを保持しない。
                 let matched = unsafe { fnmatch(pattern.as_ptr(), path.as_ptr(), 0) == 0 };
                 assert_eq!(matched, expected, "suffix={suffix}");
             }

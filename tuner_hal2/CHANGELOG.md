@@ -3427,3 +3427,5 @@
 # Android 15実装におけるueventd wildcard一致
 
 - READMEとdevices.cppの末尾wildcard最適化差を確認した。末尾以外のwildcardと末尾数字の文字クラスを組み合わせ、実装でもfnmatchを使用するpatternへ固定した。driver node、suffixなし、非数字末尾の一致/不一致を実fnmatchで試験する。
+
+- レビュー対応: host fnmatch試験のunsafe境界をSAFETY固定ラベルと日本語説明へ整形。logic変更なし。
