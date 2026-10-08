@@ -700,11 +700,14 @@ class ProgramPublishCoordinatorBk10CompletionTest {
                 failInsertOnce = false
                 return Result.failure(IllegalStateException("挿入失敗"))
             }
-            return testUpsertProgramsBatch(programs, requests) { nextProgramId++ }
-                .onSuccess { outcomes ->
-                    insertedPrograms += outcomes.count { !it.updated && it.programId != null }
-                    updatedPrograms += outcomes.count { it.updated }
-                }
+            return testUpsertProgramsBatch(
+                programs,
+                requests,
+                allocateId = { nextProgramId++ },
+            ).onSuccess { outcomes ->
+                insertedPrograms += outcomes.count { !it.updated && it.programId != null }
+                updatedPrograms += outcomes.count { it.updated }
+            }
         }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

@@ -25,7 +25,8 @@ internal fun testUpsertProgramsBatch(
                     } else {
                         val current = staged[existingId]
                         current?.putAll(request.values)
-                        TvProviderWriter.ProgramUpsertOutcome(existingId.takeIf { current != null }, updated = current != null)
+                        val affected = current != null
+                        TvProviderWriter.ProgramUpsertOutcome(existingId.takeIf { affected }, updated = affected)
                     }
                 }
             rows.clear()

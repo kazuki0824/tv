@@ -1044,8 +1044,11 @@ class TvProviderWriterProgramsTest {
         override fun upsertProgramsBatch(
             requests: List<TvProviderWriter.ProgramUpsertRequest>,
         ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> =
-            testUpsertProgramsBatch(programs, requests) { nextProgramId++ }
-                .onSuccess { outcomes -> programUpdateCount += outcomes.count { it.updated } }
+            testUpsertProgramsBatch(
+                programs,
+                requests,
+                allocateId = { nextProgramId++ },
+            ).onSuccess { outcomes -> programUpdateCount += outcomes.count { it.updated } }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")

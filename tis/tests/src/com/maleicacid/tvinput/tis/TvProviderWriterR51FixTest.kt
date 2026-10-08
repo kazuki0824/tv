@@ -411,6 +411,11 @@ class TvProviderWriterR51FixTest {
 
         override fun upsertProgramsBatch(
             requests: List<TvProviderWriter.ProgramUpsertRequest>,
-        ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> = testUpsertProgramsBatch(programs, requests) { nextProgramId++ }
+        ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> =
+            testUpsertProgramsBatch(
+                programs,
+                requests,
+                allocateId = { nextProgramId++ },
+            )
     }
 }
