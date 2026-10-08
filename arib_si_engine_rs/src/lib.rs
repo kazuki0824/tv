@@ -616,18 +616,32 @@ fn discovery_stage_to_jint(stage: DiscoveryPublishStage) -> jint {
     }
 }
 
-fn snapshot_parser(handle: jlong) -> Result<Arc<Mutex<ParserState>>, SiJniFailure> {
+fn snapshot_registry() -> Result<&'static Mutex<ParserRegistry>, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
-    let parser = match registry().lock() {
-        Ok(guard) => guard.get(handle),
-        Err(_) => {
-            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
-            return Err(SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME));
-        }
-    };
-    parser.ok_or_else(|| SiJniFailureReason::InvalidHandle.failure(handle))
+    Ok(registry())
+}
+
+fn snapshot_registry_poisoned() -> SiJniFailure {
+    record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+    SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME)
+}
+
+fn snapshot_parser_from_registry(
+    handle: jlong,
+    guard: MutexGuard<'_, ParserRegistry>,
+) -> Result<Arc<Mutex<ParserState>>, SiJniFailure> {
+    guard
+        .get(handle)
+        .ok_or_else(|| SiJniFailureReason::InvalidHandle.failure(handle))
+}
+
+fn snapshot_parser(handle: jlong) -> Result<Arc<Mutex<ParserState>>, SiJniFailure> {
+    let guard = snapshot_registry()?
+        .lock()
+        .map_err(|_| snapshot_registry_poisoned())?;
+    snapshot_parser_from_registry(handle, guard)
 }
 
 fn lock_snapshot_parser(
@@ -661,7 +675,12 @@ fn snapshot_si_collection_typed(handle: jlong) -> Result<SiCollectionSnapshotDto
 fn try_snapshot_si_collection_typed(
     handle: jlong,
 ) -> Result<Option<SiCollectionSnapshotDto>, SiJniFailure> {
-    let parser = snapshot_parser(handle)?;
+    let registry_guard = match snapshot_registry()?.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::WouldBlock) => return Ok(None),
+        Err(TryLockError::Poisoned(_)) => return Err(snapshot_registry_poisoned()),
+    };
+    let parser = snapshot_parser_from_registry(handle, registry_guard)?;
     let Some(mut guard) = try_lock_snapshot_parser(&parser)? else {
         return Ok(None);
     };
@@ -671,6 +690,28 @@ fn try_snapshot_si_collection_typed(
 #[cfg(test)]
 mod nonblocking_collection_snapshot_tests {
     use super::*;
+
+    fn try_snapshot_does_not_wait_for_registry_owned_by_another_thread() {
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            let guard = registry().lock().unwrap();
+            held_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            drop(guard);
+        });
+        held_rx.recv().unwrap();
+        let started = std::time::Instant::now();
+        let result = try_snapshot_si_collection_typed(-1);
+        let elapsed = started.elapsed();
+        release_tx.send(()).unwrap();
+        owner.join().unwrap();
+        assert!(matches!(result, Ok(None)));
+        assert!(elapsed < std::time::Duration::from_secs(1));
+        assert!(snapshot_parser(-1).is_err());
+    }
 
     #[test]
     fn try_snapshot_reports_busy_without_waiting_or_poisoning_parser() {
@@ -686,6 +727,7 @@ mod nonblocking_collection_snapshot_tests {
             Ok(Some(_))
         ));
         assert!(registry().lock().unwrap().remove(handle));
+        try_snapshot_does_not_wait_for_registry_owned_by_another_thread();
     }
 }
 
