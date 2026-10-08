@@ -93,7 +93,16 @@ class TvProviderWriterProgramsTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         writer.upsertChannels(
-            listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts(false))),
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson = testCasFacts(false),
+                ),
+            ),
         )
         val program =
             ProgramRecord(
