@@ -513,6 +513,27 @@ class TisR51FixedPlanAcceptanceTest {
         }
     }
 
+    @Test
+    fun unresolvedServiceTypeRemainsPendingUntilSiFactsResolve() {
+        val ready = semanticFacts()
+        val incomplete =
+            ready.copy(
+                serviceType = null,
+                missingComponents = listOf("NO_SDT", "NO_NIT"),
+                semanticDiagnostics = listOf("SERVICE_TYPE_UNRESOLVED"),
+            )
+        val policy = com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+        val pending = policy.evaluate(incomplete)
+        check(pending.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
+        check(!pending.registrationReady && "SERVICE_TYPE_UNRESOLVED" in pending.reasons)
+        check("UNSUPPORTED_SERVICE_TYPE" !in pending.reasons)
+        val resolved = policy.evaluate(ready)
+        check(resolved.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY)
+        val unsupported = policy.evaluate(ready.copy(serviceType = 0xa1))
+        check(unsupported.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.UNSUPPORTED)
+        check("UNSUPPORTED_SERVICE_TYPE" in unsupported.reasons)
+    }
+
     @Test fun registrationAndSelectionShareStaticCodecFacts() {
         val video = es(TsPid(0x101), 0x1b)
         val audio = es(TsPid(0x102), 0x0f)

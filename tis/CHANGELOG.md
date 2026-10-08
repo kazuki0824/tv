@@ -943,3 +943,8 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 
 - cancel確定とTvProvider公開を既存scan ownerのpublication lockへ直列化し、最終snapshot retry中の取消しもCANCELLEDで終了する。
 - retry中・publish gate直前の取消しを副作用なしの回帰試験で固定する。
+
+## レビュー対応: 未解決service_type
+
+- 未解決と解決済み非対応を分離し、SDT/NIT収集中のlive policyをPENDINGのまま再評価へ残す。
+- null service_typeと未取得SDT/NIT、解決後READY、解決済み非対応UNSUPPORTEDを回帰試験で固定する。

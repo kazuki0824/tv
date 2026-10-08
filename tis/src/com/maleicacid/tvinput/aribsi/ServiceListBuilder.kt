@@ -130,8 +130,10 @@ object ServicePolicyEvaluator {
 
         val registrationReasons = mutableListOf<String>()
         registrationReasons += facts.missingComponents
-        if (facts.serviceType !in setOf(SERVICE_TYPE_DIGITAL_TV, SERVICE_TYPE_DIGITAL_AUDIO)) {
-            registrationReasons += "UNSUPPORTED_OR_UNRESOLVED_SERVICE_TYPE"
+        if (facts.serviceType == null) {
+            registrationReasons += "SERVICE_TYPE_UNRESOLVED"
+        } else if (facts.serviceType !in setOf(SERVICE_TYPE_DIGITAL_TV, SERVICE_TYPE_DIGITAL_AUDIO)) {
+            registrationReasons += "UNSUPPORTED_SERVICE_TYPE"
         }
         if (!facts.pmtPidResolved) registrationReasons += "NO_PMT_PID"
         if (!facts.pmtParsed) registrationReasons += "NO_VALID_PMT"
@@ -187,7 +189,7 @@ object ServicePolicyEvaluator {
                 registrationReady -> ServicePolicyState.READY
 
                 normalizedRegistrationReasons.any {
-                    it == "UNSUPPORTED_OR_UNRESOLVED_SERVICE_TYPE" ||
+                    it == "UNSUPPORTED_SERVICE_TYPE" ||
                         it == "NO_SUPPORTED_VIDEO_CODEC" ||
                         it == "NO_SUPPORTED_AUDIO_CODEC" ||
                         it == "UNSUPPORTED_BROADCAST_SYSTEM" ||
