@@ -430,6 +430,7 @@ class AribCaptionController(
             return
         }
         val token = ++nextFrameToken
+        boundaries.removeAll(replaced.toSet())
         boundaries += Boundary.Display(pts, token, frame, currentViewport)
         clearAt?.let { boundaries += Boundary.Clear(it, token) }
         armNextBoundary()

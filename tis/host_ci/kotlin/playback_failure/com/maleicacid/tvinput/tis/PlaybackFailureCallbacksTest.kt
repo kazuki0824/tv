@@ -998,6 +998,18 @@ class PlaybackFailureCallbacksTest {
         val firstDone = java.util.concurrent.CountDownLatch(1)
         val retryDone = java.util.concurrent.CountDownLatch(1)
         var attempts = 0
+        val activePipelines =
+            ChannelScanManager::class.java
+                .getDeclaredField("activePlaybackPipelines")
+                .apply { isAccessible = true }
+                .get(ChannelScanManager) as java.util.concurrent.atomic.AtomicInteger
+        val baseline = activePipelines.get()
+        val registration =
+            PlaybackPipeline::class.java
+                .getDeclaredField("resourceActivityReported")
+                .apply { isAccessible = true }
+        ChannelScanManager.registerPlaybackPipeline()
+        fixture.set("resourceActivityReported", true)
         try {
             executor.executeControl {
                 started.countDown()
@@ -1021,6 +1033,7 @@ class PlaybackFailureCallbacksTest {
             unblock.countDown()
             check(firstDone.await(5, TimeUnit.SECONDS))
             check(attempts == 1 && fixture.cleanup.hasPending && !executor.isShutdown)
+            check(activePipelines.get() == baseline + 1 && registration.getBoolean(fixture.pipeline))
             executor.executeControl {
                 // Unsafe fixtureのcallback threadは未初期化。停止後のNPEは試験対象外。
                 runCatching { fixture.pipeline.release() }
@@ -1028,7 +1041,9 @@ class PlaybackFailureCallbacksTest {
             }
             check(retryDone.await(5, TimeUnit.SECONDS))
             check(attempts == 2 && !fixture.cleanup.hasPending && executor.isShutdown)
+            check(activePipelines.get() == baseline && !registration.getBoolean(fixture.pipeline))
         } finally {
+            if (registration.getBoolean(fixture.pipeline)) ChannelScanManager.unregisterPlaybackPipeline(null)
             unblock.countDown()
             executor.shutdownNow()
         }

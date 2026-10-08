@@ -16,7 +16,7 @@ class CaptionPresentationCapacityTest {
 
     @Test
     fun samePtsReplacementAboveBoundaryLimitPreservesEveryAcceptedBoundary() {
-        assertRejectedReplacementPreservesQueue(boundaryCount = 64, incomingBytes = 4)
+        assertRejectedReplacementPreservesQueue(boundaryCount = PRESENTATION_BOUNDARY_LIMIT, incomingBytes = 4)
     }
 
     @Suppress("LongMethod")
@@ -71,5 +71,34 @@ class CaptionPresentationCapacityTest {
             .invoke(controller, incoming, viewport)
         check(queue.size == boundaryCount && queue.toSet() == original)
         check(diagnostics == listOf(AribCaptionController.CaptionDiagnostic.Reason.PRESENTATION_QUEUE_OVERFLOW))
+        diagnostics.clear()
+        val retainedClearBoundaries = original - display
+        // 現行budgetの最小反例を使う。budget自体の最適性や新しい閾値は定義しない。
+        repeat(PRESENTATION_BOUNDARY_LIMIT + 1) { iteration ->
+            val accepted =
+                frame.copy(
+                    durationMillis = null,
+                    images = listOf(image.copy(rgba8888 = ByteArray(4) { iteration.toByte() })),
+                )
+            AribCaptionController::class.java
+                .getDeclaredMethod("enqueueFrame", frame.javaClass, viewport.javaClass)
+                .apply { isAccessible = true }
+                .invoke(controller, accepted, viewport)
+            val displays = queue.filter { it.javaClass == display.javaClass }
+            check(queue.size == boundaryCount && displays.size == 1)
+            check(queue.containsAll(retainedClearBoundaries))
+            val queuedFrame =
+                display.javaClass
+                    .getDeclaredField("frame")
+                    .apply { isAccessible = true }
+                    .get(displays.single()) as NativeAribCaptionRenderer.RenderedCaptionFrame
+            check(queuedFrame === accepted)
+            check(queuedFrame.images.sumOf { it.rgba8888.size } == 4)
+        }
+        check(diagnostics.isEmpty())
+    }
+
+    companion object {
+        private const val PRESENTATION_BOUNDARY_LIMIT = 64
     }
 }

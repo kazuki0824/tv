@@ -20,6 +20,12 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# 受理済み字幕置換と未実行event解放の登録保持
+
+- 同一PTS字幕は容量検査とtoken確保の成功後に旧Displayを削除し、境界数とbytesの検査結果を実際のqueueへ反映する。
+- Filter close後の未実行event回収を停止処理内へ移し、解放失敗中はglobal再生登録と既存cleanup ownerを保持する。
+- 既存host試験に受理済み置換のbudget+1回連続投入と、解放失敗・再試行時のglobal登録を追加した。検証はCIで実施する。
+
 # Filter callback容量拒否と字幕置換の所有保持
 
 - LifecycleSerialExecutorのdata投入を待機なしの有限受理/拒否にし、Framework callback lockと優先closeの循環待ちを除去した。

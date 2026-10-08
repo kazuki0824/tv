@@ -2712,6 +2712,7 @@ class PlaybackPipeline(
         closeFilter(previousAudioFilter)
         closeFilter(previousSubtitleFilter)
         closeFilter(previousSuperimposeFilter)
+        executor.discardDataCallbacks()
         releaseOutstandingAudioOutputs()
         videoDecoder?.close()
         audioDecoder?.close()
@@ -2800,7 +2801,6 @@ class PlaybackPipeline(
             try {
                 stopOnPlaybackExecutor()
             } finally {
-                executor.discardDataCallbacks()
                 resourceCleanup.requireComplete()
                 executor.shutdownNow()
                 codecCallbackThread.quitSafely()
