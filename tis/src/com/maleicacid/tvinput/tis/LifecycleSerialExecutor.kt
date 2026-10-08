@@ -116,7 +116,9 @@ internal class LifecycleSerialExecutor(
         }
     }
 
-    fun executeControl(command: Runnable) = enqueue(CONTROL_QUEUE_CLASS, command, { finishOwnerTask(hasDataSlot = false) })
+    fun executeControl(command: Runnable) {
+        enqueue(CONTROL_QUEUE_CLASS, command, { finishOwnerTask(hasDataSlot = false) })
+    }
 
     fun executeData(command: Runnable) {
         if (isOwnerThread()) {
