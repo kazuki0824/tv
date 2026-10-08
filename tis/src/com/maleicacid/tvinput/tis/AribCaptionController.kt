@@ -153,6 +153,8 @@ class AribCaptionController(
         )
     }
 
+    // 診断失敗より解放失敗を優先して記録し、未完解放は同じownerで再試行するためuseへ変換しない。
+    @Suppress("ConvertTryFinallyToUseCall")
     private fun handleSubmissionFailure(error: RuntimeException) {
         if (!released.compareAndSet(false, true)) return
         Log.w(LogTags.TIS, "caption owner投入失敗: 同じownerで解放します", error)
