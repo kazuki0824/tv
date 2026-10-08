@@ -913,7 +913,7 @@ class PlaybackFailureCallbacksTest {
     fun acceptedTuneFailureFencesOldPlaybackAndRetainsCleanupDespiteNotificationFailure() {
         val controllerExecutor = ControllerSerialExecutor("accepted-tune-controller-test")
         val sessionExecutor = LifecycleSerialExecutor("accepted-tune-session-test")
-        val fixture = controllerExecutor.submit<Fixture> { Fixture(false, false) }.get(5, TimeUnit.SECONDS)
+        val fixture = controllerExecutor.submitControl<Fixture> { Fixture(false, false) }.get(5, TimeUnit.SECONDS)
         try {
             val controller = fixture.allocate(TunerController::class.java)
             val session = fixture.allocate(MaleicacidLiveSession::class.java)
