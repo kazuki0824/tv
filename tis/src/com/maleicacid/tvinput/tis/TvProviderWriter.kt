@@ -762,7 +762,9 @@ class TvProviderWriter private constructor(
                     check(singleBytes <= budgetBytes) {
                         "単一Program operationがIPC予算を超えます bytes=$singleBytes budget=$budgetBytes"
                     }
-                    if (batch.isNotEmpty() && (batch.size == PROGRAM_PROVIDER_BATCH_SIZE || parcel.dataSize() > budgetBytes)) {
+                    if (batch.isNotEmpty() &&
+                        (batch.size == PROGRAM_PROVIDER_BATCH_SIZE || parcel.dataSize() > budgetBytes)
+                    ) {
                         batches += batch
                         batch = mutableListOf()
                         parcel.setDataSize(headerBytes)
