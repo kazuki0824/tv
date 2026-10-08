@@ -425,7 +425,7 @@ class TvProviderWriterUpsertTest {
             val oldType = old.getAsString(TvContract.Channels.COLUMN_TYPE)
             val nextType = values.getAsString(TvContract.Channels.COLUMN_TYPE)
             return if (oldType == nextType) {
-                super<TvProviderWriter.ChannelStore>.upsertExistingChannel(channelId, values)
+                testUpsertExistingChannel(rows, channelId, values, ::insertChannel)
             } else if (failRecreate) {
                 Result.failure(IllegalStateException("再作成失敗"))
             } else {

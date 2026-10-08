@@ -351,9 +351,13 @@ class TvProviderWriterR51FixTest {
         override fun upsertExistingChannel(
             channelId: Long,
             values: ContentValues,
-        ): Result<TvProviderWriter.ExistingChannelUpsertOutcome> {
-            return testUpsertExistingChannel(channels, channelId, values, ::insertChannel)
-        }
+        ): Result<TvProviderWriter.ExistingChannelUpsertOutcome> =
+            testUpsertExistingChannel(
+                channels,
+                channelId,
+                values,
+                ::insertChannel,
+            )
 
         override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
             Result.success(

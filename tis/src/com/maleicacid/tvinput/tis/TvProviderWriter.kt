@@ -1096,7 +1096,11 @@ class TvProviderWriter private constructor(
                             cursor.getString(0)
                         } ?: error("TvProvider channel type queryがnullを返しました")
                 if (type == values.getAsString(TvContract.Channels.COLUMN_TYPE)) {
-                    return@runCatching super<ChannelStore>.upsertExistingChannel(channelId, values).getOrThrow()
+                    val update = ContentValues(values)
+                    update.remove(TvContract.Channels.COLUMN_TYPE)
+                    update.remove(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1)
+                    check(updateChannel(channelId, update).getOrThrow() > 0) { "provider更新対象行がありません" }
+                    return@runCatching ExistingChannelUpsertOutcome(channelId, recreated = false)
                 }
                 val replacement = ContentValues(values).apply { put(TvContract.Channels.COLUMN_BROWSABLE, 0) }
                 val operations =
