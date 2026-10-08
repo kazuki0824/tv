@@ -420,9 +420,9 @@ class TvProviderWriterUpsertTest {
         ): Result<Int> {
             if (failUpdate) return Result.failure(IllegalStateException("更新失敗"))
             check(!values.containsKey(TvContract.Channels.COLUMN_TYPE))
-            val existing = rows[channelId] ?: return Result.success(0)
-            existing.putAll(values)
-            return Result.success(1)
+            val existing = rows[channelId]
+            existing?.putAll(values)
+            return Result.success(if (existing == null) 0 else 1)
         }
 
         override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
