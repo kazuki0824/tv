@@ -341,7 +341,10 @@ class TvProviderWriterR51FixTest {
         val programs = LinkedHashMap<Long, ContentValues>()
         var genreReadback: Result<String?> = Result.success(null)
 
-        override fun readCanonicalGenre(programId: Long): Result<String?> = genreReadback
+        override fun readCanonicalGenres(
+            channelId: Long,
+            programIds: Set<Long>,
+        ): Result<Map<Long, String?>> = genreReadback.map { genre -> programIds.associateWith { genre } }
 
         fun removeProgramsForChannel(channelId: Long) {
             val ids =
@@ -406,18 +409,8 @@ class TvProviderWriterR51FixTest {
                     }.groupBy({ it.first }, { it.second }),
             )
 
-        override fun insertProgram(values: ContentValues): Result<Long?> {
-            val id = nextProgramId++
-            programs[id] = ContentValues(values)
-            return Result.success(id)
-        }
-
-        override fun updateProgram(
-            programId: Long,
-            values: ContentValues,
-        ): Result<Int> {
-            programs[programId]?.putAll(values)
-            return Result.success(1)
-        }
+        override fun upsertProgramsBatch(
+            requests: List<TvProviderWriter.ProgramUpsertRequest>,
+        ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> = testUpsertProgramsBatch(programs, requests) { nextProgramId++ }
     }
 }

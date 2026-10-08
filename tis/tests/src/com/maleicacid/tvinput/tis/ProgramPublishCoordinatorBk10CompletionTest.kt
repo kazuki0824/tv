@@ -615,6 +615,17 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         var failChannelQuery = false
         var serviceIndexQueries = 0
 
+        override fun readCanonicalGenres(
+            channelId: Long,
+            programIds: Set<Long>,
+        ): Result<Map<Long, String?>> =
+            Result.success(
+                programs
+                    .filter { (id, values) ->
+                        id in programIds && values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId
+                    }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
+            )
+
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
             if (failChannelQuery) {
                 Result.failure(IllegalStateException("channel問い合わせ失敗"))
@@ -682,25 +693,18 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             )
         }
 
-        override fun insertProgram(values: ContentValues): Result<Long?> {
-            if (failInsertOnce) {
+        override fun upsertProgramsBatch(
+            requests: List<TvProviderWriter.ProgramUpsertRequest>,
+        ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> {
+            if (failInsertOnce && requests.any { it.existingProgramId == null }) {
                 failInsertOnce = false
                 return Result.failure(IllegalStateException("挿入失敗"))
             }
-            val id = nextProgramId++
-            programs[id] = ContentValues(values)
-            insertedPrograms++
-            return Result.success(id)
-        }
-
-        override fun updateProgram(
-            programId: Long,
-            values: ContentValues,
-        ): Result<Int> {
-            programs[programId]?.putAll(values)
-            val updated = if (programs.containsKey(programId)) 1 else 0
-            updatedPrograms += updated
-            return Result.success(updated)
+            return testUpsertProgramsBatch(programs, requests) { nextProgramId++ }
+                .onSuccess { outcomes ->
+                    insertedPrograms += outcomes.count { !it.updated && it.programId != null }
+                    updatedPrograms += outcomes.count { it.updated }
+                }
         }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

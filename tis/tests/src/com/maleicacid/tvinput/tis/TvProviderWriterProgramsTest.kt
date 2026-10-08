@@ -32,6 +32,21 @@ import org.junit.Test
 @Suppress("LargeClass", "TooManyFunctions")
 class TvProviderWriterProgramsTest {
     @Test
+    fun testStoreBatchFailureDoesNotCommitEarlierOperations() {
+        val original = ContentValues().apply { put(TvContract.Programs.COLUMN_TITLE, "旧行") }
+        val rows = linkedMapOf(1L to original)
+        val changed = ContentValues().apply { put(TvContract.Programs.COLUMN_TITLE, "更新") }
+        val requests =
+            listOf(
+                TvProviderWriter.ProgramUpsertRequest(1L, changed),
+                TvProviderWriter.ProgramUpsertRequest(null, changed),
+            )
+        val result = testUpsertProgramsBatch(rows, requests) { error("batch挿入失敗") }
+        check(result.isFailure && rows.size == 1)
+        check(rows.getValue(1L).getAsString(TvContract.Programs.COLUMN_TITLE) == "旧行")
+    }
+
+    @Test
     fun untimedProgramIndexFallbackFailsClosed() {
         val store =
             object : TvProviderWriter.ChannelStore {
@@ -45,6 +60,8 @@ class TvProviderWriterProgramsTest {
                 ): Result<Int> = Result.success(1)
             }
         check(store.indexExistingProgramEntriesForWindow(1L, 0L, 1L).isFailure)
+        check(store.upsertProgramsBatch(emptyList()).isFailure)
+        check(store.readCanonicalGenres(1L, setOf(1L)).isFailure)
     }
 
     @Suppress("MaxLineLength")
@@ -946,6 +963,17 @@ class TvProviderWriterProgramsTest {
         var programWindowQueryCount = 0
         var programUpdateCount = 0
 
+        override fun readCanonicalGenres(
+            channelId: Long,
+            programIds: Set<Long>,
+        ): Result<Map<Long, String?>> =
+            Result.success(
+                programs
+                    .filter { (id, values) ->
+                        id in programIds && values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId
+                    }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
+            )
+
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
             Result.success(
                 channels.entries
@@ -1013,20 +1041,11 @@ class TvProviderWriterProgramsTest {
                     }.toMap(),
             )
 
-        override fun insertProgram(values: ContentValues): Result<Long?> {
-            val id = nextProgramId++
-            programs[id] = ContentValues(values)
-            return Result.success(id)
-        }
-
-        override fun updateProgram(
-            programId: Long,
-            values: ContentValues,
-        ): Result<Int> {
-            programUpdateCount++
-            programs[programId] = ContentValues(values)
-            return Result.success(1)
-        }
+        override fun upsertProgramsBatch(
+            requests: List<TvProviderWriter.ProgramUpsertRequest>,
+        ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> =
+            testUpsertProgramsBatch(programs, requests) { nextProgramId++ }
+                .onSuccess { outcomes -> programUpdateCount += outcomes.count { it.updated } }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")

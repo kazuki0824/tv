@@ -2536,6 +2536,17 @@ class TisR51FixedPlanAcceptanceTest {
         val channels = LinkedHashMap<Long, ContentValues>()
         val programs = LinkedHashMap<Long, ContentValues>()
 
+        override fun readCanonicalGenres(
+            channelId: Long,
+            programIds: Set<Long>,
+        ): Result<Map<Long, String?>> =
+            Result.success(
+                programs
+                    .filter { (id, values) ->
+                        id in programIds && values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId
+                    }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
+            )
+
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
             Result.success(
                 channels.entries
@@ -2601,18 +2612,8 @@ class TisR51FixedPlanAcceptanceTest {
                     }.groupBy({ it.first }, { it.second }),
             )
 
-        override fun insertProgram(values: ContentValues): Result<Long?> {
-            val id = nextProgramId++
-            programs[id] = ContentValues(values)
-            return Result.success(id)
-        }
-
-        override fun updateProgram(
-            programId: Long,
-            values: ContentValues,
-        ): Result<Int> {
-            programs[programId] = ContentValues(values)
-            return Result.success(1)
-        }
+        override fun upsertProgramsBatch(
+            requests: List<TvProviderWriter.ProgramUpsertRequest>,
+        ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> = testUpsertProgramsBatch(programs, requests) { nextProgramId++ }
     }
 }

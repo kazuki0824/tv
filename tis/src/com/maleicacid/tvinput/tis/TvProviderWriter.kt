@@ -112,38 +112,13 @@ class TvProviderWriter private constructor(
         fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
             indexExistingProgramsForWindow(channelId, Long.MIN_VALUE, Long.MAX_VALUE)
 
-        fun insertProgram(values: ContentValues): Result<Long?> =
-            Result.failure(UnsupportedOperationException("この store は program insert に対応しません"))
-
-        fun updateProgram(
-            programId: Long,
-            values: ContentValues,
-        ): Result<Int> = Result.failure(UnsupportedOperationException("この store は program update に対応しません"))
-
         fun upsertProgramsBatch(requests: List<ProgramUpsertRequest>): Result<List<ProgramUpsertOutcome>> =
-            runCatching {
-                requests.map { request ->
-                    val existingId = request.existingProgramId
-                    if (existingId == null) {
-                        ProgramUpsertOutcome(insertProgram(request.values).getOrThrow(), updated = false)
-                    } else {
-                        val count = updateProgram(existingId, request.values).getOrThrow()
-                        ProgramUpsertOutcome(existingId.takeIf { count > 0 }, updated = count > 0)
-                    }
-                }
-            }
-
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun readCanonicalGenre(programId: Long): Result<String?> = Result.failure(UnsupportedOperationException("この store はジャンル読戻しに対応しません"))
+            Result.failure(UnsupportedOperationException("この store は program batch書込みに対応しません"))
 
         fun readCanonicalGenres(
             channelId: Long,
             programIds: Set<Long>,
-        ): Result<Map<Long, String?>> =
-            runCatching {
-                programIds.associateWith { id -> readCanonicalGenre(id).getOrThrow() }
-            }
+        ): Result<Map<Long, String?>> = Result.failure(UnsupportedOperationException("この store はジャンル一括読戻しに対応しません"))
 
         fun deleteObsoletePrograms(
             channelId: Long,
@@ -1184,21 +1159,6 @@ class TvProviderWriter private constructor(
             index: Int,
         ): ByteArray? = cursor.getBlob(index)
 
-        override fun insertProgram(values: ContentValues): Result<Long?> =
-            runCatching {
-                context.contentResolver.insert(TvContract.Programs.CONTENT_URI, values)?.let { ContentUris.parseId(it) }
-            }
-
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        override fun updateProgram(
-            programId: Long,
-            values: ContentValues,
-        ): Result<Int> =
-            runCatching {
-                context.contentResolver.update(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, programId), values, null, null)
-            }
-
         override fun upsertProgramsBatch(requests: List<ProgramUpsertRequest>): Result<List<ProgramUpsertOutcome>> =
             runCatching {
                 if (requests.isEmpty()) return@runCatching emptyList()
@@ -1245,18 +1205,6 @@ class TvProviderWriter private constructor(
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
-        override fun readCanonicalGenre(programId: Long): Result<String?> =
-            runCatching {
-                val uri = ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, programId)
-                val cursor =
-                    context.contentResolver.query(uri, arrayOf(TvContract.Programs.COLUMN_CANONICAL_GENRE), null, null, null)
-                        ?: error("TvProvider ジャンル読戻しが null cursor を返しました")
-                cursor.use {
-                    check(it.moveToFirst()) { "TvProvider ジャンル読戻しの対象行がありません" }
-                    it.getString(0)
-                }
-            }
-
         override fun readCanonicalGenres(
             channelId: Long,
             programIds: Set<Long>,
