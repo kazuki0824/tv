@@ -146,7 +146,8 @@ class TvProviderWriter private constructor(
             windowEndMs: Long,
         ): Result<Int> = Result.failure(UnsupportedOperationException("この store はobsolete program削除に対応しません"))
 
-        fun listExistingChannels(): Result<List<ChannelRecord>> = Result.success(emptyList())
+        fun listExistingChannels(): Result<List<ChannelRecord>> =
+            Result.failure(UnsupportedOperationException("既存channel一覧の問い合わせが未実装です"))
     }
 
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。

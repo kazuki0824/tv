@@ -19,7 +19,7 @@ class TvProviderWriterUpsertTest {
     private val key = ServiceKey(originalNetworkId = 4, transportStreamId = 16625, serviceId = 101)
 
     @Test
-    fun missingPendingQueryImplementationFailsClosedBeforeWrites() {
+    fun missingChannelQueryImplementationFailsClosedBeforeWrites() {
         var writes = 0
         val store =
             object : TvProviderWriter.ChannelStore {
@@ -43,6 +43,7 @@ class TvProviderWriterUpsertTest {
         val upsertFailure = store.upsertExistingChannel(1L, ContentValues()).exceptionOrNull()
         check(upsertFailure is UnsupportedOperationException)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
+        check(writer.existingChannelsResult().exceptionOrNull() is UnsupportedOperationException)
         val channel =
             ChannelRecord(
                 key,
@@ -55,6 +56,12 @@ class TvProviderWriterUpsertTest {
         val result = writer.upsertChannels(listOf(channel))
         check(result.inserted == 0 && result.updated == 0 && writes == 0)
         check(result.failures.single().operation == "channel-visibility-query")
+        val implementedStore =
+            object : TvProviderWriter.ChannelStore by store {
+                override fun listExistingChannels(): Result<List<ChannelRecord>> = Result.success(listOf(channel))
+            }
+        val implementedWriter = TvProviderWriter("input.test", implementedStore, testOnly = true)
+        check(implementedWriter.existingChannelsResult().getOrThrow() == listOf(channel))
     }
 
     @Test fun insertNewChannel() {

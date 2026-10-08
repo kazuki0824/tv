@@ -102,6 +102,8 @@
 
 # 同一publicationの既存Program重複key拒否
 
+- #186レビュー本文で指摘された既存channel一覧queryの未実装defaultを、空集合成功ではなくUnsupportedOperationExceptionのResult.failureへ変更した。writer公開入口で未実装失敗と明示実装の取得結果を既存試験へ追加した。productionの所有input別query、boot/backgroundの失敗伝播、試験数は維持。Soong/device atest/VTS/実機確認は未実施。
+
 - existing/new分岐前に全program keyを検査し、重複時はservice batch全体を書き込まない。既存rowありの重複入力試験を追加した。新しいownerやcacheは追加しない。
 
 # setup scanの新規channel可視性transaction
