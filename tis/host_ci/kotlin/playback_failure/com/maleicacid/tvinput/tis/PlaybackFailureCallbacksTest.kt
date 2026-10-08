@@ -988,6 +988,52 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
+    @Test
+    fun releaseRetainsOwnerWhenDiscardedInputReleaseFailsThenCompletesOnRetry() {
+        val fixture = Fixture(false, false, false)
+        val executor = LifecycleSerialExecutor("未実行event解放試験")
+        fixture.set("executor", executor)
+        val started = java.util.concurrent.CountDownLatch(1)
+        val unblock = java.util.concurrent.CountDownLatch(1)
+        val firstDone = java.util.concurrent.CountDownLatch(1)
+        val retryDone = java.util.concurrent.CountDownLatch(1)
+        var attempts = 0
+        try {
+            executor.executeControl {
+                started.countDown()
+                unblock.await()
+            }
+            check(started.await(5, TimeUnit.SECONDS))
+            executor.executeCallback(
+                isReleased = { false },
+                onFailure = { throw it },
+                onDiscard = {
+                    fixture.cleanup.release("未実行MediaEvent") {
+                        attempts++
+                        check(attempts > 1) { "MediaEvent解放失敗" }
+                    }
+                },
+            ) { error("release後に未実行入力を処理しました") }
+            executor.executeControl {
+                runCatching { fixture.pipeline.release() }
+                firstDone.countDown()
+            }
+            unblock.countDown()
+            check(firstDone.await(5, TimeUnit.SECONDS))
+            check(attempts == 1 && fixture.cleanup.hasPending && !executor.isShutdown)
+            executor.executeControl {
+                // Unsafe fixtureのcallback threadは未初期化。停止後のNPEは試験対象外。
+                runCatching { fixture.pipeline.release() }
+                retryDone.countDown()
+            }
+            check(retryDone.await(5, TimeUnit.SECONDS))
+            check(attempts == 2 && !fixture.cleanup.hasPending && executor.isShutdown)
+        } finally {
+            unblock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
     // 本番callback/readから実JNIまで、正常集合・有限飽和・retune失効を同じfixtureで検査する。
     @Suppress("LongMethod")
     @Test

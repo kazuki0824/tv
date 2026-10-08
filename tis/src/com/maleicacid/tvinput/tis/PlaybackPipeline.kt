@@ -2796,9 +2796,16 @@ class PlaybackPipeline(
     fun release() {
         if (executor.isShutdown) return
         released.set(true)
-        runOnPlaybackExecutorBlocking(cleanup = true) { stopOnPlaybackExecutor() }
-        executor.shutdownNow()
-        codecCallbackThread.quitSafely()
+        runOnPlaybackExecutorBlocking(cleanup = true) {
+            try {
+                stopOnPlaybackExecutor()
+            } finally {
+                executor.discardDataCallbacks()
+                resourceCleanup.requireComplete()
+                executor.shutdownNow()
+                codecCallbackThread.quitSafely()
+            }
+        }
     }
 
     override fun close() = release()
