@@ -87,12 +87,6 @@ class TvProviderWriter private constructor(
             values: ContentValues,
         ): Result<Int>
 
-        fun indexExistingProgramsForWindow(
-            channelId: Long,
-            windowStartMs: Long,
-            windowEndMs: Long,
-        ): Result<Map<String, Long>> = Result.success(emptyMap())
-
         fun indexExistingProgramEntriesForWindow(
             channelId: Long,
             windowStartMs: Long,
@@ -109,8 +103,7 @@ class TvProviderWriter private constructor(
          * EPG 更新区間 より意図的に広く取得し、start / end time が現在 window の外へ
          * 移動した event も、duplicate insert ではなく stable ONID / TSID / SID / event identity で更新する。
          */
-        fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
-            indexExistingProgramsForWindow(channelId, Long.MIN_VALUE, Long.MAX_VALUE)
+        fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> = Result.success(emptyMap())
 
         fun upsertProgramsBatch(requests: List<ProgramUpsertRequest>): Result<List<ProgramUpsertOutcome>> =
             Result.failure(UnsupportedOperationException("この store は program batch書込みに対応しません"))
@@ -1052,33 +1045,6 @@ class TvProviderWriter private constructor(
                                     requiresCas = stored.requiresCas,
                                 )
                         }
-                    }
-                }
-                out
-            }
-
-        override fun indexExistingProgramsForWindow(
-            channelId: Long,
-            windowStartMs: Long,
-            windowEndMs: Long,
-        ): Result<Map<String, Long>> =
-            runCatching {
-                val projection = arrayOf(TvContract.Programs._ID, TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
-                val uri = TvContract.buildProgramsUriForChannel(channelId, windowStartMs, windowEndMs)
-                val cursor =
-                    context.contentResolver.query(
-                        uri,
-                        projection,
-                        null,
-                        null,
-                        "${TvContract.Programs._ID} DESC",
-                    ) ?: error("TvProvider program index queryがnull cursorを返しました")
-                val out = linkedMapOf<String, Long>()
-                cursor.use { c ->
-                    while (c.moveToNext()) {
-                        val data = providerDataBytes(c, 1)
-                        val key = parseProgramKey(data)
-                        if (key != null && key !in out) out[key] = c.getLong(0)
                     }
                 }
                 out

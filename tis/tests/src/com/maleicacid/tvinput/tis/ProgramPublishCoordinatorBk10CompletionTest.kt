@@ -656,18 +656,6 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             return Result.success(programIndex())
         }
 
-        override fun indexExistingProgramsForWindow(
-            channelId: Long,
-            windowStartMs: Long,
-            windowEndMs: Long,
-        ): Result<Map<String, Long>> {
-            if (failWindowIndexOnce) {
-                failWindowIndexOnce = false
-                return Result.failure(IllegalStateException("null cursor確認"))
-            }
-            return Result.success(programIndex())
-        }
-
         override fun indexExistingProgramEntriesForWindow(
             channelId: Long,
             windowStartMs: Long,

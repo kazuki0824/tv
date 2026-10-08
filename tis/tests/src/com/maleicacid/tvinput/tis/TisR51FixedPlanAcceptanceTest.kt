@@ -2573,18 +2573,11 @@ class TisR51FixedPlanAcceptanceTest {
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
-        override fun indexExistingProgramsForWindow(
-            channelId: Long,
-            windowStartMs: Long,
-            windowEndMs: Long,
-        ): Result<Map<String, Long>> =
+        override fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
             Result.success(
                 programs.entries
                     .mapNotNull { (id, v) ->
                         if (v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
-                        val end = v.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
-                        val start = v.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
-                        if (end <= windowStartMs || start >= windowEndMs) return@mapNotNull null
                         val key =
                             TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA))
                                 ?: return@mapNotNull null
