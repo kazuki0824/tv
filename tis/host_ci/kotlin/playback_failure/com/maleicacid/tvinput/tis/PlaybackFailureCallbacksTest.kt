@@ -819,6 +819,62 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
+    // 恒等写像ではなく、本番候補loop・実tune拒否・typed scan終端を通す。
+    @Suppress("LongMethod")
+    @Test
+    fun synchronousTuneFailureStopsRemainingInitialScanCandidates() {
+        val executor = ControllerSerialExecutor("scan同期選局拒否試験")
+        val fixture = Fixture(false, false, failCleanup = false)
+        val controller = fixture.allocate(TunerController::class.java)
+        val scan = fixture.allocate(ChannelScanController::class.java)
+        val engine =
+            com.maleicacid.tvinput.aribsi
+                .AribSiEngine(android.content.ContextWrapper(null))
+
+        fun set(
+            target: Any,
+            name: String,
+            value: Any,
+        ) {
+            target.javaClass
+                .getDeclaredField(name)
+                .apply { isAccessible = true }
+                .set(target, value)
+        }
+        set(controller, "sectionExecutor", executor)
+        set(controller, "playbackPipeline", fixture.pipeline)
+        for (name in listOf(
+            "dynamicPmtPids",
+            "dynamicEcmPids",
+            "dynamicEmmPids",
+            "failedDynamicPmtPids",
+            "failedDynamicEcmPids",
+            "failedDynamicEmmPids",
+        )) {
+            set(controller, name, linkedSetOf<TsPid>())
+        }
+        for (name in listOf("captionLanguagesByPid", "captionFactParsers", "superimposeTimingByPid")) {
+            set(controller, name, java.util.concurrent.ConcurrentHashMap<TsPid, Any>())
+        }
+        set(controller, "sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
+        set(controller, "sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+        // 未初期化のTunerは利用不可を同期返却する。実tuneForScan経路を差し替えない。
+        set(scan, "engine", engine)
+        set(scan, "tunerController", controller)
+        set(scan, "cancelled", AtomicBoolean(false))
+        set(scan, "scanGenerationFence", ChannelScanController.ScanGenerationFence())
+        val candidates = JapanIsdbScanPlan.defaultInitialScan().take(3)
+        try {
+            val result = scan.startInitialScan(candidates)
+            check(result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED)
+            check(result.scanned == 1 && result.successfulCandidates == 0 && result.published == 0)
+            check(result.diagnostics.single().candidate == candidates.first())
+        } finally {
+            engine.close()
+            executor.shutdownNow()
+        }
+    }
+
     // 本番callback/readから実JNIまで、正常集合・有限飽和・retune失効を同じfixtureで検査する。
     @Suppress("LongMethod")
     @Test

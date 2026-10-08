@@ -1024,8 +1024,6 @@ class ChannelScanController(
         fun validProgramKeysForUpdateForTest(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
             validProgramKeysForUpdate(update)
 
-        fun shouldContinueInitialScanAfterSynchronousTuneResult(success: Boolean): Boolean = success
-
         internal fun finalizeSiCollectionOutcome(
             outcome: SiCollectionOutcome,
             finalSnapshotComplete: Boolean,
