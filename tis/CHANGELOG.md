@@ -51,6 +51,9 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+- Keep caption cleanup retry authority until cleanup succeeds; fence terminal presentation without allocating a new epoch.
+- Preserve the native renderer handle until its release call succeeds, and localize Program cleanup query failures.
+
 # playback cleanup完了後の登録解除
 
 - requireCleanupComplete成功後にglobal playback登録を解除し、その後generation failureを再throwする。cleanup未完了とgeneration枯渇の組合せでは登録を保持してscan admissionを防ぎ、cleanup retry成功後に解除する試験を追加した。

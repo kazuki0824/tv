@@ -678,25 +678,39 @@ class AribCaptionController(
         if (executor.isShutdown) return
         released.set(true)
         runBlocking(cleanup = true) {
-            try {
-                SectionFilterPolicy.completeCleanup(
-                    { cancelScheduledBoundary() },
-                    { broadcastTimedPesScheduler.cancelAll() },
-                    { boundaries.clear() },
-                    { renderer?.flush() },
-                    {
-                        renderer?.close()
-                        renderer = null
-                    },
-                    { postClear() },
-                )
-            } finally {
-                executor.shutdownNow()
-            }
+            completeTerminalCleanup(
+                presentationEpoch,
+                cleanup = {
+                    SectionFilterPolicy.completeCleanup(
+                        { cancelScheduledBoundary() },
+                        { broadcastTimedPesScheduler.cancelAll() },
+                        { boundaries.clear() },
+                        { renderer?.flush() },
+                        {
+                            renderer?.close()
+                            renderer = null
+                        },
+                    )
+                },
+                clear = { mainHandler.post { overlayView.clearCaptionLayer(overlayLayerId) } },
+                shutdown = { executor.shutdownNow() },
+            )
         }
     }
 
     companion object {
+        /** terminal fenceは世代を発行せず、解放成功後だけ同じownerを停止する。 */
+        internal fun completeTerminalCleanup(
+            presentationEpoch: AtomicLong,
+            cleanup: () -> Unit,
+            clear: () -> Unit,
+            shutdown: () -> Unit,
+        ) {
+            presentationEpoch.set(EXHAUSTED_PRESENTATION_EPOCH)
+            SectionFilterPolicy.completeCleanup(cleanup, clear)
+            shutdown()
+        }
+
         private const val EXHAUSTED_PRESENTATION_EPOCH = -1L
         private const val ARIB_PROFILE_A_COMPONENT_ID = 0x0008
         private const val CAPTION_CONTROL_WAIT_MS = 2_000L

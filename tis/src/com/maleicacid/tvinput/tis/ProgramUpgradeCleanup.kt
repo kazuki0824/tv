@@ -62,7 +62,7 @@ object ProgramUpgradeCleanup {
                     null,
                     null,
                     null,
-                ) ?: error("TvProvider channel query returned null cursor")
+                ) ?: error("TvProviderのチャンネル問い合わせがnull cursorを返しました")
             val channelIds = mutableListOf<Long>()
             channelCursor.use { cursor ->
                 while (cursor.moveToNext()) channelIds += cursor.getLong(0)
@@ -80,7 +80,7 @@ object ProgramUpgradeCleanup {
                         null,
                         null,
                         null,
-                    ) ?: error("TvProvider program query returned null cursor channelId=$channelId")
+                    ) ?: error("TvProviderの番組問い合わせがnull cursorを返しました channelId=$channelId")
                 programCursor.use { cursor ->
                     while (cursor.moveToNext()) {
                         rows += cursor.getLong(0) to cursor.getString(1)
