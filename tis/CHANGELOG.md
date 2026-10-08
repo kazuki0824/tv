@@ -51,6 +51,10 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# playback cleanup完了後の登録解除
+
+- requireCleanupComplete成功後にglobal playback登録を解除し、その後generation failureを再throwする。cleanup未完了とgeneration枯渇の組合せでは登録を保持してscan admissionを防ぎ、cleanup retry成功後に解除する試験を追加した。
+
 # MediaEvent解放失敗時の入力停止
 
 - ResourceCleanupの解放結果をBooleanで返し、MediaEventの初回失敗を既存playback terminal cleanupへ接続した。released fenceで新規AV処理を止め、同じownerでFilterをcloseして配送解除する。

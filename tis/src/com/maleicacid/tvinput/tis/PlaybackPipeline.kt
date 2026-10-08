@@ -3045,8 +3045,8 @@ class PlaybackPipeline(
             requireCleanupComplete: () -> Unit,
             generationFailure: Throwable?,
         ) {
-            unregister()
             requireCleanupComplete()
+            unregister()
             if (generationFailure != null) throw generationFailure
         }
 
