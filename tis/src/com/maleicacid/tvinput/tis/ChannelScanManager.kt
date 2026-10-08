@@ -486,7 +486,7 @@ object ChannelScanManager {
     ): Boolean {
         val task = activeTask.get() ?: return false
         if (task.generation != generation || task.purpose != purpose) return false
-        if (!task.requestCancel()) return
+        if (!task.requestCancel()) return false
         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, purpose))
         return true
     }
