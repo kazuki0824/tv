@@ -365,9 +365,18 @@ class MaleicacidLiveSession(
         channelUri: Uri,
         failure: Throwable,
     ) {
-        playbackState = PlaybackStartState.Stopped
-        beginCaptionPresentationGeneration(-1L, false)
-        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+        releaseOnce.set(true)
+        runCatching {
+            releaseOnSessionExecutor()
+            sessionExecutor.shutdown()
+        }.onFailure { cleanup ->
+            if (cleanup !== failure) failure.addSuppressed(cleanup)
+        }
+        runCatching {
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+        }.onFailure { notification ->
+            if (notification !== failure) failure.addSuppressed(notification)
+        }
         android.util.Log.w(
             com.maleicacid.tvinput.common.LogTags.TIS,
             "accepted live tuneの非同期初期化に失敗しました uri=$channelUri",

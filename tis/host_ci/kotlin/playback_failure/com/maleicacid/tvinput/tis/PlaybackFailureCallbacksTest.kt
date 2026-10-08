@@ -898,6 +898,96 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
+    // 同一ownerの初期化・実資源停止・失敗保持を一続きの反例で検査する。
+    @Suppress("LongMethod")
+    @Test
+    fun acceptedTuneFailureFencesOldPlaybackAndRetainsCleanupDespiteNotificationFailure() {
+        val controllerExecutor = ControllerSerialExecutor("accepted-tune-controller-test")
+        val sessionExecutor = LifecycleSerialExecutor("accepted-tune-session-test")
+        val fixture = controllerExecutor.submit<Fixture> { Fixture(false, false) }.get(5, TimeUnit.SECONDS)
+        try {
+            val controller = fixture.allocate(TunerController::class.java)
+            val session = fixture.allocate(MaleicacidLiveSession::class.java)
+
+            fun set(
+                target: Any,
+                name: String,
+                value: Any,
+            ) {
+                target.javaClass
+                    .getDeclaredField(name)
+                    .apply { isAccessible = true }
+                    .set(target, value)
+            }
+            set(controller, "sectionExecutor", controllerExecutor)
+            set(controller, "playbackPipeline", fixture.pipeline)
+            set(controller, "tuneAccepted", true)
+            set(controller, "currentTune", fixture.channel)
+            for (name in listOf("failedDynamicPmtPids", "failedDynamicEcmPids", "failedDynamicEmmPids")) {
+                set(controller, name, linkedSetOf<TsPid>())
+            }
+            for (name in listOf("captionLanguagesByPid", "captionFactParsers", "superimposeTimingByPid")) {
+                set(controller, name, java.util.concurrent.ConcurrentHashMap<TsPid, Any>())
+            }
+            set(controller, "sectionFilters", linkedMapOf<TsPid, Any>())
+            set(controller, "sectionFilterHandles", linkedMapOf<TsPid, Any>())
+            val released = AtomicBoolean(false)
+            set(session, "releaseOnce", released)
+            set(session, "sessionExecutor", sessionExecutor)
+            set(session, "tuneRequestLock", Any())
+            set(session, "tunerController", controller)
+            set(session, "playbackState", fixture.state)
+            // 字幕ownerとFramework通知を未初期化にし、両方の失敗後も実playback停止を検査する。
+            val engine =
+                com.maleicacid.tvinput.aribsi
+                    .AribSiEngine(android.content.ContextWrapper(null))
+            val parser =
+                engine.javaClass
+                    .getDeclaredField("nativeParser")
+                    .apply { isAccessible = true }
+                    .get(engine) as com.maleicacid.tvinput.aribsi.NativeAribSiParser
+            parser.close()
+            set(parser, "handle", Long.MAX_VALUE)
+            set(session, "aribSiEngine", engine)
+            val primary = checkNotNull(runCatching { engine.reset() }.exceptionOrNull())
+            check(primary is com.maleicacid.tvinput.aribsi.NativeParserCleanupException)
+            val handler =
+                MaleicacidLiveSession::class.java
+                    .getDeclaredMethod(
+                        "handleAcceptedTuneFailure",
+                        android.net.Uri::class.java,
+                        Throwable::class.java,
+                    ).apply { isAccessible = true }
+            sessionExecutor.callControl(5_000L) {
+                handler.invoke(session, android.net.Uri.parse("content://android.media.tv/channel/2"), primary)
+            }
+            check(released.get())
+            check(
+                !controller.javaClass
+                    .getDeclaredField("tuneAccepted")
+                    .apply { isAccessible = true }
+                    .getBoolean(controller),
+            )
+            check(fixture.pipeline.currentPlaybackGenerationForTest() != 7L)
+            check(fixture.cleanup.hasPending)
+            check(primary.suppressed.size >= 2)
+            val pending =
+                MaleicacidLiveSession::class.java
+                    .getDeclaredField("releaseCleanup")
+                    .apply { isAccessible = true }
+                    .get(session) as ResourceCleanup
+            check(pending.hasPending)
+            check(!sessionExecutor.isShutdown)
+            check(!session.onTune(android.net.Uri.parse("content://android.media.tv/channel/3")))
+        } finally {
+            fixture.rejectRelease = false
+            runCatching { fixture.pipeline.release() }
+            check(!fixture.cleanup.hasPending)
+            controllerExecutor.shutdownNow()
+            sessionExecutor.shutdownNow()
+        }
+    }
+
     // 本番callback/readから実JNIまで、正常集合・有限飽和・retune失効を同じfixtureで検査する。
     @Suppress("LongMethod")
     @Test
