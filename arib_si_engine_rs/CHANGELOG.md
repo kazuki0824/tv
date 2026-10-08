@@ -1,3 +1,7 @@
+# Kotlin生成物のEOF整形
+
+- generatorの最終出力を末尾LF一つへ正規化し、全Kotlin生成物へ反映した。DTO schemaとSI契約は不変。再生成整合性は既存CIへ委ねる。
+
 # Partial Reception Descriptorをtyped snapshotへ接続
 
 - 地上デジタルNITのPartial Reception Descriptor (0xFB)を解析し、列挙SIDだけを`ServiceSemanticFacts.partialReception=true`とする。service_type=0xC0単独では推定しない。

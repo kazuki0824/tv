@@ -51,6 +51,15 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# PMT初期待ちとProgram IPC境界のレビュー対応
+
+- live SIがPENDINGでも現行世代のPMT Filter取得を進め、playback/Program/CAS確定は既存READY契約まで待機する。実PAT/SDT/NITから本番refresh・Filter開始・PMT受信・READYを通すhost試験を追加した。
+- Program batchを64件およびParcel実測bytesで分割する。Android公開IPC推奨値の半分を予算とし、単一operation超過は全batchの書き込み前に失敗させる。provider-dataの切捨てやKotlin側の第二schemaは追加しない。異なる予算・24KB×64行・単一超過のRobolectric試験をCIへ接続した。
+- 未実装のservice全体Program index取得は空集合成功ではなく失敗とし、空EITをwriter公開入口で誤commitしないことを既存試験へ追加した。
+- 未使用の同期選局恒等helperとbooleanだけの試験を削除し、本番候補loop・tune拒否・TUNE_REJECTED終端と後続候補停止の回帰試験へ置き換えた。
+- Controller/Lifecycle executorのqueue・owner識別・permit受理/完了/破棄をPrioritySerialExecutorへ共通化した。既存owner/thread数と各executorの期限・再投入・callback解放方針を維持する。
+- ホストJUnit検出数をPMT試験1件分更新し、最上位PR186で373件とする。ローカルでは整形・lint・差分を確認し、テスト実行はCIへ委ねる。Soong/VTS/実機検証は未実施。
+
 # callback実行失敗と複数MediaEventの解放保持
 
 - TvProviderの単一/一覧チャンネル照会のnull cursor診断を日本語へ統一した。失敗を空結果の成功に置き換えない。
