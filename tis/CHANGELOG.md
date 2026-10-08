@@ -20,6 +20,11 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# 同一PTS置換の従属Clear回収
+
+- 置換対象DisplayのframeTokenに従属するClearも容量計算と成功時commitの除去対象に含める。拒否時は既存queueを保持し、別tokenのClearは変更しない。
+- 既存字幕2試験へduration付き同一PTSのbudget＋1回の受理とtoken・件数・bytesの確認を追加する。試験実行はCIへ委ねる。
+
 # 受理済み字幕置換と未実行event解放の登録保持
 
 - 同一PTS字幕は容量検査とtoken確保の成功後に旧Displayを削除し、境界数とbytesの検査結果を実際のqueueへ反映する。

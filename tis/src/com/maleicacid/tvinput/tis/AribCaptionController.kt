@@ -411,7 +411,12 @@ class AribCaptionController(
             return
         }
         val clearAt = timing.clearAt
-        val replaced = boundaries.filter { boundary -> boundary.mediaTimeMillis == pts && boundary is Boundary.Display }
+        val replacedTokens =
+            boundaries
+                .filterIsInstance<Boundary.Display>()
+                .filter { it.mediaTimeMillis == pts }
+                .mapTo(linkedSetOf()) { it.frameToken }
+        val replaced = boundaries.filter { it.frameToken in replacedTokens }
         val remainingCount = boundaries.size - replaced.size
         val incomingCount = if (clearAt == null) 1 else 2
         val queuedBytes =

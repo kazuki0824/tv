@@ -19,7 +19,8 @@ class CaptionPresentationCapacityTest {
         assertRejectedReplacementPreservesQueue(boundaryCount = PRESENTATION_BOUNDARY_LIMIT, incomingBytes = 4)
     }
 
-    @Suppress("LongMethod")
+    // 同じqueueの拒否・受理・従属境界を一続きに検査し、別fixtureへ状態を移さない。
+    @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun assertRejectedReplacementPreservesQueue(
         boundaryCount: Int,
         incomingBytes: Int,
@@ -32,7 +33,8 @@ class CaptionPresentationCapacityTest {
         val controller = unsafe.allocateInstance(AribCaptionController::class.java) as AribCaptionController
         val viewport = AribCaptionController.CaptionViewport(1, 1, 0, 0, 1, 1)
         val image = NativeAribCaptionRenderer.RenderedCaptionImage(0, 0, 1, 1, 4, ByteArray(4))
-        val frame = NativeAribCaptionRenderer.RenderedCaptionFrame(100L, 100L, listOf(image))
+        val frame =
+            NativeAribCaptionRenderer.RenderedCaptionFrame(100L, if (boundaryCount == 2) 100L else null, listOf(image))
         val display =
             Class
                 .forName("com.maleicacid.tvinput.tis.AribCaptionController" + "$" + "Boundary" + "$" + "Display")
@@ -48,7 +50,8 @@ class CaptionPresentationCapacityTest {
                 .apply { isAccessible = true }
         val queue = PriorityQueue<Any>(compareBy { it.hashCode() })
         queue += display
-        repeat(boundaryCount - 1) { queue += clearConstructor.newInstance(200L + it, 1L + it) }
+        val firstClearToken = if (boundaryCount == 2) 1L else 2L
+        repeat(boundaryCount - 1) { queue += clearConstructor.newInstance(200L + it, firstClearToken + it) }
         val original = queue.toSet()
         val diagnostics = mutableListOf<AribCaptionController.CaptionDiagnostic.Reason>()
 
@@ -61,10 +64,12 @@ class CaptionPresentationCapacityTest {
                 .apply { isAccessible = true }
                 .set(controller, value)
         }
+        set("nextFrameToken", boundaryCount.toLong())
         set("boundaries", queue)
         set("mediaClock", { null })
         set("onDiagnostic", { diagnostic: AribCaptionController.CaptionDiagnostic -> diagnostics += diagnostic.reason })
-        val incoming = frame.copy(images = listOf(image.copy(rgba8888 = ByteArray(incomingBytes))))
+        val incoming =
+            frame.copy(durationMillis = 100L, images = listOf(image.copy(rgba8888 = ByteArray(incomingBytes))))
         AribCaptionController::class.java
             .getDeclaredMethod("enqueueFrame", frame.javaClass, viewport.javaClass)
             .apply { isAccessible = true }
@@ -72,7 +77,15 @@ class CaptionPresentationCapacityTest {
         check(queue.size == boundaryCount && queue.toSet() == original)
         check(diagnostics == listOf(AribCaptionController.CaptionDiagnostic.Reason.PRESENTATION_QUEUE_OVERFLOW))
         diagnostics.clear()
-        val retainedClearBoundaries = original - display
+        val retainedClearBoundaries =
+            original
+                .filter { boundary ->
+                    boundary != display &&
+                        boundary.javaClass
+                            .getDeclaredField("frameToken")
+                            .apply { isAccessible = true }
+                            .getLong(boundary) != 1L
+                }.toSet()
         // 現行budgetの最小反例を使う。budget自体の最適性や新しい閾値は定義しない。
         repeat(PRESENTATION_BOUNDARY_LIMIT + 1) { iteration ->
             val accepted =
@@ -85,7 +98,7 @@ class CaptionPresentationCapacityTest {
                 .apply { isAccessible = true }
                 .invoke(controller, accepted, viewport)
             val displays = queue.filter { it.javaClass == display.javaClass }
-            check(queue.size == boundaryCount && displays.size == 1)
+            check(queue.size == retainedClearBoundaries.size + 1 && displays.size == 1)
             check(queue.containsAll(retainedClearBoundaries))
             val queuedFrame =
                 display.javaClass
@@ -94,6 +107,35 @@ class CaptionPresentationCapacityTest {
                     .get(displays.single()) as NativeAribCaptionRenderer.RenderedCaptionFrame
             check(queuedFrame === accepted)
             check(queuedFrame.images.sumOf { it.rgba8888.size } == 4)
+        }
+        queue.clear()
+        repeat(PRESENTATION_BOUNDARY_LIMIT + 1) { iteration ->
+            val accepted = frame.copy(durationMillis = 100L, images = listOf(image.copy(rgba8888 = ByteArray(4))))
+            AribCaptionController::class.java
+                .getDeclaredMethod("enqueueFrame", frame.javaClass, viewport.javaClass)
+                .apply { isAccessible = true }
+                .invoke(controller, accepted, viewport)
+            val currentDisplay = queue.single { it.javaClass == display.javaClass }
+            val currentClear = queue.single { it.javaClass == clearConstructor.declaringClass }
+            check(queue.size == 2)
+            val displayToken =
+                currentDisplay.javaClass
+                    .getDeclaredField("frameToken")
+                    .apply { isAccessible = true }
+                    .getLong(currentDisplay)
+            val clearToken =
+                currentClear.javaClass
+                    .getDeclaredField("frameToken")
+                    .apply { isAccessible = true }
+                    .getLong(currentClear)
+            check(displayToken == clearToken && displayToken > boundaryCount + iteration)
+            val queuedFrame =
+                currentDisplay.javaClass
+                    .getDeclaredField("frame")
+                    .apply { isAccessible = true }
+                    .get(currentDisplay)
+                    as NativeAribCaptionRenderer.RenderedCaptionFrame
+            check(queuedFrame === accepted && queuedFrame.images.sumOf { it.rgba8888.size } == 4)
         }
         check(diagnostics.isEmpty())
     }
