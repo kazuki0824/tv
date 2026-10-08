@@ -20,6 +20,10 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# 既存channelのone-seg方式移行
+
+- 型変更時だけProvider batchで新規row作成と旧row削除を行い、通常updateでimmutable COLUMN_TYPEを変更しない。one-segはhidden/non-pendingへ再投影する。upgradeと再作成失敗の反例試験を追加した。
+
 # scan開始時の取消し保持
 
 - initial/maintenance scan入口の不要なcancelled=false代入を除去し、別threadで受付済みのcancelを上書きしない。task生成時の初期化と既存fence/loop/publication gateを維持する。
