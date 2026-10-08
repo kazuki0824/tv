@@ -243,13 +243,13 @@ class PlaybackPipeline(
         action: () -> T,
     ): T =
         try {
-            executor.callControl(PLAYBACK_CONTROL_WAIT_MS) {
+            executor.callControl(PLAYBACK_CONTROL_WAIT_MS, cleanup = cleanup) {
                 check(cleanup || !released.get()) { "解放中のownerへ通常controlを実行できません" }
                 action()
             }
         } catch (error: ControlResultUnknownException) {
             released.set(true)
-            executor.executeControl {
+            executor.executeCleanupControl {
                 runCatching { release() }.onFailure {
                     Log.w(LogTags.TIS, "結果未確定controlの後片付けを再試行まで保持します", it)
                 }
@@ -258,19 +258,35 @@ class PlaybackPipeline(
         }
 
     private fun enqueuePlaybackAction(action: () -> Unit) {
-        if (released.get()) return
-        runCatching {
-            executor.executeData {
-                if (!released.get()) action()
-            }
-        }
+        executor.executeCallback(isReleased = released::get, onFailure = ::handleSubmissionFailure, action = action)
     }
 
     private fun enqueuePlaybackControl(action: () -> Unit) {
-        if (released.get()) return
-        runCatching {
-            executor.executeControl {
-                if (!released.get()) action()
+        executor.executeCallback(
+            control = true,
+            isReleased = released::get,
+            onFailure = ::handleSubmissionFailure,
+            action = action,
+        )
+    }
+
+    private fun handleSubmissionFailure(error: RuntimeException) {
+        if (!released.compareAndSet(false, true)) return
+        Log.w(LogTags.TIS, "playback owner投入失敗: 同じownerで解放します", error)
+        executor.executeTerminalCleanup {
+            val generation = playbackGeneration
+            completePlaybackFailureAction(generation, onVideoUnavailable) {
+                try {
+                    onVideoUnavailable(
+                        PlaybackUnavailable(
+                            PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED,
+                            error.message.orEmpty(),
+                            generation,
+                        ),
+                    )
+                } finally {
+                    release()
+                }
             }
         }
     }

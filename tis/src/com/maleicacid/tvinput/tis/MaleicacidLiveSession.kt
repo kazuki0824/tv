@@ -201,24 +201,35 @@ class MaleicacidLiveSession(
         action: () -> T,
     ): T =
         try {
-            sessionExecutor.callControl(SESSION_CONTROL_WAIT_MS) {
+            sessionExecutor.callControl(SESSION_CONTROL_WAIT_MS, cleanup = cleanup) {
                 check(cleanup || !releaseOnce.get()) { "解放中のownerへ通常controlを実行できません" }
                 action()
             }
         } catch (error: ControlResultUnknownException) {
             releaseOnce.set(true)
-            sessionExecutor.executeControl { onRelease() }
+            sessionExecutor.executeCleanupControl { onRelease() }
             throw error
         }
 
     private fun enqueueSessionAction(action: () -> Unit) {
-        if (releaseOnce.get()) return
-        runCatching {
-            sessionExecutor.executeData {
-                // 投入後から実行までの解放を観測し、解放済みownerへ遅延操作を適用しない。
-                @Suppress("RedundantIf")
-                if (!releaseOnce.get()) action()
-            }
+        sessionExecutor.executeCallback(
+            isReleased = releaseOnce::get,
+            onFailure = ::handleSubmissionFailure,
+            action = action,
+        )
+    }
+
+    private fun handleSubmissionFailure(error: RuntimeException) {
+        if (!releaseOnce.compareAndSet(false, true)) return
+        android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "session owner投入失敗: 同じownerで解放します", error)
+        sessionExecutor.executeTerminalCleanup {
+            runCatching {
+                try {
+                    notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                } finally {
+                    onRelease()
+                }
+            }.onFailure { android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "投入失敗の後片付けを再試行まで保持します", it) }
         }
     }
 
@@ -226,21 +237,21 @@ class MaleicacidLiveSession(
         if (releaseOnce.get()) return
         siRefreshDirty.set(true)
         if (!siRefreshQueued.compareAndSet(false, true)) return
-        runCatching {
-            sessionExecutor.executeData {
-                try {
-                    siRefreshDirty.set(false)
-                    // 投入後の解放を再確認し、解放済み資源へSI更新を適用しない。
-                    @Suppress("RedundantIf")
-                    if (!releaseOnce.get()) refreshDynamicSiAndCasFilters()
-                } finally {
-                    siRefreshQueued.set(false)
-                    // 更新中の解放を終了時にも観測し、解放済みownerへ再投入しない。
-                    @Suppress("RedundantIf")
-                    if (siRefreshDirty.get() && !releaseOnce.get()) requestSiRefresh()
-                }
+        sessionExecutor.executeCallback(
+            isReleased = releaseOnce::get,
+            onFailure = { error ->
+                siRefreshQueued.set(false)
+                handleSubmissionFailure(error)
+            },
+        ) {
+            try {
+                siRefreshDirty.set(false)
+                refreshDynamicSiAndCasFilters()
+            } finally {
+                siRefreshQueued.set(false)
+                if (siRefreshDirty.get() && !releaseOnce.get()) requestSiRefresh()
             }
-        }.onFailure { siRefreshQueued.set(false) }
+        }
     }
 
     override fun onSetSurface(surface: Surface?): Boolean =

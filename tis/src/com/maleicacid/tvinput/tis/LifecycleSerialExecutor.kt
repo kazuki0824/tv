@@ -59,6 +59,20 @@ internal class LifecycleSerialExecutor(
         fun cancelBeforeStart(): Boolean = phase.compareAndSet(CONTROL_QUEUED, CONTROL_CANCELLED) && super.cancel(false)
     }
 
+    private class CallbackTask(
+        private val isReleased: () -> Boolean,
+        private val onFailure: (RuntimeException) -> Unit,
+        private val action: () -> Unit,
+    ) : Runnable {
+        override fun run() {
+            if (!isReleased()) action()
+        }
+
+        fun fail(error: RuntimeException) {
+            if (!isReleased()) onFailure(error)
+        }
+    }
+
     private data class QueuedTask(
         val queueClass: Int,
         val sequence: Long,
@@ -116,6 +130,36 @@ internal class LifecycleSerialExecutor(
         }
     }
 
+    // terminal cleanupだけは通常task identityを消費しない。同じownerで枯渇後も解放を完了する。
+    fun executeCleanupControl(command: Runnable) {
+        super.execute(QueuedTask(CLEANUP_QUEUE_CLASS, 0L, command))
+    }
+
+    fun executeTerminalCleanup(command: Runnable) {
+        try {
+            executeCleanupControl(command)
+        } catch (error: RejectedExecutionException) {
+            if (!isShutdown) throw error
+        }
+    }
+
+    fun executeCallback(
+        control: Boolean = false,
+        isReleased: () -> Boolean,
+        onFailure: (RuntimeException) -> Unit,
+        action: () -> Unit,
+    ) {
+        if (isReleased()) return
+        val task = CallbackTask(isReleased, onFailure, action)
+        try {
+            if (control) executeControl(task) else executeData(task)
+        } catch (error: RejectedExecutionException) {
+            if (!isShutdown) task.fail(error)
+        } catch (error: IllegalStateException) {
+            if (!isShutdown) task.fail(error)
+        }
+    }
+
     fun executeControl(command: Runnable) {
         enqueue(CONTROL_QUEUE_CLASS, command, { finishOwnerTask(hasDataSlot = false) })
     }
@@ -169,23 +213,31 @@ internal class LifecycleSerialExecutor(
             } catch (error: RejectedExecutionException) {
                 deferredOwnerData.clear()
                 pendingDataSlots.release()
-                if (!isShutdown) throw error
+                if (!isShutdown) reportDeferredFailure(deferred, error)
             } catch (error: IllegalStateException) {
                 deferredOwnerData.clear()
                 pendingDataSlots.release()
-                throw error
+                if (!isShutdown) reportDeferredFailure(deferred, error)
             }
         }
+
+    private fun reportDeferredFailure(
+        task: Runnable,
+        error: RuntimeException,
+    ) {
+        if (task is CallbackTask) task.fail(error) else throw error
+    }
 
     // 未開始の取消しと開始済みの結果不明を混同せず、有限待機の終了理由を保持する。
     @Suppress("ThrowsCount")
     fun <T> callControl(
         timeoutMs: Long,
+        cleanup: Boolean = false,
         block: () -> T,
     ): T {
         if (isOwnerThread()) return block()
         val task = ControlFutureTask(Callable(block))
-        executeControl(task)
+        if (cleanup) executeCleanupControl(task) else executeControl(task)
         return try {
             task.get(timeoutMs, TimeUnit.MILLISECONDS)
         } catch (error: TimeoutException) {
@@ -232,6 +284,7 @@ internal class LifecycleSerialExecutor(
     private companion object {
         const val INITIAL_QUEUE_CAPACITY = 11
         const val DEFAULT_MAX_PENDING_DATA_TASKS = 64
+        const val CLEANUP_QUEUE_CLASS = -1
         const val CONTROL_QUEUE_CLASS = 0
         const val DATA_QUEUE_CLASS = 1
         const val CONTROL_QUEUED = 0

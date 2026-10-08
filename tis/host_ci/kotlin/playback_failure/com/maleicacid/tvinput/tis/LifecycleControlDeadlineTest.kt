@@ -11,6 +11,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
@@ -51,7 +52,120 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
     }
 }
 
+// 同じexecutorの投入・期限・shutdown・cleanup境界を一緒に試験する。
+@Suppress("TooManyFunctions")
 class LifecycleControlDeadlineTest {
+    @Test
+    fun exhaustedCallbackIdentityFencesBothDataAndControlAndRetainsOwnerCleanup() {
+        listOf(false, true).forEach { control ->
+            val executor = LifecycleSerialExecutor("投入失敗試験")
+            val released = AtomicBoolean(false)
+            val cause = AtomicReference<RuntimeException>()
+            val cleaned = CountDownLatch(1)
+            try {
+                val sequence =
+                    LifecycleSerialExecutor::class.java
+                        .getDeclaredField("nextSequence")
+                        .apply { isAccessible = true }
+                (sequence.get(executor) as AtomicLong).set(Long.MIN_VALUE)
+                executor.executeCallback(control, released::get, { error ->
+                    cause.set(error)
+                    released.set(true)
+                    executor.executeTerminalCleanup {
+                        check(executor.isOwnerThread())
+                        cleaned.countDown()
+                    }
+                }) { error("投入失敗した操作を実行しました") }
+                check(cleaned.await(1, TimeUnit.SECONDS))
+                check(released.get() && cause.get() is IllegalStateException)
+                // 通常identityは再利用せず、失敗したcleanupも同じownerで再試行できる。
+                check(runCatching { executor.callControl(1_000L, cleanup = true) { error("解放失敗") } }.isFailure)
+                check(executor.callControl(1_000L, cleanup = true) { executor.isOwnerThread() })
+                check(runCatching { executor.executeControl {} }.isFailure)
+            } finally {
+                executor.shutdownNow()
+            }
+        }
+    }
+
+    @Test
+    fun deferredCallbackDrainFailureRetainsCauseAndOwnerCleanup() {
+        val executor = LifecycleSerialExecutor("再入投入失敗試験", maxPendingDataTasks = 1)
+        val released = AtomicBoolean(false)
+        val cause = AtomicReference<RuntimeException>()
+        val cleaned = CountDownLatch(1)
+        try {
+            executor.executeControl {
+                executor.executeCallback(isReleased = released::get, onFailure = { error ->
+                    cause.set(error)
+                    released.set(true)
+                    executor.executeTerminalCleanup {
+                        check(executor.isOwnerThread())
+                        cleaned.countDown()
+                    }
+                }) { error("枯渇後のdeferred callbackを実行しました") }
+                val sequence =
+                    LifecycleSerialExecutor::class.java
+                        .getDeclaredField("nextSequence")
+                        .apply { isAccessible = true }
+                (sequence.get(executor) as AtomicLong).set(Long.MIN_VALUE)
+            }
+            check(cleaned.await(1, TimeUnit.SECONDS))
+            check(cause.get() is IllegalStateException && released.get())
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun ownerCallbackOverflowIsTerminalRatherThanSilentDrop() {
+        val executor = LifecycleSerialExecutor("再入上限試験", maxPendingDataTasks = 1)
+        val released = AtomicBoolean(false)
+        val cleaned = CountDownLatch(1)
+        try {
+            executor.executeControl {
+                executor.executeData { error("terminal後のdataを実行しました") }
+                executor.executeCallback(isReleased = released::get, onFailure = { error ->
+                    check(error is IllegalStateException)
+                    released.set(true)
+                    executor.executeTerminalCleanup {
+                        executor.shutdownNow()
+                        cleaned.countDown()
+                    }
+                }) { error("上限超過callbackを実行しました") }
+            }
+            check(cleaned.await(1, TimeUnit.SECONDS))
+            check(released.get())
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun shutdownAndReleasedCallbacksAreTheOnlyIgnoredSubmissionFailures() {
+        val executor = LifecycleSerialExecutor("shutdown投入試験")
+        try {
+            executor.executeCallback(
+                isReleased = { true },
+                onFailure = { throw IllegalStateException("release後を失敗通知しました", it) },
+            ) {
+                error("release後のcallbackを実行しました")
+            }
+            executor.shutdownNow()
+            listOf(false, true).forEach { control ->
+                executor.executeCallback(
+                    control,
+                    { false },
+                    { throw IllegalStateException("shutdown競合を失敗通知しました", it) },
+                ) {
+                    error("shutdown後のcallbackを実行しました")
+                }
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
     @Test
     fun replacementLifecycleWorkerReentersControlAndData() {
         val executor = LifecycleSerialExecutor("交換lifecycle worker試験", maxPendingDataTasks = 1)

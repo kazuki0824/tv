@@ -20,6 +20,8 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+- #183: current callback投入失敗は原因を保持してterminal fence・診断・同一owner解放へ接続。通常identity枯渇後もcleanup専用controlで再試行し、shutdown競合だけを無視する。
+
 # lifecycle worker交換とcontrol再入dataのdrain
 
 - beforeExecuteで現worker identityへ更新する。全owner taskのfinishからdeferred dataをdrainし、control→data再入もdata側tailへ配送する。control完了時は空きpermitをtryAcquireし、満杯なら既存data完了に回収を委ねてownerを待機させない。交換workerとcontrol→dataの反例試験を追加した。

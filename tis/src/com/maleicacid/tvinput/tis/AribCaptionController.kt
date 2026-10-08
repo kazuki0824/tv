@@ -36,6 +36,7 @@ class AribCaptionController(
             PRESENTATION_QUEUE_OVERFLOW,
             PRESENTATION_HORIZON_EXCEEDED,
             BROADCAST_TIMED_PES_OVERFLOW,
+            OWNER_SUBMISSION_FAILED,
         }
     }
 
@@ -125,13 +126,13 @@ class AribCaptionController(
         action: () -> T,
     ): T =
         try {
-            executor.callControl(CAPTION_CONTROL_WAIT_MS) {
+            executor.callControl(CAPTION_CONTROL_WAIT_MS, cleanup = cleanup) {
                 check(cleanup || !released.get()) { "解放中のownerへ通常controlを実行できません" }
                 action()
             }
         } catch (error: ControlResultUnknownException) {
             released.set(true)
-            executor.executeControl {
+            executor.executeCleanupControl {
                 runCatching { close() }.onFailure {
                     Log.w(LogTags.TIS, "結果未確定controlの後片付けを再試行まで保持します", it)
                 }
@@ -140,13 +141,37 @@ class AribCaptionController(
         }
 
     private fun enqueue(action: () -> Unit) {
-        if (released.get()) return
-        runCatching { executor.executeData { if (!released.get()) action() } }
+        executor.executeCallback(isReleased = released::get, onFailure = ::handleSubmissionFailure, action = action)
     }
 
     private fun enqueueControl(action: () -> Unit) {
-        if (released.get()) return
-        runCatching { executor.executeControl { if (!released.get()) action() } }
+        executor.executeCallback(
+            control = true,
+            isReleased = released::get,
+            onFailure = ::handleSubmissionFailure,
+            action = action,
+        )
+    }
+
+    private fun handleSubmissionFailure(error: RuntimeException) {
+        if (!released.compareAndSet(false, true)) return
+        Log.w(LogTags.TIS, "caption owner投入失敗: 同じownerで解放します", error)
+        executor.executeTerminalCleanup {
+            runCatching {
+                try {
+                    onDiagnostic(
+                        CaptionDiagnostic(
+                            CaptionDiagnostic.Reason.OWNER_SUBMISSION_FAILED,
+                            playbackGeneration,
+                            selectedTrack?.id,
+                            1,
+                        ),
+                    )
+                } finally {
+                    close()
+                }
+            }.onFailure { Log.w(LogTags.TIS, "投入失敗の後片付けを再試行まで保持します", it) }
+        }
     }
 
     fun setEnabled(value: Boolean) =
