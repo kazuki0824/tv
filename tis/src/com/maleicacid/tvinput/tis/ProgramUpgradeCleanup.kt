@@ -6,6 +6,8 @@ import android.media.tv.TvContract
 import android.os.Build
 import android.util.Log
 import com.maleicacid.tvinput.common.LogTags
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Product/TIS更新時の番組表cleanup。
@@ -14,33 +16,68 @@ import com.maleicacid.tvinput.common.LogTags
 object ProgramUpgradeCleanup {
     private const val PREFS_NAME = "program_upgrade_cleanup"
     private const val KEY_SOFTWARE_IDENTITY = "software_identity"
-    private val lock = Any()
-
-    fun ensure(context: Context): Boolean =
-        synchronized(lock) {
-            val appContext = context.applicationContext
-            val storage = appContext.createDeviceProtectedStorageContext()
-            val prefs = storage.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val currentIdentity = currentSoftwareIdentity(appContext) ?: return false
-            if (prefs.getString(KEY_SOFTWARE_IDENTITY, null) == currentIdentity) return true
-
-            val inputId = TisInputIdResolver.resolveOwnInputId(appContext) ?: return false
-            val ownedProgramIds = queryOwnedProgramIds(appContext, inputId) ?: return false
-            val completed =
-                runCleanupTransaction(
-                    programIds = ownedProgramIds,
-                    deleteProgram = { programId -> deleteProgram(appContext, programId) },
-                    commitIdentity = {
-                        prefs.edit().putString(KEY_SOFTWARE_IDENTITY, currentIdentity).commit()
-                    },
-                )
-            if (!completed) {
-                Log.w(LogTags.TIS, "Program upgrade cleanupを完了できません inputId=$inputId")
-                return false
-            }
-            Log.i(LogTags.TIS, "旧product buildのProgram行を破棄しました inputId=$inputId")
-            true
+    private val running = AtomicBoolean(false)
+    private val ready = AtomicBoolean(false)
+    private val worker =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "maleicacid-program-upgrade-cleanup").apply { isDaemon = true }
         }
+
+    /** 完了状態だけを返す。Provider・設定・package照会を呼出元で実行しない。 */
+    fun ensure(context: Context): Boolean = ensure { cleanup(context.applicationContext) }
+
+    // worker境界で例外を診断し、次回受付で同じcleanupを再試行できる状態へ戻す。
+    @Suppress("TooGenericExceptionCaught")
+    internal fun ensure(cleanup: () -> Boolean): Boolean {
+        if (ready.get()) return true
+        if (running.compareAndSet(false, true)) {
+            try {
+                worker.execute {
+                    try {
+                        ready.set(cleanup())
+                    } catch (error: Exception) {
+                        Log.w(LogTags.TIS, "Program upgrade cleanupに失敗しました", error)
+                    } finally {
+                        running.set(false)
+                    }
+                }
+            } catch (error: java.util.concurrent.RejectedExecutionException) {
+                running.set(false)
+                Log.w(LogTags.TIS, "Program upgrade cleanupを受け付けられません", error)
+            }
+        }
+        return false
+    }
+
+    // 未準備の原因を発生点で返す。I/Oは単一workerだけが実行する。
+    @Suppress("ReturnCount")
+    private fun cleanup(appContext: Context): Boolean {
+        val storage = appContext.createDeviceProtectedStorageContext()
+        val prefs = storage.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val currentIdentity = currentSoftwareIdentity(appContext) ?: return false
+        if (prefs.getString(KEY_SOFTWARE_IDENTITY, null) == currentIdentity) return true
+
+        val inputId = TisInputIdResolver.resolveOwnInputId(appContext) ?: return false
+        val completed =
+            deleteOwnedPrograms(appContext, inputId) {
+                prefs.edit().putString(KEY_SOFTWARE_IDENTITY, currentIdentity).commit()
+            }
+        if (!completed) {
+            Log.w(LogTags.TIS, "Program upgrade cleanupを完了できません inputId=$inputId")
+            return false
+        }
+        Log.i(LogTags.TIS, "旧product buildのProgram行を破棄しました inputId=$inputId")
+        return true
+    }
+
+    internal fun deleteOwnedPrograms(
+        context: Context,
+        inputId: String,
+        commitIdentity: () -> Boolean,
+    ): Boolean {
+        val programIds = queryOwnedProgramIds(context, inputId) ?: return false
+        return runCleanupTransaction(programIds, { deleteProgram(context, it) }, commitIdentity)
+    }
 
     private fun currentSoftwareIdentity(context: Context): String? =
         runCatching {

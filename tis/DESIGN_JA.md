@@ -741,6 +741,8 @@ Channel provider-data の新規書き込み・読み取り正形式は JSON v1 �
 
 TISはdevice-protected storageに、最後にProgram cleanupを完了したsoftware identityとして `Build.FINGERPRINT` とTIS packageの `longVersionCode` の組を保存する。起動時に現在値と一致しない場合、boot EPG sync、background maintenance、live sessionでの既存Program参照、Program upsert/delete、現在番組解決より前に、current TIS inputに属するchannelのうち `TvContract.Programs.COLUMN_PACKAGE_NAME == context.packageName` のProgram行を全て削除する。削除が全件成功した後だけcurrent software identityをcommitする。
 
+cleanupのProvider・SharedPreferences・package照会はProgramUpgradeCleanupが所有する単一workerだけで実行する。ensureはメインスレッドでもI/Oやworker完了を待たず、process内の完了状態を返す。同時要求は一つの実行へ集約し、未完了中はlive/setup/EPG開始を拒否する。成功後だけprocess内の完了状態を公開する。失敗時は次の利用要求で同じownerが再試行し、定期retryや重複queueを作らない。
+
 upgrade cleanupが失敗した場合は旧Program行を現行データとして使用せず、software identityを更新せず、EPG/Program処理を開始しない。既存行の旧provider-dataからprogramKey、service identity、時刻、rating、CAS状態その他を抽出してcleanup失敗を回避してはならない。cleanupは再実行可能かつ冪等にする。
 
 cleanup完了後は現行buildのSI/EITからProgramを再収集し、現行provider-dataだけで再登録する。Channel rowはこのcleanupの対象外であり、channel scan結果、表示番号、ユーザーが利用するchannel identityをProgram cleanupの副作用で削除・再作成しない。`RecordedPrograms`も対象外とする。

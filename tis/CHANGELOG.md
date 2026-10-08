@@ -51,6 +51,8 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+- Move upgrade Program cleanup I/O to its single owner worker; keep live/setup/EPG admission closed until success and retry on the next request after failure. Test blocked ContentResolver, 10,000 rows, partial delete and retry without migration.
+
 - Update host test discovery guards for the additional caption cleanup test class and two tests.
 
 - Keep caption cleanup retry authority until cleanup succeeds; fence terminal presentation without allocating a new epoch.
