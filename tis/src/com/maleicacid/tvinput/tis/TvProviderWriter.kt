@@ -319,9 +319,9 @@ class TvProviderWriter private constructor(
                 // 完成した空EITでも区間を捏造しない。所有channelとProgram問い合わせだけを確認し、既存行を保持する。
             }
             val sortedPrograms = service.programs.sortedBy { it.first.startTimeMillis }
-            val existingPrograms: MutableMap<String, MutableList<ExistingProgramIndexEntry>>? =
+            val existingPrograms: Map<String, List<ExistingProgramIndexEntry>>? =
                 if (sortedPrograms.isEmpty()) {
-                    linkedMapOf()
+                    emptyMap()
                 } else {
                     val guardStart =
                         sortedPrograms.minOf { (program, _) ->
@@ -339,15 +339,12 @@ class TvProviderWriter private constructor(
                         failures += Diagnostic(serviceKey, "program-index-query", indexResult.exceptionOrNull()?.message.orEmpty())
                         null
                     } else {
-                        indexResult.getOrThrow().mapValuesTo(linkedMapOf()) { (_, entries) -> entries.toMutableList() }
+                        indexResult.getOrThrow()
                     }
                 }
             if (existingPrograms != null) {
                 data class PendingWrite(
-                    val program: ProgramRecord,
                     val values: ContentValues,
-                    val key: String,
-                    val programEnd: Long,
                     val existingId: Long?,
                 )
                 val publicationKeys = linkedSetOf<String>()
@@ -372,7 +369,7 @@ class TvProviderWriter private constructor(
                                     entry.endTimeMillis > guardStart && entry.startTimeMillis < guardEnd
                                 }.maxByOrNull { it.programId }
                                 ?.programId
-                        PendingWrite(program, values, key, programEnd, existingId)
+                        PendingWrite(values, existingId)
                     }
                 if (failures.size == failureCountBeforeService) {
                     val batch =
@@ -405,12 +402,6 @@ class TvProviderWriter private constructor(
                                 } else {
                                     if (write.existingId == null) {
                                         inserted++
-                                        existingPrograms.getOrPut(write.key) { mutableListOf() } +=
-                                            ExistingProgramIndexEntry(
-                                                programId,
-                                                write.program.startTimeMillis,
-                                                write.programEnd,
-                                            )
                                     } else {
                                         updated++
                                     }

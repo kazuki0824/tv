@@ -14,6 +14,11 @@
 - TIS設計と停止済みcleanupの単体期待値をSDK登録寿命へ合わせる。Android 15の実scan/cancelScanning/onScanStoppedと本番operationを接続するRobolectric試験を追加し、constructorのnative/TRM接続とnative呼出しだけを試験境界で代替する。未解放登録による次RF拒否と、SUCCESS/INVALID_STATE後の次RF到達を検査する。
 - 既存Robolectric CIへ試験を接続し、host-only source setとKotlin build ownership検査へ登録する。SDK非公開型の試験runtime依存を明示し、失敗時の完全な例外出力と境界試験2件の実行report確認を接続する。新しい本番owner・wrapper・状態・scheduler・migrationは追加しない。buildと試験はCIで確認し、Soong/device atest/実機VTS/実波は未実施。
 
+# Program batch後の不要なindex更新の削除
+
+- 読み手のない既存Program index更新と、そのためだけのPendingWrite 3 field・mutable map/list変換を削除した。service単位query、個別event guard、重複key拒否、batch結果/genre readback契約は維持する。
+- 既存Program公開回帰試験はCIで確認する。新しい補助処理・migration・owner・試験は追加しない。
+
 # PR #176 非対応SMDのterminal分類
 
 - 確定したUNSUPPORTED_BROADCAST_SYSTEMを既存typed policyのUNSUPPORTEDへ写像する。未取得SMDはPENDINGを維持し、既存試験で両者を区別する。新しい状態・owner・診断文字列分岐は追加しない。検証は既存CIへ委ね、Soong/VTS/実機は未実施。
