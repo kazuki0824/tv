@@ -19,6 +19,70 @@ class CaptionPresentationCapacityTest {
         assertRejectedReplacementPreservesQueue(boundaryCount = PRESENTATION_BOUNDARY_LIMIT, incomingBytes = 4)
     }
 
+    // 時計確定前の容量反例と従属Clearの除去を同じ本番queueで検査する。
+    @Suppress("LongMethod")
+    @Test
+    fun clockAcquisitionDiscardsDistantFramesAndTheirClearBoundaries() {
+        val unsafe =
+            Unsafe::class.java
+                .getDeclaredField("theUnsafe")
+                .apply { isAccessible = true }
+                .get(null) as Unsafe
+        val controller = unsafe.allocateInstance(AribCaptionController::class.java) as AribCaptionController
+        val viewport = AribCaptionController.CaptionViewport(1, 1, 0, 0, 1, 1)
+        val image = NativeAribCaptionRenderer.RenderedCaptionImage(0, 0, 1, 1, 4, ByteArray(4))
+        val frame = NativeAribCaptionRenderer.RenderedCaptionFrame(120_000L, null, listOf(image))
+        val queue = PriorityQueue<Any>(compareBy { it.hashCode() })
+        val diagnostics = mutableListOf<AribCaptionController.CaptionDiagnostic.Reason>()
+        var clock: PlaybackPipeline.MediaClockSnapshot? = null
+
+        fun set(
+            name: String,
+            value: Any,
+        ) {
+            AribCaptionController::class.java
+                .getDeclaredField(name)
+                .apply { isAccessible = true }
+                .set(controller, value)
+        }
+        set("boundaries", queue)
+        set("mediaClock", { clock })
+        set("onDiagnostic", { diagnostic: AribCaptionController.CaptionDiagnostic -> diagnostics += diagnostic.reason })
+        val enqueue =
+            AribCaptionController::class.java
+                .getDeclaredMethod("enqueueFrame", frame.javaClass, viewport.javaClass)
+                .apply { isAccessible = true }
+        val arm = AribCaptionController::class.java.getDeclaredMethod("armNextBoundary").apply { isAccessible = true }
+        repeat(PRESENTATION_BOUNDARY_LIMIT) { enqueue.invoke(controller, frame.copy(ptsMillis = 120_000L + it), viewport) }
+        check(queue.size == PRESENTATION_BOUNDARY_LIMIT && diagnostics.isEmpty())
+        clock = PlaybackPipeline.MediaClockSnapshot(0L, System.nanoTime(), 0.0f)
+        arm.invoke(controller)
+        check(queue.isEmpty())
+        check(diagnostics.size == PRESENTATION_BOUNDARY_LIMIT)
+        check(diagnostics.all { it == AribCaptionController.CaptionDiagnostic.Reason.PRESENTATION_HORIZON_EXCEEDED })
+        diagnostics.clear()
+        enqueue.invoke(controller, frame.copy(ptsMillis = 1_000L), viewport)
+        check(queue.size == 1 && diagnostics.isEmpty())
+        queue.clear()
+        clock = null
+        enqueue.invoke(controller, frame.copy(ptsMillis = 59_000L, durationMillis = 2_000L), viewport)
+        enqueue.invoke(controller, frame.copy(ptsMillis = 59_001L, durationMillis = 999L), viewport)
+        check(queue.size == 4)
+        clock = PlaybackPipeline.MediaClockSnapshot(0L, System.nanoTime(), 0.0f)
+        arm.invoke(controller)
+        check(queue.size == 2)
+        check(diagnostics == listOf(AribCaptionController.CaptionDiagnostic.Reason.PRESENTATION_HORIZON_EXCEEDED))
+        val retainedTimes =
+            queue
+                .map { boundary ->
+                    boundary.javaClass
+                        .getDeclaredField("mediaTimeMillis")
+                        .apply { isAccessible = true }
+                        .getLong(boundary)
+                }.toSet()
+        check(retainedTimes == setOf(59_001L, 60_000L))
+    }
+
     // 同じqueueの拒否・受理・従属境界を一続きに検査し、別fixtureへ状態を移さない。
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun assertRejectedReplacementPreservesQueue(

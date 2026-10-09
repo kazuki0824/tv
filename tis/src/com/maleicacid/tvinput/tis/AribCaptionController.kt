@@ -400,11 +400,13 @@ class AribCaptionController(
             displayImmediate(frame, currentViewport)
             return
         }
+        val nowMediaMillis = mediaClock()?.let(::currentMediaMillis)
+        nowMediaMillis?.let(::discardFramesOutsideHorizon)
         val timing =
             captionTimingWithinHorizon(
                 pts = pts,
                 durationMillis = frame.durationMillis,
-                nowMediaMillis = mediaClock()?.let(::currentMediaMillis),
+                nowMediaMillis = nowMediaMillis,
             )
         if (timing == null) {
             recordPendingOverflow(CaptionDiagnostic.Reason.PRESENTATION_HORIZON_EXCEEDED)
@@ -462,6 +464,21 @@ class AribCaptionController(
         return if (clearBoundaryInvalid || outsideHorizon) null else CaptionTiming(clearAt)
     }
 
+    private fun discardFramesOutsideHorizon(nowMediaMillis: Long) {
+        val expiredTokens =
+            boundaries
+                .filterIsInstance<Boundary.Display>()
+                .filter { boundary ->
+                    captionTimingWithinHorizon(
+                        pts = boundary.mediaTimeMillis,
+                        durationMillis = boundary.frame.durationMillis,
+                        nowMediaMillis = nowMediaMillis,
+                    ) == null
+                }.mapTo(linkedSetOf()) { it.frameToken }
+        boundaries.removeAll { it.frameToken in expiredTokens }
+        expiredTokens.forEach { recordPendingOverflow(CaptionDiagnostic.Reason.PRESENTATION_HORIZON_EXCEEDED) }
+    }
+
     private fun recordPendingOverflow(reason: CaptionDiagnostic.Reason) {
         pendingOverflowCount++
         onDiagnostic(
@@ -504,9 +521,11 @@ class AribCaptionController(
     private fun armNextBoundary() {
         cancelScheduledBoundary()
         while (true) {
-            val boundary = boundaries.peek() ?: return
+            if (boundaries.isEmpty()) return
             val snapshot = mediaClock() ?: return
             val nowMediaMillis = currentMediaMillis(snapshot)
+            discardFramesOutsideHorizon(nowMediaMillis)
+            val boundary = boundaries.peek() ?: return
             val remainingMediaMillis = boundary.mediaTimeMillis - nowMediaMillis
             if (remainingMediaMillis <= 0L) {
                 boundaries.poll()

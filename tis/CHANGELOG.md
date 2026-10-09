@@ -8,6 +8,12 @@
 - 初回SI待ちの早期returnを、既存Idle状態かつ直前もPENDINGの場合へ限定する。READYからPENDINGへの失効は既存CAS解除・再生停止・字幕終了・利用不能通知へ戻す。新owner・状態機械・migrationは追加しない。
 - 初回bootstrapと失効回帰で実JNI fixtureを共用し、CRC付き同一版矛盾PMT後のStopped、pipeline世代失効、CAS plugin退役、ECM/EMM空集合とPMT継続、利用不能通知を検査する。build・試験は既存CIへ委任し、実機VTS・実波は未実施。
 
+# 字幕時計確定時のpresentation horizon再検査
+
+- clock未確定中に受理した字幕も、時計確定・再arm時と新規入力の容量判定前に既存60秒horizonを再検査する。超過Displayと従属Clearを診断付きで除去し、既存queueの容量を戻す。
+- 既存capacity試験へnullから停止clockへ遷移する64件の反例、通常字幕の再受理、Clearだけが上限を超えるpairの除去と60秒境界の保持を追加する。TIS設計と既存host CIの試験件数を更新する。owner・queue・scheduler・budget・本番test APIを追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
 # BS探索のSDK scan登録解放とAndroid 15境界試験
 
 - 停止通知後も残るTuner SDKのscan callback登録をcancelScanningで解除し、同じTuner/frontend lease上の次RF探索を可能にする。STOPPEDの受信結果とstream IDsは保持し、停止済み状態に限りnativeのINVALID_STATEを受理する。未停止operationと他の失敗では既存ownerとcleanup再試行を維持する。

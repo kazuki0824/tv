@@ -221,7 +221,7 @@ caption management dataの`num_languages / language_tag / ISO_639_language_code 
 `arib_si_engine_rs` の自前ARIB文字列decoderはサービス名・番組名・番組説明など字幕以外のSI/EPG文字列に限定し、字幕/文字スーパーPES本文を渡さない。libaribcaptionはC APIのみを使用し、独自C/C++薄層は書かない。Kotlinから直接C APIを呼ばず、TIS Kotlin → Rust JNI boundary → 安全なRustラッパー → libaribcaption C APIの順に接続する。BML / data broadcast実行環境、双方向データ放送UI、データ放送UIは恒久対象外である。
 
 
-ARIB字幕・文字スーパーownerのexecutorもlifecycle/controlをPES・clock等のdata callbackより優先し、data callback未処理数と同期control待ちを有限化する。caption presentation boundaryは1 layer当たり64件・RGBA payload合計8 MiB・current media timeから60秒先まで、Timing=10文字スーパーのpending PESは64件・2 MiB・broadcast deadline 60秒先までを製品liveness budgetとする。上限超過した新規presentation/PESは保持せず字幕診断へ計上し、既存pendingの順序とownerを維持する。これらはARIB規格値ではなく停止clock・遠未来STM・入力burstでmemoryを無制限保持しないための製品runtime上限である。
+ARIB字幕・文字スーパーownerのexecutorもlifecycle/controlをPES・clock等のdata callbackより優先し、data callback未処理数と同期control待ちを有限化する。caption presentation boundaryは1 layer当たり64件・RGBA payload合計8 MiB・current media timeから60秒先まで、Timing=10文字スーパーのpending PESは64件・2 MiB・broadcast deadline 60秒先までを製品liveness budgetとする。上限超過した新規presentation/PESは保持せず字幕診断へ計上し、既存pendingの順序とownerを維持する。clock未確定中に受理したpresentationは、時計確定・再arm時と新規入力の容量判定前にも同じ60秒horizonを再検査し、超過Displayとその従属Clearを診断付きで除去する。clock未確定中は時間上限を判定できないため件数・bytes上限で保持し、時計確定後の通常字幕の枠を遠未来入力が占有し続けない。これらはARIB規格値ではなく停止clock・遠未来STM・入力burstでmemoryを無制限保持しないための製品runtime上限である。
 
 ## libaribcaption renderer runtime 契約
 
