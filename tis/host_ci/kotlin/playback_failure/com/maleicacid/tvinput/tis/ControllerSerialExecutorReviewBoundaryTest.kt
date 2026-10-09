@@ -6,8 +6,8 @@ package com.maleicacid.tvinput.tis
 import org.junit.Test
 import sun.misc.Unsafe
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 class ControllerSerialExecutorReviewBoundaryTest {
