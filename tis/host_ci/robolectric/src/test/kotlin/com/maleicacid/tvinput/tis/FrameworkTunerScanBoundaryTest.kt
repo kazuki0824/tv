@@ -3,6 +3,7 @@
 
 package com.maleicacid.tvinput.tis
 
+import android.content.Context
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.frontend.Atsc3PlpInfo
 import android.media.tv.tuner.frontend.FrontendSettings
@@ -11,12 +12,12 @@ import android.media.tv.tuner.frontend.ScanCallback
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.util.ReflectionHelpers
-import sun.misc.Unsafe
 import java.util.concurrent.Executor
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.test.assertEquals
@@ -89,12 +90,7 @@ class FrameworkTunerScanBoundaryTest {
     }
 
     private fun frameworkTuner(): Tuner {
-        val unsafe =
-            Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as Unsafe
-        val tuner = unsafe.allocateInstance(Tuner::class.java) as Tuner
+        val tuner = Tuner(RuntimeEnvironment.getApplication(), null, 0)
         ReflectionHelpers.setField(tuner, "mFrontendLock", ReentrantLock())
         ReflectionHelpers.setField(tuner, "mScanCallbackLock", Any())
         // TRMで確保済みの同一leaseを与え、SDKの資源照合も実処理を通す。
@@ -107,6 +103,15 @@ class FrameworkTunerScanBoundaryTest {
         val scannedFrequencies = mutableListOf<Long>()
         var stopResult = Tuner.RESULT_SUCCESS
         var stopCalls = 0
+
+        // constructorのnative/TRM接続を省略し、下の試験fixtureで確保済みleaseを与える。
+        @Implementation
+        @Suppress("UNUSED_PARAMETER")
+        protected fun __constructor__(
+            context: Context,
+            tvInputSessionId: String?,
+            useCase: Int,
+        ) = Unit
 
         @Implementation
         protected fun nativeScan(
