@@ -743,8 +743,7 @@ class TvProviderWriter private constructor(
             suggestedMaxIpcSizeBytes: Int = IBinder.getSuggestedMaxIpcSizeBytes(),
         ): List<List<ContentProviderOperation>> {
             if (operations.isEmpty()) return emptyList()
-            val budgetBytes = suggestedMaxIpcSizeBytes
-            check(budgetBytes > 0) { "TvProviderの推奨IPCサイズが不正です suggested=$suggestedMaxIpcSizeBytes" }
+            check(suggestedMaxIpcSizeBytes > 0) { "TvProviderの推奨IPCサイズが不正です suggested=$suggestedMaxIpcSizeBytes" }
             val parcel = Parcel.obtain()
             try {
                 // Android 15 ContentProviderProxy.applyBatchと同じrequest envelopeを計測する。
@@ -759,11 +758,11 @@ class TvProviderWriter private constructor(
                     val previousBytes = parcel.dataSize()
                     operation.writeToParcel(parcel, 0)
                     val singleBytes = headerBytes.toLong() + parcel.dataSize() - previousBytes
-                    check(singleBytes <= budgetBytes) {
-                        "単一Program operationがIPC予算を超えます bytes=$singleBytes budget=$budgetBytes"
+                    check(singleBytes <= suggestedMaxIpcSizeBytes) {
+                        "単一Program operationがIPC予算を超えます bytes=$singleBytes budget=$suggestedMaxIpcSizeBytes"
                     }
                     if (batch.isNotEmpty() &&
-                        (batch.size == PROGRAM_PROVIDER_BATCH_SIZE || parcel.dataSize() > budgetBytes)
+                        (batch.size == PROGRAM_PROVIDER_BATCH_SIZE || parcel.dataSize() > suggestedMaxIpcSizeBytes)
                     ) {
                         batches += batch
                         batch = mutableListOf()

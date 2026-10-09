@@ -16,6 +16,7 @@
 
 # Program単一行の正常境界とIPC予算の整合
 
+- 推奨IPCサイズと同値の不要local変数を除去し、Qodana UnnecessaryVariableを解消する。予算・分割・拒否条件は変更しない。
 - AOSP公開推奨IPCサイズをrequest全体の予算として使用し、追加の半分制限を削除した。件数64とParcel実測の分割、全件事前計測、巨大単一行の明示拒否は維持する。
 - 既存Robolectric試験へ32 KiB provider-dataと標準列の受理を追加し、設計を追従させた。Rust schema・切詰め・retry・ownerは追加しない。
 - テストはCIへ委任。実機Binder・VTS・実波は未実施。
