@@ -117,9 +117,6 @@ jobs:
       fail-fast: false
       matrix:
         package: ${{ fromJson(needs.workspace-packages.outputs.packages) }}
-        exclude:
-          # production module graphの型検査を目的とし、service_runtimeのtest-only graphは対象にしない。
-          - package: maleicacid-tuner-hal2-service-runtime-host-ci
     defaults:
       run:
         working-directory: tuner_hal2/host_ci
