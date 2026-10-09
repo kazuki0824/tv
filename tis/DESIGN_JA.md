@@ -740,7 +740,7 @@ Channel provider-data の新規書き込み・読み取り正形式は JSON v1 �
 
 TISはdevice-protected storageに、最後にProgram cleanupを完了したsoftware identityとして `Build.FINGERPRINT` とTIS packageの `longVersionCode` の組を保存する。起動時に現在値と一致しない場合、boot EPG sync、background maintenance、live sessionでの既存Program参照、Program upsert/delete、現在番組解決より前に、current TIS inputに属するchannelのうち `TvContract.Programs.COLUMN_PACKAGE_NAME == context.packageName` のProgram行を全て削除する。削除が全件成功した後だけcurrent software identityをcommitする。
 
-cleanupのProvider・SharedPreferences・package照会はProgramUpgradeCleanupが所有する単一workerだけで実行する。ensureはメインスレッドでもI/Oやworker完了を待たず、process内の完了状態を返す。同時要求は一つの実行へ集約し、未完了中はlive/setup/EPG開始を拒否する。成功後だけprocess内の完了状態を公開する。失敗時は次の利用要求で同じownerが再試行し、定期retryや重複queueを作らない。
+cleanupのProvider・SharedPreferences・package照会はProgramUpgradeCleanupが所有する単一workerだけで実行する。ensureはメインスレッドでもI/Oやworker完了を待たず、process内の完了状態を返す。同時要求は一つの実行へ集約し、未完了中は受理済みlive/setup/EPG要求の処理開始を保留する。要求自体の拒否を意味せず、継続の扱いは「Program cleanup中の要求継続」に従う。旧Program参照・EPG/Program処理には進めない。成功後だけprocess内の完了状態を公開する。失敗時は次の利用要求で同じownerが再試行し、定期retryや重複queueを作らない。
 
 upgrade cleanupが失敗した場合は旧Program行を現行データとして使用せず、software identityを更新せず、EPG/Program処理を開始しない。既存行の旧provider-dataからprogramKey、service identity、時刻、rating、CAS状態その他を抽出してcleanup失敗を回避してはならない。cleanupは再実行可能かつ冪等にする。
 
@@ -869,7 +869,7 @@ MediaEvent解放の初回失敗では既存released fenceを立て、PLAYBACK_RE
 
 ### Program cleanup中の要求継続
 
-cleanup未完了をsession objectの同期作成拒否へ読み替えず、既存sessionのlatest tune要求を保留する。cleanup結果は同じsession control ownerへ一度通知し、成功時だけtune/Program利用へ進み、失敗時は既存accepted failure経路へ渡す。setupは既存ActiveScanTaskを予約してRunningを表示し、完了通知から同じscan executorで開始またはtyped失敗する。boot jobは既存pending/job再受付へ完了を接続する。I/Oは単一cleanup workerのままとし、完了と要求登録を同じlockで扱う。失敗時の旧Program使用は禁止し、新しいscheduler・migration・cleanup ownerは作らない。
+cleanup未完了中は受理した要求の処理開始を保留する。session objectの同期作成拒否へ読み替えず、既存sessionのlatest tune要求を保持する。cleanup結果は同じsession control ownerへ一度通知し、成功時だけtune/Program利用へ進み、失敗時は既存accepted failure経路へ渡す。setupは既存ActiveScanTaskを予約してRunningを表示し、完了通知から同じscan executorで開始またはtyped失敗する。boot jobは既存pending/job再受付へ完了を接続する。I/Oは単一cleanup workerのままとし、完了と要求登録を同じlockで扱う。失敗時の旧Program使用は禁止し、新しいscheduler・migration・cleanup ownerは作らない。
 
 ### MediaSync音声IDと遅延callback
 

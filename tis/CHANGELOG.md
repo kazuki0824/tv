@@ -21,6 +21,11 @@
 - 既存host試験へ、owner停止中にterminal cleanupと同期callerを投入し、shutdown後に通常/cleanup双方のcallerがtimeout前にCancellationExceptionで終了する回帰を追加する。別owner・worker・本番待機機構・migrationは追加しない。
 - build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
 
+# Program cleanup中の要求保留の用語統一
+
+- cleanup未完了中の「開始を拒否」を、受理済みlive/setup/EPG要求の「処理開始を保留」へ訂正する。要求継続の既存契約を参照し、要求自体の拒否や旧Program利用と混同しない。実装変更・migration・新ownerは追加しない。
+- 文書のみを更新し、Soong/device atest/実機VTS/実波は未実施。
+
 # 優先controller releaseによる未実行Futureの終了通知
 
 - 通常controlとcleanup controlのFutureへ既存QueuedTaskの破棄callbackを接続し、shutdownNowで未実行taskを破棄した場合はcancel完了を通知する。優先releaseが受理済み通常controlを追い越しても同期callerを待機中のまま残さない。
