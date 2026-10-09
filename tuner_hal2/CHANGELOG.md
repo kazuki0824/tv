@@ -15,6 +15,16 @@
 - 実非同期記録入口でDVB/PX4の旧世代、rollback未完、未来世代の反例を検査する回帰試験を追加。新しいowner/reaper/retry機構はない。
 - 追加時にBackendTuneStep import漏れを修正した。当時のCIはservice_runtimeをunit-tests matrixから除外しており、既存test graphの23エラーの修復・回帰試験実行は未実施だった。この制約の修復と検証結果は上記「service_runtime単体試験の実行経路修復」に記録する。
 
+# Android 15実装におけるueventd wildcard一致
+
+- READMEとdevices.cppの末尾wildcard最適化差を確認した。末尾以外のwildcardと末尾数字の文字クラスを組み合わせ、実装でもfnmatchを使用するpatternへ固定した。driver node、suffixなし、非数字末尾の一致/不一致を実fnmatchで試験する。
+
+- レビュー対応: host fnmatch試験のunsafe境界をSAFETY固定ラベルと日本語説明へ整形。logic変更なし。
+
+# px4 ueventd patternの文字クラス契約訂正
+
+- AOSP fnmatch契約に従い数値で始まるsuffixのpatternへ戻し、誤ったprefix最適化の説明を削除した。ueventd/file_contexts/probe prefix整合試験を復元した。DMA-BUF heap権限のplatform所有は維持する。
+
 # PR #166 未使用のreaper公開委譲の除去
 
 - 呼出元のないWorkerRuntimeReaperQueue::pending_valuesを削除した。共通pending owner内の複数key読取り、any_pending、wait_until_releasedは維持する。新しいhelper・状態・試験は追加しない。検証は既存CIへ委ね、Soong/VTS/実機は未実施。
@@ -3419,13 +3429,3 @@
 - `common`、`descrambler`、`frontend_px4` の再利用断片を追加した。
 - 旧制御層をコピーせず、`control` crate に worker / lifecycle / FMQ delivery / stream boundary の型付き骨格を追加した。
 - r50ed 時点では Binder service / AIDL HAL 実装は未達である。
-
-# px4 ueventd patternの文字クラス契約訂正
-
-- AOSP fnmatch契約に従い数値で始まるsuffixのpatternへ戻し、誤ったprefix最適化の説明を削除した。ueventd/file_contexts/probe prefix整合試験を復元した。DMA-BUF heap権限のplatform所有は維持する。
-
-# Android 15実装におけるueventd wildcard一致
-
-- READMEとdevices.cppの末尾wildcard最適化差を確認した。末尾以外のwildcardと末尾数字の文字クラスを組み合わせ、実装でもfnmatchを使用するpatternへ固定した。driver node、suffixなし、非数字末尾の一致/不一致を実fnmatchで試験する。
-
-- レビュー対応: host fnmatch試験のunsafe境界をSAFETY固定ラベルと日本語説明へ整形。logic変更なし。
