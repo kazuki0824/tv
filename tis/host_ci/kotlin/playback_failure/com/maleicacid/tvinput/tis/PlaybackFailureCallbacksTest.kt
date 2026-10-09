@@ -842,6 +842,7 @@ class PlaybackFailureCallbacksTest {
                 .set(target, value)
         }
         set(controller, "sectionExecutor", executor)
+        set(controller, "inputId", "input.test")
         set(controller, "playbackPipeline", fixture.pipeline)
         for (name in listOf(
             "dynamicPmtPids",
@@ -866,7 +867,7 @@ class PlaybackFailureCallbacksTest {
         val candidates = JapanIsdbScanPlan.defaultInitialScan().take(3)
         try {
             val result = scan.startInitialScan(candidates)
-            check(result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED)
+            check(result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED) { result.toString() }
             check(result.scanned == 1 && result.successfulCandidates == 0 && result.published == 0)
             check(result.diagnostics.single().candidate == candidates.first())
         } finally {
