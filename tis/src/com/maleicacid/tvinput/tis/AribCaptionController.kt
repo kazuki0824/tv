@@ -476,7 +476,7 @@ class AribCaptionController(
                     ) == null
                 }.mapTo(linkedSetOf()) { it.frameToken }
         boundaries.removeAll { it.frameToken in expiredTokens }
-        expiredTokens.forEach { recordPendingOverflow(CaptionDiagnostic.Reason.PRESENTATION_HORIZON_EXCEEDED) }
+        repeat(expiredTokens.size) { recordPendingOverflow(CaptionDiagnostic.Reason.PRESENTATION_HORIZON_EXCEEDED) }
     }
 
     private fun recordPendingOverflow(reason: CaptionDiagnostic.Reason) {
