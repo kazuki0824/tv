@@ -1120,24 +1120,15 @@ class PlaybackFailureCallbacksTest {
         val id = fixture.invoke("allocateAudioBufferId") as Int
         check(id == 1)
         val outputType = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "AudioOutput" }
-        val constructor = outputType.declaredConstructors.single().apply { isAccessible = true }
-        val output =
-            constructor.newInstance(
-                fixture.allocate(android.media.MediaCodec::class.java),
-                2,
-                fixture.allocate(android.media.MediaCodec.OutputFrame::class.java),
-                fixture.allocate(android.media.MediaCodec.LinearBlock::class.java),
-                java.nio.ByteBuffer.allocate(4),
-                4,
-                0L,
-            )
+        // codec nativeを作らないpoison出力。旧callbackが触れたらcleanup失敗が記録される。
+        val output = fixture.allocate(outputType)
         val outstanding = linkedMapOf(id to output)
         fixture.set("outstandingAudioOutputs", outstanding)
         fixture.invoke("onAudioBufferConsumedOnPlaybackExecutor", oldSync, 6L, id)
         fixture.invoke("onAudioBufferConsumedOnPlaybackExecutor", currentSync, 6L, id)
         check(outstanding[id] === output && !fixture.cleanup.hasPending)
         fixture.invoke("onAudioBufferConsumedOnPlaybackExecutor", currentSync, 7L, id)
-        // hostにcodec nativeはない。現callbackだけが実解放を試み、失敗を既存cleanupへ保持する。
+        // 現callbackだけが出力解放を試み、poison codec失敗を既存cleanupへ保持する。
         check(fixture.cleanup.hasPending)
     }
 
