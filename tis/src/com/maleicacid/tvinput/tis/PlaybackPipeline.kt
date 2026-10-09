@@ -705,7 +705,8 @@ class PlaybackPipeline(
             }
 
             fun sourceIsCurrent(filter: Filter): Boolean =
-                !released.get() && filterGeneration == playbackGeneration && (if (isAudio) audioFilter else videoFilter) === filter
+                !released.get() && filterGeneration == playbackGeneration &&
+                    (if (isAudio) audioFilter else videoFilter) === filter
             val filter =
                 tuner.openFilter(
                     Filter.TYPE_TS,
