@@ -1,3 +1,9 @@
+# controller data入口とshutdown試験の整理
+
+- 本番未使用のsubmitDataを削除し、既存backpressure試験をexecuteDataと試験内latchへ接続した。
+- shutdown前の飽和拒否と未実行task破棄後のSemaphore枠返却を別々に直接観測する。
+- production owner・permit管理・公開契約は追加しない。テスト実行はCIへ委任し、実機VTS・実波は未実施。
+
 # Filter callbackとcontroller closeの循環待ち解消
 
 - SectionEventはcallback入口でdrainし、parser更新は既存controllerへ非同期・有限・待機なしで投入する。飽和は診断付き拒否とし、世代・Filter identity fenceと順序を維持する。

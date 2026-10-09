@@ -6,8 +6,8 @@ package com.maleicacid.tvinput.tis
 import org.junit.Test
 import sun.misc.Unsafe
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicReference
 
 class ControllerSerialExecutorReviewBoundaryTest {
@@ -73,8 +73,12 @@ class ControllerSerialExecutorReviewBoundaryTest {
         val executor = ControllerSerialExecutor("shutdown-permit-test", maxPendingDataTasks = 1)
         val controlStarted = CountDownLatch(1)
         val releaseControl = CountDownLatch(1)
-        val secondReturned = CountDownLatch(1)
-        val producer = Executors.newSingleThreadExecutor()
+        val slots =
+            generateSequence<Class<*>>(executor.javaClass) { it.superclass }
+                .mapNotNull { type -> type.declaredFields.singleOrNull { it.name == "pendingDataSlots" } }
+                .first()
+                .apply { isAccessible = true }
+                .get(executor) as Semaphore
         try {
             executor.executeControl {
                 controlStarted.countDown()
@@ -82,16 +86,13 @@ class ControllerSerialExecutorReviewBoundaryTest {
             }
             check(controlStarted.await(WAIT_SECONDS, TimeUnit.SECONDS))
             executor.executeData { error("破棄対象data taskが実行されました") }
-            producer.submit {
-                runCatching { executor.executeData {} }
-                secondReturned.countDown()
-            }
-            check(secondReturned.await(WAIT_SECONDS, TimeUnit.SECONDS))
-            executor.shutdownNow()
-            check(secondReturned.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            check(slots.availablePermits() == 0)
+            check(runCatching { executor.executeData {} }.isFailure)
+            check(slots.availablePermits() == 0)
+            check(executor.shutdownNow().size == 1)
+            check(slots.availablePermits() == 1)
         } finally {
             releaseControl.countDown()
-            producer.shutdownNow()
             executor.shutdownNow()
         }
     }

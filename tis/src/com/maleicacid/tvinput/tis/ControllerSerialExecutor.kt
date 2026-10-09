@@ -128,12 +128,6 @@ internal class ControllerSerialExecutor(
         return task
     }
 
-    fun <T> submitData(block: () -> T): Future<T> {
-        val task = FutureTask(Callable(block))
-        executeData(task)
-        return task
-    }
-
     private companion object {
         const val INITIAL_QUEUE_CAPACITY = 11
         const val DEFAULT_MAX_PENDING_DATA_TASKS = 1

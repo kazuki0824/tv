@@ -80,13 +80,13 @@ class ScanPlanPolicyTest {
             }
             check(firstStarted.await(1, TimeUnit.SECONDS))
             assertFailsWith<RejectedExecutionException> {
-                executor.submitData { secondExecuted.countDown() }
+                executor.executeData { secondExecuted.countDown() }
             }
             assertEquals(1L, secondExecuted.count)
             releaseFirst.countDown()
-            // Future.getより後のdata枠返却までownerのcontrol境界で待つ。
+            // 実行中dataのfinallyによる枠返却までownerのcontrol境界で待つ。
             executor.submitControl {}.get(1, TimeUnit.SECONDS)
-            executor.submitData { secondExecuted.countDown() }.get(1, TimeUnit.SECONDS)
+            executor.executeData { secondExecuted.countDown() }
             assertTrue(secondExecuted.await(1, TimeUnit.SECONDS))
         } finally {
             releaseFirst.countDown()
