@@ -53,7 +53,9 @@ class CaptionPresentationCapacityTest {
                 .getDeclaredMethod("enqueueFrame", frame.javaClass, viewport.javaClass)
                 .apply { isAccessible = true }
         val arm = AribCaptionController::class.java.getDeclaredMethod("armNextBoundary").apply { isAccessible = true }
-        repeat(PRESENTATION_BOUNDARY_LIMIT) { enqueue.invoke(controller, frame.copy(ptsMillis = 120_000L + it), viewport) }
+        repeat(PRESENTATION_BOUNDARY_LIMIT) { index ->
+            enqueue.invoke(controller, frame.copy(ptsMillis = 120_000L + index), viewport)
+        }
         check(queue.size == PRESENTATION_BOUNDARY_LIMIT && diagnostics.isEmpty())
         clock = PlaybackPipeline.MediaClockSnapshot(0L, System.nanoTime(), 0.0f)
         arm.invoke(controller)
