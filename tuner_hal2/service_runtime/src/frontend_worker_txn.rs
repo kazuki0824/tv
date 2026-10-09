@@ -3122,7 +3122,7 @@ mod backend_submit_terminal_policy_tests {
             FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
             IsdbtSegmentCapability, SatellitePowerTopology,
         };
-        use maleicacid_tuner_hal2_device::FrontendRuntimeState;
+        use maleicacid_tuner_hal2_device::{BackendTuneStep, FrontendRuntimeState};
 
         for backend in [
             FrontendBackendKind::LinuxDvb,

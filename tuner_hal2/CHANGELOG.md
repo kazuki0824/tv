@@ -1,7 +1,8 @@
 # PR #166 旧tune submit失敗とworker回収結果の分離
 
 - 再選局・stop・closeでfenceされた旧世代の非同期tune失敗を、既存FrontendRuntimeの遅延診断入口へ接続する。現世代の状態を変更せず、rollback成功済みoperation失敗をworker cleanup失敗へ昇格させない。
-- 実非同期記録入口でDVB/PX4の旧世代、rollback未完、未来世代の反例を検査する回帰試験を追加。新しいowner/reaper/retry機構はない。build・試験は既存CIへ委任し、Soong/VTS/実機は未実施。
+- 実非同期記録入口でDVB/PX4の旧世代、rollback未完、未来世代の反例を検査する回帰試験を追加。新しいowner/reaper/retry機構はない。
+- 追加試験のBackendTuneStep import漏れを修正した。既存CIはservice_runtimeのproduction cargo check --libを行うが、unit-tests matrixでは同packageを除外しており、この回帰試験は実行していない。レビューで変更前にもtest graphの23エラーが報告されたため、その修復・試験実行は未実施として残す。CI successを本試験成功へ読み替えない。Soong/device atest/VTS/実機も未実施。
 
 # PR #166 未使用のreaper公開委譲の除去
 
