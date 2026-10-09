@@ -14,6 +14,12 @@
 - TIS設計と停止済みcleanupの単体期待値をSDK登録寿命へ合わせる。Android 15の実scan/cancelScanning/onScanStoppedと本番operationを接続するRobolectric試験を追加し、constructorのnative/TRM接続とnative呼出しだけを試験境界で代替する。未解放登録による次RF拒否と、SUCCESS/INVALID_STATE後の次RF到達を検査する。
 - 既存Robolectric CIへ試験を接続し、host-only source setとKotlin build ownership検査へ登録する。SDK非公開型の試験runtime依存を明示し、失敗時の完全な例外出力と境界試験2件の実行report確認を接続する。新しい本番owner・wrapper・状態・scheduler・migrationは追加しない。buildと試験はCIで確認し、Soong/device atest/実機VTS/実波は未実施。
 
+# Program単一行の正常境界とIPC予算の整合
+
+- AOSP公開推奨IPCサイズをrequest全体の予算として使用し、追加の半分制限を削除した。件数64とParcel実測の分割、全件事前計測、巨大単一行の明示拒否は維持する。
+- 既存Robolectric試験へ32 KiB provider-dataと標準列の受理を追加し、設計を追従させた。Rust schema・切詰め・retry・ownerは追加しない。
+- テストはCIへ委任。実機Binder・VTS・実波は未実施。
+
 ## レビュー対応: Program bulk/batch正規契約
 
 - 旧単数Program insert/update/genre読戻しAPIとoverrideを削除し、未対応bulk/batch storeをfail-closedにする。

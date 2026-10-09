@@ -734,7 +734,7 @@ class TvProviderWriter private constructor(
     companion object {
         private const val PROGRAM_PROVIDER_BATCH_SIZE = 64
 
-        // 公開推奨値の半分を使用し、共有bufferや未観測の付加情報へ余裕を残す。
+        // 公開推奨値は既にtransaction buffer上限より安全に小さいrequest予算である。
         // 実Binder容量・現在空き容量の取得値ではない。
         @Suppress("MagicNumber", "LongMethod")
         internal fun programOperationBatches(
@@ -743,7 +743,7 @@ class TvProviderWriter private constructor(
             suggestedMaxIpcSizeBytes: Int = IBinder.getSuggestedMaxIpcSizeBytes(),
         ): List<List<ContentProviderOperation>> {
             if (operations.isEmpty()) return emptyList()
-            val budgetBytes = suggestedMaxIpcSizeBytes / 2
+            val budgetBytes = suggestedMaxIpcSizeBytes
             check(budgetBytes > 0) { "TvProviderの推奨IPCサイズが不正です suggested=$suggestedMaxIpcSizeBytes" }
             val parcel = Parcel.obtain()
             try {
