@@ -34,6 +34,8 @@ public class Filter implements AutoCloseable {
     }
     public int stop() { return 0; }
     @Override public void close() {
+        // AOSP同様、native closeの成否より先に配送を解除する。
+        callback = null;
         closes++;
         if (rejectClose) throw new IllegalStateException("injected filter close");
     }

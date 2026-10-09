@@ -1064,28 +1064,39 @@ class PlaybackFailureCallbacksTest {
         val executor = LifecycleSerialExecutor("複数MediaEvent失敗試験")
         fixture.set("executor", executor)
         val filter = fixture.allocate(Filter::class.java)
-        val events = Array(3) { fixture.allocate(MediaEvent::class.java) }
+        val events = Array(6) { fixture.allocate(MediaEvent::class.java) }
         val releases = MediaEvent::class.java.getField("releases")
         MediaEvent::class.java.getField("rejectRead").setBoolean(events[1], true)
-        MediaEvent::class.java.getField("rejectRelease").setBoolean(events[2], true)
+        events.drop(2).forEach { MediaEvent::class.java.getField("rejectRelease").setBoolean(it, true) }
         Tuner::class.java.getField("nextFilter").set(null, filter)
         try {
             executor.callControl(5_000L) {
                 fixture.invoke("createAndStartAvFilter", fixture.tuner, fixture.selection.audio!!, true)
             }
-            val callback = Tuner::class.java.getField("lastCallback").get(null) as FilterCallback
-            callback.onFilterEvent(filter, Array<FilterEvent>(3) { events[it] })
-            val processed = java.util.concurrent.CountDownLatch(1)
-            executor.executeData { processed.countDown() }
-            check(processed.await(5, TimeUnit.SECONDS))
-            executor.callControl(5_000L) {
-                check(events.all { releases.getInt(it) == 1 })
+            fixture.set("audioFilter", filter)
+            Filter::class.java.getField("rejectClose").setBoolean(filter, true)
+            val failed = java.util.concurrent.CountDownLatch(1)
+            fixture.set("onVideoUnavailable", { _: PlaybackPipeline.PlaybackUnavailable -> failed.countDown() })
+            val deliver = Filter::class.java.getMethod("deliver", Array<FilterEvent>::class.java)
+            check(deliver.invoke(filter, Array<FilterEvent>(events.size) { events[it] }) == true)
+            check(failed.await(5, TimeUnit.SECONDS))
+            executor.callControl(5_000L, cleanup = true) {
+                check(events.take(2).all { releases.getInt(it) == 1 })
+                check(events.drop(2).all { releases.getInt(it) >= 1 })
                 check(fixture.cleanup.hasPending)
-                MediaEvent::class.java.getField("rejectRelease").setBoolean(events[2], false)
+                val pending = ResourceCleanup::class.java.getDeclaredField("pending").apply { isAccessible = true }
+                val retained = (pending.get(fixture.cleanup) as List<*>).size
+                check(retained == 5)
+                repeat(100) {
+                    check(deliver.invoke(filter, Array<FilterEvent>(events.size) { events[it] }) == false)
+                }
+                check((pending.get(fixture.cleanup) as List<*>).size == retained)
+                events.drop(2).forEach { MediaEvent::class.java.getField("rejectRelease").setBoolean(it, false) }
+                Filter::class.java.getField("rejectClose").setBoolean(filter, false)
                 fixture.cleanup.retry()
                 fixture.cleanup.requireComplete()
                 check(releases.getInt(events[0]) == 1 && releases.getInt(events[1]) == 1)
-                check(releases.getInt(events[2]) == 2 && !fixture.cleanup.hasPending)
+                check(!fixture.cleanup.hasPending)
             }
         } finally {
             Tuner::class.java.getField("nextFilter").set(null, null)

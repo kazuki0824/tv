@@ -22,6 +22,7 @@ public class Tuner {
         openFilterCalls++;
         if (nextFilter != null) nextFilter.callback = callback;
         lastCallback = callback;
+        if (nextFilter != null) nextFilter.callback = callback;
         return nextFilter;
     }
 }

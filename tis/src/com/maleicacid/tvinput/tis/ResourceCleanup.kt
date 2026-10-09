@@ -28,12 +28,14 @@ internal class ResourceCleanup {
         name: String,
         owner: Any?,
         action: () -> Unit,
-    ) {
-        try {
+    ): Boolean {
+        return try {
             action()
+            true
         } catch (error: Throwable) {
             Log.w(LogTags.TIS, "資源の解放失敗を再試行まで保持します resource=$name", error)
             synchronized(pending) { pending += Pending(name, action, error, owner) }
+            false
         }
     }
 

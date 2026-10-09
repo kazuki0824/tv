@@ -51,6 +51,12 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# MediaEvent解放失敗時の入力停止
+
+- ResourceCleanupの解放結果をBooleanで返し、MediaEventの初回失敗を既存playback terminal cleanupへ接続した。released fenceで新規AV処理を止め、同じownerでFilterをcloseして配送解除する。
+- 既存複数event試験を連続release失敗・Filter close失敗・100回の配送非受理と保持数不変・成功後の再試行完了へ拡張した。host境界のFilter callback解除順をAOSPに合わせた。
+- 解放義務を捨てず、親codec完了契約を維持する。別owner・scheduler・migrationは追加しない。設計追従、テストはCIへ委任。実機VTS・実波は未実施。
+
 # 2026-10-09 PR185レビュー履歴の整理
 
 - stale/current output解放、codec親子cleanup、AV配列の残余回収の履歴を古いreleaseより前へ統合した。既存実装・試験を維持し、検証はCIへ委ねる。Soong/VTS/実機確認は未実施。

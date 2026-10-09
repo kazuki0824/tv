@@ -705,7 +705,7 @@ class PlaybackPipeline(
             }
 
             fun sourceIsCurrent(filter: Filter): Boolean =
-                filterGeneration == playbackGeneration && (if (isAudio) audioFilter else videoFilter) === filter
+                !released.get() && filterGeneration == playbackGeneration && (if (isAudio) audioFilter else videoFilter) === filter
             val filter =
                 tuner.openFilter(
                     Filter.TYPE_TS,
@@ -1306,7 +1306,10 @@ class PlaybackPipeline(
     internal fun currentPlaybackGenerationForTest(): Long = playbackGeneration
 
     private fun releaseMediaEvent(event: MediaEvent) {
-        resourceCleanup.release("MediaEvent") { event.release() }
+        if (!resourceCleanup.release("MediaEvent") { event.release() }) {
+            // 新しい入力の保持を止め、有限の受理済み入力と解放義務だけを同じownerへ残す。
+            handleSubmissionFailure(IllegalStateException("MediaEventの解放が未完了です"))
+        }
     }
 
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
