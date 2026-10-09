@@ -105,9 +105,9 @@ class FrameworkTunerScanBoundaryTest {
         var stopCalls = 0
 
         // constructorのnative/TRM接続を省略し、下の試験fixtureで確保済みleaseを与える。
-        @Implementation
+        @Implementation(methodName = "__constructor__")
         @Suppress("UNUSED_PARAMETER")
-        protected fun __constructor__(
+        protected fun constructTuner(
             context: Context,
             tvInputSessionId: String?,
             useCase: Int,
