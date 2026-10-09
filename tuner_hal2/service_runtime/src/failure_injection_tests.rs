@@ -645,6 +645,14 @@ fn frontend_scan_end_artifact_lookup_failure_records_lookup_diagnostic_only() {
         .unwrap();
     runtime
         .frontend_txn()
+        .install_frontend_live_reader_descriptor_for_generation(
+            94_007,
+            maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
+            scan_generation,
+        )
+        .unwrap();
+    runtime
+        .frontend_txn()
         .begin_frontend_scan_session(
             94_007,
             scan_generation,
