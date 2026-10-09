@@ -115,7 +115,7 @@ class FrameworkTunerScanBoundaryTest {
         ) = Unit
 
         @Implementation
-        private fun nativeScan(
+        fun nativeScan(
             settingsType: Int,
             settings: FrontendSettings,
             scanType: Int,
@@ -127,7 +127,7 @@ class FrameworkTunerScanBoundaryTest {
         }
 
         @Implementation
-        private fun nativeStopScan(): Int {
+        fun nativeStopScan(): Int {
             stopCalls++
             return stopResult
         }
