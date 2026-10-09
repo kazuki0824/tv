@@ -203,7 +203,8 @@ object ServicePolicyEvaluator {
         val normalizedRegistrationReasons = registrationReasons.distinct().sorted()
         val state =
             when {
-                unsupported || facts.smd.semanticState == SmdSemanticState.NON_BROADCAST -> ServicePolicyState.UNSUPPORTED
+                unsupported || facts.smd.semanticState == SmdSemanticState.NON_BROADCAST ||
+                    facts.smd.semanticState == SmdSemanticState.UNSUPPORTED_BROADCAST_SYSTEM -> ServicePolicyState.UNSUPPORTED
 
                 facts.smd.semanticState == SmdSemanticState.UNDEFINED_BROADCAST_CLASS -> ServicePolicyState.INVALID
 
