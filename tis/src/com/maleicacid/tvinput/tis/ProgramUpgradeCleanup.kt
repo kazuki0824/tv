@@ -9,11 +9,12 @@ import com.maleicacid.tvinput.common.LogTags
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
+// 同じcleanupの状態・I/O・完了通知を一つの所有者へ保ち、関数数だけを理由に分割しない。
+
 /**
  * Product/TIS更新時の番組表cleanup。
  * Programsは再生成可能なcacheとして扱い、旧release provider-dataをmigrationしない。
  */
-// 同じcleanupの状態・I/O・完了通知を一つの所有者へ保ち、関数数だけを理由に分割しない。
 @Suppress("TooManyFunctions")
 object ProgramUpgradeCleanup {
     private const val PREFS_NAME = "program_upgrade_cleanup"
