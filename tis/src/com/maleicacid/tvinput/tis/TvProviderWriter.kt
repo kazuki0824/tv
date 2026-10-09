@@ -67,21 +67,10 @@ class TvProviderWriter private constructor(
 
     data class ProgramUpsertOutcome(
         val programId: Long?,
-        val updated: Boolean,
     )
 
     interface ChannelStore {
-        fun findExistingChannelId(key: ServiceKey): Result<Long?>
-
-        fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
-            runCatching {
-                keys
-                    .mapNotNull { key ->
-                        findExistingChannelId(key)
-                            .getOrThrow()
-                            ?.let { id -> key to id }
-                    }.toMap()
-            }
+        fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>>
 
         fun insertChannel(values: ContentValues): Result<Long?>
 
@@ -908,7 +897,8 @@ class TvProviderWriter private constructor(
                 TvProviderWriter(
                     "test",
                     object : ChannelStore {
-                        override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(channelId)
+                        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+                            Result.success(keys.associateWith { channelId })
 
                         override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(channelId)
 
@@ -957,36 +947,6 @@ class TvProviderWriter private constructor(
             const val PROGRAM_START_TIME_COLUMN_INDEX = 2
             const val PROGRAM_END_TIME_COLUMN_INDEX = 3
         }
-
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
-            runCatching {
-                val projection =
-                    arrayOf(
-                        TvContract.Channels._ID,
-                        TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID,
-                        TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID,
-                        TvContract.Channels.COLUMN_SERVICE_ID,
-                    )
-                val uri = TvContract.buildChannelsUriForInput(inputId)
-                val cursor =
-                    context.contentResolver.query(uri, projection, null, null, null)
-                        ?: error("TvProvider channel query returned null cursor")
-                cursor.use { rows ->
-                    var found: Long? = null
-                    while (rows.moveToNext()) {
-                        if (rows.getInt(ORIGINAL_NETWORK_ID_COLUMN_INDEX) == key.originalNetworkId &&
-                            rows.getInt(TRANSPORT_STREAM_ID_COLUMN_INDEX) == key.transportStreamId &&
-                            rows.getInt(SERVICE_ID_COLUMN_INDEX) == key.serviceId
-                        ) {
-                            found = rows.getLong(CHANNEL_ID_COLUMN_INDEX)
-                            break
-                        }
-                    }
-                    found
-                }
-            }.onFailure { Log.w(LogTags.TIS, "既存 channel 検索に失敗しました key=$key", it) }
 
         override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
             runCatching {
@@ -1200,12 +1160,10 @@ class TvProviderWriter private constructor(
                             if (request.existingProgramId == null) {
                                 ProgramUpsertOutcome(
                                     result.uri?.let { uri -> ContentUris.parseId(uri) },
-                                    updated = false,
                                 )
                             } else {
                                 ProgramUpsertOutcome(
                                     request.existingProgramId.takeIf { (result.count ?: 0) > 0 },
-                                    updated = (result.count ?: 0) > 0,
                                 )
                             }
                     }

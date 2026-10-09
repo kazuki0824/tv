@@ -21,12 +21,12 @@ internal fun testUpsertProgramsBatch(
                     if (existingId == null) {
                         val id = allocateId()
                         staged[id] = ContentValues(request.values)
-                        TvProviderWriter.ProgramUpsertOutcome(id, updated = false)
+                        TvProviderWriter.ProgramUpsertOutcome(id)
                     } else {
                         val current = staged[existingId]
                         current?.putAll(request.values)
                         val affected = current != null
-                        TvProviderWriter.ProgramUpsertOutcome(existingId.takeIf { affected }, updated = affected)
+                        TvProviderWriter.ProgramUpsertOutcome(existingId.takeIf { affected })
                     }
                 }
             rows.clear()

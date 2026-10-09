@@ -2547,14 +2547,19 @@ class TisR51FixedPlanAcceptanceTest {
                     }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
             )
 
-        override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
+        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
             Result.success(
-                channels.entries
-                    .firstOrNull { (_, v) ->
-                        v.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID) == key.originalNetworkId &&
-                            v.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID) == key.transportStreamId &&
-                            v.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID) == key.serviceId
-                    }?.key,
+                buildMap {
+                    channels.forEach { (id, values) ->
+                        val key =
+                            ServiceKey(
+                                values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                            )
+                        if (key in keys && !containsKey(key)) put(key, id)
+                    }
+                },
             )
 
         override fun insertChannel(values: ContentValues): Result<Long?> {
