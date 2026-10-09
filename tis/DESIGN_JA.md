@@ -875,3 +875,5 @@ cleanup未完了をsession objectの同期作成拒否へ読み替えず、既�
 ### MediaSync音声IDと遅延callback
 
 音声consume callbackはsync identityおよびplayback generationを照合してからoutstanding mapを変更する。同一MediaSyncではIDをchecked incrementし、解放済みIDも再利用しない。Int最大値ではfail-closedとし、callback寿命を推測する台帳は作らない。新MediaSync作成時だけIDを再開でき、旧sync callbackはidentity/generation fenceで拒否する。
+
+Program cleanupの完了通知は準備済み同期経路とworker完了経路で同じnotifyCompletionへ集約し、通知先例外は診断へ残してcleanup成否を変更せず、他の通知を妨げない。callbackはcompletion lock外で実行する。

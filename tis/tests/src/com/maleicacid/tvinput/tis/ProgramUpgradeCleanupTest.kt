@@ -24,6 +24,7 @@ class ProgramUpgradeCleanupTest {
         val caller = Executors.newSingleThreadExecutor()
         val rows = (1L..10000L).toMutableSet()
         var committed = false
+        val notifications = java.util.concurrent.atomic.AtomicInteger()
         try {
             val request =
                 caller.submit<Boolean> {
@@ -38,6 +39,10 @@ class ProgramUpgradeCleanupTest {
                                 true
                             },
                         )
+                    }, onComplete = {
+                        check(!it)
+                        notifications.incrementAndGet()
+                        error("非同期通知先の失敗")
                     })
                 }
             check(!request.get(1, TimeUnit.SECONDS))
@@ -49,6 +54,7 @@ class ProgramUpgradeCleanupTest {
             release.countDown()
             worker.submit {}.get(2, TimeUnit.SECONDS)
             check(!running.get() && !ready.get() && !committed && rows.size == 5001)
+            check(notifications.get() == 1)
             check(
                 !ProgramUpgradeCleanup.ensure(cleanup = {
                     ProgramUpgradeCleanup.runCleanupTransaction(
@@ -63,7 +69,15 @@ class ProgramUpgradeCleanupTest {
             )
             worker.submit {}.get(2, TimeUnit.SECONDS)
             check(committed && rows.isEmpty())
-            check(ProgramUpgradeCleanup.ensure(cleanup = { error("完了後に再削除しました") }))
+            check(ProgramUpgradeCleanup.ensure(cleanup = { error("完了後に再削除しました") }, onComplete = {
+                check(it)
+                notifications.incrementAndGet()
+                error("準備済み通知先の失敗")
+            }))
+            check(ready.get() && !running.get() && notifications.get() == 2)
+            var notified = false
+            check(ProgramUpgradeCleanup.ensure(cleanup = { error("完了後に再削除しました") }, onComplete = { notified = it }))
+            check(notified && ready.get())
         } finally {
             release.countDown()
             worker.submit {}.get(2, TimeUnit.SECONDS)

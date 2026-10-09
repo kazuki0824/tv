@@ -50,7 +50,7 @@ object ProgramUpgradeCleanup {
                 }
             }
         if (alreadyReady) {
-            onComplete?.invoke(true)
+            onComplete?.let { notifyCompletion(it, true) }
             return true
         }
         if (start) {
@@ -73,7 +73,6 @@ object ProgramUpgradeCleanup {
         return false
     }
 
-    @Suppress("TooGenericExceptionCaught")
     private fun complete(success: Boolean) {
         val callbacks =
             synchronized(completionLock) {
@@ -81,12 +80,19 @@ object ProgramUpgradeCleanup {
                 running.set(false)
                 completions.toList().also { completions.clear() }
             }
-        callbacks.forEach { callback ->
-            try {
-                callback(success)
-            } catch (error: Exception) {
-                Log.w(LogTags.TIS, "Program cleanup完了通知に失敗しました", error)
-            }
+        callbacks.forEach { notifyCompletion(it, success) }
+    }
+
+    // cleanup成否と通知先の失敗を分離し、準備済み経路でも同じ診断へ渡す。
+    @Suppress("TooGenericExceptionCaught")
+    private fun notifyCompletion(
+        callback: (Boolean) -> Unit,
+        success: Boolean,
+    ) {
+        try {
+            callback(success)
+        } catch (error: Exception) {
+            Log.w(LogTags.TIS, "Program cleanup完了通知に失敗しました", error)
         }
     }
 
