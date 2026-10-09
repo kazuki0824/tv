@@ -20,6 +20,12 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# serial executorの到達しないcontrol分類の削除
+
+- 両executorの未使用ControlTask markerとexecute振分けを削除し、controlは既存の明示入口、executeはdataに限定した。
+- controllerのFuture専用classを既存FutureTaskへ簡素化。Lifecycleの開始前取消し・開始後結果不明、共通queue・owner・permitは維持する。
+- 設計を追従し、既存回帰試験はCIへ委任。新しいowner・framework・migrationは追加しない。実機VTSは未実施。
+
 # cleanup優先classのFIFO保持
 
 - cleanup commandへ通常taskとは独立したchecked sequenceを同じexecutor内で付け、通常identity枯渇時もA/B/Cの投入順を保持する。最大値では明示失敗とし、wrap/reuseはしない。

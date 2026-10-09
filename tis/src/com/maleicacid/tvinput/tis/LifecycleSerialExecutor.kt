@@ -21,12 +21,9 @@ internal class LifecycleSerialExecutor(
     private val threadName: String,
     private val maxPendingDataTasks: Int = DEFAULT_MAX_PENDING_DATA_TASKS,
 ) : PrioritySerialExecutor(threadName, maxPendingDataTasks) {
-    private interface ControlTask
-
     private class ControlFutureTask<T>(
         callable: Callable<T>,
-    ) : FutureTask<T>(callable),
-        ControlTask {
+    ) : FutureTask<T>(callable) {
         private val phase = AtomicInteger(CONTROL_QUEUED)
 
         override fun run() {
@@ -108,13 +105,7 @@ internal class LifecycleSerialExecutor(
         }
     }
 
-    override fun execute(command: Runnable) {
-        if (command is ControlTask) {
-            executeControl(command)
-        } else {
-            executeData(command)
-        }
-    }
+    override fun execute(command: Runnable) = executeData(command)
 
     // terminal cleanupだけは通常task identityを消費しない。同じownerで枯渇後も解放を完了する。
     fun executeCleanupControl(command: Runnable) {

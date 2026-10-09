@@ -12,20 +12,7 @@ internal class ControllerSerialExecutor(
     threadName: String,
     maxPendingDataTasks: Int = DEFAULT_MAX_PENDING_DATA_TASKS,
 ) : PrioritySerialExecutor(threadName, maxPendingDataTasks) {
-    private interface ControlTask
-
-    private class ControlFutureTask<T>(
-        callable: Callable<T>,
-    ) : FutureTask<T>(callable),
-        ControlTask
-
-    override fun execute(command: Runnable) {
-        if (command is ControlTask) {
-            executeControl(command)
-        } else {
-            executeData(command)
-        }
-    }
+    override fun execute(command: Runnable) = executeData(command)
 
     fun executeControl(command: Runnable) {
         enqueue(CONTROL_QUEUE_CLASS, command)
@@ -34,7 +21,7 @@ internal class ControllerSerialExecutor(
     fun executeData(command: Runnable) = acquireDataSlotAndEnqueue(command)
 
     fun <T> submitControl(block: () -> T): Future<T> {
-        val task = ControlFutureTask(Callable(block))
+        val task = FutureTask(Callable(block))
         executeControl(task)
         return task
     }
