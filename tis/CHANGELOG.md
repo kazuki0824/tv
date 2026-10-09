@@ -1,8 +1,8 @@
 # BS探索のSDK scan登録解放とAndroid 15境界試験
 
 - 停止通知後も残るTuner SDKのscan callback登録をcancelScanningで解除し、同じTuner/frontend lease上の次RF探索を可能にする。STOPPEDの受信結果とstream IDsは保持し、停止済み状態に限りnativeのINVALID_STATEを受理する。未停止operationと他の失敗では既存ownerとcleanup再試行を維持する。
-- TIS設計と停止済みcleanupの単体期待値をSDK登録寿命へ合わせる。Android 15の実scan/cancelScanning/onScanStoppedと本番operationを接続するRobolectric試験を追加し、native呼出しだけを試験境界で代替する。未解放登録による次RF拒否と、SUCCESS/INVALID_STATE後の次RF到達を検査する。
-- 既存Robolectric CIへ試験を接続する。新しい本番owner・wrapper・状態・scheduler・migrationは追加しない。buildと試験はCIで確認し、Soong/device atest/実機VTS/実波は未実施。
+- TIS設計と停止済みcleanupの単体期待値をSDK登録寿命へ合わせる。Android 15の実scan/cancelScanning/onScanStoppedと本番operationを接続するRobolectric試験を追加し、constructorのnative/TRM接続とnative呼出しだけを試験境界で代替する。未解放登録による次RF拒否と、SUCCESS/INVALID_STATE後の次RF到達を検査する。
+- 既存Robolectric CIへ試験を接続し、host-only source setとKotlin build ownership検査へ登録する。SDK非公開型の試験runtime依存を明示し、失敗時の完全な例外出力と境界試験2件の実行report確認を接続する。新しい本番owner・wrapper・状態・scheduler・migrationは追加しない。buildと試験はCIで確認し、Soong/device atest/実機VTS/実波は未実施。
 
 # controller data入口とshutdown試験の整理
 

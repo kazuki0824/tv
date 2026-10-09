@@ -25,6 +25,9 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
     }
 }
 
@@ -37,6 +40,7 @@ val androidAll = "org.robolectric:android-all:15-robolectric-13954326"
 dependencies {
     compileOnly(androidAll)
     testCompileOnly(androidAll)
+    testRuntimeOnly(androidAll)
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:1.9.22")
     testImplementation("androidx.test:core:1.7.0")

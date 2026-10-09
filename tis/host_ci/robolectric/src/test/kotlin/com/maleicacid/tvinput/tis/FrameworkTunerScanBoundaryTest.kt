@@ -43,8 +43,9 @@ class FrameworkTunerScanBoundaryTest {
         ReflectionHelpers.callInstanceMethod<Unit>(tuner, "onScanStopped")
         assertTrue(first.await(1))
         assertSame(firstCallback, ReflectionHelpers.getField<ScanCallback>(tuner, "mScanCallback"))
+        val nextCallback = callback(TunerController.StreamIdDiscoveryOperation(2L))
         assertFailsWith<IllegalStateException> {
-            tuner.scan(secondRf, Tuner.SCAN_TYPE_AUTO, executor, callback(TunerController.StreamIdDiscoveryOperation(2L)))
+            tuner.scan(secondRf, Tuner.SCAN_TYPE_AUTO, executor, nextCallback)
         }
         assertEquals(listOf(firstRf.frequencyLong), native.scannedFrequencies)
         assertEquals(0, native.stopCalls)
@@ -107,14 +108,14 @@ class FrameworkTunerScanBoundaryTest {
         // constructorのnative/TRM接続を省略し、下の試験fixtureで確保済みleaseを与える。
         @Implementation(methodName = "__constructor__")
         @Suppress("UNUSED_PARAMETER")
-        protected fun constructTuner(
+        private fun constructTuner(
             context: Context,
             tvInputSessionId: String?,
             useCase: Int,
         ) = Unit
 
         @Implementation
-        protected fun nativeScan(
+        private fun nativeScan(
             settingsType: Int,
             settings: FrontendSettings,
             scanType: Int,
@@ -126,7 +127,7 @@ class FrameworkTunerScanBoundaryTest {
         }
 
         @Implementation
-        protected fun nativeStopScan(): Int {
+        private fun nativeStopScan(): Int {
             stopCalls++
             return stopResult
         }
