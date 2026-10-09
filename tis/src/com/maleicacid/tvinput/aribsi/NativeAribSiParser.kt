@@ -49,11 +49,6 @@ class NativeAribSiParser : AutoCloseable {
         eventId: Int,
     ): String = requireNativeString(nativeBuildProgramKey(onid, tsid, sid, eventId))
 
-    fun normalizeProgramProviderData(providerData: ByteArray): String {
-        val result = nativeNormalizeProgramProviderData(providerData)
-        return requireNativeString(result)
-    }
-
     fun extractProgramKeyResult(providerData: ByteArray): String {
         val result = nativeExtractProgramKeyResult(providerData)
         return requireNativeString(result)
@@ -248,8 +243,6 @@ class NativeAribSiParser : AutoCloseable {
         sid: Int,
         eventId: Int,
     ): String?
-
-    private external fun nativeNormalizeProgramProviderData(providerData: ByteArray): String?
 
     private external fun nativeExtractProgramKeyResult(providerData: ByteArray): String?
 

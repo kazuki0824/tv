@@ -515,7 +515,6 @@ TIS Kotlin は provider-data JSON を解釈せず、以下の Rust JNI API 相�
 // Kotlin facade。実JNIはclosed JSON result envelopeを返す。
 object ProviderDataBridge {
     fun buildProgramProviderData(program: ProgramRecord): ProviderDataResult
-    fun normalizeProgramProviderData(rawBytes: ByteArray): ProviderDataResult
     fun extractProgramKeyResult(rawBytes: ByteArray): ProgramKeyResult?
     fun buildChannelProviderData(channel: ChannelRecord): ProviderDataResult
     fun decodeChannelProviderData(rawBytes: ByteArray): ChannelProviderDataResult?
@@ -551,7 +550,7 @@ Rust JNIのclosed envelopeは`arib_si_engine_rs/DESIGN_JA.md`を正とし、faca
 
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。Kotlin は `String(rawBytes)` などで再解釈してから Rust へ渡してはならず、TvProvider から取得した `COLUMN_INTERNAL_PROVIDER_DATA` の BLOB バイト列をそのまま Rust JNI 境界へ渡す。TvProvider が文字列として返した場合の互換補助は、UTF-8 バイト列へ戻すだけに限定し、Kotlin側でJSON構造を解釈・再構築してはならない。
 
-`normalizeProgramProviderData(rawBytes)`、`extractProgramKey(rawBytes)`、`decodeChannelProviderData(rawBytes)`は、invalid UTF-8またはmalformed JSONをKotlin側で修復しない。Rustは診断付き失敗、key抽出失敗、またはchannel decode失敗へ落とし、通常実行経路で例外やpanicに変換しない。provider-data bytesだけのdigest APIと`ProviderDataResult.signature` / `contentDigest`は設けない。
+`extractProgramKey(rawBytes)`、`decodeChannelProviderData(rawBytes)`は、invalid UTF-8またはmalformed JSONをKotlin側で修復しない。Rustは診断付き失敗、key抽出失敗、またはchannel decode失敗へ落とし、通常実行経路で例外やpanicに変換しない。provider-data bytesだけのdigest APIと`ProviderDataResult.signature` / `contentDigest`は設けない。
 
 ### 診断情報 schema
 
@@ -747,7 +746,7 @@ upgrade cleanupが失敗した場合は旧Program行を現行データとして�
 
 cleanup完了後は現行buildのSI/EITからProgramを再収集し、現行provider-dataだけで再登録する。Channel rowはこのcleanupの対象外であり、channel scan結果、表示番号、ユーザーが利用するchannel identityをProgram cleanupの副作用で削除・再作成しない。`RecordedPrograms`も対象外とする。
 
-`normalizeProgramProviderData(rawBytes)` と `extractProgramKey(rawBytes)` はcurrent buildが書いた現行Program provider-dataの検査・利用に限定し、product更新時の旧Program migration APIとして使わない。旧release形式の受理を追加してupgrade cleanupを迂回してはならない。
+`extractProgramKey(rawBytes)` はcurrent buildが書いた現行Program provider-dataの検査・利用に限定し、product更新時の旧Program migration APIとして使わない。旧release形式の受理を追加してupgrade cleanupを迂回してはならない。
 
 ### 旧 indexed JNI / 廃止経路の禁止
 

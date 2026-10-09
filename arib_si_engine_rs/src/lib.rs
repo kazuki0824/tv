@@ -1071,19 +1071,6 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeNormalizeProgramProviderData(
-    mut env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    provider_data: JByteArray<'_>,
-) -> jstring {
-    let result = match env.convert_byte_array(provider_data) {
-        Ok(data) => provider_data_api::normalize_program_provider_data(&data),
-        Err(error) => provider_jni_failure(error),
-    };
-    java_string(&mut env, Ok(provider_result_json(result)))
-}
-
-#[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeExtractProgramKeyResult(
     mut env: JNIEnv<'_>,
     _this: JObject<'_>,

@@ -671,50 +671,6 @@ pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
     finalize_channel(data)
 }
 
-pub fn normalize_program_provider_data(raw_bytes: &[u8]) -> ProviderDataResult {
-    let text = match std::str::from_utf8(raw_bytes) {
-        Ok(text) => text,
-        Err(err) => {
-            return failure_result(
-                "PROGRAM_PROVIDER_DATA_UTF8_FAILED",
-                format!("Program provider-dataがUTF-8ではありません: {err}"),
-                PROVIDER_SCHEMA_VERSION,
-            )
-        }
-    };
-    let data = match serde_json::from_str::<ProgramProviderDataV1>(text.trim()) {
-        Ok(data) => data,
-        Err(err) => {
-            let (code, message) = match err.classify() {
-                serde_json::error::Category::Syntax | serde_json::error::Category::Eof => (
-                    "PROGRAM_PROVIDER_DATA_PARSE_FAILED",
-                    format!("Program provider-data JSONの構文解析に失敗しました: {err}"),
-                ),
-                serde_json::error::Category::Data | serde_json::error::Category::Io => (
-                    "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED",
-                    format!("Program provider-data JSON v1の型契約に適合しません: {err}"),
-                ),
-            };
-            return failure_result(code, message, PROVIDER_SCHEMA_VERSION);
-        }
-    };
-    let Some(data) = normalize_program_extensions(data) else {
-        return failure_result(
-            "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED",
-            "Program provider-data JSON v1に旧release互換fieldが含まれています".to_string(),
-            PROVIDER_SCHEMA_VERSION,
-        );
-    };
-    if !valid_program_provider_data(&data) {
-        return failure_result(
-            "PROGRAM_PROVIDER_DATA_INVALID",
-            "Program provider-data JSON v1の不変条件を満たしません".to_string(),
-            PROVIDER_SCHEMA_VERSION,
-        );
-    }
-    finalize_program(data)
-}
-
 pub fn extract_program_key_result(raw_bytes: &[u8]) -> Option<ProgramKeyResult> {
     let text = std::str::from_utf8(raw_bytes).ok()?;
     let data = serde_json::from_str::<ProgramProviderDataV1>(text.trim()).ok()?;
@@ -1683,9 +1639,6 @@ mod provider_data_tests {
         let mut stored: serde_json::Value =
             serde_json::from_str(&minimal_program_json("")).unwrap();
         stored["diagnostics"]["publishDiagnostics"] = diagnostic;
-        let result = normalize_program_provider_data(stored.to_string().as_bytes());
-        assert!(!result.success);
-        assert_eq!(result.error_code, "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED");
         assert!(extract_program_key_result(stored.to_string().as_bytes()).is_none());
     }
 
@@ -1708,32 +1661,32 @@ mod provider_data_tests {
         value["cas"]["requiresCas"] = serde_json::json!(true);
         value["casFacts"] = serde_json::json!({"pmtPid":256,"parseStatus":"CA_UNRESOLVED","sdtFreeCaMode":true,
             "descriptors":[{"scope":"ES","esPid":273,"caSystemId":5,"caPid":500,"rawDescriptorHex":"09040005e1f4"}]});
-        let normalized = normalize_program_provider_data(value.to_string().as_bytes());
-        assert!(normalized.success);
-        let output: serde_json::Value = serde_json::from_str(&normalized.json).unwrap();
+        let data: ProgramProviderDataV1 = serde_json::from_value(value.clone()).unwrap();
+        let result = finalize_program(data);
+        assert!(result.success);
+        let output: serde_json::Value = serde_json::from_str(&result.json).unwrap();
         assert_eq!(output["casFacts"], value["casFacts"]);
+        assert!(extract_program_key_result(result.json.as_bytes()).is_some());
         value["cas"]["requiresCas"] = serde_json::json!(false);
-        assert!(!normalize_program_provider_data(value.to_string().as_bytes()).success);
+        assert!(extract_program_key_result(value.to_string().as_bytes()).is_none());
         value["cas"]["requiresCas"] = serde_json::json!(true);
         value["casFacts"]["descriptors"][0]["esPid"] = serde_json::Value::Null;
-        assert!(!normalize_program_provider_data(value.to_string().as_bytes()).success);
+        assert!(extract_program_key_result(value.to_string().as_bytes()).is_none());
     }
 
     #[test]
-    fn normalize_program_provider_data_rejects_missing_required_arrays() {
+    fn program_key_extraction_rejects_missing_required_arrays() {
         let mut stored: serde_json::Value =
             serde_json::from_str(&minimal_program_json("")).unwrap();
         stored.as_object_mut().unwrap().remove("shortEvents");
         stored.as_object_mut().unwrap().remove("extendedTexts");
 
-        let normalized = normalize_program_provider_data(stored.to_string().as_bytes());
-        assert!(!normalized.success);
-        assert_eq!(normalized.error_code, "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED");
+        assert!(extract_program_key_result(stored.to_string().as_bytes()).is_none());
     }
 
     #[test]
     fn size_limit_shortens_text_without_removing_languages() {
-        let mut value: serde_json::Value = serde_json::from_str(&minimal_program_json("")).unwrap();
+        let mut value = minimal_program_request_value();
         value["shortEvents"] = serde_json::json!([
             {"parseStatus":"OK", "languageCode":"jpn","title":"日本語", "text":"本文".repeat(5000)},
             {"parseStatus":"OK", "languageCode":"eng","title":"English", "text":"text".repeat(5000)}
@@ -1743,13 +1696,10 @@ mod provider_data_tests {
             {"parseStatus":"OK", "languageCode":"eng","text":"long".repeat(5000)}
         ]);
         let input = value.to_string();
-        let first = normalize_program_provider_data(input.as_bytes());
+        let first = build_program_provider_data(&input);
         assert!(first.success && first.truncated, "{}", first.json);
         assert!(first.json.len() <= HARD_LIMIT_BYTES);
-        assert_eq!(
-            normalize_program_provider_data(input.as_bytes()).json,
-            first.json
-        );
+        assert_eq!(build_program_provider_data(&input).json, first.json);
         let output: serde_json::Value = serde_json::from_str(&first.json).unwrap();
         for field in ["shortEvents", "extendedTexts"] {
             assert_eq!(output[field].as_array().unwrap().len(), 2);
@@ -1759,13 +1709,13 @@ mod provider_data_tests {
         assert_eq!(output["extendedTexts"][1]["text"], "");
         assert_eq!(output["shortEvents"][0]["title"], "日本語");
         assert_eq!(
-            normalize_program_provider_data(first.json.as_bytes()).json,
+            finalize_program(serde_json::from_str(&first.json).unwrap()).json,
             first.json
         );
     }
 
     #[test]
-    fn shared_boundary_corpus_matches_normalization_and_key_extraction() {
+    fn shared_boundary_corpus_matches_program_key_extraction_and_channel_decode() {
         #[derive(Deserialize)]
         struct Case {
             name: String,
@@ -1792,15 +1742,7 @@ mod provider_data_tests {
                 other => panic!("未知のfixture符号化: {other}"),
             };
             let accepted = match case.boundary.as_str() {
-                "PROGRAM" => {
-                    assert_eq!(
-                        extract_program_key_result(&bytes).is_some(),
-                        case.accepted,
-                        "{}: key extraction",
-                        case.name
-                    );
-                    normalize_program_provider_data(&bytes).success
-                }
+                "PROGRAM" => extract_program_key_result(&bytes).is_some(),
                 "CHANNEL" => !decode_channel_provider_data(&bytes).is_empty(),
                 other => panic!("未知のfixture境界: {other}"),
             };
@@ -1903,9 +1845,9 @@ mod provider_data_tests {
         let mut stored: serde_json::Value =
             serde_json::from_str(&minimal_program_json("")).unwrap();
         stored.as_object_mut().unwrap().remove("casFacts");
-        assert!(!normalize_program_provider_data(stored.to_string().as_bytes()).success);
+        assert!(extract_program_key_result(stored.to_string().as_bytes()).is_none());
 
-        assert!(normalize_program_provider_data(minimal_program_json("").as_bytes()).success);
+        assert!(extract_program_key_result(minimal_program_json("").as_bytes()).is_some());
         assert!(build_program_provider_data(&minimal_program_request_value().to_string()).success);
         assert!(build_channel_provider_data(&minimal_channel_request("", 16400)).success);
     }
@@ -2004,10 +1946,12 @@ mod provider_data_tests {
     }
 
     #[test]
-    fn normalize_program_provider_data_preserves_top_level_unknown_key() {
-        let result = normalize_program_provider_data(
-            minimal_program_json(",\"futureVendorKey\":{\"x\":1}").as_bytes(),
-        );
+    fn program_extension_validation_preserves_top_level_unknown_key() {
+        let data: ProgramProviderDataV1 =
+            serde_json::from_str(&minimal_program_json(",\"futureVendorKey\":{\"x\":1}")).unwrap();
+        let data = normalize_program_extensions(data).unwrap();
+        assert!(valid_program_provider_data(&data));
+        let result = finalize_program(data);
         assert!(result.success, "{}", result.error_message);
         let value: serde_json::Value = serde_json::from_str(&result.json).unwrap();
         let extensions = value["diagnostics"]["rawProviderDataExtensions"]
@@ -2019,7 +1963,7 @@ mod provider_data_tests {
     }
 
     #[test]
-    fn normalize_program_provider_data_rejects_legacy_duplicate_fields() {
+    fn program_key_extraction_rejects_legacy_duplicate_fields() {
         let mut stored: serde_json::Value =
             serde_json::from_str(&minimal_program_json("")).unwrap();
         stored["serviceKey"] = serde_json::json!({
@@ -2029,20 +1973,15 @@ mod provider_data_tests {
         });
         stored["timing"]["endUtcMillis"] = serde_json::json!(1_730_001_800_000_i64);
         stored["audioLanguages"] = serde_json::json!([]);
-
-        let result = normalize_program_provider_data(stored.to_string().as_bytes());
-        assert!(!result.success);
-        assert_eq!(result.error_code, "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED");
+        assert!(extract_program_key_result(stored.to_string().as_bytes()).is_none());
     }
 
     #[test]
-    fn normalize_program_provider_data_rejects_nested_policy_extensions() {
+    fn program_key_extraction_rejects_nested_policy_extensions() {
         let mut stored: serde_json::Value =
             serde_json::from_str(&minimal_program_json("")).unwrap();
         stored["cas"]["unsupportedCas"] = serde_json::json!(true);
-        let result = normalize_program_provider_data(stored.to_string().as_bytes());
-        assert!(!result.success);
-        assert_eq!(result.error_code, "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED");
+        assert!(extract_program_key_result(stored.to_string().as_bytes()).is_none());
     }
 
     #[test]
