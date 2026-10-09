@@ -1,3 +1,7 @@
+# PR #166 未使用のreaper公開委譲の除去
+
+- 呼出元のないWorkerRuntimeReaperQueue::pending_valuesを削除した。共通pending owner内の複数key読取り、any_pending、wait_until_releasedは維持する。新しいhelper・状態・試験は追加しない。検証は既存CIへ委ね、Soong/VTS/実機は未実施。
+
 # frontend reaper受付の有限待機
 
 - Bound frontend tune/scan reaper-admission waits by the existing workerReaperDeadlineMs capability; retain pending ownership and return typed cleanup failure on timeout.
@@ -3398,4 +3402,3 @@
 - `common`、`descrambler`、`frontend_px4` の再利用断片を追加した。
 - 旧制御層をコピーせず、`control` crate に worker / lifecycle / FMQ delivery / stream boundary の型付き骨格を追加した。
 - r50ed 時点では Binder service / AIDL HAL 実装は未達である。
-

@@ -1137,13 +1137,6 @@ where
         self.pending.pending_value(key)
     }
 
-    pub fn pending_values<const N: usize>(
-        &self,
-        keys: [&K; N],
-    ) -> Result<[Option<V>; N], maleicacid_tuner_hal2_common::HalError> {
-        self.pending.pending_values(keys)
-    }
-
     pub fn any_pending<const N: usize>(
         &self,
         keys: [&K; N],
