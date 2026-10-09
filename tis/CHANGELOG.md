@@ -20,6 +20,12 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# PR #119 channel挿入直後のrollback ID引渡し
+
+- 未初期化native ownerを使用する例外注入試験をhost専用ソースへ置き、Android/SoongとRobolectric共用ソースにsun.misc.Unsafe依存を持ち込まない。
+
+- 挿入成功時に既存scanのrollback集合へIDを直接渡し、upsert途中と後続Program snapshot取得の例外でも新規行を既存finalizationで削除可能にした。別owner・scheduler・migrationは追加しない。回帰試験は既存CIへ委ね、Soong/VTS/実機は未実施。
+
 - レビュー再確認により、現行製品の必要条件を立証できないchannel型移行transactionを撤去した。通常rescanは既存IDとユーザー可視性を保持し、immutable列をupdateから除外する。
 
 ## レビュー対応: immutable型を保つupsertの必須semantics

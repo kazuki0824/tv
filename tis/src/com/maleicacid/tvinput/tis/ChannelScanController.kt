@@ -211,6 +211,7 @@ class ChannelScanController(
                         tune.generation,
                         PublishMode.SETUP_SCAN,
                         registrationSnapshot = collection.finalRegistrationSnapshot,
+                        onChannelInserted = { insertedChannelIds += it },
                     )
                 if (publishResult == null) {
                     diagnostics += resourceLostDiagnostic(candidate, tune.generation)
@@ -481,6 +482,7 @@ class ChannelScanController(
         mode: PublishMode,
         allowedServiceKeys: Set<ServiceKey>? = null,
         registrationSnapshot: com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? = null,
+        onChannelInserted: (Long) -> Unit = {},
     ): PublishSnapshotResult {
         if (mode == PublishMode.DIAGNOSTIC_ONLY) return PublishSnapshotResult(0)
         if (mode == PublishMode.LIVE_TUNE_REFRESH || mode == PublishMode.BOOT_EPG_SYNC ||
@@ -560,7 +562,7 @@ class ChannelScanController(
             )
             return PublishSnapshotResult(0)
         }
-        val channelResult = tvProviderWriter.upsertChannels(channels)
+        val channelResult = tvProviderWriter.upsertChannels(channels, onChannelInserted)
         if (channelResult.failures.isNotEmpty()) Log.w(LogTags.TIS, "TvProvider channel 登録失敗=${channelResult.failures}")
         val insertedChannelIds = channelResult.insertedChannelIds.values.toSet()
         val initialBrowsablePendingChannelIds =
@@ -903,9 +905,10 @@ class ChannelScanController(
         mode: PublishMode,
         allowedServiceKeys: Set<ServiceKey>? = null,
         registrationSnapshot: com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? = null,
+        onChannelInserted: (Long) -> Unit = {},
     ): PublishSnapshotResult? =
         scanGenerationFence.publishIfCurrent(generation) {
-            publishCurrentServiceSnapshot(mode, allowedServiceKeys, registrationSnapshot)
+            publishCurrentServiceSnapshot(mode, allowedServiceKeys, registrationSnapshot, onChannelInserted)
         }
 
     /** scanが既に所有していたgeneration、信号終端、公開lockをまとめる。別の世代ownerは作らない。 */

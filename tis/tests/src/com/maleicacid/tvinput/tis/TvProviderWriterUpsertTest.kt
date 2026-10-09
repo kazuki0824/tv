@@ -62,6 +62,42 @@ class TvProviderWriterUpsertTest {
         check(implementedWriter.existingChannelsResult().getOrThrow() == listOf(channel))
     }
 
+    @Test
+    fun partialUpsertExceptionRetainsInsertedIdsForExistingRollback() {
+        val store = FakeChannelStore()
+        var calls = 0
+        val failingStore =
+            object : TvProviderWriter.ChannelStore by store {
+                override fun insertChannel(values: ContentValues): Result<Long?> {
+                    calls++
+                    check(calls == 1) { "後続channel処理の例外" }
+                    return store.insertChannel(values)
+                }
+            }
+        val writer = TvProviderWriter("input.test", failingStore, testOnly = true)
+        val channel =
+            ChannelRecord(
+                key,
+                0x01,
+                "101",
+                "NHK",
+                FrequencyHz(473_142_857L),
+                casFactsCanonicalJson = testCasFacts(false),
+            )
+        val rollbackIds = linkedSetOf<Long>()
+        val failure =
+            runCatching {
+                writer.upsertChannels(
+                    listOf(channel, channel.copy(serviceKey = ServiceKey(4, 16625, 102))),
+                    onChannelInserted = { rollbackIds += it },
+                )
+            }.exceptionOrNull()
+        check(failure is IllegalStateException && calls == 2)
+        check(rollbackIds == setOf(1L) && store.rows.keys == rollbackIds)
+        check(writer.finalizeSetupChannels(false, rollbackIds, emptySet()).isSuccess)
+        check(store.rows.isEmpty())
+    }
+
     @Test fun insertNewChannel() {
         val store = FakeChannelStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)

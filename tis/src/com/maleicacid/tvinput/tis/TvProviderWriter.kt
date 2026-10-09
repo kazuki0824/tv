@@ -141,7 +141,10 @@ class TvProviderWriter private constructor(
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("LongMethod", "MaxLineLength", "NestedBlockDepth", "ReturnCount")
-    fun upsertChannels(channels: List<ChannelRecord>): UpsertResult {
+    fun upsertChannels(
+        channels: List<ChannelRecord>,
+        onChannelInserted: (Long) -> Unit = {},
+    ): UpsertResult {
         var inserted = 0
         var updated = 0
         val failures = mutableListOf<Diagnostic>()
@@ -195,6 +198,8 @@ class TvProviderWriter private constructor(
                 if (insertedId == null) {
                     failures += Diagnostic(channel.serviceKey, "insert", "provider が null URI を返しました")
                 } else {
+                    // 後続のSI/JNI/provider処理が失敗しても、scan所有のrollback集合へ行IDを先に渡す。
+                    onChannelInserted(insertedId)
                     inserted++
                     insertedChannelIds[channel.serviceKey] = insertedId
                     successfulServiceKeys += channel.serviceKey

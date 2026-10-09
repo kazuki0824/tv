@@ -3,6 +3,7 @@
 
 package com.maleicacid.tvinput.tis
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ResolveInfo
@@ -10,14 +11,153 @@ import android.content.pm.ServiceInfo
 import android.media.tv.TvInputInfo
 import android.media.tv.TvInputManager
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.AribService
+import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.NativeAribCaptionFactParser
+import com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot
+import com.maleicacid.tvinput.aribsi.ServiceSemanticFacts
+import com.maleicacid.tvinput.aribsi.SmdSemanticFacts
+import com.maleicacid.tvinput.aribsi.SmdSemanticState
+import com.maleicacid.tvinput.aribsi.TransportKey
+import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
+import com.maleicacid.tvinput.db.ChannelRecord
 import org.junit.Test
 import sun.misc.Unsafe
 import java.util.concurrent.ConcurrentHashMap
 
+// 実TIS境界の失敗注入を同じhost fixtureで検査し、関数数だけを理由にfixtureを複製しない。
+@Suppress("TooManyFunctions")
 class TisReviewBoundaryTest {
+    // 実公開入口から挿入・snapshot失敗・既存rollbackまでを一続きに検証する。
+    @Suppress("LongMethod")
+    @Test
+    fun programSnapshotExceptionRetainsInsertedChannelsForRollback() {
+        val unsafe =
+            sun.misc.Unsafe::class.java
+                .getDeclaredField("theUnsafe")
+                .apply { isAccessible = true }
+                .get(null) as sun.misc.Unsafe
+        val controller = unsafe.allocateInstance(ChannelScanController::class.java) as ChannelScanController
+        val engine = unsafe.allocateInstance(com.maleicacid.tvinput.aribsi.AribSiEngine::class.java)
+        val key = ServiceKey(4, 0x4010, 101)
+        val store =
+            object : TvProviderWriter.ChannelStore {
+                val channels = linkedMapOf<Long, ContentValues>()
+
+                override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(null)
+
+                // 標準整形後に残る型付きstore契約の宣言だけ行長を許容する。
+                @Suppress("MaxLineLength")
+                override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+                    Result.success(emptyMap())
+
+                override fun insertChannel(values: ContentValues): Result<Long?> {
+                    channels[1L] = ContentValues(values)
+                    return Result.success(1L)
+                }
+
+                override fun updateChannel(
+                    channelId: Long,
+                    values: ContentValues,
+                ): Result<Int> = error("既存行更新は対象外")
+            }
+        val rollbackIds = linkedSetOf<Long>()
+        val rollbackStore =
+            object : TvProviderWriter.ChannelStore by store {
+                override fun deleteChannels(channelIds: Set<Long>): Result<Int> {
+                    channelIds.forEach { store.channels.remove(it) }
+                    return Result.success(channelIds.size)
+                }
+            }
+        val writer = TvProviderWriter("input.test", rollbackStore, testOnly = true)
+
+        fun set(
+            name: String,
+            value: Any,
+        ) {
+            ChannelScanController::class.java
+                .getDeclaredField(name)
+                .apply { isAccessible = true }
+                .set(controller, value)
+        }
+        set("tvProviderWriter", writer)
+        set("engine", engine) // 未初期化lockで後続Program snapshot取得を確実に失敗させる。
+        set(
+            "currentCandidate",
+            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13"),
+        )
+        val facts =
+            ServiceSemanticFacts(
+                serviceKey = key,
+                serviceType = 0x01,
+                pmtPidResolved = true,
+                pmtParsed = true,
+                pcrPidResolved = true,
+                elementaryStreams = listOf(AribElementaryStream(TsPid(0x101), 0x1b, null, null, null)),
+                requiresCas = false,
+                caDescriptorsResolved = true,
+                freeCaMode = false,
+                smd =
+                    SmdSemanticFacts(
+                        descriptorPresent = true,
+                        syntaxValid = true,
+                        systemManagementId = 0x0300,
+                        broadcastingFlag = 0,
+                        broadcastingIdentifier = 3,
+                        broadcastSystem = BroadcastSystem.ISDB_T,
+                        additionalBroadcastingIdentification = 0,
+                        additionalIdentificationInfoHex = "",
+                        semanticState = SmdSemanticState.SUPPORTED_BROADCAST,
+                        diagnostic = null,
+                    ),
+                missingComponents = emptyList(),
+                semanticDiagnostics = emptyList(),
+                casFactsCanonicalJson = testCasFacts(false),
+            )
+        val service =
+            AribService(
+                serviceKey = key,
+                name = "NHK",
+                serviceType = 0x01,
+                pmtPid = TsPid(0x100),
+                pcrPid = TsPid(0x101),
+                freeCaMode = false,
+                streams = facts.elementaryStreams,
+            )
+        val snapshot =
+            ServiceRegistrationSnapshot(
+                1,
+                emptyList(),
+                listOf(service),
+                setOf(TransportKey(key.originalNetwork, key.transportStream)),
+                emptyList(),
+                mapOf(key to facts),
+                emptyList(),
+            )
+        val publish =
+            ChannelScanController::class.java
+                .getDeclaredMethod(
+                    "publishCurrentServiceSnapshot",
+                    ChannelScanController.PublishMode::class.java,
+                    Set::class.java,
+                    ServiceRegistrationSnapshot::class.java,
+                    Function1::class.java,
+                ).apply { isAccessible = true }
+        val failure =
+            runCatching {
+                publish.invoke(controller, ChannelScanController.PublishMode.SETUP_SCAN, null, snapshot, { id: Long ->
+                    rollbackIds.add(id)
+                    Unit
+                })
+            }.exceptionOrNull()
+        check(failure is java.lang.reflect.InvocationTargetException && failure.cause is NullPointerException)
+        check(rollbackIds == setOf(1L) && store.channels.keys == rollbackIds)
+        check(writer.finalizeSetupChannels(false, rollbackIds, emptySet()).isSuccess)
+        check(store.channels.isEmpty())
+    }
+
     @Test fun liveTuneWithoutCurrentServiceFactsRemainsPending() {
         val pending =
             com.maleicacid.tvinput.aribsi.ServicePolicyDecision(
