@@ -6019,7 +6019,7 @@ mod scan_contract_tests {
         let close_result = close_frontend_workers_and_live_data(
             Arc::clone(&runtime),
             frontend_id,
-            FrontendWorkerCancelReason::ExplicitClose,
+            FrontendWorkerCancelReason::FrontendClosing,
         );
         assert!(close_result.is_err());
         assert!(cancel_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap());
@@ -6127,7 +6127,7 @@ mod scan_contract_tests {
         close_frontend_workers_and_live_data(
             Arc::clone(&runtime),
             frontend_id,
-            FrontendWorkerCancelReason::ExplicitClose,
+            FrontendWorkerCancelReason::FrontendClosing,
         )
         .expect("ワーカーが速やかに終了した場合、回収処理へ失敗を残さずフロントエンドのcloseが完了しなければなりません");
 

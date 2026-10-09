@@ -162,7 +162,9 @@ pub enum ServiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
+    use maleicacid_tuner_hal2_common::{
+        FrontendBackendKind, FrontendDevicePath, FrontendSystem, HalError,
+    };
     use maleicacid_tuner_hal2_demux::{
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PacketPid, PesSettings,
         PipelineAssemblySuppressionReason, PipelineDeliveryAction, QueueRuntimeError,
@@ -173,7 +175,7 @@ mod tests {
         DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
-        AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+        AidlApi, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
         DvrConfigureKind, DvrConfigureRequest, DvrDataFormat, DvrOpenKind, FilterDelayHintKind,
         FilterDelayHintRequest, OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName,
         AIDL_TRANSACTION_TABLE,
@@ -181,6 +183,34 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    fn start_frontend_worker_fixture<F>(
+        runtime: &mut TunerServiceRuntime,
+        frontend_id: i32,
+        kind: maleicacid_tuner_hal2_device::FrontendWorkerKind,
+        generation: u64,
+        job: F,
+    ) -> Result<(), maleicacid_tuner_hal2_device::FrontendWorkerStartError>
+    where
+        F: FnOnce(maleicacid_tuner_hal2_device::FrontendWorkerContext) -> Result<(), HalError>
+            + Send
+            + 'static,
+    {
+        let entry = runtime.registry().frontend(FrontendRuntimeId(frontend_id)).unwrap();
+        let plan = maleicacid_tuner_hal2_device::FrontendBackendTunePlan::new(
+            frontend_id,
+            generation,
+            entry.backend,
+            FrontendDevicePath::new(entry.device_path.clone()),
+            isdbt_request(473_142_857),
+        );
+        let ticket = runtime.frontend_txn().prepare_backend_submit(kind, plan, None).unwrap();
+        runtime.frontend_txn().start_worker_with_prepared_submit(ticket, move |ctx, ticket| {
+            // 機器要求は送らず準備済み権限を回収し、汎用ワーカーの寿命だけを検査する。
+            assert_eq!(ticket.complete(), maleicacid_tuner_hal2_device::FrontendWorkerStopOutcome::NotRunning);
+            job(ctx)
+        })
+    }
 
     fn test_descrambler_pid(pid: u16) -> DescramblerPid {
         DescramblerPidClaim::from_demux_input(pid)
@@ -763,9 +793,7 @@ mod tests {
                 generation,
             )
             .unwrap();
-        runtime
-            .frontend_txn()
-            .start_worker(
+        start_frontend_worker_fixture(&mut runtime,
                 1_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
                 generation,
@@ -838,9 +866,7 @@ mod tests {
             .frontend_txn()
             .commit_frontend_active_tune_request(1_000_000, generation, request.clone())
             .unwrap();
-        runtime
-            .frontend_txn()
-            .start_worker(
+        start_frontend_worker_fixture(&mut runtime,
                 1_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
                 generation,
@@ -1047,9 +1073,7 @@ mod tests {
                 )
                 .unwrap();
             let tune_tx = reason_tx.clone();
-            guard
-                .frontend_txn()
-                .start_worker(
+            start_frontend_worker_fixture(&mut guard,
                     1_000_000,
                     maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
                     tune_generation,
@@ -1089,9 +1113,7 @@ mod tests {
                     vec![isdbt_request(473_142_857)],
                 )
                 .unwrap();
-            guard
-                .frontend_txn()
-                .start_worker(
+            start_frontend_worker_fixture(&mut guard,
                     1_000_000,
                     maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
                     scan_generation,
@@ -1170,9 +1192,7 @@ mod tests {
                     generation,
                 )
                 .unwrap();
-            guard
-                .frontend_txn()
-                .start_worker(
+            start_frontend_worker_fixture(&mut guard,
                     1_000_000,
                     maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
                     generation,
@@ -2721,7 +2741,7 @@ mod tests {
         runtime
             .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
             .unwrap();
-        runtime.start_filter_runtime(filter.id.0).unwrap();
+        runtime.transact_start_filter_runtime(filter.id.0).unwrap();
 
         let key_slot = DescramblerKeySlot::empty()
             .try_with_even(sample_multi2_key(1))
@@ -2729,7 +2749,7 @@ mod tests {
         let token_bytes = vec![0x10; 8];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
         runtime
-            .registry
+            .registry_mut_for_test()
             .publish_descrambler_key_resolution(
                 token.clone(),
                 Arc::new(SharedTestKeyReference(Mutex::new(Some(key_slot.clone())))),
@@ -2805,7 +2825,7 @@ mod tests {
         runtime
             .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
             .unwrap();
-        runtime.start_filter_runtime(filter.id.0).unwrap();
+        runtime.transact_start_filter_runtime(filter.id.0).unwrap();
 
         let current_key_slot = DescramblerKeySlot::empty()
             .try_with_even(sample_multi2_key(7))
@@ -2816,7 +2836,7 @@ mod tests {
             current_key_slot.clone(),
         ))));
         runtime
-            .registry
+            .registry_mut_for_test()
             .publish_descrambler_key_resolution(token, reference.clone())
             .unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
