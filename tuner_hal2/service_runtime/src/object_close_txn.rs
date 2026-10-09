@@ -1707,7 +1707,7 @@ mod tests {
         drop(first);
 
         let retry = begin_filter_close_plan(&mut runtime, 3);
-        retry
+        let _attempt = retry
             .begin_cleanup_attempt(&mut runtime)
             .expect("dropped authority leaves the obligation reissuable");
     }
@@ -1718,7 +1718,7 @@ mod tests {
         let first = begin_filter_close_plan(&mut runtime, 30);
         let competing = begin_filter_close_plan(&mut runtime, 30);
 
-        first
+        let _attempt = first
             .begin_cleanup_attempt(&mut runtime)
             .expect("first cleanup attempt starts");
         assert!(competing.begin_cleanup_attempt(&mut runtime).is_err());

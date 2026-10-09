@@ -2986,3 +2986,11 @@ mod tests {
         ));
     }
 }
+
+// ホストにはDMAヒープがない。既存packet_pathホスト試験と同様、確保を未対応として返す。
+// Androidの単体試験は実際のネイティブ実装をリンクする。
+#[cfg(all(test, not(target_os = "android")))]
+#[no_mangle]
+extern "C" fn tuner_dmabuf_heap_alloc_system(_len: usize) -> i32 {
+    -38
+}
