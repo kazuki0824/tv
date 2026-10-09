@@ -43,4 +43,5 @@ jobs:
           gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest \
             --tests com.maleicacid.tvinput.tis.DirectBootGuardR51FixTest \
             --tests com.maleicacid.tvinput.tis.RecordingDisabledR51Test \
-            --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest
+            --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest \
+            --tests com.maleicacid.tvinput.tis.FrameworkTunerScanBoundaryTest

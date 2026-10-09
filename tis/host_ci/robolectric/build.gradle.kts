@@ -19,7 +19,7 @@ android {
             assets.setSrcDirs(listOf("../../tests/assets"))
         }
         getByName("test") {
-            java.setSrcDirs(listOf("../../tests/src"))
+            java.setSrcDirs(listOf("../../tests/src", "src/test/kotlin"))
         }
     }
 

@@ -113,7 +113,7 @@ class ScanPlanPolicyTest {
     }
 
     @Test
-    fun bsStoppedDiscoveryCleanupDoesNotCancelNativeScanAgain() {
+    fun bsStoppedDiscoveryCleanupReleasesSdkRegistrationAndPreservesResult() {
         val operation = TunerController.StreamIdDiscoveryOperation(28L)
         operation.reportIds(intArrayOf(16400))
         operation.complete()
@@ -125,7 +125,7 @@ class ScanPlanPolicyTest {
             android.media.tv.tuner.Tuner.RESULT_INVALID_STATE
         }
 
-        assertEquals(0, cancelCalls)
+        assertEquals(1, cancelCalls)
         assertEquals(stopped, operation.result(true))
         assertEquals(setOf(16400), stopped.streamIds)
     }
@@ -241,7 +241,7 @@ class ScanPlanPolicyTest {
                 runCatching {
                     operation.cancel { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE }
                 }
-            check(firstCancel.isSuccess == (prior == "stopped"))
+            check(firstCancel.isFailure)
             check(operation.acceptsResourceLoss)
             var notifications = 0
 
@@ -265,7 +265,7 @@ class ScanPlanPolicyTest {
                 )
 
             val firstLoss = runCatching { lose() }
-            check(firstLoss.isSuccess == (prior == "stopped"))
+            check(firstLoss.isFailure)
             lose()
             check(notifications == 1 && fence.terminalObserved && operation.await(1))
             val result = operation.result(true)
