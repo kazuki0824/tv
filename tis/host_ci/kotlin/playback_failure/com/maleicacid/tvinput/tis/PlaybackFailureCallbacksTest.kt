@@ -131,7 +131,7 @@ class PlaybackFailureCallbacksTest {
             set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>(pid to retainedHandle))
             set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
 
-            check(runCatching { controller.updateScanPmtFilters(emptySet(), 7L) }.isFailure)
+            check(runCatching { controller.updatePmtFilters(emptySet(), 7L) }.isFailure)
             check(retainedHandle.closes == 1)
             check(failedPmt.isEmpty())
 
@@ -141,7 +141,7 @@ class PlaybackFailureCallbacksTest {
             Tuner::class.java.getField("openFilterCalls").setInt(null, 0)
             Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
 
-            controller.updateScanPmtFilters(setOf(pid), 7L)
+            controller.updatePmtFilters(setOf(pid), 7L)
 
             check(retainedHandle.closes == 2)
             check(Tuner::class.java.getField("openFilterCalls").getInt(null) == 1)
