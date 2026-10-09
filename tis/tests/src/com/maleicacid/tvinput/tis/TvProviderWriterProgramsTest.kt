@@ -1054,7 +1054,12 @@ class TvProviderWriterProgramsTest {
                 programs,
                 requests,
                 allocateId = { nextProgramId++ },
-            ).onSuccess { outcomes -> programUpdateCount += outcomes.count { it.updated } }
+            ).onSuccess { outcomes ->
+                programUpdateCount +=
+                    requests.zip(outcomes).count { (request, outcome) ->
+                        request.existingProgramId != null && outcome.programId != null
+                    }
+            }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")

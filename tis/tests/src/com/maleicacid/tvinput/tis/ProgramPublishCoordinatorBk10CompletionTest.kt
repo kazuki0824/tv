@@ -705,8 +705,11 @@ class ProgramPublishCoordinatorBk10CompletionTest {
                 requests,
                 allocateId = { nextProgramId++ },
             ).onSuccess { outcomes ->
-                insertedPrograms += outcomes.count { !it.updated && it.programId != null }
-                updatedPrograms += outcomes.count { it.updated }
+                requests.zip(outcomes).forEach { (request, outcome) ->
+                    if (outcome.programId != null) {
+                        if (request.existingProgramId == null) insertedPrograms++ else updatedPrograms++
+                    }
+                }
             }
         }
 
