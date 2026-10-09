@@ -976,7 +976,7 @@ class TvProviderWriter private constructor(
                                 rows.getInt(TRANSPORT_STREAM_ID_COLUMN_INDEX),
                                 rows.getInt(SERVICE_ID_COLUMN_INDEX),
                             )
-                        if (key in wanted) out[key] = rows.getLong(0)
+                        if (key in wanted) out[key] = rows.getLong(CHANNEL_ID_COLUMN_INDEX)
                     }
                 }
                 out
