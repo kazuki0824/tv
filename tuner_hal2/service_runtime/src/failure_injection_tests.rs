@@ -132,10 +132,13 @@ fn fmq_failure_and_rollback_keep_the_primary_delivery_kind() {
             } if delivery == kind && recorded == rollback));
         let composed = crate::boot::demux_runtime_error_to_hal(failure);
         assert_eq!(composed.primary_error(), &expected);
-        assert!(matches!(
+        assert_eq!(
             composed.cleanup_error(),
-            Some(HalError::CleanupFailed { .. })
-        ));
+            Some(&HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                rollback.detail
+            ))
+        );
         assert!(composed
             .cleanup_error()
             .unwrap()
@@ -481,6 +484,7 @@ fn dvr_callback_artifact_lookup_failure_records_diagnostic_without_cleanup_compo
     );
 
     let primary = HalError::callback_failed("IDvrCallback.lookup", "callback artifact missing");
+    let expected_error = primary.clone();
     let result =
         runtime.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::dvr(
             owner_id,
@@ -490,19 +494,12 @@ fn dvr_callback_artifact_lookup_failure_records_diagnostic_without_cleanup_compo
             primary,
         ));
 
-    let Err(error) = result else {
-        panic!("expected DVR callback artifact lookup failure");
-    };
-    assert!(matches!(
-        error.primary_error(),
-        HalError::CallbackFailed { .. }
-    ));
-    assert!(error.cleanup_error().is_none());
-    assert!(!runtime
-        .dvr_post_commit_notification_diagnostics()
-        .expect("DVR post-commit diagnostics snapshot should be available")
-        .records()
-        .is_empty());
+    assert_eq!(result, Ok(()), "DVR post-commit通知失敗は診断に記録する");
+    let snapshot = runtime.dvr_post_commit_notification_diagnostics().unwrap();
+    assert_eq!(snapshot.records().len(), 1);
+    assert_eq!(snapshot.records()[0].error, expected_error);
+    assert_eq!(snapshot.records()[0].object_id, owner_id);
+    assert_eq!(snapshot.records()[0].generation, owner_generation);
 }
 
 #[test]
@@ -606,6 +603,66 @@ fn frontend_scan_end_artifact_lookup_failure_records_lookup_diagnostic_only() {
         AidlApi::FrontendSetCallback,
     );
 
+    use crate::registry::{
+        FrontendCapabilitySnapshot, FrontendRegistryEntry, FrontendRuntimeId,
+        FrontendScalarCapability, IsdbtSegmentCapability, SatellitePowerTopology,
+    };
+    use maleicacid_tuner_hal2_common::{
+        FrontendBackendKind, FrontendIsdbtPartialReceptionRequirement, FrontendSystem,
+        FrontendTuneRequest,
+    };
+    runtime
+        .registry_mut_for_test()
+        .register_frontend(FrontendRegistryEntry {
+            id: FrontendRuntimeId(94_007),
+            backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbT,
+            device_path: "/dev/null".into(),
+            lnb_profile: None,
+            satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+            capability: FrontendCapabilitySnapshot {
+                scalar: FrontendScalarCapability {
+                    min_frequency_hz: 473_142_857,
+                    max_frequency_hz: 473_142_857,
+                    min_symbol_rate: 0,
+                    max_symbol_rate: 0,
+                    acquire_range_hz: 0,
+                },
+                exclusive_group_id: 0x1000_0007,
+                isdbt_segment: Some(IsdbtSegmentCapability {
+                    is_segment_auto: true,
+                    is_full_segment: true,
+                }),
+            },
+        })
+        .unwrap();
+    let scan_generation = runtime
+        .frontend_txn()
+        .prepare_frontend_worker_generation(
+            94_007,
+            maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
+        )
+        .unwrap();
+    runtime
+        .frontend_txn()
+        .begin_frontend_scan_session(
+            94_007,
+            scan_generation,
+            "callback-lookup-test".into(),
+            vec![FrontendTuneRequest {
+                system: FrontendSystem::IsdbT,
+                frequency: 473_142_857,
+                end_frequency: None,
+                stream_id: None,
+                stream_id_kind: None,
+                bandwidth_hz: Some(6_000_000),
+                symbol_rate: None,
+                isdbt_layer_settings: Vec::new(),
+                partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            }],
+        )
+        .unwrap();
+
     let primary = HalError::callback_failed(
         "IFrontendCallback.lookup",
         "frontend scan-end callback artifact missing",
@@ -615,7 +672,7 @@ fn frontend_scan_end_artifact_lookup_failure_records_lookup_diagnostic_only() {
             owner_id,
             owner_generation,
             94_007,
-            1,
+            scan_generation,
             CallbackDeliveryFailurePhase::CallbackArtifactLookup,
             primary,
         ),

@@ -3146,7 +3146,10 @@ mod backend_submit_terminal_policy_tests {
                             max_symbol_rate: 0,
                             acquire_range_hz: 0,
                         },
-                        exclusive_group_id: 0x1000_0003,
+                        exclusive_group_id: match backend {
+                            FrontendBackendKind::LinuxDvb => 0x2000_0003,
+                            FrontendBackendKind::Px4CharDevice => 0x1000_0003,
+                        },
                         isdbt_segment: Some(IsdbtSegmentCapability {
                             is_segment_auto: true,
                             is_full_segment: true,
@@ -5953,7 +5956,7 @@ mod scan_contract_tests {
                             max_symbol_rate: 0,
                             acquire_range_hz: 0,
                         },
-                        exclusive_group_id: 0x1000_0003,
+                        exclusive_group_id: 0x2000_0003,
                         isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
                             is_segment_auto: true,
                             is_full_segment: true,
@@ -6072,7 +6075,7 @@ mod scan_contract_tests {
                             max_symbol_rate: 0,
                             acquire_range_hz: 0,
                         },
-                        exclusive_group_id: 0x1000_0004,
+                        exclusive_group_id: 0x2000_0004,
                         isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
                             is_segment_auto: true,
                             is_full_segment: true,

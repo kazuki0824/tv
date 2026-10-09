@@ -1536,7 +1536,7 @@ mod tests {
     }
 
     #[test]
-    fn demux_start_guard_makes_close_retry_without_partial_runtime_unregister() {
+    fn demux_close_unregisters_runtime_while_start_guard_is_active() {
         use crate::boot::{FrontendProbeOutcome, ServiceBootOutcome};
         use crate::registry::{
             FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
@@ -1636,45 +1636,17 @@ mod tests {
         .begin_cleanup_attempt(&mut runtime)
         .unwrap();
 
-        let first_cleanup =
-            unregister_public_runtime_entries_for_close(&mut runtime, &first.cascade_entries);
-        let failure = first_cleanup.unwrap_err();
-        assert!(matches!(failure.error(), HalError::Busy { .. }));
-        assert!(runtime.registry().demux(demux.id).is_some());
-        assert!(runtime.registry().filter(filter.id).is_some());
-
-        assert!(
-            finish_object_close_use_case(&mut runtime, first.completion, Err(failure),).is_err()
-        );
-        assert!(matches!(
-            runtime
-                .object_table()
-                .entry(demux_object_id)
-                .unwrap()
-                .lifecycle,
-            crate::RuntimeObjectLifecycle::CleanupPending {
-                step: CleanupStep::UnregisterRuntime
-            }
-        ));
-
-        start_guard.release();
-
-        let retry = close_object_use_case(
-            &mut runtime,
-            demux_object_id,
-            AidlObjectGeneration(1),
-            AidlObjectKind::Demux,
-            AidlMethodCall::DemuxClose,
-        )
-        .unwrap()
-        .begin_cleanup_attempt(&mut runtime)
-        .unwrap();
-
-        unregister_public_runtime_entries_for_close(&mut runtime, &retry.cascade_entries).unwrap();
-        finish_object_close_use_case(&mut runtime, retry.completion, Ok(())).unwrap();
-
+        // START一回性guardはrelation変更やcloseの拒否条件ではない。
+        unregister_public_runtime_entries_for_close(&mut runtime, &first.cascade_entries)
+            .expect("START中もdemuxと子filterを解除できる");
         assert!(runtime.registry().demux(demux.id).is_none());
         assert!(runtime.registry().filter(filter.id).is_none());
+        assert!(runtime
+            .registry()
+            .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
+            .is_empty());
+        finish_object_close_use_case(&mut runtime, first.completion, Ok(()))
+            .expect("close所有者が終端を確定する");
         assert_eq!(
             runtime
                 .object_table()
@@ -1691,6 +1663,7 @@ mod tests {
                 .lifecycle,
             crate::RuntimeObjectLifecycle::Closed
         );
+        start_guard.release();
     }
 
     #[test]
@@ -1915,8 +1888,11 @@ mod frontend_root_reopen_tests {
                         max_symbol_rate: 0,
                         acquire_range_hz: 0,
                     },
-                    exclusive_group_id: 7,
-                    isdbt_segment: None,
+                    exclusive_group_id: 0x1000_0007,
+                    isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                        is_segment_auto: true,
+                        is_full_segment: true,
+                    }),
                 },
             }]),
             ServiceBootOutcome::Ready

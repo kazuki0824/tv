@@ -2653,9 +2653,32 @@ mod tests {
         runtime
             .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
             .unwrap();
+        // 同一設定はNoopなので、PIDを保ったままPES条件を変えて世代を進める。
+        let before = runtime
+            .registry()
+            .demux_runtime(demux.id)
+            .unwrap()
+            .filter_snapshot(filter.id.0)
+            .unwrap()
+            .generation;
+        let mut reconfigured = configured_pes_filter_config(200);
+        reconfigured.kind = FilterConfigKind::TsPes(PesSettings {
+            stream_id: 0xe0,
+            raw: false,
+        });
         runtime
-            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .configure_filter_runtime_request(filter.id.0, reconfigured)
             .unwrap();
+        assert!(
+            runtime
+                .registry()
+                .demux_runtime(demux.id)
+                .unwrap()
+                .filter_snapshot(filter.id.0)
+                .unwrap()
+                .generation
+                > before
+        );
 
         runtime
             .push_frontend_ts_packet_to_bound_demuxes(
@@ -2973,9 +2996,32 @@ mod tests {
         runtime
             .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
             .unwrap();
+        // 同一設定はNoopなので、PIDを保ったままPES条件を変えて世代を進める。
+        let before = runtime
+            .registry()
+            .demux_runtime(demux.id)
+            .unwrap()
+            .filter_snapshot(filter.id.0)
+            .unwrap()
+            .generation;
+        let mut reconfigured = configured_pes_filter_config(200);
+        reconfigured.kind = FilterConfigKind::TsPes(PesSettings {
+            stream_id: 0xe0,
+            raw: false,
+        });
         runtime
-            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .configure_filter_runtime_request(filter.id.0, reconfigured)
             .unwrap();
+        assert!(
+            runtime
+                .registry()
+                .demux_runtime(demux.id)
+                .unwrap()
+                .filter_snapshot(filter.id.0)
+                .unwrap()
+                .generation
+                > before
+        );
 
         let err = runtime
             .remove_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
