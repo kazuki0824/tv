@@ -26,20 +26,6 @@ internal object RuntimeIdentity {
         }
     }
 
-    fun nextReusablePositiveInt(
-        current: Int,
-        live: Set<Int>,
-        label: String,
-    ): Int {
-        require(current >= 0) { "$label の現在tokenは0以上でなければなりません: $current" }
-        var candidate = current
-        repeat(live.size + 1) {
-            candidate = if (candidate == Int.MAX_VALUE) 1 else candidate + 1
-            if (candidate !in live) return candidate
-        }
-        error("$label のtoken空間が枯渇しました live数=${live.size}")
-    }
-
     fun nextReusablePositiveLong(
         current: Long,
         live: Set<Long>,

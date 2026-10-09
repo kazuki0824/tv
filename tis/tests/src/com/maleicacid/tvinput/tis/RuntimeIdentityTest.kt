@@ -17,13 +17,6 @@ class RuntimeIdentityTest {
         )
 
         check(
-            RuntimeIdentity.nextReusablePositiveInt(
-                current = Int.MAX_VALUE,
-                live = setOf(1, 2),
-                label = "Intトークン",
-            ) == 3,
-        )
-        check(
             RuntimeIdentity.nextReusablePositiveLong(
                 current = Long.MAX_VALUE,
                 live = setOf(1L, 2L),
