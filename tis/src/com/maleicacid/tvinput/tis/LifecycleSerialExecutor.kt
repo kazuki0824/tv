@@ -118,7 +118,7 @@ internal class LifecycleSerialExecutor(
 
     // terminal cleanupだけは通常task identityを消費しない。同じownerで枯渇後も解放を完了する。
     fun executeCleanupControl(command: Runnable) {
-        enqueueUnsequenced(CLEANUP_QUEUE_CLASS, command)
+        enqueueCleanup(CLEANUP_QUEUE_CLASS, command)
     }
 
     fun executeTerminalCleanup(command: Runnable) {

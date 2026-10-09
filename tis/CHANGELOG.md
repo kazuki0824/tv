@@ -20,6 +20,11 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# cleanup優先classのFIFO保持
+
+- cleanup commandへ通常taskとは独立したchecked sequenceを同じexecutor内で付け、通常identity枯渇時もA/B/Cの投入順を保持する。最大値では明示失敗とし、wrap/reuseはしない。
+- ownerをブロックして複数cleanupをenqueueした後の実行順を既存host fixtureへ追加した。別executor・scheduler・台帳は追加しない。テストはCIへ委ね、Soong/VTS/実機確認は未実施。
+
 # 同一PTS置換の従属Clear回収
 
 - 置換対象DisplayのframeTokenに従属するClearも容量計算と成功時commitの除去対象に含める。拒否時は既存queueを保持し、別tokenのClearは変更しない。

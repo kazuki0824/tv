@@ -57,6 +57,43 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
 @Suppress("TooManyFunctions")
 class LifecycleControlDeadlineTest {
     @Test
+    fun cleanupCommandsRemainFifoAfterNormalIdentityExhaustion() {
+        val executor = LifecycleSerialExecutor("cleanup FIFO試験")
+        val entered = CountDownLatch(1)
+        val unblock = CountDownLatch(1)
+        val completed = CountDownLatch(3)
+        val order = Collections.synchronizedList(mutableListOf<String>())
+        try {
+            executor.executeControl {
+                entered.countDown()
+                check(unblock.await(5, TimeUnit.SECONDS))
+            }
+            check(entered.await(5, TimeUnit.SECONDS))
+            val sequence =
+                PrioritySerialExecutor::class.java
+                    .getDeclaredField("nextSequence")
+                    .apply {
+                        isAccessible = true
+                    }.get(executor) as AtomicLong
+            sequence.set(Long.MIN_VALUE)
+            for (label in listOf("A", "B", "C")) {
+                executor.executeCleanupControl {
+                    check(executor.isOwnerThread())
+                    order += label
+                    completed.countDown()
+                }
+            }
+            unblock.countDown()
+            check(completed.await(5, TimeUnit.SECONDS))
+            check(order == listOf("A", "B", "C")) { order.toString() }
+            check(sequence.get() == Long.MIN_VALUE)
+        } finally {
+            unblock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun rejectedCallbackDisposesInputAndRetainsFailedReleaseForOwnerRetry() {
         val executor = LifecycleSerialExecutor("拒否資源試験", maxPendingDataTasks = 1)
         val started = CountDownLatch(1)

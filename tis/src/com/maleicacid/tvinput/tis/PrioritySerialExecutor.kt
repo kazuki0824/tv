@@ -45,6 +45,7 @@ internal abstract class PrioritySerialExecutor(
 
     private val ownerThread = AtomicReference<Thread?>()
     private val nextSequence = AtomicLong()
+    private val nextCleanupSequence = AtomicLong()
     protected val pendingDataSlots =
         Semaphore(maxPendingDataTasks.also { require(it > 0) { "maxPendingDataTasksは正でなければなりません" } })
 
@@ -96,11 +97,16 @@ internal abstract class PrioritySerialExecutor(
     }
 
     // cleanupの方針は呼出元が決め、通常sequenceを消費しない投入機構だけを共有する。
-    protected fun enqueueUnsequenced(
+    protected fun enqueueCleanup(
         queueClass: Int,
         command: Runnable,
     ) {
-        super.execute(QueuedTask(queueClass, 0L, command))
+        val sequence =
+            nextCleanupSequence.getAndUpdate {
+                check(it < Long.MAX_VALUE) { "$ownerName cleanup sequenceが枯渇しました" }
+                it + 1L
+            }
+        super.execute(QueuedTask(queueClass, sequence, command))
     }
 
     protected companion object {

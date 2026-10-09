@@ -836,3 +836,7 @@ Filter callback入口ではFrameworkのcallback lockを保持する区間でowne
 ### serial executorの共通投入機構
 
 ControllerSerialExecutorとLifecycleSerialExecutorはPrioritySerialExecutorを継承し、単一thread、control優先/FIFO順序、owner識別、受理したdataのpermit返却、未実行taskの破棄を共有する。追加threadや別ownerは作らない。controllerの上限1とsessionの上限64、有限control待機、owner再投入、callback入力の解放は各executorの既存方針に残す。通常identity枯渇後のcleanup投入も同じqueueへ入り、通常sequenceを消費しない。既存の飽和・shutdown・取消し・投入/実行失敗試験は共通機構を経由する。
+
+### cleanup classのFIFO
+
+cleanup投入は通常task sequenceと独立した単調sequenceを同じPrioritySerialExecutor内で採番する。通常identity枯渇後もcleanup class内の順序を失わず、同順位commandをqueue実装依存にしない。cleanup sequence自体も最大値で明示失敗とし、wrap/reuseはしない。別thread・scheduler・cleanup台帳を追加せず、通常/control/dataの既存優先順位を維持する。
