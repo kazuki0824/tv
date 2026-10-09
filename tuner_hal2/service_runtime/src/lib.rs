@@ -196,7 +196,10 @@ mod tests {
             + Send
             + 'static,
     {
-        let entry = runtime.registry().frontend(FrontendRuntimeId(frontend_id)).unwrap();
+        let entry = runtime
+            .registry()
+            .frontend(FrontendRuntimeId(frontend_id))
+            .unwrap();
         let plan = maleicacid_tuner_hal2_device::FrontendBackendTunePlan::new(
             frontend_id,
             generation,
@@ -204,12 +207,20 @@ mod tests {
             FrontendDevicePath::new(entry.device_path.clone()),
             isdbt_request(473_142_857),
         );
-        let ticket = runtime.frontend_txn().prepare_backend_submit(kind, plan, None).unwrap();
-        runtime.frontend_txn().start_worker_with_prepared_submit(ticket, move |ctx, ticket| {
-            // 機器要求は送らず準備済み権限を回収し、汎用ワーカーの寿命だけを検査する。
-            assert_eq!(ticket.complete(), maleicacid_tuner_hal2_device::FrontendWorkerStopOutcome::NotRunning);
-            job(ctx)
-        })
+        let ticket = runtime
+            .frontend_txn()
+            .prepare_backend_submit(kind, plan, None)
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .start_worker_with_prepared_submit(ticket, move |ctx, ticket| {
+                // 機器要求は送らず準備済み権限を回収し、汎用ワーカーの寿命だけを検査する。
+                assert_eq!(
+                    ticket.complete(),
+                    maleicacid_tuner_hal2_device::FrontendWorkerStopOutcome::NotRunning
+                );
+                job(ctx)
+            })
     }
 
     fn test_descrambler_pid(pid: u16) -> DescramblerPid {
@@ -793,18 +804,19 @@ mod tests {
                 generation,
             )
             .unwrap();
-        start_frontend_worker_fixture(&mut runtime,
-                1_000_000,
-                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
-                generation,
-                |_ctx| {
-                    Err(HalError::internal(
-                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                        "test frontend worker failure",
-                    ))
-                },
-            )
-            .unwrap();
+        start_frontend_worker_fixture(
+            &mut runtime,
+            1_000_000,
+            maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+            generation,
+            |_ctx| {
+                Err(HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "test frontend worker failure",
+                ))
+            },
+        )
+        .unwrap();
 
         let mut next_generation = None;
         for _ in 0..100 {
@@ -1073,21 +1085,22 @@ mod tests {
                 )
                 .unwrap();
             let tune_tx = reason_tx.clone();
-            start_frontend_worker_fixture(&mut guard,
-                    1_000_000,
-                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
-                    tune_generation,
-                    move |ctx| {
-                        while !ctx.cancel_requested() {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        tune_tx
-                            .send((ctx.kind(), ctx.cancel_reason().unwrap()))
-                            .unwrap();
-                        Ok(())
-                    },
-                )
-                .unwrap();
+            start_frontend_worker_fixture(
+                &mut guard,
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                tune_generation,
+                move |ctx| {
+                    while !ctx.cancel_requested() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    tune_tx
+                        .send((ctx.kind(), ctx.cancel_reason().unwrap()))
+                        .unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
 
             let scan_generation = guard
                 .frontend_txn()
@@ -1113,21 +1126,22 @@ mod tests {
                     vec![isdbt_request(473_142_857)],
                 )
                 .unwrap();
-            start_frontend_worker_fixture(&mut guard,
-                    1_000_000,
-                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
-                    scan_generation,
-                    move |ctx| {
-                        while !ctx.cancel_requested() {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        reason_tx
-                            .send((ctx.kind(), ctx.cancel_reason().unwrap()))
-                            .unwrap();
-                        Ok(())
-                    },
-                )
-                .unwrap();
+            start_frontend_worker_fixture(
+                &mut guard,
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
+                scan_generation,
+                move |ctx| {
+                    while !ctx.cancel_requested() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    reason_tx
+                        .send((ctx.kind(), ctx.cancel_reason().unwrap()))
+                        .unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
         }
 
         crate::frontend_worker_txn::close_frontend_workers_and_live_data(
@@ -1192,20 +1206,21 @@ mod tests {
                     generation,
                 )
                 .unwrap();
-            start_frontend_worker_fixture(&mut guard,
-                    1_000_000,
-                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
-                    generation,
-                    move |ctx| {
-                        while !ctx.cancel_requested() {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        cancel_seen_tx.send(()).unwrap();
-                        release_rx.recv().unwrap();
-                        Ok(())
-                    },
-                )
-                .unwrap();
+            start_frontend_worker_fixture(
+                &mut guard,
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                generation,
+                move |ctx| {
+                    while !ctx.cancel_requested() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    cancel_seen_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
             demux.id
         };
 
