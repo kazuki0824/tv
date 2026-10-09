@@ -3116,6 +3116,110 @@ mod backend_submit_terminal_policy_tests {
     use super::*;
 
     #[test]
+    fn delayed_tune_submit_failure_preserves_replacement_state_and_cleanup_result() {
+        use crate::boot::{FrontendProbeOutcome, ServiceBootOutcome};
+        use crate::registry::{
+            FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
+            IsdbtSegmentCapability, SatellitePowerTopology,
+        };
+        use maleicacid_tuner_hal2_device::FrontendRuntimeState;
+
+        for backend in [
+            FrontendBackendKind::LinuxDvb,
+            FrontendBackendKind::Px4CharDevice,
+        ] {
+            let frontend_id = 7;
+            let mut service = TunerServiceRuntime::new();
+            assert_eq!(
+                service.boot_from_probe_results([FrontendProbeOutcome::Available {
+                    id: FrontendRuntimeId(frontend_id),
+                    backend,
+                    system: FrontendSystem::IsdbT,
+                    path: "/unused-delayed-submit-test".into(),
+                    lnb_profile: None,
+                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                    capability: FrontendCapabilitySnapshot {
+                        scalar: FrontendScalarCapability {
+                            min_frequency_hz: 473_142_857,
+                            max_frequency_hz: 473_142_857,
+                            min_symbol_rate: 0,
+                            max_symbol_rate: 0,
+                            acquire_range_hz: 0,
+                        },
+                        exclusive_group_id: 0x1000_0003,
+                        isdbt_segment: Some(IsdbtSegmentCapability {
+                            is_segment_auto: true,
+                            is_full_segment: true,
+                        }),
+                    },
+                }]),
+                ServiceBootOutcome::Ready,
+            );
+            let mut tuning = service
+                .query()
+                .frontend_runtime_snapshot(frontend_id)
+                .unwrap();
+            tuning.generation = 1;
+            tuning.state = FrontendRuntimeState::Tuning { generation: 1 };
+            service
+                .frontend_txn()
+                .restore_frontend_runtime_snapshot(frontend_id, tuning)
+                .unwrap();
+            service
+                .frontend_txn()
+                .fence_frontend_worker_replacement_generation(frontend_id, 2)
+                .unwrap();
+            let before = service
+                .query()
+                .frontend_runtime_snapshot(frontend_id)
+                .unwrap();
+            let runtime = Arc::new(Mutex::new(service));
+            let primary = HalError::cleanup_failed("submit", "primary");
+            for rollback_succeeded in [true, false] {
+                let failure = FrontendBackendSubmitFailure {
+                    generation: 1,
+                    error: primary.clone(),
+                    rollback_succeeded,
+                    step: Some(BackendTuneStep::ApplyChannel),
+                    rollback_failure: None,
+                };
+                let expected = if rollback_succeeded {
+                    Ok(())
+                } else {
+                    Err(failure.clone().into_error())
+                };
+                assert_eq!(
+                    record_async_backend_submit_failure(&runtime, frontend_id, 1, failure),
+                    expected
+                );
+                let service = runtime.lock().unwrap();
+                assert_eq!(
+                    service
+                        .query()
+                        .frontend_runtime_snapshot(frontend_id)
+                        .unwrap(),
+                    before
+                );
+                let diagnostics = service.frontend_backend_diagnostic_snapshots().unwrap();
+                let diagnostic = diagnostics
+                    .iter()
+                    .find(|entry| entry.backend == backend)
+                    .unwrap();
+                assert_eq!(diagnostic.records.last().unwrap().generation, 1);
+                assert_eq!(diagnostic.records.last().unwrap().primary_error, primary);
+            }
+            let future = FrontendBackendSubmitFailure {
+                generation: 3,
+                error: primary.clone(),
+                rollback_succeeded: true,
+                step: Some(BackendTuneStep::ApplyChannel),
+                rollback_failure: None,
+            };
+            assert!(record_async_backend_submit_failure(&runtime, frontend_id, 3, future).is_err());
+        }
+    }
+
+    #[test]
     fn rollback_completed_backend_submit_failure_is_not_worker_cleanup_failure() {
         let primary = HalError::IoctlFailed {
             backend: "px4",

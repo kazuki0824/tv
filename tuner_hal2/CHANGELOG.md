@@ -1,3 +1,8 @@
+# PR #166 旧tune submit失敗とworker回収結果の分離
+
+- 再選局・stop・closeでfenceされた旧世代の非同期tune失敗を、既存FrontendRuntimeの遅延診断入口へ接続する。現世代の状態を変更せず、rollback成功済みoperation失敗をworker cleanup失敗へ昇格させない。
+- 実非同期記録入口でDVB/PX4の旧世代、rollback未完、未来世代の反例を検査する回帰試験を追加。新しいowner/reaper/retry機構はない。build・試験は既存CIへ委任し、Soong/VTS/実機は未実施。
+
 # PR #166 未使用のreaper公開委譲の除去
 
 - 呼出元のないWorkerRuntimeReaperQueue::pending_valuesを削除した。共通pending owner内の複数key読取り、any_pending、wait_until_releasedは維持する。新しいhelper・状態・試験は追加しない。検証は既存CIへ委ね、Soong/VTS/実機は未実施。

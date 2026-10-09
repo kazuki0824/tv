@@ -784,6 +784,16 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing while recording backend activation failure",
                 )
             })?;
+        if generation < runtime.generation() {
+            // 旧試行の失敗は既存の遅延診断入口へ渡し、現世代の状態を変更しない。
+            return runtime.record_completed_backend_submit_failure(FrontendBackendSubmitFailure {
+                generation,
+                error: diagnostic_primary_error,
+                rollback_succeeded: backend_stopped,
+                step,
+                rollback_failure,
+            });
+        }
         let diagnostic_result = runtime.record_backend_failure_diagnostic_context(
             generation,
             backend,
