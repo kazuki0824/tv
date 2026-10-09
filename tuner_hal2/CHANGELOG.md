@@ -1,3 +1,8 @@
+# frontend reaper受付の有限待機
+
+- Bound frontend tune/scan reaper-admission waits by the existing workerReaperDeadlineMs capability; retain pending ownership and return typed cleanup failure on timeout.
+- 既存workerとcleanup所有を維持する。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
 # フロントエンドclose失敗詳細の日本語統一
 
 - ワーカー終了待ちの未完了を示すruntime error detailを日本語へ統一した。typed error、回収所有権、状態遷移、終了待ち期限は変更していない。
@@ -3394,4 +3399,3 @@
 - 旧制御層をコピーせず、`control` crate に worker / lifecycle / FMQ delivery / stream boundary の型付き骨格を追加した。
 - r50ed 時点では Binder service / AIDL HAL 実装は未達である。
 
-- Bound frontend tune/scan reaper-admission waits by the existing workerReaperDeadlineMs capability; retain pending ownership and return typed cleanup failure on timeout.
