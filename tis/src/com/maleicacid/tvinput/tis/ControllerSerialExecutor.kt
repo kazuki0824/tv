@@ -25,7 +25,12 @@ internal class ControllerSerialExecutor(
         block: () -> T,
     ): Future<T> {
         val task = FutureTask(Callable(block))
-        if (cleanup) enqueueCleanup(CLEANUP_QUEUE_CLASS, task) else executeControl(task)
+        val onDiscarded: () -> Unit = { task.cancel(false) }
+        if (cleanup) {
+            enqueueCleanup(CLEANUP_QUEUE_CLASS, task, onDiscarded = onDiscarded)
+        } else {
+            enqueue(CONTROL_QUEUE_CLASS, task, onDiscarded = onDiscarded)
+        }
         return task
     }
 

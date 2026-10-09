@@ -8,6 +8,12 @@
 - 初回SI待ちの早期returnを、既存Idle状態かつ直前もPENDINGの場合へ限定する。READYからPENDINGへの失効は既存CAS解除・再生停止・字幕終了・利用不能通知へ戻す。新owner・状態機械・migrationは追加しない。
 - 初回bootstrapと失効回帰で実JNI fixtureを共用し、CRC付き同一版矛盾PMT後のStopped、pipeline世代失効、CAS plugin退役、ECM/EMM空集合とPMT継続、利用不能通知を検査する。build・試験は既存CIへ委任し、実機VTS・実波は未実施。
 
+# 優先controller releaseによる未実行Futureの終了通知
+
+- 通常controlとcleanup controlのFutureへ既存QueuedTaskの破棄callbackを接続し、shutdownNowで未実行taskを破棄した場合はcancel完了を通知する。優先releaseが受理済み通常controlを追い越しても同期callerを待機中のまま残さない。
+- 既存host境界試験へ本番currentGeneration/releaseの競合と、通常/cleanup両Futureの破棄完了を追加する。解放用fixtureは試験内で共用し、設計とCI検出件数を更新する。別worker・owner・待機loopを本番へ追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
 # controller releaseの枯渇後cleanup入口
 
 - TunerController.releaseを既存PrioritySerialExecutorのenqueueCleanupへ接続し、通常task sequence枯渇後も同じownerで解放・失敗後の再試行を実行する。通常taskの拒否、成功後だけのshutdownは維持する。

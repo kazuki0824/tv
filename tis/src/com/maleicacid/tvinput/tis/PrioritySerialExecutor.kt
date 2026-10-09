@@ -100,13 +100,14 @@ internal abstract class PrioritySerialExecutor(
     protected fun enqueueCleanup(
         queueClass: Int,
         command: Runnable,
+        onDiscarded: (() -> Unit)? = null,
     ) {
         val sequence =
             nextCleanupSequence.getAndUpdate {
                 check(it < Long.MAX_VALUE) { "$ownerName cleanup sequenceが枯渇しました" }
                 it + 1L
             }
-        super.execute(QueuedTask(queueClass, sequence, command))
+        super.execute(QueuedTask(queueClass, sequence, command, onDiscarded = onDiscarded))
     }
 
     protected companion object {
