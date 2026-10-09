@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Product/TIS更新時の番組表cleanup。
  * Programsは再生成可能なcacheとして扱い、旧release provider-dataをmigrationしない。
  */
+// 同じcleanupの状態・I/O・完了通知を一つの所有者へ保ち、関数数だけを理由に分割しない。
+@Suppress("TooManyFunctions")
 object ProgramUpgradeCleanup {
     private const val PREFS_NAME = "program_upgrade_cleanup"
     private const val KEY_SOFTWARE_IDENTITY = "software_identity"
