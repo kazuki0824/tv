@@ -28,8 +28,8 @@ internal class ResourceCleanup {
         name: String,
         owner: Any?,
         action: () -> Unit,
-    ): Boolean {
-        return try {
+    ): Boolean =
+        try {
             action()
             true
         } catch (error: Throwable) {
@@ -37,7 +37,6 @@ internal class ResourceCleanup {
             synchronized(pending) { pending += Pending(name, action, error, owner) }
             false
         }
-    }
 
     fun retry() {
         val previous = synchronized(pending) { pending.toList() }
