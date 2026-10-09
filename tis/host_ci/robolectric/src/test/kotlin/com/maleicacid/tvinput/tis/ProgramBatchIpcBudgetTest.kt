@@ -8,16 +8,16 @@ import android.content.ContentProviderOperation
 import android.content.ContentProviderResult
 import android.content.ContentUris
 import android.content.ContentValues
-import android.content.ContextWrapper
+import android.content.pm.ProviderInfo
 import android.database.Cursor
 import android.media.tv.TvContract
 import android.net.Uri
-import android.test.mock.MockContentResolver
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowContentResolver
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -42,11 +42,9 @@ class ProgramBatchIpcBudgetTest {
     @Test
     fun androidStoreSplitsAcceptedRowsAndRejectsOversizedSingleOperationBeforeWriting() {
         val provider = BatchProvider()
-        val resolver = MockContentResolver().apply { addProvider(TvContract.AUTHORITY, provider) }
-        val context =
-            object : ContextWrapper(RuntimeEnvironment.getApplication()) {
-                override fun getContentResolver() = resolver
-            }
+        val context = RuntimeEnvironment.getApplication()
+        provider.attachInfo(context, ProviderInfo().apply { authority = TvContract.AUTHORITY })
+        ShadowContentResolver.registerProviderInternal(TvContract.AUTHORITY, provider)
         val writer = TvProviderWriter(context, "input.test")
         val store =
             TvProviderWriter::class.java

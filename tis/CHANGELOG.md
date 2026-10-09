@@ -14,6 +14,29 @@
 - TIS設計と停止済みcleanupの単体期待値をSDK登録寿命へ合わせる。Android 15の実scan/cancelScanning/onScanStoppedと本番operationを接続するRobolectric試験を追加し、constructorのnative/TRM接続とnative呼出しだけを試験境界で代替する。未解放登録による次RF拒否と、SUCCESS/INVALID_STATE後の次RF到達を検査する。
 - 既存Robolectric CIへ試験を接続し、host-only source setとKotlin build ownership検査へ登録する。SDK非公開型の試験runtime依存を明示し、失敗時の完全な例外出力と境界試験2件の実行report確認を接続する。新しい本番owner・wrapper・状態・scheduler・migrationは追加しない。buildと試験はCIで確認し、Soong/device atest/実機VTS/実波は未実施。
 
+## レビュー対応: Program bulk/batch正規契約
+
+- 旧単数Program insert/update/genre読戻しAPIとoverrideを削除し、未対応bulk/batch storeをfail-closedにする。
+- test storeも64操作単位でstage/commitし、batch途中失敗で先行操作が残らない反例を固定する。
+
+- レビュー対応: authoritative windowのobsolete Program削除未実装をfailureへ変更。必要test storeだけwindow削除を明示実装。
+
+## レビュー対応: 未解決service_type
+
+- 未解決と解決済み非対応を分離し、SDT/NIT収集中のlive policyをPENDINGのまま再評価へ残す。
+- null service_typeと未取得SDT/NIT、解決後READY、解決済み非対応UNSUPPORTEDを回帰試験で固定する。
+
+## レビュー対応: scan cancelの公開境界
+
+- cancel確定とTvProvider公開を既存scan ownerのpublication lockへ直列化し、最終snapshot retry中の取消しもCANCELLEDで終了する。
+- retry中・publish gate直前の取消しを副作用なしの回帰試験で固定する。
+
+# controller worker交換後のowner判定
+
+- beforeExecuteで現在実行するworker identityへ更新する。未捕捉例外による交換後も単一thread ownerとcontroller/data再入を維持する試験を追加した。thread数やexecutorは増やさない。
+
+- Localize TunerController runtime failure details without changing scan outcomes.
+
 # Program batch後の不要なindex更新の削除
 
 - 読み手のない既存Program index更新と、そのためだけのPendingWrite 3 field・mutable map/list変換を削除した。service単位query、個別event guard、重複key拒否、batch結果/genre readback契約は維持する。
@@ -951,25 +974,3 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 ## r50ba2
 - `ChannelKeys.kt` を package 外の `../` source path ではなく Soong module dependency 経由で `rec` tests から参照できるよう、`maleicacid_tvinput_channel_keys_sources` filegroup を追加した。
 - No TIS Kotlin implementation, resources, manifest, permissions, or product integration files were changed.
-
-# controller worker交換後のowner判定
-
-- beforeExecuteで現在実行するworker identityへ更新する。未捕捉例外による交換後も単一thread ownerとcontroller/data再入を維持する試験を追加した。thread数やexecutorは増やさない。
-
-- Localize TunerController runtime failure details without changing scan outcomes.
-## レビュー対応: scan cancelの公開境界
-
-- cancel確定とTvProvider公開を既存scan ownerのpublication lockへ直列化し、最終snapshot retry中の取消しもCANCELLEDで終了する。
-- retry中・publish gate直前の取消しを副作用なしの回帰試験で固定する。
-
-## レビュー対応: 未解決service_type
-
-- 未解決と解決済み非対応を分離し、SDT/NIT収集中のlive policyをPENDINGのまま再評価へ残す。
-- null service_typeと未取得SDT/NIT、解決後READY、解決済み非対応UNSUPPORTEDを回帰試験で固定する。
-
-## レビュー対応: Program bulk/batch正規契約
-
-- 旧単数Program insert/update/genre読戻しAPIとoverrideを削除し、未対応bulk/batch storeをfail-closedにする。
-- test storeも64操作単位でstage/commitし、batch途中失敗で先行操作が残らない反例を固定する。
-
-- レビュー対応: authoritative windowのobsolete Program削除未実装をfailureへ変更。必要test storeだけwindow削除を明示実装。
