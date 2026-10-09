@@ -871,7 +871,9 @@ class PlaybackFailureCallbacksTest {
             TvProviderWriter(
                 "input.test",
                 object : TvProviderWriter.ChannelStore {
-                    override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(null)
+                    // 標準整形後に残る型付きstore契約の宣言だけ行長を許容する。
+                    @Suppress("MaxLineLength")
+                    override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> = Result.success(emptyMap())
 
                     override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(null)
 
