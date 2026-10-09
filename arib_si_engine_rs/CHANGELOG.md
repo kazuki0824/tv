@@ -1,3 +1,9 @@
+# 2026-10-09 PR #186 nativeCreate例外生成前のregistryロック解放
+
+- nativeCreateはregistryロック内でhandleまたは既存typed failureだけを確定し、guardを解放した後に共通throw_si_failureからJava例外を生成する。handle枯渇とregistry poisonの両分岐でJVM処理をロック外へ移した。
+- 公開戻り値、例外reason、handle割当、poison記録は維持し、新しいowner・wrapper・状態は追加しない。64bit handle空間の実機枯渇やdeadlock再現を根拠にした修正ではない。
+- ローカルは差分とRust 1.81整形を確認し、build・試験は既存ARIB SI host CIへ委ねる。Soong/device atest/VTS/実機確認は未実施。
+
 # 2026-10-09 Program normalize未使用APIの削除
 
 - 本番呼出元のないProgram normalizeのKotlin facade・native宣言・JNI export・Rust公開関数を削除し、設計のAPI一覧も揃えた。

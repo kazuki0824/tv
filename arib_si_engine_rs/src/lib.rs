@@ -1108,24 +1108,22 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
         );
         return 0;
     }
-    match registry().lock() {
-        Ok(mut guard) => match guard.create() {
-            Some(handle) => handle,
-            None => {
-                let _ = throw_si_failure(
-                    &mut env,
-                    SiJniFailureReason::IdentityExhausted
-                        .failure("SI parser handle空間が枯渇しました"),
-                );
-                0
+    let result = {
+        // registryロック内ではRustの値だけを確定し、Java例外生成は解放後に行う。
+        match registry().lock() {
+            Ok(mut guard) => guard.create().ok_or_else(|| {
+                SiJniFailureReason::IdentityExhausted.failure("SI parser handle空間が枯渇しました")
+            }),
+            Err(_) => {
+                record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+                Err(SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME))
             }
-        },
-        Err(_) => {
-            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
-            let _ = throw_si_failure(
-                &mut env,
-                SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME),
-            );
+        }
+    };
+    match result {
+        Ok(handle) => handle,
+        Err(failure) => {
+            let _ = throw_si_failure(&mut env, failure);
             0
         }
     }
