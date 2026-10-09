@@ -27,7 +27,7 @@ class ProgramUpgradeCleanupTest {
         try {
             val request =
                 caller.submit<Boolean> {
-                    ProgramUpgradeCleanup.ensure {
+                    ProgramUpgradeCleanup.ensure(cleanup = {
                         entered.countDown()
                         check(release.await(5, TimeUnit.SECONDS))
                         ProgramUpgradeCleanup.runCleanupTransaction(
@@ -38,19 +38,19 @@ class ProgramUpgradeCleanupTest {
                                 true
                             },
                         )
-                    }
+                    })
                 }
             check(!request.get(1, TimeUnit.SECONDS))
             check(entered.await(1, TimeUnit.SECONDS))
             repeat(10) {
-                check(!ProgramUpgradeCleanup.ensure { error("cleanupを重複実行しました") })
+                check(!ProgramUpgradeCleanup.ensure(cleanup = { error("cleanupを重複実行しました") }))
             }
             check(!ready.get() && !committed)
             release.countDown()
             worker.submit {}.get(2, TimeUnit.SECONDS)
             check(!running.get() && !ready.get() && !committed && rows.size == 5001)
             check(
-                !ProgramUpgradeCleanup.ensure {
+                !ProgramUpgradeCleanup.ensure(cleanup = {
                     ProgramUpgradeCleanup.runCleanupTransaction(
                         rows.toList(),
                         deleteProgram = { rows.remove(it) },
@@ -59,11 +59,11 @@ class ProgramUpgradeCleanupTest {
                             true
                         },
                     )
-                },
+                }),
             )
             worker.submit {}.get(2, TimeUnit.SECONDS)
             check(committed && rows.isEmpty())
-            check(ProgramUpgradeCleanup.ensure { error("完了後に再削除しました") })
+            check(ProgramUpgradeCleanup.ensure(cleanup = { error("完了後に再削除しました") }))
         } finally {
             release.countDown()
             worker.submit {}.get(2, TimeUnit.SECONDS)
