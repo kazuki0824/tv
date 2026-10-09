@@ -211,8 +211,12 @@ class MaleicacidLiveSession(
             throw error
         }
 
-    private fun enqueueSessionAction(action: () -> Unit) {
+    private fun enqueueSessionAction(
+        control: Boolean = false,
+        action: () -> Unit,
+    ) {
         sessionExecutor.executeCallback(
+            control = control,
             isReleased = releaseOnce::get,
             onFailure = ::handleSubmissionFailure,
             action = action,
@@ -326,7 +330,22 @@ class MaleicacidLiveSession(
                 else -> {
                     tuneRequestQueued = true
                     runCatching {
-                        sessionExecutor.executeControl { processLatestTuneRequest() }
+                        ProgramUpgradeCleanup.ensure(appContext) { success ->
+                            enqueueSessionAction(control = true) {
+                                if (success) {
+                                    processLatestTuneRequest()
+                                } else {
+                                    val uri =
+                                        synchronized(tuneRequestLock) {
+                                            tuneRequestQueued = false
+                                            pendingTuneUri.also { pendingTuneUri = null }
+                                        }
+                                    if (uri != null) {
+                                        handleAcceptedTuneFailure(uri, IllegalStateException("Program cleanupに失敗しました"))
+                                    }
+                                }
+                            }
+                        }
                         true
                     }.onFailure {
                         tuneRequestQueued = false

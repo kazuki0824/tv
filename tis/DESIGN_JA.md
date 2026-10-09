@@ -9,7 +9,7 @@ TIS の setup / boot EPG sync / user unlock drain は、固定文字列や packa
 
 TISがstale callback fence、owner世代、runtime tokenとして使用するgeneration / IDは、silent wrap、saturating increment、live identityとの無検査reuseを行わない。単調世代（Tuner tune generation、scan generation、playback generation、broadcast-clock discontinuity generation、caption presentation epoch）はchecked incrementを使い、最大値到達時は現在のowner/stateをfail-closedにfenceして新しい世代を発行しない。枯渇後のsentinelを有効世代としてcallback比較・publish・playback開始へ使用しない。
 
-有限live-set内で再利用可能なtoken（MediaSync audio buffer ID、caption frame token、Timing=10 pending/arm token）は正数空間を明示的に巡回してよいが、再利用候補が現在のlive-setに存在しないことを発行時に検査する。使用中tokenとの衝突がない候補を取得できなければ発行を失敗させる。wrapそのものをgeneration更新の代替にしない。
+有限live-set内で再利用可能なtoken（caption frame token、Timing=10 pending/arm token）は正数空間を明示的に巡回してよいが、再利用候補が現在のlive-setに存在しないことを発行時に検査する。使用中tokenとの衝突がない候補を取得できなければ発行を失敗させる。wrapそのものをgeneration更新の代替にしない。
 
 SI parser内部のcollection generation / ingest sequence / parser handleは `../arib_si_engine_rs/DESIGN_JA.md` の枯渇契約を正とし、TISは `IDENTITY_EXHAUSTED` / internal failureを空snapshot、未観測SI、通常のcollection timeoutへ読み替えない。
 
@@ -867,3 +867,11 @@ AV callback配列の途中処理が失敗した場合、現在eventがdecoderへ
 MediaCodecのrelease成功を、そのcodecに従属するoutput bufferの解放義務の終端とする。成功前は既存ResourceCleanupが子outputと親codecの失敗を保持する。成功後は同codec ownerの子actionと保持audio参照を完了し、閉鎖済みcodecへoutput releaseをretryしない。旧DecoderPipelineに遅着したoutput callbackも親release済みなら新たな子義務を作らない。他codecやMediaEventの未解放義務は同時に完了扱いにしない。
 
 MediaEvent解放の初回失敗では既存released fenceを立て、PLAYBACK_RECOVERY_FAILEDを通知し、既存terminal cleanupを同じplayback ownerへ一度投入する。通常AV入力の処理を継続せず、Filter closeによるcallback解除と有限の受理済みqueueの破棄を行う。AOSP Filter.closeはnative close失敗前にもcallbackを解除するため、保持量は既に受理したevent・decoder予算と既存資源の解放義務に閉じる。未解放義務は捨てず、同じResourceCleanupの再試行まで保持する。
+
+### Program cleanup中の要求継続
+
+cleanup未完了をsession objectの同期作成拒否へ読み替えず、既存sessionのlatest tune要求を保留する。cleanup結果は同じsession control ownerへ一度通知し、成功時だけtune/Program利用へ進み、失敗時は既存accepted failure経路へ渡す。setupは既存ActiveScanTaskを予約してRunningを表示し、完了通知から同じscan executorで開始またはtyped失敗する。boot jobは既存pending/job再受付へ完了を接続する。I/Oは単一cleanup workerのままとし、完了と要求登録を同じlockで扱う。失敗時の旧Program使用は禁止し、新しいscheduler・migration・cleanup ownerは作らない。
+
+### MediaSync音声IDと遅延callback
+
+音声consume callbackはsync identityおよびplayback generationを照合してからoutstanding mapを変更する。同一MediaSyncではIDをchecked incrementし、解放済みIDも再利用しない。Int最大値ではfail-closedとし、callback寿命を推測する台帳は作らない。新MediaSync作成時だけIDを再開でき、旧sync callbackはidentity/generation fenceで拒否する。

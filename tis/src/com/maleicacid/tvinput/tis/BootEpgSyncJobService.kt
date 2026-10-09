@@ -47,7 +47,10 @@ class BootEpgSyncJobService : JobService() {
                 // 続けて番組表の同期を開始する。
             }
         }
-        if (!ProgramUpgradeCleanup.ensure(applicationContext)) {
+        if (!ProgramUpgradeCleanup.ensure(applicationContext) { success ->
+                if (success) BootEpgSyncScheduler.scheduleIfEligible(applicationContext, "PROGRAM_CLEANUP_COMPLETED")
+            }
+        ) {
             DirectBootGuard.deferPending(applicationContext, "PROGRAM_UPGRADE_CLEANUP_FAILED")
             return finish(run, needsReschedule = true)
         }

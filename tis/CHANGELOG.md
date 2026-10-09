@@ -51,6 +51,12 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# cleanup要求継続と遅延音声callbackの保護
+
+- Program cleanup完了を既存session control・setup scan・boot jobへ通知し、最初の利用要求を失わない。失敗時は旧Program使用を拒否する。単一worker、既存latest tune/ActiveScanTask/pending jobを再利用し、schedulerやmigrationは追加しない。
+- MediaSync consume入口はsync/世代照合をmap変更の前に行う。同一sync内の音声IDは再利用せず、最大値で明示失敗にする。新sync作成時だけIDを再開する。
+- 遅い実Providerの失敗通知とsetup受付、単一onTune要求の完了後再開/失敗時拒否、最大IDと旧sync callbackによる現在outputの無変更をCI回帰試験へ接続した。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
 # PMT初期待ちとProgram IPC境界のレビュー対応
 
 - live SIがPENDINGでも現行世代のPMT Filter取得を進め、playback/Program/CAS確定は既存READY契約まで待機する。実PAT/SDT/NITから本番refresh・Filter開始・PMT受信・READYを通すhost試験を追加した。

@@ -23,30 +23,71 @@ object ProgramUpgradeCleanup {
             Thread(runnable, "maleicacid-program-upgrade-cleanup").apply { isDaemon = true }
         }
 
-    /** 完了状態だけを返す。Provider・設定・package照会を呼出元で実行しない。 */
-    fun ensure(context: Context): Boolean = ensure { cleanup(context.applicationContext) }
+    private val completionLock = Any()
+    private val completions = mutableListOf<(Boolean) -> Unit>()
 
-    // worker境界で例外を診断し、次回受付で同じcleanupを再試行できる状態へ戻す。
+    /** Provider I/Oを呼出元で行わず、保留した利用要求へ完了を一度通知する。 */
+    fun ensure(
+        context: Context,
+        onComplete: ((Boolean) -> Unit)? = null,
+    ): Boolean = ensure(cleanup = { cleanup(context.applicationContext) }, onComplete = onComplete)
+
+    // ready/runningと登録を同じlockで扱い、完了と登録の競合で要求を失わない。
     @Suppress("TooGenericExceptionCaught")
-    internal fun ensure(cleanup: () -> Boolean): Boolean {
-        if (ready.get()) return true
-        if (running.compareAndSet(false, true)) {
+    internal fun ensure(
+        cleanup: () -> Boolean,
+        onComplete: ((Boolean) -> Unit)? = null,
+    ): Boolean {
+        var alreadyReady = false
+        val start =
+            synchronized(completionLock) {
+                if (ready.get()) {
+                    alreadyReady = true
+                    false
+                } else {
+                    onComplete?.let(completions::add)
+                    running.compareAndSet(false, true)
+                }
+            }
+        if (alreadyReady) {
+            onComplete?.invoke(true)
+            return true
+        }
+        if (start) {
             try {
                 worker.execute {
-                    try {
-                        ready.set(cleanup())
-                    } catch (error: Exception) {
-                        Log.w(LogTags.TIS, "Program upgrade cleanupに失敗しました", error)
-                    } finally {
-                        running.set(false)
-                    }
+                    val success =
+                        try {
+                            cleanup()
+                        } catch (error: Exception) {
+                            Log.w(LogTags.TIS, "Program upgrade cleanupに失敗しました", error)
+                            false
+                        }
+                    complete(success)
                 }
             } catch (error: java.util.concurrent.RejectedExecutionException) {
-                running.set(false)
                 Log.w(LogTags.TIS, "Program upgrade cleanupを受け付けられません", error)
+                complete(false)
             }
         }
         return false
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun complete(success: Boolean) {
+        val callbacks =
+            synchronized(completionLock) {
+                ready.set(success)
+                running.set(false)
+                completions.toList().also { completions.clear() }
+            }
+        callbacks.forEach { callback ->
+            try {
+                callback(success)
+            } catch (error: Exception) {
+                Log.w(LogTags.TIS, "Program cleanup完了通知に失敗しました", error)
+            }
+        }
     }
 
     // 未準備の原因を発生点で返す。I/Oは単一workerだけが実行する。

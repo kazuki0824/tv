@@ -80,6 +80,8 @@ class ProgramCleanupProviderTest {
                 override fun getContentResolver(): ContentResolver = resolver
 
                 override fun getPackageName(): String = "own.package"
+
+                override fun getApplicationContext() = this
             }
         val ready =
             ProgramUpgradeCleanup::class.java
@@ -103,12 +105,34 @@ class ProgramCleanupProviderTest {
             check(!caller.submit<Boolean> { ProgramUpgradeCleanup.ensure(cleanup) }.get(1, TimeUnit.SECONDS))
             check(entered.await(1, TimeUnit.SECONDS))
             check(!caller.submit<Boolean> { ProgramUpgradeCleanup.ensure(cleanup) }.get(1, TimeUnit.SECONDS))
-            check(!ready.get() && !committed)
+            val firstCompletion =
+                java.util.concurrent.atomic
+                    .AtomicReference<Boolean>()
+            check(!ProgramUpgradeCleanup.ensure(cleanup, firstCompletion::set))
+            val setupGeneration = checkNotNull(ChannelScanManager.startIfIdle(context, "own/input"))
+            check(ChannelScanManager.currentState() is ScanState.Running)
+            check(firstCompletion.get() == null && !ready.get() && !committed)
             release.countDown()
             worker.submit {}.get(5, TimeUnit.SECONDS)
-            check(!ready.get() && !committed && rows.size == 5001)
+            check(!ready.get() && !committed && rows.size == 5001 && firstCompletion.get() == false)
+            val scanWorker =
+                ChannelScanManager::class.java
+                    .getDeclaredField("executor")
+                    .apply {
+                        isAccessible = true
+                    }.get(ChannelScanManager) as ExecutorService
+            scanWorker.submit {}.get(5, TimeUnit.SECONDS)
+            val failed = ChannelScanManager.currentState() as ScanState.Failed
+            check(failed.generation == setupGeneration && failed.message == "Program cleanupに失敗しました")
             rejectDelete = false
-            check(!ProgramUpgradeCleanup.ensure(cleanup))
+            val resumed = CountDownLatch(1)
+            check(
+                !ProgramUpgradeCleanup.ensure(cleanup) { success ->
+                    check(success && rows.isEmpty() && committed)
+                    resumed.countDown()
+                },
+            )
+            check(resumed.await(5, TimeUnit.SECONDS))
             worker.submit {}.get(5, TimeUnit.SECONDS)
             check(rows.isEmpty() && committed && ProgramUpgradeCleanup.ensure(cleanup))
         } finally {

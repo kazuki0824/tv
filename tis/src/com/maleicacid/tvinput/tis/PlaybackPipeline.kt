@@ -996,6 +996,7 @@ class PlaybackPipeline(
         runCatching {
             val sync = MediaSync()
             mediaSync = sync
+            nextAudioBufferId = 0
             nextAvailabilityArmSequence = 1L
             sync.setCallback(
                 object : MediaSync.Callback() {
@@ -1117,11 +1118,11 @@ class PlaybackPipeline(
         generation: Long,
         bufferId: Int,
     ) {
+        if (sync !== mediaSync || generation != playbackGeneration) return
         releaseAudioOutput(bufferId)
         if (outstandingAudioOutputs.isEmpty()) {
             audioOutputBackpressureStartedAtMs = null
         }
-        if (sync !== mediaSync || generation != playbackGeneration) return
     }
 
     private fun releaseAudioOutput(bufferId: Int) {
@@ -2910,13 +2911,9 @@ class PlaybackPipeline(
     }
 
     private fun allocateAudioBufferId(): Int {
-        val live = outstandingAudioOutputs.keys + pendingAudioOutputReleases
-        val next =
-            RuntimeIdentity.nextReusablePositiveInt(
-                current = nextAudioBufferId,
-                live = live,
-                label = "MediaSync音声buffer",
-            )
+        // 同じMediaSyncへ配送済みのcallback寿命を追跡する第二台帳は作らず、同一sync内では再利用しない。
+        val next = RuntimeIdentity.nextInt(nextAudioBufferId, "MediaSync音声buffer")
+        check(next > 0) { "MediaSync音声buffer IDは正でなければなりません" }
         nextAudioBufferId = next
         return next
     }
