@@ -110,6 +110,7 @@ internal abstract class PrioritySerialExecutor(
     }
 
     protected companion object {
+        const val CLEANUP_QUEUE_CLASS = -1
         const val CONTROL_QUEUE_CLASS = 0
         const val DATA_QUEUE_CLASS = 1
         private const val INITIAL_QUEUE_CAPACITY = 11

@@ -8,6 +8,12 @@
 - 初回SI待ちの早期returnを、既存Idle状態かつ直前もPENDINGの場合へ限定する。READYからPENDINGへの失効は既存CAS解除・再生停止・字幕終了・利用不能通知へ戻す。新owner・状態機械・migrationは追加しない。
 - 初回bootstrapと失効回帰で実JNI fixtureを共用し、CRC付き同一版矛盾PMT後のStopped、pipeline世代失効、CAS plugin退役、ECM/EMM空集合とPMT継続、利用不能通知を検査する。build・試験は既存CIへ委任し、実機VTS・実波は未実施。
 
+# controller releaseの枯渇後cleanup入口
+
+- TunerController.releaseを既存PrioritySerialExecutorのenqueueCleanupへ接続し、通常task sequence枯渇後も同じownerで解放・失敗後の再試行を実行する。通常taskの拒否、成功後だけのshutdownは維持する。
+- cleanup classの既存定数を共通queueへ集約し、既存Future投入へcleanup選択を追加する。本番release入口の枯渇・cleanup失敗・再試行・完了を既存host境界試験へ追加し、TIS設計とCI検出件数を更新する。別executor・資源owner・retry loopは追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
 # 字幕時計確定時のpresentation horizon再検査
 
 - clock未確定中に受理した字幕も、時計確定・再arm時と新規入力の容量判定前に既存60秒horizonを再検査する。超過Displayと従属Clearを診断付きで除去し、既存queueの容量を戻す。

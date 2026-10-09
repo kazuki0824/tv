@@ -20,9 +20,12 @@ internal class ControllerSerialExecutor(
 
     fun executeData(command: Runnable) = acquireDataSlotAndEnqueue(command)
 
-    fun <T> submitControl(block: () -> T): Future<T> {
+    fun <T> submitControl(
+        cleanup: Boolean = false,
+        block: () -> T,
+    ): Future<T> {
         val task = FutureTask(Callable(block))
-        executeControl(task)
+        if (cleanup) enqueueCleanup(CLEANUP_QUEUE_CLASS, task) else executeControl(task)
         return task
     }
 

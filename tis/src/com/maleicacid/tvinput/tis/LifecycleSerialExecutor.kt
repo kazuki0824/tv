@@ -241,7 +241,6 @@ internal class LifecycleSerialExecutor(
 
     private companion object {
         const val DEFAULT_MAX_PENDING_DATA_TASKS = 64
-        const val CLEANUP_QUEUE_CLASS = -1
         const val CONTROL_QUEUED = 0
         const val CONTROL_RUNNING = 1
         const val CONTROL_DONE = 2
