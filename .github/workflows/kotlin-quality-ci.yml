@@ -104,7 +104,7 @@ jobs:
               ),
               "tis/host_ci/robolectric/build.gradle.kts": (
                   'id("com.android.library") version "8.7.0"',
-                  'java.setSrcDirs(listOf("../../tests/src"))',
+                  'java.setSrcDirs(listOf("../../tests/src", "src/test/kotlin"))',
                   'testImplementation("org.robolectric:robolectric:4.16.1")',
               ),
               "tis/host_ci/robolectric/settings.gradle.kts": (
@@ -153,6 +153,7 @@ jobs:
               tis/src/*.kt|tis/tests/src/*.kt|\
               tis/arib_parental_rating/src/*.kt|tis/arib_parental_rating/tests/src/*.kt|\
               tis/host_ci/kotlin/*.kt|\
+              tis/host_ci/robolectric/src/test/kotlin/*.kt|\
               tis/host_ci/robolectric/build.gradle.kts|\
               tis/host_ci/robolectric/settings.gradle.kts|\
               rec/tests/src/*.kt|\
