@@ -824,7 +824,7 @@ class PlaybackFailureCallbacksTest {
     @Test
     fun synchronousTuneFailureStopsRemainingInitialScanCandidates() {
         val executor = ControllerSerialExecutor("scan同期選局拒否試験")
-        val fixture = Fixture(false, false, failCleanup = false)
+        val fixture = executor.submitControl { Fixture(false, false, failCleanup = false) }.get(5, TimeUnit.SECONDS)
         val controller = fixture.allocate(TunerController::class.java)
         val scan = fixture.allocate(ChannelScanController::class.java)
         val engine =
@@ -867,7 +867,8 @@ class PlaybackFailureCallbacksTest {
         val candidates = JapanIsdbScanPlan.defaultInitialScan().take(3)
         try {
             val result = scan.startInitialScan(candidates)
-            check(result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED) { result.toString() }
+            val terminal = result.terminal.outcome
+            check(terminal == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED) { result.toString() }
             check(result.scanned == 1 && result.successfulCandidates == 0 && result.published == 0)
             check(result.diagnostics.single().candidate == candidates.first())
         } finally {
