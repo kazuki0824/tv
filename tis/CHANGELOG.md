@@ -51,6 +51,10 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# 2026-10-09 PR186レビュー履歴の整理
+
+- playback登録解除、caption/renderer cleanup保持、Program cleanup要求継続の履歴を古いreleaseより前へ統合した。PMT・cleanup FIFO・音声callback・保留tuneの追加試験を含む通常host検出数は376件。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
 # cleanup要求継続と遅延音声callbackの保護
 
 - Program cleanup完了を既存session control・setup scan・boot jobへ通知し、最初の利用要求を失わない。失敗時は旧Program使用を拒否する。単一worker、既存latest tune/ActiveScanTask/pending jobを再利用し、schedulerやmigrationは追加しない。

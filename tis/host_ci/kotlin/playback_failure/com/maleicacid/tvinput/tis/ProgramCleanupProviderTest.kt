@@ -126,14 +126,28 @@ class ProgramCleanupProviderTest {
             check(failed.generation == setupGeneration && failed.message == "Program cleanupに失敗しました")
             rejectDelete = false
             val resumed = CountDownLatch(1)
+            val retryEntered = CountDownLatch(1)
+            val continueRetry = CountDownLatch(1)
             check(
-                !ProgramUpgradeCleanup.ensure(cleanup) { success ->
+                !ProgramUpgradeCleanup.ensure(cleanup = {
+                    retryEntered.countDown()
+                    check(continueRetry.await(5, TimeUnit.SECONDS))
+                    cleanup()
+                }, onComplete = { success ->
                     check(success && rows.isEmpty() && committed)
                     resumed.countDown()
-                },
+                }),
             )
+            check(retryEntered.await(5, TimeUnit.SECONDS))
+            val retriedSetup = checkNotNull(ChannelScanManager.startIfIdle(context, "own/input"))
+            check(ChannelScanManager.currentState() is ScanState.Running)
+            continueRetry.countDown()
             check(resumed.await(5, TimeUnit.SECONDS))
             worker.submit {}.get(5, TimeUnit.SECONDS)
+            scanWorker.submit {}.get(5, TimeUnit.SECONDS)
+            // cleanup成功後は再要求なしで実scanへ進む。hostのAndroid Tuner constructorは未提供。
+            val attempted = ChannelScanManager.currentState() as ScanState.Failed
+            check(attempted.generation == retriedSetup && attempted.message != "Program cleanupに失敗しました")
             check(rows.isEmpty() && committed && ProgramUpgradeCleanup.ensure(cleanup))
         } finally {
             release.countDown()
