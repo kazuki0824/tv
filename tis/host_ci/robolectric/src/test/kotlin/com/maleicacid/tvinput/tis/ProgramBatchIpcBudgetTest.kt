@@ -56,16 +56,17 @@ class ProgramBatchIpcBudgetTest {
         check(outcomes.size == 64 && outcomes.map { it.programId } == (1L..64L).toList())
         check(provider.batches.size > 1 && provider.batches.sumOf { it.size } == 64)
         // Rustの正常上限のopaque bytesと標準列を同じ本番store入口へ渡す。
-        val boundary = values(65, 32_768).apply {
-            put(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS, 1_700_000_000_000L)
-            put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, 1_700_000_060_000L)
-            put(TvContract.Programs.COLUMN_SHORT_DESCRIPTION, "番組の説明")
-            put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, "追加の番組説明")
-            put(TvContract.Programs.COLUMN_VIDEO_WIDTH, 1_920)
-            put(TvContract.Programs.COLUMN_VIDEO_HEIGHT, 1_080)
-            put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, "ja")
-            put(TvContract.Programs.COLUMN_CANONICAL_GENRE, "NEWS")
-        }
+        val boundary =
+            values(65, 32_768).apply {
+                put(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS, 1_700_000_000_000L)
+                put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, 1_700_000_060_000L)
+                put(TvContract.Programs.COLUMN_SHORT_DESCRIPTION, "番組の説明")
+                put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, "追加の番組説明")
+                put(TvContract.Programs.COLUMN_VIDEO_WIDTH, 1_920)
+                put(TvContract.Programs.COLUMN_VIDEO_HEIGHT, 1_080)
+                put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, "ja")
+                put(TvContract.Programs.COLUMN_CANONICAL_GENRE, "NEWS")
+            }
         val boundaryResult = store.upsertProgramsBatch(listOf(TvProviderWriter.ProgramUpsertRequest(null, boundary)))
         check(boundaryResult.getOrThrow().single().programId == 65L)
         check(provider.batches.last().size == 1)
