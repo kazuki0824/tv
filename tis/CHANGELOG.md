@@ -8,6 +8,12 @@
 - 初回SI待ちの早期returnを、既存Idle状態かつ直前もPENDINGの場合へ限定する。READYからPENDINGへの失効は既存CAS解除・再生停止・字幕終了・利用不能通知へ戻す。新owner・状態機械・migrationは追加しない。
 - 初回bootstrapと失効回帰で実JNI fixtureを共用し、CRC付き同一版矛盾PMT後のStopped、pipeline世代失効、CAS plugin退役、ECM/EMM空集合とPMT継続、利用不能通知を検査する。build・試験は既存CIへ委任し、実機VTS・実波は未実施。
 
+# Lifecycle同期control破棄時の終了通知
+
+- callControlの通常control/cleanup control両経路へ既存QueuedTaskの破棄callbackを接続し、未開始FutureをcancelBeforeStartで完了する。開始phase CASと開始済み結果未確定の契約を維持し、terminal cleanup後の取消しをtimeoutとして報告しない。
+- 既存host試験へ、owner停止中にterminal cleanupと同期callerを投入し、shutdown後に通常/cleanup双方のcallerがtimeout前にCancellationExceptionで終了する回帰を追加する。別owner・worker・本番待機機構・migrationは追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
 # 優先controller releaseによる未実行Futureの終了通知
 
 - 通常controlとcleanup controlのFutureへ既存QueuedTaskの破棄callbackを接続し、shutdownNowで未実行taskを破棄した場合はcancel完了を通知する。優先releaseが受理済み通常controlを追い越しても同期callerを待機中のまま残さない。

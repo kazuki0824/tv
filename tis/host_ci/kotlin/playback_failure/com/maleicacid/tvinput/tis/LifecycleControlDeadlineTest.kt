@@ -5,6 +5,7 @@ package com.maleicacid.tvinput.tis
 
 import org.junit.Test
 import java.util.Collections
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -56,6 +57,45 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
 // 同じexecutorの投入・期限・shutdown・cleanup境界を一緒に試験する。
 @Suppress("TooManyFunctions")
 class LifecycleControlDeadlineTest {
+    @Test
+    fun terminalCleanupCancelsUnstartedNormalControlWithoutTimeout() = assertTerminalCleanupCancelsQueuedControl(false)
+
+    @Test
+    fun terminalCleanupCancelsUnstartedCleanupControlWithoutTimeout() = assertTerminalCleanupCancelsQueuedControl(true)
+
+    private fun assertTerminalCleanupCancelsQueuedControl(cleanup: Boolean) {
+        val executor = LifecycleSerialExecutor("terminal破棄試験")
+        val caller = Executors.newSingleThreadExecutor()
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val executed = AtomicBoolean(false)
+        try {
+            executor.executeControl {
+                entered.countDown()
+                resume.await()
+            }
+            check(entered.await(1, TimeUnit.SECONDS))
+            executor.executeTerminalCleanup { executor.shutdownNow() }
+            val failure =
+                caller.submit<Throwable?> {
+                    runCatching { executor.callControl(5_000L, cleanup) { executed.set(true) } }.exceptionOrNull()
+                }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
+            while (executor.queue.size != 2 && System.nanoTime() < deadline) Thread.yield()
+            check(executor.queue.size == 2)
+            resume.countDown()
+            check(executor.awaitTermination(1, TimeUnit.SECONDS))
+            check(executor.isShutdown && executor.queue.isEmpty())
+            check(failure.get(1, TimeUnit.SECONDS) is CancellationException)
+            check(!executed.get())
+        } finally {
+            resume.countDown()
+            executor.shutdownNow()
+            caller.shutdownNow()
+            check(caller.awaitTermination(1, TimeUnit.SECONDS))
+        }
+    }
+
     @Test
     fun cleanupCommandsRemainFifoAfterNormalIdentityExhaustion() {
         val executor = LifecycleSerialExecutor("cleanup FIFO試験")

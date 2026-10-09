@@ -214,7 +214,12 @@ internal class LifecycleSerialExecutor(
     ): T {
         if (isOwnerThread()) return block()
         val task = ControlFutureTask(Callable(block))
-        if (cleanup) executeCleanupControl(task) else executeControl(task)
+        val onDiscarded: () -> Unit = { task.cancelBeforeStart() }
+        if (cleanup) {
+            enqueueCleanup(CLEANUP_QUEUE_CLASS, task, onDiscarded = onDiscarded)
+        } else {
+            enqueue(CONTROL_QUEUE_CLASS, task, { finishOwnerTask(hasDataSlot = false) }, onDiscarded)
+        }
         return try {
             task.get(timeoutMs, TimeUnit.MILLISECONDS)
         } catch (error: TimeoutException) {
