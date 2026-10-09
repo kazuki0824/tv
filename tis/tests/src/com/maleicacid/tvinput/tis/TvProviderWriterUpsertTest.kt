@@ -23,7 +23,8 @@ class TvProviderWriterUpsertTest {
         var writes = 0
         val store =
             object : TvProviderWriter.ChannelStore {
-                override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(1L)
+                override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+                    Result.success(keys.associateWith { 1L })
 
                 override fun insertChannel(values: ContentValues): Result<Long?> {
                     writes++

@@ -46,7 +46,7 @@ class TisReviewBoundaryTest {
             object : TvProviderWriter.ChannelStore {
                 val channels = linkedMapOf<Long, ContentValues>()
 
-                override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(null)
+                override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> = Result.success(emptyMap())
 
                 // 標準整形後に残る型付きstore契約の宣言だけ行長を許容する。
                 @Suppress("MaxLineLength")
