@@ -892,13 +892,7 @@ class TunerController(
             }
         val closeFailure = releaseFrontendBeforeTypeChange(tunerInstance, settings.type)
         if (closeFailure != null) {
-            return TuneOutcome(
-                false,
-                Tuner.RESULT_UNKNOWN_ERROR,
-                channel,
-                tuneGeneration,
-                "frontend type切替前のlease解放に失敗しました: ${closeFailure.message}",
-            )
+            return TuneOutcome(false, Tuner.RESULT_UNKNOWN_ERROR, channel, tuneGeneration, "frontend解放失敗: ${closeFailure.message}")
         }
         val nextGeneration =
             runCatching { nextTuneGenerationOrFence() }.getOrElse { error ->
