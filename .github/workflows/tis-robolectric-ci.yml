@@ -65,7 +65,7 @@ jobs:
               print(f"Android 15実SDK境界試験: {case.get('name')} success")
           playback_report = report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest.xml")
           playback = ET.parse(playback_report).getroot()
-          assert playback.get("tests") == "9", playback.attrib
+          assert playback.get("tests") == "11", playback.attrib
           assert playback.get("failures") == "0" and playback.get("errors") == "0", playback.attrib
           assert playback.get("skipped", "0") == "0", playback.attrib
           for case in playback.findall("testcase"):

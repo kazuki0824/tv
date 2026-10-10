@@ -28,6 +28,7 @@ import org.robolectric.annotation.Implements
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowSystemClock
 import org.robolectric.util.ReflectionHelpers
+import java.nio.ByteBuffer
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
@@ -45,11 +46,92 @@ import kotlin.test.assertTrue
         PlaybackFilterAdmissionTest.NativeTuner::class,
         PlaybackFilterAdmissionTest.NativeFilter::class,
         PlaybackFilterAdmissionTest.NativeMediaEvent::class,
+        PlaybackFilterAdmissionTest.NativeLinearBlock::class,
     ],
 )
 // 同じproduction ownerとAndroid境界fixtureを共有する。
 @Suppress("TooManyFunctions", "LargeClass")
 class PlaybackFilterAdmissionTest {
+    @Test
+    fun avOverflowDiscardsPreFlushAndInFlightInputAndAcceptsPostFlushInput() {
+        for (audio in listOf(false, true)) {
+            for (afterClear in listOf(false, true)) {
+                val newInput = mappedMediaEvent()
+                Fixture().use { fixture ->
+                    fixture.decoder(audio)
+                    val filter = fixture.avFilter(audio)
+                    val decoderField = if (audio) "audioDecoder" else "videoDecoder"
+                    val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, decoderField)
+                    val native = Shadow.extract<NativeFilter>(filter)
+                    val pending = mappedMediaEvent()
+                    deliver(filter, pending)
+                    fixture.drain()
+                    assertEquals(listOf(pending), fixture.pendingEvents(audio))
+                    val old = mappedMediaEvent()
+                    val beforeExecution = mappedMediaEvent()
+                    val duringFlush = mappedMediaEvent()
+                    val (started, allow) = native.blockNextReclamation(afterClear)
+                    try {
+                        fixture.whileOwnerBlocked {
+                            deliver(filter, old)
+                            status(filter, Filter.STATUS_OVERFLOW)
+                            deliver(filter, beforeExecution)
+                        }
+                        assertTrue(started.await(5, TimeUnit.SECONDS))
+                        deliver(filter, duringFlush)
+                    } finally {
+                        allow.countDown()
+                    }
+                    fixture.drain()
+                    assertEquals(emptyList(), fixture.pendingEvents(audio))
+                    for (event in listOf(old, beforeExecution, duringFlush)) {
+                        assertEquals(0, Shadow.extract<NativeMediaEvent>(event).blockReads)
+                        assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
+                    }
+                    assertEquals(1, Shadow.extract<NativeMediaEvent>(pending).releases)
+                    deliver(filter, newInput)
+                    fixture.drain()
+                    assertEquals(listOf(newInput), fixture.pendingEvents(audio))
+                    assertEquals(1, Shadow.extract<NativeMediaEvent>(newInput).blockReads)
+                    assertEquals(0, Shadow.extract<NativeMediaEvent>(newInput).releases)
+                    assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+                    assertTrue(decoder === ReflectionHelpers.getField(fixture.pipeline, decoderField))
+                    assertEquals(0, native.closes)
+                    assertEquals(1, native.flushes)
+                    assertTrue(fixture.failures.isEmpty())
+                }
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(newInput).releases)
+            }
+        }
+    }
+
+    @Test
+    fun failedAvFlushKeepsInputClosedUntilSuccessfulFlush() {
+        for (audio in listOf(false, true)) {
+            Fixture().use { fixture ->
+                fixture.decoder(audio)
+                val filter = fixture.avFilter(audio)
+                val native = Shadow.extract<NativeFilter>(filter)
+                native.flushResult = Tuner.RESULT_UNKNOWN_ERROR
+                status(filter, Filter.STATUS_OVERFLOW)
+                fixture.drain()
+                val rejected = mappedMediaEvent()
+                deliver(filter, rejected)
+                fixture.drain()
+                assertEquals(emptyList(), fixture.pendingEvents(audio))
+                assertEquals(0, Shadow.extract<NativeMediaEvent>(rejected).blockReads)
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(rejected).releases)
+                native.flushResult = Tuner.RESULT_SUCCESS
+                status(filter, Filter.STATUS_OVERFLOW)
+                fixture.drain()
+                val accepted = mappedMediaEvent()
+                deliver(filter, accepted)
+                fixture.drain()
+                assertEquals(listOf(accepted), fixture.pendingEvents(audio))
+            }
+        }
+    }
+
     @Test
     fun normalVideoAudioCaptionAndStatusBurstsReturnWithoutClosingPlayback() {
         Fixture().use { fixture ->
@@ -330,7 +412,7 @@ class PlaybackFilterAdmissionTest {
             val stream =
                 AribElementaryStream(
                     TsPid(if (audio) 0x102 else 0x101),
-                    if (audio) 0x0f else 0x1b,
+                    if (audio) 0x03 else 0x1b,
                     null,
                     null,
                     null,
@@ -347,22 +429,48 @@ class PlaybackFilterAdmissionTest {
             return filter
         }
 
-        fun decoder() {
-            val type = Class.forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$VideoDecoderPipeline")
+        fun decoder(audio: Boolean = false) {
+            val name = if (audio) "AudioDecoderPipeline" else "VideoDecoderPipeline"
+            val type = Class.forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$$name")
             val constructor = type.declaredConstructors.single().apply { isAccessible = true }
             val sink: (PlaybackPipeline.PlaybackUnavailableReason, String) -> Unit = { reason, detail ->
                 failures += reason to detail
             }
             val decoder =
-                constructor.newInstance(
-                    pipeline,
-                    PlaybackPipeline.VideoCodecKind.AVC,
-                    AribCodecFacts(),
-                    Surface(),
-                    7L,
-                    sink,
-                )
-            ReflectionHelpers.setField(pipeline, "videoDecoder", decoder)
+                if (audio) {
+                    val kind =
+                        Class
+                            .forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$AudioCodecKind")
+                            .enumConstants
+                            .single { it.toString() == "MPEG1" }
+                    constructor.newInstance(
+                        pipeline,
+                        kind,
+                        AribElementaryStream(TsPid(0x102), 0x03, null, null, null),
+                        null,
+                        false,
+                        PlaybackPipeline.DualMonoPresentation.MAIN,
+                        1.0f,
+                        7L,
+                        sink,
+                    )
+                } else {
+                    constructor.newInstance(
+                        pipeline,
+                        PlaybackPipeline.VideoCodecKind.AVC,
+                        AribCodecFacts(),
+                        Surface(),
+                        7L,
+                        sink,
+                    )
+                }
+            ReflectionHelpers.setField(pipeline, if (audio) "audioDecoder" else "videoDecoder", decoder)
+        }
+
+        fun pendingEvents(audio: Boolean): List<MediaEvent> {
+            val decoder = ReflectionHelpers.getField<Any>(pipeline, if (audio) "audioDecoder" else "videoDecoder")
+            val pending = ReflectionHelpers.getField<java.util.ArrayDeque<*>>(decoder, "pendingSamples")
+            return pending.map { ReflectionHelpers.getField(it, "event") }
         }
 
         fun capacityLoss(filter: Filter): MediaEvent {
@@ -416,6 +524,12 @@ class PlaybackFilterAdmissionTest {
             pipeline.close()
         }
     }
+
+    private fun mappedMediaEvent(): MediaEvent =
+        mediaEvent(1L).also {
+            Shadow.extract<NativeMediaEvent>(it).block =
+                ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+        }
 
     private fun mediaEvent(length: Long): MediaEvent =
         MediaEvent::class.java.declaredConstructors
@@ -535,6 +649,7 @@ class PlaybackFilterAdmissionTest {
         var flushes = 0
         var closeThread: String? = null
         var closeResult: Int = Tuner.RESULT_SUCCESS
+        var flushResult: Int = Tuner.RESULT_SUCCESS
         val readSizes = mutableListOf<Int>()
         private val pendingBytes = ArrayDeque<Byte>()
         val unreadBytes: Int get() = pendingBytes.size
@@ -580,7 +695,7 @@ class PlaybackFilterAdmissionTest {
         fun nativeFlushFilter(): Int {
             flushes++
             reclaimBytes()
-            return Tuner.RESULT_SUCCESS
+            return flushResult
         }
 
         @Implementation
@@ -606,6 +721,7 @@ class PlaybackFilterAdmissionTest {
 
     @Implements(MediaEvent::class)
     class NativeMediaEvent {
+        var block: MediaCodec.LinearBlock? = null
         var releases = 0
         var blockReads = 0
         var releaseThread: String? = null
@@ -614,7 +730,7 @@ class PlaybackFilterAdmissionTest {
         @Implementation
         fun nativeGetLinearBlock(): MediaCodec.LinearBlock? {
             blockReads++
-            return null
+            return block
         }
 
         @Implementation
@@ -623,5 +739,11 @@ class PlaybackFilterAdmissionTest {
             releaseThread = Thread.currentThread().name
             onRelease()
         }
+    }
+
+    @Implements(MediaCodec.LinearBlock::class)
+    class NativeLinearBlock {
+        @Implementation
+        fun map(): ByteBuffer = ByteBuffer.wrap(byteArrayOf(0))
     }
 }

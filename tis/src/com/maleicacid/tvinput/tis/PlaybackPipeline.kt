@@ -36,6 +36,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 // 同じ所有者の状態と解放順を維持し、行数だけを理由に責務を分割しない。
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
@@ -684,6 +685,8 @@ class PlaybackPipeline(
             val targetAudioDecoder = audioDecoder
             val targetVideoDecoder = videoDecoder
             val pendingCapacityLoss = AtomicLong(-1L)
+            // MediaEventは個別に解放できる。flush実行中は閉じ、成功後だけ次の受付へ進む。
+            val inputIdentity = AtomicReference<Any?>(Any())
 
             fun reportCapacityLoss(source: Filter) {
                 val rejectedAt = SystemClock.elapsedRealtime()
@@ -716,7 +719,11 @@ class PlaybackPipeline(
                             filter: Filter,
                             events: Array<FilterEvent>,
                         ) {
-                            if (!sourceIsCurrent(filter)) {
+                            val acceptedIdentity = inputIdentity.get()
+
+                            fun inputIsCurrent(): Boolean =
+                                acceptedIdentity != null && inputIdentity.get() === acceptedIdentity && sourceIsCurrent(filter)
+                            if (!inputIsCurrent()) {
                                 events.filterIsInstance<MediaEvent>().forEach(::releaseMediaEvent)
                                 return
                             }
@@ -724,13 +731,13 @@ class PlaybackPipeline(
                                 runCatching {
                                     for (event in events) {
                                         if (event is RestartEvent) {
-                                            if (sourceIsCurrent(filter)) {
+                                            if (inputIsCurrent()) {
                                                 (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
                                             }
                                             continue
                                         }
                                         if (event !is MediaEvent) continue
-                                        if (!sourceIsCurrent(filter)) {
+                                        if (!inputIsCurrent()) {
                                             releaseMediaEvent(event)
                                             continue
                                         }
@@ -739,7 +746,7 @@ class PlaybackPipeline(
                                             releaseMediaEvent(event)
                                             continue
                                         }
-                                        if (!sourceIsCurrent(filter)) {
+                                        if (!inputIsCurrent()) {
                                             releaseMediaEvent(event)
                                             continue
                                         }
@@ -775,9 +782,12 @@ class PlaybackPipeline(
                                     "AV filter 状態 inputId=$inputId pid=$pid isAudio=$isAudio status=$status",
                                 )
                                 if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
+                                    inputIdentity.set(null)
                                     (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
                                     val result = filter.flush()
-                                    if (result != Tuner.RESULT_SUCCESS) {
+                                    if (result == Tuner.RESULT_SUCCESS) {
+                                        inputIdentity.set(Any())
+                                    } else {
                                         emitUnavailableForGeneration(
                                             filterGeneration,
                                             PlaybackUnavailableReason.UNKNOWN,
