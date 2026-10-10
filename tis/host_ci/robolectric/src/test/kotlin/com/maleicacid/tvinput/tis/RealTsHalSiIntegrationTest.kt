@@ -173,12 +173,13 @@ class RealTsHalSiIntegrationTest {
         val broadcastSystem = ServicePolicyEvaluator.expectedSmdBroadcastSystem(SiDiscoveryProfile.ISDB_T)
         val ready =
             registration.services.filter { service ->
-                ServicePolicyEvaluator.evaluate(
-                    facts = registration.semanticFactsByServiceKey[service.serviceKey],
-                    fallbackKey = service.serviceKey,
-                    expectedSmdBroadcastSystem = broadcastSystem,
-                )
-                    .registrationReady
+                val decision =
+                    ServicePolicyEvaluator.evaluate(
+                        facts = registration.semanticFactsByServiceKey[service.serviceKey],
+                        fallbackKey = service.serviceKey,
+                        expectedSmdBroadcastSystem = broadcastSystem,
+                    )
+                decision.registrationReady
             }
         assertEquals(setOf(1048, 1049), ready.map { it.serviceKey.serviceId }.toSet())
     }
