@@ -16,6 +16,7 @@ import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 
 // channel/program投影、setup visibility commit、rollbackは同一TvProvider transaction ownerで扱う。
 // ownerを分割するとinsert/update/finalize間の部分成功を別objectへ跨がせるため、ここでは責務を分散しない。
@@ -371,7 +372,7 @@ class TvProviderWriter private constructor(
         val genreDiagnostics = mutableListOf<GenreReadbackDiagnostic>()
         val succeededServiceKeys = linkedSetOf<ServiceKey>()
         publication.services.forEach { service ->
-            val serviceStartedAt = android.os.SystemClock.elapsedRealtime()
+            val serviceStartedAtNs = System.nanoTime()
             val serviceKey = service.serviceKey
             val channelId = service.channelId
             val failureCountBeforeService = failures.size
@@ -400,10 +401,10 @@ class TvProviderWriter private constructor(
                             runCatching { Math.addExact(programEnd, EVENT_ID_REUSE_GUARD_MS) }
                                 .getOrDefault(Long.MAX_VALUE)
                         }
-                    val queryStartedAt = android.os.SystemClock.elapsedRealtime()
+                    val queryStartedAtNs = System.nanoTime()
                     val indexResult = channelStore.indexExistingProgramEntriesForWindow(channelId, guardStart, guardEnd)
-                    val queryElapsedMs = android.os.SystemClock.elapsedRealtime() - queryStartedAt
-                    if (queryElapsedMs >= 5_000L) {
+                    val queryElapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - queryStartedAtNs)
+                    if (queryElapsedMs >= SLOW_PROVIDER_OPERATION_MS) {
                         Log.w(LogTags.TIS, "program index取得遅延 service=$serviceKey elapsedMs=$queryElapsedMs")
                     }
                     if (indexResult.isFailure) {
@@ -443,13 +444,13 @@ class TvProviderWriter private constructor(
                         PendingWrite(values, existingId)
                     }
                 if (failures.size == failureCountBeforeService) {
-                    val batchStartedAt = android.os.SystemClock.elapsedRealtime()
+                    val batchStartedAtNs = System.nanoTime()
                     val batch =
                         channelStore.upsertProgramsBatch(
                             writes.map { ProgramUpsertRequest(it.existingId, it.values) },
                         )
-                    val batchElapsedMs = android.os.SystemClock.elapsedRealtime() - batchStartedAt
-                    if (batchElapsedMs >= 5_000L) {
+                    val batchElapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - batchStartedAtNs)
+                    if (batchElapsedMs >= SLOW_PROVIDER_OPERATION_MS) {
                         Log.w(LogTags.TIS, "program batch更新遅延 service=$serviceKey writes=${writes.size} elapsedMs=$batchElapsedMs")
                     }
                     if (batch.isFailure) {
@@ -521,8 +522,8 @@ class TvProviderWriter private constructor(
             if (!preparationFailed && failures.size == failureCountBeforeService) {
                 succeededServiceKeys += serviceKey
             }
-            val serviceElapsedMs = android.os.SystemClock.elapsedRealtime() - serviceStartedAt
-            if (serviceElapsedMs >= 5_000L) {
+            val serviceElapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - serviceStartedAtNs)
+            if (serviceElapsedMs >= SLOW_PROVIDER_OPERATION_MS) {
                 Log.w(LogTags.TIS, "programサービス処理遅延 service=$serviceKey count=${service.programs.size} elapsedMs=$serviceElapsedMs")
             }
         }
@@ -813,6 +814,7 @@ class TvProviderWriter private constructor(
     @Suppress("TooManyFunctions")
     companion object {
         private const val PROGRAM_PROVIDER_BATCH_SIZE = 64
+        private const val SLOW_PROVIDER_OPERATION_MS = 5_000L
 
         // 公開推奨値は既にtransaction buffer上限より安全に小さいrequest予算である。
         // 実Binder容量・現在空き容量の取得値ではない。
