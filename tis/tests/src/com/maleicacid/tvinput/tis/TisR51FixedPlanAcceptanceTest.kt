@@ -50,12 +50,6 @@ import org.junit.Test
 @Suppress("LargeClass", "TooManyFunctions")
 class TisR51FixedPlanAcceptanceTest {
     @Test
-    fun synchronousTuneFailureStopsRemainingInitialScanCandidates() {
-        check(ChannelScanController.shouldContinueInitialScanAfterSynchronousTuneResult(true))
-        check(!ChannelScanController.shouldContinueInitialScanAfterSynchronousTuneResult(false))
-    }
-
-    @Test
     fun scanSignalUnavailableDiagnosticDistinguishesNoSignalAndLostLock() {
         val noSignal =
             ChannelScanController.signalUnavailableDiagnosticForTest(

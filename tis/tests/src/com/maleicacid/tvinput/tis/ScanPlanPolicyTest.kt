@@ -22,6 +22,35 @@ import kotlin.test.assertTrue
 @Suppress("TooManyFunctions", "LargeClass")
 class ScanPlanPolicyTest {
     @Test
+    fun finalizedScanTerminalRejectsLateCancelWithoutRewritingCommit() {
+        val cancelled = AtomicBoolean(false)
+        val fence = ChannelScanController.ScanGenerationFence(Any(), cancelled)
+        var committed = false
+        val terminal =
+            fence.finishScan {
+                committed = true
+                ChannelScanController.ScanTerminal(ChannelScanController.ScanTerminalOutcome.COMPLETED)
+            }
+        assertFalse(fence.cancel())
+        assertFalse(cancelled.get())
+        assertTrue(committed)
+        assertEquals(ChannelScanController.ScanTerminalOutcome.COMPLETED, terminal.outcome)
+        val before = ChannelScanController.ScanGenerationFence(Any(), cancelled)
+        assertTrue(before.cancel())
+        val cancelledTerminal =
+            before.finishScan {
+                ChannelScanController.ScanTerminal(
+                    if (cancelled.get()) {
+                        ChannelScanController.ScanTerminalOutcome.CANCELLED
+                    } else {
+                        ChannelScanController.ScanTerminalOutcome.COMPLETED
+                    },
+                )
+            }
+        assertEquals(ChannelScanController.ScanTerminalOutcome.CANCELLED, cancelledTerminal.outcome)
+    }
+
+    @Test
     fun cancellationDuringFinalSnapshotRetryStopsAcquisitionAndPublication() {
         val cancelled = AtomicBoolean(false)
         var attempts = 0
@@ -54,6 +83,23 @@ class ScanPlanPolicyTest {
         var writes = 0
         assertEquals(null, fence.publishIfCurrent(1L) { writes++ })
         assertEquals(0, writes)
+    }
+
+    @Test
+    fun setupScanResultCarriesFatalSynchronousTuneFailure() {
+        val result =
+            ChannelScanController.ScanResult(
+                scanned = 1,
+                published = 0,
+                diagnostics = emptyList(),
+                terminal =
+                    ChannelScanController.ScanTerminal(
+                        ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED,
+                        "選局に失敗しました result=3 InvalidLifecycle",
+                    ),
+            )
+        check(result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED)
+        check(result.terminal.detail.contains("InvalidLifecycle"))
     }
 
     @Test

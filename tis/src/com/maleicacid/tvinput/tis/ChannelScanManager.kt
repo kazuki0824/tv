@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
-@Suppress("TooManyFunctions")
+@Suppress("TooManyFunctions", "LargeClass")
 object ChannelScanManager {
     private const val TUNER_RESOURCE_LOST = "TUNER_RESOURCE_LOST"
 
@@ -52,7 +52,16 @@ object ChannelScanManager {
         val cancelRequested = AtomicBoolean(false)
         val publicationLock = Any()
 
-        fun requestCancel() = synchronized(publicationLock) { cancelRequested.set(true) }
+        fun requestCancel(): Boolean =
+            synchronized(cancelRequested) {
+                val scan = controller as? ChannelScanController
+                if (scan != null) {
+                    scan.requestCancelScan()
+                } else {
+                    cancelRequested.set(true)
+                    true
+                }
+            }
 
         @Volatile var controller: AutoCloseable? = null
 
@@ -146,7 +155,8 @@ object ChannelScanManager {
     ): LiveSessionPreemptDecision = liveSessionPreemptDecision(scanRunning, purpose)
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength", "ReturnCount")
+    // setup terminalのtyped分岐は同一scan ownerで完結させ、状態写像だけを別ownerへ分散しない。
+    @Suppress("LongMethod", "MaxLineLength", "ReturnCount")
     fun startIfIdle(
         context: Context,
         inputId: String,
@@ -178,12 +188,40 @@ object ChannelScanManager {
             result
                 .onSuccess { scanResult ->
                     if (scanResult != null) {
-                        if (scanResult.terminalCancelObserved || isCancelledGeneration(generation)) {
-                            setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
-                        } else if (scanResult.terminalResourceLostObserved) {
-                            setTerminalStateIfCurrent(generation, ScanState.Failed(TUNER_RESOURCE_LOST, generation, ScanPurpose.SETUP_SCAN))
-                        } else {
-                            setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.SETUP_SCAN))
+                        when {
+                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED -> {
+                                setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
+                            }
+
+                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST -> {
+                                setTerminalStateIfCurrent(
+                                    generation,
+                                    ScanState.Failed(
+                                        TUNER_RESOURCE_LOST,
+                                        generation,
+                                        ScanPurpose.SETUP_SCAN,
+                                    ),
+                                )
+                            }
+
+                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED ||
+                                scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.INTERNAL_FAILURE -> {
+                                setTerminalStateIfCurrent(
+                                    generation,
+                                    ScanState.Failed(scanResult.terminal.detail, generation, ScanPurpose.SETUP_SCAN),
+                                )
+                            }
+
+                            else -> {
+                                setTerminalStateIfCurrent(
+                                    generation,
+                                    ScanState.Completed(
+                                        scanResult,
+                                        generation,
+                                        ScanPurpose.SETUP_SCAN,
+                                    ),
+                                )
+                            }
                         }
                     }
                 }.onFailure { e ->
@@ -273,8 +311,10 @@ object ChannelScanManager {
             result
                 .onSuccess { scanResult ->
                     if (scanResult != null) {
-                        val terminalCancel = scanResult.terminalCancelObserved || isCancelledGeneration(generation)
-                        val terminalResourceLost = scanResult.terminalResourceLostObserved
+                        val terminalCancel =
+                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED
+                        val terminalResourceLost =
+                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST
                         val allRequiredTargetsCommitted =
                             requiredServiceKeys.isNotEmpty() &&
                                 scanResult.committedServiceKeys.containsAll(requiredServiceKeys) &&
@@ -396,9 +436,11 @@ object ChannelScanManager {
             result
                 .onSuccess { scanResult ->
                     if (scanResult != null) {
-                        if (scanResult.terminalCancelObserved || isCancelledGeneration(generation)) {
+                        if (
+                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED
+                        ) {
                             setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BACKGROUND_MAINTENANCE))
-                        } else if (scanResult.terminalResourceLostObserved) {
+                        } else if (scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST) {
                             setTerminalStateIfCurrent(
                                 generation,
                                 ScanState.Failed(TUNER_RESOURCE_LOST, generation, ScanPurpose.BACKGROUND_MAINTENANCE),
@@ -429,7 +471,7 @@ object ChannelScanManager {
 
     fun cancel() {
         val task = activeTask.get() ?: return
-        task.requestCancel()
+        if (!task.requestCancel()) return
         setTerminalStateIfCurrent(
             task.generation,
             ScanState.Cancelled(task.generation, task.purpose),
@@ -444,7 +486,7 @@ object ChannelScanManager {
     ): Boolean {
         val task = activeTask.get() ?: return false
         if (task.generation != generation || task.purpose != purpose) return false
-        task.requestCancel()
+        if (!task.requestCancel()) return false
         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, purpose))
         return true
     }
@@ -468,7 +510,7 @@ object ChannelScanManager {
             BackgroundChannelMaintenanceDiagnostics.lastSkippedReason =
                 decision.diagnosticReason ?: "LIVE_SESSION_PREEMPTED_RUNNING_BACKGROUND_MAINTENANCE"
         }
-        task.requestCancel()
+        if (!task.requestCancel()) return
         setTerminalStateIfCurrent(
             task.generation,
             ScanState.Cancelled(task.generation, task.purpose),
