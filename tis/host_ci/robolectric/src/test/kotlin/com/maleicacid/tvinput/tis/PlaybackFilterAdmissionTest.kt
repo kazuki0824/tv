@@ -54,54 +54,52 @@ import kotlin.test.assertTrue
 class PlaybackFilterAdmissionTest {
     @Test
     fun avOverflowDiscardsPreFlushAndInFlightInputAndAcceptsPostFlushInput() {
-        for (audio in listOf(false, true)) {
-            for (afterClear in listOf(false, true)) {
-                val newInput = mappedMediaEvent()
-                Fixture().use { fixture ->
-                    fixture.decoder(audio)
-                    val filter = fixture.avFilter(audio)
-                    val decoderField = if (audio) "audioDecoder" else "videoDecoder"
-                    val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, decoderField)
-                    val native = Shadow.extract<NativeFilter>(filter)
-                    val pending = mappedMediaEvent()
-                    deliver(filter, pending)
-                    fixture.drain()
-                    assertEquals(listOf(pending), fixture.pendingEvents(audio))
-                    val old = mappedMediaEvent()
-                    val beforeExecution = mappedMediaEvent()
-                    val duringFlush = mappedMediaEvent()
-                    val (started, allow) = native.blockNextReclamation(afterClear)
-                    try {
-                        fixture.whileOwnerBlocked {
-                            deliver(filter, old)
-                            status(filter, Filter.STATUS_OVERFLOW)
-                            deliver(filter, beforeExecution)
-                        }
-                        assertTrue(started.await(5, TimeUnit.SECONDS))
-                        deliver(filter, duringFlush)
-                    } finally {
-                        allow.countDown()
+        for ((audio, afterClear) in listOf(false to false, false to true, true to false, true to true)) {
+            val newInput = mappedMediaEvent()
+            Fixture().use { fixture ->
+                fixture.decoder(audio)
+                val filter = fixture.avFilter(audio)
+                val decoderField = if (audio) "audioDecoder" else "videoDecoder"
+                val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, decoderField)
+                val native = Shadow.extract<NativeFilter>(filter)
+                val pending = mappedMediaEvent()
+                deliver(filter, pending)
+                fixture.drain()
+                assertEquals(listOf(pending), fixture.pendingEvents(audio))
+                val old = mappedMediaEvent()
+                val beforeExecution = mappedMediaEvent()
+                val duringFlush = mappedMediaEvent()
+                val (started, allow) = native.blockNextReclamation(afterClear)
+                try {
+                    fixture.whileOwnerBlocked {
+                        deliver(filter, old)
+                        status(filter, Filter.STATUS_OVERFLOW)
+                        deliver(filter, beforeExecution)
                     }
-                    fixture.drain()
-                    assertEquals(emptyList(), fixture.pendingEvents(audio))
-                    for (event in listOf(old, beforeExecution, duringFlush)) {
-                        assertEquals(0, Shadow.extract<NativeMediaEvent>(event).blockReads)
-                        assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
-                    }
-                    assertEquals(1, Shadow.extract<NativeMediaEvent>(pending).releases)
-                    deliver(filter, newInput)
-                    fixture.drain()
-                    assertEquals(listOf(newInput), fixture.pendingEvents(audio))
-                    assertEquals(1, Shadow.extract<NativeMediaEvent>(newInput).blockReads)
-                    assertEquals(0, Shadow.extract<NativeMediaEvent>(newInput).releases)
-                    assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
-                    assertTrue(decoder === ReflectionHelpers.getField(fixture.pipeline, decoderField))
-                    assertEquals(0, native.closes)
-                    assertEquals(1, native.flushes)
-                    assertTrue(fixture.failures.isEmpty())
+                    assertTrue(started.await(5, TimeUnit.SECONDS))
+                    deliver(filter, duringFlush)
+                } finally {
+                    allow.countDown()
                 }
-                assertEquals(1, Shadow.extract<NativeMediaEvent>(newInput).releases)
+                fixture.drain()
+                assertEquals(emptyList(), fixture.pendingEvents(audio))
+                for (event in listOf(old, beforeExecution, duringFlush)) {
+                    assertEquals(0, Shadow.extract<NativeMediaEvent>(event).blockReads)
+                    assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
+                }
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(pending).releases)
+                deliver(filter, newInput)
+                fixture.drain()
+                assertEquals(listOf(newInput), fixture.pendingEvents(audio))
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(newInput).blockReads)
+                assertEquals(0, Shadow.extract<NativeMediaEvent>(newInput).releases)
+                assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+                assertTrue(decoder === ReflectionHelpers.getField<Any>(fixture.pipeline, decoderField))
+                assertEquals(0, native.closes)
+                assertEquals(1, native.flushes)
+                assertTrue(fixture.failures.isEmpty())
             }
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(newInput).releases)
         }
     }
 
