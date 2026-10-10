@@ -598,7 +598,11 @@ class NativeAribSiParserCasDiscoveryTest {
                 val beforeActualNit = parser.serviceRegistrationSnapshot()
                 val missingNitFacts = beforeActualNit.semanticFactsByServiceKey.values.single()
                 check("NIT" in missingNitFacts.missingComponents)
-                check(!ServicePolicyEvaluator.evaluate(missingNitFacts, expectedSmdBroadcastSystem = broadcastSystem).registrationReady)
+                check(
+                    !ServicePolicyEvaluator
+                        .evaluate(missingNitFacts, expectedSmdBroadcastSystem = broadcastSystem)
+                        .registrationReady,
+                )
 
                 // network-level SMDとcurrent transportが一致するactual NITを受理。
                 val nit =
@@ -612,12 +616,19 @@ class NativeAribSiParserCasDiscoveryTest {
                 val snapshot = parser.serviceRegistrationSnapshot()
                 val facts = snapshot.semanticFactsByServiceKey.values.single()
                 check(snapshot.actualTransports.any { it.originalNetworkId == 0x22 && it.transportStreamId == 0x11 })
-                check(snapshot.tableRequirements.any { it.component == "SDT-other" && it.required && !it.complete })
+                check(
+                    snapshot.tableRequirements.any { it.component == "SDT-other" && it.required && !it.complete },
+                )
                 if (profile == SiDiscoveryProfile.CS110) {
-                    check(snapshot.tableRequirements.any { it.component == "NIT-other" && it.required && !it.complete })
+                    check(
+                        snapshot.tableRequirements.any { it.component == "NIT-other" && it.required && !it.complete },
+                    )
                 }
-                check(facts.missingComponents.isEmpty()) { "other表の未完成がcurrent serviceへ漏れています: ${facts.missingComponents}" }
-                val decision = ServicePolicyEvaluator.evaluate(facts, expectedSmdBroadcastSystem = broadcastSystem)
+                check(facts.missingComponents.isEmpty()) {
+                    "other表の未完成がcurrent serviceへ漏れています: ${facts.missingComponents}"
+                }
+                val decision =
+                    ServicePolicyEvaluator.evaluate(facts, expectedSmdBroadcastSystem = broadcastSystem)
                 check(decision.registrationReady && decision.requiresCas && decision.casDecisionReady) {
                     "放送由来CA事実を維持した現在サービスを登録できません state=${decision.state} reasons=${decision.reasons}"
                 }
