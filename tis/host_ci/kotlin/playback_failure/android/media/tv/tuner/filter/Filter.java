@@ -8,6 +8,19 @@ public class Filter implements AutoCloseable {
     public int configurations;
     public int starts;
     public int closes;
+    public FilterCallback callback;
+    public byte[][] sectionPayloads;
+    public int reads;
+    public boolean deliver(FilterEvent[] events) {
+        if (callback == null) return false;
+        callback.onFilterEvent(this, events);
+        return true;
+    }
+    public int read(byte[] buffer, long offset, long size) {
+        byte[] payload = sectionPayloads[reads++];
+        System.arraycopy(payload, 0, buffer, (int) offset, payload.length);
+        return payload.length;
+    }
 
     public int configure(FilterConfiguration configuration) {
         configurations++;

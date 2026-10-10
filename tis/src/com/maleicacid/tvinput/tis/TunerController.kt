@@ -179,7 +179,12 @@ class TunerController(
         override fun toString(): String = "UnavailableSectionFilterHandle(pid=$pid, reason=$reason)"
     }
 
-    private val sectionExecutor = ControllerSerialExecutor("maleicacid-tis-controller-$inputId")
+    // 1 FilterのFMQ容量を最大section長のslotへ分け、正常table集合を有限に受理する。
+    private val sectionExecutor =
+        ControllerSerialExecutor(
+            "maleicacid-tis-controller-$inputId",
+            maxPendingDataTasks = (SECTION_FILTER_BUFFER_BYTES / SectionFilterPolicy.MAX_SECTION_EVENT_BYTES).toInt(),
+        )
     private val controllerControlExecutor =
         java.util.concurrent.Executor { task -> sectionExecutor.executeControl(task) }
 
@@ -203,7 +208,12 @@ class TunerController(
         }
     }
 
-    private fun postOnControllerData(block: () -> Unit) {
+    private fun postOnControllerData(block: () -> Unit) = postOnControllerData(block, {})
+
+    private fun postOnControllerData(
+        block: () -> Unit,
+        onRejected: (Throwable) -> Unit,
+    ) {
         if (released) return
         runCatching {
             sectionExecutor.executeData {
@@ -214,6 +224,7 @@ class TunerController(
                 }
             }
         }.onFailure { error ->
+            onRejected(error)
             if (!released) Log.w(LogTags.TIS, "drain済みsection dataの投入を拒否しました inputId=$inputId", error)
         }
     }
@@ -260,7 +271,8 @@ class TunerController(
     private val superimposeTimingByPid = ConcurrentHashMap<TsPid, Int>()
 
     @Volatile private var latestBroadcastClockAuthority: AribBroadcastClock.AuthoritySample? = null
-    private var sectionIngestController: SectionIngestController? = null
+
+    @Volatile private var sectionIngestController: SectionIngestController? = null
     private var casController: CasController? = null
     private var onSectionIngestedCallback: (() -> Unit)? = null
     private var onTunerResourceLostCallback: ((Long) -> Unit)? = null
@@ -269,8 +281,10 @@ class TunerController(
     private val tvInputSessionId: String? = normalizedTvInputSessionId(sessionId)
     private var tuner: Tuner? = createTuner()
     private var currentTune: ResolvedChannel? = null
-    private var tuneAccepted = false
-    private var tuneGeneration: Long = 0L
+
+    @Volatile private var tuneAccepted = false
+
+    @Volatile private var tuneGeneration: Long = 0L
     private var streamIdDiscovery: StreamIdDiscoveryOperation? = null
     private val sectionShortReadCounters = linkedMapOf<TsPid, Int>()
     private val sectionReadErrorCounters = linkedMapOf<TsPid, Int>()
@@ -1120,8 +1134,9 @@ class TunerController(
         section: ByteArray,
         read: Int,
     ) {
+        val ingest = sectionIngestController
         runCatching {
-            postOnControllerData {
+            postOnControllerData({
                 val sourceIsCurrent = isCurrentSectionFilter(pid, generation, filter)
                 when (
                     SectionFilterPolicy.readDecision(
@@ -1149,7 +1164,9 @@ class TunerController(
                         return@postOnControllerData
                     }
                 }
-            }
+            }, {
+                if (!released && tuneAccepted && generation == tuneGeneration) ingest?.recordInputDeliveryLoss()
+            })
         }.onFailure { error ->
             if (!released) {
                 Log.w(

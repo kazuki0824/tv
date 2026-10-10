@@ -624,6 +624,131 @@ class PlaybackFailureCallbacksTest {
         fixture.cleanup.requireComplete()
     }
 
+    // 本番callback/readから実JNIまで、正常集合・有限飽和・retune失効を同じfixtureで検査する。
+    @Suppress("LongMethod")
+    @Test
+    fun sectionCallbackBurstCompletesSiAndReportsFiniteAdmissionLoss() {
+        val executor = ControllerSerialExecutor("section burst試験", maxPendingDataTasks = 16)
+        val fixture = executor.submitControl { Fixture(false, false, failCleanup = false) }.get(5, TimeUnit.SECONDS)
+        val controller = fixture.allocate(TunerController::class.java)
+        val engine =
+            com.maleicacid.tvinput.aribsi
+                .AribSiEngine(android.content.ContextWrapper(null))
+        val ingest =
+            com.maleicacid.tvinput.aribsi
+                .SectionIngestController(engine)
+        var releaseOwner = java.util.concurrent.CountDownLatch(1)
+
+        fun set(
+            name: String,
+            value: Any,
+        ) {
+            TunerController::class.java
+                .getDeclaredField(name)
+                .apply { isAccessible = true }
+                .set(controller, value)
+        }
+
+        fun holdOwner(): java.util.concurrent.CountDownLatch {
+            val started = java.util.concurrent.CountDownLatch(1)
+            releaseOwner = java.util.concurrent.CountDownLatch(1)
+            executor.executeControl {
+                started.countDown()
+                check(releaseOwner.await(5, TimeUnit.SECONDS))
+            }
+            check(started.await(5, TimeUnit.SECONDS))
+            return releaseOwner
+        }
+        val eventConstructor =
+            android.media.tv.tuner.filter.SectionEvent::class.java
+                .getDeclaredConstructor(
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                    Long::class.javaPrimitiveType,
+                ).apply { isAccessible = true }
+
+        fun deliver(
+            filter: Filter,
+            vararg hex: String,
+        ) {
+            val payloads = hex.map { h -> h.chunked(2).map { it.toInt(16).toByte() }.toByteArray() }
+            Filter::class.java.getField("sectionPayloads").set(filter, payloads.toTypedArray())
+            Filter::class.java.getField("reads").setInt(filter, 0)
+            val events = payloads.map { bytes -> eventConstructor.newInstance(0, 0, 0, bytes.size.toLong()) }
+            val before = System.nanoTime()
+            check(
+                Filter::class.java
+                    .getMethod("deliver", Array<android.media.tv.tuner.filter.FilterEvent>::class.java)
+                    .invoke(filter, events.toTypedArray()) == true,
+            )
+            check(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before) < 1_000L)
+        }
+        val pat0 = "00b00d0011c100010001e1000c2c9e3b"
+        val pat1 = "00b00d0011c101010000e01088d42568"
+        val filters = linkedMapOf<Int, Filter>()
+        try {
+            set("inputId", "test")
+            set("sectionExecutor", executor)
+            set("tuneAccepted", true)
+            set("tuneGeneration", 7L)
+            set("tuner", fixture.tuner)
+            set("sectionIngestController", ingest)
+            set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
+            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+            set("dynamicPmtPids", linkedSetOf(TsPid(0x100)))
+            set("dynamicEcmPids", linkedSetOf<TsPid>())
+            set("dynamicEmmPids", linkedSetOf<TsPid>())
+            Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
+            for (pid in listOf(0, 0x10, 0x11, 0x100)) {
+                val filter = fixture.allocate(Filter::class.java)
+                Tuner::class.java.getField("nextFilter").set(null, filter)
+                check(controller.openSectionFilter(TsPid(pid), 7L).isOpen)
+                filters[pid] = filter
+            }
+            val received = java.util.concurrent.CountDownLatch(5)
+            controller.setOnSectionIngestedCallback { received.countDown() }
+            val owner = holdOwner()
+            deliver(filters.getValue(0), pat0, pat1)
+            deliver(filters.getValue(0x10), "40b01c0022c10000f004fe020300f00b00110022f0054103000101ab293465")
+            deliver(filters.getValue(0x11), "42f0180011c100000022000001fc80074805010002543128d78c81")
+            deliver(filters.getValue(0x100), "02b0170001c10000e101f0001be101f0000fe102f0009e28c6dd")
+            check(ingest.inputDeliveryLossCount == 0)
+            owner.countDown()
+            check(received.await(5, TimeUnit.SECONDS))
+            check(ingest.diagnostics().sumOf { it.acceptedCount } == 5)
+            check(engine.pmtPidsForSectionFilters() == setOf(TsPid(0x100)))
+            check(
+                com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+                    .evaluateLive(engine.livePlaybackSnapshot(), ServiceKey(0x22, 0x11, 1))
+                    .registrationReady,
+            )
+            val saturated = java.util.concurrent.CountDownLatch(16)
+            controller.setOnSectionIngestedCallback { saturated.countDown() }
+            val stalled = holdOwner()
+            deliver(filters.getValue(0), *Array(17) { pat0 })
+            check(ingest.inputDeliveryLossCount == 1 && ingest.diagnosticSummary().contains("inputDeliveryLoss=1"))
+            stalled.countDown()
+            check(saturated.await(5, TimeUnit.SECONDS))
+            val beforeStale = ingest.diagnostics().sumOf { it.acceptedCount }
+            val staleOwner = holdOwner()
+            deliver(filters.getValue(0), pat1)
+            val retune = executor.submitControl { set("tuneGeneration", 8L) }
+            staleOwner.countDown()
+            retune.get(5, TimeUnit.SECONDS)
+            val dataFinished = java.util.concurrent.CountDownLatch(1)
+            executor.executeData { dataFinished.countDown() }
+            check(dataFinished.await(5, TimeUnit.SECONDS))
+            check(ingest.diagnostics().sumOf { it.acceptedCount } == beforeStale)
+        } finally {
+            releaseOwner.countDown()
+            filters.keys.forEach { controller.closeSectionFilter(TsPid(it)) }
+            Tuner::class.java.getField("nextFilter").set(null, null)
+            engine.close()
+            executor.shutdownNow()
+        }
+    }
+
     private class Fixture(
         waiting: Boolean,
         audioOnly: Boolean,

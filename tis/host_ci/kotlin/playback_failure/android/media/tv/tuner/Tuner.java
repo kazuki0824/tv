@@ -19,6 +19,7 @@ public class Tuner {
 
     public Filter openFilter(int type, int subtype, long bufferSize, Executor executor, FilterCallback callback) {
         openFilterCalls++;
+        if (nextFilter != null) nextFilter.callback = callback;
         return nextFilter;
     }
 }
