@@ -71,7 +71,7 @@ jobs:
           for case in playback.findall("testcase"):
               print(f"Android 15実SDK playback受付試験: {case.get('name')} success")
           caption = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CaptionInputContinuityTest.xml")).getroot()
-          assert caption.get("tests") == "2", caption.attrib
+          assert caption.get("tests") == "5", caption.attrib
           assert caption.get("failures") == "0" and caption.get("errors") == "0", caption.attrib
           assert caption.get("skipped", "0") == "0", caption.attrib
           for case in caption.findall("testcase"):

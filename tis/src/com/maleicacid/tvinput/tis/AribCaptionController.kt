@@ -75,10 +75,11 @@ class AribCaptionController(
     private val released = AtomicBoolean(false)
     private val presentationEpoch = AtomicLong(0L)
 
-    // UI clearのepochと異なり、PES入力はcontinuity/trackのresetだけで失効する。
+    // UI clearと入力失効を分離する。受付番号はlock、失効下限は既存ownerが所有する。
     private val pesAdmissionLock = Any()
 
-    @Volatile private var pesInputIdentity: Any = Any()
+    private var pesAdmissionSequence = 0L
+    private var minimumPesSequence = 0L
     private val boundaries =
         PriorityQueue(
             compareBy<Boundary> { it.mediaTimeMillis }
@@ -160,8 +161,33 @@ class AribCaptionController(
 
     private fun enqueuePes(action: () -> Unit) {
         synchronized(pesAdmissionLock) {
-            val identity = pesInputIdentity
-            enqueue { if (pesInputIdentity === identity) action() }
+            val sequence = pesAdmissionSequence
+            enqueue { if (sequence >= minimumPesSequence) action() }
+        }
+    }
+
+    private fun enqueuePresentationChange(
+        control: Boolean = true,
+        change: () -> Boolean,
+    ) {
+        synchronized(pesAdmissionLock) {
+            if (released.get()) return
+            val sequence =
+                try {
+                    Math.incrementExact(pesAdmissionSequence)
+                } catch (error: ArithmeticException) {
+                    handleSubmissionFailure(error)
+                    return
+                }
+            pesAdmissionSequence = sequence
+            val action = {
+                if (change()) {
+                    // 古いdata側の世代切替が後から実行されても失効境界を戻さない。
+                    minimumPesSequence = maxOf(minimumPesSequence, sequence)
+                    restartPresentation()
+                }
+            }
+            if (control) enqueueControl(action) else enqueue(action)
         }
     }
 
@@ -189,25 +215,25 @@ class AribCaptionController(
     }
 
     fun setEnabled(value: Boolean) =
-        enqueueControl {
-            if (enabled == value) return@enqueueControl
+        enqueuePresentationChange {
+            if (enabled == value) return@enqueuePresentationChange false
             enabled = value
-            restartPresentation()
+            true
         }
 
     fun selectTrack(track: TunerController.TisTrack?) =
-        enqueueControl {
+        enqueuePresentationChange {
             val normalized = track?.takeIf { it.type == TvTrackInfo.TYPE_SUBTITLE }
-            if (normalized?.id == selectedTrack?.id) return@enqueueControl
+            if (normalized?.id == selectedTrack?.id) return@enqueuePresentationChange false
             selectedTrack = normalized
-            restartPresentation()
+            true
         }
 
     fun beginPlaybackGeneration(
         generation: Long,
         hasVideo: Boolean,
-    ) = enqueue {
-        if (playbackGeneration == generation && videoPathExpected == hasVideo) return@enqueue
+    ) = enqueuePresentationChange(control = false) {
+        if (playbackGeneration == generation && videoPathExpected == hasVideo) return@enqueuePresentationChange false
         playbackGeneration = generation
         noPtsRejectedCount = 0
         videoPathExpected = hasVideo
@@ -215,7 +241,7 @@ class AribCaptionController(
         videoHeight = 0
         videoDisplayAspectRatio = null
         viewport = null
-        restartPresentation()
+        true
     }
 
     fun updateVideoGeometry(
@@ -294,13 +320,7 @@ class AribCaptionController(
         }
     }
 
-    fun flushForSubtitleContinuityLoss() {
-        synchronized(pesAdmissionLock) {
-            // 新PESの受付を再開する前にresetを投入する。ownerの完了は待たない。
-            pesInputIdentity = Any()
-            enqueueControl { restartPresentation(invalidateQueuedPes = false) }
-        }
-    }
+    fun flushForSubtitleContinuityLoss() = enqueuePresentationChange { true }
 
     private fun recordNoPtsRejected(trackId: String?) {
         noPtsRejectedCount++
@@ -371,8 +391,7 @@ class AribCaptionController(
             .getOrNull()
     }
 
-    private fun restartPresentation(invalidateQueuedPes: Boolean = true) {
-        if (invalidateQueuedPes) pesInputIdentity = Any()
+    private fun restartPresentation() {
         cancelScheduledBoundary()
         broadcastTimedPesScheduler.cancelAll()
         boundaries.clear()
