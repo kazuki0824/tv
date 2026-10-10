@@ -708,6 +708,7 @@ class PlaybackFailureCallbacksTest {
         val filter = playback.allocate(Filter::class.java)
         val pendingNotifications = mutableListOf<Runnable>()
         private val cas = CasController()
+        private val captionExecutors = mutableListOf<LifecycleSerialExecutor>()
 
         init {
             MediaCas.Faults.reset()
@@ -739,6 +740,9 @@ class PlaybackFailureCallbacksTest {
             for (name in listOf("captionController", "superimposeController")) {
                 val caption = playback.allocate(AribCaptionController::class.java)
                 set(caption, "released", AtomicBoolean(true))
+                val captionExecutor = LifecycleSerialExecutor("closed caption fixture")
+                captionExecutors += captionExecutor
+                set(caption, "executor", captionExecutor)
                 set(session, name, caption)
             }
             val sessionType = android.media.tv.TvInputService.Session::class.java
@@ -815,6 +819,7 @@ class PlaybackFailureCallbacksTest {
                     .apply { isAccessible = true }
                     .get(playback.pipeline)
                     .let { (it as? java.util.concurrent.ExecutorService)?.shutdownNow() }
+                captionExecutors.forEach { it.shutdownNow() }
                 MediaCas.Faults.reset()
             }
         }
