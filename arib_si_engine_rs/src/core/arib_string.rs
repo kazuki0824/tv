@@ -508,7 +508,9 @@ fn decode_arib_string_with_policy(
                     GraphicSet::Alnum => out.push(normalized as char),
                     GraphicSet::Hiragana => out.push_str(map_hiragana(normalized)),
                     GraphicSet::Katakana => out.push_str(map_katakana(normalized)),
-                    GraphicSet::JisX0201Katakana => out.push_str(map_jis_x0201_katakana(normalized)),
+                    GraphicSet::JisX0201Katakana => {
+                        out.push_str(map_jis_x0201_katakana(normalized))
+                    }
                     GraphicSet::Kanji | GraphicSet::AdditionalSymbols => {
                         let Some(next) = bytes.get(index + 1).copied() else {
                             if error_policy == ErrorPolicy::Strict {
@@ -765,12 +767,15 @@ fn map_katakana(byte: u8) -> &'static str {
 fn map_jis_x0201_katakana(byte: u8) -> &'static str {
     // ESC ( Iで指定されるJIS X 0201片仮名は、ARIBのESC ( 1と別の符号表。
     const TABLE: &[&str] = &[
-        "｡", "｢", "｣", "､", "･", "ｦ", "ｧ", "ｨ", "ｩ", "ｪ", "ｫ", "ｬ", "ｭ", "ｮ", "ｯ", "ｰ",
-        "ｱ", "ｲ", "ｳ", "ｴ", "ｵ", "ｶ", "ｷ", "ｸ", "ｹ", "ｺ", "ｻ", "ｼ", "ｽ", "ｾ", "ｿ", "ﾀ",
-        "ﾁ", "ﾂ", "ﾃ", "ﾄ", "ﾅ", "ﾆ", "ﾇ", "ﾈ", "ﾉ", "ﾊ", "ﾋ", "ﾌ", "ﾍ", "ﾎ", "ﾏ", "ﾐ",
-        "ﾑ", "ﾒ", "ﾓ", "ﾔ", "ﾕ", "ﾖ", "ﾗ", "ﾘ", "ﾙ", "ﾚ", "ﾛ", "ﾜ", "ﾝ", "ﾞ", "ﾟ",
+        "｡", "｢", "｣", "､", "･", "ｦ", "ｧ", "ｨ", "ｩ", "ｪ", "ｫ", "ｬ", "ｭ", "ｮ", "ｯ", "ｰ", "ｱ", "ｲ",
+        "ｳ", "ｴ", "ｵ", "ｶ", "ｷ", "ｸ", "ｹ", "ｺ", "ｻ", "ｼ", "ｽ", "ｾ", "ｿ", "ﾀ", "ﾁ", "ﾂ", "ﾃ", "ﾄ",
+        "ﾅ", "ﾆ", "ﾇ", "ﾈ", "ﾉ", "ﾊ", "ﾋ", "ﾌ", "ﾍ", "ﾎ", "ﾏ", "ﾐ", "ﾑ", "ﾒ", "ﾓ", "ﾔ", "ﾕ", "ﾖ",
+        "ﾗ", "ﾘ", "ﾙ", "ﾚ", "ﾛ", "ﾜ", "ﾝ", "ﾞ", "ﾟ",
     ];
-    TABLE.get(usize::from(byte.saturating_sub(0x21))).copied().unwrap_or("�")
+    TABLE
+        .get(usize::from(byte.saturating_sub(0x21)))
+        .copied()
+        .unwrap_or("�")
 }
 
 fn map_kanji(first: u8, second: u8) -> &'static str {
@@ -790,9 +795,14 @@ mod tests {
         let punctuation = ["ヽ", "ヾ", "ー", "。", "「", "」", "、", "・"];
         for (offset, expected) in punctuation.iter().enumerate() {
             let b = 0x77 + u8::try_from(offset).unwrap();
-            assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'1', b]).0, *expected);
-            assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'0', b]).0,
-                       ["ゝ", "ゞ", "ー", "。", "「", "」", "、", "・"][offset]);
+            assert_eq!(
+                decode_arib_string_lossy(&[0x1b, b'(', b'1', b]).0,
+                *expected
+            );
+            assert_eq!(
+                decode_arib_string_lossy(&[0x1b, b'(', b'0', b]).0,
+                ["ゝ", "ゞ", "ー", "。", "「", "」", "、", "・"][offset]
+            );
         }
         assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'0', 0x74]).0, "�");
         assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'0', 0x76]).0, "�");
@@ -800,10 +810,22 @@ mod tests {
 
     #[test]
     fn b24_arib_and_jis_x0201_katakana_are_distinct() {
-        assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'1', 0x22, 0x79]).0, "アー");
-        assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'I', 0x31, 0x30]).0, "ｱｰ");
-        assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'8', 0x22, 0x79]).0, "アー");
-        assert_eq!(decode_arib_string_lossy(&[0x1b, b')', b'1', 0x0e, 0x22, 0x79]).0, "アー");
+        assert_eq!(
+            decode_arib_string_lossy(&[0x1b, b'(', b'1', 0x22, 0x79]).0,
+            "アー"
+        );
+        assert_eq!(
+            decode_arib_string_lossy(&[0x1b, b'(', b'I', 0x31, 0x30]).0,
+            "ｱｰ"
+        );
+        assert_eq!(
+            decode_arib_string_lossy(&[0x1b, b'(', b'8', 0x22, 0x79]).0,
+            "アー"
+        );
+        assert_eq!(
+            decode_arib_string_lossy(&[0x1b, b')', b'1', 0x0e, 0x22, 0x79]).0,
+            "アー"
+        );
     }
 
     #[test]
