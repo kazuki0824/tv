@@ -5,15 +5,18 @@ package com.maleicacid.tvinput.tis
 import android.content.ContentInterface
 import android.content.ContentResolver
 import android.content.ContextWrapper
+import android.content.SharedPreferences
 import android.database.MatrixCursor
 import android.net.Uri
 import org.junit.Test
 import java.lang.reflect.Proxy
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class ProgramCleanupProviderTest {
     // 実workerとContentResolverでProvider停止・部分削除・retryを連続して検証する。
@@ -75,6 +78,18 @@ class ProgramCleanupProviderTest {
             isAccessible = true
             set(resolver, provider)
         }
+        val pendingReads = AtomicInteger()
+        val preferences =
+            Proxy.newProxyInstance(
+                SharedPreferences::class.java.classLoader,
+                arrayOf(SharedPreferences::class.java),
+            ) { _, method, args ->
+                check(method.name == "getBoolean" && args[0] == "pending") {
+                    "予期しないpreferences操作 ${method.name}"
+                }
+                pendingReads.incrementAndGet()
+                false
+            } as SharedPreferences
         val context =
             object : ContextWrapper(null) {
                 override fun getContentResolver(): ContentResolver = resolver
@@ -82,6 +97,13 @@ class ProgramCleanupProviderTest {
                 override fun getPackageName(): String = "own.package"
 
                 override fun getApplicationContext() = this
+
+                override fun createDeviceProtectedStorageContext() = this
+
+                override fun getSharedPreferences(
+                    name: String,
+                    mode: Int,
+                ): SharedPreferences = preferences
             }
         val ready =
             ProgramUpgradeCleanup::class.java
@@ -94,6 +116,20 @@ class ProgramCleanupProviderTest {
                 .apply { isAccessible = true }
                 .get(null) as ExecutorService
         val previous = ready.getAndSet(false)
+        val scanWorker =
+            ChannelScanManager::class.java
+                .getDeclaredField("executor")
+                .apply { isAccessible = true }
+                .get(ChannelScanManager) as ExecutorService
+        val scanFailures = ConcurrentLinkedQueue<Throwable>()
+        val previousHandler =
+            scanWorker
+                .submit<Thread.UncaughtExceptionHandler> {
+                    Thread.currentThread().uncaughtExceptionHandler.also {
+                        Thread.currentThread().uncaughtExceptionHandler =
+                            Thread.UncaughtExceptionHandler { _, error -> scanFailures.add(error) }
+                    }
+                }.get(5, TimeUnit.SECONDS)
         val caller = Executors.newSingleThreadExecutor()
         val cleanup = {
             ProgramUpgradeCleanup.deleteOwnedPrograms(context, "own/input") {
@@ -115,12 +151,6 @@ class ProgramCleanupProviderTest {
             release.countDown()
             worker.submit {}.get(5, TimeUnit.SECONDS)
             check(!ready.get() && !committed && rows.size == 5001 && firstCompletion.get() == false)
-            val scanWorker =
-                ChannelScanManager::class.java
-                    .getDeclaredField("executor")
-                    .apply {
-                        isAccessible = true
-                    }.get(ChannelScanManager) as ExecutorService
             scanWorker.submit {}.get(5, TimeUnit.SECONDS)
             val failed = ChannelScanManager.currentState() as ScanState.Failed
             check(failed.generation == setupGeneration && failed.message == "Program cleanupに失敗しました")
@@ -149,11 +179,15 @@ class ProgramCleanupProviderTest {
             val attempted = ChannelScanManager.currentState() as ScanState.Failed
             check(attempted.generation == retriedSetup && attempted.message != "Program cleanupに失敗しました")
             check(rows.isEmpty() && committed && ProgramUpgradeCleanup.ensure(cleanup))
+            // 両scanの終端からDirectBoot pending検査まで到達していることを確認する。
+            check(pendingReads.get() >= 2)
         } finally {
             release.countDown()
             worker.submit {}.get(5, TimeUnit.SECONDS)
             ready.set(previous)
             caller.shutdownNow()
+            scanWorker.submit { Thread.currentThread().uncaughtExceptionHandler = previousHandler }.get(5, TimeUnit.SECONDS)
         }
+        check(scanFailures.isEmpty()) { "scan ownerの非同期例外: ${scanFailures.joinToString { it.stackTraceToString() }}" }
     }
 }
