@@ -1,3 +1,13 @@
+# フロントエンドclose失敗詳細の日本語統一
+
+- ワーカー終了待ちの未完了を示すruntime error detailを日本語へ統一した。typed error、回収所有権、状態遷移、終了待ち期限は変更していない。
+- Rust 1.81系rustfmtで整形確認した。文言確認から単体試験、Soong、VTS、実機の成功は宣言しない。
+
+# フロントエンドclose待機試験の説明文修正
+
+- 速やかなワーカー終了を検証する既存試験のexpect説明文を日本語へ統一した。入力・期待値・後片付けの観測・本番処理は変更していない。
+- Rust 1.81系rustfmtで整形確認した。単体試験とAndroid/Soong、atest、VTS、実機確認はこの文言修正から成功を宣言しない。
+
 # 旧 tuner_hal 削除
 
 - Tuner HAL の公開契約正本をリポジトリ直下の `TUNER_HAL_DESIGN_JA.md` へ移し、`tuner_hal2` を唯一の製品実装として文書参照を整理した。
