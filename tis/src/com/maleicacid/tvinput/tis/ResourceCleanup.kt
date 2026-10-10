@@ -11,8 +11,10 @@ internal class ResourceCleanup {
         val failure: Throwable,
     )
 
+    // 拒否したFilter eventの即時解放失敗だけはcallbackから登録し、再試行は既存ownerが行う。
+    // native解放はこのlist lock外で実行し、callbackとownerを相互待機させない。
     private val pending = mutableListOf<Pending>()
-    val hasPending: Boolean get() = pending.isNotEmpty()
+    val hasPending: Boolean get() = synchronized(pending) { pending.isNotEmpty() }
 
     // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
     @Suppress("TooGenericExceptionCaught")
@@ -24,20 +26,20 @@ internal class ResourceCleanup {
             action()
         } catch (error: Throwable) {
             Log.w(LogTags.TIS, "資源の解放失敗を再試行まで保持します resource=$name", error)
-            pending += Pending(name, action, error)
+            synchronized(pending) { pending += Pending(name, action, error) }
         }
     }
 
     fun retry() {
-        val previous = pending.toList()
-        pending.clear()
+        val previous = synchronized(pending) { pending.toList().also { pending.clear() } }
         previous.forEach { release(it.name, it.release) }
     }
 
     fun requireComplete() {
-        if (pending.isEmpty()) return
-        val error = IllegalStateException("資源の解放が未完了です: ${pending.joinToString { it.name }}")
-        pending.forEach { if (it.failure !== error) error.addSuppressed(it.failure) }
+        val remaining = synchronized(pending) { pending.toList() }
+        if (remaining.isEmpty()) return
+        val error = IllegalStateException("資源の解放が未完了です: ${remaining.joinToString { it.name }}")
+        remaining.forEach { if (it.failure !== error) error.addSuppressed(it.failure) }
         throw error
     }
 }

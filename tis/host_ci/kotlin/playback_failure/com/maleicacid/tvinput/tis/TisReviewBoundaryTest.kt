@@ -171,12 +171,12 @@ class TisReviewBoundaryTest {
                 com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING,
             )
         check(MaleicacidLiveSession.initialLiveSiPending(pending))
+        // serviceが既に観測済みでも、PMT/PCR/ES等の未完成factは待機を継続する。
+        check(MaleicacidLiveSession.initialLiveSiPending(pending.copy(reasons = listOf("NO_VALID_PMT"))))
+        check(MaleicacidLiveSession.initialLiveSiPending(pending.copy(reasons = listOf("NO_PCR_PID"))))
         check(
-            MaleicacidLiveSession.initialLiveSiPending(
-                pending.copy(
-                    reasons = listOf("NO_PMT_PID"),
-                    state = com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING,
-                ),
+            !MaleicacidLiveSession.initialLiveSiPending(
+                pending.copy(state = com.maleicacid.tvinput.aribsi.ServicePolicyState.UNSUPPORTED),
             ),
         )
     }

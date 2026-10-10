@@ -160,6 +160,10 @@ secure-memory handle、tunneled playback、platform passthroughは本製品が�
 
 デコード後のA/V同期とSurface提示はAndroid標準`MediaSync`だけを使用する。decoder output の `BufferInfo.presentationTimeUs` をMediaSyncへ渡すmedia timeの正本とする。video decoder出力は`MediaSync.setSurface(sessionSurface)`後の`createInputSurface()`へ接続し、output timestampをMediaSyncへ渡す。audio decoder出力PCMは`MediaSync.queueAudio()`へpresentation time付きで渡し、`MediaSync.Callback.onAudioBufferConsumed()`を受けるまでaudio output bufferの所有権を保持する。独自media clock、PCR→wallclock変換、独自future render / late drop schedulerを設けない。
 
+AV overflowのplain flushでは、既存playback ownerがflushを開始する時点で当該Filterの入力identityを閉じる。既にdecoderで保持する未queue入力に加え、ownerで待機する旧MediaEvent/RestartEventも失効させる。overflow通知後・owner実行前の受理分もflush前の入力として破棄し、flush実行中のMediaEventはdecodeせず個別に解放する。flush成功後だけ新identityで受付を再開し、失敗時は既存診断を通知して受付を閉じたままにする。別Filterの入力、decoder/MediaSync/AudioTrack、playback generationは変更しない。PESのFMQ read通知とは異なり、個別所有するMediaEventの破棄であるため、捨てた通知に対応する未読PES bytesを後続readへ持ち越す経路は作らない。
+
+映像decoderのowner受付過負荷期限、decoder内queueの過負荷期限、header取得上限による構成不能は、既存の映像decoder失敗と同じ停止入口へ接続する。再生不能通知だけでdecoderを閉じてFilterを残さず、既存stopで世代失効・Filter参照解除/close・待機callback回収・decoder解放を行う。音声側は既存のaudio-only停止またはvideo-only新世代fallbackの入口を維持する。
+
 ### MediaSync Framework-private final-output observation
 
 stock Android 15 / LineageOS 22.1 の `MediaSync` はvideo scheduling/dropをnative側で所有し、late frameをinputへ返すdrop分岐と、render対象frameをcurrent outputへattachして`queueBuffer()`する分岐を区別する。一方、公開Java APIにはそのfinal-output成功をvideo clientへ通知するcallbackがない。この不足だけを閉じたい製品構成では、対象LineageOS platformの`android.media.MediaSync`へ、既存public `MediaSync.Callback`とは別の `@hide OnFirstVideoFrameQueuedToOutputListener` と、arm識別子を同時に設定する `@hide setOnFirstVideoFrameQueuedToOutputListener(long armSequence, listener, handler)` 相当を任意に追加できる。Framework側は`armSequence`をTIF/TIS固有の意味を解釈しないopaque値として保持し、listener eventは`MediaSync` instanceと成功判定時に固定した`armSequence`を返す。TISのbuildと起動はこの追加APIを要求せず、public SDK、`@SystemApi`、`@TestApi`、Tuner AIDL/VINTFも変更しない。
@@ -220,6 +224,8 @@ caption management dataの`num_languages / language_tag / ISO_639_language_code 
 
 `arib_si_engine_rs` の自前ARIB文字列decoderはサービス名・番組名・番組説明など字幕以外のSI/EPG文字列に限定し、字幕/文字スーパーPES本文を渡さない。libaribcaptionはC APIのみを使用し、独自C/C++薄層は書かない。Kotlinから直接C APIを呼ばず、TIS Kotlin → Rust JNI boundary → 安全なRustラッパー → libaribcaption C APIの順に接続する。BML / data broadcast実行環境、双方向データ放送UI、データ放送UIは恒久対象外である。
 
+
+ARIB字幕・文字スーパーownerのexecutorもlifecycle/controlをPES・clock等のdata callbackより優先し、data callback未処理数と同期control待ちを有限化する。caption presentation boundaryは1 layer当たり64件・RGBA payload合計8 MiB・current media timeから60秒先まで、Timing=10文字スーパーのpending PESは64件・2 MiB・broadcast deadline 60秒先までを製品liveness budgetとする。上限超過した新規presentation/PESは保持せず字幕診断へ計上し、既存pendingの順序とownerを維持する。clock未確定中に受理したpresentationは、時計確定・再arm時と新規入力の容量判定前にも同じ60秒horizonを再検査し、超過Displayとその従属Clearを診断付きで除去する。clock未確定中は時間上限を判定できないため件数・bytes上限で保持し、時計確定後の通常字幕の枠を遠未来入力が占有し続けない。これらはARIB規格値ではなく停止clock・遠未来STM・入力burstでmemoryを無制限保持しないための製品runtime上限である。
 
 ## libaribcaption renderer runtime 契約
 
@@ -317,6 +323,8 @@ CaptionPresentationEpoch:
 `onSelectTrack(TYPE_SUBTITLE, null)` は即時にscheduler cancel、overlay clear、renderer flushを行ってcurrent subtitle generationを終了する。別subtitle trackへの変更も旧generationを終了し、新track用context/decoder/rendererを新規初期化して旧trackのcaption/result/eventを持ち越さない。
 
 字幕filter自身のflush、stop/reconfigure/restartによりdata-group continuityが失われ得る場合はpending scheduler eventとoverlayをclearし、rendererをflushし、decoder/rendererを新subtitle generationとして再初期化する。A/V filterだけのplain flushは字幕generationを変更しない。
+
+字幕ownerのreset controlが待機dataを追い越しても、reset前に受理した通常PESとTiming=10 PESはreset後のdecode/pendingへ復活させない。continuity・再生世代・track・enableの変更要求は共通受付境界で順序番号を確保し、PESも同じ短いlock内で現在の受付番号を保持して既存ownerへ投入する。ownerは実際に状態が変わった要求の番号を入力失効の下限とし、それより古いPESだけを破棄する。変更のない要求では下限を進めず、要求後・owner実行前の新PESも保持する。controlとdataの優先度が異なっても下限は戻さない。受付番号はchecked incrementとし、枯渇時は既存の投入失敗経路でownerをfenceして解放する。UI clearのpresentation epochと混用せず、状態変更判定・renderer操作は既存owner内に保つ。別owner・queue・retry機構やowner完了待ちは設けない。
 
 物理retune、service/codec/PID graph変更、playback generation変更、Surface/MediaSync generation変更では旧subtitle generationを終了し、pending event cancel、overlay clear、renderer flush、decoder/renderer/context解放を行う。新playback generationでは新viewportとtiming epochが確定するまで字幕inputを表示成功にしない。playback rate変更時はcurrent canonical clockに対してpending subtitle eventをcancel/re-armするが、それだけを理由にdecoder stateを破棄しない。
 
@@ -652,9 +660,13 @@ AudioTrackの生成、音量・dual-mono設定、MediaSyncへの接続、routing
 
 AV・字幕・文字スーパーのFilterも、取得直後から設定・開始を同じ初期化処理で囲む。設定値の構築、configure、startの途中例外と失敗戻り値では、当該Filterのcallback受理用参照を先に外し、停止・解放を試行する。解放失敗は既存ResourceCleanupへ保持し、部分初期化したFilterを未所有のまま失わない。AudioTrackとFilterは同じ準備・確定・巻戻し処理を使用し、資源の所有者を追加しない。
 
-`MaleicacidLiveSession` は session-level serial executor を持ち、currentサービス、generation、track state、unblock state、latest videoメタデータ、`ProgramPublishCoordinator`へのアクセスを同一executorに閉じる。AV開始lifecycleはSessionが`Idle / Starting(signature) / WaitingFirstOutput(signature,generation) / Started(signature,generation) / Failed(signature,generation?) / Stopped`のsealed stateを一つだけ所有する。current/pending signature、last attempted/started gate、pipeline generationを並行して保持しない。遷移判定は状態を持たない純粋関数とする。TunerController、PlaybackPipeline、parental receiverのコールバックは直接state mutationせず、session executorにenqueueする。
+`MaleicacidLiveSession` は lifecycle/control優先かつdata callback未処理数が有限のsession-level serial executorを持ち、currentサービス、generation、track state、unblock state、latest videoメタデータ、`ProgramPublishCoordinator`へのアクセスを同一executorに閉じる。TIF `onTune()` はURIと解放状態だけを同期検証してacceptedなら即時に返し、tune/reset/filter/CAS/SI初期化をsession control taskとして非同期実行する。zappingで複数のaccepted tuneが到着した場合は実行中1件に加えてlatest URIだけを保持し、中間の未実行tune要求をcontrol queueへ積み上げない。accepted後の初期化失敗はprocessへ例外を伝播せず同sessionのterminal unavailableへ閉じる。同期control待ちは有限budgetを持ちtimeoutなしの`Future.get()`を使用しない。section ingest後のlive refreshは同時に1件だけqueue/runningとし、実行中の追加ingestは終了後の1回の再評価へcoalesceする。AV開始lifecycleはSessionが`Idle / Starting(signature) / WaitingFirstOutput(signature,generation) / Started(signature,generation) / Failed(signature,generation?) / Stopped`のsealed stateを一つだけ所有する。current/pending signature、last attempted/started gate、pipeline generationを並行して保持しない。遷移判定は状態を持たない純粋関数とする。TunerController、PlaybackPipeline、parental receiverのコールバックは直接state mutationせず、session executorにenqueueする。
 
-`PlaybackPipeline` は playback-level serial executor を持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、availability arm sequenceの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。
+同期controlの待機期限は開始済みtaskにも適用する。未開始taskは実行権をatomicに取消し、開始済みtaskは取消し済み・未実行と偽らず`ControlResultUnknownException`で結果未確定として返す。割込みも同じ開始状態の区別を保つ。terminal cleanupのshutdownで未実行の通常control/cleanup controlを破棄する場合も、既存の破棄通知から同じ開始phase CASでcancel完了させ、callerへCancellationExceptionを返す。shutdownによる取消しを待機期限超過として報告しない。開始済みtaskの実行・資源所有権は元のexecutorに残し、session/playback/captionの呼出し境界は既存の解放flagを立て、同じownerへ既存の解放入口をqueueする。これにより後続data callbackを拒否し、遅延実行が終了してから同じownerで後片付けする。TIF同期Booleanは操作の成功を表明せず、当該sessionを閉鎖する。後片付け失敗は既存の未完解放を保持し、解放を再試行する入口を捨てない。別executorや別資源所有者へ未確定taskを移さず、callerを無期限に待たせない。
+
+`PlaybackPipeline` は lifecycle/control優先かつdata callback未処理数が有限のplayback-level serial executorを持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。同期control待ちは有限budgetを持ち、timeoutなしの`Future.get()`を使用しない。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、availability arm sequenceの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。
+
+MediaEvent/PESを保持するFilter入力は既存data予算へ課金する。decoderのbuffer返却・入力可能通知、MediaSyncのconsume等の進捗通知と回収・期限通知は同じownerの既存control経路へ渡し、Filter入力の予算飽和だけで全再生を終端しない。字幕PESの容量喪失・overflow・読取り失敗では、同じownerでcurrent Filter参照を失効させ、continuity lostを通知し、旧Filterを既存close/ResourceCleanupで退役させる。解放完了を確認してから既存生成入口で同じstream/trackの新Filterを設定・開始する。flush後の同一FMQ再利用は行わず、旧待機通知・回収中の通知・未読bytesを新Filterの入力へ読み替えない。解放・再生成失敗時は字幕入力を閉じたまま診断し、解放義務は既存cleanupへ保持する。別owner、別queue、callback内の待機は追加しない。
 
 TIFの`Session.onSetStreamVolume(volume)`は各Live sessionが所有する相対音量要求であり、初期値を`1.0f`、受付範囲を`0.0f..1.0f`とする。範囲外は同区間へclampし、system/master volumeや他sessionの音量を変更しない。Session executorで保持した値をPlaybackPipeline executorへ渡し、現在のAudioTrackへ適用する。音声track切替、decoder再起動、video-only fallbackからの復帰などでAudioTrackを再生成するときも、そのsessionが保持する最新値を新しいAudioTrackへ一度適用してからMediaSyncへ接続する。音声経路が未生成の時点の要求も捨てず、次回生成時に適用する。
 
@@ -818,3 +830,23 @@ Program insert/update/obsolete deleteは最大64 operationと、IBinder.getSugge
 scan全体のtyped terminalの確定も同じpublication fenceへ直列化する。終端確定後のcancelは拒否し、既に確定したCOMPLETEDやcommit副作用を遡ってCancelledへ書き換えない。Managerの正常return経路はScanResult.terminalだけを状態へ写像し、task cancel flagを再混合しない。
 scan全体の終端処理はpublication fence上で行い、Provider最終commitに入る前にcancel flagのmonitorで取消し受付を閉じる。この確定点より前に受理した取消しをterminalへ反映し、以後のcancelはProvider完了を待たず拒否する。既に確定したCOMPLETEDやcommit副作用を遡ってCancelledへ書き換えない。Managerの正常return経路はScanResult.terminalだけを状態へ写像し、task cancel flagを再混合しない。
 既存Channelはsetup/rescanで同じIDのmutable列を更新し、immutable COLUMN_TYPEと初期可視性markerを通常updateに含めない。未公開版の方式誤登録を移行するためのChannel再作成・旧row削除は実装しない。
+
+### current callbackの投入・実行失敗
+
+caption/sessionのcurrent callbackとplaybackの通常task sequence枯渇・想定外投入拒否は、成功や無診断dropに読み替えない。原因をログへ保持し、既存release fenceを閉じた後、同じexecutorのterminal cleanup controlで診断/PlaybackUnavailable/Session video unavailableと解放を実行する。cleanupだけは通常sequenceを消費せず、枯渇後も既存ownerで解放を再試行できる。通常identityの再利用、別executor、第二の資源台帳は導入しない。release/shutdown競合の遅着callbackだけは無視する。
+
+受理後に実行を開始したcallbackのRuntimeExceptionも、同じ失敗通知とterminal cleanupへ渡す。開始済み入力の所有権はactionが管理し、失敗通知のためにonDiscardを重ねて呼ばない。
+
+Filter callback入口ではFrameworkのcallback lockを保持する区間でowner完了やdata permitを待たない。playbackのAV/PES callbackは即時入口から既存ownerへ待機なしで有限投入し、満杯はtask実行失敗と区別し、AVは既存decoderのbackpressure時計へ接続する。owner再開後の入力進捗で同時計を解除し、継続拒否だけを既存startup/steady期限でvideo codec failureまたはaudio unavailableへ写像する。PES容量喪失は既存字幕continuity lostとFilter退役・再生成で局所回収する。各Filterの未処理損失通知は一つに束ねて既存controlへ渡し、別queueやtimerを持たない。generationとFilter identityが失効した入力はこの通知を発行しない。受理されなかったMediaEventは入口で解放し、解放失敗は既存ResourceCleanupへ同期保護した登録だけを行う。登録listのlock内でnative解放を呼ばず、再試行は同じplayback ownerだけが行う。受理済みでrelease後に失効したcallback、未実行の破棄callbackもeventを解放し、Filter close後に未実行eventを回収して未完解放がないことを確認した後だけglobal再生登録を解除し、executorを停止する。PESはFilter closeで未読bufferを回収し、再選局後の旧Filter/generationを新しい受信へ読み替えない。別queue・cleanup owner・retry loopは追加しない。
+
+字幕presentationの同一PTS置換は、既存queueを変更せずに置換後のbytes/境界数を検査し、token確保成功後だけ既存Displayと同じframeTokenに従属するClearを同じcommitで削除して新境界を追加する。置換後容量はこの両境界を除いた集合で判定する。容量拒否またはidentity枯渇では受理済みqueueを保持する。
+
+### serial executorの共通投入機構
+
+ControllerSerialExecutorとLifecycleSerialExecutorはPrioritySerialExecutorを継承し、単一thread、control優先/FIFO順序、owner識別、受理したdataのpermit返却、未実行taskの破棄を共有する。追加threadや別ownerは作らない。汎用controllerの既定上限1、TunerControllerのsection配送上限16、sessionの既定上限64は各利用者の方針に残す。playbackだけは既存16MiB AV Filter容量を共有受付予算とし、既存Semaphoreを1KiB単位で消費する。payloadを切り上げた予約にcallbackと各eventにつき1KiBの保守的な帳簿予約を加えるため、sample bytesとevent数の両方が有限となる。既存owner再入の一時保留にも同じ16MiB上限を適用し、通常queueと一時保留を合わせた予約上限は32MiBとする。1KiBは製品の受付予約単位でありJVM実測サイズやAOSP/ARIB規範値ではない。満杯でowner・permitを待たず、新しいqueueや入力コピーを作らない。有限control待機、owner再投入、callback入力の解放は各executorの方針に残す。通常identity枯渇後のcleanup投入も同じqueueへ入り、通常sequenceを消費しない。TunerController.releaseも外部ownerからこのcleanup classへ投入し、失敗時はexecutorを停止せず同じ入口で再試行する。shutdown時に未実行の通常control/cleanup Futureを破棄する場合は同じQueuedTaskの破棄通知でcancel完了させ、同期callerを未完了Future待ちに残さない。既存の飽和・shutdown・取消し・投入/実行失敗試験は共通機構を経由する。
+
+### cleanup classのFIFO
+
+cleanup投入は通常task sequenceと独立した単調sequenceを同じPrioritySerialExecutor内で採番する。通常identity枯渇後もcleanup class内の順序を失わず、同順位commandをqueue実装依存にしない。cleanup sequence自体も最大値で明示失敗とし、wrap/reuseはしない。別thread・scheduler・cleanup台帳を追加せず、通常/control/dataの既存優先順位を維持する。
+
+汎用executeはdata配送に限定し、controlは明示入口から同じqueueへ投入する。Futureの型をmarkerで再分類しない。LifecycleのControlFutureTaskは開始前取消しと開始後結果不明の区別だけを担う。

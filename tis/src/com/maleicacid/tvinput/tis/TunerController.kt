@@ -194,11 +194,14 @@ class TunerController(
 
     @Volatile private var released = false
 
-    private fun <T> callOnController(block: () -> T): T {
+    private fun <T> callOnController(
+        cleanup: Boolean = false,
+        block: () -> T,
+    ): T {
         if (sectionExecutor.isOwnerThread()) return block()
         check(!released) { "TunerController は解放済みです inputId=$inputId" }
         return try {
-            sectionExecutor.submitControl(block).get()
+            sectionExecutor.submitControl(cleanup = cleanup, block = block).get()
         } catch (error: InterruptedException) {
             propagateControllerBlockingFailure(error)
         } catch (error: ExecutionException) {
@@ -1871,7 +1874,7 @@ class TunerController(
             sectionExecutor.shutdownNow()
             return
         }
-        callOnController { releaseOnController() }
+        callOnController(cleanup = true) { releaseOnController() }
         sectionExecutor.shutdownNow()
         Log.i(LogTags.TIS, "Tuner を解放します inputId=$inputId sessionId=$tvInputSessionId")
     }

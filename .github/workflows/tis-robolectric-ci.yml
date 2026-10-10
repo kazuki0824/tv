@@ -46,7 +46,9 @@ jobs:
             --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest \
             --tests com.maleicacid.tvinput.tis.FrameworkTunerScanBoundaryTest \
             --tests com.maleicacid.tvinput.tis.ProgramBatchIpcBudgetTest \
-            --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest
+            --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest \
+            --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest \
+            --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest
 
       - name: 実SDK scan境界試験の実行結果を確認
         run: |
@@ -61,4 +63,17 @@ jobs:
           assert suite.get("skipped", "0") == "0", suite.attrib
           for case in suite.findall("testcase"):
               print(f"Android 15実SDK境界試験: {case.get('name')} success")
+          playback_report = report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest.xml")
+          playback = ET.parse(playback_report).getroot()
+          assert playback.get("tests") == "12", playback.attrib
+          assert playback.get("failures") == "0" and playback.get("errors") == "0", playback.attrib
+          assert playback.get("skipped", "0") == "0", playback.attrib
+          for case in playback.findall("testcase"):
+              print(f"Android 15実SDK playback受付試験: {case.get('name')} success")
+          caption = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CaptionInputContinuityTest.xml")).getroot()
+          assert caption.get("tests") == "5", caption.attrib
+          assert caption.get("failures") == "0" and caption.get("errors") == "0", caption.attrib
+          assert caption.get("skipped", "0") == "0", caption.attrib
+          for case in caption.findall("testcase"):
+              print(f"Android 15字幕入力continuity試験: {case.get('name')} success")
           PYRESULT

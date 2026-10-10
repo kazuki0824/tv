@@ -708,6 +708,7 @@ class PlaybackFailureCallbacksTest {
         val filter = playback.allocate(Filter::class.java)
         val pendingNotifications = mutableListOf<Runnable>()
         private val cas = CasController()
+        private val captionExecutors = mutableListOf<LifecycleSerialExecutor>()
 
         init {
             MediaCas.Faults.reset()
@@ -739,6 +740,10 @@ class PlaybackFailureCallbacksTest {
             for (name in listOf("captionController", "superimposeController")) {
                 val caption = playback.allocate(AribCaptionController::class.java)
                 set(caption, "released", AtomicBoolean(true))
+                set(caption, "pesAdmissionLock", Any())
+                val captionExecutor = LifecycleSerialExecutor("closed caption fixture")
+                captionExecutors += captionExecutor
+                set(caption, "executor", captionExecutor)
                 set(session, name, caption)
             }
             val sessionType = android.media.tv.TvInputService.Session::class.java
@@ -815,6 +820,7 @@ class PlaybackFailureCallbacksTest {
                     .apply { isAccessible = true }
                     .get(playback.pipeline)
                     .let { (it as? java.util.concurrent.ExecutorService)?.shutdownNow() }
+                captionExecutors.forEach { it.shutdownNow() }
                 MediaCas.Faults.reset()
             }
         }
@@ -894,6 +900,157 @@ class PlaybackFailureCallbacksTest {
             check(result.diagnostics.single().candidate == candidates.first())
         } finally {
             engine.close()
+            executor.shutdownNow()
+        }
+    }
+
+    // 同一ownerの初期化・実資源停止・失敗保持を一続きの反例で検査する。
+    @Suppress("LongMethod")
+    @Test
+    fun acceptedTuneFailureFencesOldPlaybackAndRetainsCleanupDespiteNotificationFailure() {
+        val controllerExecutor = ControllerSerialExecutor("accepted-tune-controller-test")
+        val sessionExecutor = LifecycleSerialExecutor("accepted-tune-session-test")
+        val fixture = controllerExecutor.submit<Fixture> { Fixture(false, false) }.get(5, TimeUnit.SECONDS)
+        try {
+            val controller = fixture.allocate(TunerController::class.java)
+            val session = fixture.allocate(MaleicacidLiveSession::class.java)
+
+            fun set(
+                target: Any,
+                name: String,
+                value: Any,
+            ) {
+                target.javaClass
+                    .getDeclaredField(name)
+                    .apply { isAccessible = true }
+                    .set(target, value)
+            }
+            set(controller, "sectionExecutor", controllerExecutor)
+            set(controller, "playbackPipeline", fixture.pipeline)
+            set(controller, "tuneAccepted", true)
+            set(controller, "currentTune", fixture.channel)
+            for (name in listOf("failedDynamicPmtPids", "failedDynamicEcmPids", "failedDynamicEmmPids")) {
+                set(controller, name, linkedSetOf<TsPid>())
+            }
+            for (name in listOf("captionLanguagesByPid", "captionFactParsers", "superimposeTimingByPid")) {
+                set(controller, name, java.util.concurrent.ConcurrentHashMap<TsPid, Any>())
+            }
+            set(controller, "sectionFilters", linkedMapOf<TsPid, Any>())
+            set(controller, "sectionFilterHandles", linkedMapOf<TsPid, Any>())
+            val released = AtomicBoolean(false)
+            set(session, "releaseOnce", released)
+            set(session, "sessionExecutor", sessionExecutor)
+            set(session, "tuneRequestLock", Any())
+            set(session, "tunerController", controller)
+            set(session, "playbackState", fixture.state)
+            // 字幕ownerとFramework通知を未初期化にし、両方の失敗後も実playback停止を検査する。
+            val engine =
+                com.maleicacid.tvinput.aribsi
+                    .AribSiEngine(android.content.ContextWrapper(null))
+            val parser =
+                engine.javaClass
+                    .getDeclaredField("nativeParser")
+                    .apply { isAccessible = true }
+                    .get(engine) as com.maleicacid.tvinput.aribsi.NativeAribSiParser
+            parser.close()
+            set(parser, "handle", Long.MAX_VALUE)
+            set(session, "aribSiEngine", engine)
+            val primary = checkNotNull(runCatching { engine.reset() }.exceptionOrNull())
+            check(primary is com.maleicacid.tvinput.aribsi.NativeParserCleanupException)
+            val handler =
+                MaleicacidLiveSession::class.java
+                    .getDeclaredMethod(
+                        "handleAcceptedTuneFailure",
+                        android.net.Uri::class.java,
+                        Throwable::class.java,
+                    ).apply { isAccessible = true }
+            sessionExecutor.callControl(5_000L) {
+                handler.invoke(session, android.net.Uri.parse("content://android.media.tv/channel/2"), primary)
+            }
+            check(released.get())
+            check(
+                !controller.javaClass
+                    .getDeclaredField("tuneAccepted")
+                    .apply { isAccessible = true }
+                    .getBoolean(controller),
+            )
+            check(fixture.pipeline.currentPlaybackGenerationForTest() != 7L)
+            check(fixture.cleanup.hasPending)
+            check(primary.suppressed.size >= 2)
+            val pending =
+                MaleicacidLiveSession::class.java
+                    .getDeclaredField("releaseCleanup")
+                    .apply { isAccessible = true }
+                    .get(session) as ResourceCleanup
+            check(pending.hasPending)
+            check(!sessionExecutor.isShutdown)
+            check(!session.onTune(android.net.Uri.parse("content://android.media.tv/channel/3")))
+        } finally {
+            fixture.rejectRelease = false
+            runCatching { fixture.pipeline.release() }
+            check(!fixture.cleanup.hasPending)
+            controllerExecutor.shutdownNow()
+            sessionExecutor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun releaseRetainsOwnerWhenDiscardedInputReleaseFailsThenCompletesOnRetry() {
+        val fixture = Fixture(false, false, false)
+        val executor = LifecycleSerialExecutor("未実行event解放試験")
+        fixture.set("executor", executor)
+        val started = java.util.concurrent.CountDownLatch(1)
+        val unblock = java.util.concurrent.CountDownLatch(1)
+        val firstDone = java.util.concurrent.CountDownLatch(1)
+        val retryDone = java.util.concurrent.CountDownLatch(1)
+        var attempts = 0
+        val activePipelines =
+            ChannelScanManager::class.java
+                .getDeclaredField("activePlaybackPipelines")
+                .apply { isAccessible = true }
+                .get(ChannelScanManager) as java.util.concurrent.atomic.AtomicInteger
+        val baseline = activePipelines.get()
+        val registration =
+            PlaybackPipeline::class.java
+                .getDeclaredField("resourceActivityReported")
+                .apply { isAccessible = true }
+        ChannelScanManager.registerPlaybackPipeline()
+        fixture.set("resourceActivityReported", true)
+        try {
+            executor.executeControl {
+                started.countDown()
+                unblock.await()
+            }
+            check(started.await(5, TimeUnit.SECONDS))
+            executor.executeCallback(
+                isReleased = { false },
+                onFailure = { throw it },
+                onDiscard = {
+                    fixture.cleanup.release("未実行MediaEvent") {
+                        attempts++
+                        check(attempts > 1) { "MediaEvent解放失敗" }
+                    }
+                },
+            ) { error("release後に未実行入力を処理しました") }
+            executor.executeControl {
+                runCatching { fixture.pipeline.release() }
+                firstDone.countDown()
+            }
+            unblock.countDown()
+            check(firstDone.await(5, TimeUnit.SECONDS))
+            check(attempts == 1 && fixture.cleanup.hasPending && !executor.isShutdown)
+            check(activePipelines.get() == baseline + 1 && registration.getBoolean(fixture.pipeline))
+            executor.executeControl {
+                // Unsafe fixtureのcallback threadは未初期化。停止後のNPEは試験対象外。
+                runCatching { fixture.pipeline.release() }
+                retryDone.countDown()
+            }
+            check(retryDone.await(5, TimeUnit.SECONDS))
+            check(attempts == 2 && !fixture.cleanup.hasPending && executor.isShutdown)
+            check(activePipelines.get() == baseline && !registration.getBoolean(fixture.pipeline))
+        } finally {
+            if (registration.getBoolean(fixture.pipeline)) ChannelScanManager.unregisterPlaybackPipeline(null)
+            unblock.countDown()
             executor.shutdownNow()
         }
     }
@@ -1081,7 +1238,7 @@ class PlaybackFailureCallbacksTest {
 
         init {
             set("inputId", "test")
-            set("playbackExecutorThread", Thread.currentThread())
+            set("executor", LifecycleSerialExecutor("playback-fixture"))
             set("playbackGeneration", 7L)
             set("released", AtomicBoolean(false))
             set("videoAvailableNotified", AtomicBoolean(!waiting))

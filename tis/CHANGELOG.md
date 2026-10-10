@@ -1,3 +1,10 @@
+# 非待機playback配送の容量拒否と実行失敗の分離
+
+- 64 callback固定の受付を、既存AV Filter容量に基づくpayload/event帳簿の有限予約へ変更する。同じSemaphoreのweighted acquire/releaseを使用し、owner再入とshutdown破棄でも全予約を返す。
+- 容量拒否はAVの既存decoder backpressure期限、字幕の既存continuity lost/flushへ接続する。損失通知は各Filterにつき既存controlへ一つだけ保留し、stale generation/Filterの入力はcurrent損失へ読み替えない。非overflow statusはdata枠を消費しない。真の投入/実行失敗のterminal cleanupは維持する。
+- 実SDK Filter callback lock、MediaEvent解放、Android時計を使う回帰をRobolectricへ追加し、65件video/audio/字幕/status burst、単発拒否後の再開、継続拒否の期限、字幕の局所回収、stale入力、実行失敗を検査する。weighted permit寿命は既存host試験で確認する。
+- 新owner・scheduler・retry loop・SI意味parserは追加しない。build/testは既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
 # 非待機section配送の有限burst受理
 
 - 1件固定のdata枠を、既存64KiB Filter容量と最大section長から導く16 slotへ変更する。残る拒否は既存ingest診断へ保持し、収集完了時も入力喪失を隠さない。callback待機・第二worker・SI意味解析/coalescingは追加しない。
@@ -7,6 +14,30 @@
 
 - 初回SI待ちの早期returnを、既存Idle状態かつ直前もPENDINGの場合へ限定する。READYからPENDINGへの失効は既存CAS解除・再生停止・字幕終了・利用不能通知へ戻す。新owner・状態機械・migrationは追加しない。
 - 初回bootstrapと失効回帰で実JNI fixtureを共用し、CRC付き同一版矛盾PMT後のStopped、pipeline世代失効、CAS plugin退役、ECM/EMM空集合とPMT継続、利用不能通知を検査する。build・試験は既存CIへ委任し、実機VTS・実波は未実施。
+
+# Lifecycle同期control破棄時の終了通知
+
+- callControlの通常control/cleanup control両経路へ既存QueuedTaskの破棄callbackを接続し、未開始FutureをcancelBeforeStartで完了する。開始phase CASと開始済み結果未確定の契約を維持し、terminal cleanup後の取消しをtimeoutとして報告しない。
+- 既存host試験へ、owner停止中にterminal cleanupと同期callerを投入し、shutdown後に通常/cleanup双方のcallerがtimeout前にCancellationExceptionで終了する回帰を追加する。別owner・worker・本番待機機構・migrationは追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
+# 優先controller releaseによる未実行Futureの終了通知
+
+- 通常controlとcleanup controlのFutureへ既存QueuedTaskの破棄callbackを接続し、shutdownNowで未実行taskを破棄した場合はcancel完了を通知する。優先releaseが受理済み通常controlを追い越しても同期callerを待機中のまま残さない。
+- 既存host境界試験へ本番currentGeneration/releaseの競合と、通常/cleanup両Futureの破棄完了を追加する。解放用fixtureは試験内で共用し、設計とCI検出件数を更新する。別worker・owner・待機loopを本番へ追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
+# controller releaseの枯渇後cleanup入口
+
+- TunerController.releaseを既存PrioritySerialExecutorのenqueueCleanupへ接続し、通常task sequence枯渇後も同じownerで解放・失敗後の再試行を実行する。通常taskの拒否、成功後だけのshutdownは維持する。
+- cleanup classの既存定数を共通queueへ集約し、既存Future投入へcleanup選択を追加する。本番release入口の枯渇・cleanup失敗・再試行・完了を既存host境界試験へ追加し、TIS設計とCI検出件数を更新する。別executor・資源owner・retry loopは追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
+# 字幕時計確定時のpresentation horizon再検査
+
+- clock未確定中に受理した字幕も、時計確定・再arm時と新規入力の容量判定前に既存60秒horizonを再検査する。超過Displayと従属Clearを診断付きで除去し、既存queueの容量を戻す。
+- 既存capacity試験へnullから停止clockへ遷移する64件の反例、通常字幕の再受理、Clearだけが上限を超えるpairの除去と60秒境界の保持を追加する。TIS設計と既存host CIの試験件数を更新する。owner・queue・scheduler・budget・本番test APIを追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
 
 # BS探索のSDK scan登録解放とAndroid 15境界試験
 
@@ -20,11 +51,56 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# serial executorの到達しないcontrol分類の削除
+
+- 両executorの未使用ControlTask markerとexecute振分けを削除し、controlは既存の明示入口、executeはdataに限定した。
+- controllerのFuture専用classを既存FutureTaskへ簡素化。Lifecycleの開始前取消し・開始後結果不明、共通queue・owner・permitは維持する。
+- 設計を追従し、既存回帰試験はCIへ委任。新しいowner・framework・migrationは追加しない。実機VTSは未実施。
+
+# cleanup優先classのFIFO保持
+
+- cleanup commandへ通常taskとは独立したchecked sequenceを同じexecutor内で付け、通常identity枯渇時もA/B/Cの投入順を保持する。最大値では明示失敗とし、wrap/reuseはしない。
+- ownerをブロックして複数cleanupをenqueueした後の実行順を既存host fixtureへ追加した。別executor・scheduler・台帳は追加しない。テストはCIへ委ね、Soong/VTS/実機確認は未実施。
+
+# 同一PTS置換の従属Clear回収
+
+- 置換対象DisplayのframeTokenに従属するClearも容量計算と成功時commitの除去対象に含める。拒否時は既存queueを保持し、別tokenのClearは変更しない。
+- 既存字幕2試験へduration付き同一PTSのbudget＋1回の受理とtoken・件数・bytesの確認を追加する。試験実行はCIへ委ねる。
+
+# 受理済み字幕置換と未実行event解放の登録保持
+
+- 同一PTS字幕は容量検査とtoken確保の成功後に旧Displayを削除し、境界数とbytesの検査結果を実際のqueueへ反映する。
+- Filter close後の未実行event回収を停止処理内へ移し、解放失敗中はglobal再生登録と既存cleanup ownerを保持する。
+- 既存host試験に受理済み置換のbudget+1回連続投入と、解放失敗・再試行時のglobal登録を追加した。検証はCIで実施する。
+
+# Filter callback容量拒否と字幕置換の所有保持
+
+- LifecycleSerialExecutorのdata投入を待機なしの有限受理/拒否にし、Framework callback lockと優先closeの循環待ちを除去した。
+- playbackのAV/PES callbackは即時入口から同じownerへ渡す。拒否・失効・未実行破棄のMediaEventを解放し、失敗は既存ResourceCleanupへ保持する。Filter close後の未実行event回収と解放完了をexecutor停止の前提にした。別queue・cleanup ownerは追加しない。
+- 同一PTS字幕の置換後容量を無変更で検査し、token確保後だけqueueへcommitする。拒否時に既存Display/Clearを保持する。
+- 実Android 15 Filter lockの64枠飽和、callback資源破棄と解放retry、字幕bytes/境界数拒否をCI回帰試験へ接続する。Soong/VTS/実機試験は未実施。
+
+- accepted tune初期化失敗を既存session release fenceとResourceCleanupへ接続し、旧playbackを停止する。解放失敗と通知失敗は主原因へ保持し、同じownerによる再試行を残す。
+
+- #183: current callback投入失敗は原因を保持してterminal fence・診断・同一owner解放へ接続。通常identity枯渇後もcleanup専用controlで再試行し、shutdown競合だけを無視する。
+
+# lifecycle worker交換とcontrol再入dataのdrain
+
+- beforeExecuteで現worker identityへ更新する。全owner taskのfinishからdeferred dataをdrainし、control→data再入もdata側tailへ配送する。control完了時は空きpermitをtryAcquireし、満杯なら既存data完了に回収を委ねてownerを待機させない。交換workerとcontrol→dataの反例試験を追加した。
+
+# shutdown時のdeferred dataとpermit回収
+
+- discard callbackを通常finishから分離し、shutdown時は再enqueueしない。既存deferred queueを同じmonitorで排他回収し、実行中dataとqueued dataのpermitを一度ずつ返す。別thread shutdownとowner再入の競合試験を追加した。
+
 # PR #119 channel挿入直後のrollback ID引渡し
 
 - 未初期化native ownerを使用する例外注入試験をhost専用ソースへ置き、Android/SoongとRobolectric共用ソースにsun.misc.Unsafe依存を持ち込まない。
 
 - 挿入成功時に既存scanのrollback集合へIDを直接渡し、upsert途中と後続Program snapshot取得の例外でも新規行を既存finalizationで削除可能にした。別owner・scheduler・migrationは追加しない。回帰試験は既存CIへ委ね、Soong/VTS/実機は未実施。
+
+# 同一publicationの既存Program重複key拒否
+
+- existing/new分岐前に全program keyを検査し、重複時はservice batch全体を書き込まない。既存rowありの重複入力試験を追加した。新しいownerやcacheは追加しない。
 
 - レビュー再確認により、現行製品の必要条件を立証できないchannel型移行transactionを撤去した。通常rescanは既存IDとユーザー可視性を保持し、immutable列をupdateから除外する。
 
@@ -114,11 +190,19 @@
 - 実ContentProviderOperationとSQLite transactionを使うRobolectric試験を追加し、中間・末尾行の消失、既存行と新規行の混在、正常commitを検査する。製品の新しいowner・retry・migrationは追加しない。
 - Kotlin build ownership検査へRobolectric専用試験のsource setを登録し、通常host・製品sourceへ混入させずに型照合・実行・品質検査を行う。
 
-# 同一publicationの既存Program重複key拒否
+# stacked PR直線化時のレビュー残件
 
 - #186レビュー本文で指摘された既存channel一覧queryの未実装defaultを、空集合成功ではなくUnsupportedOperationExceptionのResult.failureへ変更した。writer公開入口で未実装失敗と明示実装の取得結果を既存試験へ追加した。productionの所有input別query、boot/backgroundの失敗伝播、試験数は維持。Soong/device atest/VTS/実機確認は未実施。
+- #183の字幕投入失敗境界は、診断通知が失敗しても同じownerでcloseを実行し、双方失敗時には未完解放の例外を記録する順序を維持する。useへの変換は一次例外を変えるため、理由付き局所抑制でQodanaに意図を明示した。処理・所有権・試験数は不変。Soong/device atest/VTS/実機確認は未実施。
 
-- existing/new分岐前に全program keyを検査し、重複時はservice batch全体を書き込まない。既存rowありの重複入力試験を追加した。新しいownerやcacheは追加しない。
+- Qodanaの追加4件は取消しCASおよびsurface/track選択のrelease判定を短絡評価へ同値変換して対処し、失効時の後続処理拒否と評価順を保持した。
+
+- #166の既存試験で使用するreflection helperを試験class内へ復元し、controller専用試験との重複は再導入しない。
+- #183のlive初期判定はservice観測有無に依存させず、typed PENDINGを待機として保持する。PMT/PCR未完成とterminal stateの反例を境界試験へ追加した。
+- 未使用のLifecycleSerialExecutor.submitControlを削除し、試験は既存executeControl/callControlへ接続した。
+- queued→runningのCASとSI更新時のrelease再確認を維持し、取消し競合・投入後解放の理由を付けてRedundantIfを対象式だけ抑制した。
+- #161からの両系統を各PRの差分を保持して直線化し、setup/one-segの変更をlive owner以降にも継承した。
+
 
 # setup scanの新規channel可視性transaction
 
