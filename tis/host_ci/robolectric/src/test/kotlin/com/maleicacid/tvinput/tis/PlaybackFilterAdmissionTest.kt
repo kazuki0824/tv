@@ -87,16 +87,25 @@ class PlaybackFilterAdmissionTest {
         Fixture().use { fixture ->
             val video = fixture.avFilter(false)
             val progress = CountDownLatch(1)
+            val samples = listOf(4_194_304L, 4_194_304L, 4_194_304L, 4_186_112L).map(::mediaEvent)
+            val releasedSamples = CountDownLatch(samples.size)
+            samples.forEach { Shadow.extract<NativeMediaEvent>(it).onRelease = { releasedSamples.countDown() } }
             // 共有16,384 slotをAVC単一sample上限内の入力だけで満たす。
             fixture.whileOwnerBlocked {
-                listOf(4_194_304L, 4_194_304L, 4_194_304L, 4_186_112L)
-                    .map(::mediaEvent)
-                    .forEach { deliver(video, it) }
+                samples.forEach { deliver(video, it) }
                 fixture.invoke("enqueuePlaybackAction", { progress.countDown() })
                 assertFalse(fixture.released())
             }
             assertTrue(progress.await(5, TimeUnit.SECONDS))
+            assertTrue(releasedSamples.await(5, TimeUnit.SECONDS))
+            // 最後のdata taskのfinallyでpermitを返してからdrain用dataを受理させる。
+            fixture.executor.callControl(5_000L) { Unit }
             fixture.drain()
+            samples.forEach {
+                val native = Shadow.extract<NativeMediaEvent>(it)
+                assertEquals(1, native.blockReads)
+                assertEquals(1, native.releases)
+            }
             assertFalse(fixture.released())
         }
     }
@@ -541,6 +550,7 @@ class PlaybackFilterAdmissionTest {
         var releases = 0
         var blockReads = 0
         var releaseThread: String? = null
+        var onRelease: () -> Unit = {}
 
         @Implementation
         fun nativeGetLinearBlock(): MediaCodec.LinearBlock? {
@@ -552,6 +562,7 @@ class PlaybackFilterAdmissionTest {
         fun nativeFinalize() {
             releases++
             releaseThread = Thread.currentThread().name
+            onRelease()
         }
     }
 }

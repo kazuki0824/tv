@@ -36,6 +36,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 // 同じ所有者の状態と解放順を維持し、行数だけを理由に責務を分割しない。
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
@@ -295,12 +296,7 @@ class PlaybackPipeline(
     }
 
     private fun enqueuePlaybackAction(action: () -> Unit) {
-        executor.executeCallback(
-            control = true,
-            isReleased = released::get,
-            onFailure = ::handleSubmissionFailure,
-            action = action,
-        )
+        enqueuePlaybackControl(action)
     }
 
     private fun enqueuePlaybackControl(action: () -> Unit) {
@@ -846,27 +842,25 @@ class PlaybackPipeline(
             }
             val filterGeneration = playbackGeneration
             val pendingCapacityLoss = AtomicBoolean(false)
-            val inputEpoch = AtomicLong(0L)
-            val acceptingPes = AtomicBoolean(true)
+            val inputEpoch = AtomicReference<Any?>(Any())
 
             fun sourceInputIsCurrent(
                 filter: Filter,
-                eventEpoch: Long,
+                eventEpoch: Any,
             ): Boolean =
                 filterGeneration == playbackGeneration &&
                     (if (superimpose) superimposeFilter === filter else subtitleFilter === filter) &&
-                    inputEpoch.get() == eventEpoch
+                    inputEpoch.get() === eventEpoch
 
             fun invalidatePendingPesAndFlush(source: Filter) {
                 // flush中に届く通知は、消去対象のFMQ bytesを読めないよう入口で捨てる。
-                acceptingPes.set(false)
-                inputEpoch.incrementAndGet()
+                inputEpoch.set(null)
                 try {
                     onSubtitleContinuityLost(filterGeneration, trackId)
                     runCatching { check(source.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
                         .onFailure { Log.w(LogTags.TIS, "字幕Filterの入力回収に失敗しました", it) }
                 } finally {
-                    acceptingPes.set(true)
+                    inputEpoch.set(Any())
                 }
             }
 
@@ -900,8 +894,7 @@ class PlaybackPipeline(
                             events: Array<FilterEvent>,
                         ) {
                             if (!sourceIsCurrent(filter)) return
-                            val eventEpoch = inputEpoch.get()
-                            if (!acceptingPes.get() || eventEpoch != inputEpoch.get()) return
+                            val eventEpoch = inputEpoch.get() ?: return
                             enqueuePlaybackFilterEvents(events, { reportCapacityLoss(filter) }) {
                                 runCatching {
                                     if (!sourceInputIsCurrent(filter, eventEpoch)) return@enqueuePlaybackFilterEvents
