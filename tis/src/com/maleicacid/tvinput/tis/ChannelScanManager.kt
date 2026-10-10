@@ -50,6 +50,9 @@ object ChannelScanManager {
     ) {
         @Volatile var closing = false
         val cancelRequested = AtomicBoolean(false)
+        val publicationLock = Any()
+
+        fun requestCancel() = synchronized(publicationLock) { cancelRequested.set(true) }
 
         @Volatile var controller: AutoCloseable? = null
 
@@ -165,6 +168,7 @@ object ChannelScanManager {
                             createdEngine,
                             task.purpose,
                             task.cancelRequested,
+                            task.publicationLock,
                         )
                     task.controller = createdController
                     if (!isCurrentGeneration(generation)) return@runCatching null
@@ -259,6 +263,7 @@ object ChannelScanManager {
                             createdEngine,
                             task.purpose,
                             task.cancelRequested,
+                            task.publicationLock,
                         )
                     task.controller = createdController
                     if (!isCurrentGeneration(generation)) return@runCatching null
@@ -381,6 +386,7 @@ object ChannelScanManager {
                             createdEngine,
                             task.purpose,
                             task.cancelRequested,
+                            task.publicationLock,
                         )
                     task.controller = createdController
                     if (!isCurrentGeneration(generation)) return@runCatching null
@@ -423,7 +429,7 @@ object ChannelScanManager {
 
     fun cancel() {
         val task = activeTask.get() ?: return
-        task.cancelRequested.set(true)
+        task.requestCancel()
         setTerminalStateIfCurrent(
             task.generation,
             ScanState.Cancelled(task.generation, task.purpose),
@@ -438,7 +444,7 @@ object ChannelScanManager {
     ): Boolean {
         val task = activeTask.get() ?: return false
         if (task.generation != generation || task.purpose != purpose) return false
-        task.cancelRequested.set(true)
+        task.requestCancel()
         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, purpose))
         return true
     }
@@ -462,7 +468,7 @@ object ChannelScanManager {
             BackgroundChannelMaintenanceDiagnostics.lastSkippedReason =
                 decision.diagnosticReason ?: "LIVE_SESSION_PREEMPTED_RUNNING_BACKGROUND_MAINTENANCE"
         }
-        task.cancelRequested.set(true)
+        task.requestCancel()
         setTerminalStateIfCurrent(
             task.generation,
             ScanState.Cancelled(task.generation, task.purpose),

@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -17,8 +18,61 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-@Suppress("TooManyFunctions")
+// scanの終端と公開拒否を同じ契約群で検証し、取消しの反例を別fixtureへ分散しない。
+@Suppress("TooManyFunctions", "LargeClass")
 class ScanPlanPolicyTest {
+    @Test
+    fun cancellationDuringFinalSnapshotRetryStopsAcquisitionAndPublication() {
+        val cancelled = AtomicBoolean(false)
+        var attempts = 0
+        val snapshot =
+            ChannelScanController.acquireFinalSnapshotUnlessCancelled<String>(
+                cancelled,
+                attempt = {
+                    attempts++
+                    null
+                },
+                waitForRetry = { cancelled.set(true) },
+            )
+        assertEquals(1, attempts)
+        assertEquals(null, snapshot)
+        val result =
+            ChannelScanController.SiCollectionResult(
+                ChannelScanController.SiCollectionOutcome.CANCELLED,
+                null,
+                1,
+            )
+        assertFalse(result.mayPublishChannels)
+    }
+
+    @Test
+    fun cancellationBeforePublicationGatePreventsProviderSideEffects() {
+        val cancelled = AtomicBoolean(false)
+        val lock = Any()
+        val fence = ChannelScanController.ScanGenerationFence(lock, cancelled)
+        synchronized(lock) { cancelled.set(true) }
+        var writes = 0
+        assertEquals(null, fence.publishIfCurrent(1L) { writes++ })
+        assertEquals(0, writes)
+    }
+
+    @Test
+    fun finalSiSnapshotAttemptMayStartImmediatelyBeforeDeadline() {
+        assertTrue(ChannelScanController.shouldStartFinalSiSnapshot(999L, 1_000L))
+    }
+
+    @Test
+    fun finalSiSnapshotAttemptCannotStartAtOrAfterDeadline() {
+        assertFalse(ChannelScanController.shouldStartFinalSiSnapshot(1_000L, 1_000L))
+        assertFalse(ChannelScanController.shouldStartFinalSiSnapshot(1_001L, 1_000L))
+    }
+
+    @Test
+    fun finalSiSnapshotBusyAtDeadlineDoesNotSleepOrRetry() {
+        assertEquals(null, ChannelScanController.finalSiSnapshotRetrySleepMs(1_000L, 1_000L, 200L))
+        assertEquals(1L, ChannelScanController.finalSiSnapshotRetrySleepMs(999L, 1_000L, 200L))
+    }
+
     @Test
     fun controllerControlBoundaryOvertakesQueuedSectionWorkWithoutReorderingControls() {
         val executor =

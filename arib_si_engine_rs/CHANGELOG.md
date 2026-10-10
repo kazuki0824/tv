@@ -1,3 +1,8 @@
+# collection registry取得の待機拒否
+
+- Make collection try-snapshot registry acquisition non-blocking while preserving typed poison and invalid-handle failures.
+- 既存typed failureと共有snapshot契約を維持する。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
 # r51_pr91_review_truncated_loop_and_identity
 
 - event loopがsection残量を超えても、受信境界内の共通descriptor解析と全bytesの診断保持を行う。未受信部分を補完せず、構造不正状態を維持する。
