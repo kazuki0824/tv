@@ -686,7 +686,7 @@ class PlaybackPipeline(
             val targetVideoDecoder = videoDecoder
             val pendingCapacityLoss = AtomicLong(-1L)
             // MediaEventは個別に解放できる。flush実行中は閉じ、成功後だけ次の受付へ進む。
-            val inputIdentity = AtomicReference<Any?>(Any())
+            val inputIdentity = AtomicReference(Any())
 
             fun reportCapacityLoss(source: Filter) {
                 val rejectedAt = SystemClock.elapsedRealtime()
