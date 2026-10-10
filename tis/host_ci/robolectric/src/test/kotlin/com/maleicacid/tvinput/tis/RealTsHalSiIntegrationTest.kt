@@ -8,6 +8,7 @@ import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.CaDescriptorScope
 import com.maleicacid.tvinput.aribsi.SectionIngestController
+import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.SiStatus
@@ -29,6 +30,9 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class RealTsHalSiIntegrationTest {
+    // Rust JNIの未対応PID/table通知値。製品の公開定数を試験のために復活させない。
+    private val ignoredUnsupportedPidOrTable = 1
+
     private data class Section(
         val pid: Int,
         val bytes: ByteArray,
@@ -139,9 +143,9 @@ class RealTsHalSiIntegrationTest {
             val status = controller.onSection(checkNotNull(TsPid.fromOrNull(section.pid)), section.bytes).status
             assertTrue(
                 "pid=${section.pid} status=$status",
-                status == SiStatus.OK || status == SiStatus.IGNORED_UNSUPPORTED_PID_OR_TABLE,
+                status == SiStatus.OK || status == ignoredUnsupportedPidOrTable,
             )
-            if (status == SiStatus.IGNORED_UNSUPPORTED_PID_OR_TABLE) {
+            if (status == ignoredUnsupportedPidOrTable) {
                 ignored += section.pid to (section.bytes.first().toInt() and 255)
             }
         }
@@ -165,7 +169,16 @@ class RealTsHalSiIntegrationTest {
             assertEquals(expected.getInt("transport_stream_id"), service.serviceKey.transportStreamId)
             verifyService(service, reference)
         }
-        assertEquals(setOf(1048, 1049), builder.registrationReadySnapshot().map { it.serviceKey.serviceId }.toSet())
+        val registration = engine.serviceRegistrationSnapshot()
+        val ready =
+            registration.services.filter { service ->
+                ServicePolicyEvaluator.evaluate(
+                    facts = registration.semanticFactsByServiceKey[service.serviceKey],
+                    fallbackKey = service.serviceKey,
+                    expectedSmdBroadcastSystem = ServicePolicyEvaluator.expectedSmdBroadcastSystem(SiDiscoveryProfile.ISDB_T),
+                ).registrationReady
+            }
+        assertEquals(setOf(1048, 1049), ready.map { it.serviceKey.serviceId }.toSet())
     }
 
     private fun verifyService(
@@ -199,7 +212,7 @@ class RealTsHalSiIntegrationTest {
         expected: JSONObject,
     ) {
         val events =
-            engine.programStateSnapshot().events.filter {
+            engine.livePlaybackSnapshot().programs.events.filter {
                 it.serviceKey.serviceId == expected.getInt("selected_service_id") && it.source.tableId == 0x4e
             }
         val references = objects(expected.getJSONArray("selected_service_pf_events"))

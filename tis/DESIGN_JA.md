@@ -6,7 +6,7 @@
 
 ### 接続する実処理
 
-入力からの経路は、HAL側のホスト実行器 → 完成したsectionと配送確認結果 → `SectionIngestController.onSection()` → `AribSiEngine` → `NativeAribSiParser` → 製品のRust JNI／SI解析 → `ServiceListBuilder`および`programStateSnapshot()`とする。HAL側の注入位置、実処理、置換する部分は`../tuner_hal2/DESIGN_JA.md`の「実TSホスト試験のHAL接続」を正とする。
+入力からの経路は、HAL側のホスト実行器 → 完成したsectionと配送確認結果 → `SectionIngestController.onSection()` → `AribSiEngine` → `NativeAribSiParser` → 製品のRust JNI／SI解析 → `ServiceListBuilder`および`livePlaybackSnapshot().programs`とする。HAL側の注入位置、実処理、置換する部分は`../tuner_hal2/DESIGN_JA.md`の「実TSホスト試験のHAL接続」を正とする。
 
 Robolectricの試験本体が、その実行時にHAL実行器へ`test.ts`を与える。実行器の出力を読み、PIDを`TsPid`へ検証変換して、記録順のまま`SectionIngestController`へ渡す。保存済みsection列、tsduckの実行時出力、模擬サービス一覧でHAL処理を代替しない。JNIは既存`arib_si_engine_rs/host_ci/Cargo.toml`の`cdylib`から生成した`libmaleicacid_arib_si_engine_jni.so`を読み込む。`NativeAribSiParser`のnative methodを模擬結果で置換せず、取得不能・リンク失敗は試験失敗にする。
 
@@ -22,7 +22,7 @@ Robolectricの試験本体が、その実行時にHAL実行器へ`test.ts`を与
 | HAL配送 | PID／table IDごとのsection数、byte数、各sectionのSHA-256と出現回数が参照値に一致する。キューに確定したbyte列と配送eventのbyte列が一致し、予期しないoverflow・CRC破棄・配送失敗がない |
 | TIS取込み | 全sectionの取込み結果を確認し、負のstatus、例外、collection上限到達を成功へ変換しない。許容する非負の未対応table通知はPID／table IDと件数を明示して照合する |
 | サービス事実 | ONID／TSIDと、全4サービスのSID、名称、service type、PMT／PCR PID、ES PID／stream typeが一致する。service集合を非空判定だけで済ませない |
-| TIS採用判断 | ISDB-T profileで`ServiceListBuilder.registrationReadySnapshot()`がTBS1／TBS2を採用し、service typeが0xC0の2サービスを採用しない。受信した4サービスと登録可能な2サービスを区別する |
+| TIS採用判断 | ISDB-T profileで`serviceRegistrationSnapshot()`の意味factを`ServicePolicyEvaluator.evaluate()`へ渡した`registrationReady`判断がTBS1／TBS2を採用し、service typeが0xC0の2サービスを採用しない。受信した4サービスと登録可能な2サービスを区別する |
 | CA事実 | SDTのfree_CA_modeがfalseでも、PMTのCA descriptorを消去しない。TBS1／TBS2のsystem ID／ECM PIDを照合する。packetが平文であることをCAS不要・復号成功・ライブ再生成功の根拠にしない |
 | 番組 | 選択SIDのEIT p/f actualについて、event ID集合、開始時刻、継続時間を参照値と照合する。ARIBのJST時刻からUnix時刻への変換も照合し、試験実行日の壁時計で番組を落とさない。scheduleから補完しない |
 | 終了 | HAL終了報告、終了コード、全出力取込み、JNI closeを確認する。途中までの一致、欠落した終了報告、時間切れを成功にしない |
