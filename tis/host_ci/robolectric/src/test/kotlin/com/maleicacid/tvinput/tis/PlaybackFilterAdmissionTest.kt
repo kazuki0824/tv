@@ -212,7 +212,21 @@ class PlaybackFilterAdmissionTest {
             val second = fixture.capacityLoss(video)
             assertTrue(fixture.failures.isEmpty())
             ShadowSystemClock.advanceBy(Duration.ofSeconds(6))
-            val third = fixture.capacityLoss(video)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
+            val accepted = mappedMediaEvent()
+            val rejected = mappedMediaEvent()
+            fixture.whileOwnerBlocked {
+                deliver(video, accepted)
+                // 1-byte eventの3 slot以外を既存permitで予約し、本番callbackの拒否を起こす。
+                fixture.executor.executeCallback(
+                    isReleased = { false },
+                    onFailure = { throw it },
+                    dataSlots = 16 * 1024 - 3,
+                ) {}
+                deliver(video, rejected)
+            }
+            fixture.executor.callControl(5_000L) { Unit }
+            fixture.drain()
             assertEquals(1, fixture.failures.size)
             assertEquals(PlaybackPipeline.PlaybackUnavailableReason.VIDEO_CODEC_ERROR, fixture.failures.single().first)
             assertTrue(
@@ -222,10 +236,59 @@ class PlaybackFilterAdmissionTest {
                     .contains("OWNER_INPUT_FULL"),
             )
             assertFalse(fixture.released())
-            for (event in listOf(first, second, third)) {
+            fixture.assertStoppedVideo(decoder, video, listOf(accepted, rejected))
+            for (event in listOf(first, second)) {
                 assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
             }
         }
+    }
+
+    @Test
+    fun decoderQueueDeadlineStopsFilterAndRejectsFurtherInput() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val video = fixture.avFilter(false)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
+            // AVC startup budgetの32件を満たし、次の入力で既存decoderの停滞時計を開始する。
+            val samples = List(33) { mappedMediaEvent() }
+            samples.forEach { deliver(video, it) }
+            fixture.drain()
+            assertEquals(32, fixture.pendingEvents(false).size)
+            assertTrue(fixture.failures.isEmpty())
+            ShadowSystemClock.advanceBy(Duration.ofSeconds(6))
+            val expired = mappedMediaEvent()
+            deliver(video, expired)
+            fixture.drain()
+            assertEquals(1, fixture.failures.size)
+            assertTrue(
+                fixture.failures
+                    .single()
+                    .second
+                    .contains("PENDING_QUEUE_FULL"),
+            )
+            fixture.assertStoppedVideo(decoder, video, samples + expired)
+        }
+    }
+
+    private fun Fixture.assertStoppedVideo(
+        decoder: Any,
+        filter: Filter,
+        events: List<MediaEvent>,
+    ) {
+        assertTrue(pipeline.currentPlaybackGenerationForTest() != 7L)
+        assertEquals(null, ReflectionHelpers.getField<Any?>(pipeline, "videoFilter"))
+        assertEquals(null, ReflectionHelpers.getField<Any?>(pipeline, "videoDecoder"))
+        val pending = ReflectionHelpers.getField<java.util.ArrayDeque<*>>(decoder, "pendingSamples")
+        assertTrue(pending.isEmpty())
+        assertEquals(null, ReflectionHelpers.getField<Any?>(decoder, "codec"))
+        assertEquals(1, Shadow.extract<NativeFilter>(filter).closes)
+        val late = mappedMediaEvent()
+        deliver(filter, late)
+        drain()
+        assertTrue(pending.isEmpty())
+        assertEquals(null, ReflectionHelpers.getField<Any?>(decoder, "codec"))
+        assertEquals(0, Shadow.extract<NativeMediaEvent>(late).blockReads)
+        for (event in events + late) assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
     }
 
     @Test

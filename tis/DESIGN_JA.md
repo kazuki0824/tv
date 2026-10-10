@@ -162,6 +162,8 @@ secure-memory handle、tunneled playback、platform passthroughは本製品が�
 
 AV overflowのplain flushでは、既存playback ownerがflushを開始する時点で当該Filterの入力identityを閉じる。既にdecoderで保持する未queue入力に加え、ownerで待機する旧MediaEvent/RestartEventも失効させる。overflow通知後・owner実行前の受理分もflush前の入力として破棄し、flush実行中のMediaEventはdecodeせず個別に解放する。flush成功後だけ新identityで受付を再開し、失敗時は既存診断を通知して受付を閉じたままにする。別Filterの入力、decoder/MediaSync/AudioTrack、playback generationは変更しない。PESのFMQ read通知とは異なり、個別所有するMediaEventの破棄であるため、捨てた通知に対応する未読PES bytesを後続readへ持ち越す経路は作らない。
 
+映像decoderのowner受付過負荷期限、decoder内queueの過負荷期限、header取得上限による構成不能は、既存の映像decoder失敗と同じ停止入口へ接続する。再生不能通知だけでdecoderを閉じてFilterを残さず、既存stopで世代失効・Filter参照解除/close・待機callback回収・decoder解放を行う。音声側は既存のaudio-only停止またはvideo-only新世代fallbackの入口を維持する。
+
 ### MediaSync Framework-private final-output observation
 
 stock Android 15 / LineageOS 22.1 の `MediaSync` はvideo scheduling/dropをnative側で所有し、late frameをinputへ返すdrop分岐と、render対象frameをcurrent outputへattachして`queueBuffer()`する分岐を区別する。一方、公開Java APIにはそのfinal-output成功をvideo clientへ通知するcallbackがない。この不足だけを閉じたい製品構成では、対象LineageOS platformの`android.media.MediaSync`へ、既存public `MediaSync.Callback`とは別の `@hide OnFirstVideoFrameQueuedToOutputListener` と、arm識別子を同時に設定する `@hide setOnFirstVideoFrameQueuedToOutputListener(long armSequence, listener, handler)` 相当を任意に追加できる。Framework側は`armSequence`をTIF/TIS固有の意味を解釈しないopaque値として保持し、listener eventは`MediaSync` instanceと成功判定時に固定した`armSequence`を返す。TISのbuildと起動はこの追加APIを要求せず、public SDK、`@SystemApi`、`@TestApi`、Tuner AIDL/VINTFも変更しない。

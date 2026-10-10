@@ -1753,10 +1753,12 @@ class PlaybackPipeline(
 
         override fun onCodecConfigTimeout() {
             errorSink(PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT, "video decoder 構成に必要な ES header が見つかりません")
+            stopOnPlaybackExecutor()
         }
 
         override fun onBackpressureDeadline(detail: String) {
             errorSink(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "DECODER_BACKPRESSURE_TIMEOUT $detail")
+            stopOnPlaybackExecutor()
         }
 
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
