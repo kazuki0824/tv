@@ -626,7 +626,7 @@ eventの宣言descriptor loop長がsection残量を超える場合も、CRCを�
 
 ### LiveSession / PlaybackPipeline / Scan の直列化
 
-ライブ選局開始直後は`AribSiEngine.reset()`後の新generationでSI sectionがまだ一件も確定していない期間を通常の`TUNING`状態として扱う。`ServicePolicyDecision.state`を`PENDING / READY / UNSUPPORTED / INVALID`のtyped stateとして正本化し、診断文字列`reasons`を制御分岐へ使用しない。対象service未観測かつ`PENDING`の間は再生不能へ変換して`VIDEO_UNAVAILABLE_REASON_UNKNOWN`を通知してはならない。section ingest後に同じlive generationで再評価し、`UNSUPPORTED` / `INVALID`またはCAS/playbackのterminal failureが確定した場合だけunavailableへ遷移する。
+ライブ選局開始直後は`AribSiEngine.reset()`後の新generationでSI sectionがまだ一件も確定していない期間を通常の`TUNING`状態として扱う。`ServicePolicyDecision.state`を`PENDING / READY / UNSUPPORTED / INVALID`のtyped stateとして正本化し、診断文字列`reasons`を制御分岐へ使用しない。再生状態が`Idle`で直前のSI判断も`PENDING`である初回待ちに限り、対象service未観測かつ`PENDING`の間は再生不能へ変換して`VIDEO_UNAVAILABLE_REASON_UNKNOWN`を通知してはならない。確立済みSIが矛盾PMT等で`READY`から`PENDING`へ失効した場合は初回待ちへ戻さず、既存CAS transactionでmetadataとECM/EMMを退役し、再生停止・字幕終了・利用不能通知を行う。section ingest後に同じlive generationで再評価し、`UNSUPPORTED` / `INVALID`またはCAS/playbackのterminal failureが確定した場合だけunavailableへ遷移する。
 
 非同期 `MediaCodec.Callback.onError()` は現行codec identityと再生generationが一致する場合だけ扱う。AOSP `CodecException` の `ERROR_RECLAIMED` は必ず解放し、回復不能なエラーも旧codecを再利用しない。回復可能なエラーでは既存の全再生generation終了・再生成を使い、transientの場合は100ms後、それ以外のrecoverableの場合は次のexecutor処理で再生成する。自動再生成は外部からの一回のstart要求につき一回までとし、再失敗は音声なら既存のvideo-only新generationへの移行（audio-onlyは再生不能）、映像なら再生不能通知と全generation終了へ渡す。待機中のstop・retune・releaseで再生成予約を無効にする。codec単体の独立した回復state machineや無限の再取得loopは設けない。この回数と待機時間はプロダクトの回復方針であり、CDD/ARIBが規定する値とは扱わない。
 

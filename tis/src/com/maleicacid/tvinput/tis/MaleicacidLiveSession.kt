@@ -354,12 +354,13 @@ class MaleicacidLiveSession(
     @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount", "TooGenericExceptionCaught")
     private fun refreshDynamicSiAndCasFilters() {
         val serviceKey = currentService ?: return
+        val previouslyPending = initialLiveSiPending(currentServicePolicy())
         val transaction = aribSiEngine.livePlaybackSnapshot()
         latestLiveSnapshot = transaction
         val service = transaction.services.firstOrNull { it.serviceKey == serviceKey }
         val pmtPids = transaction.pmtPidsFor(serviceKey)
         val decision = currentServicePolicy()
-        if (initialLiveSiPending(decision)) {
+        if (playbackState == PlaybackStartState.Idle && previouslyPending && initialLiveSiPending(decision)) {
             tunerController.updatePmtFilters(pmtPids, currentGeneration)
             return
         }

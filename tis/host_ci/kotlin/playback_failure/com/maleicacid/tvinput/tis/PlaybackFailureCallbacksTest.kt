@@ -625,16 +625,168 @@ class PlaybackFailureCallbacksTest {
     }
 
     // 実JNIのPAT/SDTから本番session refreshとcontrollerのFilter開始までを通す。
-    @Suppress("LongMethod")
     @Test
     fun pendingLiveSiBootstrapsPmtFilterAndBecomesReadyAfterPmtReception() {
-        val executor = ControllerSerialExecutor("live PMT bootstrap試験")
-        val fixture = Fixture(false, false, failCleanup = false)
-        val controller = fixture.allocate(TunerController::class.java)
-        val session = fixture.allocate(MaleicacidLiveSession::class.java)
+        LiveSiFixture().use { live ->
+            live.ingestInitialTables()
+            check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
+            live.refresh()
+            check(Filter::class.java.getField("starts").getInt(live.filter) == 1)
+            live.refresh()
+            check(Filter::class.java.getField("starts").getInt(live.filter) == 1)
+            live.ingestPmt()
+            val ready = live.decision()
+            check(ready.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY && ready.casDecisionReady)
+            check(live.pendingNotifications.isEmpty())
+        }
+    }
+
+    // 同じ実JNI失効からCAS・再生停止・通知までを一つの回帰で観測する。
+    @Suppress("LongMethod")
+    @Test
+    fun conflictingPmtStopsEstablishedPlaybackAndRetiresCasMetadata() {
+        for (playing in listOf(true, false)) {
+            LiveSiFixture().use { live ->
+                live.ingestInitialTables()
+                live.refresh()
+                live.ingestPmt()
+                check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY)
+                live.set(live.session, "latestLiveSnapshot", live.engine.livePlaybackSnapshot())
+                val signature =
+                    AvPlaybackSignature(live.key, TsPid(0x101), TsPid(0x101), 0x1b, TsPid(0x102), 0x0f, true, false)
+                val previousState = if (playing) PlaybackStartState.Started(signature, 7L) else PlaybackStartState.Idle
+                live.set(live.session, "playbackState", previousState)
+                val emm = TsPid(0x123)
+                val metadata =
+                    listOf(
+                        com.maleicacid.tvinput.aribsi.CaMetadata(
+                            null,
+                            5,
+                            null,
+                            emm,
+                            null,
+                            source = com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT,
+                        ),
+                    )
+                val emmFilter = live.playback.allocate(Filter::class.java)
+                Tuner::class.java.getField("nextFilter").set(null, emmFilter)
+                val result = live.controller.updateCasMetadataAndFilters(metadata, setOf(TsPid(0x100)), 7L, true)
+                check(result?.emmPids == setOf(emm))
+                check(MediaCas.Faults.creates == 1 && MediaCas.Faults.pluginCloses == 0)
+                // 同一version・同一番号のPCR PIDだけが矛盾するCRC付きPMT。
+                live.ingest(0x100, "02b0170001c10000e102f0001be101f0000fe102f000a3052165")
+                check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
+                live.refresh()
+                check(live.state() == PlaybackStartState.Stopped)
+                check(live.playback.pipeline.currentPlaybackGenerationForTest() == 8L)
+                check(MediaCas.Faults.pluginCloses == 1)
+                check(live.dynamicPids("dynamicEcmPids").isEmpty() && live.dynamicPids("dynamicEmmPids").isEmpty())
+                check(live.dynamicPids("dynamicPmtPids") == setOf(TsPid(0x100)))
+                check(Filter::class.java.getField("closes").getInt(emmFilter) == 1)
+                check(Filter::class.java.getField("closes").getInt(live.filter) == 0)
+                check(live.pendingNotifications.size == 1)
+                live.ingestPmt()
+                check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
+                check(live.state() == PlaybackStartState.Stopped)
+            }
+        }
+    }
+
+    // 既存の初回SI試験と失効試験で同じ実JNI・controller fixtureを共用する。
+    // Androidの通知は未初期化Sessionの保留listで観測し、字幕native/UI資源は既に閉じた境界とする。
+    private class LiveSiFixture : AutoCloseable {
+        private val executor = ControllerSerialExecutor("live SI失効試験")
+        val playback = executor.submitControl { Fixture(false, false, failCleanup = false) }.get(5, TimeUnit.SECONDS)
+        val controller = playback.allocate(TunerController::class.java)
+        val session = playback.allocate(MaleicacidLiveSession::class.java)
         val engine =
             com.maleicacid.tvinput.aribsi
                 .AribSiEngine(android.content.ContextWrapper(null))
+        val key = ServiceKey(0x22, 0x11, 1)
+        val filter = playback.allocate(Filter::class.java)
+        val pendingNotifications = mutableListOf<Runnable>()
+        private val cas = CasController()
+
+        init {
+            MediaCas.Faults.reset()
+            set(controller, "inputId", "test")
+            set(controller, "sectionExecutor", executor)
+            set(controller, "tuneAccepted", true)
+            set(controller, "tuneGeneration", 7L)
+            set(controller, "tuner", playback.tuner)
+            set(controller, "playbackPipeline", playback.pipeline)
+            for (name in listOf(
+                "dynamicPmtPids",
+                "dynamicEcmPids",
+                "dynamicEmmPids",
+                "failedDynamicPmtPids",
+                "failedDynamicEcmPids",
+                "failedDynamicEmmPids",
+            )) {
+                set(controller, name, linkedSetOf<TsPid>())
+            }
+            set(controller, "sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
+            set(controller, "sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+            controller.setCasController(cas)
+            set(session, "currentService", key)
+            set(session, "currentGeneration", 7L)
+            set(session, "playbackState", PlaybackStartState.Idle)
+            set(session, "tunerController", controller)
+            set(session, "aribSiEngine", engine)
+            set(session, "caMapper", PmtCatCaMetadataMapper())
+            for (name in listOf("captionController", "superimposeController")) {
+                val caption = playback.allocate(AribCaptionController::class.java)
+                set(caption, "released", AtomicBoolean(true))
+                set(session, name, caption)
+            }
+            val sessionType = android.media.tv.TvInputService.Session::class.java
+            sessionType.getDeclaredField("mLock").apply { isAccessible = true }.set(session, Any())
+            sessionType
+                .getDeclaredField("mPendingActions")
+                .apply { isAccessible = true }.set(session, pendingNotifications)
+            Tuner::class.java.getField("nextFilter").set(null, filter)
+            Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
+            engine.setDiscoveryProfile(com.maleicacid.tvinput.aribsi.SiDiscoveryProfile.ISDB_T)
+        }
+
+        fun ingestInitialTables() {
+            ingest(0, "00b00d0011c100000001e1004521f9b6")
+            ingest(0x11, "42f0180011c100000022000001fc80074805010002543128d78c81")
+            ingest(0x10, "40b01c0022c10000f004fe020300f00b00110022f0054103000101ab293465")
+        }
+
+        fun ingestPmt() = ingest(0x100, "02b0170001c10000e101f0001be101f0000fe102f0009e28c6dd")
+
+        fun ingest(
+            pid: Int,
+            hex: String,
+        ) {
+            val bytes = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            check(engine.ingestSection(TsPid(pid), bytes).status == com.maleicacid.tvinput.aribsi.SiStatus.OK)
+        }
+
+        fun decision() =
+            com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+                .evaluateLive(engine.livePlaybackSnapshot(), key)
+
+        fun refresh() {
+            MaleicacidLiveSession::class.java
+                .getDeclaredMethod("refreshDynamicSiAndCasFilters")
+                .apply { isAccessible = true }
+                .invoke(session)
+        }
+
+        fun state() =
+            MaleicacidLiveSession::class.java
+                .getDeclaredField("playbackState")
+                .apply { isAccessible = true }
+                .get(session)
+
+        fun dynamicPids(name: String) =
+            TunerController::class.java
+                .getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(controller) as Set<*>
 
         fun set(
             target: Any,
@@ -647,65 +799,21 @@ class PlaybackFailureCallbacksTest {
                 .set(target, value)
         }
 
-        fun ingest(
-            pid: Int,
-            hex: String,
-        ) {
-            val bytes = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-            check(engine.ingestSection(TsPid(pid), bytes).status == com.maleicacid.tvinput.aribsi.SiStatus.OK)
-        }
-        set(controller, "sectionExecutor", executor)
-        set(controller, "tuneAccepted", true)
-        set(controller, "tuneGeneration", 7L)
-        set(controller, "tuner", fixture.tuner)
-        for (name in listOf(
-            "dynamicPmtPids",
-            "dynamicEcmPids",
-            "dynamicEmmPids",
-            "failedDynamicPmtPids",
-            "failedDynamicEcmPids",
-            "failedDynamicEmmPids",
-        )) {
-            set(controller, name, linkedSetOf<TsPid>())
-        }
-        set(controller, "sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
-        set(controller, "sectionFilters", linkedMapOf<TsPid, List<Filter>>())
-        set(session, "currentService", ServiceKey(0x22, 0x11, 1))
-        set(session, "currentGeneration", 7L)
-        set(session, "tunerController", controller)
-        set(session, "aribSiEngine", engine)
-        val filter = fixture.allocate(Filter::class.java)
-        Tuner::class.java.getField("nextFilter").set(null, filter)
-        val refresh =
-            MaleicacidLiveSession::class.java
-                .getDeclaredMethod("refreshDynamicSiAndCasFilters")
-                .apply { isAccessible = true }
-        try {
-            engine.setDiscoveryProfile(com.maleicacid.tvinput.aribsi.SiDiscoveryProfile.ISDB_T)
-            ingest(0, "00b00d0011c100000001e1004521f9b6")
-            ingest(0x11, "42f0180011c100000022000001fc80074805010002543128d78c81")
-            ingest(0x10, "40b01c0022c10000f004fe020300f00b00110022f0054103000101ab293465")
-            val key = ServiceKey(0x22, 0x11, 1)
-            check(
-                com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
-                    .evaluateLive(engine.livePlaybackSnapshot(), key)
-                    .state ==
-                    com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING,
-            )
-            refresh.invoke(session)
-            check(Filter::class.java.getField("starts").getInt(filter) == 1)
-            refresh.invoke(session)
-            check(Filter::class.java.getField("starts").getInt(filter) == 1)
-            ingest(0x100, "02b0170001c10000e101f0001be101f0000fe102f0009e28c6dd")
-            val ready =
-                com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
-                    .evaluateLive(engine.livePlaybackSnapshot(), key)
-            check(ready.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY && ready.casDecisionReady)
-            controller.closeSectionFilter(TsPid(0x100))
-        } finally {
-            Tuner::class.java.getField("nextFilter").set(null, null)
-            engine.close()
-            executor.shutdownNow()
+        override fun close() {
+            try {
+                controller.closeSectionFilter(TsPid(0x100))
+                executor.submitControl { cas.close() }.get(5, TimeUnit.SECONDS)
+            } finally {
+                Tuner::class.java.getField("nextFilter").set(null, null)
+                engine.close()
+                executor.shutdownNow()
+                PlaybackPipeline::class.java
+                    .getDeclaredField("executor")
+                    .apply { isAccessible = true }
+                    .get(playback.pipeline)
+                    .let { (it as? java.util.concurrent.ExecutorService)?.shutdownNow() }
+                MediaCas.Faults.reset()
+            }
         }
     }
 

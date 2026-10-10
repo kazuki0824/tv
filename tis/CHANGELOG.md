@@ -3,6 +3,11 @@
 - 1件固定のdata枠を、既存64KiB Filter容量と最大section長から導く16 slotへ変更する。残る拒否は既存ingest診断へ保持し、収集完了時も入力喪失を隠さない。callback待機・第二worker・SI意味解析/coalescingは追加しない。
 - 本番Filter callback/read/実JNIへの複数section配送、飽和診断、世代失効の回帰を既存host fixtureへ追加する。検証は既存CIへ委任し、実機VTS・実波は未実施。
 
+# 確立済みlive SI失効後の旧再生停止
+
+- 初回SI待ちの早期returnを、既存Idle状態かつ直前もPENDINGの場合へ限定する。READYからPENDINGへの失効は既存CAS解除・再生停止・字幕終了・利用不能通知へ戻す。新owner・状態機械・migrationは追加しない。
+- 初回bootstrapと失効回帰で実JNI fixtureを共用し、CRC付き同一版矛盾PMT後のStopped、pipeline世代失効、CAS plugin退役、ECM/EMM空集合とPMT継続、利用不能通知を検査する。build・試験は既存CIへ委任し、実機VTS・実波は未実施。
+
 # BS探索のSDK scan登録解放とAndroid 15境界試験
 
 - 停止通知後も残るTuner SDKのscan callback登録をcancelScanningで解除し、同じTuner/frontend lease上の次RF探索を可能にする。STOPPEDの受信結果とstream IDsは保持し、停止済み状態に限りnativeのINVALID_STATEを受理する。未停止operationと他の失敗では既存ownerとcleanup再試行を維持する。
