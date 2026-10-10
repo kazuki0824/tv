@@ -580,7 +580,9 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
-    // SI table完成とcurrent serviceの公開判断を、実section→Rust/JNI→TIS policy経路で固定する。
+    // BS/CS110の実section投入からJNI snapshot・登録判定までを一連の契約として検証する。
+    // テストのみを行数制限のために分断すると、判定の前後関係と欠落表の因果が追いにくくなる。
+    @Suppress("LongMethod")
     @Test
     fun satelliteOtherTablesMayRemainIncompleteWhileCurrentServiceIsRegistrationReady() {
         for ((profile, smdIdentifier, broadcastSystem) in listOf(
