@@ -149,6 +149,50 @@ class ScanPlanPolicyTest {
     }
 
     @Test
+    fun finalSiSnapshotReprojectsTerminalOutcomeInBothDirections() {
+        assertEquals(
+            ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL,
+            ChannelScanController.finalizeSiCollectionOutcome(
+                ChannelScanController.SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE,
+                finalSnapshotComplete = false,
+                finalRegistrationReadyServices = 3,
+            ),
+        )
+        assertEquals(
+            ChannelScanController.SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE,
+            ChannelScanController.finalizeSiCollectionOutcome(
+                ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL,
+                finalSnapshotComplete = false,
+                finalRegistrationReadyServices = 0,
+            ),
+        )
+        assertEquals(
+            ChannelScanController.SiCollectionOutcome.COMPLETE,
+            ChannelScanController.finalizeSiCollectionOutcome(
+                ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL,
+                finalSnapshotComplete = true,
+                finalRegistrationReadyServices = 3,
+            ),
+        )
+        val terminalOutcomes =
+            listOf(
+                ChannelScanController.SiCollectionOutcome.CANCELLED,
+                ChannelScanController.SiCollectionOutcome.RESOURCE_LOST,
+                ChannelScanController.SiCollectionOutcome.SIGNAL_UNAVAILABLE,
+            )
+        for (terminal in terminalOutcomes) {
+            assertEquals(
+                terminal,
+                ChannelScanController.finalizeSiCollectionOutcome(
+                    terminal,
+                    finalSnapshotComplete = true,
+                    finalRegistrationReadyServices = 3,
+                ),
+            )
+        }
+    }
+
+    @Test
     fun bsLockContinuesTheSameScanExactlyOnceAndWaitsForStopped() {
         val operation = TunerController.StreamIdDiscoveryOperation(25L)
         var continuationCalls = 0
