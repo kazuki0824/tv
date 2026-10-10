@@ -229,7 +229,7 @@ object ServicePolicyEvaluator {
                     normalizedRegistrationReasons +
                         facts.semanticDiagnostics +
                         (if (!facts.caDescriptorsResolved) listOf("CA_DESCRIPTOR_UNRESOLVED") else emptyList()) +
-                        if (facts.requiresCas) listOf("CAS_NOT_IMPLEMENTED") else emptyList()
+                        if (facts.requiresCas) listOf("CAS_REQUIRED") else emptyList()
                 ).distinct().sorted(),
         )
     }
