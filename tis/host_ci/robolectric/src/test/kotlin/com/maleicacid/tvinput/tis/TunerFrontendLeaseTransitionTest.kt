@@ -97,9 +97,7 @@ class TunerFrontendLeaseTransitionTest {
         }
     }
 
-    private fun controller(): TunerController {
-        return TunerController(RuntimeEnvironment.getApplication(), "lease-integration-test")
-    }
+    private fun controller(): TunerController = TunerController(RuntimeEnvironment.getApplication(), "lease-integration-test")
 
     private fun terrestrial(): ScanCandidate =
         ScanCandidate(
