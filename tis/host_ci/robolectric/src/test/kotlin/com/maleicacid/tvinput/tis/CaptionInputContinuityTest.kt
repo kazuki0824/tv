@@ -151,6 +151,7 @@ class CaptionInputContinuityTest {
                 assertTrue(ReflectionHelpers.getField<AtomicBoolean>(controller, "released").get())
                 assertEquals(Long.MAX_VALUE, ReflectionHelpers.getField<Long>(controller, "pesAdmissionSequence"))
             }
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS))
         }
     }
 

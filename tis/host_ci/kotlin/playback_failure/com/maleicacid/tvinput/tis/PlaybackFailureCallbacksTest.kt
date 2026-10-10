@@ -740,6 +740,7 @@ class PlaybackFailureCallbacksTest {
             for (name in listOf("captionController", "superimposeController")) {
                 val caption = playback.allocate(AribCaptionController::class.java)
                 set(caption, "released", AtomicBoolean(true))
+                set(caption, "pesAdmissionLock", Any())
                 val captionExecutor = LifecycleSerialExecutor("closed caption fixture")
                 captionExecutors += captionExecutor
                 set(caption, "executor", captionExecutor)
