@@ -288,7 +288,7 @@ class TunerController(
     private val tvInputSessionId: String? = normalizedTvInputSessionId(sessionId)
     private var tuner: Tuner? = createTuner()
 
-    // SDKへ要求済みのFrontend type。実際のFrontend IDと割当可否はFramework/TRMが管理する。
+    // 直近のSDK frontend type要求（scan/tune実行前にも記録）。実リースの取得事実ではない。
     private var frontendLeaseType: Int? = null
     private var currentTune: ResolvedChannel? = null
 
@@ -505,6 +505,8 @@ class TunerController(
         val tunerInstance =
             tuner
                 ?: return BsFrontendSelectionResult(null, Tuner.RESULT_UNAVAILABLE, "Tunerを利用できません")
+        // applyFrontendは既存Frontendを保持したままではINVALID_STATEになる。
+        // 特定id/capabilityで選び直すBS候補source確定時は同typeでも旧leaseを返す。
         val closeFailure = runCatching { tunerInstance.closeFrontend() }.exceptionOrNull()
         if (closeFailure != null) {
             return BsFrontendSelectionResult(
@@ -617,7 +619,8 @@ class TunerController(
         }
     }
 
-    // 利用不可・旧lease解放失敗・正常開始は独立した終端で、それぞれ後続scanを止める。
+    // Tuner不在と旧Frontend解放失敗はSDK scan発行前に終了すべき独立した境界。
+    // 長いcallback実装を条件分岐で包まず、operationの失敗を確定して即returnする。
     @Suppress("ReturnCount")
     private fun startStreamIdDiscoveryOnController(seed: ScanCandidate): StreamIdDiscoveryOperation {
         require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector == StreamSelector.NONE)
@@ -692,7 +695,7 @@ class TunerController(
 
                 override fun onDvbtCellIdsReported(dvbtCellIds: IntArray) = Unit
             }
-        // scanもFrontendを確保し得る。native scanが失敗してもleaseは残り得る。
+        // scan失敗でもFrameworkがFrontendを取得済みの可能性があるため、呼出前に要求typeを記録する。
         frontendLeaseType = settings.type
         operation.start { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, controllerControlExecutor, callback) }
         return operation
@@ -909,8 +912,8 @@ class TunerController(
         if (!armTuneEventListener(tunerInstance, nextGeneration)) {
             return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "frontend tune event listenerを登録できません")
         }
-        // tuneが非SUCCESSや例外で戻っても、Frontendの確保が副作用として完了し得る。
-        // そのため次回の異種選局で安全に解放できるよう、呼出し前に記録する。
+        // tune失敗でもFrameworkがFrontendを取得済みの可能性があるため、呼出前に要求typeを記録する。
+        // これは実リース取得済みの判定ではなく、次回の異種要求前に安全に解放するための保守値。
         frontendLeaseType = settings.type
         val result =
             runCatching { tunerInstance.tune(settings) }.getOrElse { e ->
