@@ -287,6 +287,8 @@ class TunerController(
     private var onBroadcastClockUpdatedCallback: (() -> Unit)? = null
     private val tvInputSessionId: String? = normalizedTvInputSessionId(sessionId)
     private var tuner: Tuner? = createTuner()
+    // SDK frontend leaseの種類だけを記録する。物理資源の選択・調停はFramework/TRMに委譲する。
+    private var frontendLeaseType: Int? = null
     private var currentTune: ResolvedChannel? = null
 
     @Volatile private var tuneAccepted = false
@@ -391,6 +393,8 @@ class TunerController(
     @Suppress("SpreadOperator", "TooGenericExceptionCaught", "MaxLineLength")
     private fun handleTunerResourceLostOnController() {
         val lostGeneration = streamIdDiscovery?.generation ?: tuneGeneration
+        // ResourceLost通知の前にFrameworkがFrontend leaseを回収済み。
+        frontendLeaseType = null
         try {
             completeResourceLoss(
                 invalidate = {
@@ -508,6 +512,7 @@ class TunerController(
                 "既存frontendの解放に失敗しました: ${closeFailure.message}",
             )
         }
+        frontendLeaseType = null
         val infos =
             runCatching { tunerInstance.availableFrontendInfos.orEmpty() }.getOrElse { error ->
                 return BsFrontendSelectionResult(
@@ -556,6 +561,7 @@ class TunerController(
                     "frontend適用に失敗しました id=${candidate.frontendId} result=$result",
                 )
             }
+            frontendLeaseType = info.type
             val source = BsFrontendSelectionPolicy.sourceFor(candidate)
             return BsFrontendSelectionResult(source, Tuner.RESULT_SUCCESS)
         }
@@ -854,6 +860,18 @@ class TunerController(
         return tuneResolvedChannel(synthetic)
     }
 
+    // cancelTuningはleaseを返さない。種類が変わる時だけSDKへ解放を依頼し、
+    // 次のTuner.tune()による新typeのFrontend要求・資源調停をFrameworkへ委ねる。
+    private fun releaseFrontendBeforeTypeChange(
+        nextType: Int,
+        closeFrontend: () -> Unit,
+    ) {
+        if (frontendLeaseType != null && frontendLeaseType != nextType) {
+            closeFrontend()
+            frontendLeaseType = null
+        }
+    }
+
     @Suppress("ReturnCount", "MaxLineLength")
     private fun tuneResolvedChannel(channel: ResolvedChannel): TuneOutcome {
         resetBeforeTune()
@@ -863,6 +881,17 @@ class TunerController(
                 Log.w(LogTags.TIS, "frontend settings 構築に失敗しました channel=$channel", e)
                 return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, channel, tuneGeneration, e.message.orEmpty())
             }
+        val closeFailure =
+            runCatching { releaseFrontendBeforeTypeChange(settings.type) { tunerInstance.closeFrontend() } }.exceptionOrNull()
+        if (closeFailure != null) {
+            return TuneOutcome(
+                false,
+                Tuner.RESULT_UNKNOWN_ERROR,
+                channel,
+                tuneGeneration,
+                "frontend type切替前のlease解放に失敗しました: ${closeFailure.message}",
+            )
+        }
         val nextGeneration =
             runCatching { nextTuneGenerationOrFence() }.getOrElse { error ->
                 return TuneOutcome(
@@ -876,6 +905,9 @@ class TunerController(
         if (!armTuneEventListener(tunerInstance, nextGeneration)) {
             return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "frontend tune event listenerを登録できません")
         }
+        // tuneが非SUCCESSや例外で戻っても、Frontendの確保が副作用として完了し得る。
+        // そのため次回の異種選局で安全に解放できるよう、呼出し前に記録する。
+        frontendLeaseType = settings.type
         val result =
             runCatching { tunerInstance.tune(settings) }.getOrElse { e ->
                 runCatching { tunerInstance.clearOnTuneEventListener() }.onFailure(e::addSuppressed)
@@ -1975,6 +2007,7 @@ class TunerController(
         release {
             tuner?.close()
             tuner = null
+            frontendLeaseType = null
         }
         failure?.let { throw it }
         released = true
