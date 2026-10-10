@@ -170,6 +170,11 @@ class RealTsHalSiIntegrationTest {
             verifyService(service, reference)
         }
         val registration = engine.serviceRegistrationSnapshot()
+        services.forEach { reference ->
+            val service = actual.getValue(reference.getInt("service_id"))
+            val facts = checkNotNull(registration.semanticFactsByServiceKey[service.serviceKey])
+            assertEquals(reference.getBoolean("partial_reception"), facts.partialReception)
+        }
         val broadcastSystem = ServicePolicyEvaluator.expectedSmdBroadcastSystem(SiDiscoveryProfile.ISDB_T)
         val ready =
             registration.services.filter { service ->
@@ -181,7 +186,7 @@ class RealTsHalSiIntegrationTest {
                     )
                 decision.registrationReady
             }
-        assertEquals(setOf(1048, 1049), ready.map { it.serviceKey.serviceId }.toSet())
+        assertEquals(setOf(1048, 1049, 1432), ready.map { it.serviceKey.serviceId }.toSet())
     }
 
     private fun verifyService(
