@@ -2536,14 +2536,30 @@ class TisR51FixedPlanAcceptanceTest {
         val channels = LinkedHashMap<Long, ContentValues>()
         val programs = LinkedHashMap<Long, ContentValues>()
 
-        override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
+        override fun readCanonicalGenres(
+            channelId: Long,
+            programIds: Set<Long>,
+        ): Result<Map<Long, String?>> =
             Result.success(
-                channels.entries
-                    .firstOrNull { (_, v) ->
-                        v.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID) == key.originalNetworkId &&
-                            v.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID) == key.transportStreamId &&
-                            v.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID) == key.serviceId
-                    }?.key,
+                programs
+                    .filter { (id, values) ->
+                        id in programIds && values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId
+                    }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
+            )
+
+        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            Result.success(
+                buildMap {
+                    channels.forEach { (id, values) ->
+                        val key =
+                            ServiceKey(
+                                values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                            )
+                        if (key in keys && !containsKey(key)) put(key, id)
+                    }
+                },
             )
 
         override fun insertChannel(values: ContentValues): Result<Long?> {
@@ -2562,18 +2578,11 @@ class TisR51FixedPlanAcceptanceTest {
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
-        override fun indexExistingProgramsForWindow(
-            channelId: Long,
-            windowStartMs: Long,
-            windowEndMs: Long,
-        ): Result<Map<String, Long>> =
+        override fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
             Result.success(
                 programs.entries
                     .mapNotNull { (id, v) ->
                         if (v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
-                        val end = v.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
-                        val start = v.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
-                        if (end <= windowStartMs || start >= windowEndMs) return@mapNotNull null
                         val key =
                             TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA))
                                 ?: return@mapNotNull null
@@ -2581,18 +2590,40 @@ class TisR51FixedPlanAcceptanceTest {
                     }.toMap(),
             )
 
-        override fun insertProgram(values: ContentValues): Result<Long?> {
-            val id = nextProgramId++
-            programs[id] = ContentValues(values)
-            return Result.success(id)
-        }
+        override fun indexExistingProgramEntriesForWindow(
+            channelId: Long,
+            windowStartMs: Long,
+            windowEndMs: Long,
+        ): Result<Map<String, List<TvProviderWriter.ExistingProgramIndexEntry>>> =
+            Result.success(
+                programs.entries
+                    .mapNotNull { (id, values) ->
+                        if (values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
+                        val start = values.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                        val end = values.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                        if (end <= windowStartMs || start >= windowEndMs) return@mapNotNull null
+                        val key =
+                            TvProviderWriter.parseProgramKey(
+                                values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
+                            ) ?: return@mapNotNull null
+                        key to TvProviderWriter.ExistingProgramIndexEntry(id, start, end)
+                    }.groupBy({ it.first }, { it.second }),
+            )
 
-        override fun updateProgram(
-            programId: Long,
-            values: ContentValues,
-        ): Result<Int> {
-            programs[programId] = ContentValues(values)
-            return Result.success(1)
-        }
+        override fun deleteObsoletePrograms(
+            channelId: Long,
+            validProgramKeys: Set<String>,
+            windowStartMs: Long,
+            windowEndMs: Long,
+        ): Result<Int> = testDeleteObsoletePrograms(programs, channelId, validProgramKeys, windowStartMs, windowEndMs)
+
+        override fun upsertProgramsBatch(
+            requests: List<TvProviderWriter.ProgramUpsertRequest>,
+        ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> =
+            testUpsertProgramsBatch(
+                programs,
+                requests,
+                allocateId = { nextProgramId++ },
+            )
     }
 }

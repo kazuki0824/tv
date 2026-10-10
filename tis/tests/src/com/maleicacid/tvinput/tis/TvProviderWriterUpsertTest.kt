@@ -124,14 +124,19 @@ class TvProviderWriterUpsertTest {
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
-        override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
+        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
             Result.success(
-                rows.entries
-                    .firstOrNull { (_, values) ->
-                        values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID) == key.originalNetworkId &&
-                            values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID) == key.transportStreamId &&
-                            values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID) == key.serviceId
-                    }?.key,
+                buildMap {
+                    rows.forEach { (id, values) ->
+                        val key =
+                            ServiceKey(
+                                values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                            )
+                        if (key in keys && !containsKey(key)) put(key, id)
+                    }
+                },
             )
 
         override fun insertChannel(values: ContentValues): Result<Long?> {

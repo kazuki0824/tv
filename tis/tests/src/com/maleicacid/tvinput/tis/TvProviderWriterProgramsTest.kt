@@ -29,12 +29,188 @@ import com.maleicacid.tvinput.db.ProgramRecord
 import org.junit.Test
 
 // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
-@Suppress("LargeClass")
+@Suppress("LargeClass", "TooManyFunctions")
 class TvProviderWriterProgramsTest {
+    @Test
+    fun testStoreBatchFailureDoesNotCommitEarlierOperations() {
+        val original = ContentValues().apply { put(TvContract.Programs.COLUMN_TITLE, "旧行") }
+        val rows = linkedMapOf(1L to original)
+        val changed = ContentValues().apply { put(TvContract.Programs.COLUMN_TITLE, "更新") }
+        val requests =
+            listOf(
+                TvProviderWriter.ProgramUpsertRequest(1L, changed),
+                TvProviderWriter.ProgramUpsertRequest(null, changed),
+            )
+        val result = testUpsertProgramsBatch(rows, requests) { error("batch挿入失敗") }
+        check(result.isFailure && rows.size == 1)
+        check(rows.getValue(1L).getAsString(TvContract.Programs.COLUMN_TITLE) == "旧行")
+    }
+
+    @Test
+    fun untimedProgramIndexFallbackFailsClosed() {
+        val store =
+            object : TvProviderWriter.ChannelStore {
+                override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+                    Result.success(keys.associateWith { 1L })
+
+                override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(1L)
+
+                override fun updateChannel(
+                    channelId: Long,
+                    values: ContentValues,
+                ): Result<Int> = Result.success(1)
+            }
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val publication = writer.prepareProgramPublication(emptyList(), emptyList(), setOf(key))
+        val outcome = writer.upsertPreparedPrograms(publication)
+        check(outcome.succeededServiceKeys.isEmpty())
+        check(outcome.failures.single().operation == "program-index-query")
+        check(store.indexExistingProgramsForService(1L).isFailure)
+        check(store.indexExistingProgramEntriesForWindow(1L, 0L, 1L).isFailure)
+        check(store.upsertProgramsBatch(emptyList()).isFailure)
+        check(store.readCanonicalGenres(1L, setOf(1L)).isFailure)
+        check(store.deleteObsoletePrograms(1L, emptySet(), 0L, 1L).isFailure)
+    }
+
+    @Suppress("MaxLineLength")
+    @Test
+    fun multipleProgramsUseOneProviderIndexQueryPerService() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson = testCasFacts(false),
+                ),
+            ),
+        )
+        val first =
+            ProgramRecord(
+                key,
+                10,
+                "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}",
+                1_700_000_000_000L,
+                1_800_000L,
+                "first",
+                "first",
+                casFactsCanonicalJson = testCasFacts(false),
+            )
+        val second =
+            first.copy(
+                eventId = 11,
+                stableIdentity =
+                    "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":11}",
+                startTimeMillis = first.startTimeMillis + first.durationMillis,
+                title = "second",
+            )
+        val result = writer.upsertPrograms(listOf(first, second))
+        check(result.inserted == 2) { result.toString() }
+        check(store.programWindowQueryCount == 1) { "queries=${store.programWindowQueryCount}" }
+    }
+
+    @Test
+    fun duplicateExistingProgramKeyRejectsEntireServiceBatch() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson = testCasFacts(false),
+                ),
+            ),
+        )
+        val program =
+            ProgramRecord(
+                key,
+                10,
+                "existing-event",
+                1_700_000_000_000L,
+                1_800_000L,
+                "original",
+                "original",
+                casFactsCanonicalJson = testCasFacts(false),
+            )
+        check(writer.upsertPrograms(listOf(program)).inserted == 1)
+        val before = ContentValues(store.programs.values.single())
+        val result = writer.upsertPrograms(listOf(program.copy(title = "first"), program.copy(title = "second")))
+        check(result.failures.any { it.operation == "program-batch" })
+        check(result.inserted == 0 && result.updated == 0)
+        check(store.programUpdateCount == 0)
+        check(store.programs.values.single() == before)
+    }
+
     private val key = ServiceKey(4, 16625, 101)
 
     // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun serviceUnionQueryPreservesPerProgramEventReuseGuard() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson = testCasFacts(false),
+                ),
+            ),
+        )
+        val secondStart = 1_700_100_000_000L
+        val old =
+            ProgramRecord(
+                key,
+                11,
+                "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":11}",
+                secondStart - 25L * 60L * 60L * 1_000L,
+                30L * 60L * 1_000L,
+                "old",
+                "old",
+                casFactsCanonicalJson = testCasFacts(false),
+            )
+        check(writer.upsertPrograms(listOf(old)).inserted == 1)
+        store.programWindowQueryCount = 0
+
+        val first =
+            old.copy(
+                eventId = 10,
+                stableIdentity =
+                    "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}",
+                startTimeMillis = secondStart - 2L * 60L * 60L * 1_000L,
+                title = "first",
+            )
+        val second =
+            old.copy(
+                startTimeMillis = secondStart,
+                title = "second",
+            )
+
+        val result = writer.upsertPrograms(listOf(first, second))
+
+        check(result.inserted == 2 && result.updated == 0) { result.toString() }
+        check(store.programWindowQueryCount == 1)
+        check(store.programs.size == 3)
+        check(
+            store.programs.values.count {
+                it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == 11
+            } == 2,
+        )
+    }
+
     @Suppress("LongMethod", "MaxLineLength")
     @Test
     fun insertAndUpdateProgram() {
@@ -792,15 +968,33 @@ class TvProviderWriterProgramsTest {
         private var nextProgramId = 100L
         val channels = LinkedHashMap<Long, ContentValues>()
         val programs = LinkedHashMap<Long, ContentValues>()
+        var programWindowQueryCount = 0
+        var programUpdateCount = 0
 
-        override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
+        override fun readCanonicalGenres(
+            channelId: Long,
+            programIds: Set<Long>,
+        ): Result<Map<Long, String?>> =
             Result.success(
-                channels.entries
-                    .firstOrNull { (_, v) ->
-                        v.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID) == key.originalNetworkId &&
-                            v.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID) == key.transportStreamId &&
-                            v.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID) == key.serviceId
-                    }?.key,
+                programs
+                    .filter { (id, values) ->
+                        id in programIds && values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId
+                    }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
+            )
+
+        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            Result.success(
+                buildMap {
+                    channels.forEach { (id, values) ->
+                        val key =
+                            ServiceKey(
+                                values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                            )
+                        if (key in keys && !containsKey(key)) put(key, id)
+                    }
+                },
             )
 
         override fun insertChannel(values: ContentValues): Result<Long?> {
@@ -817,20 +1011,35 @@ class TvProviderWriterProgramsTest {
             return Result.success(1)
         }
 
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        override fun indexExistingProgramsForWindow(
+        override fun indexExistingProgramEntriesForWindow(
             channelId: Long,
             windowStartMs: Long,
             windowEndMs: Long,
-        ): Result<Map<String, Long>> =
+        ): Result<Map<String, List<TvProviderWriter.ExistingProgramIndexEntry>>> {
+            programWindowQueryCount++
+            val out = linkedMapOf<String, MutableList<TvProviderWriter.ExistingProgramIndexEntry>>()
+            programs.entries.forEach { (id, values) ->
+                if (values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@forEach
+                val start = values.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                val end = values.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                if (end <= windowStartMs || start >= windowEndMs) return@forEach
+                val key =
+                    TvProviderWriter.parseProgramKey(
+                        values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
+                    ) ?: return@forEach
+                out.getOrPut(key) { mutableListOf() } +=
+                    TvProviderWriter.ExistingProgramIndexEntry(id, start, end)
+            }
+            return Result.success(out)
+        }
+
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
+        override fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
             Result.success(
                 programs.entries
                     .mapNotNull { (id, v) ->
                         if (v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
-                        val end = v.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
-                        val start = v.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
-                        if (end <= windowStartMs || start >= windowEndMs) return@mapNotNull null
                         val key =
                             TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA))
                                 ?: return@mapNotNull null
@@ -838,19 +1047,19 @@ class TvProviderWriterProgramsTest {
                     }.toMap(),
             )
 
-        override fun insertProgram(values: ContentValues): Result<Long?> {
-            val id = nextProgramId++
-            programs[id] = ContentValues(values)
-            return Result.success(id)
-        }
-
-        override fun updateProgram(
-            programId: Long,
-            values: ContentValues,
-        ): Result<Int> {
-            programs[programId] = ContentValues(values)
-            return Result.success(1)
-        }
+        override fun upsertProgramsBatch(
+            requests: List<TvProviderWriter.ProgramUpsertRequest>,
+        ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> =
+            testUpsertProgramsBatch(
+                programs,
+                requests,
+                allocateId = { nextProgramId++ },
+            ).onSuccess { outcomes ->
+                programUpdateCount +=
+                    requests.zip(outcomes).count { (request, outcome) ->
+                        request.existingProgramId != null && outcome.programId != null
+                    }
+            }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")

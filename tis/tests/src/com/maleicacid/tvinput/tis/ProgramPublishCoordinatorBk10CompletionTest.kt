@@ -578,14 +578,23 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             )
         check(publish().hasCommittedTarget)
         val before = store.deleteCalls
+        val changedProgram = program.copy(description = "provider失敗確認")
+
+        fun publishChanged() =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                listOf(changedProgram),
+                listOf(window),
+                setOf(key),
+            )
         store.failChannelQuery = true
-        check(publish().failures.isNotEmpty() && coordinator.retryWindowCountForTest() == 1)
+        check(publishChanged().failures.isNotEmpty() && coordinator.retryWindowCountForTest() == 1)
         store.failChannelQuery = false
         now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
-        val recovered = publish()
+        val recovered = publishChanged()
         check(recovered.hasCommittedTarget && recovered.skippedUnchanged == 0)
         check(store.deleteCalls == before + 1 && coordinator.retryWindowCountForTest() == 0)
-        check(publish().skippedUnchanged > 0 && store.deleteCalls == before + 1)
+        check(publishChanged().skippedUnchanged > 0 && store.deleteCalls == before + 1)
     }
 
     private class FakeStore(
@@ -606,11 +615,34 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         var failChannelQuery = false
         var serviceIndexQueries = 0
 
-        override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
+        override fun readCanonicalGenres(
+            channelId: Long,
+            programIds: Set<Long>,
+        ): Result<Map<Long, String?>> =
+            Result.success(
+                programs
+                    .filter { (id, values) ->
+                        id in programIds && values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId
+                    }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
+            )
+
+        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
             if (failChannelQuery) {
                 Result.failure(IllegalStateException("channel問い合わせ失敗"))
             } else {
-                Result.success(channels.keys.firstOrNull())
+                Result.success(
+                    buildMap {
+                        channels.forEach { (id, values) ->
+                            val key =
+                                ServiceKey(
+                                    values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                                )
+                            if (key in keys && !containsKey(key)) put(key, id)
+                        }
+                    },
+                )
             }
 
         override fun insertChannel(values: ContentValues): Result<Long?> {
@@ -636,37 +668,49 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             return Result.success(programIndex())
         }
 
-        override fun indexExistingProgramsForWindow(
+        override fun indexExistingProgramEntriesForWindow(
             channelId: Long,
             windowStartMs: Long,
             windowEndMs: Long,
-        ): Result<Map<String, Long>> {
+        ): Result<Map<String, List<TvProviderWriter.ExistingProgramIndexEntry>>> {
             if (failWindowIndexOnce) {
                 failWindowIndexOnce = false
-                return Result.failure(IllegalStateException("null cursor"))
+                return Result.failure(IllegalStateException("null cursor確認"))
             }
-            return Result.success(programIndex())
+            return Result.success(
+                programs.entries
+                    .mapNotNull { (id, values) ->
+                        if (values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
+                        val start = values.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                        val end = values.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                        if (end <= windowStartMs || start >= windowEndMs) return@mapNotNull null
+                        val key =
+                            TvProviderWriter.parseProgramKey(
+                                values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
+                            ) ?: return@mapNotNull null
+                        key to TvProviderWriter.ExistingProgramIndexEntry(id, start, end)
+                    }.groupBy({ it.first }, { it.second }),
+            )
         }
 
-        override fun insertProgram(values: ContentValues): Result<Long?> {
-            if (failInsertOnce) {
+        override fun upsertProgramsBatch(
+            requests: List<TvProviderWriter.ProgramUpsertRequest>,
+        ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> {
+            if (failInsertOnce && requests.any { it.existingProgramId == null }) {
                 failInsertOnce = false
                 return Result.failure(IllegalStateException("挿入失敗"))
             }
-            val id = nextProgramId++
-            programs[id] = ContentValues(values)
-            insertedPrograms++
-            return Result.success(id)
-        }
-
-        override fun updateProgram(
-            programId: Long,
-            values: ContentValues,
-        ): Result<Int> {
-            programs[programId]?.putAll(values)
-            val updated = if (programs.containsKey(programId)) 1 else 0
-            updatedPrograms += updated
-            return Result.success(updated)
+            return testUpsertProgramsBatch(
+                programs,
+                requests,
+                allocateId = { nextProgramId++ },
+            ).onSuccess { outcomes ->
+                requests.zip(outcomes).forEach { (request, outcome) ->
+                    if (outcome.programId != null) {
+                        if (request.existingProgramId == null) insertedPrograms++ else updatedPrograms++
+                    }
+                }
+            }
         }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

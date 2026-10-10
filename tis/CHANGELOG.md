@@ -14,6 +14,47 @@
 - TIS設計と停止済みcleanupの単体期待値をSDK登録寿命へ合わせる。Android 15の実scan/cancelScanning/onScanStoppedと本番operationを接続するRobolectric試験を追加し、constructorのnative/TRM接続とnative呼出しだけを試験境界で代替する。未解放登録による次RF拒否と、SUCCESS/INVALID_STATE後の次RF到達を検査する。
 - 既存Robolectric CIへ試験を接続し、host-only source setとKotlin build ownership検査へ登録する。SDK非公開型の試験runtime依存を明示し、失敗時の完全な例外出力と境界試験2件の実行report確認を接続する。新しい本番owner・wrapper・状態・scheduler・migrationは追加しない。buildと試験はCIで確認し、Soong/device atest/実機VTS/実波は未実施。
 
+# PR #175 一括照会契約への統一と未使用結果fieldの除去
+
+- ChannelStoreを既存のindexExistingChannelIds契約へ揃え、呼出元のない単一key Provider照会とtest用fallbackを削除。fixtureも一括indexを直接供給する。
+- ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
+- 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
+
+# Program単一行の正常境界とIPC予算の整合
+
+- 推奨IPCサイズと同値の不要local変数を除去し、Qodana UnnecessaryVariableを解消する。予算・分割・拒否条件は変更しない。
+- AOSP公開推奨IPCサイズをrequest全体の予算として使用し、追加の半分制限を削除した。件数64とParcel実測の分割、全件事前計測、巨大単一行の明示拒否は維持する。
+- 既存Robolectric試験へ32 KiB provider-dataと標準列の受理を追加し、設計を追従させた。Rust schema・切詰め・retry・ownerは追加しない。
+- テストはCIへ委任。実機Binder・VTS・実波は未実施。
+
+## レビュー対応: Program bulk/batch正規契約
+
+- 旧単数Program insert/update/genre読戻しAPIとoverrideを削除し、未対応bulk/batch storeをfail-closedにする。
+- test storeも64操作単位でstage/commitし、batch途中失敗で先行操作が残らない反例を固定する。
+
+- レビュー対応: authoritative windowのobsolete Program削除未実装をfailureへ変更。必要test storeだけwindow削除を明示実装。
+
+## レビュー対応: 未解決service_type
+
+- 未解決と解決済み非対応を分離し、SDT/NIT収集中のlive policyをPENDINGのまま再評価へ残す。
+- null service_typeと未取得SDT/NIT、解決後READY、解決済み非対応UNSUPPORTEDを回帰試験で固定する。
+
+## レビュー対応: scan cancelの公開境界
+
+- cancel確定とTvProvider公開を既存scan ownerのpublication lockへ直列化し、最終snapshot retry中の取消しもCANCELLEDで終了する。
+- retry中・publish gate直前の取消しを副作用なしの回帰試験で固定する。
+
+# controller worker交換後のowner判定
+
+- beforeExecuteで現在実行するworker identityへ更新する。未捕捉例外による交換後も単一thread ownerとcontroller/data再入を維持する試験を追加した。thread数やexecutorは増やさない。
+
+- Localize TunerController runtime failure details without changing scan outcomes.
+
+# Program batch後の不要なindex更新の削除
+
+- 読み手のない既存Program index更新と、そのためだけのPendingWrite 3 field・mutable map/list変換を削除した。service単位query、個別event guard、重複key拒否、batch結果/genre readback契約は維持する。
+- 既存Program公開回帰試験はCIで確認する。新しい補助処理・migration・owner・試験は追加しない。
+
 # PR #176 非対応SMDのterminal分類
 
 - 確定したUNSUPPORTED_BROADCAST_SYSTEMを既存typed policyのUNSUPPORTEDへ写像する。未取得SMDはPENDINGを維持し、既存試験で両者を区別する。新しい状態・owner・診断文字列分岐は追加しない。検証は既存CIへ委ね、Soong/VTS/実機は未実施。
@@ -28,6 +69,10 @@
 
 - SectionEventはcallback入口でdrainし、parser更新は既存controllerへ非同期・有限・待機なしで投入する。飽和は診断付き拒否とし、世代・Filter identity fenceと順序を維持する。
 - Android 15の実Filter callback lockと優先closeを競合させるホスト試験をCIへ追加する。試験実行はCIに委ね、Soong/VTS/実機適合は未確認。
+
+# 同一publicationの既存Program重複key拒否
+
+- existing/new分岐前に全program keyを検査し、重複時はservice batch全体を書き込まない。既存rowありの重複入力試験を追加した。新しいownerやcacheは追加しない。
 
 # 不要な例示設定の削除
 
@@ -942,18 +987,3 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 ## r50ba2
 - `ChannelKeys.kt` を package 外の `../` source path ではなく Soong module dependency 経由で `rec` tests から参照できるよう、`maleicacid_tvinput_channel_keys_sources` filegroup を追加した。
 - No TIS Kotlin implementation, resources, manifest, permissions, or product integration files were changed.
-
-# controller worker交換後のowner判定
-
-- beforeExecuteで現在実行するworker identityへ更新する。未捕捉例外による交換後も単一thread ownerとcontroller/data再入を維持する試験を追加した。thread数やexecutorは増やさない。
-
-- Localize TunerController runtime failure details without changing scan outcomes.
-## レビュー対応: scan cancelの公開境界
-
-- cancel確定とTvProvider公開を既存scan ownerのpublication lockへ直列化し、最終snapshot retry中の取消しもCANCELLEDで終了する。
-- retry中・publish gate直前の取消しを副作用なしの回帰試験で固定する。
-
-## レビュー対応: 未解決service_type
-
-- 未解決と解決済み非対応を分離し、SDT/NIT収集中のlive policyをPENDINGのまま再評価へ残す。
-- null service_typeと未取得SDT/NIT、解決後READY、解決済み非対応UNSUPPORTEDを回帰試験で固定する。
