@@ -40,6 +40,8 @@ TvProviderのchannel internal provider dataへ保存するtune情報は、`arib_
 
 TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補と、dynamic discovery非対応frontend用の固定RF→absolute TSID候補を保持する。BS setup/rescanの候補source選択は`開発規則.md`の「製品 scan 候補の規範値」を正とする。TISは`Tuner.getAvailableFrontendInfos()`でISDB-S frontendを列挙し、`FrontendInfo.statusCapabilities`の`FRONTEND_STATUS_TYPE_STREAM_IDS`を持つ候補を優先して`Tuner.applyFrontend()`で確保する。確保したfrontendが同capabilityを持つ場合は物理RFごとにstream selector未指定の`IsdbsFrontendSettings`で`Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。 選択したfrontendはBS setup/rescanの候補source lifetime中保持し、RFごとの`cancelScanning()`後に`closeFrontend()`しない。explicit tuneと次RFのdynamic scanは同じ選択frontendを継続使用する。同capability frontendを確保できず、非対応frontendを確保できた場合は固定RF→absolute TSID候補を使う。dynamic scan開始後の失敗、timeout、空報告から固定候補へ切り替えない。候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。
 
+BSのstream-ID探索と通常のlive/setup/EPG選局は、同一Tuner SDK frontend leaseの異種type切替境界を共有する。前のleaseのtypeと次のFrontendSettings.typeが異なる場合は、TISがTuner.closeFrontend()で旧leaseを返却してからTuner.scan()/tune()を呼び、物理frontend選択・T/S専用機の能力判定・資源調停はFramework/TRMに委ねる。同じtypeでは余分な解放を行わない。旧leaseの解放に失敗した場合は次のscan/tuneを開始しない。通常選局はTuneOutcome、BS探索はStreamIdDiscoveryResultのSTART_FAILEDへ同じ異常を写像する。後者だけが独自エラーを作るのではなく、探索operationの終端結果型が異なるための表現差である。BS候補sourceのlifetime中は同じISDB-S frontend leaseを保持し、RFごとのcancelScanning後に解放しない。
+
 ## サービス登録・公開・再生policy境界
 
 `arib_si_engine_rs/DESIGN_JA.md` が定義するservice / transport単位の `ServiceSemanticFacts` を入力とし、Android channel登録、EPG公開、ライブ再生へ接続するproduct policyの算出はTISが所有する。`ServiceSemanticFacts` のfield集合、放送意味、導出条件、包含・除外境界は同SI engine設計を唯一の正本とし、本書では再定義しない。
