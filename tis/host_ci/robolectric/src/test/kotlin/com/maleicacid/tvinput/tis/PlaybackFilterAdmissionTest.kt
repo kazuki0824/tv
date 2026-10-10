@@ -83,6 +83,25 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun progressCallbackRunsWhileFilterDataBudgetIsFull() {
+        Fixture().use { fixture ->
+            val video = fixture.avFilter(false)
+            val progress = CountDownLatch(1)
+            // 共有16,384 slotをAVC単一sample上限内の入力だけで満たす。
+            fixture.whileOwnerBlocked {
+                listOf(4_194_304L, 4_194_304L, 4_194_304L, 4_186_112L)
+                    .map(::mediaEvent)
+                    .forEach { deliver(video, it) }
+                fixture.invoke("enqueuePlaybackAction", { progress.countDown() })
+                assertFalse(fixture.released())
+            }
+            assertTrue(progress.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            assertFalse(fixture.released())
+        }
+    }
+
+    @Test
     fun transientVideoAdmissionLossRecoversAndPersistentLossUsesExistingDeadline() {
         Fixture().use { fixture ->
             fixture.decoder()
@@ -168,6 +187,37 @@ class PlaybackFilterAdmissionTest {
             deliver(video, videoEvent)
             fixture.drain()
             assertEquals(1, Shadow.extract<NativeMediaEvent>(videoEvent).blockReads)
+            assertFalse(fixture.released())
+        }
+    }
+
+    @Test
+    fun captionPesArrivingDuringFlushIsDiscardedBeforeNextInput() {
+        Fixture().use { fixture ->
+            val video = fixture.avFilter(false)
+            val caption = fixture.captionFilter()
+            val nativeCaption = Shadow.extract<NativeFilter>(caption)
+            val (flushStarted, allowFlush) = nativeCaption.blockNextFlush()
+            fixture.whileOwnerBlocked {
+                nativeCaption.offer(ByteArray(12) { 0x55 })
+                deliver(caption, pesEvent(12))
+                deliver(caption, Array(16 * 1024) { restartEvent() })
+            }
+            assertTrue(flushStarted.await(5, TimeUnit.SECONDS))
+            // flush開始後に届いた通知は、flush対象のbytesを読む前に入口で捨てる。
+            nativeCaption.offer(ByteArray(12) { 0x66 })
+            deliver(caption, pesEvent(12))
+            allowFlush.countDown()
+            fixture.drain()
+            assertEquals(emptyList(), nativeCaption.readSizes)
+            val currentPes = captionPes()
+            nativeCaption.offer(currentPes)
+            deliver(caption, pesEvent(currentPes.size))
+            fixture.drain()
+            assertEquals(listOf(currentPes.size), nativeCaption.readSizes)
+            assertContentEquals(currentPes.copyOfRange(9, currentPes.size), fixture.captionPayloads.single())
+            deliver(video, mediaEvent(1L))
+            fixture.drain()
             assertFalse(fixture.released())
         }
     }
@@ -428,9 +478,16 @@ class PlaybackFilterAdmissionTest {
         var closeThread: String? = null
         val readSizes = mutableListOf<Int>()
         private val pendingBytes = ArrayDeque<Byte>()
+        private var flushBlock: Pair<CountDownLatch, CountDownLatch>? = null
 
         fun offer(bytes: ByteArray) {
             bytes.forEach(pendingBytes::addLast)
+        }
+
+        fun blockNextFlush(): Pair<CountDownLatch, CountDownLatch> {
+            val block = Pair(CountDownLatch(1), CountDownLatch(1))
+            flushBlock = block
+            return block
         }
 
         @Implementation
@@ -450,6 +507,11 @@ class PlaybackFilterAdmissionTest {
         @Implementation
         fun nativeFlushFilter(): Int {
             flushes++
+            flushBlock?.let { (started, allow) ->
+                started.countDown()
+                check(allow.await(5, TimeUnit.SECONDS)) { "test flush was not released" }
+                flushBlock = null
+            }
             pendingBytes.clear()
             return Tuner.RESULT_SUCCESS
         }

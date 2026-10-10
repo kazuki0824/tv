@@ -295,7 +295,12 @@ class PlaybackPipeline(
     }
 
     private fun enqueuePlaybackAction(action: () -> Unit) {
-        executor.executeCallback(isReleased = released::get, onFailure = ::handleSubmissionFailure, action = action)
+        executor.executeCallback(
+            control = true,
+            isReleased = released::get,
+            onFailure = ::handleSubmissionFailure,
+            action = action,
+        )
     }
 
     private fun enqueuePlaybackControl(action: () -> Unit) {
@@ -842,6 +847,7 @@ class PlaybackPipeline(
             val filterGeneration = playbackGeneration
             val pendingCapacityLoss = AtomicBoolean(false)
             val inputEpoch = AtomicLong(0L)
+            val acceptingPes = AtomicBoolean(true)
 
             fun sourceInputIsCurrent(
                 filter: Filter,
@@ -852,10 +858,16 @@ class PlaybackPipeline(
                     inputEpoch.get() == eventEpoch
 
             fun invalidatePendingPesAndFlush(source: Filter) {
+                // flush中に届く通知は、消去対象のFMQ bytesを読めないよう入口で捨てる。
+                acceptingPes.set(false)
                 inputEpoch.incrementAndGet()
-                onSubtitleContinuityLost(filterGeneration, trackId)
-                runCatching { check(source.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
-                    .onFailure { Log.w(LogTags.TIS, "字幕Filterの入力回収に失敗しました", it) }
+                try {
+                    onSubtitleContinuityLost(filterGeneration, trackId)
+                    runCatching { check(source.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
+                        .onFailure { Log.w(LogTags.TIS, "字幕Filterの入力回収に失敗しました", it) }
+                } finally {
+                    acceptingPes.set(true)
+                }
             }
 
             fun reportCapacityLoss(source: Filter) {
@@ -889,6 +901,7 @@ class PlaybackPipeline(
                         ) {
                             if (!sourceIsCurrent(filter)) return
                             val eventEpoch = inputEpoch.get()
+                            if (!acceptingPes.get() || eventEpoch != inputEpoch.get()) return
                             enqueuePlaybackFilterEvents(events, { reportCapacityLoss(filter) }) {
                                 runCatching {
                                     if (!sourceInputIsCurrent(filter, eventEpoch)) return@enqueuePlaybackFilterEvents
