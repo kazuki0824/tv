@@ -183,7 +183,7 @@ class TunerController(
     private val sectionExecutor =
         ControllerSerialExecutor(
             "maleicacid-tis-controller-$inputId",
-            maxPendingDataTasks = (SECTION_FILTER_BUFFER_BYTES / SectionFilterPolicy.MAX_SECTION_EVENT_BYTES).toInt(),
+            maxPendingDataTasks = sectionDataSlotLimitForFilterCapacity(0),
         )
     private val controllerControlExecutor =
         java.util.concurrent.Executor { task -> sectionExecutor.executeControl(task) }
@@ -307,6 +307,14 @@ class TunerController(
             created.setResourceLostListener(controllerControlExecutor) { callbackTuner ->
                 if (callbackTuner === tuner && !released) handleTunerResourceLostOnController()
             }
+            // 1 Filter分の暫定16 slotから、demuxが広告する複数Filter分の有限入場予算へ拡張。
+            // まだsection filterを開いておらず、callback処理前なので上限の縮小は不要。
+            val filterCount =
+                runCatching { created.demuxCapabilities?.sectionFilterCount ?: 0 }.getOrElse { error ->
+                    Log.w(LogTags.TIS, "demux section filter容量を取得できません。1 Filter分の予算を使用します inputId=$inputId", error)
+                    0
+                }
+            sectionExecutor.expandDataTaskCapacity(sectionDataSlotLimitForFilterCapacity(filterCount))
             created
         } catch (error: RuntimeException) {
             runCatching { created?.close() }.exceptionOrNull()?.let { cleanup ->
@@ -2051,6 +2059,15 @@ class TunerController(
 
         private const val EXHAUSTED_TUNE_GENERATION = -1L
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
+        // product内で最大1MiBのdrain済みsection payloadを保持する。1 Filter=64KiB。
+        private const val MAX_CONTROLLER_SECTION_PENDING_BYTES = 1024 * 1024L
+
+        internal fun sectionDataSlotLimitForFilterCapacity(advertisedFilterCount: Int): Int {
+            val filterCount = advertisedFilterCount.coerceAtLeast(1).toLong()
+            val admissionBytes =
+                minOf(filterCount * SECTION_FILTER_BUFFER_BYTES, MAX_CONTROLLER_SECTION_PENDING_BYTES)
+            return (admissionBytes / SectionFilterPolicy.MAX_SECTION_EVENT_BYTES).toInt()
+        }
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 
         @Suppress("MagicNumber", "MaxLineLength")

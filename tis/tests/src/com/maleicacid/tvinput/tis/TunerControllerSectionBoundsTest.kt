@@ -37,6 +37,15 @@ class TunerControllerSectionBoundsTest {
         check(setting.lengthFieldBitWidth == 12)
     }
 
+    @Test fun controllerSectionAdmissionBudgetTracksAdvertisedFilterCapacityWithHardBound() {
+        check(TunerController.sectionDataSlotLimitForFilterCapacity(0) == 16)
+        check(TunerController.sectionDataSlotLimitForFilterCapacity(1) == 16)
+        check(TunerController.sectionDataSlotLimitForFilterCapacity(2) == 32)
+        check(TunerController.sectionDataSlotLimitForFilterCapacity(16) == 256)
+        check(TunerController.sectionDataSlotLimitForFilterCapacity(32) == 256)
+        check(TunerController.sectionDataSlotLimitForFilterCapacity(Int.MAX_VALUE) == 256)
+    }
+
     @Test fun sectionEventDataLengthDecisionIsFixedAt4096Bytes() {
         check(SectionFilterPolicy.dataLengthDecision(0) == SectionFilterPolicy.DataLengthDecision.MALFORMED)
         check(SectionFilterPolicy.dataLengthDecision(-1) == SectionFilterPolicy.DataLengthDecision.MALFORMED)
