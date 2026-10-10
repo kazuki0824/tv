@@ -572,10 +572,10 @@ class NativeAribSiParserCasDiscoveryTest {
                 }
             val diagnostic = ServicePolicyEvaluator.evaluate(facts)
             check(!diagnostic.clearLivePlaybackStaticallyEligible)
-            check(diagnostic.requiresCas && diagnostic.reasons.contains("CAS_REQUIRED")) {
-                "CAS要否の放送事実を診断へ保持する必要があります: ${diagnostic.reasons}"
+            check(diagnostic.requiresCas) {
+                "CAS要否は既存の型付き放送事実に保持する必要があります"
             }
-            check("CAS_NOT_IMPLEMENTED" !in diagnostic.reasons) {
+            check("CAS_NOT_IMPLEMENTED" !in diagnostic.reasons && "CAS_REQUIRED" !in diagnostic.reasons) {
                 "SIのCAS要否からruntime plugin実装可否を推定してはなりません: ${diagnostic.reasons}"
             }
         } finally {

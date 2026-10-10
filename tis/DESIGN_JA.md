@@ -66,7 +66,7 @@ Video track metadataもPMTとEITの責務を混同しない。filter/decoderへ�
 
 録画機能を有効化するreleaseでは、`rec/DESIGN_JA.md` にmodule固有runtime契約を確定してから、本節とTIS runtimeをその契約へ接続する。
 
-SI段階のproduct policyが出す`requiresCas`は放送由来のCA要否であり、`ServicePolicyDecision.reasons`にはその事実を`CAS_REQUIRED`として投影する。SI段階では実際のMediaCas pluginの配置、初期容量通知、ECM処理、key token、Descramblerの結合状態を観測しないので、`requiresCas=true`のみを根拠に`CAS_NOT_IMPLEMENTED`やruntime失敗を宣言しない。`CAS_REQUIRED`は登録不適格の理由ではなく情報診断とし、`clearLivePlaybackStaticallyEligible=false`とは区別する。r51のスクランブル視聴非対応宣言は`開発規則.md`のrelease契約を維持する。r52の視聴可否は既存の`livePlaybackEligible(currentCasLinkageReady())`とCasControllerのtyped failureを正とし、SI診断文字列を成功・失敗の代用にしない。
+SI段階のproduct policyが出す`requiresCas`は放送由来のCA要否であり、既存の`ServicePolicyDecision.requiresCas`を唯一の型付き判断材料とする。`reasons`へ`CAS_REQUIRED`等の同義文字列を複製しない。SI段階ではMediaCas pluginの配置、初期容量通知、ECM処理、key token、Descramblerの結合状態を観測しないので、`requiresCas=true`のみを根拠に`CAS_NOT_IMPLEMENTED`やruntime失敗を宣言しない。`clearLivePlaybackStaticallyEligible=false`も非スクランブル静的候補ではないという別意味を維持する。r51のスクランブル視聴非対応宣言は`開発規則.md`のrelease契約を維持する。r52の視聴可否は既存の`livePlaybackEligible(currentCasLinkageReady())`とCasControllerのtyped failureを正とし、SI診断文字列を成功・失敗の代用にしない。
 
 ## CAS / descrambler の現行境界
 
