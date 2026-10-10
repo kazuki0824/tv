@@ -276,6 +276,7 @@ class TunerController(
     @Volatile private var latestBroadcastClockAuthority: AribBroadcastClock.AuthoritySample? = null
 
     @Volatile private var broadcastClockGenerationExhausted = false
+
     @Volatile private var sectionIngestController: SectionIngestController? = null
     private var casController: CasController? = null
     private var onSectionIngestedCallback: (() -> Unit)? = null
