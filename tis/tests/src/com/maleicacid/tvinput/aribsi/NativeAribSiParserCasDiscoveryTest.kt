@@ -580,6 +580,52 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+    // SI table完成とcurrent serviceの公開判断を、実section→Rust/JNI→TIS policy経路で固定する。
+    @Test
+    fun satelliteOtherTablesMayRemainIncompleteWhileCurrentServiceIsRegistrationReady() {
+        for ((profile, smdIdentifier, broadcastSystem) in listOf(
+            Triple(SiDiscoveryProfile.BS, 0x02, BroadcastSystem.ISDB_S_BS),
+            Triple(SiDiscoveryProfile.CS110, 0x04, BroadcastSystem.ISDB_S_110CS),
+        )) {
+            NativeAribSiParser().use { parser ->
+                parser.setDiscoveryProfile(profile)
+                check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
+                check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+                val mpeg2Pmt = PMT_WITH_PROGRAM_AND_ES_CA_BODY.copyOf().also { it[18] = 0x02 }
+                check(parser.ingestSection(TsPid(PID_PMT), section(mpeg2Pmt)) == SiStatus.OK)
+
+                // actual NITがない段階では、other表とは無関係に登録不可のまま。
+                val beforeActualNit = parser.serviceRegistrationSnapshot()
+                val missingNitFacts = beforeActualNit.semanticFactsByServiceKey.values.single()
+                check("NIT" in missingNitFacts.missingComponents)
+                check(!ServicePolicyEvaluator.evaluate(missingNitFacts, expectedSmdBroadcastSystem = broadcastSystem).registrationReady)
+
+                // network-level SMDとcurrent transportが一致するactual NITを受理。
+                val nit =
+                    mutableListOf(
+                        0x40, 0xf0, 0x00, 0x00, 0x01, 0xc1, 0x00, 0x00,
+                        0xf0, 0x04, 0xfe, 0x02, smdIdentifier, 0x00,
+                        0xf0, 0x06, 0x00, 0x11, 0x00, 0x22, 0xf0, 0x00,
+                    )
+                setSectionLength(nit, 0xf0)
+                check(parser.ingestSection(TsPid(0x0010), section(nit.toIntArray())) == SiStatus.OK)
+                val snapshot = parser.serviceRegistrationSnapshot()
+                val facts = snapshot.semanticFactsByServiceKey.values.single()
+                check(snapshot.actualTransports.any { it.originalNetworkId == 0x22 && it.transportStreamId == 0x11 })
+                check(snapshot.tableRequirements.any { it.component == "SDT-other" && it.required && !it.complete })
+                if (profile == SiDiscoveryProfile.CS110) {
+                    check(snapshot.tableRequirements.any { it.component == "NIT-other" && it.required && !it.complete })
+                }
+                check(facts.missingComponents.isEmpty()) { "other表の未完成がcurrent serviceへ漏れています: ${facts.missingComponents}" }
+                val decision = ServicePolicyEvaluator.evaluate(facts, expectedSmdBroadcastSystem = broadcastSystem)
+                check(decision.registrationReady && decision.requiresCas && decision.casDecisionReady) {
+                    "放送由来CA事実を維持した現在サービスを登録できません state=${decision.state} reasons=${decision.reasons}"
+                }
+                check(!decision.clearLivePlaybackStaticallyEligible && !decision.livePlaybackEligible(false))
+            }
+        }
+    }
+
     @Test fun serviceNamesPreserveAbsentAndPresentEmptyValuesAcrossJni() {
         val parser = NativeAribSiParser()
         try {
