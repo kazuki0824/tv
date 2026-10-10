@@ -85,9 +85,7 @@ class PlaybackFilterAdmissionTest {
         Fixture().use { fixture ->
             fixture.decoder()
             val video = fixture.avFilter(false)
-            val first = mediaEvent(16L * 1024 * 1024)
-            fixture.whileOwnerBlocked { deliver(video, first) }
-            fixture.drain()
+            val first = fixture.capacityLoss(video)
             assertTrue(fixture.failures.isEmpty())
             assertFalse(fixture.released())
             assertEquals(1, Shadow.extract<NativeMediaEvent>(first).releases)
@@ -100,14 +98,10 @@ class PlaybackFilterAdmissionTest {
             fixture.drain()
             assertEquals(1, Shadow.extract<NativeMediaEvent>(recovered).blockReads)
             assertTrue(fixture.failures.isEmpty())
-            val second = mediaEvent(16L * 1024 * 1024)
-            deliver(video, second)
-            fixture.drain()
+            val second = fixture.capacityLoss(video)
             assertTrue(fixture.failures.isEmpty())
             ShadowSystemClock.advanceBy(Duration.ofSeconds(6))
-            val third = mediaEvent(16L * 1024 * 1024)
-            deliver(video, third)
-            fixture.drain()
+            val third = fixture.capacityLoss(video)
             assertEquals(1, fixture.failures.size)
             assertEquals(PlaybackPipeline.PlaybackUnavailableReason.VIDEO_CODEC_ERROR, fixture.failures.single().first)
             assertTrue(
@@ -126,15 +120,14 @@ class PlaybackFilterAdmissionTest {
         Fixture().use { fixture ->
             val video = fixture.avFilter(false)
             val caption = fixture.captionFilter()
-            fixture.whileOwnerBlocked {
-                // 同じcallback内のevent帳簿だけでも有限予算を超える入力は局所回収する。
-                deliver(caption, Array(16 * 1024) { restartEvent() })
-            }
+            // fixture作成時間と実SDK callbackの非待機境界を混同しない。
+            val burst = Array(16 * 1024) { restartEvent() }
+            fixture.whileOwnerBlocked { deliver(caption, burst) }
             fixture.drain()
             assertEquals(1, fixture.captionDiscontinuities)
             assertEquals(1, Shadow.extract<NativeFilter>(caption).flushes)
             val replacement = fixture.avFilter(false)
-            val stale = mediaEvent(16L * 1024 * 1024)
+            val stale = mediaEvent(1L)
             deliver(video, stale)
             fixture.drain()
             assertEquals(0, Shadow.extract<NativeMediaEvent>(stale).blockReads)
@@ -160,7 +153,7 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
-    private class Fixture : AutoCloseable {
+    private inner class Fixture : AutoCloseable {
         val pipeline = PlaybackPipeline("admission-test", null)
         val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
         val tuner = Tuner(RuntimeEnvironment.getApplication(), null, 0)
@@ -199,6 +192,17 @@ class PlaybackFilterAdmissionTest {
             val sink: (PlaybackPipeline.PlaybackUnavailableReason, String) -> Unit = { reason, detail -> failures += reason to detail }
             val decoder = constructor.newInstance(pipeline, PlaybackPipeline.VideoCodecKind.AVC, AribCodecFacts(), Surface(), 7L, sink)
             ReflectionHelpers.setField(pipeline, "videoDecoder", decoder)
+        }
+
+        fun capacityLoss(filter: Filter): MediaEvent {
+            // 各4MiB入力はAVCの単一sample予算内。owner停止中の累積だけで拒否する。
+            val samples = List(4) { mediaEvent(4L * 1024 * 1024) }
+            whileOwnerBlocked { samples.forEach { deliver(filter, it) } }
+            drain()
+            samples.take(3).forEach { assertEquals(1, Shadow.extract<NativeMediaEvent>(it).blockReads) }
+            samples.forEach { assertEquals(1, Shadow.extract<NativeMediaEvent>(it).releases) }
+            assertEquals(0, Shadow.extract<NativeMediaEvent>(samples.last()).blockReads)
+            return samples.last()
         }
 
         fun whileOwnerBlocked(callback: () -> Unit) {
