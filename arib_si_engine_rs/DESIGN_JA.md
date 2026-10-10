@@ -464,6 +464,8 @@ MPEG-4音声profileの追加認識値は[ISO/IEC 14496-3:2005 Amd.2 Table 1.12](
 
 SI収集のactual TSは現在collectionで受理したPATのTSIDを基準にする。SDT actual / NIT actual / PMTの必須scopeはそのTSへ限定し、観測した他TSをSDT actualやPMTの必須対象にしない。profileが要求するSDT-otherは、NIT・SDT等から観測した他TS集合について評価する。必要な他TSをまだ観測していない場合も未完成を返す。NIT-otherは他networkの表であるため、現在TSを含むことを要求せず、少なくとも1 instanceを受信し、観測した全instanceが完成・無矛盾であることを要求する。未観測networkを含む全国の表の完全収集を意味しない。collectionの固定対象・期限はTISの操作契約で扱う。
 
+profileが必須とするSDT-other / NIT-otherは、BS/CS110の**collection全体の完成条件**として従来どおり保持する。一方、`ServiceSemanticFacts.missing_components`は現在サービスを登録可能とするために必要な**actual transport/serviceの未完成条件**であり、他TSのSDT-otherと他networkのNIT-otherの未受信をそのサービスの欠落理由へ複写しない。PAT、現在TSのNIT actual / SDT actual、当該サービスのPMTは引き続き個別登録の必要条件とする。`DiscoveryCollectionState.table_requirements`のrequired/completeと、そこから算出するcollection full-completeを緩和しない。これによりprofile補完テーブルが未完成でも、独立に確定した現在TSのサービスだけを部分登録できる。
+
 PMTの構文解析済み事実とsection instance完成は別条件とし、必要表の完成には両方を要求する。同一版の矛盾を検出した場合は旧PMTのES・CA事実も退役し、同じ版の再送で復帰させない。新しい受理可能な版で再解析・完成するまで未完成を保つ。
 
 PMT ESのAVC video descriptor、MPEG-4 audio descriptor、MPEG-4 audio extension descriptorは`CodecDescriptorFacts`に集約し、通常のES snapshotで渡す。AVCはprofile_idc・constraint flags・level_idc、音声は通常記述子のprofile値・拡張記述子のprofile値列・ASC原bytes・ASC共通先頭部を別々に保持する。同じtagの矛盾、長さ不正、予約bit不正、0xff指定時の拡張記述子欠落を正常profileへ昇格しない。ASC共通先頭部の解釈はcodec固有config全体の検証を意味しない。未知のMPEG-4音声をAACと推測しない。

@@ -201,6 +201,8 @@ TISは`SiCollectionRequirements`で操作目的に応じた必要集合を作り
 | 操作 | 対象集合と必要instance | 更新・終了条件 |
 |---|---|---|
 | setup / explicit rescan | 同じcandidateのSDT actualに属する現在観測サービス。profileの必須SI集合のうち対象transportのSDT/NIT、対象サービスのPMT、およびPAT・profile必須補完表。EITは初期channel登録の必須にしない | 収集中のサービス追加・消失で集合を更新し安定待ちをやり直す。最短2秒かつ集合・完成状態が1.2秒安定し全必要instanceが完成すれば終了。登録可能な部分集合の安定による終了はSTABLE_PARTIALとする |
+
+setup/rescanの登録可否は現在TSのサービスの`ServiceSemanticFacts.missing_components`により評価する。BS/CS110のSDT-other/NIT-otherの未受信はcollection全体の`table_requirements`と不完全診断へ残すが、現在TSのPAT・NIT actual・SDT actual・当該PMT/PCR/codec/SMDが独立に成立したサービスの`registrationReady`だけをfalseにしない。全collectionの完成要件を緩和せず、安定した登録可能な部分集合は既存の`STABLE_PARTIAL`条件で処理する。
 | boot EPG sync / background maintenance | 開始時に問い合わせた既存channelのServiceKeyをfrequency/deliverySystem/selector/satelliteBandの物理候補ごとに固定する。上記の対象SIと各ServiceKeyのp/f actual EITを必要にする。表示番号の違いで対象を落とさない | 対象の消失は未完成に残し、対象外サービスの到着で代用しない。EITを待たず安定部分終了せず、全必要instance完成または最大12秒で終了する。必要集合の完成とprovider transaction成功は別条件とする |
 | live | 現在の選局世代のServiceKeyについてPSI/SI・EPG・CAの継続変化を監視する | 初回snapshotの完成を視聴中の更新監視の終了条件にしない。repeat=trueで監視を続け、選局変更・資源喪失・解放時に既存の終了処理でstopする。解析器の内部保持は有限collection寿命に従う |
 
