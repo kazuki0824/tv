@@ -74,6 +74,35 @@ class ControllerSerialExecutorReviewBoundaryTest {
     }
 
     @Test
+    fun controllerExecutorExpandedBudgetAdmitsMultipleFilterBurstsButRemainsBounded() {
+        val executor = ControllerSerialExecutor("multi-filter-section-budget", maxPendingDataTasks = 16)
+        val started = CountDownLatch(1)
+        val releaseControl = CountDownLatch(1)
+        val slots =
+            generateSequence<Class<*>>(executor.javaClass) { it.superclass }
+                .mapNotNull { type -> type.declaredFields.singleOrNull { it.name == "pendingDataSlots" } }
+                .first()
+                .apply { isAccessible = true }
+                .get(executor) as Semaphore
+        try {
+            executor.expandDataTaskCapacity(32)
+            executor.executeControl {
+                started.countDown()
+                runCatching { releaseControl.await() }
+            }
+            check(started.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            repeat(32) { executor.executeData { error("未実行data taskが実行されました") } }
+            check(slots.availablePermits() == 0)
+            check(runCatching { executor.executeData {} }.exceptionOrNull() is DataCapacityExceededException)
+            check(executor.shutdownNow().size == 32)
+            check(slots.availablePermits() == 32)
+        } finally {
+            releaseControl.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun controllerExecutorShutdownReturnsDiscardedDataPermit() {
         val executor = ControllerSerialExecutor("shutdown-permit-test", maxPendingDataTasks = 1)
         val controlStarted = CountDownLatch(1)
