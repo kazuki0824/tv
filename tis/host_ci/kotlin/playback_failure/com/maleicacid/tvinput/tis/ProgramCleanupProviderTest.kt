@@ -154,6 +154,7 @@ class ProgramCleanupProviderTest {
             scanWorker.submit {}.get(5, TimeUnit.SECONDS)
             val failed = ChannelScanManager.currentState() as ScanState.Failed
             check(failed.generation == setupGeneration && failed.message == "Program cleanupに失敗しました")
+            check(!ChannelScanManager.isScanRunning() && pendingReads.get() == 0)
             rejectDelete = false
             val resumed = CountDownLatch(1)
             val retryEntered = CountDownLatch(1)
@@ -179,8 +180,8 @@ class ProgramCleanupProviderTest {
             val attempted = ChannelScanManager.currentState() as ScanState.Failed
             check(attempted.generation == retriedSetup && attempted.message != "Program cleanupに失敗しました")
             check(rows.isEmpty() && committed && ProgramUpgradeCleanup.ensure(cleanup))
-            // 両scanの終端からDirectBoot pending検査まで到達していることを確認する。
-            check(pendingReads.get() >= 2)
+            // cleanup成功後の実scan終端はDirectBoot pending検査まで一度到達する。
+            check(!ChannelScanManager.isScanRunning() && pendingReads.get() == 1)
         } finally {
             release.countDown()
             worker.submit {}.get(5, TimeUnit.SECONDS)
