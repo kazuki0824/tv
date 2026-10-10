@@ -8,6 +8,7 @@ import android.media.MediaSync
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.filter.Filter
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.ServicePolicyDecision
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
