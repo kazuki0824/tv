@@ -208,7 +208,7 @@ class TunerController(
         }
     }
 
-    private fun postOnControllerData(block: () -> Unit) = postOnControllerData(block, {})
+    private fun postOnControllerData(block: () -> Unit) = postOnControllerData(block) {}
 
     private fun postOnControllerData(
         block: () -> Unit,
@@ -1164,9 +1164,9 @@ class TunerController(
                         return@postOnControllerData
                     }
                 }
-            }, {
+            }) {
                 if (!released && tuneAccepted && generation == tuneGeneration) ingest?.recordInputDeliveryLoss()
-            })
+            }
         }.onFailure { error ->
             if (!released) {
                 Log.w(
