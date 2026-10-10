@@ -657,18 +657,6 @@ class TisR51FixedPlanAcceptanceTest {
             check("CA_DESCRIPTOR_UNRESOLVED" in unresolved.reasons)
             val scrambled = policy.evaluateLive(snapshot(clear.copy(requiresCas = true, freeCaMode = true)), key)
             check(scrambled.registrationReady && scrambled.casDecisionReady && !scrambled.clearLivePlaybackStaticallyEligible)
-            // r52ではCAS要否というSI放送事実と、実行時の鍵結合可否を独立に評価する。
-            check(scrambled.requiresCas && !scrambled.livePlaybackEligible(false) && scrambled.livePlaybackEligible(true))
-            check("CAS_NOT_IMPLEMENTED" !in scrambled.reasons && "CAS_REQUIRED" !in scrambled.reasons)
-            val withoutCasLinkage =
-                policy.evaluateLive(
-                    snapshot(clear.copy(requiresCas = true, freeCaMode = true, caDescriptorsResolved = false)),
-                    key,
-                )
-            check(withoutCasLinkage.registrationReady && !withoutCasLinkage.casDecisionReady)
-            check(!withoutCasLinkage.livePlaybackEligible(true) && "CA_DESCRIPTOR_UNRESOLVED" in withoutCasLinkage.reasons)
-            val clearWithoutCas = policy.evaluateLive(snapshot(clear), key)
-            check(!clearWithoutCas.requiresCas && clearWithoutCas.livePlaybackEligible(false))
             for (facts in listOf(
                 clear.copy(serviceType = 0xa1),
                 clear.copy(
@@ -686,6 +674,30 @@ class TisR51FixedPlanAcceptanceTest {
             check(pids.pmtPidsFor(key) == setOf(TsPid(0x100)))
             check(pids.pmtPidsFor(ServiceKey(1, 2, 3)).isEmpty())
         }
+    }
+
+    @Test
+    fun r52CasRequirementRemainsSeparateFromRuntimeKeyLinkage() {
+        val policy = com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+        val clear = semanticFacts()
+        val scrambled = policy.evaluate(clear.copy(requiresCas = true, freeCaMode = true))
+        check(scrambled.registrationReady && scrambled.casDecisionReady)
+        check(scrambled.requiresCas)
+        check(!scrambled.clearLivePlaybackStaticallyEligible)
+        check(!scrambled.livePlaybackEligible(false))
+        check(scrambled.livePlaybackEligible(true))
+        check("CAS_NOT_IMPLEMENTED" !in scrambled.reasons && "CAS_REQUIRED" !in scrambled.reasons)
+
+        // キー結合準備だけが成功しても、SIのCA解析未完了を成功へ丸めない。
+        val unresolved =
+            policy.evaluate(clear.copy(requiresCas = true, freeCaMode = true, caDescriptorsResolved = false))
+        check(unresolved.registrationReady && !unresolved.casDecisionReady)
+        check(!unresolved.livePlaybackEligible(true))
+        check("CA_DESCRIPTOR_UNRESOLVED" in unresolved.reasons)
+
+        val clearDecision = policy.evaluate(clear)
+        check(!clearDecision.requiresCas)
+        check(clearDecision.livePlaybackEligible(false))
     }
 
     // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
