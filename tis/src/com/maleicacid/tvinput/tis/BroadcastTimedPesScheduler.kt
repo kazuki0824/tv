@@ -122,7 +122,13 @@ internal class BroadcastTimedPesScheduler(
             return
         }
 
-        val sequence = nextArmSequence()
+        val sequence =
+            try {
+                nextArmSequence()
+            } catch (error: IllegalStateException) {
+                removePending(token)
+                throw error
+            }
         lateinit var runnable: Runnable
         runnable =
             Runnable {
@@ -155,13 +161,21 @@ internal class BroadcastTimedPesScheduler(
     }
 
     private fun nextToken(): Long {
-        nextToken = if (nextToken == Long.MAX_VALUE) 1L else nextToken + 1L
-        return nextToken
+        val live = pending.keys + armed.keys
+        val next =
+            RuntimeIdentity.nextReusablePositiveLong(
+                current = nextToken,
+                live = live,
+                label = "放送時刻連動PES token",
+            )
+        nextToken = next
+        return next
     }
 
     private fun nextArmSequence(): Long {
-        nextArmSequence = if (nextArmSequence == Long.MAX_VALUE) 1L else nextArmSequence + 1L
-        return nextArmSequence
+        val next = RuntimeIdentity.nextLong(nextArmSequence, "放送時刻連動PES arm sequence")
+        nextArmSequence = next
+        return next
     }
 
     private companion object {

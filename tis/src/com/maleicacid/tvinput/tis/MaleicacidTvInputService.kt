@@ -58,10 +58,7 @@ class MaleicacidTvInputService : TvInputService() {
         tvInputSessionId: String,
         sessionContext: Context,
     ): Session? {
-        if (!ProgramUpgradeCleanup.ensure(applicationContext)) {
-            Log.w(LogTags.TIS, "旧Program行のcleanupが未完了のためライブセッション生成を拒否します")
-            return null
-        }
+        // Session objectは同期受付し、Program/tune利用だけをcleanup完了まで保留する。
         // TvInputService.onCreateSession()入口から MaleicacidLiveSession constructor が
         // active ライブセッション を登録するまでの短い区間で、boot / background maintenance を
         // 開始してはならない。この境界を明示し、session creation が完了または失敗するまで

@@ -124,6 +124,48 @@ class PlaybackResourceCleanupTest {
         check(!owned && !cleanup.hasPending && calls == 2)
     }
 
+    @Test
+    fun cleanupPendingKeepsPlaybackRegisteredEvenWhenGenerationExhausted() {
+        for (generationFailure in listOf(null, IllegalStateException("generation枯渇"))) {
+            var registered = true
+            val cleanupFailure = IllegalStateException("cleanup未完了")
+            val failure =
+                runCatching {
+                    PlaybackPipeline.completeStopAfterResourceRelease(
+                        unregister = { registered = false },
+                        requireCleanupComplete = { throw cleanupFailure },
+                        generationFailure = generationFailure,
+                    )
+                }.exceptionOrNull()
+            check(failure === cleanupFailure && registered)
+            val retryFailure =
+                runCatching {
+                    PlaybackPipeline.completeStopAfterResourceRelease(
+                        unregister = { registered = false },
+                        requireCleanupComplete = {},
+                        generationFailure = generationFailure,
+                    )
+                }.exceptionOrNull()
+            check(!registered && retryFailure === generationFailure)
+        }
+    }
+
+    @Test
+    fun playbackGenerationExhaustionUnregistersAfterCleanupBeforeFailure() {
+        val order = mutableListOf<String>()
+        val generationFailure = IllegalStateException("再生generationが枯渇しました")
+        val failure =
+            runCatching {
+                PlaybackPipeline.completeStopAfterResourceRelease(
+                    unregister = { order += "登録解除" },
+                    requireCleanupComplete = { order += "cleanup完了確認" },
+                    generationFailure = generationFailure,
+                )
+            }.exceptionOrNull()
+        check(order == listOf("cleanup完了確認", "登録解除"))
+        check(failure === generationFailure)
+    }
+
     @Test fun codecRecoveryIsBoundedAndReclaimedAlwaysTerminates() {
         check(PlaybackPipeline.codecRecoveryDelay(false, true, false, false) == 0L)
         check(PlaybackPipeline.codecRecoveryDelay(false, false, true, false) == 100L)

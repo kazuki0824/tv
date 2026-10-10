@@ -12,6 +12,7 @@ enum class NativeSiFailureReason {
     REGISTRY_POISONED,
     PARSER_POISONED,
     INVALID_HANDLE,
+    IDENTITY_EXHAUSTED,
     JNI_INPUT,
     JNI_OUTPUT,
 }
@@ -47,11 +48,6 @@ class NativeAribSiParser : AutoCloseable {
         sid: Int,
         eventId: Int,
     ): String = requireNativeString(nativeBuildProgramKey(onid, tsid, sid, eventId))
-
-    fun normalizeProgramProviderData(providerData: ByteArray): String {
-        val result = nativeNormalizeProgramProviderData(providerData)
-        return requireNativeString(result)
-    }
 
     fun extractProgramKeyResult(providerData: ByteArray): String {
         val result = nativeExtractProgramKeyResult(providerData)
@@ -247,8 +243,6 @@ class NativeAribSiParser : AutoCloseable {
         sid: Int,
         eventId: Int,
     ): String?
-
-    private external fun nativeNormalizeProgramProviderData(providerData: ByteArray): String?
 
     private external fun nativeExtractProgramKeyResult(providerData: ByteArray): String?
 

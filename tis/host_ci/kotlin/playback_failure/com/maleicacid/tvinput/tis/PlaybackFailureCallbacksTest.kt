@@ -913,7 +913,7 @@ class PlaybackFailureCallbacksTest {
     fun acceptedTuneFailureFencesOldPlaybackAndRetainsCleanupDespiteNotificationFailure() {
         val controllerExecutor = ControllerSerialExecutor("accepted-tune-controller-test")
         val sessionExecutor = LifecycleSerialExecutor("accepted-tune-session-test")
-        val fixture = controllerExecutor.submit<Fixture> { Fixture(false, false) }.get(5, TimeUnit.SECONDS)
+        val fixture = controllerExecutor.submitControl<Fixture> { Fixture(false, false) }.get(5, TimeUnit.SECONDS)
         try {
             val controller = fixture.allocate(TunerController::class.java)
             val session = fixture.allocate(MaleicacidLiveSession::class.java)
@@ -1101,6 +1101,107 @@ class PlaybackFailureCallbacksTest {
         } finally {
             Tuner::class.java.getField("nextFilter").set(null, null)
             executor.shutdownNow()
+        }
+    }
+
+    // 実consume入口が旧sync/世代をmap変更より先に拒否することを検査する。
+    @Suppress("LongMethod")
+    @Test
+    fun delayedAudioConsumeCannotReleaseReassignedOutputAndIdsDoNotWrapWithinSync() {
+        val fixture = Fixture(false, false, failCleanup = false)
+        val oldSync = fixture.allocate(MediaSync::class.java)
+        val currentSync = fixture.allocate(MediaSync::class.java)
+        fixture.set("mediaSync", currentSync)
+        fixture.set("nextAudioBufferId", Int.MAX_VALUE - 1)
+        check(fixture.invoke("allocateAudioBufferId") == Int.MAX_VALUE)
+        check(runCatching { fixture.invoke("allocateAudioBufferId") }.isFailure)
+        // 新syncではID空間を再開できる。旧sync callbackは現在の同じIDへ到達しない。
+        fixture.set("nextAudioBufferId", 0)
+        val id = fixture.invoke("allocateAudioBufferId") as Int
+        check(id == 1)
+        val outputType = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "AudioOutput" }
+        // codec nativeを作らないpoison出力。旧callbackが触れたらcleanup失敗が記録される。
+        val output = fixture.allocate(outputType)
+        val outstanding = linkedMapOf(id to output)
+        fixture.set("outstandingAudioOutputs", outstanding)
+        fixture.invoke("onAudioBufferConsumedOnPlaybackExecutor", oldSync, 6L, id)
+        fixture.invoke("onAudioBufferConsumedOnPlaybackExecutor", currentSync, 6L, id)
+        check(outstanding[id] === output && !fixture.cleanup.hasPending)
+        fixture.invoke("onAudioBufferConsumedOnPlaybackExecutor", currentSync, 7L, id)
+        // 現callbackだけが出力解放を試み、poison codec失敗を既存cleanupへ保持する。
+        check(fixture.cleanup.hasPending)
+    }
+
+    // Android Sessionの通知queueだけを初期化し、実onTune受付と同じownerへの再開を確認する。
+    @Suppress("LongMethod")
+    @Test
+    fun singlePendingTuneResumesAfterCleanupAndFailureNeverEntersTune() {
+        val ready =
+            ProgramUpgradeCleanup::class.java
+                .getDeclaredField("ready")
+                .apply {
+                    isAccessible = true
+                }.get(null) as AtomicBoolean
+        val worker =
+            ProgramUpgradeCleanup::class.java
+                .getDeclaredField("worker")
+                .apply {
+                    isAccessible = true
+                }.get(null) as java.util.concurrent.ExecutorService
+        val previous = ready.get()
+        try {
+            for (success in listOf(false, true)) {
+                ready.set(false)
+                val entered = java.util.concurrent.CountDownLatch(1)
+                val unblock = java.util.concurrent.CountDownLatch(1)
+                val executor = LifecycleSerialExecutor("cleanup待機session試験")
+                val fixture = Fixture(false, false, failCleanup = false)
+                val session = fixture.allocate(MaleicacidLiveSession::class.java)
+
+                fun set(
+                    type: Class<*>,
+                    name: String,
+                    value: Any,
+                ) {
+                    type.getDeclaredField(name).apply { isAccessible = true }.set(session, value)
+                }
+                val context =
+                    object : android.content.ContextWrapper(null) {
+                        override fun getApplicationContext() = this
+                    }
+                val notifications = mutableListOf<Runnable>()
+                val released = AtomicBoolean(false)
+                set(MaleicacidLiveSession::class.java, "appContext", context)
+                set(MaleicacidLiveSession::class.java, "releaseOnce", released)
+                set(MaleicacidLiveSession::class.java, "sessionExecutor", executor)
+                set(MaleicacidLiveSession::class.java, "tuneRequestLock", Any())
+                set(android.media.tv.TvInputService.Session::class.java, "mLock", Any())
+                set(android.media.tv.TvInputService.Session::class.java, "mPendingActions", notifications)
+                try {
+                    check(
+                        !ProgramUpgradeCleanup.ensure(cleanup = {
+                            entered.countDown()
+                            check(unblock.await(5, TimeUnit.SECONDS))
+                            success
+                        }),
+                    )
+                    check(entered.await(5, TimeUnit.SECONDS))
+                    check(session.onTune(android.net.Uri.parse("content://android.media.tv/channel/1")))
+                    check(notifications.isEmpty() && !released.get())
+                    unblock.countDown()
+                    worker.submit {}.get(5, TimeUnit.SECONDS)
+                    executor.callControl(5_000L) {}
+                    // 成功時だけ実tuneのTUNING通知へ進む。その後の未初期化native owner失敗はfixture境界。
+                    check(notifications.size == if (success) 2 else 1)
+                    check(released.get() && ready.get() == success)
+                } finally {
+                    unblock.countDown()
+                    worker.submit {}.get(5, TimeUnit.SECONDS)
+                    executor.shutdownNow()
+                }
+            }
+        } finally {
+            ready.set(previous)
         }
     }
 

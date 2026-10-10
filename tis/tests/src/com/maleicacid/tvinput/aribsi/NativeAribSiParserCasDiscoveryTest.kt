@@ -98,7 +98,6 @@ class NativeAribSiParserCasDiscoveryTest {
             for ((name, parameter) in listOf(
                 "nativeBuildChannelProviderData" to String::class.java,
                 "nativeBuildProgramProviderData" to String::class.java,
-                "nativeNormalizeProgramProviderData" to ByteArray::class.java,
             )) {
                 val method = NativeAribSiParser::class.java.getDeclaredMethod(name, parameter)
                 method.isAccessible = true
@@ -935,8 +934,7 @@ class NativeAribSiParserCasDiscoveryTest {
             }
             check(savedFacts.getJSONArray("unknownDescriptors").getJSONObject(0).getString("rawDescriptorHex") == rawUnknown)
             check(
-                (ProviderDataBridge.normalizeProgramProviderData(stored.toByteArray(Charsets.UTF_8)) as ProviderDataBridge.Success).json ==
-                    stored,
+                ProviderDataBridge.extractProgramKeyResult(stored.toByteArray(Charsets.UTF_8))?.eventId == program.eventId,
             )
         } finally {
             parser.close()

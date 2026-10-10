@@ -21,6 +21,11 @@
 - 既存host試験へ、owner停止中にterminal cleanupと同期callerを投入し、shutdown後に通常/cleanup双方のcallerがtimeout前にCancellationExceptionで終了する回帰を追加する。別owner・worker・本番待機機構・migrationは追加しない。
 - build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
 
+# Program cleanup中の要求保留の用語統一
+
+- cleanup未完了中の「開始を拒否」を、受理済みlive/setup/EPG要求の「処理開始を保留」へ訂正する。要求継続の既存契約を参照し、要求自体の拒否や旧Program利用と混同しない。実装変更・migration・新ownerは追加しない。
+- 文書のみを更新し、Soong/device atest/実機VTS/実波は未実施。
+
 # 優先controller releaseによる未実行Futureの終了通知
 
 - 通常controlとcleanup controlのFutureへ既存QueuedTaskの破棄callbackを接続し、shutdownNowで未実行taskを破棄した場合はcancel完了を通知する。優先releaseが受理済み通常controlを追い越しても同期callerを待機中のまま残さない。
@@ -50,6 +55,56 @@
 - ChannelStoreを既存のindexExistingChannelIds契約へ揃え、呼出元のない単一key Provider照会とtest用fallbackを削除。fixtureも一括indexを直接供給する。
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
+
+# 2026-10-09 Program normalize未使用APIの削除
+
+- 本番呼出元のないProgram normalizeのKotlin facade・native宣言・JNI export・Rust公開関数を削除し、設計のAPI一覧も揃えた。
+- 既存の境界試験は本番Program builder・key抽出・共通validationへ接続し、Program更新時のcleanup・再収集とkey抽出に必要な内部helperを維持した。互換migrationや代替ownerは追加しない。
+- ローカルは差分・参照・整形を確認し、buildと試験は既存CIで検証する。Soong/device atest/VTS/実波は未実施。
+
+# Program cleanup完了通知の例外境界統一
+
+- ready済みの同期通知とworker完了通知を同じ狭いnotifyCompletionへ集約し、通知先の例外を診断へ残す。cleanup成功状態と後続通知は維持する。
+- 既存worker失敗・retry試験へ非同期通知例外とready済み通知例外・次の通知継続を追加。設計追従、テストはCIへ委任。
+- worker・state machine・scheduler・migrationは追加しない。実機VTSは未実施。
+
+# 2026-10-09 PR186レビュー履歴の整理
+
+- playback登録解除、caption/renderer cleanup保持、Program cleanup要求継続の履歴を古いreleaseより前へ統合した。PMT・cleanup FIFO・音声callback・保留tuneの追加試験を含む通常host検出数は376件。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
+# cleanup要求継続と遅延音声callbackの保護
+
+- Program cleanup完了を既存session control・setup scan・boot jobへ通知し、最初の利用要求を失わない。失敗時は旧Program使用を拒否する。単一worker、既存latest tune/ActiveScanTask/pending jobを再利用し、schedulerやmigrationは追加しない。
+- MediaSync consume入口はsync/世代照合をmap変更の前に行う。同一sync内の音声IDは再利用せず、最大値で明示失敗にする。新sync作成時だけIDを再開する。
+- 遅い実Providerの失敗通知とsetup受付、単一onTune要求の完了後再開/失敗時拒否、最大IDと旧sync callbackによる現在outputの無変更をCI回帰試験へ接続した。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
+# PMT初期待ちとProgram IPC境界のレビュー対応
+
+- live SIがPENDINGでも現行世代のPMT Filter取得を進め、playback/Program/CAS確定は既存READY契約まで待機する。実PAT/SDT/NITから本番refresh・Filter開始・PMT受信・READYを通すhost試験を追加した。
+- Program batchを64件およびParcel実測bytesで分割する。Android公開IPC推奨値の半分を予算とし、単一operation超過は全batchの書き込み前に失敗させる。provider-dataの切捨てやKotlin側の第二schemaは追加しない。異なる予算・24KB×64行・単一超過のRobolectric試験をCIへ接続した。
+- 未実装のservice全体Program index取得は空集合成功ではなく失敗とし、空EITをwriter公開入口で誤commitしないことを既存試験へ追加した。
+- 未使用の同期選局恒等helperとbooleanだけの試験を削除し、本番候補loop・tune拒否・TUNE_REJECTED終端と後続候補停止の回帰試験へ置き換えた。
+- Controller/Lifecycle executorのqueue・owner識別・permit受理/完了/破棄をPrioritySerialExecutorへ共通化した。既存owner/thread数と各executorの期限・再投入・callback解放方針を維持する。
+- ホストJUnit検出数をPMT試験1件分更新し、最上位PR186で373件とする。ローカルでは整形・lint・差分を確認し、テスト実行はCIへ委ねる。Soong/VTS/実機検証は未実施。
+
+# callback実行失敗と複数MediaEventの解放保持
+
+- TvProviderの単一/一覧チャンネル照会のnull cursor診断を日本語へ統一した。失敗を空結果の成功に置き換えない。
+- LifecycleSerialExecutorで開始済みcallbackのRuntimeExceptionを既存onFailureへ渡し、失敗通知・release fence・同一ownerのterminal cleanupへ接続した。開始済み入力へonDiscardを重ねない。
+- AV callback配列の途中例外では現在の未移譲eventと残余eventを既存releaseMediaEventへ渡す。処理済み/decoder所有eventは再解放せず、解放失敗は既存ResourceCleanupが保持する。
+- 恒久設計を投入・実行失敗と配列残余回収へ追従した。既存executor試験を実行開始後の失敗まで拡張し、実AV callback入口への3イベント入力と残余解放retryの試験・ホスト境界fixtureを追加した。CIの検出期待値はPR185で360、PR186で372に更新した。
+- ローカルでは整形・lint・差分を確認し、テスト実行はCIへ委ねる。Soong/VTS/実機検証は未実施。
+
+- Move upgrade Program cleanup I/O to its single owner worker; keep live/setup/EPG admission closed until success and retry on the next request after failure. Test blocked ContentResolver, 10,000 rows, partial delete and retry without migration.
+
+- Update host test discovery guards for the additional caption cleanup test class and two tests.
+
+- Keep caption cleanup retry authority until cleanup succeeds; fence terminal presentation without allocating a new epoch.
+- Preserve the native renderer handle until its release call succeeds, and localize Program cleanup query failures.
+
+# playback cleanup完了後の登録解除
+
+- requireCleanupComplete成功後にglobal playback登録を解除し、その後generation failureを再throwする。cleanup未完了とgeneration枯渇の組合せでは登録を保持してscan admissionを防ぎ、cleanup retry成功後に解除する試験を追加した。
 
 # MediaEvent解放失敗時の入力停止
 

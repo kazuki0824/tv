@@ -93,7 +93,7 @@ class PlaybackPipeline(
     private val ptsEpochCoordinator = PtsEpochCoordinator()
     private val outstandingAudioOutputs = linkedMapOf<Int, AudioOutput>()
     private val pendingAudioOutputReleases = mutableSetOf<Int>()
-    private var nextAudioBufferId = 1
+    private var nextAudioBufferId = 0
     private var audioOutputBackpressureStartedAtMs: Long? = null
     private val videoAvailableNotified = AtomicBoolean(false)
     private var oversizedSamplesDropped: Int = 0
@@ -479,7 +479,8 @@ class PlaybackPipeline(
         selection: TunerController.AvStreamSelection,
     ): StartResult {
         stopOnPlaybackExecutor()
-        val startGeneration = ++playbackGeneration
+        val startGeneration = nextPlaybackGenerationOrFence()
+        playbackGeneration = startGeneration
         val currentSurface = surface
         val audioOnly = channel.serviceType == SERVICE_TYPE_DIGITAL_AUDIO
         activeChannel = channel
@@ -995,6 +996,7 @@ class PlaybackPipeline(
         runCatching {
             val sync = MediaSync()
             mediaSync = sync
+            nextAudioBufferId = 0
             nextAvailabilityArmSequence = 1L
             sync.setCallback(
                 object : MediaSync.Callback() {
@@ -1116,11 +1118,11 @@ class PlaybackPipeline(
         generation: Long,
         bufferId: Int,
     ) {
+        if (sync !== mediaSync || generation != playbackGeneration) return
         releaseAudioOutput(bufferId)
         if (outstandingAudioOutputs.isEmpty()) {
             audioOutputBackpressureStartedAtMs = null
         }
-        if (sync !== mediaSync || generation != playbackGeneration) return
     }
 
     private fun releaseAudioOutput(bufferId: Int) {
@@ -1967,7 +1969,7 @@ class PlaybackPipeline(
                 if (outputClaim.deadlineReached) errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, outputClaim.detail)
                 return
             }
-            val bufferId = nextAudioBufferId++
+            val bufferId = allocateAudioBufferId()
             outstandingAudioOutputs[bufferId] = AudioOutput(codec, index, frame, block, bytes, info.size, info.presentationTimeUs)
             try {
                 requireNotNull(mediaSync).queueAudio(bytes, bufferId, info.presentationTimeUs)
@@ -2832,10 +2834,14 @@ class PlaybackPipeline(
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 停止時もsetter-only APIの明示呼出しを保持する。
-    @Suppress("MaxLineLength", "UsePropertyAccessSyntax")
+    // 世代fenceから資源回収・解除までの順序を同じowner内で保持する。
+    @Suppress("MaxLineLength", "UsePropertyAccessSyntax", "LongMethod")
     private fun stopOnPlaybackExecutor() {
         resourceCleanup.retry()
-        playbackGeneration = Math.addExact(playbackGeneration, 1L)
+        val generationFailure =
+            runCatching { nextPlaybackGenerationOrFence() }
+                .onSuccess { playbackGeneration = it }
+                .exceptionOrNull()
         videoAvailableNotified.set(false)
         val previousVideoFilter = videoFilter
         val previousAudioFilter = audioFilter
@@ -2882,11 +2888,34 @@ class PlaybackPipeline(
         activeTuner = null
         activeSelection = null
         ptsEpochCoordinator.reset()
-        resourceCleanup.requireComplete()
-        if (resourceActivityReported) {
-            ChannelScanManager.unregisterPlaybackPipeline(sessionContext)
-            resourceActivityReported = false
+        completeStopAfterResourceRelease(
+            unregister = {
+                if (resourceActivityReported) {
+                    ChannelScanManager.unregisterPlaybackPipeline(sessionContext)
+                    resourceActivityReported = false
+                }
+            },
+            requireCleanupComplete = resourceCleanup::requireComplete,
+            generationFailure = generationFailure,
+        )
+    }
+
+    private fun nextPlaybackGenerationOrFence(): Long {
+        check(playbackGeneration != EXHAUSTED_PLAYBACK_GENERATION) { "再生generationは既に枯渇しています" }
+        return try {
+            RuntimeIdentity.nextLong(playbackGeneration, "再生generation")
+        } catch (error: IllegalStateException) {
+            playbackGeneration = EXHAUSTED_PLAYBACK_GENERATION
+            throw error
         }
+    }
+
+    private fun allocateAudioBufferId(): Int {
+        // 同じMediaSyncへ配送済みのcallback寿命を追跡する第二台帳は作らず、同一sync内では再利用しない。
+        val next = RuntimeIdentity.nextInt(nextAudioBufferId, "MediaSync音声buffer")
+        check(next > 0) { "MediaSync音声buffer IDは正でなければなりません" }
+        nextAudioBufferId = next
+        return next
     }
 
     private fun releaseOutstandingAudioOutputs() {
@@ -2946,6 +2975,7 @@ class PlaybackPipeline(
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
     @Suppress("TooManyFunctions")
     companion object {
+        private const val EXHAUSTED_PLAYBACK_GENERATION = -1L
         private const val PLAYBACK_CONTROL_WAIT_MS = 5_000L
 
         internal fun decodedVideoFormatInfo(
@@ -3005,6 +3035,16 @@ class PlaybackPipeline(
                 completed = true
             }
             return completed
+        }
+
+        internal fun completeStopAfterResourceRelease(
+            unregister: () -> Unit,
+            requireCleanupComplete: () -> Unit,
+            generationFailure: Throwable?,
+        ) {
+            requireCleanupComplete()
+            unregister()
+            if (generationFailure != null) throw generationFailure
         }
 
         // codec/framework実行失敗を元generationの再生不可通知へ変換する境界。

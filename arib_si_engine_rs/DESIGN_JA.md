@@ -304,7 +304,7 @@ PMT / 音声コンポーネントdescriptor から取得できるISO639言語は
 
 `ratings` はparental_rating_descriptorのcountry_code、raw_rating_byte、parse_statusだけを保持する。Android ratingへの導出・未対応値の扱いは `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`supported`や`mappedTvContentRating`等の投影結果をprovider-dataへ保存しない。
 
-`components.video[]` は ES PID、stream_type、component_tag、component_type、codec signaling、解像度、走査方式、aspect、profile / level、根拠 descriptor を ES/component単位で保持する。`components.audio[]` は ES PID、stream_type、component_tag、component_type、codec signaling、primary/secondary ISO639 language、channel configuration、sampling info、根拠 descriptor を ES/component単位で保持する。EIT の component descriptor 事実に対応する PMT component_tag が無い場合も descriptor 事実は保持し、PMT からだけ確定できる ES PID / stream_type / codec は `null` とする。PAT 等の sentinel PIDや推測値を入れない。`components.subtitle[]` は ES PID、component_tag、data_component_id、PMT Data Component Descriptorから得たDMF/Timing/service-kind fact、parse_statusを保持し、Android/TIS runtimeの`trackId`を保持しない。caption management data由来ISO639 languageはPES runtime factであり、本crateがgeneric PMT ISO639 descriptorから代用・捏造してprovider-dataへ保存しない。現行v1の`components.subtitle[].language`は互換用の予約欄として必須の`null`だけを受理し、文字列入力をbuilder・normalizer・schemaで拒否する。PES runtimeで得たlanguage setを永続provider-dataへ戻す場合は別の明示的なpublication input契約を先に設計する。`components.data[]` はデータcomponentのメタデータを保持するが、BML / data broadcast実行状態やUI状態は保持しない。
+`components.video[]` は ES PID、stream_type、component_tag、component_type、codec signaling、解像度、走査方式、aspect、profile / level、根拠 descriptor を ES/component単位で保持する。`components.audio[]` は ES PID、stream_type、component_tag、component_type、codec signaling、primary/secondary ISO639 language、channel configuration、sampling info、根拠 descriptor を ES/component単位で保持する。EIT の component descriptor 事実に対応する PMT component_tag が無い場合も descriptor 事実は保持し、PMT からだけ確定できる ES PID / stream_type / codec は `null` とする。PAT 等の sentinel PIDや推測値を入れない。`components.subtitle[]` は ES PID、component_tag、data_component_id、PMT Data Component Descriptorから得たDMF/Timing/service-kind fact、parse_statusを保持し、Android/TIS runtimeの`trackId`を保持しない。caption management data由来ISO639 languageはPES runtime factであり、本crateがgeneric PMT ISO639 descriptorから代用・捏造してprovider-dataへ保存しない。現行v1の`components.subtitle[].language`は互換用の予約欄として必須の`null`だけを受理し、文字列入力をbuilder・key抽出の共通validationで拒否する。PES runtimeで得たlanguage setを永続provider-dataへ戻す場合は別の明示的なpublication input契約を先に設計する。`components.data[]` はデータcomponentのメタデータを保持するが、BML / data broadcast実行状態やUI状態は保持しない。
 
 codec metadataの認識はライブviewable / playable対応宣言を意味しない。`ProgramProviderDataV1.components.video[]` / `components.audio[]` にrelease固有またはruntime capability判定の `r51PlaybackSupported` / `liveViewableClaim` を保存せず、再生可否とtrack選択はTIS runtimeの製品policyとdecoder capability判定に閉じる。
 
@@ -336,11 +336,17 @@ pub struct DescriptorDiagnosticV1 {
 
 canonical JSON は Rust `serde_json` で生成し、struct フィールド順序と`BTreeMap`により出力順序を固定する。これは保存bytesの決定性、32 KiB上限制御、回帰試験データとのbyte比較のために必要である。provider-data単体の同一内容判定には、TISがTvProvider更新抑止用に計算する行全体のpublish fingerprintが既にprovider-data bytesを含むため、別のSHA-256値を生成・返却・保存しない。provider-dataの暗号学的署名、MAC、真正性、送信者認証、改ざん防止も要件としない。
 
+### Runtime identity / collection generation の枯渇契約
+
+parserの `collection_generation` と `sections_seen` はsnapshotの世代・ingest順序を識別するruntime identityであり、`saturating_add`による最大値固定やwrap/reuseを行わない。checked incrementに失敗した時点で当該parserをidentity-exhaustedへ不可逆にfenceし、collection semantic facts / broadcast clockを破棄して以後のingestを `STATUS_INTERNAL_ERROR` とする。snapshot取得は空collectionを返さず `NativeSiException(reason=IDENTITY_EXHAUSTED)` として失敗する。
+
+JNI parser handleはprocess-local live object identityである。handle空間の末尾に達した場合は正数空間を巡回してよいが、registry内のlive handleとの衝突検査を必須とし、既存parserを上書きしない。空きhandleを得られない場合はcreateを失敗させる。parser handle、collection generation、ingest sequenceの再利用可否を相互に混同しない。
+
 ### JNI boundary
 
 #### 実行失敗と正常な空値の区別
 
-文字列を返すJNI入口では、放送上の事実の欠落・有効な空文字と、JNIや解析器の実行失敗を区別する。provider-dataの構築・正規化の失敗は、`ProviderDataResult`の失敗形式で表す。それ以外のスナップショット取得、キー抽出、チャンネル情報の復号、ARIB文字列の復号、コーデック構成解析の実行失敗は、`NativeSiException`を送出する。正常なスナップショットは本書のスキーマに従う。キー欠落を表す空文字、空の文字入力に対する正常結果、コーデック解析の`Pending / Invalid / Ready`は、JNIの実行失敗とは区別する。
+文字列を返すJNI入口では、放送上の事実の欠落・有効な空文字と、JNIや解析器の実行失敗を区別する。provider-dataの構築の失敗は、`ProviderDataResult`の失敗形式で表す。それ以外のスナップショット取得、キー抽出、チャンネル情報の復号、ARIB文字列の復号、コーデック構成解析の実行失敗は、`NativeSiException`を送出する。正常なスナップショットは本書のスキーマに従う。キー欠落を表す空文字、空の文字入力に対する正常結果、コーデック解析の`Pending / Invalid / Ready`は、JNIの実行失敗とは区別する。
 
 `NativeSiException`は表示用メッセージと独立した`NativeSiFailureReason`を持つ。失敗理由は次表の識別子に対応し、表示用メッセージを分類に使用しない。
 
@@ -350,6 +356,7 @@ canonical JSON は Rust `serde_json` で生成し、struct フィールド順序
 | `REGISTRY_POISONED` | 解析器登録表のロック汚染 |
 | `PARSER_POISONED` | 解析器状態のロック汚染 |
 | `INVALID_HANDLE` | 存在しない解析器handle |
+| `IDENTITY_EXHAUSTED` | parserのcollection generationまたはingest sequenceが枯渇し、当該parserをfail-closedにした状態 |
 | `JNI_INPUT` | Java文字列・配列の取得や変換の失敗 |
 | `JNI_OUTPUT` | Java結果の生成失敗、例外なしの不正なnull戻り値 |
 
@@ -363,13 +370,12 @@ Rust は少なくとも以下の JNI API 相当を提供する。
 
 ```text
 buildProgramProviderData(inputJson) -> ProviderDataResult
-normalizeProgramProviderData(rawBytes) -> ProviderDataResult
-
-`normalizeProgramProviderData(rawBytes)` とProgram key抽出はcurrent buildが生成した現行Program provider-dataだけを対象とする。`../開発規則.md`の更新不変条件により、product更新前のProgram行はTISが先に削除・再収集するため、旧release schemaのmigration、互換decode、field補完をこのAPIへ追加してはならない。
 extractProgramKey(rawBytes) -> ProgramKeyResult?
 buildChannelProviderData(inputJson) -> ProviderDataResult
 decodeChannelProviderData(rawBytes) -> ChannelProviderDataResult?
 ```
+
+Program key抽出はcurrent buildが生成した現行Program provider-dataだけを対象とする。`../開発規則.md`の更新不変条件により、product更新前のProgram行はTISが先に削除・再収集するため、旧release schemaのmigration、互換decode、field補完をこのAPIへ追加してはならない。
 
 `decodeChannelProviderData()` は UTF-8、JSON、schema を Rust 側で検証し、canonical bytes、schema version、型付き `ServiceKey`、型付き `ChannelTune`、放送由来の`requiresCas`を返す。現行のString JNI surfaceではこれらを単一JSON result envelopeで返し、TAB区切り・hexという第二wire protocolを設けない。Kotlinが解釈するのはこのresult envelopeだけで、保存済みchannel provider-dataの検証・修復・canonical化はRustに閉じる。`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持ち、`inputId`、表示名、backend名、driver名、driver固有slotを含めない。TV input ownershipはTvProvider channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとし、Kotlin/TISはprovider-data decode前にrowのinputIdがcurrent TIS inputIdと一致することを検証する。
 
@@ -389,11 +395,11 @@ ProviderDataResult {
 }
 ```
 
-build/normalize成功時は`success=true`、`bytes`を非空canonical JSON、`schemaVersion`を対象schema version、`truncated`と`diagnosticsDroppedCount`を実処理結果、`errorCode/errorMessage`を空文字とする。UTF-8/JSON/schema/値域/32 KiB上限などの失敗時は`success=false`、`bytes=""`、`truncated=false`、`diagnosticsDroppedCount=0`とし、安定した非空`errorCode`と診断用の非空`errorMessage`を返す。失敗を`{}`、成功形の空bytes、panic、JNI nullへ丸めない。Kotlinは`success=false`を保存可能データとして扱わず、`errorCode/errorMessage`をprovider書込み失敗診断へ渡す。field追加・削除・意味変更はJNI契約変更としてRust/Kotlin/設計を同時更新する。
+build成功時は`success=true`、`bytes`を非空canonical JSON、`schemaVersion`を対象schema version、`truncated`と`diagnosticsDroppedCount`を実処理結果、`errorCode/errorMessage`を空文字とする。UTF-8/JSON/schema/値域/32 KiB上限などの失敗時は`success=false`、`bytes=""`、`truncated=false`、`diagnosticsDroppedCount=0`とし、安定した非空`errorCode`と診断用の非空`errorMessage`を返す。失敗を`{}`、成功形の空bytes、panic、JNI nullへ丸めない。Kotlinは`success=false`を保存可能データとして扱わず、`errorCode/errorMessage`をprovider書込み失敗診断へ渡す。field追加・削除・意味変更はJNI契約変更としてRust/Kotlin/設計を同時更新する。
 
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。JNI 呼び出し元は provider-data を `String` 化して渡してはならず、保存済み BLOB バイト列をそのまま渡す。互換上 TvProvider が文字列として返す場合も、呼び出し元は UTF-8 バイト列へ戻すだけに限定し、provider-data JSON を Kotlin 側で解釈・再構築しない。
 
-Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通常実行経路では panic せず、`ProviderDataResult` の失敗または key 抽出失敗へ落とす。provider-data bytesだけのdigest APIは設けない。同一公開内容の抑止判定はTISの行全体publish fingerprintを正とし、Rust builderの責務へ重複させない。
+Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通常実行経路では panic せず、key 抽出失敗またはchannel decode失敗へ落とす。provider-data bytesだけのdigest APIは設けない。同一公開内容の抑止判定はTISの行全体publish fingerprintを正とし、Rust builderの責務へ重複させない。
 
 ### current-program 診断情報
 
@@ -411,7 +417,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 ### Rust serde SSOT / 回帰試験データ
 
-現行仕様では provider-data の型、JSON field名、必須性、nullable条件、未知field受理可否、値域、cross-field不変条件、canonical encode、正規化、保存上限を Rust serde struct と Rust validation 実装だけで定義する。JSON Schemaファイルを別正本として保持しない。`arib_si_engine_rs/testdata/` と `tis/tests/assets/` のJSONは規範定義ではなく回帰試験ベクトルであり、Rustのtyped parse/build/normalize結果へ従う。Rust側とTIS側に同じfixtureを置く場合は、試験入力の同一性を保つためbyte一致を確認するが、fixture自体を正本とはしない。
+現行仕様では provider-data の型、JSON field名、必須性、nullable条件、未知field受理可否、値域、cross-field不変条件、canonical encode、正規化、保存上限を Rust serde struct と Rust validation 実装だけで定義する。JSON Schemaファイルを別正本として保持しない。`arib_si_engine_rs/testdata/` と `tis/tests/assets/` のJSONは規範定義ではなく回帰試験ベクトルであり、Rustのtyped parse/build/key抽出/channel decode結果へ従う。Rust側とTIS側に同じfixtureを置く場合は、試験入力の同一性を保つためbyte一致を確認するが、fixture自体を正本とはしない。
 
 ### 現行実装との関係
 

@@ -5,6 +5,14 @@
 TIS は `TvInputService` としてシステムTVアプリから呼ばれ、Tuner HAL には Tuner SDK API 経由でアクセスする。HAL binder を直接呼ばない。
 TIS の setup / boot EPG sync / user unlock drain は、固定文字列や package 名を inputId とみなしてはならない。`TvInputManager.tvInputList` から自 `MaleicacidTvInputService` に一致する `TvInputInfo.id` を一意に解決し、その inputId だけを scan / sync / TvProvider writer へ渡す。解決不能または複数一致の場合、boot EPG sync は pending のまま延期し、setup scan は開始しない。
 
+### Runtime identity / generation の枯渇契約
+
+TISがstale callback fence、owner世代、runtime tokenとして使用するgeneration / IDは、silent wrap、saturating increment、live identityとの無検査reuseを行わない。単調世代（Tuner tune generation、scan generation、playback generation、broadcast-clock discontinuity generation、caption presentation epoch）はchecked incrementを使い、最大値到達時は現在のowner/stateをfail-closedにfenceして新しい世代を発行しない。枯渇後のsentinelを有効世代としてcallback比較・publish・playback開始へ使用しない。
+
+有限live-set内で再利用可能なtoken（caption frame token、Timing=10 pending/arm token）は正数空間を明示的に巡回してよいが、再利用候補が現在のlive-setに存在しないことを発行時に検査する。使用中tokenとの衝突がない候補を取得できなければ発行を失敗させる。wrapそのものをgeneration更新の代替にしない。
+
+SI parser内部のcollection generation / ingest sequence / parser handleは `../arib_si_engine_rs/DESIGN_JA.md` の枯渇契約を正とし、TISは `IDENTITY_EXHAUSTED` / internal failureを空snapshot、未観測SI、通常のcollection timeoutへ読み替えない。
+
 ### SI収集の期限と失敗境界
 
 JNIの実行失敗と正常な空値の契約は`../arib_si_engine_rs/DESIGN_JA.md`の「実行失敗と正常な空値の区別」を正とする。TISはJNIの実行失敗を呼出し元へ伝え、SI事実なし・番組キーなし・JSON内容不正へ変換しない。走査・番組更新では当該操作の失敗として扱い、失敗したスナップショットを登録・更新・削除判断へ使用しない。具体的な呼出しと受取補助関数の使用規則は、`CODE_CONVENTION.md`を正とする。
@@ -507,7 +515,6 @@ TIS Kotlin は provider-data JSON を解釈せず、以下の Rust JNI API 相�
 // Kotlin facade。実JNIはclosed JSON result envelopeを返す。
 object ProviderDataBridge {
     fun buildProgramProviderData(program: ProgramRecord): ProviderDataResult
-    fun normalizeProgramProviderData(rawBytes: ByteArray): ProviderDataResult
     fun extractProgramKeyResult(rawBytes: ByteArray): ProgramKeyResult?
     fun buildChannelProviderData(channel: ChannelRecord): ProviderDataResult
     fun decodeChannelProviderData(rawBytes: ByteArray): ChannelProviderDataResult?
@@ -543,7 +550,7 @@ Rust JNIのclosed envelopeは`arib_si_engine_rs/DESIGN_JA.md`を正とし、faca
 
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。Kotlin は `String(rawBytes)` などで再解釈してから Rust へ渡してはならず、TvProvider から取得した `COLUMN_INTERNAL_PROVIDER_DATA` の BLOB バイト列をそのまま Rust JNI 境界へ渡す。TvProvider が文字列として返した場合の互換補助は、UTF-8 バイト列へ戻すだけに限定し、Kotlin側でJSON構造を解釈・再構築してはならない。
 
-`normalizeProgramProviderData(rawBytes)`、`extractProgramKey(rawBytes)`、`decodeChannelProviderData(rawBytes)`は、invalid UTF-8またはmalformed JSONをKotlin側で修復しない。Rustは診断付き失敗、key抽出失敗、またはchannel decode失敗へ落とし、通常実行経路で例外やpanicに変換しない。provider-data bytesだけのdigest APIと`ProviderDataResult.signature` / `contentDigest`は設けない。
+`extractProgramKey(rawBytes)`、`decodeChannelProviderData(rawBytes)`は、invalid UTF-8またはmalformed JSONをKotlin側で修復しない。Rustは診断付き失敗、key抽出失敗、またはchannel decode失敗へ落とし、通常実行経路で例外やpanicに変換しない。provider-data bytesだけのdigest APIと`ProviderDataResult.signature` / `contentDigest`は設けない。
 
 ### 診断情報 schema
 
@@ -664,7 +671,7 @@ AV・字幕・文字スーパーのFilterも、取得直後から設定・開始
 
 `MaleicacidLiveSession` は lifecycle/control優先かつdata callback未処理数が有限のsession-level serial executorを持ち、currentサービス、generation、track state、unblock state、latest videoメタデータ、`ProgramPublishCoordinator`へのアクセスを同一executorに閉じる。TIF `onTune()` はURIと解放状態だけを同期検証してacceptedなら即時に返し、tune/reset/filter/CAS/SI初期化をsession control taskとして非同期実行する。zappingで複数のaccepted tuneが到着した場合は実行中1件に加えてlatest URIだけを保持し、中間の未実行tune要求をcontrol queueへ積み上げない。accepted後の初期化失敗はprocessへ例外を伝播せず同sessionのterminal unavailableへ閉じる。同期control待ちは有限budgetを持ちtimeoutなしの`Future.get()`を使用しない。section ingest後のlive refreshは同時に1件だけqueue/runningとし、実行中の追加ingestは終了後の1回の再評価へcoalesceする。AV開始lifecycleはSessionが`Idle / Starting(signature) / WaitingFirstOutput(signature,generation) / Started(signature,generation) / Failed(signature,generation?) / Stopped`のsealed stateを一つだけ所有する。current/pending signature、last attempted/started gate、pipeline generationを並行して保持しない。遷移判定は状態を持たない純粋関数とする。TunerController、PlaybackPipeline、parental receiverのコールバックは直接state mutationせず、session executorにenqueueする。
 
-同期controlの待機期限は開始済みtaskにも適用する。未開始taskは実行権をatomicに取消し、開始済みtaskは取消し済み・未実行と偽らず`ControlResultUnknownException`で結果未確定として返す。割込みも同じ開始状態の区別を保つ。terminal cleanupのshutdownで未実行の通常control/cleanup controlを破棄する場合も、既存の破棄通知から同じ開始phase CASでcancel完了させ、callerへCancellationExceptionを返す。shutdownによる取消しを待機期限超過として報告しない。開始済みtaskの実行・資源所有権は元のexecutorに残し、session/playback/captionの呼出し境界は既存の解放flagを立て、同じownerへ既存の解放入口をqueueする。これにより後続data callbackを拒否し、遅延実行が終了してから同じownerで後片付けする。TIF同期Booleanは操作の成功を表明せず、当該sessionを閉鎖する。後片付け失敗は既存の未完解放を保持し、解放を再試行する入口を捨てない。別executorや別資源所有者へ未確定taskを移さず、callerを無期限に待たせない。
+同期controlの待機期限は開始済みtaskにも適用する。未開始taskは実行権をatomicに取消し、開始済みtaskは取消し済み・未実行と偽らず`ControlResultUnknownException`で結果未確定として返す。割込みも同じ開始状態の区別を保つ。terminal cleanupのshutdownで未実行の通常control/cleanup controlを破棄する場合も、既存の破棄通知から同じ開始phase CASでcancel完了させ、callerへCancellationExceptionを返す。shutdownによる取消しを待機期限超過として報告しない。開始済みtaskの実行・資源所有権は元のexecutorに残し、session/playback/captionの呼出し境界は既存の解放flagを立て、同じownerへ既存の解放入口をqueueする。これにより後続data callbackを拒否し、遅延実行が終了してから同じownerで後片付けする。TIF同期Booleanは操作の成功を表明せず、当該sessionを閉鎖する。後片付け失敗は既存の未完解放を保持し、解放を再試行する入口を捨てない。字幕のterminal cleanupではpresentation epochを不可逆sentinelへ直接fenceし、新epochを発行しない。表示clearを含む後片付けが成功した後だけexecutorを停止し、失敗時は同じownerで再試行する。別executorや別資源所有者へ未確定taskを移さず、callerを無期限に待たせない。
 
 `PlaybackPipeline` は lifecycle/control優先かつdata callback未処理数が有限のplayback-level serial executorを持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。同期control待ちは有限budgetを持ち、timeoutなしの`Future.get()`を使用しない。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、availability arm sequenceの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。
 
@@ -733,11 +740,13 @@ Channel provider-data の新規書き込み・読み取り正形式は JSON v1 �
 
 TISはdevice-protected storageに、最後にProgram cleanupを完了したsoftware identityとして `Build.FINGERPRINT` とTIS packageの `longVersionCode` の組を保存する。起動時に現在値と一致しない場合、boot EPG sync、background maintenance、live sessionでの既存Program参照、Program upsert/delete、現在番組解決より前に、current TIS inputに属するchannelのうち `TvContract.Programs.COLUMN_PACKAGE_NAME == context.packageName` のProgram行を全て削除する。削除が全件成功した後だけcurrent software identityをcommitする。
 
+cleanupのProvider・SharedPreferences・package照会はProgramUpgradeCleanupが所有する単一workerだけで実行する。ensureはメインスレッドでもI/Oやworker完了を待たず、process内の完了状態を返す。同時要求は一つの実行へ集約し、未完了中は受理済みlive/setup/EPG要求の処理開始を保留する。要求自体の拒否を意味せず、継続の扱いは「Program cleanup中の要求継続」に従う。旧Program参照・EPG/Program処理には進めない。成功後だけprocess内の完了状態を公開する。失敗時は次の利用要求で同じownerが再試行し、定期retryや重複queueを作らない。
+
 upgrade cleanupが失敗した場合は旧Program行を現行データとして使用せず、software identityを更新せず、EPG/Program処理を開始しない。既存行の旧provider-dataからprogramKey、service identity、時刻、rating、CAS状態その他を抽出してcleanup失敗を回避してはならない。cleanupは再実行可能かつ冪等にする。
 
 cleanup完了後は現行buildのSI/EITからProgramを再収集し、現行provider-dataだけで再登録する。Channel rowはこのcleanupの対象外であり、channel scan結果、表示番号、ユーザーが利用するchannel identityをProgram cleanupの副作用で削除・再作成しない。`RecordedPrograms`も対象外とする。
 
-`normalizeProgramProviderData(rawBytes)` と `extractProgramKey(rawBytes)` はcurrent buildが書いた現行Program provider-dataの検査・利用に限定し、product更新時の旧Program migration APIとして使わない。旧release形式の受理を追加してupgrade cleanupを迂回してはならない。
+`extractProgramKey(rawBytes)` はcurrent buildが書いた現行Program provider-dataの検査・利用に限定し、product更新時の旧Program migration APIとして使わない。旧release形式の受理を追加してupgrade cleanupを迂回してはならない。
 
 ### 旧 indexed JNI / 廃止経路の禁止
 
@@ -857,3 +866,13 @@ AV callback配列の途中処理が失敗した場合、現在eventがdecoderへ
 MediaCodecのrelease成功を、そのcodecに従属するoutput bufferの解放義務の終端とする。成功前は既存ResourceCleanupが子outputと親codecの失敗を保持する。成功後は同codec ownerの子actionと保持audio参照を完了し、閉鎖済みcodecへoutput releaseをretryしない。旧DecoderPipelineに遅着したoutput callbackも親release済みなら新たな子義務を作らない。他codecやMediaEventの未解放義務は同時に完了扱いにしない。
 
 MediaEvent解放の初回失敗では既存released fenceを立て、PLAYBACK_RECOVERY_FAILEDを通知し、既存terminal cleanupを同じplayback ownerへ一度投入する。通常AV入力の処理を継続せず、Filter closeによるcallback解除と有限の受理済みqueueの破棄を行う。AOSP Filter.closeはnative close失敗前にもcallbackを解除するため、保持量は既に受理したevent・decoder予算と既存資源の解放義務に閉じる。未解放義務は捨てず、同じResourceCleanupの再試行まで保持する。
+
+### Program cleanup中の要求継続
+
+cleanup未完了中は受理した要求の処理開始を保留する。session objectの同期作成拒否へ読み替えず、既存sessionのlatest tune要求を保持する。cleanup結果は同じsession control ownerへ一度通知し、成功時だけtune/Program利用へ進み、失敗時は既存accepted failure経路へ渡す。setupは既存ActiveScanTaskを予約してRunningを表示し、完了通知から同じscan executorで開始またはtyped失敗する。boot jobは既存pending/job再受付へ完了を接続する。I/Oは単一cleanup workerのままとし、完了と要求登録を同じlockで扱う。失敗時の旧Program使用は禁止し、新しいscheduler・migration・cleanup ownerは作らない。
+
+### MediaSync音声IDと遅延callback
+
+音声consume callbackはsync identityおよびplayback generationを照合してからoutstanding mapを変更する。同一MediaSyncではIDをchecked incrementし、解放済みIDも再利用しない。Int最大値ではfail-closedとし、callback寿命を推測する台帳は作らない。新MediaSync作成時だけIDを再開でき、旧sync callbackはidentity/generation fenceで拒否する。
+
+Program cleanupの完了通知は準備済み同期経路とworker完了経路で同じnotifyCompletionへ集約し、通知先例外は診断へ残してcleanup成否を変更せず、他の通知を妨げない。callbackはcompletion lock外で実行する。

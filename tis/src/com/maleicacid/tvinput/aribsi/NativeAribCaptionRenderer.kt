@@ -110,8 +110,8 @@ class NativeAribCaptionRenderer(
 
     override fun close() {
         val current = handle
-        handle = 0L
         if (current != 0L) nativeReleaseRenderer(current)
+        handle = 0L
     }
 
     private external fun nativeCreateRenderer(

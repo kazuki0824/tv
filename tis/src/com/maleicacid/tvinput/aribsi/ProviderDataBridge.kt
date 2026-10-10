@@ -216,9 +216,6 @@ object ProviderDataBridge {
         return request.toString()
     }
 
-    fun normalizeProgramProviderData(providerData: ByteArray?): ProviderDataResult =
-        parseResult(native.normalizeProgramProviderData(providerData ?: ByteArray(0)))
-
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
     fun extractProgramKeyResult(providerData: ByteArray?): ProgramKeyResult? {

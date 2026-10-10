@@ -17,6 +17,8 @@ import java.util.concurrent.atomic.AtomicReference
 @Suppress("TooManyFunctions", "LargeClass")
 object ChannelScanManager {
     private const val TUNER_RESOURCE_LOST = "TUNER_RESOURCE_LOST"
+    private const val SCAN_GENERATION_EXHAUSTED = "SCAN_GENERATION_EXHAUSTED"
+    private const val EXHAUSTED_SCAN_GENERATION = -1
 
     interface Listener {
         fun onScanStateChanged(state: ScanState)
@@ -124,7 +126,7 @@ object ChannelScanManager {
 
     fun beginLiveSessionCreation() {
         retryPendingRelease()
-        sessionCreationsInProgress.incrementAndGet()
+        sessionCreationsInProgress.updateAndGet { Math.addExact(it, 1) }
         preemptBootOrBackgroundScanForLiveSessionCreation()
     }
 
@@ -163,77 +165,97 @@ object ChannelScanManager {
     ): Int? {
         retryPendingRelease()
         val appContext = context.applicationContext
-        if (!ProgramUpgradeCleanup.ensure(appContext)) return null
         val task = beginScan(ScanPurpose.SETUP_SCAN, appContext) ?: return null
         val generation = task.generation
-        executor.execute {
-            val result =
-                runCatching {
-                    val createdEngine = AribSiEngine(appContext)
-                    task.engine = createdEngine
-                    val createdController =
-                        ChannelScanController(
-                            appContext,
-                            inputId,
-                            createdEngine,
-                            task.purpose,
-                            task.cancelRequested,
-                            task.publicationLock,
-                        )
-                    task.controller = createdController
-                    if (!isCurrentGeneration(generation)) return@runCatching null
-                    if (isCancelledGeneration(generation)) createdController.cancelScan()
-                    createdController.startInitialScan()
-                }
-            result
-                .onSuccess { scanResult ->
-                    if (scanResult != null) {
-                        when {
-                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED -> {
-                                setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
-                            }
+        val scanAction =
+            Runnable {
+                val result =
+                    runCatching {
+                        val createdEngine = AribSiEngine(appContext)
+                        task.engine = createdEngine
+                        val createdController =
+                            ChannelScanController(
+                                appContext,
+                                inputId,
+                                createdEngine,
+                                task.purpose,
+                                task.cancelRequested,
+                                task.publicationLock,
+                            )
+                        task.controller = createdController
+                        if (!isCurrentGeneration(generation)) return@runCatching null
+                        if (isCancelledGeneration(generation)) createdController.cancelScan()
+                        createdController.startInitialScan()
+                    }
+                result
+                    .onSuccess { scanResult ->
+                        if (scanResult != null) {
+                            when {
+                                scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED -> {
+                                    setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
+                                }
 
-                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST -> {
-                                setTerminalStateIfCurrent(
-                                    generation,
-                                    ScanState.Failed(
-                                        TUNER_RESOURCE_LOST,
+                                scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST -> {
+                                    setTerminalStateIfCurrent(
                                         generation,
-                                        ScanPurpose.SETUP_SCAN,
-                                    ),
-                                )
-                            }
+                                        ScanState.Failed(
+                                            TUNER_RESOURCE_LOST,
+                                            generation,
+                                            ScanPurpose.SETUP_SCAN,
+                                        ),
+                                    )
+                                }
 
-                            scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED ||
-                                scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.INTERNAL_FAILURE -> {
-                                setTerminalStateIfCurrent(
-                                    generation,
-                                    ScanState.Failed(scanResult.terminal.detail, generation, ScanPurpose.SETUP_SCAN),
-                                )
-                            }
-
-                            else -> {
-                                setTerminalStateIfCurrent(
-                                    generation,
-                                    ScanState.Completed(
-                                        scanResult,
+                                scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED ||
+                                    scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.INTERNAL_FAILURE -> {
+                                    setTerminalStateIfCurrent(
                                         generation,
-                                        ScanPurpose.SETUP_SCAN,
-                                    ),
-                                )
+                                        ScanState.Failed(scanResult.terminal.detail, generation, ScanPurpose.SETUP_SCAN),
+                                    )
+                                }
+
+                                else -> {
+                                    setTerminalStateIfCurrent(
+                                        generation,
+                                        ScanState.Completed(
+                                            scanResult,
+                                            generation,
+                                            ScanPurpose.SETUP_SCAN,
+                                        ),
+                                    )
+                                }
                             }
                         }
+                    }.onFailure { e ->
+                        Log.w(LogTags.TIS, "チャンネル scan に失敗しました inputId=$inputId", e)
+                        if (isCancelledGeneration(generation)) {
+                            setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
+                        } else {
+                            setTerminalStateIfCurrent(
+                                generation,
+                                ScanState.Failed(e.message ?: "不明な例外", generation, ScanPurpose.SETUP_SCAN),
+                            )
+                        }
                     }
-                }.onFailure { e ->
-                    Log.w(LogTags.TIS, "チャンネル scan に失敗しました inputId=$inputId", e)
-                    if (isCancelledGeneration(generation)) {
-                        setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
-                    } else {
-                        setTerminalStateIfCurrent(generation, ScanState.Failed(e.message ?: "不明な例外", generation, ScanPurpose.SETUP_SCAN))
-                    }
+                finishScanIfCurrent(generation)
+                drainPendingBootEpgSyncIfIdle(appContext, "SCAN_FINISHED")
+            }
+        ProgramUpgradeCleanup.ensure(appContext) { success ->
+            executor.execute {
+                if (success) {
+                    scanAction.run()
+                } else {
+                    setTerminalStateIfCurrent(
+                        generation,
+                        if (isCancelledGeneration(generation)) {
+                            ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN)
+                        } else {
+                            ScanState.Failed("Program cleanupに失敗しました", generation, ScanPurpose.SETUP_SCAN)
+                        },
+                    )
+                    finishScanIfCurrent(generation)
                 }
-            finishScanIfCurrent(generation)
-            drainPendingBootEpgSyncIfIdle(appContext, "SCAN_FINISHED")
+            }
         }
         return generation
     }
@@ -270,7 +292,10 @@ object ChannelScanManager {
         }
         val task = beginScan(ScanPurpose.BOOT_EPG_SYNC, appContext)
         if (task == null) {
-            markBootEpgSyncDeferred(appContext, "SCAN_RUNNING")
+            markBootEpgSyncDeferred(
+                appContext,
+                if (isScanRunning()) "SCAN_RUNNING" else SCAN_GENERATION_EXHAUSTED,
+            )
             return null
         }
         val generation = task.generation
@@ -397,7 +422,10 @@ object ChannelScanManager {
         }
         val task = beginScan(ScanPurpose.BACKGROUND_MAINTENANCE, appContext)
         if (task == null) {
-            markBackgroundMaintenanceSkipped("SCAN_RUNNING", source)
+            markBackgroundMaintenanceSkipped(
+                if (isScanRunning()) "SCAN_RUNNING" else SCAN_GENERATION_EXHAUSTED,
+                source,
+            )
             return false
         }
         val generation = task.generation
@@ -551,11 +579,35 @@ object ChannelScanManager {
         }
     }
 
+    private fun allocateScanGeneration(): Int? {
+        while (true) {
+            val current = nextGeneration.get()
+            val next =
+                runCatching { RuntimeIdentity.nextInt(current, "channel scan世代") }
+                    .getOrNull()
+                    ?: return null
+            if (nextGeneration.compareAndSet(current, next)) return next
+        }
+    }
+
+    @Synchronized
+    @Suppress("ReturnCount")
     private fun beginScan(
         purpose: ScanPurpose,
         context: Context,
     ): ActiveScanTask? {
-        val generation = nextGeneration.incrementAndGet()
+        if (activeTask.get() != null) return null
+        val generation = allocateScanGeneration()
+        if (generation == null) {
+            setState(
+                ScanState.Failed(
+                    SCAN_GENERATION_EXHAUSTED,
+                    EXHAUSTED_SCAN_GENERATION,
+                    purpose,
+                ),
+            )
+            return null
+        }
         val task = ActiveScanTask(generation, purpose, context.applicationContext)
         if (!activeTask.compareAndSet(null, task)) return null
         setState(ScanState.Running(System.currentTimeMillis(), generation, purpose))

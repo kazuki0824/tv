@@ -6,41 +6,128 @@ import android.media.tv.TvContract
 import android.os.Build
 import android.util.Log
 import com.maleicacid.tvinput.common.LogTags
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+
+// 同じcleanupの状態・I/O・完了通知を一つの所有者へ保ち、関数数だけを理由に分割しない。
 
 /**
  * Product/TIS更新時の番組表cleanup。
  * Programsは再生成可能なcacheとして扱い、旧release provider-dataをmigrationしない。
  */
+@Suppress("TooManyFunctions")
 object ProgramUpgradeCleanup {
     private const val PREFS_NAME = "program_upgrade_cleanup"
     private const val KEY_SOFTWARE_IDENTITY = "software_identity"
-    private val lock = Any()
-
-    fun ensure(context: Context): Boolean =
-        synchronized(lock) {
-            val appContext = context.applicationContext
-            val storage = appContext.createDeviceProtectedStorageContext()
-            val prefs = storage.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val currentIdentity = currentSoftwareIdentity(appContext) ?: return false
-            if (prefs.getString(KEY_SOFTWARE_IDENTITY, null) == currentIdentity) return true
-
-            val inputId = TisInputIdResolver.resolveOwnInputId(appContext) ?: return false
-            val ownedProgramIds = queryOwnedProgramIds(appContext, inputId) ?: return false
-            val completed =
-                runCleanupTransaction(
-                    programIds = ownedProgramIds,
-                    deleteProgram = { programId -> deleteProgram(appContext, programId) },
-                    commitIdentity = {
-                        prefs.edit().putString(KEY_SOFTWARE_IDENTITY, currentIdentity).commit()
-                    },
-                )
-            if (!completed) {
-                Log.w(LogTags.TIS, "Program upgrade cleanupを完了できません inputId=$inputId")
-                return false
-            }
-            Log.i(LogTags.TIS, "旧product buildのProgram行を破棄しました inputId=$inputId")
-            true
+    private val running = AtomicBoolean(false)
+    private val ready = AtomicBoolean(false)
+    private val worker =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "maleicacid-program-upgrade-cleanup").apply { isDaemon = true }
         }
+
+    private val completionLock = Any()
+    private val completions = mutableListOf<(Boolean) -> Unit>()
+
+    /** Provider I/Oを呼出元で行わず、保留した利用要求へ完了を一度通知する。 */
+    fun ensure(
+        context: Context,
+        onComplete: ((Boolean) -> Unit)? = null,
+    ): Boolean = ensure(cleanup = { cleanup(context.applicationContext) }, onComplete = onComplete)
+
+    // ready/runningと登録を同じlockで扱い、完了と登録の競合で要求を失わない。
+    @Suppress("TooGenericExceptionCaught")
+    internal fun ensure(
+        cleanup: () -> Boolean,
+        onComplete: ((Boolean) -> Unit)? = null,
+    ): Boolean {
+        var alreadyReady = false
+        val start =
+            synchronized(completionLock) {
+                if (ready.get()) {
+                    alreadyReady = true
+                    false
+                } else {
+                    onComplete?.let(completions::add)
+                    running.compareAndSet(false, true)
+                }
+            }
+        if (alreadyReady) {
+            onComplete?.let { notifyCompletion(it, true) }
+            return true
+        }
+        if (start) {
+            try {
+                worker.execute {
+                    val success =
+                        try {
+                            cleanup()
+                        } catch (error: Exception) {
+                            Log.w(LogTags.TIS, "Program upgrade cleanupに失敗しました", error)
+                            false
+                        }
+                    complete(success)
+                }
+            } catch (error: java.util.concurrent.RejectedExecutionException) {
+                Log.w(LogTags.TIS, "Program upgrade cleanupを受け付けられません", error)
+                complete(false)
+            }
+        }
+        return false
+    }
+
+    private fun complete(success: Boolean) {
+        val callbacks =
+            synchronized(completionLock) {
+                ready.set(success)
+                running.set(false)
+                completions.toList().also { completions.clear() }
+            }
+        callbacks.forEach { notifyCompletion(it, success) }
+    }
+
+    // cleanup成否と通知先の失敗を分離し、準備済み経路でも同じ診断へ渡す。
+    @Suppress("TooGenericExceptionCaught")
+    private fun notifyCompletion(
+        callback: (Boolean) -> Unit,
+        success: Boolean,
+    ) {
+        try {
+            callback(success)
+        } catch (error: Exception) {
+            Log.w(LogTags.TIS, "Program cleanup完了通知に失敗しました", error)
+        }
+    }
+
+    // 未準備の原因を発生点で返す。I/Oは単一workerだけが実行する。
+    @Suppress("ReturnCount")
+    private fun cleanup(appContext: Context): Boolean {
+        val storage = appContext.createDeviceProtectedStorageContext()
+        val prefs = storage.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val currentIdentity = currentSoftwareIdentity(appContext) ?: return false
+        if (prefs.getString(KEY_SOFTWARE_IDENTITY, null) == currentIdentity) return true
+
+        val inputId = TisInputIdResolver.resolveOwnInputId(appContext) ?: return false
+        val completed =
+            deleteOwnedPrograms(appContext, inputId) {
+                prefs.edit().putString(KEY_SOFTWARE_IDENTITY, currentIdentity).commit()
+            }
+        if (!completed) {
+            Log.w(LogTags.TIS, "Program upgrade cleanupを完了できません inputId=$inputId")
+            return false
+        }
+        Log.i(LogTags.TIS, "旧product buildのProgram行を破棄しました inputId=$inputId")
+        return true
+    }
+
+    internal fun deleteOwnedPrograms(
+        context: Context,
+        inputId: String,
+        commitIdentity: () -> Boolean,
+    ): Boolean {
+        val programIds = queryOwnedProgramIds(context, inputId) ?: return false
+        return runCleanupTransaction(programIds, { deleteProgram(context, it) }, commitIdentity)
+    }
 
     private fun currentSoftwareIdentity(context: Context): String? =
         runCatching {
@@ -62,7 +149,7 @@ object ProgramUpgradeCleanup {
                     null,
                     null,
                     null,
-                ) ?: error("TvProvider channel query returned null cursor")
+                ) ?: error("TvProviderのチャンネル問い合わせがnull cursorを返しました")
             val channelIds = mutableListOf<Long>()
             channelCursor.use { cursor ->
                 while (cursor.moveToNext()) channelIds += cursor.getLong(0)
@@ -80,7 +167,7 @@ object ProgramUpgradeCleanup {
                         null,
                         null,
                         null,
-                    ) ?: error("TvProvider program query returned null cursor channelId=$channelId")
+                    ) ?: error("TvProviderの番組問い合わせがnull cursorを返しました channelId=$channelId")
                 programCursor.use { cursor ->
                     while (cursor.moveToNext()) {
                         rows += cursor.getLong(0) to cursor.getString(1)
