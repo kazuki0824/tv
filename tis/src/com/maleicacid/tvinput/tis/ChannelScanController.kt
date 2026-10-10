@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.tis
 
 import android.content.Context
 import android.media.tv.TvInputService
+import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.frontend.OnTuneEventListener
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
@@ -275,12 +276,16 @@ class ChannelScanController(
                                 if (discovery.success && discovered.isNotEmpty()) {
                                     discovered
                                 } else {
-                                    diagnostics +=
-                                        ScanDiagnostic(
-                                            candidate,
-                                            "BS dynamic stream-ID discovery失敗 result=${discovery.resultCode} " +
-                                                "message=${discovery.message}",
-                                        )
+                                    val message =
+                                        "BS dynamic stream-ID discovery失敗 result=${discovery.resultCode} " +
+                                            "message=${discovery.message}"
+                                    diagnostics += ScanDiagnostic(candidate, message)
+                                    // 同期scan失敗は通常tuneの失敗と同様にsetup全体を拒否する。
+                                    // 正常scan後の空報告/timeout (SUCCESS)だけは次のRFを調べられる。
+                                    if (!cancelled.get() && discovery.resultCode != Tuner.RESULT_SUCCESS) {
+                                        terminalFailure = ScanTerminal(ScanTerminalOutcome.TUNE_REJECTED, message)
+                                        break@scanLoop
+                                    }
                                     emptyList()
                                 }
                             }

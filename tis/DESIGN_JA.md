@@ -40,6 +40,12 @@ TvProviderのchannel internal provider dataへ保存するtune情報は、`arib_
 
 TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補と、dynamic discovery非対応frontend用の固定RF→absolute TSID候補を保持する。BS setup/rescanの候補source選択は`開発規則.md`の「製品 scan 候補の規範値」を正とする。TISは`Tuner.getAvailableFrontendInfos()`でISDB-S frontendを列挙し、`FrontendInfo.statusCapabilities`の`FRONTEND_STATUS_TYPE_STREAM_IDS`を持つ候補を優先して`Tuner.applyFrontend()`で確保する。確保したfrontendが同capabilityを持つ場合は物理RFごとにstream selector未指定の`IsdbsFrontendSettings`で`Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。 選択したfrontendはBS setup/rescanの候補source lifetime中保持し、RFごとの`cancelScanning()`後に`closeFrontend()`しない。explicit tuneと次RFのdynamic scanは同じ選択frontendを継続使用する。同capability frontendを確保できず、非対応frontendを確保できた場合は固定RF→absolute TSID候補を使う。dynamic scan開始後の失敗、timeout、空報告から固定候補へ切り替えない。候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。
 
+TunerControllerは同一Tuner SDK instanceへ最後に要求したFrontendSettings.typeを `frontendLeaseType` として保守的に追跡する。これはFrontendの実取得・リース存在・物理Frontend IDを示す事実ではない。Tuner.scan()/tune()は失敗時にもFrameworkがFrontendを確保済みの場合があるため、呼出し直前に要求typeを記録する。BS候補sourceのTuner.applyFrontend()成功時もそのtypeを記録する。異種typeの次回要求ではTuner.closeFrontend()で旧leaseを返し、成功時のみ追跡値を消去してからscan/tuneする。返却失敗時は追跡値を維持し、次のSDK選局・探索を発行しない。FrameworkによるonResourceLost()後、およびTuner.close()成功時も追跡値を消去する。物理Frontend選択・T/S専用機の能力判定・資源調停はFramework/TRMが担当し、TISでは再実装しない。
+
+通常の同type再選局・RF切替では既存Frontendを解放せず再利用する。ただしBS候補sourceの最初の確定では、特定のFrontendInfo.id/capabilityを指定するTuner.applyFrontend()が既存Frontend確保中にINVALID_STATEを返すため、同typeであっても既存leaseを先に解放してから選び直す。source確定後は同じISDB-S frontend leaseを保持し、BS RFごとのcancelScanning後には解放しない。
+
+異種type切替時の解放失敗は通常選局ではTuneOutcome(success=false)、BS stream-ID探索ではStreamIdDiscoveryOperation内部のOutcome.START_FAILEDへ遷移したうえでStreamIdDiscoveryResult(success=false, resultCode, message, generation)を返す。失敗理由による資源調停の違いではなく、選局と非同期探索で呼出元が要求する結果の違いである。setup scanでのTuner.tune()またはBS Tuner.scan()の同期失敗はTUNE_REJECTEDで後続candidateを停止する。BSのscanが正常に受理された後の空stream-ID報告や収集timeoutは、受信未完了と区別して当該RFを登録せず次のRFへ進める。cancelとresource-lostの終端をこの同期失敗へ書き換えない。
+
 ## サービス登録・公開・再生policy境界
 
 `arib_si_engine_rs/DESIGN_JA.md` が定義するservice / transport単位の `ServiceSemanticFacts` を入力とし、Android channel登録、EPG公開、ライブ再生へ接続するproduct policyの算出はTISが所有する。`ServiceSemanticFacts` のfield集合、放送意味、導出条件、包含・除外境界は同SI engine設計を唯一の正本とし、本書では再定義しない。
@@ -214,7 +220,7 @@ live refreshは`LivePlaybackSnapshot`一つを取得し、その同じnative tra
 
 有限走査では成功・timeout・cancel・例外のいずれでも、最終snapshotを使う前に全section filterをstop/closeして読取りcallbackを無効化する。setup scanで通常channelを新規insertする間は、`../ARIB_SI_EPG_TvProvider投影方針.md`が定義する初期可視性pending投影でstagingする。one-segは同投影正本が定義するnon-browsable / non-pending投影を用い、通常一覧への初期自動露出対象にしない。既存channel更新では初期可視性pending状態や確定済みのユーザー可視性を再scanで上書きしない。
 
-scan全体の終端意味は`ScanResult.terminal: ScanTerminal`を単一正本とし、`COMPLETED / CANCELLED / RESOURCE_LOST / TUNE_REJECTED / INTERNAL_FAILURE`を型付きで保持する。cancel/resource-lostのbooleanやnullable failure文字列をcallerが組み合わせて終端意味を再構成してはならない。setup scanの候補選局でframework/HALが同期失敗を返した場合は`TUNE_REJECTED`として保持し、`ChannelScanManager`は`Completed`ではなく`Failed`へ遷移する。`SIGNAL_NO_SIGNAL` / `SIGNAL_LOST_LOCK`による候補単位の非受信とは区別する。
+scan全体の終端意味は`ScanResult.terminal: ScanTerminal`を単一正本とし、`COMPLETED / CANCELLED / RESOURCE_LOST / TUNE_REJECTED / INTERNAL_FAILURE`を型付きで保持する。cancel/resource-lostのbooleanやnullable failure文字列をcallerが組み合わせて終端意味を再構成してはならない。setup scanの候補選局またはBSのstream-ID探索の開始時にframework/HALが同期失敗を返した場合は`TUNE_REJECTED`として保持し、`ChannelScanManager`は`Completed`ではなく`Failed`へ遷移する。`SIGNAL_NO_SIGNAL` / `SIGNAL_LOST_LOCK`による候補単位の非受信とは区別する。
 
 setup terminalが`COMPLETED`のときだけ、そのscanで正常に処理した初期可視性pending rowを、投影正本が定義する確定済み可視状態へcommitする。channel insert/updateまたはProgram publishのいずれかに失敗があれば、setup terminalを`INTERNAL_FAILURE`として後続候補を停止し、初期可視性finalizationをrollback側へ流す。前回process終了などでfinalizeされなかったpending rowは、次のsetupで同serviceを正常に再確認した場合にcommit候補へ復帰する。setupがcancel/resource-lost/tune-rejected/internal-failureで終端した場合は当該setupで新規insertしたrowだけをrollbackし、既存pending rowはhiddenのまま残す。可視化commit失敗時も当該setupの新規insert分だけをrollbackし、terminalを`INTERNAL_FAILURE`へ変換する。新規insertに成功した行IDは、後続SI/JNI処理およびProgram公開の前に、当該scanが所有するrollback集合へ直接引き渡す。upsert処理途中の例外も同じ集合でfinalizationする。具体的なTvProvider列値は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本書では再定義しない。
 
