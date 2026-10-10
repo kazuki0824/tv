@@ -174,8 +174,8 @@ class AribCaptionController(
             if (released.get()) return
             val sequence =
                 try {
-                    Math.incrementExact(pesAdmissionSequence)
-                } catch (error: ArithmeticException) {
+                    RuntimeIdentity.nextLong(pesAdmissionSequence, "caption PES admission")
+                } catch (error: IllegalStateException) {
                     handleSubmissionFailure(error)
                     return
                 }
