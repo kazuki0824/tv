@@ -8,8 +8,8 @@ import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.CaDescriptorScope
 import com.maleicacid.tvinput.aribsi.SectionIngestController
-import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
+import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.SiStatus
 import com.maleicacid.tvinput.common.TsPid
@@ -170,13 +170,15 @@ class RealTsHalSiIntegrationTest {
             verifyService(service, reference)
         }
         val registration = engine.serviceRegistrationSnapshot()
+        val broadcastSystem = ServicePolicyEvaluator.expectedSmdBroadcastSystem(SiDiscoveryProfile.ISDB_T)
         val ready =
             registration.services.filter { service ->
                 ServicePolicyEvaluator.evaluate(
                     facts = registration.semanticFactsByServiceKey[service.serviceKey],
                     fallbackKey = service.serviceKey,
-                    expectedSmdBroadcastSystem = ServicePolicyEvaluator.expectedSmdBroadcastSystem(SiDiscoveryProfile.ISDB_T),
-                ).registrationReady
+                    expectedSmdBroadcastSystem = broadcastSystem,
+                )
+                    .registrationReady
             }
         assertEquals(setOf(1048, 1049), ready.map { it.serviceKey.serviceId }.toSet())
     }
