@@ -96,7 +96,8 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
                 assertTrue(decoder === ReflectionHelpers.getField<Any>(fixture.pipeline, decoderField))
                 assertEquals(0, native.closes)
-                assertEquals(1, native.flushes)
+                // 対象Android 15のFilter.onFilterStatusはcallbackを2回配送する。
+                assertEquals(2, native.flushes)
                 assertTrue(fixture.failures.isEmpty())
             }
             assertEquals(1, Shadow.extract<NativeMediaEvent>(newInput).releases)
