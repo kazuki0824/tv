@@ -683,9 +683,7 @@ class PlaybackPipeline(
             val filterGeneration = playbackGeneration
             val targetAudioDecoder = audioDecoder
             val targetVideoDecoder = videoDecoder
-            val pendingCapacityLoss =
-                java.util.concurrent.atomic
-                    .AtomicLong(-1L)
+            val pendingCapacityLoss = AtomicLong(-1L)
 
             fun reportCapacityLoss(source: Filter) {
                 val rejectedAt = SystemClock.elapsedRealtime()
