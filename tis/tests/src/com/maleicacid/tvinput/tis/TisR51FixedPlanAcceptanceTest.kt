@@ -553,7 +553,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(missingSmd.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
     }
 
-    @Test fun registrationAndSelectionShareStaticCodecFacts() {
+    @Test fun registrationSelectionAndOneSegProjectionShareStaticFacts() {
         val video = es(TsPid(0x101), 0x1b)
         val audio = es(TsPid(0x102), 0x0f)
         val badAudio =
@@ -597,7 +597,44 @@ class TisR51FixedPlanAcceptanceTest {
                 .evaluate(semanticFacts(0x02, listOf(audio)))
                 .registrationReady,
         )
+        assertOneSegRegistrationAndProjection(video, audio)
         check(TunerSelectionPolicy.selectVideo(listOf(video)) == video) // descriptor不在時はSPS到着後にruntime検証
+    }
+
+    private fun assertOneSegRegistrationAndProjection(
+        video: AribElementaryStream,
+        audio: AribElementaryStream,
+    ) {
+        val oneSegFacts = semanticFacts(0xc0, listOf(video, audio)).copy(partialReception = true)
+        check(
+            com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+                .evaluate(oneSegFacts)
+                .registrationReady,
+        )
+        check(
+            !com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+                .evaluate(oneSegFacts.copy(partialReception = false))
+                .registrationReady,
+        )
+        val oneSegChannel =
+            ChannelRecord(
+                key,
+                0xc0,
+                "101",
+                "1seg",
+                FrequencyHz(473_142_857L),
+                casFactsCanonicalJson = testCasFacts(false),
+                partialReception = true,
+            )
+        val store = FakeStore()
+        val publication =
+            TvProviderWriter("input.test", store, testOnly = true)
+                .upsertChannels(listOf(oneSegChannel))
+        check(publication.failures.isEmpty())
+        check(publication.inserted == 1)
+        val oneSegValues = store.channels.values.single()
+        check(oneSegValues.getAsString(TvContract.Channels.COLUMN_TYPE) == TvContract.Channels.TYPE_1SEG)
+        check(!oneSegValues.containsKey(TvContract.Channels.COLUMN_BROWSABLE))
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -2541,6 +2578,24 @@ class TisR51FixedPlanAcceptanceTest {
                     }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
             )
 
+        override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            Result.success(
+                channels.entries
+                    .mapNotNull { (id, values) ->
+                        if (values.getAsLong(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1) != 1L) {
+                            null
+                        } else {
+                            val key =
+                                ServiceKey(
+                                    values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                                )
+                            if (key in keys) key to id else null
+                        }
+                    }.toMap(),
+            )
+
         override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
             Result.success(
                 buildMap {
@@ -2566,7 +2621,7 @@ class TisR51FixedPlanAcceptanceTest {
             channelId: Long,
             values: ContentValues,
         ): Result<Int> {
-            channels[channelId] = ContentValues(values)
+            channels.getValue(channelId).putAll(values)
             return Result.success(1)
         }
 

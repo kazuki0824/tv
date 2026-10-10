@@ -112,6 +112,21 @@ cmd package check-permission android.permission.TUNER_RESOURCE_ACCESS com.maleic
 
 `MaleicacidRecScopeTests` は録画・予約機能を扱う作業で明示指定し、録画機能を有効化していないreleaseのbuild / atest / VTS / 実機確認gateへ混ぜない。
 
+## setup scan後のchannel可視化
+
+MaleicacidTvInputは`system_ext_specific: true`、`privileged: true`、platform certificateの製品appとして、setup初期可視性をTvProviderへ反映するため`com.android.providers.tv.permission.ACCESS_ALL_EPG_DATA`を`AndroidManifest.xml`と`privapp-permissions-maleicacid-tvinput.xml`で宣言・付与する。既存のchannel/program queryは引き続き`buildChannelsUriForInput(inputId)`等の所有row URIへ限定し、このpermissionをraw SQL selectionや他package row参照の理由に使わない。
+
+TvProvider列の具体投影は`../ARIB_SI_EPG_TvProvider投影方針.md`、setup scanのstaging / commit / rollback / pending回収は`DESIGN_JA.md`を正とし、本書では列値やterminal state transitionを再定義しない。
+
+実機では次を確認する。
+
+```text
+cmd package check-permission com.android.providers.tv.permission.ACCESS_ALL_EPG_DATA com.maleicacid.tvinput
+content query --uri content://android.media.tv/channel --projection _id:input_id:display_number:display_name:browsable:internal_provider_flag1
+```
+
+permissionがgrant済みであることと、freshなTvProvider状態からsetup scanを実行した結果が、上記2正本で定義する通常channel / one-seg / pending / 既存hidden channelの投影およびruntime条件に一致することを確認する。未公開版相互の自動migrationは受入条件に含めない。
+
 ## Direct Boot の product 統合条件
 
 TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />` を宣言し、`EpgBootSyncReceiver` は `android:directBootAware="true"` とする。`EpgBootSyncReceiver` の intent filter は `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` を含める。`ACTION_USER_UNLOCKED` は manifest receiver の対象にしない。

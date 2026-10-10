@@ -257,6 +257,7 @@ pub fn service_semantic_facts(value: &ServiceSemanticFacts) -> ServiceSemanticFa
         transport_stream_id: i32::from(value.transport_stream_id),
         service_id: i32::from(value.service_id),
         service_type: value.service_type.map(i32::from),
+        partial_reception: value.partial_reception,
         pmt_pid_resolved: value.pmt_pid_resolved,
         pmt_parsed: value.pmt_parsed,
         pcr_pid_resolved: value.pcr_pid_resolved,

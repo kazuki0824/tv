@@ -113,6 +113,8 @@ class ChannelScanController(
         val failures: List<TvProviderWriter.Diagnostic> = emptyList(),
         val hasCommittedProgramTarget: Boolean = false,
         val committedServiceKeys: Set<ServiceKey> = emptySet(),
+        val insertedChannelIds: Set<Long> = emptySet(),
+        val initialBrowsablePendingChannelIds: Set<Long> = emptySet(),
     ) {
         val success: Boolean get() = failures.isEmpty()
     }
@@ -168,6 +170,8 @@ class ChannelScanController(
         var successfulCandidates = 0
         var scannedCandidates = 0
         var terminalFailure: ScanTerminal? = null
+        val insertedChannelIds = linkedSetOf<Long>()
+        val initialBrowsablePendingChannelIds = linkedSetOf<Long>()
         var bsCandidateSource: BsCandidateSource? = null
 
         // 選局失敗、公開不可、資源喪失を発生点で返し、finallyによる世代の後始末を共通に保つ。
@@ -207,15 +211,23 @@ class ChannelScanController(
                         tune.generation,
                         PublishMode.SETUP_SCAN,
                         registrationSnapshot = collection.finalRegistrationSnapshot,
+                        onChannelInserted = { insertedChannelIds += it },
                     )
                 if (publishResult == null) {
                     diagnostics += resourceLostDiagnostic(candidate, tune.generation)
                     return false
                 }
+                insertedChannelIds += publishResult.insertedChannelIds
+                initialBrowsablePendingChannelIds += publishResult.initialBrowsablePendingChannelIds
+                val publicationFailure = setupPublicationFailureTerminal(publishResult.failures)
+                if (publicationFailure != null) {
+                    diagnostics += ScanDiagnostic(candidate, publicationFailure.detail)
+                    terminalFailure = publicationFailure
+                    return false
+                }
                 if (
                     collection.outcome == SiCollectionOutcome.COMPLETE &&
-                    collection.registrationReadyServices > 0 &&
-                    publishResult.success
+                    collection.registrationReadyServices > 0
                 ) {
                     successfulCandidates++
                 }
@@ -299,17 +311,33 @@ class ChannelScanController(
         }
         return scanGenerationFence.finishScan {
             terminalCancelObserved = terminalCancelObserved || cancelled.get()
+            var terminal =
+                initialScanTerminal(
+                    cancelled = terminalCancelObserved,
+                    resourceLost = terminalResourceLostObserved,
+                    terminalFailure = terminalFailure,
+                )
+            val finalization =
+                tvProviderWriter.finalizeSetupChannels(
+                    completed = terminal.outcome == ScanTerminalOutcome.COMPLETED,
+                    insertedChannelIds = insertedChannelIds,
+                    initialBrowsablePendingChannelIds = initialBrowsablePendingChannelIds,
+                )
+            if (finalization.isFailure) {
+                val message =
+                    "setup channel可視性transactionに失敗しました: " +
+                        (finalization.exceptionOrNull()?.message ?: "不明な失敗")
+                finalization.exceptionOrNull()?.let { error ->
+                    Log.w(LogTags.TIS, message, error)
+                } ?: Log.w(LogTags.TIS, message)
+                terminal = ScanTerminal(ScanTerminalOutcome.INTERNAL_FAILURE, message)
+            }
             ScanResult(
                 scannedCandidates,
                 published,
                 diagnostics,
                 successfulCandidates = successfulCandidates,
-                terminal =
-                    when {
-                        terminalCancelObserved -> ScanTerminal(ScanTerminalOutcome.CANCELLED)
-                        terminalResourceLostObserved -> ScanTerminal(ScanTerminalOutcome.RESOURCE_LOST)
-                        else -> terminalFailure ?: ScanTerminal(ScanTerminalOutcome.COMPLETED)
-                    },
+                terminal = terminal,
             )
         }
     }
@@ -454,6 +482,7 @@ class ChannelScanController(
         mode: PublishMode,
         allowedServiceKeys: Set<ServiceKey>? = null,
         registrationSnapshot: com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? = null,
+        onChannelInserted: (Long) -> Unit = {},
     ): PublishSnapshotResult {
         if (mode == PublishMode.DIAGNOSTIC_ONLY) return PublishSnapshotResult(0)
         if (mode == PublishMode.LIVE_TUNE_REFRESH || mode == PublishMode.BOOT_EPG_SYNC ||
@@ -516,6 +545,7 @@ class ChannelScanController(
                     satelliteBand = candidate.satelliteBand,
                     remoteControlKeyId = remoteKey,
                     serviceType = serviceType,
+                    partialReception = transaction.semanticFactsByServiceKey[service.serviceKey]?.partialReception == true,
                     requiresCas = transaction.semanticFactsByServiceKey[service.serviceKey]?.requiresCas == true,
                     casFactsCanonicalJson = transaction.semanticFactsByServiceKey[service.serviceKey]?.casFactsCanonicalJson,
                 )
@@ -532,13 +562,18 @@ class ChannelScanController(
             )
             return PublishSnapshotResult(0)
         }
-        val channelResult = tvProviderWriter.upsertChannels(channels)
+        val channelResult = tvProviderWriter.upsertChannels(channels, onChannelInserted)
         if (channelResult.failures.isNotEmpty()) Log.w(LogTags.TIS, "TvProvider channel 登録失敗=${channelResult.failures}")
+        val insertedChannelIds = channelResult.insertedChannelIds.values.toSet()
+        val initialBrowsablePendingChannelIds =
+            channelResult.initialBrowsablePendingChannelIds.values.toSet()
         val programResult =
             publishProgramsForRegisteredServices(PublishMode.SETUP_SCAN, allowedServiceKeys = channels.map { it.serviceKey }.toSet())
         return PublishSnapshotResult(
             changed = channelResult.inserted + channelResult.updated,
             failures = channelResult.failures + programResult.failures,
+            insertedChannelIds = insertedChannelIds,
+            initialBrowsablePendingChannelIds = initialBrowsablePendingChannelIds,
         )
     }
 
@@ -870,9 +905,10 @@ class ChannelScanController(
         mode: PublishMode,
         allowedServiceKeys: Set<ServiceKey>? = null,
         registrationSnapshot: com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? = null,
+        onChannelInserted: (Long) -> Unit = {},
     ): PublishSnapshotResult? =
         scanGenerationFence.publishIfCurrent(generation) {
-            publishCurrentServiceSnapshot(mode, allowedServiceKeys, registrationSnapshot)
+            publishCurrentServiceSnapshot(mode, allowedServiceKeys, registrationSnapshot, onChannelInserted)
         }
 
     /** scanが既に所有していたgeneration、信号終端、公開lockをまとめる。別の世代ownerは作らない。 */
@@ -1023,6 +1059,27 @@ class ChannelScanController(
 
         fun validProgramKeysForUpdateForTest(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
             validProgramKeysForUpdate(update)
+
+        private fun setupPublicationFailureTerminal(failures: List<TvProviderWriter.Diagnostic>): ScanTerminal? =
+            if (failures.isEmpty()) {
+                null
+            } else {
+                ScanTerminal(
+                    ScanTerminalOutcome.INTERNAL_FAILURE,
+                    "TvProvider publishに失敗しました failures=$failures",
+                )
+            }
+
+        private fun initialScanTerminal(
+            cancelled: Boolean,
+            resourceLost: Boolean,
+            terminalFailure: ScanTerminal?,
+        ): ScanTerminal =
+            when {
+                cancelled -> ScanTerminal(ScanTerminalOutcome.CANCELLED)
+                resourceLost -> ScanTerminal(ScanTerminalOutcome.RESOURCE_LOST)
+                else -> terminalFailure ?: ScanTerminal(ScanTerminalOutcome.COMPLETED)
+            }
 
         internal fun finalizeSiCollectionOutcome(
             outcome: SiCollectionOutcome,

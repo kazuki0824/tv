@@ -982,6 +982,24 @@ class TvProviderWriterProgramsTest {
                     }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
             )
 
+        override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            Result.success(
+                channels.entries
+                    .mapNotNull { (id, values) ->
+                        if (values.getAsLong(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1) != 1L) {
+                            null
+                        } else {
+                            val key =
+                                ServiceKey(
+                                    values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                                )
+                            if (key in keys) key to id else null
+                        }
+                    }.toMap(),
+            )
+
         override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
             Result.success(
                 buildMap {
@@ -1007,7 +1025,7 @@ class TvProviderWriterProgramsTest {
             channelId: Long,
             values: ContentValues,
         ): Result<Int> {
-            channels[channelId] = ContentValues(values)
+            channels.getValue(channelId).putAll(values)
             return Result.success(1)
         }
 

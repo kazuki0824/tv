@@ -3,6 +3,7 @@
 
 package com.maleicacid.tvinput.tis
 
+import android.content.ContentValues
 import android.media.MediaCas
 import android.media.MediaSync
 import android.media.tv.tuner.Tuner
@@ -864,6 +865,26 @@ class PlaybackFailureCallbacksTest {
         set(scan, "tunerController", controller)
         set(scan, "cancelled", AtomicBoolean(false))
         set(scan, "scanGenerationFence", ChannelScanController.ScanGenerationFence())
+        set(
+            scan,
+            "tvProviderWriter",
+            TvProviderWriter(
+                "input.test",
+                object : TvProviderWriter.ChannelStore {
+                    // 標準整形後に残る型付きstore契約の宣言だけ行長を許容する。
+                    @Suppress("MaxLineLength")
+                    override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> = Result.success(emptyMap())
+
+                    override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(null)
+
+                    override fun updateChannel(
+                        channelId: Long,
+                        values: ContentValues,
+                    ): Result<Int> = Result.success(0)
+                },
+                testOnly = true,
+            ),
+        )
         val candidates = JapanIsdbScanPlan.defaultInitialScan().take(3)
         try {
             val result = scan.startInitialScan(candidates)

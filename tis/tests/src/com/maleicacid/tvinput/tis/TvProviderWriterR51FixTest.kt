@@ -334,6 +334,8 @@ class TvProviderWriterR51FixTest {
         )
     }
 
+    // 必須store操作を一つのrow所有者へ明示実装し、fixtureの状態を分散しない。
+    @Suppress("TooManyFunctions")
     private class MergeStore : TvProviderWriter.ChannelStore {
         private var nextChannelId = 1L
         private var nextProgramId = 100L
@@ -345,6 +347,24 @@ class TvProviderWriterR51FixTest {
             channelId: Long,
             programIds: Set<Long>,
         ): Result<Map<Long, String?>> = genreReadback.map { genre -> programIds.associateWith { genre } }
+
+        override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            Result.success(
+                channels.entries
+                    .mapNotNull { (id, values) ->
+                        if (values.getAsLong(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1) != 1L) {
+                            null
+                        } else {
+                            val key =
+                                ServiceKey(
+                                    values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                                )
+                            if (key in keys) key to id else null
+                        }
+                    }.toMap(),
+            )
 
         fun removeProgramsForChannel(channelId: Long) {
             val ids =

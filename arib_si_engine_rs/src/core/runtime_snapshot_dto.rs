@@ -209,6 +209,7 @@ pub struct ServiceSemanticFactsDto {
     pub transport_stream_id: i32,
     pub service_id: i32,
     pub service_type: Option<i32>,
+    pub partial_reception: bool,
     pub pmt_pid_resolved: bool,
     pub pmt_parsed: bool,
     pub pcr_pid_resolved: bool,

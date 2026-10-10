@@ -20,6 +20,28 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# PR #119 channel挿入直後のrollback ID引渡し
+
+- 未初期化native ownerを使用する例外注入試験をhost専用ソースへ置き、Android/SoongとRobolectric共用ソースにsun.misc.Unsafe依存を持ち込まない。
+
+- 挿入成功時に既存scanのrollback集合へIDを直接渡し、upsert途中と後続Program snapshot取得の例外でも新規行を既存finalizationで削除可能にした。別owner・scheduler・migrationは追加しない。回帰試験は既存CIへ委ね、Soong/VTS/実機は未実施。
+
+- レビュー再確認により、現行製品の必要条件を立証できないchannel型移行transactionを撤去した。通常rescanは既存IDとユーザー可視性を保持し、immutable列をupdateから除外する。
+
+## レビュー対応: immutable型を保つupsertの必須semantics
+
+- 型を捨てるdefault updateを未対応failureへ変更し、storeごとに型比較と再作成を明示する。
+- test storeも既存型の保持・型不一致時のhidden再作成を実装し、未対応defaultは書込みを開始しない。
+
+## レビュー対応: 必須pending問い合わせのfail-closed
+
+- 未対応ChannelStoreのpending問い合わせdefaultを失敗へ変更し、既存pending rowなしと混同しない。
+- 必要なtest storeだけ明示query実装とし、default未実装では書込みなしで失敗する反例を固定する。
+
+# 既存channelのone-seg方式移行
+
+- 型変更時だけProvider batchで新規row作成と旧row削除を行い、通常updateでimmutable COLUMN_TYPEを変更しない。one-segはhidden/non-pendingへ再投影する。upgradeと再作成失敗の反例試験を追加した。
+
 # scan開始時の取消し保持
 
 - initial/maintenance scan入口の不要なcancelled=false代入を除去し、別threadで受付済みのcancelを上書きしない。task生成時の初期化と既存fence/loop/publication gateを維持する。
@@ -86,9 +108,28 @@
 - SectionEventはcallback入口でdrainし、parser更新は既存controllerへ非同期・有限・待機なしで投入する。飽和は診断付き拒否とし、世代・Filter identity fenceと順序を維持する。
 - Android 15の実Filter callback lockと優先closeを競合させるホスト試験をCIへ追加する。試験実行はCIに委ね、Soong/VTS/実機適合は未確認。
 
+# setup可視化batchの件数不一致をtransaction内で拒否
+
+- 初期可視化の各updateへexpected count 1を指定し、対象行消失をProvider transactionのcommit前に失敗させる。既存pending行のhidden状態とmarkerを保持し、今回insertした行だけを既存rollback入口で削除する。
+- 実ContentProviderOperationとSQLite transactionを使うRobolectric試験を追加し、中間・末尾行の消失、既存行と新規行の混在、正常commitを検査する。製品の新しいowner・retry・migrationは追加しない。
+- Kotlin build ownership検査へRobolectric専用試験のsource setを登録し、通常host・製品sourceへ混入させずに型照合・実行・品質検査を行う。
+
 # 同一publicationの既存Program重複key拒否
 
+- #186レビュー本文で指摘された既存channel一覧queryの未実装defaultを、空集合成功ではなくUnsupportedOperationExceptionのResult.failureへ変更した。writer公開入口で未実装失敗と明示実装の取得結果を既存試験へ追加した。productionの所有input別query、boot/backgroundの失敗伝播、試験数は維持。Soong/device atest/VTS/実機確認は未実施。
+
 - existing/new分岐前に全program keyを検査し、重複時はservice batch全体を書き込まない。既存rowありの重複入力試験を追加した。新しいownerやcacheは追加しない。
+
+# setup scanの新規channel可視性transaction
+
+- 実機でscan後52 channelがTvProviderへ存在する一方、大半が`browsable=0`のためstock Live TVの一覧に出ない事象を、setup終了時の初期可視性commit欠落として修正した。
+- 通常channel新規rowは`COLUMN_INTERNAL_PROVIDER_FLAG1=1`かつhiddenでstagingし、setup terminalが`COMPLETED`のときだけ、そのscanで正常に再確認したpending rowを`browsable=1, flag1=0`へcommitする。one-segは`TYPE_1SEG`、flag1=0、browsable=0を維持する。
+- 既存確定rowのbrowsableは再scanで変更しない。process終了等でfinalizeされなかったpending rowは次の正常setupで同serviceを再確認した場合に回収する。
+- setup失敗/cancel/resource-lost/tune-rejectedでは今回新規insertしたrowだけをrollbackする。可視化commit失敗も`INTERNAL_FAILURE`として扱い、今回新規insert分をrollbackする。
+- `ACCESS_ALL_EPG_DATA`はplatform署名priv-appへ付与するが、実装上の利用を自package channelの初期可視性確定へ限定し、既存queryは所有row URI制約を維持する。
+- 通常/one-segのcommit差、既存hidden保持、失敗rollback、commit failure rollback、process再起動後pending回収の回帰試験を追加した。
+
+# 不要な例示設定の削除
 
 # 不要な例示設定の削除
 
