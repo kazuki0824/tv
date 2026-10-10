@@ -279,7 +279,10 @@ class PlaybackPipeline(
                     else -> 0L
                 }
             }
-        val slots = (1L + events.size + (payloadBytes + KIB - 1) / KIB).coerceAtMost(AV_FILTER_BUFFER_BYTES / KIB + 1).toInt()
+        val slots =
+            (1L + events.size + (payloadBytes + KIB - 1) / KIB)
+                .coerceAtMost(AV_FILTER_BUFFER_BYTES / KIB + 1)
+                .toInt()
         executor.executeCallback(
             isReleased = released::get,
             onFailure = ::handleSubmissionFailure,
@@ -665,6 +668,8 @@ class PlaybackPipeline(
         )
     }
 
+    // Filter固有のcallback・世代・decoder・解放寿命を同じ生成境界に保ち、別owner/状態保持型を作らない。
+    @Suppress("CyclomaticComplexMethod")
     private fun createAndStartAvFilter(
         tuner: Tuner,
         stream: AribElementaryStream,
@@ -689,7 +694,10 @@ class PlaybackPipeline(
                     val current =
                         filterGeneration == playbackGeneration && !released.get() &&
                             (if (isAudio) audioFilter else videoFilter) === source
-                    if (current) (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.inputAdmissionRejected(firstRejectedAt)
+                    if (current) {
+                        (if (isAudio) targetAudioDecoder else targetVideoDecoder)
+                            ?.inputAdmissionRejected(firstRejectedAt)
+                    }
                 }
             }
 
@@ -817,8 +825,9 @@ class PlaybackPipeline(
             filter
         }
 
+    // Filter固有のcallback・世代・字幕回収・解放寿命を同じ生成境界で確定する。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
+    @Suppress("CyclomaticComplexMethod", "MaxLineLength")
     private fun createAndStartCaptionPesFilter(
         tuner: Tuner,
         stream: AribElementaryStream,

@@ -73,7 +73,11 @@ internal class LifecycleSerialExecutor(
         fun fail(error: RuntimeException) {
             try {
                 if (!isReleased()) {
-                    if (error is DataCapacityExceededException && onCapacity != null) onCapacity.invoke() else onFailure(error)
+                    if (error is DataCapacityExceededException && onCapacity != null) {
+                        onCapacity.invoke()
+                    } else {
+                        onFailure(error)
+                    }
                 }
             } finally {
                 discard()

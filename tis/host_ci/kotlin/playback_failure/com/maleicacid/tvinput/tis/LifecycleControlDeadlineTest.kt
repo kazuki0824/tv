@@ -58,7 +58,7 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
 @Suppress("TooManyFunctions")
 class LifecycleControlDeadlineTest {
     // 同じpermitの受理・再入・返却・破棄を一つの寿命として確認する。
-    @Suppress("LongMethod")
+    @Suppress("LongMethod", "ThrowsCount")
     @Test
     fun weightedCallbacksReturnAllPermitsAndKeepOwnerReentryBounded() {
         val executor = LifecycleSerialExecutor("weighted admission試験", maxPendingDataTasks = 6)
@@ -108,7 +108,7 @@ class LifecycleControlDeadlineTest {
             val held = CountDownLatch(1)
             executor.executeControl {
                 held.countDown()
-                CountDownLatch(1).await()
+                runCatching { CountDownLatch(1).await() }
             }
             check(held.await(5, TimeUnit.SECONDS))
             executor.executeCallback(
@@ -375,7 +375,7 @@ class LifecycleControlDeadlineTest {
             executor.executeControl {
                 executor.executeData { error("terminal後のdataを実行しました") }
                 executor.executeCallback(isReleased = released::get, onFailure = { error ->
-                    check(error is IllegalStateException)
+                    check(error is DataCapacityExceededException)
                     released.set(true)
                     executor.executeTerminalCleanup {
                         executor.shutdownNow()

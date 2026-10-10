@@ -111,7 +111,9 @@ class PlaybackFilterAdmissionTest {
                     .contains("OWNER_INPUT_FULL"),
             )
             assertFalse(fixture.released())
-            for (event in listOf(first, second, third)) assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
+            for (event in listOf(first, second, third)) {
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
+            }
         }
     }
 
@@ -146,7 +148,10 @@ class PlaybackFilterAdmissionTest {
             assertTrue(fixture.executor.awaitTermination(5, TimeUnit.SECONDS))
             assertTrue(fixture.released())
             assertEquals(1, fixture.unavailable.size)
-            assertEquals(PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED, fixture.unavailable.single().reason)
+            assertEquals(
+                PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED,
+                fixture.unavailable.single().reason,
+            )
             val native = Shadow.extract<NativeFilter>(video)
             assertEquals(1, native.closes)
             assertTrue(native.closeThread.orEmpty().startsWith("maleicacid-playback-"))
@@ -163,17 +168,27 @@ class PlaybackFilterAdmissionTest {
 
         init {
             ReflectionHelpers.setField(pipeline, "playbackGeneration", 7L)
-            ReflectionHelpers.setField(pipeline, "onVideoUnavailable", { failure: PlaybackPipeline.PlaybackUnavailable ->
-                unavailable +=
-                    failure
+            ReflectionHelpers.setField(
+                pipeline,
+                "onVideoUnavailable",
+                { failure: PlaybackPipeline.PlaybackUnavailable -> unavailable += failure },
+            )
+            ReflectionHelpers.setField(pipeline, "onSubtitleContinuityLost", { _: Long, _: String ->
+                captionDiscontinuities++
             })
-            ReflectionHelpers.setField(pipeline, "onSubtitleContinuityLost", { _: Long, _: String -> captionDiscontinuities++ })
         }
 
         fun released(): Boolean = ReflectionHelpers.getField<AtomicBoolean>(pipeline, "released").get()
 
         fun avFilter(audio: Boolean): Filter {
-            val stream = AribElementaryStream(TsPid(if (audio) 0x102 else 0x101), if (audio) 0x0f else 0x1b, null, null, null)
+            val stream =
+                AribElementaryStream(
+                    TsPid(if (audio) 0x102 else 0x101),
+                    if (audio) 0x0f else 0x1b,
+                    null,
+                    null,
+                    null,
+                )
             val filter = invoke("createAndStartAvFilter", tuner, stream, audio) as Filter
             ReflectionHelpers.setField(pipeline, if (audio) "audioFilter" else "videoFilter", filter)
             return filter
@@ -189,8 +204,18 @@ class PlaybackFilterAdmissionTest {
         fun decoder() {
             val type = Class.forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$VideoDecoderPipeline")
             val constructor = type.declaredConstructors.single().apply { isAccessible = true }
-            val sink: (PlaybackPipeline.PlaybackUnavailableReason, String) -> Unit = { reason, detail -> failures += reason to detail }
-            val decoder = constructor.newInstance(pipeline, PlaybackPipeline.VideoCodecKind.AVC, AribCodecFacts(), Surface(), 7L, sink)
+            val sink: (PlaybackPipeline.PlaybackUnavailableReason, String) -> Unit = { reason, detail ->
+                failures += reason to detail
+            }
+            val decoder =
+                constructor.newInstance(
+                    pipeline,
+                    PlaybackPipeline.VideoCodecKind.AVC,
+                    AribCodecFacts(),
+                    Surface(),
+                    7L,
+                    sink,
+                )
             ReflectionHelpers.setField(pipeline, "videoDecoder", decoder)
         }
 
@@ -250,12 +275,31 @@ class PlaybackFilterAdmissionTest {
         MediaEvent::class.java.declaredConstructors
             .single { it.parameterCount == 15 }
             .apply { isAccessible = true }
-            .newInstance(0, false, 0L, false, 0L, length, 0L, null, false, 0L, 0, false, 0, null, emptyList<Any>()) as MediaEvent
+            .newInstance(
+                0,
+                false,
+                0L,
+                false,
+                0L,
+                length,
+                0L,
+                null,
+                false,
+                0L,
+                0,
+                false,
+                0,
+                null,
+                emptyList<Any>(),
+            ) as MediaEvent
 
     private fun restartEvent(): RestartEvent =
-        RestartEvent::class.java.declaredConstructors.single { it.parameterCount == 1 }.apply { isAccessible = true }.newInstance(
-            0,
-        ) as RestartEvent
+        RestartEvent::class.java.declaredConstructors
+            .single { it.parameterCount == 1 }
+            .apply { isAccessible = true }
+            .newInstance(
+                0,
+            ) as RestartEvent
 
     private fun deliver(
         filter: Filter,
