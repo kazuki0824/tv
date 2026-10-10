@@ -676,6 +676,30 @@ class TisR51FixedPlanAcceptanceTest {
         }
     }
 
+    @Test
+    fun r52CasRequirementRemainsSeparateFromRuntimeKeyLinkage() {
+        val policy = com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+        val clear = semanticFacts()
+        val scrambled = policy.evaluate(clear.copy(requiresCas = true, freeCaMode = true))
+        check(scrambled.registrationReady && scrambled.casDecisionReady)
+        check(scrambled.requiresCas)
+        check(!scrambled.clearLivePlaybackStaticallyEligible)
+        check(!scrambled.livePlaybackEligible(false))
+        check(scrambled.livePlaybackEligible(true))
+        check("CAS_NOT_IMPLEMENTED" !in scrambled.reasons && "CAS_REQUIRED" !in scrambled.reasons)
+
+        // キー結合準備だけが成功しても、SIのCA解析未完了を成功へ丸めない。
+        val unresolved =
+            policy.evaluate(clear.copy(requiresCas = true, freeCaMode = true, caDescriptorsResolved = false))
+        check(unresolved.registrationReady && !unresolved.casDecisionReady)
+        check(!unresolved.livePlaybackEligible(true))
+        check("CA_DESCRIPTOR_UNRESOLVED" in unresolved.reasons)
+
+        val clearDecision = policy.evaluate(clear)
+        check(!clearDecision.requiresCas)
+        check(clearDecision.livePlaybackEligible(false))
+    }
+
     // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("LongMethod", "MaxLineLength")
