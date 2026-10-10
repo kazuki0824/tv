@@ -320,6 +320,8 @@ CaptionPresentationEpoch:
 
 字幕filter自身のflush、stop/reconfigure/restartによりdata-group continuityが失われ得る場合はpending scheduler eventとoverlayをclearし、rendererをflushし、decoder/rendererを新subtitle generationとして再初期化する。A/V filterだけのplain flushは字幕generationを変更しない。
 
+字幕ownerのreset controlが待機dataを追い越しても、reset前に受理した通常PESとTiming=10 PESはreset後のdecode/pendingへ復活させない。両PES入口は受付時の入力identityを保持し、同じownerのreset開始でidentityを交換して実行前に照合する。UI clearだけでも進むpresentation epochとは寿命が異なるため、入力identityはcontinuity/trackのresetだけで失効する。別owner・queue・採番・retry機構は設けない。
+
 物理retune、service/codec/PID graph変更、playback generation変更、Surface/MediaSync generation変更では旧subtitle generationを終了し、pending event cancel、overlay clear、renderer flush、decoder/renderer/context解放を行う。新playback generationでは新viewportとtiming epochが確定するまで字幕inputを表示成功にしない。playback rate変更時はcurrent canonical clockに対してpending subtitle eventをcancel/re-armするが、それだけを理由にdecoder stateを破棄しない。
 
 session releaseはpending event cancel、overlay clear、renderer flushの後、renderer → decoder → contextの依存関係を壊さない順で解放し、subtitle executor上のqueued stale workをreleased flag/generation tokenで破棄する。release後にnative callback/resultがUI stateを変更してはならない。

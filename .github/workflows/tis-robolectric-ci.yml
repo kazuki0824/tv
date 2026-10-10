@@ -47,7 +47,8 @@ jobs:
             --tests com.maleicacid.tvinput.tis.FrameworkTunerScanBoundaryTest \
             --tests com.maleicacid.tvinput.tis.ProgramBatchIpcBudgetTest \
             --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest \
-            --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest
+            --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest \
+            --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest
 
       - name: 実SDK scan境界試験の実行結果を確認
         run: |
@@ -69,4 +70,10 @@ jobs:
           assert playback.get("skipped", "0") == "0", playback.attrib
           for case in playback.findall("testcase"):
               print(f"Android 15実SDK playback受付試験: {case.get('name')} success")
+          caption = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CaptionInputContinuityTest.xml")).getroot()
+          assert caption.get("tests") == "2", caption.attrib
+          assert caption.get("failures") == "0" and caption.get("errors") == "0", caption.attrib
+          assert caption.get("skipped", "0") == "0", caption.attrib
+          for case in caption.findall("testcase"):
+              print(f"Android 15字幕入力continuity試験: {case.get('name')} success")
           PYRESULT

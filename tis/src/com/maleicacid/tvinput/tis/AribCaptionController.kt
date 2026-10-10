@@ -74,6 +74,9 @@ class AribCaptionController(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val released = AtomicBoolean(false)
     private val presentationEpoch = AtomicLong(0L)
+
+    // UI clearのepochと異なり、PES入力はcontinuity/trackのresetだけで失効する。
+    @Volatile private var pesInputIdentity: Any = Any()
     private val boundaries =
         PriorityQueue(
             compareBy<Boundary> { it.mediaTimeMillis }
@@ -153,6 +156,11 @@ class AribCaptionController(
         )
     }
 
+    private fun enqueuePes(action: () -> Unit) {
+        val identity = pesInputIdentity
+        enqueue { if (pesInputIdentity === identity) action() }
+    }
+
     // 診断失敗より解放失敗を優先して記録し、未完解放は同じownerで再試行するためuseへ変換しない。
     @Suppress("ConvertTryFinallyToUseCall")
     private fun handleSubmissionFailure(error: RuntimeException) {
@@ -227,8 +235,8 @@ class AribCaptionController(
         trackId: String,
         pesData: ByteArray,
         statementTime: AribBroadcastClock.StatementTime,
-    ) = enqueue {
-        if (!allowNoPts || broadcastDeadline == null || selectedTrack?.id != trackId) return@enqueue
+    ) = enqueuePes {
+        if (!allowNoPts || broadcastDeadline == null || selectedTrack?.id != trackId) return@enqueuePes
         broadcastTimedPesScheduler.submit(trackId, pesData, statementTime)
     }
 
@@ -241,7 +249,7 @@ class AribCaptionController(
         trackId: String,
         pesData: ByteArray,
         timestamp: CaptionTimestamp,
-    ) = enqueue {
+    ) = enqueuePes {
         decodePesOnExecutor(trackId, pesData, timestamp, forceImmediate = false)
     }
 
@@ -354,6 +362,7 @@ class AribCaptionController(
     }
 
     private fun restartPresentation() {
+        pesInputIdentity = Any()
         cancelScheduledBoundary()
         broadcastTimedPesScheduler.cancelAll()
         boundaries.clear()
