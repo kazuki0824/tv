@@ -12,6 +12,7 @@
   "services": [
     {
       "service_id": 1048,
+      "partial_reception": false,
       "name": "TBS1",
       "service_type": 1,
       "pmt_pid": 257,
@@ -80,6 +81,7 @@
     },
     {
       "service_id": 1049,
+      "partial_reception": false,
       "name": "TBS2",
       "service_type": 1,
       "pmt_pid": 258,
@@ -148,6 +150,7 @@
     },
     {
       "service_id": 1183,
+      "partial_reception": false,
       "name": "Gガイド",
       "service_type": 192,
       "pmt_pid": 2032,
@@ -175,6 +178,7 @@
     },
     {
       "service_id": 1432,
+      "partial_reception": true,
       "name": "TBS",
       "service_type": 192,
       "pmt_pid": 8136,
