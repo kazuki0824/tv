@@ -14,3 +14,7 @@ tstables --isdb --default-charset ARIB --pid 0 --pid 16 --pid 17 --pid 18 --pid 
 section参照値は`expected.json`の`section_reference`ごとに、同ファイルの`reference_section_command`のPID／TABLE_IDを置き換えて取得できる。binary出力を`3 + section_length`で分割し、CRCを含む各section全体のSHA-256と出現回数を数える。tsduckのXMLに表示されるARIB放送時刻はJSTとして確認し、`selected_service_pf_events`のUnix millisecond値と照合する。
 
 TSDuckは期待値の確認用であり、通常の結合試験実行時には不要である。解析用の`.deb`や生成した一時出力をcommitする必要はない。
+
+## 部分受信サービスの独立照合
+
+元TSのPID 0x0010、NIT actualのtransport descriptor loopを走査すると、Partial Reception Descriptor (tag 0xFB) のpayloadは `05 98`、列挙SIDは1432だけである。`expected.json`の各serviceの`partial_reception`はこの元byte列から固定した値であり、製品parserの出力から更新しない。現行TIS policyでは、この部分受信サービスも登録可能とする。
