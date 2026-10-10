@@ -371,6 +371,7 @@ class TvProviderWriter private constructor(
         val genreDiagnostics = mutableListOf<GenreReadbackDiagnostic>()
         val succeededServiceKeys = linkedSetOf<ServiceKey>()
         publication.services.forEach { service ->
+            val serviceStartedAt = android.os.SystemClock.elapsedRealtime()
             val serviceKey = service.serviceKey
             val channelId = service.channelId
             val failureCountBeforeService = failures.size
@@ -399,7 +400,12 @@ class TvProviderWriter private constructor(
                             runCatching { Math.addExact(programEnd, EVENT_ID_REUSE_GUARD_MS) }
                                 .getOrDefault(Long.MAX_VALUE)
                         }
+                    val queryStartedAt = android.os.SystemClock.elapsedRealtime()
                     val indexResult = channelStore.indexExistingProgramEntriesForWindow(channelId, guardStart, guardEnd)
+                    val queryElapsedMs = android.os.SystemClock.elapsedRealtime() - queryStartedAt
+                    if (queryElapsedMs >= 5_000L) {
+                        Log.w(LogTags.TIS, "program index取得遅延 service=$serviceKey elapsedMs=$queryElapsedMs")
+                    }
                     if (indexResult.isFailure) {
                         failures += Diagnostic(serviceKey, "program-index-query", indexResult.exceptionOrNull()?.message.orEmpty())
                         null
@@ -437,10 +443,15 @@ class TvProviderWriter private constructor(
                         PendingWrite(values, existingId)
                     }
                 if (failures.size == failureCountBeforeService) {
+                    val batchStartedAt = android.os.SystemClock.elapsedRealtime()
                     val batch =
                         channelStore.upsertProgramsBatch(
                             writes.map { ProgramUpsertRequest(it.existingId, it.values) },
                         )
+                    val batchElapsedMs = android.os.SystemClock.elapsedRealtime() - batchStartedAt
+                    if (batchElapsedMs >= 5_000L) {
+                        Log.w(LogTags.TIS, "program batch更新遅延 service=$serviceKey writes=${writes.size} elapsedMs=$batchElapsedMs")
+                    }
                     if (batch.isFailure) {
                         val operation =
                             when {
@@ -509,6 +520,10 @@ class TvProviderWriter private constructor(
             }
             if (!preparationFailed && failures.size == failureCountBeforeService) {
                 succeededServiceKeys += serviceKey
+            }
+            val serviceElapsedMs = android.os.SystemClock.elapsedRealtime() - serviceStartedAt
+            if (serviceElapsedMs >= 5_000L) {
+                Log.w(LogTags.TIS, "programサービス処理遅延 service=$serviceKey count=${service.programs.size} elapsedMs=$serviceElapsedMs")
             }
         }
         Log.i(LogTags.TIS, "program登録結果 inputId=$inputId inserted=$inserted updated=$updated deleted=$deleted failures=${failures.size}")
