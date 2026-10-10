@@ -157,7 +157,7 @@ class PlaybackFilterAdmissionTest {
             fixture.whileOwnerBlocked { deliver(caption, burst) }
             fixture.drain()
             assertEquals(1, fixture.captionDiscontinuities)
-            assertEquals(1, Shadow.extract<NativeFilter>(caption).flushes)
+            assertEquals(1, Shadow.extract<NativeFilter>(caption).closes)
             val replacement = fixture.avFilter(false)
             val stale = mediaEvent(1L)
             deliver(video, stale)
@@ -171,12 +171,12 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
-    fun captionCapacityFlushInvalidatesQueuedPesBeforeReadingNewInput() {
+    fun captionCapacityRecoveryRetiresQueuedPesBeforeReadingNewInput() {
         Fixture().use { fixture ->
             val video = fixture.avFilter(false)
             val caption = fixture.captionFilter()
             val nativeCaption = Shadow.extract<NativeFilter>(caption)
-            // 先に受理したPESは、容量回収のflush後に新しいFMQ入力を読んではならない。
+            // 先に受理したPESは、旧Filter退役後に新しいFMQ入力を読んではならない。
             fixture.whileOwnerBlocked {
                 nativeCaption.offer(ByteArray(12) { 0x55 })
                 deliver(caption, pesEvent(12))
@@ -184,12 +184,16 @@ class PlaybackFilterAdmissionTest {
             }
             fixture.drain()
             assertEquals(emptyList(), nativeCaption.readSizes)
-            assertEquals(1, nativeCaption.flushes)
+            assertEquals(1, nativeCaption.closes)
+            assertEquals(0, nativeCaption.flushes)
+            val currentCaption = fixture.currentCaptionFilter()
+            assertTrue(currentCaption !== caption)
+            val nativeCurrent = Shadow.extract<NativeFilter>(currentCaption)
             val currentPes = captionPes()
-            nativeCaption.offer(currentPes)
-            deliver(caption, pesEvent(currentPes.size))
+            nativeCurrent.offer(currentPes)
+            deliver(currentCaption, pesEvent(currentPes.size))
             fixture.drain()
-            assertEquals(listOf(currentPes.size), nativeCaption.readSizes)
+            assertEquals(listOf(currentPes.size), nativeCurrent.readSizes)
             assertEquals(1, fixture.captionPayloads.size)
             assertContentEquals(currentPes.copyOfRange(9, currentPes.size), fixture.captionPayloads.single())
             val videoEvent = mediaEvent(1L)
@@ -201,29 +205,44 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
-    fun captionPesArrivingDuringFlushIsDiscardedBeforeNextInput() {
+    fun captionPesBeforeBufferClearDuringRecoveryCannotReachNewInput() = captionPesDuringRecovery(false)
+
+    @Test
+    fun captionPesAfterBufferClearBeforeRecoveryReturnsCannotReachNewInput() = captionPesDuringRecovery(true)
+
+    private fun captionPesDuringRecovery(afterClear: Boolean) {
         Fixture().use { fixture ->
             val video = fixture.avFilter(false)
             val caption = fixture.captionFilter()
             val nativeCaption = Shadow.extract<NativeFilter>(caption)
-            val (flushStarted, allowFlush) = nativeCaption.blockNextFlush()
+            val (recoveryStarted, allowRecovery) = nativeCaption.blockNextReclamation(afterClear)
             fixture.whileOwnerBlocked {
                 nativeCaption.offer(ByteArray(12) { 0x55 })
                 deliver(caption, pesEvent(12))
                 deliver(caption, Array(16 * 1024) { restartEvent() })
             }
-            assertTrue(flushStarted.await(5, TimeUnit.SECONDS))
-            // flush開始後に届いた通知は、flush対象のbytesを読む前に入口で捨てる。
-            nativeCaption.offer(ByteArray(12) { 0x66 })
-            deliver(caption, pesEvent(12))
-            allowFlush.countDown()
+            assertTrue(recoveryStarted.await(5, TimeUnit.SECONDS))
+            // 消去前/消去後return前の旧FMQ入力Aを、復帰後の通知Bへ読み替えない。
+            val arrivingPes = captionPes().also { it[11] = 0x22 }
+            try {
+                nativeCaption.offer(arrivingPes)
+                deliver(caption, pesEvent(arrivingPes.size))
+            } finally {
+                allowRecovery.countDown()
+            }
             fixture.drain()
             assertEquals(emptyList(), nativeCaption.readSizes)
-            val currentPes = captionPes()
-            nativeCaption.offer(currentPes)
-            deliver(caption, pesEvent(currentPes.size))
+            assertEquals(1, nativeCaption.closes)
+            val currentCaption = fixture.currentCaptionFilter()
+            assertTrue(currentCaption !== caption)
+            val nativeCurrent = Shadow.extract<NativeFilter>(currentCaption)
+            val currentPes = captionPes().also { it[11] = 0x33 }
+            nativeCurrent.offer(currentPes)
+            deliver(currentCaption, pesEvent(currentPes.size))
             fixture.drain()
-            assertEquals(listOf(currentPes.size), nativeCaption.readSizes)
+            assertEquals(listOf(currentPes.size), nativeCurrent.readSizes)
+            assertEquals(0, nativeCurrent.unreadBytes)
+            assertEquals(emptyList(), nativeCaption.readSizes)
             assertContentEquals(currentPes.copyOfRange(9, currentPes.size), fixture.captionPayloads.single())
             val videoEvent = mediaEvent(1L)
             deliver(video, videoEvent)
@@ -232,6 +251,30 @@ class PlaybackFilterAdmissionTest {
             assertEquals(1, nativeVideo.blockReads)
             assertEquals(1, nativeVideo.releases)
             assertFalse(fixture.released())
+        }
+    }
+
+    @Test
+    fun captionRecoveryCloseFailureKeepsOwnershipAndDoesNotOpenReplacement() {
+        Fixture().use { fixture ->
+            val video = fixture.avFilter(false)
+            val caption = fixture.captionFilter()
+            val nativeCaption = Shadow.extract<NativeFilter>(caption)
+            nativeCaption.closeResult = Tuner.RESULT_UNKNOWN_ERROR
+            try {
+                fixture.whileOwnerBlocked { deliver(caption, Array(16 * 1024) { restartEvent() }) }
+                fixture.drain()
+                assertEquals(null, ReflectionHelpers.getField<Filter?>(fixture.pipeline, "subtitleFilter"))
+                assertEquals(1, nativeCaption.closes)
+                assertTrue(ReflectionHelpers.getField<ResourceCleanup>(fixture.pipeline, "resourceCleanup").hasPending)
+                val videoEvent = mediaEvent(1L)
+                deliver(video, videoEvent)
+                fixture.drain()
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(videoEvent).blockReads)
+                assertFalse(fixture.released())
+            } finally {
+                nativeCaption.closeResult = Tuner.RESULT_SUCCESS
+            }
         }
     }
 
@@ -280,6 +323,8 @@ class PlaybackFilterAdmissionTest {
         }
 
         fun released(): Boolean = ReflectionHelpers.getField<AtomicBoolean>(pipeline, "released").get()
+
+        fun currentCaptionFilter(): Filter = ReflectionHelpers.getField(pipeline, "subtitleFilter")
 
         fun avFilter(audio: Boolean): Filter {
             val stream =
@@ -489,18 +534,32 @@ class PlaybackFilterAdmissionTest {
         var closes = 0
         var flushes = 0
         var closeThread: String? = null
+        var closeResult: Int = Tuner.RESULT_SUCCESS
         val readSizes = mutableListOf<Int>()
         private val pendingBytes = ArrayDeque<Byte>()
-        private var flushBlock: Pair<CountDownLatch, CountDownLatch>? = null
+        val unreadBytes: Int get() = pendingBytes.size
+        private var reclamationBlock: Pair<CountDownLatch, CountDownLatch>? = null
+        private var blockAfterClear = false
 
         fun offer(bytes: ByteArray) {
             bytes.forEach(pendingBytes::addLast)
         }
 
-        fun blockNextFlush(): Pair<CountDownLatch, CountDownLatch> {
+        fun blockNextReclamation(afterClear: Boolean): Pair<CountDownLatch, CountDownLatch> {
             val block = Pair(CountDownLatch(1), CountDownLatch(1))
-            flushBlock = block
+            reclamationBlock = block
+            blockAfterClear = afterClear
             return block
+        }
+
+        private fun reclaimBytes() {
+            if (blockAfterClear) pendingBytes.clear()
+            reclamationBlock?.let { (started, allow) ->
+                started.countDown()
+                check(allow.await(5, TimeUnit.SECONDS)) { "test reclamation was not released" }
+                reclamationBlock = null
+            }
+            if (!blockAfterClear) pendingBytes.clear()
         }
 
         @Implementation
@@ -520,12 +579,7 @@ class PlaybackFilterAdmissionTest {
         @Implementation
         fun nativeFlushFilter(): Int {
             flushes++
-            flushBlock?.let { (started, allow) ->
-                started.countDown()
-                check(allow.await(5, TimeUnit.SECONDS)) { "test flush was not released" }
-                flushBlock = null
-            }
-            pendingBytes.clear()
+            reclaimBytes()
             return Tuner.RESULT_SUCCESS
         }
 
@@ -545,7 +599,8 @@ class PlaybackFilterAdmissionTest {
         fun nativeClose(): Int {
             closes++
             closeThread = Thread.currentThread().name
-            return Tuner.RESULT_SUCCESS
+            if (closeResult == Tuner.RESULT_SUCCESS) reclaimBytes()
+            return closeResult
         }
     }
 

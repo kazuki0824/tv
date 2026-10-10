@@ -36,7 +36,6 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 // 同じ所有者の状態と解放順を維持し、行数だけを理由に責務を分割しない。
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
@@ -842,26 +841,16 @@ class PlaybackPipeline(
             }
             val filterGeneration = playbackGeneration
             val pendingCapacityLoss = AtomicBoolean(false)
-            val inputEpoch = AtomicReference<Any?>(Any())
 
-            fun sourceInputIsCurrent(
-                filter: Filter,
-                eventEpoch: Any,
-            ): Boolean =
-                filterGeneration == playbackGeneration &&
-                    (if (superimpose) superimposeFilter === filter else subtitleFilter === filter) &&
-                    inputEpoch.get() === eventEpoch
-
-            fun invalidatePendingPesAndFlush(source: Filter) {
-                // flush中に届く通知は、消去対象のFMQ bytesを読めないよう入口で捨てる。
-                inputEpoch.set(null)
-                try {
-                    onSubtitleContinuityLost(filterGeneration, trackId)
-                    runCatching { check(source.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
-                        .onFailure { Log.w(LogTags.TIS, "字幕Filterの入力回収に失敗しました", it) }
-                } finally {
-                    inputEpoch.set(Any())
-                }
+            fun replaceCaptionInput(source: Filter) {
+                // bytesと通知を同じFilter寿命で退役させ、旧FMQを新通知で読まない。
+                if (superimpose) superimposeFilter = null else subtitleFilter = null
+                onSubtitleContinuityLost(filterGeneration, trackId)
+                runCatching {
+                    closeFilter(source)
+                    resourceCleanup.requireComplete()
+                    createAndStartCaptionPesFilter(tuner, stream, trackId, superimpose).getOrThrow()
+                }.onFailure { Log.w(LogTags.TIS, "字幕Filterの入力再開に失敗しました", it) }
             }
 
             fun reportCapacityLoss(source: Filter) {
@@ -871,7 +860,7 @@ class PlaybackPipeline(
                     if (filterGeneration == playbackGeneration && !released.get() &&
                         (if (superimpose) superimposeFilter else subtitleFilter) === source
                     ) {
-                        invalidatePendingPesAndFlush(source)
+                        replaceCaptionInput(source)
                     }
                 }
             }
@@ -894,12 +883,11 @@ class PlaybackPipeline(
                             events: Array<FilterEvent>,
                         ) {
                             if (!sourceIsCurrent(filter)) return
-                            val eventEpoch = inputEpoch.get() ?: return
                             enqueuePlaybackFilterEvents(events, { reportCapacityLoss(filter) }) {
                                 runCatching {
-                                    if (!sourceInputIsCurrent(filter, eventEpoch)) return@enqueuePlaybackFilterEvents
+                                    if (!sourceIsCurrent(filter)) return@enqueuePlaybackFilterEvents
                                     for (event in events) {
-                                        if (!sourceInputIsCurrent(filter, eventEpoch)) continue
+                                        if (!sourceIsCurrent(filter)) continue
                                         if (event is RestartEvent) {
                                             onSubtitleContinuityLost(filterGeneration, trackId)
                                             continue
@@ -911,7 +899,7 @@ class PlaybackPipeline(
                                         val read = filter.read(buffer, 0, dataLength.toLong())
                                         check(read == buffer.size) { "字幕PESの読取りが不足しています expected=${buffer.size} actual=$read" }
                                         val captionSample = captionSampleFromPes(buffer, superimpose) ?: continue
-                                        if (!sourceInputIsCurrent(filter, eventEpoch)) continue
+                                        if (!sourceIsCurrent(filter)) continue
                                         onSubtitlePes(
                                             filterGeneration,
                                             trackId,
@@ -926,7 +914,7 @@ class PlaybackPipeline(
                                         error,
                                     )
                                     if (sourceIsCurrent(filter)) {
-                                        invalidatePendingPesAndFlush(filter)
+                                        replaceCaptionInput(filter)
                                     }
                                 }
                             }
@@ -945,7 +933,7 @@ class PlaybackPipeline(
                                     "caption PES filter 状態 inputId=$inputId pid=$pid superimpose=$superimpose status=$status",
                                 )
                                 if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
-                                    invalidatePendingPesAndFlush(filter)
+                                    replaceCaptionInput(filter)
                                 }
                             }
                         }
