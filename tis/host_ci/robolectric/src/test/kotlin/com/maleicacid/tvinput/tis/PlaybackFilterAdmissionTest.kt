@@ -341,9 +341,9 @@ class PlaybackFilterAdmissionTest {
 
     private fun pesEvent(length: Int): PesEvent =
         PesEvent::class.java.declaredConstructors
-            .single { it.parameterCount == 2 }
+            .single { it.parameterCount == 3 }
             .apply { isAccessible = true }
-            .newInstance(0, length) as PesEvent
+            .newInstance(0, length, 0) as PesEvent
 
     private fun captionPes(): ByteArray =
         ByteArray(20).also { pes ->
