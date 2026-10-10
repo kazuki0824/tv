@@ -30,7 +30,15 @@ class TunerFrontendLeaseTransitionTest {
             check(sdk.closed == 1)
             check(!controller.tuneForScan(terrestrial()).success)
             check(sdk.closed == 2)
-            check(sdk.requested == listOf(FrontendSettings.TYPE_ISDBT, FrontendSettings.TYPE_ISDBT, FrontendSettings.TYPE_ISDBS, FrontendSettings.TYPE_ISDBT))
+            check(
+                sdk.requested ==
+                    listOf(
+                        FrontendSettings.TYPE_ISDBT,
+                        FrontendSettings.TYPE_ISDBT,
+                        FrontendSettings.TYPE_ISDBS,
+                        FrontendSettings.TYPE_ISDBT,
+                    ),
+            )
         } finally {
             controller.release()
         }
@@ -74,10 +82,13 @@ class TunerFrontendLeaseTransitionTest {
         TunerController(RuntimeEnvironment.getApplication(), "lease-integration-test")
 
     private fun terrestrial(): ScanCandidate =
-        ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13")
+        ScanCandidate(
+            ChannelRecord.DELIVERY_SYSTEM_ISDB_T,
+            FrequencyHz(473_142_857L),
+            displayChannel = "13",
+        )
 
-    private fun satellite(): ScanCandidate =
-        JapanIsdbScanPlan.isdbs110CsBands().first()
+    private fun satellite(): ScanCandidate = JapanIsdbScanPlan.isdbs110CsBands().first()
 
     @Implements(Tuner::class)
     class NativeTuner {
@@ -93,13 +104,20 @@ class TunerFrontendLeaseTransitionTest {
 
         @Implementation(methodName = "__constructor__")
         @Suppress("UNUSED_PARAMETER")
-        private fun construct(context: Context, sessionId: String?, useCase: Int) {
+        private fun construct(
+            context: Context,
+            sessionId: String?,
+            useCase: Int,
+        ) {
             current = this
         }
 
         @Implementation
         @Suppress("UNUSED_PARAMETER")
-        fun setResourceLostListener(executor: Executor, listener: Tuner.OnResourceLostListener) = Unit
+        fun setResourceLostListener(
+            executor: Executor,
+            listener: Tuner.OnResourceLostListener,
+        ) = Unit
 
         @Implementation
         fun tune(settings: FrontendSettings): Int {
@@ -111,7 +129,12 @@ class TunerFrontendLeaseTransitionTest {
 
         @Implementation
         @Suppress("UNUSED_PARAMETER")
-        fun scan(settings: FrontendSettings, scanType: Int, executor: Executor, callback: android.media.tv.tuner.frontend.ScanCallback): Int {
+        fun scan(
+            settings: FrontendSettings,
+            scanType: Int,
+            executor: Executor,
+            callback: android.media.tv.tuner.frontend.ScanCallback,
+        ): Int {
             check(heldType == null || heldType == settings.type) { "Tuner SDK would reject a cross-type scan" }
             scanned += settings.type
             heldType = settings.type
