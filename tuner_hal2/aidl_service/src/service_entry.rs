@@ -759,7 +759,7 @@ mod tests {
         text.lines()
             .filter_map(|line| line.split_whitespace().next())
             .filter_map(|path| path.strip_prefix("/dev/"))
-            .filter_map(|name| name.split("[0-9]").next())
+            .filter_map(|name| name.strip_suffix("*[0-9]"))
             .filter(|name| super::PX4_PROBE_PREFIXES.contains(name))
             .map(str::to_string)
             .collect()
@@ -786,7 +786,7 @@ mod tests {
         assert_eq!(collect_prefixes_from_ueventd(ueventd), expected);
         assert_eq!(collect_prefixes_from_file_contexts(file_contexts), expected);
         for prefix in super::PX4_PROBE_PREFIXES {
-            let ueventd_prefix = format!("/dev/{prefix}[0-9]*");
+            let ueventd_prefix = format!("/dev/{prefix}*[0-9]");
             let ueventd_line = ueventd
                 .lines()
                 .find(|line| line.starts_with(ueventd_prefix.as_str()))
@@ -795,6 +795,27 @@ mod tests {
                 ueventd_line.ends_with("0660 media system"),
                 "{ueventd_line}"
             );
+            // SAFETY: 文字列はNUL終端CStringで保持し、fnmatchはポインターを呼出し後に保持しない。
+            extern "C" {
+                fn fnmatch(
+                    pattern: *const std::ffi::c_char,
+                    path: *const std::ffi::c_char,
+                    flags: i32,
+                ) -> i32;
+            }
+            let pattern = std::ffi::CString::new(ueventd_prefix).unwrap();
+            for (suffix, expected) in [
+                ("0", true),
+                ("12", true),
+                ("", false),
+                ("extra", false),
+                ("0extra", false),
+            ] {
+                let path = std::ffi::CString::new(format!("/dev/{prefix}{suffix}")).unwrap();
+                // SAFETY: 両CStringは呼出し中も生存し、NUL終端であり、fnmatchはポインターを保持しない。
+                let matched = unsafe { fnmatch(pattern.as_ptr(), path.as_ptr(), 0) == 0 };
+                assert_eq!(matched, expected, "suffix={suffix}");
+            }
             let fc_prefix = format!("/dev/{prefix}[0-9]+");
             let fc_line = file_contexts
                 .lines()
