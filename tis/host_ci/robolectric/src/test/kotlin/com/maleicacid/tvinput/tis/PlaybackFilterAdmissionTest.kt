@@ -225,8 +225,12 @@ class PlaybackFilterAdmissionTest {
             fixture.drain()
             assertEquals(listOf(currentPes.size), nativeCaption.readSizes)
             assertContentEquals(currentPes.copyOfRange(9, currentPes.size), fixture.captionPayloads.single())
-            deliver(video, mediaEvent(1L))
+            val videoEvent = mediaEvent(1L)
+            deliver(video, videoEvent)
             fixture.drain()
+            val nativeVideo = Shadow.extract<NativeMediaEvent>(videoEvent)
+            assertEquals(1, nativeVideo.blockReads)
+            assertEquals(1, nativeVideo.releases)
             assertFalse(fixture.released())
         }
     }
