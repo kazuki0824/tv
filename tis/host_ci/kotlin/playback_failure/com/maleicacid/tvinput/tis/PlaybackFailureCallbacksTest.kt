@@ -743,7 +743,8 @@ class PlaybackFailureCallbacksTest {
             sessionType.getDeclaredField("mLock").apply { isAccessible = true }.set(session, Any())
             sessionType
                 .getDeclaredField("mPendingActions")
-                .apply { isAccessible = true }.set(session, pendingNotifications)
+                .apply { isAccessible = true }
+                .set(session, pendingNotifications)
             Tuner::class.java.getField("nextFilter").set(null, filter)
             Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
             engine.setDiscoveryProfile(com.maleicacid.tvinput.aribsi.SiDiscoveryProfile.ISDB_T)
