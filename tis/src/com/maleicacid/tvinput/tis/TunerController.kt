@@ -1359,7 +1359,7 @@ class TunerController(
             }
         }
 
-    fun updateScanPmtFilters(
+    fun updatePmtFilters(
         pmtPids: Set<TsPid>,
         generation: Long,
     ): Unit =

@@ -32,6 +32,7 @@ import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.SiParseStatus
 import com.maleicacid.tvinput.aribsi.SiStatus
 import com.maleicacid.tvinput.aribsi.SmdSemanticFacts
+import com.maleicacid.tvinput.aribsi.SmdSemanticState
 import com.maleicacid.tvinput.aribsi.TableRequirementStatus
 import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.common.CaptionTimestamp
@@ -511,6 +512,51 @@ class TisR51FixedPlanAcceptanceTest {
             apply(valid)
             check(opened.count { it == ecm } == 2 && opened.count { it == emm } == 2)
         }
+    }
+
+    @Test
+    fun unresolvedServiceTypeRemainsPendingUntilSiFactsResolve() {
+        val ready = semanticFacts()
+        val incomplete =
+            ready.copy(
+                serviceType = null,
+                missingComponents = listOf("NO_SDT", "NO_NIT"),
+                semanticDiagnostics = listOf("SERVICE_TYPE_UNRESOLVED"),
+            )
+        val policy = com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+        val pending = policy.evaluate(incomplete)
+        check(pending.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
+        check(!pending.registrationReady && "SERVICE_TYPE_UNRESOLVED" in pending.reasons)
+        check("UNSUPPORTED_SERVICE_TYPE" !in pending.reasons)
+        val renamedDiagnostic =
+            policy.evaluate(
+                incomplete.copy(missingComponents = listOf("UNSUPPORTED_SERVICE_TYPE", "UNDEFINED_BROADCAST_CLASS")),
+            )
+        check(renamedDiagnostic.state == pending.state)
+        check(
+            policy.evaluate(ready.copy(semanticDiagnostics = renamedDiagnostic.reasons)).state ==
+                com.maleicacid.tvinput.aribsi.ServicePolicyState.READY,
+        )
+
+        val resolved = policy.evaluate(ready)
+        check(resolved.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY)
+        val unsupported = policy.evaluate(ready.copy(serviceType = 0xa1))
+        check(unsupported.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.UNSUPPORTED)
+        check("UNSUPPORTED_SERVICE_TYPE" in unsupported.reasons)
+        val unsupportedSmd =
+            policy.evaluate(
+                ready.copy(
+                    smd = ready.smd.copy(semanticState = SmdSemanticState.UNSUPPORTED_BROADCAST_SYSTEM),
+                ),
+            )
+        check(unsupportedSmd.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.UNSUPPORTED)
+        check(!unsupportedSmd.registrationReady && !MaleicacidLiveSession.initialLiveSiPending(unsupportedSmd))
+        check("UNSUPPORTED_BROADCAST_SYSTEM" in unsupportedSmd.reasons)
+        val missingSmd =
+            policy.evaluate(
+                ready.copy(smd = ready.smd.copy(semanticState = SmdSemanticState.UNDETERMINED_SMD)),
+            )
+        check(missingSmd.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
     }
 
     @Test fun registrationAndSelectionShareStaticCodecFacts() {
@@ -2251,7 +2297,7 @@ class TisR51FixedPlanAcceptanceTest {
                 broadcastSystem = BroadcastSystem.ISDB_T,
                 additionalBroadcastingIdentification = 0,
                 additionalIdentificationInfoHex = "",
-                semanticState = com.maleicacid.tvinput.aribsi.SmdSemanticState.SUPPORTED_BROADCAST,
+                semanticState = SmdSemanticState.SUPPORTED_BROADCAST,
                 diagnostic = null,
             ),
         missingComponents = emptyList(),

@@ -18,6 +18,27 @@ import sun.misc.Unsafe
 import java.util.concurrent.ConcurrentHashMap
 
 class TisReviewBoundaryTest {
+    @Test fun liveTuneWithoutCurrentServiceFactsRemainsPending() {
+        val pending =
+            com.maleicacid.tvinput.aribsi.ServicePolicyDecision(
+                ServiceKey(4, 1, 1),
+                false,
+                false,
+                false,
+                listOf("NO_CURRENT_SERVICE_SEMANTIC_FACTS"),
+                com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING,
+            )
+        check(MaleicacidLiveSession.initialLiveSiPending(pending))
+        check(
+            MaleicacidLiveSession.initialLiveSiPending(
+                pending.copy(
+                    reasons = listOf("NO_PMT_PID"),
+                    state = com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING,
+                ),
+            ),
+        )
+    }
+
     private val unsafe =
         Unsafe::class.java
             .getDeclaredField("theUnsafe")
