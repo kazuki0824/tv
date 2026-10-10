@@ -228,7 +228,9 @@ class TunerController(
             }
         }.onFailure { error ->
             onRejected(error)
-            if (!released) Log.w(LogTags.TIS, "drain済みsection dataの投入を拒否しました inputId=$inputId", error)
+            if (!released && error !is DataCapacityExceededException) {
+                Log.w(LogTags.TIS, "drain済みsection dataの投入を拒否しました inputId=$inputId", error)
+            }
         }
     }
 
