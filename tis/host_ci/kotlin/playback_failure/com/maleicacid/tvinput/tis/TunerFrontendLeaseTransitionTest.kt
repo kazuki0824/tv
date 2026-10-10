@@ -14,7 +14,7 @@ class TunerFrontendLeaseTransitionTest {
         TunerController::class.java
             .getDeclaredMethod(
                 "releaseFrontendBeforeTypeChange",
-                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType ?: error("Int primitive type unavailable"),
                 Function0::class.java,
             ).apply { isAccessible = true }
 
