@@ -607,9 +607,28 @@ class NativeAribSiParserCasDiscoveryTest {
                 // network-level SMDとcurrent transportが一致するactual NITを受理。
                 val nit =
                     mutableListOf(
-                        0x40, 0xf0, 0x00, 0x00, 0x01, 0xc1, 0x00, 0x00,
-                        0xf0, 0x04, 0xfe, 0x02, smdIdentifier, 0x00,
-                        0xf0, 0x06, 0x00, 0x11, 0x00, 0x22, 0xf0, 0x00,
+                        0x40,
+                        0xf0,
+                        0x00,
+                        0x00,
+                        0x01,
+                        0xc1,
+                        0x00,
+                        0x00,
+                        0xf0,
+                        0x04,
+                        0xfe,
+                        0x02,
+                        smdIdentifier,
+                        0x00,
+                        0xf0,
+                        0x06,
+                        0x00,
+                        0x11,
+                        0x00,
+                        0x22,
+                        0xf0,
+                        0x00,
                     )
                 setSectionLength(nit, 0xf0)
                 check(parser.ingestSection(TsPid(0x0010), section(nit.toIntArray())) == SiStatus.OK)
