@@ -187,7 +187,8 @@ class ProgramCleanupProviderTest {
             worker.submit {}.get(5, TimeUnit.SECONDS)
             ready.set(previous)
             caller.shutdownNow()
-            scanWorker.submit { Thread.currentThread().uncaughtExceptionHandler = previousHandler }.get(5, TimeUnit.SECONDS)
+            val restored = scanWorker.submit { Thread.currentThread().uncaughtExceptionHandler = previousHandler }
+            restored.get(5, TimeUnit.SECONDS)
         }
         check(scanFailures.isEmpty()) { "scan ownerの非同期例外: ${scanFailures.joinToString { it.stackTraceToString() }}" }
     }
