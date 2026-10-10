@@ -617,6 +617,8 @@ class TunerController(
         }
     }
 
+    // 利用不可・旧lease解放失敗・正常開始は独立した終端で、それぞれ後続scanを止める。
+    @Suppress("ReturnCount")
     private fun startStreamIdDiscoveryOnController(seed: ScanCandidate): StreamIdDiscoveryOperation {
         require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector == StreamSelector.NONE)
         resetBeforeTune()
