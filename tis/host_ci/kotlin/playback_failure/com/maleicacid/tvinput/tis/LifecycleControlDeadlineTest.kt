@@ -57,6 +57,75 @@ private fun assertLifecycleSerialExecutorBoundsDataAndPrioritizesControl() {
 // 同じexecutorの投入・期限・shutdown・cleanup境界を一緒に試験する。
 @Suppress("TooManyFunctions")
 class LifecycleControlDeadlineTest {
+    // 同じpermitの受理・再入・返却・破棄を一つの寿命として確認する。
+    @Suppress("LongMethod")
+    @Test
+    fun weightedCallbacksReturnAllPermitsAndKeepOwnerReentryBounded() {
+        val executor = LifecycleSerialExecutor("weighted admission試験", maxPendingDataTasks = 6)
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val completed = CountDownLatch(2)
+        val capacityLosses =
+            java.util.concurrent.atomic
+                .AtomicInteger()
+        val discarded =
+            java.util.concurrent.atomic
+                .AtomicInteger()
+        try {
+            executor.executeControl {
+                entered.countDown()
+                resume.await()
+                executor.executeCallback(
+                    isReleased = { false },
+                    onFailure = { throw it },
+                    dataSlots = 4,
+                    action = { completed.countDown() },
+                )
+            }
+            check(entered.await(5, TimeUnit.SECONDS))
+            executor.executeCallback(
+                isReleased = { false },
+                onFailure = { throw it },
+                dataSlots = 6,
+                action = { completed.countDown() },
+            )
+            executor.executeCallback(
+                isReleased = { false },
+                onFailure = { throw it },
+                onDiscard = { discarded.incrementAndGet() },
+                onCapacity = { capacityLosses.incrementAndGet() },
+                action = { error("満杯入力を実行しました") },
+            )
+            check(capacityLosses.get() == 1 && discarded.get() == 1)
+            resume.countDown()
+            check(completed.await(5, TimeUnit.SECONDS))
+            val permits =
+                PrioritySerialExecutor::class.java
+                    .getDeclaredField("pendingDataSlots")
+                    .apply { isAccessible = true }
+                    .get(executor) as Semaphore
+            executor.callControl(5_000L) { check(permits.availablePermits() == 6) }
+            val held = CountDownLatch(1)
+            executor.executeControl {
+                held.countDown()
+                CountDownLatch(1).await()
+            }
+            check(held.await(5, TimeUnit.SECONDS))
+            executor.executeCallback(
+                isReleased = { false },
+                onFailure = { throw it },
+                onDiscard = { discarded.incrementAndGet() },
+                dataSlots = 6,
+                action = { error("破棄入力を実行しました") },
+            )
+            executor.shutdownNow()
+            check(permits.availablePermits() == 6 && discarded.get() == 2)
+        } finally {
+            resume.countDown()
+            executor.shutdownNow()
+        }
+    }
+
     @Test
     fun terminalCleanupCancelsUnstartedNormalControlWithoutTimeout() = assertTerminalCleanupCancelsQueuedControl(false)
 

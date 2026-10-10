@@ -47,24 +47,29 @@ class PlaybackPipeline(
     private val executor =
         LifecycleSerialExecutor(
             "maleicacid-playback-$inputId",
-            maxPendingDataTasks = PLAYBACK_MAX_PENDING_DATA_TASKS,
+            maxPendingDataTasks = (AV_FILTER_BUFFER_BYTES / KIB).toInt(),
         )
     private val mainHandler = Handler(Looper.getMainLooper())
     private val codecCallbackThread = HandlerThread("maleicacid-codec-$inputId").apply { start() }
     private val codecCallbackHandler = Handler(codecCallbackThread.looper)
     private var surface: Surface? = null
     private var streamVolume: Float = 1.0f
-    private var playbackGeneration: Long = 0L
+
+    @Volatile private var playbackGeneration: Long = 0L
     private var onVideoAvailable: (Long) -> Unit = {}
     private var onVideoUnavailable: (PlaybackUnavailable) -> Unit = {}
     private var onVideoFormatDiscovered: (Long, VideoFormatInfo) -> Unit = { _, _ -> }
     private var onSubtitlePes: (Long, String, ByteArray, CaptionTimestamp) -> Unit = { _, _, _, _ -> }
     private var onSubtitleContinuityLost: (Long, String) -> Unit = { _, _ -> }
     private var onPlaybackGenerationRestarted: (PlaybackGenerationRestart) -> Unit = {}
-    private var videoFilter: Filter? = null
-    private var audioFilter: Filter? = null
-    private var subtitleFilter: Filter? = null
-    private var superimposeFilter: Filter? = null
+
+    @Volatile private var videoFilter: Filter? = null
+
+    @Volatile private var audioFilter: Filter? = null
+
+    @Volatile private var subtitleFilter: Filter? = null
+
+    @Volatile private var superimposeFilter: Filter? = null
     private var videoDecoder: VideoDecoderPipeline? = null
     private var audioDecoder: AudioDecoderPipeline? = null
     private var mediaSync: MediaSync? = null
@@ -262,11 +267,24 @@ class PlaybackPipeline(
 
     private fun enqueuePlaybackFilterEvents(
         events: Array<FilterEvent>,
+        onCapacity: () -> Unit,
         action: () -> Unit,
     ) {
+        // payloadとeventごとの保守的な1KiB帳簿予約を同じ既存permitへ課金する。件数64では判定しない。
+        val payloadBytes =
+            events.sumOf { event ->
+                when (event) {
+                    is MediaEvent -> event.dataLength.coerceIn(0L, AV_FILTER_BUFFER_BYTES)
+                    is PesEvent -> event.dataLength.toLong().coerceIn(0L, SUBTITLE_FILTER_BUFFER_BYTES)
+                    else -> 0L
+                }
+            }
+        val slots = (1L + events.size + (payloadBytes + KIB - 1) / KIB).coerceAtMost(AV_FILTER_BUFFER_BYTES / KIB + 1).toInt()
         executor.executeCallback(
             isReleased = released::get,
             onFailure = ::handleSubmissionFailure,
+            dataSlots = slots,
+            onCapacity = onCapacity,
             onDiscard = { events.filterIsInstance<MediaEvent>().forEach(::releaseMediaEvent) },
             action = action,
         )
@@ -659,6 +677,21 @@ class PlaybackPipeline(
             val filterGeneration = playbackGeneration
             val targetAudioDecoder = audioDecoder
             val targetVideoDecoder = videoDecoder
+            val pendingCapacityLoss =
+                java.util.concurrent.atomic
+                    .AtomicLong(-1L)
+
+            fun reportCapacityLoss(source: Filter) {
+                val rejectedAt = SystemClock.elapsedRealtime()
+                if (!pendingCapacityLoss.compareAndSet(-1L, rejectedAt)) return
+                enqueuePlaybackControl {
+                    val firstRejectedAt = pendingCapacityLoss.getAndSet(-1L)
+                    val current =
+                        filterGeneration == playbackGeneration && !released.get() &&
+                            (if (isAudio) audioFilter else videoFilter) === source
+                    if (current) (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.inputAdmissionRejected(firstRejectedAt)
+                }
+            }
 
             fun sourceIsCurrent(filter: Filter): Boolean =
                 filterGeneration == playbackGeneration && (if (isAudio) audioFilter else videoFilter) === filter
@@ -676,7 +709,11 @@ class PlaybackPipeline(
                             filter: Filter,
                             events: Array<FilterEvent>,
                         ) {
-                            enqueuePlaybackFilterEvents(events) {
+                            if (!sourceIsCurrent(filter)) {
+                                events.filterIsInstance<MediaEvent>().forEach(::releaseMediaEvent)
+                                return
+                            }
+                            enqueuePlaybackFilterEvents(events, { reportCapacityLoss(filter) }) {
                                 runCatching {
                                     for (event in events) {
                                         if (event is RestartEvent) {
@@ -724,6 +761,7 @@ class PlaybackPipeline(
                             filter: Filter,
                             status: Int,
                         ) {
+                            if (!sourceIsCurrent(filter) || status and Filter.STATUS_OVERFLOW == 0) return
                             enqueuePlaybackAction {
                                 Log.d(
                                     LogTags.TIS,
@@ -794,6 +832,21 @@ class PlaybackPipeline(
                 "caption kindとstreamが一致しません pid=$pid superimpose=$superimpose"
             }
             val filterGeneration = playbackGeneration
+            val pendingCapacityLoss = AtomicBoolean(false)
+
+            fun reportCapacityLoss(source: Filter) {
+                if (!pendingCapacityLoss.compareAndSet(false, true)) return
+                enqueuePlaybackControl {
+                    pendingCapacityLoss.set(false)
+                    if (filterGeneration == playbackGeneration && !released.get() &&
+                        (if (superimpose) superimposeFilter else subtitleFilter) === source
+                    ) {
+                        onSubtitleContinuityLost(filterGeneration, trackId)
+                        runCatching { check(source.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
+                            .onFailure { Log.w(LogTags.TIS, "字幕Filterの入力回収に失敗しました", it) }
+                    }
+                }
+            }
 
             fun sourceIsCurrent(filter: Filter): Boolean =
                 filterGeneration == playbackGeneration &&
@@ -812,7 +865,8 @@ class PlaybackPipeline(
                             filter: Filter,
                             events: Array<FilterEvent>,
                         ) {
-                            enqueuePlaybackFilterEvents(events) {
+                            if (!sourceIsCurrent(filter)) return
+                            enqueuePlaybackFilterEvents(events, { reportCapacityLoss(filter) }) {
                                 runCatching {
                                     if (!sourceIsCurrent(filter)) return@enqueuePlaybackFilterEvents
                                     for (event in events) {
@@ -857,6 +911,7 @@ class PlaybackPipeline(
                             filter: Filter,
                             status: Int,
                         ) {
+                            if (!sourceIsCurrent(filter) || status and Filter.STATUS_OVERFLOW == 0) return
                             enqueuePlaybackAction {
                                 Log.d(
                                     LogTags.TIS,
@@ -1562,6 +1617,24 @@ class PlaybackPipeline(
 
         protected open fun onSampleRejected(reason: String) {
             Log.w(LogTags.TIS, "decoder sampleを拒否しました reason=$reason")
+        }
+
+        // owner受付の過負荷も既存decoderの継続停滞時計へ接続する。単発拒否で全再生をreleaseしない。
+        fun inputAdmissionRejected(rejectedAtMs: Long) {
+            val nowMs = SystemClock.elapsedRealtime()
+            val startedAtMs = backpressureStartedAtMs ?: rejectedAtMs.also { backpressureStartedAtMs = it }
+            val deadlineMs =
+                if (startupDeadline?.firstOutputSeen == true) {
+                    budget.steadyBackpressureDeadlineMs
+                } else {
+                    budget.decoderStartupDeadlineMs
+                }
+            val detail = "OWNER_INPUT_FULL blockedMs=${nowMs - startedAtMs} deadlineMs=$deadlineMs"
+            onSampleRejected(detail)
+            if (backpressureDeadlineReached(startedAtMs, nowMs, deadlineMs)) {
+                onBackpressureDeadline(detail)
+                close()
+            }
         }
 
         fun discardPendingInput() {
@@ -2814,7 +2887,6 @@ class PlaybackPipeline(
     @Suppress("TooManyFunctions")
     companion object {
         private const val PLAYBACK_CONTROL_WAIT_MS = 5_000L
-        private const val PLAYBACK_MAX_PENDING_DATA_TASKS = 64
 
         internal fun decodedVideoFormatInfo(
             kind: VideoCodecKind,

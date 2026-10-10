@@ -1,3 +1,10 @@
+# 非待機playback配送の容量拒否と実行失敗の分離
+
+- 64 callback固定の受付を、既存AV Filter容量に基づくpayload/event帳簿の有限予約へ変更する。同じSemaphoreのweighted acquire/releaseを使用し、owner再入とshutdown破棄でも全予約を返す。
+- 容量拒否はAVの既存decoder backpressure期限、字幕の既存continuity lost/flushへ接続する。損失通知は各Filterにつき既存controlへ一つだけ保留し、stale generation/Filterの入力はcurrent損失へ読み替えない。非overflow statusはdata枠を消費しない。真の投入/実行失敗のterminal cleanupは維持する。
+- 実SDK Filter callback lock、MediaEvent解放、Android時計を使う回帰をRobolectricへ追加し、65件video/audio/字幕/status burst、単発拒否後の再開、継続拒否の期限、字幕の局所回収、stale入力、実行失敗を検査する。weighted permit寿命は既存host試験で確認する。
+- 新owner・scheduler・retry loop・SI意味parserは追加しない。build/testは既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
 # 非待機section配送の有限burst受理
 
 - 1件固定のdata枠を、既存64KiB Filter容量と最大section長から導く16 slotへ変更する。残る拒否は既存ingest診断へ保持し、収集完了時も入力喪失を隠さない。callback待機・第二worker・SI意味解析/coalescingは追加しない。

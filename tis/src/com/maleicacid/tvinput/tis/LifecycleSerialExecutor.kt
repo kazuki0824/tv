@@ -45,6 +45,8 @@ internal class LifecycleSerialExecutor(
         private val onFailure: (RuntimeException) -> Unit,
         private val action: () -> Unit,
         private val onDiscard: () -> Unit,
+        val dataSlots: Int,
+        private val onCapacity: (() -> Unit)?,
     ) : Runnable {
         private val discarded =
             java.util.concurrent.atomic
@@ -70,7 +72,9 @@ internal class LifecycleSerialExecutor(
 
         fun fail(error: RuntimeException) {
             try {
-                if (!isReleased()) onFailure(error)
+                if (!isReleased()) {
+                    if (error is DataCapacityExceededException && onCapacity != null) onCapacity.invoke() else onFailure(error)
+                }
             } finally {
                 discard()
             }
@@ -120,18 +124,22 @@ internal class LifecycleSerialExecutor(
         }
     }
 
+    // 既存callbackの資源寿命と容量拒否方針を直接渡し、別の状態保持型を増やさない。
+    @Suppress("LongParameterList")
     fun executeCallback(
         control: Boolean = false,
         isReleased: () -> Boolean,
         onFailure: (RuntimeException) -> Unit,
         onDiscard: () -> Unit = {},
+        dataSlots: Int = 1,
+        onCapacity: (() -> Unit)? = null,
         action: () -> Unit,
     ) {
         if (isReleased()) {
             onDiscard()
             return
         }
-        val task = CallbackTask(isReleased, onFailure, action, onDiscard)
+        val task = CallbackTask(isReleased, onFailure, action, onDiscard, dataSlots, onCapacity)
         try {
             if (control) executeControl(task) else executeData(task)
         } catch (error: RejectedExecutionException) {
@@ -142,48 +150,50 @@ internal class LifecycleSerialExecutor(
     }
 
     fun executeControl(command: Runnable) {
-        enqueue(CONTROL_QUEUE_CLASS, command, { finishOwnerTask(hasDataSlot = false) })
+        enqueue(CONTROL_QUEUE_CLASS, command, { finishOwnerTask(dataSlots = 0) })
     }
 
+    private fun dataSlots(command: Runnable): Int = (command as? CallbackTask)?.dataSlots ?: 1
+
     fun executeData(command: Runnable) {
+        val slots = dataSlots(command)
+        require(slots > 0)
         if (isOwnerThread()) {
             synchronized(deferredOwnerData) {
                 if (stoppingData || isShutdown) throw RejectedExecutionException("$threadName はshutdown済みです")
-                check(deferredOwnerData.size < maxPendingDataTasks) {
-                    "$threadName のowner-thread data再投入数が上限に達しました"
+                if (slots > maxPendingDataTasks - deferredOwnerData.sumOf(::dataSlots)) {
+                    throw DataCapacityExceededException("$threadName のowner-thread data再投入数が上限に達しました")
                 }
                 deferredOwnerData.addLast(command)
             }
             return
         }
-        acquireDataSlotAndEnqueue(command, { finishOwnerTask(hasDataSlot = true) }, {
-            pendingDataSlots.release()
+        acquireDataSlotAndEnqueue(command, slots, { finishOwnerTask(slots) }, {
+            pendingDataSlots.release(slots)
             discardCallback(command)
         })
     }
 
-    private fun finishOwnerTask(hasDataSlot: Boolean): Unit =
+    private fun finishOwnerTask(dataSlots: Int): Unit =
         synchronized(deferredOwnerData) {
+            if (dataSlots > 0) pendingDataSlots.release(dataSlots)
             if (stoppingData || isShutdown) discardDeferredCallbacks()
-            if (deferredOwnerData.isEmpty()) {
-                if (hasDataSlot) pendingDataSlots.release()
-                return@synchronized
-            }
-            // control完了はpermitを待たない。dataが満杯なら既存dataの完了が同じqueueをdrainする。
-            if (!hasDataSlot && !pendingDataSlots.tryAcquire()) return@synchronized
-            val deferred = deferredOwnerData.removeFirst()
+            val deferred = deferredOwnerData.firstOrNull() ?: return@synchronized
+            val slots = this.dataSlots(deferred)
+            if (!pendingDataSlots.tryAcquire(slots)) return@synchronized
+            deferredOwnerData.removeFirst()
             try {
-                enqueue(DATA_QUEUE_CLASS, deferred, { finishOwnerTask(hasDataSlot = true) }, {
-                    pendingDataSlots.release()
+                enqueue(DATA_QUEUE_CLASS, deferred, { finishOwnerTask(slots) }, {
+                    pendingDataSlots.release(slots)
                     discardCallback(deferred)
                 })
             } catch (error: RejectedExecutionException) {
                 discardDeferredCallbacks()
-                pendingDataSlots.release()
+                pendingDataSlots.release(slots)
                 if (!isShutdown) reportDeferredFailure(deferred, error)
             } catch (error: IllegalStateException) {
                 discardDeferredCallbacks()
-                pendingDataSlots.release()
+                pendingDataSlots.release(slots)
                 if (!isShutdown) reportDeferredFailure(deferred, error)
             }
         }
@@ -218,7 +228,7 @@ internal class LifecycleSerialExecutor(
         if (cleanup) {
             enqueueCleanup(CLEANUP_QUEUE_CLASS, task, onDiscarded = onDiscarded)
         } else {
-            enqueue(CONTROL_QUEUE_CLASS, task, { finishOwnerTask(hasDataSlot = false) }, onDiscarded)
+            enqueue(CONTROL_QUEUE_CLASS, task, { finishOwnerTask(dataSlots = 0) }, onDiscarded)
         }
         return try {
             task.get(timeoutMs, TimeUnit.MILLISECONDS)

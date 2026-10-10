@@ -10,6 +10,11 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
+// 満杯はtask実行失敗と区別し、呼出元の既存backpressure方針へ写像できる。
+internal class DataCapacityExceededException(
+    message: String,
+) : RejectedExecutionException(message)
+
 // 二つのownerで共通のqueue順序・thread識別・permit寿命だけを実装する。
 // control待機、callback破棄、owner再投入と上限値は各executorの方針として残す。
 internal abstract class PrioritySerialExecutor(
@@ -68,19 +73,21 @@ internal abstract class PrioritySerialExecutor(
     @Suppress("ThrowsCount")
     protected fun acquireDataSlotAndEnqueue(
         command: Runnable,
-        onFinished: () -> Unit = { pendingDataSlots.release() },
-        onDiscarded: () -> Unit = { pendingDataSlots.release() },
+        dataSlots: Int = 1,
+        onFinished: () -> Unit = { pendingDataSlots.release(dataSlots) },
+        onDiscarded: () -> Unit = { pendingDataSlots.release(dataSlots) },
     ) {
-        if (!pendingDataSlots.tryAcquire()) {
-            throw RejectedExecutionException("$ownerName のdata未処理数が上限に達しました")
+        require(dataSlots > 0)
+        if (!pendingDataSlots.tryAcquire(dataSlots)) {
+            throw DataCapacityExceededException("$ownerName のdata未処理数が上限に達しました")
         }
         try {
             enqueue(DATA_QUEUE_CLASS, command, onFinished, onDiscarded)
         } catch (error: RejectedExecutionException) {
-            pendingDataSlots.release()
+            pendingDataSlots.release(dataSlots)
             throw error
         } catch (error: IllegalStateException) {
-            pendingDataSlots.release()
+            pendingDataSlots.release(dataSlots)
             throw error
         }
     }
