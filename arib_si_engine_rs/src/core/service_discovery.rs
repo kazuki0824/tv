@@ -1292,8 +1292,11 @@ impl ServiceDiscoveryCollector {
             let mut missing_for_service = table_requirements
                 .iter()
                 .filter(|status| {
+                    // other network/transportの完成はcollection全体の条件。
+                    // 現在TSの単独service登録にまで他networkの未受信を波及させない。
                     status.required
                         && !status.complete
+                        && !matches!(status.component, "SDT-other" | "NIT-other")
                         && status
                             .original_network_id
                             .map(|value| value == service.original_network_id)
@@ -2309,6 +2312,67 @@ mod tests {
             &section_with_crc(vec![0x41, 0xf0, 0x0d, 0, 3, 0xc1, 0, 1, 0xf0, 0, 0xf0, 0]),
         );
         assert!(!collector.state().is_complete());
+    }
+
+    #[test]
+    fn satellite_other_tables_still_gate_collection_but_not_current_service_facts() {
+        // PAT/PMT/SDT actualとNIT actualは完成。他TS/他networkのテーブルを故意に未受信にする。
+        // collection完全性と現在サービスの登録準備は別の契約である。
+        for profile in [DiscoveryProfile::Bs, DiscoveryProfile::Cs110] {
+            let mut collector = collector_with_pmt(&[], &[0x1b, 0xe1, 0x01, 0xf0, 0], 0x101);
+            collector.set_discovery_profile(profile);
+            collector.push_section(
+                0x10,
+                &section_with_crc(vec![
+                    0x40, 0xf0, 0x19, 0, 1, 0xc1, 0, 0, 0xf0, 0, 0xf0, 12, 0, 0x11, 0, 0x22, 0xf0,
+                    0, 0, 0x12, 0, 0x22, 0xf0, 0,
+                ]),
+            );
+            let state = collector.state();
+            assert!(
+                !state.is_complete(),
+                "satellite completion must still require other tables"
+            );
+            assert!(state.table_requirements.iter().any(|status| {
+                status.component == "SDT-other" && status.required && !status.complete
+            }));
+            if profile == DiscoveryProfile::Cs110 {
+                assert!(state.table_requirements.iter().any(|status| {
+                    status.component == "NIT-other" && status.required && !status.complete
+                }));
+            }
+            let current = state
+                .semantic_facts_by_service
+                .iter()
+                .find(|facts| facts.transport_stream_id == 0x11 && facts.service_id == 1)
+                .expect("current transport service");
+            assert!(
+                current.missing_components.is_empty(),
+                "unrelated satellite other tables must not block actual service: {:?}",
+                current.missing_components
+            );
+            assert!(current.pmt_parsed && current.pmt_pid_resolved && current.pcr_pid_resolved);
+        }
+    }
+
+    #[test]
+    fn satellite_actual_nit_is_still_required_for_current_service() {
+        let mut collector = collector_with_pmt(&[], &[0x1b, 0xe1, 0x01, 0xf0, 0], 0x101);
+        collector.set_discovery_profile(DiscoveryProfile::Cs110);
+        let state = collector.state();
+        let service = state
+            .semantic_facts_by_service
+            .iter()
+            .find(|facts| facts.service_id == 1)
+            .expect("service from current SDT");
+        assert!(
+            service.missing_components.contains(&"NIT"),
+            "missing NIT actual must remain a registration blocker"
+        );
+        assert!(
+            !service.missing_components.contains(&"NIT-other"),
+            "other-network table absence is collection-level, not service-level"
+        );
     }
 
     #[test]
