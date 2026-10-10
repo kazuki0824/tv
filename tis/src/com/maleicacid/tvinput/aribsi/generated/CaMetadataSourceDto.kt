@@ -9,4 +9,3 @@ sealed class CaMetadataSourceDto {
 
     object Cat : CaMetadataSourceDto()
 }
-

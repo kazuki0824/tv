@@ -15,4 +15,3 @@ sealed class SiParseStatusDto {
 
     object Unresolved : SiParseStatusDto()
 }
-

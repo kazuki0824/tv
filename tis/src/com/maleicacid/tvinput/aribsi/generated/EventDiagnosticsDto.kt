@@ -9,4 +9,3 @@ data class EventDiagnosticsDto(
     val textDiagnostics: List<String>,
     val truncatedDescriptorLoop: TruncatedDescriptorLoopDto?
 )
-

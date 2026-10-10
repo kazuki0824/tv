@@ -6,4 +6,3 @@ data class FreeCaModeDto(
     val scrambled: Boolean?,
     val parseStatus: SiParseStatusDto
 )
-

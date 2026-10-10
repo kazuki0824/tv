@@ -7,4 +7,3 @@ data class OtherNetworkEventGroupReferenceDto(
     val serviceId: Int,
     val eventId: Int
 )
-

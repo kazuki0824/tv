@@ -7,4 +7,3 @@ sealed class CaDescriptorScopeDto {
 
     object Es : CaDescriptorScopeDto()
 }
-

@@ -7,4 +7,3 @@ data class ShortEventDto(
     val text: String,
     val parseStatus: SiParseStatusDto
 )
-

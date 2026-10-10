@@ -8,4 +8,3 @@ data class ContentGenreDto(
     val aribName: String,
     val parseStatus: SiParseStatusDto
 )
-

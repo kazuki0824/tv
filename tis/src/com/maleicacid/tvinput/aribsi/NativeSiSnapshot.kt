@@ -59,7 +59,4 @@ data class NativeSiSnapshot(
             .mapNotNull { facts ->
                 facts.pmtPid?.let { facts.serviceKey to it }
             }.toMap()
-
-    val actualTransports: List<AribTransport> get() =
-        transportSemanticFacts.filter { it.sdtActual }
 }

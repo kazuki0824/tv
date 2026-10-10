@@ -10,4 +10,3 @@ data class CaMetadataDto(
     val privateDataHex: String,
     val source: CaMetadataSourceDto
 )
-

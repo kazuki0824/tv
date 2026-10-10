@@ -12,4 +12,3 @@ data class DescriptorDiagnosticScopeDto(
     val serviceId: Int?,
     val eventId: Int?
 )
-

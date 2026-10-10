@@ -9,4 +9,3 @@ data class ServiceCaDescriptorDto(
     val rawDescriptorHex: String,
     val privateDataHex: String
 )
-

@@ -13,4 +13,3 @@ data class SmdSemanticFactsDto(
     val semanticState: SmdSemanticStateDto,
     val diagnostic: String?
 )
-

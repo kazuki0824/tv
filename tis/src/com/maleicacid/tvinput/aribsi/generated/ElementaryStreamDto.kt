@@ -18,4 +18,3 @@ data class ElementaryStreamDto(
     val codecKind: ElementaryStreamKindDto?,
     val codecFacts: CodecFactsDto
 )
-

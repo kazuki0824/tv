@@ -10,4 +10,3 @@ data class DescriptorDiagnosticDescriptorDto(
     val parseStatus: String,
     val rawPrefixHex: String
 )
-

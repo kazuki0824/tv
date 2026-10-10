@@ -6,4 +6,3 @@ data class ExtendedTextDto(
     val text: String,
     val parseStatus: SiParseStatusDto
 )
-

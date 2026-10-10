@@ -20,4 +20,3 @@ data class EventDescriptorsDto(
     val components: ComponentsDto,
     val diagnostics: EventDiagnosticsDto
 )
-

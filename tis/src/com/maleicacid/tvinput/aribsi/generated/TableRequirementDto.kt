@@ -9,4 +9,3 @@ data class TableRequirementDto(
     val required: Boolean,
     val complete: Boolean
 )
-

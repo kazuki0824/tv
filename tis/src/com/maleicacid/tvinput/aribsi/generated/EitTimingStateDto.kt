@@ -11,4 +11,3 @@ sealed class EitTimingStateDto {
 
     object MalformedTiming : EitTimingStateDto()
 }
-

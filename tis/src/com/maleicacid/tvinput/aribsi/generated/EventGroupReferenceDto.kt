@@ -5,4 +5,3 @@ data class EventGroupReferenceDto(
     val serviceId: Int,
     val eventId: Int
 )
-

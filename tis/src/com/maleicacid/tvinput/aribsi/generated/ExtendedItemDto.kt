@@ -6,4 +6,3 @@ data class ExtendedItemDto(
     val description: String,
     val text: String
 )
-

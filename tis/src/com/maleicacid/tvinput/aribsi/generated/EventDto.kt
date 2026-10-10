@@ -17,4 +17,3 @@ data class EventDto(
     val source: ProgramSourceDto,
     val descriptors: EventDescriptorsDto
 )
-

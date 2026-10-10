@@ -9,4 +9,3 @@ sealed class BroadcastSystemDto {
 
     object IsdbS110Cs : BroadcastSystemDto()
 }
-

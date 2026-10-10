@@ -12,4 +12,3 @@ data class SeriesDto(
     val name: String?,
     val parseStatus: SiParseStatusDto
 )
-

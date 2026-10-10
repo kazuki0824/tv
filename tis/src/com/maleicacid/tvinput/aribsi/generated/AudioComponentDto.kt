@@ -24,4 +24,3 @@ data class AudioComponentDto(
     val hardOfHearing: Boolean?,
     val dualMono: Boolean?
 )
-
