@@ -20,6 +20,9 @@ internal class ControllerSerialExecutor(
 
     fun executeData(command: Runnable) = acquireDataSlotAndEnqueue(command)
 
+    /** Tunerのdemux能力確定時にだけ初期容量を増やす。data/controlの所有順は変更しない。 */
+    fun expandDataTaskCapacity(limit: Int) = expandDataSlotCapacity(limit)
+
     fun <T> submitControl(
         cleanup: Boolean = false,
         block: () -> T,
