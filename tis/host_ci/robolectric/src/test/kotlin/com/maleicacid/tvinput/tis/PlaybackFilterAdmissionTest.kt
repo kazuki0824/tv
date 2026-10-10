@@ -12,6 +12,7 @@ import android.media.tv.tuner.filter.FilterCallback
 import android.media.tv.tuner.filter.FilterConfiguration
 import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.MediaEvent
+import android.media.tv.tuner.filter.PesEvent
 import android.media.tv.tuner.filter.RestartEvent
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribCodecFacts
@@ -32,6 +33,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -141,6 +143,36 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun captionCapacityFlushInvalidatesQueuedPesBeforeReadingNewInput() {
+        Fixture().use { fixture ->
+            val video = fixture.avFilter(false)
+            val caption = fixture.captionFilter()
+            val nativeCaption = Shadow.extract<NativeFilter>(caption)
+            // 先に受理したPESは、容量回収のflush後に新しいFMQ入力を読んではならない。
+            fixture.whileOwnerBlocked {
+                nativeCaption.offer(ByteArray(12) { 0x55 })
+                deliver(caption, pesEvent(12))
+                deliver(caption, Array(16 * 1024) { restartEvent() })
+            }
+            fixture.drain()
+            assertEquals(emptyList(), nativeCaption.readSizes)
+            assertEquals(1, nativeCaption.flushes)
+            val currentPes = captionPes()
+            nativeCaption.offer(currentPes)
+            deliver(caption, pesEvent(currentPes.size))
+            fixture.drain()
+            assertEquals(listOf(currentPes.size), nativeCaption.readSizes)
+            assertEquals(1, fixture.captionPayloads.size)
+            assertContentEquals(currentPes.copyOfRange(9, currentPes.size), fixture.captionPayloads.single())
+            val videoEvent = mediaEvent(1L)
+            deliver(video, videoEvent)
+            fixture.drain()
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(videoEvent).blockReads)
+            assertFalse(fixture.released())
+        }
+    }
+
+    @Test
     fun actualOwnerExecutionFailureNotifiesOnceAndCleansOnSameOwner() {
         Fixture().use { fixture ->
             val video = fixture.avFilter(false)
@@ -164,6 +196,7 @@ class PlaybackFilterAdmissionTest {
         val tuner = Tuner(RuntimeEnvironment.getApplication(), null, 0)
         val failures = mutableListOf<Pair<PlaybackPipeline.PlaybackUnavailableReason, String>>()
         val unavailable = mutableListOf<PlaybackPipeline.PlaybackUnavailable>()
+        val captionPayloads = mutableListOf<ByteArray>()
         var captionDiscontinuities = 0
 
         init {
@@ -176,6 +209,11 @@ class PlaybackFilterAdmissionTest {
             ReflectionHelpers.setField(pipeline, "onSubtitleContinuityLost", { _: Long, _: String ->
                 captionDiscontinuities++
             })
+            ReflectionHelpers.setField(
+                pipeline,
+                "onSubtitlePes",
+                { _: Long, _: String, payload: ByteArray, _: Any -> captionPayloads += payload },
+            )
         }
 
         fun released(): Boolean = ReflectionHelpers.getField<AtomicBoolean>(pipeline, "released").get()
@@ -301,6 +339,23 @@ class PlaybackFilterAdmissionTest {
                 0,
             ) as RestartEvent
 
+    private fun pesEvent(length: Int): PesEvent =
+        PesEvent::class.java.declaredConstructors
+            .single { it.parameterCount == 2 }
+            .apply { isAccessible = true }
+            .newInstance(0, length) as PesEvent
+
+    private fun captionPes(): ByteArray =
+        ByteArray(20).also { pes ->
+            pes[2] = 1
+            pes[3] = 0xbd.toByte()
+            pes[5] = 14
+            pes[6] = 0x80.toByte()
+            pes[9] = 0x80.toByte()
+            pes[10] = 0xff.toByte()
+            for (index in 11 until pes.size) pes[index] = index.toByte()
+        }
+
     private fun deliver(
         filter: Filter,
         event: FilterEvent,
@@ -371,6 +426,12 @@ class PlaybackFilterAdmissionTest {
         var closes = 0
         var flushes = 0
         var closeThread: String? = null
+        val readSizes = mutableListOf<Int>()
+        private val pendingBytes = ArrayDeque<Byte>()
+
+        fun offer(bytes: ByteArray) {
+            bytes.forEach(pendingBytes::addLast)
+        }
 
         @Implementation
         @Suppress("UNUSED_PARAMETER")
@@ -389,7 +450,20 @@ class PlaybackFilterAdmissionTest {
         @Implementation
         fun nativeFlushFilter(): Int {
             flushes++
+            pendingBytes.clear()
             return Tuner.RESULT_SUCCESS
+        }
+
+        @Implementation
+        fun nativeRead(
+            buffer: ByteArray,
+            offset: Long,
+            size: Long,
+        ): Int {
+            val count = minOf(size.toInt(), pendingBytes.size)
+            repeat(count) { index -> buffer[offset.toInt() + index] = pendingBytes.removeFirst() }
+            readSizes += count
+            return count
         }
 
         @Implementation
