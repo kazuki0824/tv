@@ -1040,7 +1040,9 @@ mod tests {
                     },
                 )
                 .expect("PCR filter configure succeeds");
-            guard.start_filter_runtime(pcr_open.filter_id).unwrap();
+            guard
+                .transact_start_filter_runtime(pcr_open.filter_id)
+                .unwrap();
         }
         let response = ObjectMethodUseCase::execute_query_after_live(
             &runtime,

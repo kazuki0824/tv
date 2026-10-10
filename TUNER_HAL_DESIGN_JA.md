@@ -379,6 +379,8 @@ TS main typeの具体的linkageでは、実データを供給するsourceとし�
 
 `IFrontend.tune()`はbinder thread上でlock完了まで待ち続けない。同一の正規化settings、typed selector、LNB/power条件で既存lockを安全に継続できる場合は、既存streamを中断せず当該requestに対応する`LOCKED`を正確に1回配送する。それ以外の要求ではfull retuneとして扱い、破壊的遷移後に旧service由来のdataを新要求の出力として復元しない。入力分類、caller-visibleな結果、失敗後の公開状態は本節のfrontend各API契約を正とし、同値性snapshot、generation、worker/backend停止、boundary、commit / rollbackの内部semanticsはcanonical `frontend tune/scan`だけを正本とする。
 
+新しい`tune()` / `scan()`の受付時に、同じfrontend endpointの旧worker cleanupが既存reaperへ移管済みである場合は、service runtime lockを保持せず既存`workerReaperDeadlineMs`の範囲でそのpending ownershipの解放を待つ。期限内にreaperがterminal cleanupを完了した場合はobject/generationとfrontend bindingを再検証してから新operationを開始し、期限を超えてもpendingならcleanup failureとして新operationを開始しない。旧reaper ownershipを即時`INVALID_STATE`としてcallerへ露出したり、pending中のendpointへ新workerを重ねたりしない。新しいdeadline、retry owner、別reaperは追加せず、待機対象と期限は既存`WorkerRuntime` reaperの正本を使用する。
+
 無応答backendの製品watchdogはbackend別`ProductProfile.tuneTerminalDeadlineMs`を正とし、本製品ProductProfileではearth_pt1=`4000 ms`、px4=`7000 ms`とする。これはAIDL規定値ではなく、正常なbackend処理列を期限前に打ち切らないための製品値である。lockまたは明示失敗がないまま期限へ達した場合のcaller-visibleな結果は`NO_SIGNAL`を正確に1回通知して`Idle`とし、期限と既に確定したlockが競合する場合は`LOCKED`を優先する。cancel / stale通知fence等の内部処理はcanonical `frontend tune/scan` / `WorkerRuntime`参照とする。Android 14 AIDL VTSへ結び付けるprofileは、実信号でVTSの`WAIT_TIMEOUT=3秒`より前に`LOCKED`を通知できることを別の受入条件とし、VTS待機値を製品watchdogへ流用しない。
 
 `IFrontend.scan()`は、最初の`scan(K)`で`LOCKED`を配送した後、同じsettings / scan typeの次の`scan(K)`に対して`END`を正確に1回配送し、2回目の`LOCKED`で補償しない。異なるrequestは新しいscanとして扱い、`stopScan()`はactive scanを停止する。`tune()` / `close()`等で継続条件を失った後に旧scanのterminal callbackを新operationの結果として配送しない。request fingerprint、scan generation、continuation state、worker/callback commit等の内部semanticsはcanonical `frontend tune/scan`だけを正本とする。最低試験は`scan(K)→LOCKED→scan(K)→END`、2回目の`LOCKED`がないこと、および異なるrequest / `stopScan()` / `tune()` / `close()`後に旧continuation結果が現れないことを確認する。
@@ -561,6 +563,8 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | コールバック失敗 | Binder コールバック失敗 | API表に従う | コールバック所有者 | データ経路全体を即failedにしない |
 
 ワーカー関連の失敗種別は`WorkerFailureClassifier`だけがtyped分類する。対象にはstop/wake/join/EventFlag/Reaper/backend-control/callback等の発生源を含めるが、分類器が所有するのは分類結果だけであり、停止順序、retry、cleanup、quarantine、公開状態遷移は各worker owner/API契約に残す。FMQ payload commit後のEventFlag起床失敗についても、payload保持・再起床というdata-path状態機械はqueue runtimeが所有し、classifierは失敗種別を分類するだけとする。
+
+backend submitの失敗でtransaction rollbackが完了し、workerの物理終了も確定した場合は、失敗事実をfrontend operation stateと診断へ保存するが、generic worker cleanup失敗へ昇格させずAIDL objectをquarantineしない。rollback、stop、join、reaper等のcleanup自体が未完了または失敗した場合だけ、そのcleanup ownershipに従って`CleanupPending` / `Quarantined`を判定する。operation失敗とcleanup失敗を同じworker terminal errorだけを理由に混同してはならない。
 
 
 | 失敗種別 | 例 | 戻り値 | 波及範囲 | 禁止事項 |

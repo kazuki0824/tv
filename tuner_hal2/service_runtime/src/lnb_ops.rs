@@ -478,21 +478,26 @@ mod wp_r11_lnb_apply_tests {
     }
 
     #[test]
-    fn set_frontend_lnb_backend_failure_does_not_commit_binding() {
+    fn set_frontend_lnb_commits_relation_without_applying_electrical_state() {
         let mut runtime = runtime_with_lnb(LnbRegistryProfile::Px4Device15VOnly);
-
-        let err = runtime.set_frontend_lnb(1, 10001).unwrap_err();
-
-        assert!(matches!(err, HalError::Internal { .. }));
+        // /dev/nullは電気制御I/Oを受け付けない。それでもrelation設定自体は成功する。
+        runtime.set_frontend_lnb(1, 10001).unwrap();
         assert_eq!(
             runtime
                 .registry()
                 .selected_lnb_for_frontend(FrontendRuntimeId(1)),
-            None
+            Some(LnbRuntimeId(10001))
         );
         let lnb = runtime.registry().lnb_runtime(LnbRuntimeId(10001)).unwrap();
         assert_eq!(lnb.registry_state(), LnbElectricalState::safe());
-        assert_eq!(lnb.state(), LnbRuntimeState::Quarantined);
+        assert_ne!(lnb.state(), LnbRuntimeState::Quarantined);
+        assert_eq!(
+            runtime
+                .registry()
+                .lnb_registry()
+                .rail_reference_count(LnbRuntimeId(10001)),
+            Some(1)
+        );
     }
 
     #[test]

@@ -104,8 +104,27 @@ impl RootOpenTxn<'_> {
             ));
         };
         if self.runtime.has_active_frontend_lease(frontend_id) {
-            return Err(HalError::Unsupported(
-                "frontend id is already leased by a live object",
+            let occupant = self
+                .runtime
+                .object_table()
+                .active_entry_for_runtime(
+                    AidlObjectKind::Frontend,
+                    maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(frontend_id)),
+                )
+                .ok_or_else(|| {
+                    HalError::internal(
+                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                        "active frontend leaseにruntime object occupantがありません",
+                    )
+                })?;
+            return Err(HalError::unsupported_detail(
+                "frontend.open",
+                format!(
+                    "frontend leaseは占有中です: frontend_id={frontend_id} object_id={} generation={} lifecycle={:?}",
+                    occupant.object_id().0,
+                    occupant.generation().0,
+                    occupant.lifecycle,
+                ),
             ));
         }
         if self

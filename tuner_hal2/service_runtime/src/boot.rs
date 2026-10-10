@@ -1742,6 +1742,12 @@ impl TunerServiceRuntime {
         Ok(snapshots)
     }
 
+    pub fn runtime_object_diagnostic_snapshots(
+        &self,
+    ) -> Vec<crate::object_table::RuntimeObjectDiagnosticSnapshot> {
+        self.object_table.active_diagnostic_snapshots()
+    }
+
     pub fn frontend_diagnostic_snapshots(
         &self,
     ) -> Result<Vec<crate::diagnostics::FrontendDiagnosticSnapshot>, HalError> {

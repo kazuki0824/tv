@@ -256,6 +256,31 @@ impl FrontendTxn<'_> {
             .record_completed_backend_submit_failure(failure)
     }
 
+    pub(crate) fn record_completed_frontend_scan_submit_failure(
+        &mut self,
+        frontend_id: i32,
+        failure: FrontendBackendSubmitFailure,
+    ) -> Result<(), HalError> {
+        let frontend_key = crate::registry::FrontendRuntimeId(frontend_id);
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(frontend_key)
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "遅延scan backend失敗の記録中にfrontend runtimeがありません",
+                )
+            })?;
+        let generation = failure.generation;
+        let primary_error = failure.error.clone();
+        runtime.record_completed_backend_submit_failure(failure)?;
+        if generation < runtime.generation() {
+            return Ok(());
+        }
+        runtime.mark_scan_submit_rejected_after_boundary(generation, primary_error)
+    }
+
     pub(crate) fn record_frontend_backend_failure_diagnostic(
         &mut self,
         frontend_id: i32,
@@ -759,6 +784,16 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing while recording backend activation failure",
                 )
             })?;
+        if generation < runtime.generation() {
+            // 旧試行の失敗は既存の遅延診断入口へ渡し、現世代の状態を変更しない。
+            return runtime.record_completed_backend_submit_failure(FrontendBackendSubmitFailure {
+                generation,
+                error: diagnostic_primary_error,
+                rollback_succeeded: backend_stopped,
+                step,
+                rollback_failure,
+            });
+        }
         let diagnostic_result = runtime.record_backend_failure_diagnostic_context(
             generation,
             backend,

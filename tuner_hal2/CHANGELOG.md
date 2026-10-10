@@ -1,3 +1,29 @@
+# PR #166 service_runtime単体試験の実行経路修復
+
+- 既存host Rust CIのunit-tests matrixからservice_runtimeの除外を削除し、追加した旧世代submit失敗の回帰試験を含む通常単体試験を継続実行する。
+- 既存試験のAidlApi・FrontendDevicePath import漏れ、未使用AidlMethodAdapter import、旧ExplicitClose名、private registry field参照、privateなFilter開始wrapper参照を現行の型・入口へ修正した。
+- 旧start_workerを使っていた5箇所を、既存prepare_backend_submitとstart_worker_with_prepared_submitへ接続するtest module内fixtureへ統一した。機器I/Oを発行せず準備済み権限を回収し、実ワーカーの寿命を検査する。
+- close完了情報を直接検査するfrontend再open試験群をObjectCloseTxn所有者のtest moduleへ移動した。本番APIの可視性拡大、新しい本番owner・状態・互換入口はない。
+- ホストにDMAヒープがないことは既存packet_path試験と同じ未対応スタブで表現し、リンク不足を修正した。Android試験のネイティブ実装は置換しない。cleanup権限を使う既存試験では、開始したattemptを変数へ保持した。
+- 初回実行で表面化した13件の失敗に対し、backend種別に一致するexclusive groupとISDB-T能力をfixtureへ設定した。世代不一致試験は同一configureのNoopを避け、PIDを保ってPES条件を変更し、実際の世代増加を確認してから反例を検査する。
+- START中のDemux close許可、setLnbのrelationのみのcommit、DVR post-commit通知失敗の診断記録、queue失敗の型付き投影という現行契約へ既存試験を更新した。scan END artifact lookup試験は実際のscan sessionを準備し、存在しないsessionのaccounting失敗が混入しないようにした。本番処理は変更しない。
+- コミット`d682b47`の[host Rust CI](https://github.com/kazuki0824/tv/actions/runs/37943174871)でservice_runtime単体試験235件が成功（失敗・無視0件）。旧世代submit失敗のDVB/PX4回帰試験を含み、本番の警告エラー扱い型検査とhost Rust CI全30ジョブも成功した。Rust quality、TISホスト、TIS Robolectric、Kotlin quality CIも成功。Soong/device atest/VTS/実機は未実施。
+
+# PR #166 旧tune submit失敗とworker回収結果の分離
+
+- 再選局・stop・closeでfenceされた旧世代の非同期tune失敗を、既存FrontendRuntimeの遅延診断入口へ接続する。現世代の状態を変更せず、rollback成功済みoperation失敗をworker cleanup失敗へ昇格させない。
+- 実非同期記録入口でDVB/PX4の旧世代、rollback未完、未来世代の反例を検査する回帰試験を追加。新しいowner/reaper/retry機構はない。
+- 追加時にBackendTuneStep import漏れを修正した。当時のCIはservice_runtimeをunit-tests matrixから除外しており、既存test graphの23エラーの修復・回帰試験実行は未実施だった。この制約の修復と検証結果は上記「service_runtime単体試験の実行経路修復」に記録する。
+
+# PR #166 未使用のreaper公開委譲の除去
+
+- 呼出元のないWorkerRuntimeReaperQueue::pending_valuesを削除した。共通pending owner内の複数key読取り、any_pending、wait_until_releasedは維持する。新しいhelper・状態・試験は追加しない。検証は既存CIへ委ね、Soong/VTS/実機は未実施。
+
+# frontend reaper受付の有限待機
+
+- Bound frontend tune/scan reaper-admission waits by the existing workerReaperDeadlineMs capability; retain pending ownership and return typed cleanup failure on timeout.
+- 既存workerとcleanup所有を維持する。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
 # フロントエンドclose失敗詳細の日本語統一
 
 - ワーカー終了待ちの未完了を示すruntime error detailを日本語へ統一した。typed error、回収所有権、状態遷移、終了待ち期限は変更していない。

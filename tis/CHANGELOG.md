@@ -1,3 +1,25 @@
+# 非待機section配送の有限burst受理
+
+- 1件固定のdata枠を、既存64KiB Filter容量と最大section長から導く16 slotへ変更する。残る拒否は既存ingest診断へ保持し、収集完了時も入力喪失を隠さない。callback待機・第二worker・SI意味解析/coalescingは追加しない。
+- 本番Filter callback/read/実JNIへの複数section配送、飽和診断、世代失効の回帰を既存host fixtureへ追加する。検証は既存CIへ委任し、実機VTS・実波は未実施。
+
+# BS探索のSDK scan登録解放とAndroid 15境界試験
+
+- 停止通知後も残るTuner SDKのscan callback登録をcancelScanningで解除し、同じTuner/frontend lease上の次RF探索を可能にする。STOPPEDの受信結果とstream IDsは保持し、停止済み状態に限りnativeのINVALID_STATEを受理する。未停止operationと他の失敗では既存ownerとcleanup再試行を維持する。
+- TIS設計と停止済みcleanupの単体期待値をSDK登録寿命へ合わせる。Android 15の実scan/cancelScanning/onScanStoppedと本番operationを接続するRobolectric試験を追加し、constructorのnative/TRM接続とnative呼出しだけを試験境界で代替する。未解放登録による次RF拒否と、SUCCESS/INVALID_STATE後の次RF到達を検査する。
+- 既存Robolectric CIへ試験を接続し、host-only source setとKotlin build ownership検査へ登録する。SDK非公開型の試験runtime依存を明示し、失敗時の完全な例外出力と境界試験2件の実行report確認を接続する。新しい本番owner・wrapper・状態・scheduler・migrationは追加しない。buildと試験はCIで確認し、Soong/device atest/実機VTS/実波は未実施。
+
+# controller data入口とshutdown試験の整理
+
+- 本番未使用のsubmitDataを削除し、既存backpressure試験をexecuteDataと試験内latchへ接続した。
+- shutdown前の飽和拒否と未実行task破棄後のSemaphore枠返却を別々に直接観測する。
+- production owner・permit管理・公開契約は追加しない。テスト実行はCIへ委任し、実機VTS・実波は未実施。
+
+# Filter callbackとcontroller closeの循環待ち解消
+
+- SectionEventはcallback入口でdrainし、parser更新は既存controllerへ非同期・有限・待機なしで投入する。飽和は診断付き拒否とし、世代・Filter identity fenceと順序を維持する。
+- Android 15の実Filter callback lockと優先closeを競合させるホスト試験をCIへ追加する。試験実行はCIに委ね、Soong/VTS/実機適合は未確認。
+
 # 不要な例示設定の削除
 
 - 正式な製品組込み設定を継承するだけだった未参照の例示makefileを削除した。
@@ -911,3 +933,9 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 ## r50ba2
 - `ChannelKeys.kt` を package 外の `../` source path ではなく Soong module dependency 経由で `rec` tests から参照できるよう、`maleicacid_tvinput_channel_keys_sources` filegroup を追加した。
 - No TIS Kotlin implementation, resources, manifest, permissions, or product integration files were changed.
+
+# controller worker交換後のowner判定
+
+- beforeExecuteで現在実行するworker identityへ更新する。未捕捉例外による交換後も単一thread ownerとcontroller/data再入を維持する試験を追加した。thread数やexecutorは増やさない。
+
+- Localize TunerController runtime failure details without changing scan outcomes.

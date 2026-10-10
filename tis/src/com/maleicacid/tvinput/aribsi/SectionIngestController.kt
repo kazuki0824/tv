@@ -31,6 +31,15 @@ class SectionIngestController(
         var lastErrorTimeMillis: Long = 0L,
     )
 
+    @Volatile var inputDeliveryLossCount: Int = 0
+        private set
+
+    // transport拒否の観測だけを同期保護し、SI意味解析は既存owner/JNIから移さない。
+    @Synchronized
+    fun recordInputDeliveryLoss() {
+        inputDeliveryLossCount++
+    }
+
     private val counters = linkedMapOf<Triple<TsPid, Int, Int>, MutableCounter>()
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -62,11 +71,12 @@ class SectionIngestController(
     fun broadcastClockSnapshot(): AribBroadcastClockFact? = engine.broadcastClockSnapshot()
 
     fun diagnosticSummary(): String =
-        diagnostics().joinToString("; ") { c ->
-            "pid=${c.pid.value} table=${c.tableId} status=${c.status} ok=" +
-                "${c.acceptedCount} invalidSection=${c.invalidSectionCount} malformed=${c.malformedCount} " +
-                "lastError=${c.lastErrorTimeMillis}"
-        }
+        "inputDeliveryLoss=$inputDeliveryLossCount; " +
+            diagnostics().joinToString("; ") { c ->
+                "pid=${c.pid.value} table=${c.tableId} status=${c.status} ok=" +
+                    "${c.acceptedCount} invalidSection=${c.invalidSectionCount} malformed=${c.malformedCount} " +
+                    "lastError=${c.lastErrorTimeMillis}"
+            }
 
     @Synchronized
     private fun record(

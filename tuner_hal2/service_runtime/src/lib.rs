@@ -124,7 +124,10 @@ pub use object_method_use_case::{
     ObjectMethodUseCase, ObjectMethodUseCaseBuildError, ObjectQueryRequest, ObjectQueryResponse,
 };
 pub(crate) use object_table::RuntimeObjectLifecycle;
-pub use object_table::{RuntimeObjectEntry, RuntimeObjectTableError, RuntimeOwnerRelation};
+pub use object_table::{
+    RuntimeObjectDiagnosticSnapshot, RuntimeObjectEntry, RuntimeObjectLifecycleSnapshot,
+    RuntimeObjectTableError, RuntimeOwnerRelation,
+};
 pub use registry::{
     FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
     IsdbtSegmentCapability, LnbRegistry, LnbRegistryProfile, SatellitePowerTopology,
@@ -159,7 +162,9 @@ pub enum ServiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
+    use maleicacid_tuner_hal2_common::{
+        FrontendBackendKind, FrontendDevicePath, FrontendSystem, HalError,
+    };
     use maleicacid_tuner_hal2_demux::{
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PacketPid, PesSettings,
         PipelineAssemblySuppressionReason, PipelineDeliveryAction, QueueRuntimeError,
@@ -170,7 +175,7 @@ mod tests {
         DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
-        AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+        AidlApi, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
         DvrConfigureKind, DvrConfigureRequest, DvrDataFormat, DvrOpenKind, FilterDelayHintKind,
         FilterDelayHintRequest, OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName,
         AIDL_TRANSACTION_TABLE,
@@ -178,6 +183,45 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    fn start_frontend_worker_fixture<F>(
+        runtime: &mut TunerServiceRuntime,
+        frontend_id: i32,
+        kind: maleicacid_tuner_hal2_device::FrontendWorkerKind,
+        generation: u64,
+        job: F,
+    ) -> Result<(), maleicacid_tuner_hal2_device::FrontendWorkerStartError>
+    where
+        F: FnOnce(maleicacid_tuner_hal2_device::FrontendWorkerContext) -> Result<(), HalError>
+            + Send
+            + 'static,
+    {
+        let entry = runtime
+            .registry()
+            .frontend(FrontendRuntimeId(frontend_id))
+            .unwrap();
+        let plan = maleicacid_tuner_hal2_device::FrontendBackendTunePlan::new(
+            frontend_id,
+            generation,
+            entry.backend,
+            FrontendDevicePath::new(entry.device_path.clone()),
+            isdbt_request(473_142_857),
+        );
+        let ticket = runtime
+            .frontend_txn()
+            .prepare_backend_submit(kind, plan, None)
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .start_worker_with_prepared_submit(ticket, move |ctx, ticket| {
+                // 機器要求は送らず準備済み権限を回収し、汎用ワーカーの寿命だけを検査する。
+                assert_eq!(
+                    ticket.complete(),
+                    maleicacid_tuner_hal2_device::FrontendWorkerStopOutcome::NotRunning
+                );
+                job(ctx)
+            })
+    }
 
     fn test_descrambler_pid(pid: u16) -> DescramblerPid {
         DescramblerPidClaim::from_demux_input(pid)
@@ -760,20 +804,19 @@ mod tests {
                 generation,
             )
             .unwrap();
-        runtime
-            .frontend_txn()
-            .start_worker(
-                1_000_000,
-                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
-                generation,
-                |_ctx| {
-                    Err(HalError::internal(
-                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                        "test frontend worker failure",
-                    ))
-                },
-            )
-            .unwrap();
+        start_frontend_worker_fixture(
+            &mut runtime,
+            1_000_000,
+            maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+            generation,
+            |_ctx| {
+                Err(HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "test frontend worker failure",
+                ))
+            },
+        )
+        .unwrap();
 
         let mut next_generation = None;
         for _ in 0..100 {
@@ -835,9 +878,7 @@ mod tests {
             .frontend_txn()
             .commit_frontend_active_tune_request(1_000_000, generation, request.clone())
             .unwrap();
-        runtime
-            .frontend_txn()
-            .start_worker(
+        start_frontend_worker_fixture(&mut runtime,
                 1_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
                 generation,
@@ -1044,23 +1085,22 @@ mod tests {
                 )
                 .unwrap();
             let tune_tx = reason_tx.clone();
-            guard
-                .frontend_txn()
-                .start_worker(
-                    1_000_000,
-                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
-                    tune_generation,
-                    move |ctx| {
-                        while !ctx.cancel_requested() {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        tune_tx
-                            .send((ctx.kind(), ctx.cancel_reason().unwrap()))
-                            .unwrap();
-                        Ok(())
-                    },
-                )
-                .unwrap();
+            start_frontend_worker_fixture(
+                &mut guard,
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                tune_generation,
+                move |ctx| {
+                    while !ctx.cancel_requested() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    tune_tx
+                        .send((ctx.kind(), ctx.cancel_reason().unwrap()))
+                        .unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
 
             let scan_generation = guard
                 .frontend_txn()
@@ -1086,23 +1126,22 @@ mod tests {
                     vec![isdbt_request(473_142_857)],
                 )
                 .unwrap();
-            guard
-                .frontend_txn()
-                .start_worker(
-                    1_000_000,
-                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
-                    scan_generation,
-                    move |ctx| {
-                        while !ctx.cancel_requested() {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        reason_tx
-                            .send((ctx.kind(), ctx.cancel_reason().unwrap()))
-                            .unwrap();
-                        Ok(())
-                    },
-                )
-                .unwrap();
+            start_frontend_worker_fixture(
+                &mut guard,
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
+                scan_generation,
+                move |ctx| {
+                    while !ctx.cancel_requested() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    reason_tx
+                        .send((ctx.kind(), ctx.cancel_reason().unwrap()))
+                        .unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
         }
 
         crate::frontend_worker_txn::close_frontend_workers_and_live_data(
@@ -1167,22 +1206,21 @@ mod tests {
                     generation,
                 )
                 .unwrap();
-            guard
-                .frontend_txn()
-                .start_worker(
-                    1_000_000,
-                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
-                    generation,
-                    move |ctx| {
-                        while !ctx.cancel_requested() {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        cancel_seen_tx.send(()).unwrap();
-                        release_rx.recv().unwrap();
-                        Ok(())
-                    },
-                )
-                .unwrap();
+            start_frontend_worker_fixture(
+                &mut guard,
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                generation,
+                move |ctx| {
+                    while !ctx.cancel_requested() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    cancel_seen_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
             demux.id
         };
 
@@ -2615,9 +2653,32 @@ mod tests {
         runtime
             .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
             .unwrap();
+        // 同一設定はNoopなので、PIDを保ったままPES条件を変えて世代を進める。
+        let before = runtime
+            .registry()
+            .demux_runtime(demux.id)
+            .unwrap()
+            .filter_snapshot(filter.id.0)
+            .unwrap()
+            .generation;
+        let mut reconfigured = configured_pes_filter_config(200);
+        reconfigured.kind = FilterConfigKind::TsPes(PesSettings {
+            stream_id: 0xe0,
+            raw: false,
+        });
         runtime
-            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .configure_filter_runtime_request(filter.id.0, reconfigured)
             .unwrap();
+        assert!(
+            runtime
+                .registry()
+                .demux_runtime(demux.id)
+                .unwrap()
+                .filter_snapshot(filter.id.0)
+                .unwrap()
+                .generation
+                > before
+        );
 
         runtime
             .push_frontend_ts_packet_to_bound_demuxes(
@@ -2718,7 +2779,7 @@ mod tests {
         runtime
             .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
             .unwrap();
-        runtime.start_filter_runtime(filter.id.0).unwrap();
+        runtime.transact_start_filter_runtime(filter.id.0).unwrap();
 
         let key_slot = DescramblerKeySlot::empty()
             .try_with_even(sample_multi2_key(1))
@@ -2726,7 +2787,7 @@ mod tests {
         let token_bytes = vec![0x10; 8];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
         runtime
-            .registry
+            .registry_mut_for_test()
             .publish_descrambler_key_resolution(
                 token.clone(),
                 Arc::new(SharedTestKeyReference(Mutex::new(Some(key_slot.clone())))),
@@ -2802,7 +2863,7 @@ mod tests {
         runtime
             .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
             .unwrap();
-        runtime.start_filter_runtime(filter.id.0).unwrap();
+        runtime.transact_start_filter_runtime(filter.id.0).unwrap();
 
         let current_key_slot = DescramblerKeySlot::empty()
             .try_with_even(sample_multi2_key(7))
@@ -2813,7 +2874,7 @@ mod tests {
             current_key_slot.clone(),
         ))));
         runtime
-            .registry
+            .registry_mut_for_test()
             .publish_descrambler_key_resolution(token, reference.clone())
             .unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
@@ -2935,9 +2996,32 @@ mod tests {
         runtime
             .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
             .unwrap();
+        // 同一設定はNoopなので、PIDを保ったままPES条件を変えて世代を進める。
+        let before = runtime
+            .registry()
+            .demux_runtime(demux.id)
+            .unwrap()
+            .filter_snapshot(filter.id.0)
+            .unwrap()
+            .generation;
+        let mut reconfigured = configured_pes_filter_config(200);
+        reconfigured.kind = FilterConfigKind::TsPes(PesSettings {
+            stream_id: 0xe0,
+            raw: false,
+        });
         runtime
-            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .configure_filter_runtime_request(filter.id.0, reconfigured)
             .unwrap();
+        assert!(
+            runtime
+                .registry()
+                .demux_runtime(demux.id)
+                .unwrap()
+                .filter_snapshot(filter.id.0)
+                .unwrap()
+                .generation
+                > before
+        );
 
         let err = runtime
             .remove_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
@@ -2947,4 +3031,12 @@ mod tests {
             maleicacid_tuner_hal2_common::HalError::InvalidState { .. }
         ));
     }
+}
+
+// ホストにはDMAヒープがない。既存packet_pathホスト試験と同様、確保を未対応として返す。
+// Androidの単体試験は実際のネイティブ実装をリンクする。
+#[cfg(all(test, not(target_os = "android")))]
+#[no_mangle]
+extern "C" fn tuner_dmabuf_heap_alloc_system(_len: usize) -> i32 {
+    -38
 }

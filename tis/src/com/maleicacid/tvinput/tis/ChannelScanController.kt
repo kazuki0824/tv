@@ -689,7 +689,7 @@ class ChannelScanController(
         val message =
             when (outcome) {
                 SiCollectionOutcome.COMPLETE -> {
-                    null
+                    if (ingestController.inputDeliveryLossCount == 0) null else ingestController.diagnosticSummary()
                 }
 
                 SiCollectionOutcome.SIGNAL_UNAVAILABLE -> {

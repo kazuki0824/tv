@@ -16,21 +16,21 @@ import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.common.TunerKeyToken
 import org.junit.Test
 import sun.misc.Unsafe
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 // 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
-@Suppress("TooManyFunctions")
+// 同じ本番資源とfixtureを再利用し、試験数だけを理由に所有者を分割しない。
+@Suppress("TooManyFunctions", "LargeClass")
 class PlaybackFailureCallbacksTest {
     @Suppress("LongMethod")
     @Test
     fun casFilterRejectRollbackKeepsProductionRetryMarker() {
-        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         try {
             val fixture =
                 executor
-                    .submit<Fixture> { Fixture(false, false, failCleanup = false) }
+                    .submitControl<Fixture> { Fixture(false, false, failCleanup = false) }
                     .get(5, TimeUnit.SECONDS)
             val controller = fixture.allocate(TunerController::class.java)
             val cas = CasController()
@@ -96,11 +96,11 @@ class PlaybackFailureCallbacksTest {
     @Suppress("LongMethod")
     @Test
     fun removedFailedPmtRetriesRetainedCleanupBeforeSingleReopen() {
-        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         try {
             val fixture =
                 executor
-                    .submit<Fixture> { Fixture(false, false, failCleanup = false) }
+                    .submitControl<Fixture> { Fixture(false, false, failCleanup = false) }
                     .get(5, TimeUnit.SECONDS)
             val controller = fixture.allocate(TunerController::class.java)
             val pid = TsPid(0x1004)
@@ -170,7 +170,7 @@ class PlaybackFailureCallbacksTest {
 
     @Suppress("LongMethod")
     private fun checkCasConnectionFailure(initializing: Boolean) {
-        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         val faults = MediaCas.Faults
         faults.reset()
         val delegate = FrameworkMediaCasBridgeFactory().create(5).getOrThrow()
@@ -204,7 +204,7 @@ class PlaybackFailureCallbacksTest {
                 }
                 val fixture =
                     executor
-                        .submit<Fixture> { Fixture(false, false, failCleanup = true) }
+                        .submitControl<Fixture> { Fixture(false, false, failCleanup = true) }
                         .get(5, TimeUnit.SECONDS)
                 val controller = fixture.allocate(TunerController::class.java)
                 val ecm = TestSectionHandle(TsPid(0x123), rejectClose = true)
@@ -241,7 +241,7 @@ class PlaybackFailureCallbacksTest {
                 controller.setOnTunerResourceLostCallback { lostGeneration = it }
                 faults.pluginFailure = true
                 if (initializing) connectionListener.onCapacity(0) else connectionListener.onResourceLost()
-                executor.submit { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
+                executor.submitControl { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
                 check(lostGeneration == null)
                 check(pmt.isOpen)
                 check(pmt.closes == 0)
@@ -267,14 +267,14 @@ class PlaybackFailureCallbacksTest {
                 check(cas.lastDiagnostic().errorCode == expectedError)
                 check(cas.updateFromCaMetadata(metadata, 7L).ecmPids.isEmpty())
                 if (initializing) connectionListener.onCapacity(0) else connectionListener.onResourceLost()
-                executor.submit { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
+                executor.submitControl { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
                 check(fixture.notifications == 1 && faults.pluginCloses == attempts)
                 faults.pluginFailure = false
                 cas.clearForResourceLoss()
                 ecm.rejectClose = false
                 controller.closeSectionFilters()
                 fixture.rejectRelease = false
-                executor.submit { fixture.pipeline.stop() }.get(5, TimeUnit.SECONDS)
+                executor.submitControl { fixture.pipeline.stop() }.get(5, TimeUnit.SECONDS)
                 check(faults.pluginCloses == attempts + 1 && faults.sessionCloses == 0)
                 check(ecm.closes == 2)
             }
@@ -287,7 +287,7 @@ class PlaybackFailureCallbacksTest {
     // 同じ配送から所有解放・再生通知までの因果関係を一続きに確認する。
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun checkCasInvalidation(failCleanup: Boolean) {
-        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         try {
             executor
                 .submit {
@@ -509,7 +509,7 @@ class PlaybackFailureCallbacksTest {
 
     @Test fun realCasLinkageReevaluatesLiveAndReachesGenericPlaybackStart() {
         MediaCas.Faults.reset()
-        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         val factory =
             object : CasController.MediaCasBridgeFactory {
                 override fun create(caSystemId: Int) =
@@ -519,7 +519,7 @@ class PlaybackFailureCallbacksTest {
             }
         try {
             CasController(mediaCasFactory = factory).use { cas ->
-                val fixture = executor.submit<Fixture> { Fixture(false, false, false) }.get(5, TimeUnit.SECONDS)
+                val fixture = executor.submitControl<Fixture> { Fixture(false, false, false) }.get(5, TimeUnit.SECONDS)
                 val controller = fixture.allocate(TunerController::class.java)
 
                 fun set(
@@ -570,7 +570,7 @@ class PlaybackFailureCallbacksTest {
                 check(controller.startPlayback(fixture.selection, requiresCas = true, generation = 7L) == null)
                 check(fixture.pipeline.currentPlaybackGenerationForTest() == 7L)
                 cas.onEcmSection(TsPid(0x123), byteArrayOf(1))
-                executor.submit {}.get(5, TimeUnit.SECONDS)
+                executor.submitControl {}.get(5, TimeUnit.SECONDS)
                 check(decisions == listOf(true))
                 val result = controller.startPlayback(fixture.selection, requiresCas = true, generation = 7L)
                 check(result != null && result.generation > 7L)
@@ -623,6 +623,131 @@ class PlaybackFailureCallbacksTest {
         fixture.rejectRelease = false
         fixture.cleanup.retry()
         fixture.cleanup.requireComplete()
+    }
+
+    // 本番callback/readから実JNIまで、正常集合・有限飽和・retune失効を同じfixtureで検査する。
+    @Suppress("LongMethod")
+    @Test
+    fun sectionCallbackBurstCompletesSiAndReportsFiniteAdmissionLoss() {
+        val executor = ControllerSerialExecutor("section burst試験", maxPendingDataTasks = 16)
+        val fixture = executor.submitControl { Fixture(false, false, failCleanup = false) }.get(5, TimeUnit.SECONDS)
+        val controller = fixture.allocate(TunerController::class.java)
+        val engine =
+            com.maleicacid.tvinput.aribsi
+                .AribSiEngine(android.content.ContextWrapper(null))
+        val ingest =
+            com.maleicacid.tvinput.aribsi
+                .SectionIngestController(engine)
+        var releaseOwner = java.util.concurrent.CountDownLatch(1)
+
+        fun set(
+            name: String,
+            value: Any,
+        ) {
+            TunerController::class.java
+                .getDeclaredField(name)
+                .apply { isAccessible = true }
+                .set(controller, value)
+        }
+
+        fun holdOwner(): java.util.concurrent.CountDownLatch {
+            val started = java.util.concurrent.CountDownLatch(1)
+            releaseOwner = java.util.concurrent.CountDownLatch(1)
+            executor.executeControl {
+                started.countDown()
+                check(releaseOwner.await(5, TimeUnit.SECONDS))
+            }
+            check(started.await(5, TimeUnit.SECONDS))
+            return releaseOwner
+        }
+        val eventConstructor =
+            android.media.tv.tuner.filter.SectionEvent::class.java
+                .getDeclaredConstructor(
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                    Long::class.javaPrimitiveType,
+                ).apply { isAccessible = true }
+
+        fun deliver(
+            filter: Filter,
+            hex: Array<String>,
+        ) {
+            val payloads = hex.map { h -> h.chunked(2).map { it.toInt(16).toByte() }.toByteArray() }
+            Filter::class.java.getField("sectionPayloads").set(filter, payloads.toTypedArray())
+            Filter::class.java.getField("reads").setInt(filter, 0)
+            val events = payloads.map { bytes -> eventConstructor.newInstance(0, 0, 0, bytes.size.toLong()) }
+            val before = System.nanoTime()
+            check(
+                Filter::class.java
+                    .getMethod("deliver", Array<android.media.tv.tuner.filter.FilterEvent>::class.java)
+                    .invoke(filter, events.toTypedArray()) == true,
+            )
+            check(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before) < 1_000L)
+        }
+        val pat0 = "00b00d0011c100010001e1000c2c9e3b"
+        val pat1 = "00b00d0011c101010000e01088d42568"
+        val filters = linkedMapOf<Int, Filter>()
+        try {
+            set("inputId", "test")
+            set("sectionExecutor", executor)
+            set("tuneAccepted", true)
+            set("tuneGeneration", 7L)
+            set("tuner", fixture.tuner)
+            set("sectionIngestController", ingest)
+            set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
+            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+            set("dynamicPmtPids", linkedSetOf(TsPid(0x100)))
+            set("dynamicEcmPids", linkedSetOf<TsPid>())
+            set("dynamicEmmPids", linkedSetOf<TsPid>())
+            Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
+            for (pid in listOf(0, 0x10, 0x11, 0x100)) {
+                val filter = fixture.allocate(Filter::class.java)
+                Tuner::class.java.getField("nextFilter").set(null, filter)
+                check(controller.openSectionFilter(TsPid(pid), 7L).isOpen)
+                filters[pid] = filter
+            }
+            val received = java.util.concurrent.CountDownLatch(5)
+            controller.setOnSectionIngestedCallback { received.countDown() }
+            val owner = holdOwner()
+            deliver(filters.getValue(0), arrayOf(pat0, pat1))
+            deliver(filters.getValue(0x10), arrayOf("40b01c0022c10000f004fe020300f00b00110022f0054103000101ab293465"))
+            deliver(filters.getValue(0x11), arrayOf("42f0180011c100000022000001fc80074805010002543128d78c81"))
+            deliver(filters.getValue(0x100), arrayOf("02b0170001c10000e101f0001be101f0000fe102f0009e28c6dd"))
+            check(ingest.inputDeliveryLossCount == 0)
+            owner.countDown()
+            check(received.await(5, TimeUnit.SECONDS))
+            check(ingest.diagnostics().sumOf { it.acceptedCount } == 5)
+            check(engine.pmtPidsForSectionFilters() == setOf(TsPid(0x100)))
+            check(
+                com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+                    .evaluateLive(engine.livePlaybackSnapshot(), ServiceKey(0x22, 0x11, 1))
+                    .registrationReady,
+            )
+            val saturated = java.util.concurrent.CountDownLatch(16)
+            controller.setOnSectionIngestedCallback { saturated.countDown() }
+            val stalled = holdOwner()
+            deliver(filters.getValue(0), Array(17) { pat0 })
+            check(ingest.inputDeliveryLossCount == 1 && ingest.diagnosticSummary().contains("inputDeliveryLoss=1"))
+            stalled.countDown()
+            check(saturated.await(5, TimeUnit.SECONDS))
+            val beforeStale = ingest.diagnostics().sumOf { it.acceptedCount }
+            val staleOwner = holdOwner()
+            deliver(filters.getValue(0), arrayOf(pat1))
+            val retune = executor.submitControl { set("tuneGeneration", 8L) }
+            staleOwner.countDown()
+            retune.get(5, TimeUnit.SECONDS)
+            val dataFinished = java.util.concurrent.CountDownLatch(1)
+            executor.executeData { dataFinished.countDown() }
+            check(dataFinished.await(5, TimeUnit.SECONDS))
+            check(ingest.diagnostics().sumOf { it.acceptedCount } == beforeStale)
+        } finally {
+            releaseOwner.countDown()
+            filters.keys.forEach { controller.closeSectionFilter(TsPid(it)) }
+            Tuner::class.java.getField("nextFilter").set(null, null)
+            engine.close()
+            executor.shutdownNow()
+        }
     }
 
     private class Fixture(
