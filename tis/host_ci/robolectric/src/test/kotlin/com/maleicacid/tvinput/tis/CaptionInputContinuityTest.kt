@@ -35,7 +35,8 @@ class CaptionInputContinuityTest {
                 controller.flushForSubtitleContinuityLoss()
             }
             drain(owner)
-            val scheduler = ReflectionHelpers.getField<BroadcastTimedPesScheduler>(controller, "broadcastTimedPesScheduler")
+            val scheduler =
+                ReflectionHelpers.getField<BroadcastTimedPesScheduler>(controller, "broadcastTimedPesScheduler")
             val pending = ReflectionHelpers.getField<Map<*, *>>(scheduler, "pending")
             assertEquals(0, pending.size)
             controller.onBroadcastTimedPesData("caption", byteArrayOf(0x33), AribBroadcastClock.StatementTime(2L))
@@ -83,7 +84,11 @@ class CaptionInputContinuityTest {
                     "selectedTrack",
                     TunerController.TisTrack("caption", TvTrackInfo.TYPE_SUBTITLE, TsPid(0x103), 6, null, null, null),
                 )
-                ReflectionHelpers.setField(controller, "viewport", AribCaptionController.CaptionViewport(1, 1, 0, 0, 1, 1))
+                ReflectionHelpers.setField(
+                    controller,
+                    "viewport",
+                    AribCaptionController.CaptionViewport(1, 1, 0, 0, 1, 1),
+                )
             }
             action(controller, owner)
         } finally {
