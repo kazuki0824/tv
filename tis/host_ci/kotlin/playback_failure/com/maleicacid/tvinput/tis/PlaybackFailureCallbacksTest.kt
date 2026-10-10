@@ -20,7 +20,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 // 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
-@Suppress("TooManyFunctions")
+// 同じ本番資源とfixtureを再利用し、試験数だけを理由に所有者を分割しない。
+@Suppress("TooManyFunctions", "LargeClass")
 class PlaybackFailureCallbacksTest {
     @Suppress("LongMethod")
     @Test
@@ -670,7 +671,7 @@ class PlaybackFailureCallbacksTest {
 
         fun deliver(
             filter: Filter,
-            vararg hex: String,
+            hex: Array<String>,
         ) {
             val payloads = hex.map { h -> h.chunked(2).map { it.toInt(16).toByte() }.toByteArray() }
             Filter::class.java.getField("sectionPayloads").set(filter, payloads.toTypedArray())
@@ -709,10 +710,10 @@ class PlaybackFailureCallbacksTest {
             val received = java.util.concurrent.CountDownLatch(5)
             controller.setOnSectionIngestedCallback { received.countDown() }
             val owner = holdOwner()
-            deliver(filters.getValue(0), pat0, pat1)
-            deliver(filters.getValue(0x10), "40b01c0022c10000f004fe020300f00b00110022f0054103000101ab293465")
-            deliver(filters.getValue(0x11), "42f0180011c100000022000001fc80074805010002543128d78c81")
-            deliver(filters.getValue(0x100), "02b0170001c10000e101f0001be101f0000fe102f0009e28c6dd")
+            deliver(filters.getValue(0), arrayOf(pat0, pat1))
+            deliver(filters.getValue(0x10), arrayOf("40b01c0022c10000f004fe020300f00b00110022f0054103000101ab293465"))
+            deliver(filters.getValue(0x11), arrayOf("42f0180011c100000022000001fc80074805010002543128d78c81"))
+            deliver(filters.getValue(0x100), arrayOf("02b0170001c10000e101f0001be101f0000fe102f0009e28c6dd"))
             check(ingest.inputDeliveryLossCount == 0)
             owner.countDown()
             check(received.await(5, TimeUnit.SECONDS))
@@ -726,13 +727,13 @@ class PlaybackFailureCallbacksTest {
             val saturated = java.util.concurrent.CountDownLatch(16)
             controller.setOnSectionIngestedCallback { saturated.countDown() }
             val stalled = holdOwner()
-            deliver(filters.getValue(0), *Array(17) { pat0 })
+            deliver(filters.getValue(0), Array(17) { pat0 })
             check(ingest.inputDeliveryLossCount == 1 && ingest.diagnosticSummary().contains("inputDeliveryLoss=1"))
             stalled.countDown()
             check(saturated.await(5, TimeUnit.SECONDS))
             val beforeStale = ingest.diagnostics().sumOf { it.acceptedCount }
             val staleOwner = holdOwner()
-            deliver(filters.getValue(0), pat1)
+            deliver(filters.getValue(0), arrayOf(pat1))
             val retune = executor.submitControl { set("tuneGeneration", 8L) }
             staleOwner.countDown()
             retune.get(5, TimeUnit.SECONDS)
