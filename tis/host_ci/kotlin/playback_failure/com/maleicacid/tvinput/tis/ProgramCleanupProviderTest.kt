@@ -122,6 +122,11 @@ class ProgramCleanupProviderTest {
                 .apply { isAccessible = true }
                 .get(ChannelScanManager) as ExecutorService
         val scanFailures = ConcurrentLinkedQueue<Throwable>()
+        val activeScan =
+            ChannelScanManager::class.java
+                .getDeclaredField("activeTask")
+                .apply { isAccessible = true }
+                .get(ChannelScanManager) as java.util.concurrent.atomic.AtomicReference<*>
         val previousHandler =
             scanWorker
                 .submit<Thread.UncaughtExceptionHandler> {
@@ -154,7 +159,7 @@ class ProgramCleanupProviderTest {
             scanWorker.submit {}.get(5, TimeUnit.SECONDS)
             val failed = ChannelScanManager.currentState() as ScanState.Failed
             check(failed.generation == setupGeneration && failed.message == "Program cleanupに失敗しました")
-            check(!ChannelScanManager.isScanRunning() && pendingReads.get() == 0)
+            check(activeScan.get() == null && pendingReads.get() == 0)
             rejectDelete = false
             val resumed = CountDownLatch(1)
             val retryEntered = CountDownLatch(1)
@@ -181,7 +186,7 @@ class ProgramCleanupProviderTest {
             check(attempted.generation == retriedSetup && attempted.message != "Program cleanupに失敗しました")
             check(rows.isEmpty() && committed && ProgramUpgradeCleanup.ensure(cleanup))
             // cleanup成功後の実scan終端はDirectBoot pending検査まで一度到達する。
-            check(!ChannelScanManager.isScanRunning() && pendingReads.get() == 1)
+            check(activeScan.get() == null && pendingReads.get() == 1)
         } finally {
             release.countDown()
             worker.submit {}.get(5, TimeUnit.SECONDS)
