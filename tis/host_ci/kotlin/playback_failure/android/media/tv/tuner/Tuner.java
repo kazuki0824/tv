@@ -8,6 +8,7 @@ import java.util.concurrent.Executor;
 public class Tuner {
     public static final byte[] VOID_KEYTOKEN = new byte[] {0};
     public static Filter nextFilter;
+    public static FilterCallback lastCallback;
     public static int openFilterCalls;
     public static int sectionFilterCount = 16;
 
@@ -19,6 +20,8 @@ public class Tuner {
 
     public Filter openFilter(int type, int subtype, long bufferSize, Executor executor, FilterCallback callback) {
         openFilterCalls++;
+        if (nextFilter != null) nextFilter.callback = callback;
+        lastCallback = callback;
         if (nextFilter != null) nextFilter.callback = callback;
         return nextFilter;
     }

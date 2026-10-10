@@ -51,6 +51,39 @@
 - ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
 - 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
 
+# MediaEvent解放失敗時の入力停止
+
+- ResourceCleanupの解放結果をBooleanで返し、MediaEventの初回失敗を既存playback terminal cleanupへ接続した。released fenceで新規AV処理を止め、同じownerでFilterをcloseして配送解除する。
+- 既存複数event試験を連続release失敗・Filter close失敗・100回の配送非受理と保持数不変・成功後の再試行完了へ拡張した。host境界のFilter callback解除順をAOSPに合わせた。
+- 解放義務を捨てず、親codec完了契約を維持する。別owner・scheduler・migrationは追加しない。設計追従、テストはCIへ委任。実機VTS・実波は未実施。
+
+# 2026-10-09 PR185レビュー履歴の整理
+
+- stale/current output解放、codec親子cleanup、AV配列の残余回収の履歴を古いreleaseより前へ統合した。既存実装・試験を維持し、検証はCIへ委ねる。Soong/VTS/実機確認は未実施。
+
+- Localize playback runtime diagnostics while preserving reason codes and cleanup ordering.
+
+- #185: playback recoveryのruntime例外境界へ理由付き局所抑制を配置し、親PR自身のdetekt gateを満たす。current output境界の既存抑制は維持。
+
+## レビュー対応: MediaCodec親子cleanupの確定
+
+- codec release成功時に同codec配下のoutput解放義務とaudio参照を完了し、閉鎖済みcodecへのretryを残さない。
+- pending actionに既存codec ownerを紐付け、retry中に親成功で完了した子actionも再実行しない。
+- output失敗→parent成功→retry、parentも初回失敗する順序の反例を固定する。
+
+## レビュー対応: current decoder output失敗の通知
+
+- current outputのruntime例外を既存onDecoderFailure/errorSinkへ渡し、data workerからの未捕捉終了を防ぐ。
+- cleanup所有を保持したままSessionへtyped failureを通知しdata taskが完了する回帰試験を追加。stale出力は通知せず所有保持を継続。
+
+# MediaCodec出力buffer全release経路の回収所有権
+
+- stale callbackに加え、current videoの空buffer・Surface拒否・時刻指定render、current audioの空buffer・LinearBlock欠落・range拒否・backpressure拒否も共通の既存ResourceCleanupへ接続した。失敗時はclosureがcodec/indexを保持し、current処理では解放完了扱いせず既存失敗通知へ伝播する。audio outstanding集合の解放成功まで保持する経路は維持した。
+
+# stale decoder outputの回収所有権保持
+
+- generation/codec identity不一致の遅延callbackも既存ResourceCleanupへ接続し、release失敗を保持してstop/release時にretryする。audio outstanding集合へ登録前のbufferも回収対象にし、新しいcleanup ownerは追加しない。
+
 # serial executorの到達しないcontrol分類の削除
 
 - 両executorの未使用ControlTask markerとexecute振分けを削除し、controlは既存の明示入口、executeはdataに限定した。

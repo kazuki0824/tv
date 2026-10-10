@@ -8,6 +8,9 @@ import android.media.MediaCas
 import android.media.MediaSync
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.filter.Filter
+import android.media.tv.tuner.filter.FilterCallback
+import android.media.tv.tuner.filter.FilterEvent
+import android.media.tv.tuner.filter.MediaEvent
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.ServicePolicyDecision
@@ -1055,6 +1058,52 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
+    @Test
+    fun mediaArrayFailureReleasesOnlyUnprocessedInputsAndRetainsReleaseFailure() {
+        val fixture = Fixture(false, false, false)
+        val executor = LifecycleSerialExecutor("複数MediaEvent失敗試験")
+        fixture.set("executor", executor)
+        val filter = fixture.allocate(Filter::class.java)
+        val events = Array(6) { fixture.allocate(MediaEvent::class.java) }
+        val releases = MediaEvent::class.java.getField("releases")
+        MediaEvent::class.java.getField("rejectRead").setBoolean(events[1], true)
+        events.drop(2).forEach { MediaEvent::class.java.getField("rejectRelease").setBoolean(it, true) }
+        Tuner::class.java.getField("nextFilter").set(null, filter)
+        try {
+            executor.callControl(5_000L) {
+                fixture.invoke("createAndStartAvFilter", fixture.tuner, fixture.selection.audio!!, true)
+            }
+            fixture.set("audioFilter", filter)
+            Filter::class.java.getField("rejectClose").setBoolean(filter, true)
+            val failed = java.util.concurrent.CountDownLatch(1)
+            fixture.set("onVideoUnavailable", { _: PlaybackPipeline.PlaybackUnavailable -> failed.countDown() })
+            val deliver = Filter::class.java.getMethod("deliver", Array<FilterEvent>::class.java)
+            check(deliver.invoke(filter, Array<FilterEvent>(events.size) { events[it] }) == true)
+            check(failed.await(5, TimeUnit.SECONDS))
+            executor.callControl(5_000L, cleanup = true) {
+                check(events.take(2).all { releases.getInt(it) == 1 })
+                check(events.drop(2).all { releases.getInt(it) >= 1 })
+                check(fixture.cleanup.hasPending)
+                val pending = ResourceCleanup::class.java.getDeclaredField("pending").apply { isAccessible = true }
+                val retained = (pending.get(fixture.cleanup) as List<*>).size
+                check(retained == 5)
+                repeat(100) {
+                    check(deliver.invoke(filter, Array<FilterEvent>(events.size) { events[it] }) == false)
+                }
+                check((pending.get(fixture.cleanup) as List<*>).size == retained)
+                events.drop(2).forEach { MediaEvent::class.java.getField("rejectRelease").setBoolean(it, false) }
+                Filter::class.java.getField("rejectClose").setBoolean(filter, false)
+                fixture.cleanup.retry()
+                fixture.cleanup.requireComplete()
+                check(releases.getInt(events[0]) == 1 && releases.getInt(events[1]) == 1)
+                check(!fixture.cleanup.hasPending)
+            }
+        } finally {
+            Tuner::class.java.getField("nextFilter").set(null, null)
+            executor.shutdownNow()
+        }
+    }
+
     // 本番callback/readから実JNIまで、正常集合・有限飽和・retune失効を同じfixtureで検査する。
     @Suppress("LongMethod")
     @Test
@@ -1244,6 +1293,7 @@ class PlaybackFailureCallbacksTest {
             set("videoAvailableNotified", AtomicBoolean(!waiting))
             set("resourceCleanup", cleanup)
             set("outstandingAudioOutputs", linkedMapOf<Int, Any>())
+            set("pendingAudioOutputReleases", mutableSetOf<Int>())
             val ptsType = field("ptsEpochCoordinator").type
             set("ptsEpochCoordinator", ptsType.getDeclaredConstructor().apply { isAccessible = true }.newInstance())
             set("activeTuner", tuner)
