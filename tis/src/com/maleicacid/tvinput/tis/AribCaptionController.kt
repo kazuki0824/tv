@@ -76,6 +76,8 @@ class AribCaptionController(
     private val presentationEpoch = AtomicLong(0L)
 
     // UI clearのepochと異なり、PES入力はcontinuity/trackのresetだけで失効する。
+    private val pesAdmissionLock = Any()
+
     @Volatile private var pesInputIdentity: Any = Any()
     private val boundaries =
         PriorityQueue(
@@ -157,8 +159,10 @@ class AribCaptionController(
     }
 
     private fun enqueuePes(action: () -> Unit) {
-        val identity = pesInputIdentity
-        enqueue { if (pesInputIdentity === identity) action() }
+        synchronized(pesAdmissionLock) {
+            val identity = pesInputIdentity
+            enqueue { if (pesInputIdentity === identity) action() }
+        }
     }
 
     // 診断失敗より解放失敗を優先して記録し、未完解放は同じownerで再試行するためuseへ変換しない。
@@ -290,7 +294,13 @@ class AribCaptionController(
         }
     }
 
-    fun flushForSubtitleContinuityLoss() = enqueueControl { restartPresentation() }
+    fun flushForSubtitleContinuityLoss() {
+        synchronized(pesAdmissionLock) {
+            // 新PESの受付を再開する前にresetを投入する。ownerの完了は待たない。
+            pesInputIdentity = Any()
+            enqueueControl { restartPresentation(invalidateQueuedPes = false) }
+        }
+    }
 
     private fun recordNoPtsRejected(trackId: String?) {
         noPtsRejectedCount++
@@ -361,8 +371,8 @@ class AribCaptionController(
             .getOrNull()
     }
 
-    private fun restartPresentation() {
-        pesInputIdentity = Any()
+    private fun restartPresentation(invalidateQueuedPes: Boolean = true) {
+        if (invalidateQueuedPes) pesInputIdentity = Any()
         cancelScheduledBoundary()
         broadcastTimedPesScheduler.cancelAll()
         boundaries.clear()

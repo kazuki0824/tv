@@ -33,17 +33,18 @@ class CaptionInputContinuityTest {
             blocked(owner) {
                 controller.onBroadcastTimedPesData("caption", byteArrayOf(0x22), AribBroadcastClock.StatementTime(1L))
                 controller.flushForSubtitleContinuityLoss()
+                controller.onBroadcastTimedPesData("caption", byteArrayOf(0x33), AribBroadcastClock.StatementTime(2L))
             }
             drain(owner)
             val scheduler =
                 ReflectionHelpers.getField<BroadcastTimedPesScheduler>(controller, "broadcastTimedPesScheduler")
             val pending = ReflectionHelpers.getField<Map<*, *>>(scheduler, "pending")
-            assertEquals(0, pending.size)
-            controller.onBroadcastTimedPesData("caption", byteArrayOf(0x33), AribBroadcastClock.StatementTime(2L))
-            drain(owner)
             assertEquals(1, pending.size)
             val data = ReflectionHelpers.getField<ByteArray>(pending.values.single(), "pesData")
             assertEquals(listOf(0x33.toByte()), data.toList())
+            controller.onBroadcastTimedPesData("caption", byteArrayOf(0x44), AribBroadcastClock.StatementTime(3L))
+            drain(owner)
+            assertEquals(2, pending.size)
         }
     }
 
@@ -56,13 +57,14 @@ class CaptionInputContinuityTest {
                 controller.flushForSubtitleContinuityLoss()
                 // reset controlの後、旧dataの前に次rendererを設定し、誤decodeを隠さない。
                 owner.executeControl { ReflectionHelpers.setField(controller, "renderer", renderer) }
+                controller.onPesData("caption", byteArrayOf(0x33), CaptionTimestamp.NoPts)
             }
             drain(owner)
             val boundary = Shadow.extract<RendererBoundary>(renderer)
-            assertTrue(boundary.decoded.isEmpty())
-            controller.onPesData("caption", byteArrayOf(0x33), CaptionTimestamp.NoPts)
-            drain(owner)
             assertEquals(listOf(0x33.toByte()), boundary.decoded)
+            controller.onPesData("caption", byteArrayOf(0x44), CaptionTimestamp.NoPts)
+            drain(owner)
+            assertEquals(listOf(0x33.toByte(), 0x44.toByte()), boundary.decoded)
         }
     }
 
