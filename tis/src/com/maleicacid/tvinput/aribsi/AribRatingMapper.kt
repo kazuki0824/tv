@@ -40,7 +40,7 @@ object AribRatingMapper {
         profile: BroadcastProfile,
     ): TvContentRating? {
         if (rating.countryCode != "JPN") return null
-        if (rating.parseStatus != "OK") return null
+        if (rating.parseStatus != SiParseStatus.OK) return null
         if (profile == BroadcastProfile.UNRESOLVED) return null
         return when (val raw = rating.rawRatingByte) {
             0x00 -> {
@@ -71,16 +71,6 @@ object AribRatingMapper {
                 null
             }
         }
-    }
-
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-    @Suppress("MagicNumber")
-    fun isExceptional(
-        rating: AribParentalRating,
-        profile: BroadcastProfile,
-    ): Boolean {
-        if (profile == BroadcastProfile.UNRESOLVED) return false
-        return rating.countryCode == "JPN" && rating.rawRatingByte in 0x12..0xff
     }
 
     fun unrated(): TvContentRating = TvContentRating.UNRATED

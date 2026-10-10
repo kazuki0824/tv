@@ -87,6 +87,8 @@ struct FmqReader(*mut ImportedFmq);
 
 impl Drop for FmqReader {
     fn drop(&mut self) {
+        // SAFETY: self.0はvts_agent_fmq_importが返した非nullのハンドルである。
+        // FmqReaderが排他的に所有し、Dropで一度だけ破棄する。
         unsafe { vts_agent_fmq_destroy(self.0) };
     }
 }
@@ -109,6 +111,9 @@ impl FmqReader {
             .map(AsRawFd::as_raw_fd)
             .collect::<Vec<_>>();
         let ints = &desc.handle.ints;
+        // SAFETY: 各ポインターは指定した長さの有効な連続領域を指す。
+        // 生成するキューは複製したネイティブハンドルを受け取り、呼出し終了後に
+        // 一時的なRustのスライス領域への参照を保持しない。
         let queue = unsafe {
             vts_agent_fmq_import(
                 desc.quantum,
@@ -129,6 +134,7 @@ impl FmqReader {
     }
 
     fn available(&self) -> usize {
+        // SAFETY: self.0はこの読取り主体が所有しており、&selfの借用中には破棄されない。
         unsafe { vts_agent_fmq_available_to_read(self.0) }
     }
 
@@ -138,9 +144,17 @@ impl FmqReader {
             return Ok(Vec::new());
         }
         let mut bytes = vec![0u8; available];
+        // SAFETY: bytesはbytes.len()バイトの初期化済み書込み可能領域を提供する。
+        // self.0は有効なキューであり、&mut selfを通じて排他的に借用している。
         let read = unsafe { vts_agent_fmq_read(self.0, bytes.as_mut_ptr(), bytes.len()) };
         if read == 0 {
             return Err("filter FMQ read failed".to_string());
+        }
+        if read > bytes.len() {
+            return Err(format!(
+                "filter FMQが不正な読取り長を返しました: {read} > {}",
+                bytes.len()
+            ));
         }
         bytes.truncate(read);
         Ok(bytes)
@@ -361,6 +375,42 @@ struct DeviceSession {
     args: Args,
     frontend: Strong<dyn IFrontend>,
     demux: Strong<dyn IDemux>,
+    tuned: bool,
+}
+
+fn compose_cleanup_result<T>(
+    primary: Result<T, String>,
+    cleanup: Result<(), String>,
+) -> Result<T, String> {
+    match (primary, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Err(cleanup)) => Err(format!("{primary}; 後片付け失敗: {cleanup}")),
+    }
+}
+
+fn collect_cleanup_status(
+    failures: &mut Vec<String>,
+    operation: &'static str,
+    result: binder::Result<()>,
+) {
+    if let Err(error) = result {
+        failures.push(format!("{operation} failed: {error:?}"));
+    }
+}
+
+fn cleanup_frontend(frontend: &Strong<dyn IFrontend>, stop_tune: bool) -> Result<(), String> {
+    let mut failures = Vec::new();
+    if stop_tune {
+        collect_cleanup_status(&mut failures, "frontend.stopTune", frontend.stopTune());
+    }
+    collect_cleanup_status(&mut failures, "frontend.close", frontend.close());
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 impl DeviceSession {
@@ -386,58 +436,63 @@ impl DeviceSession {
             .map_err(|e| format!("openFrontendById failed: {e:?}"))?;
         let callback = BnFrontendCallback::new_binder(FrontendCallback, BinderFeatures::default());
         if let Err(error) = frontend.setCallback(&callback) {
-            let _ = frontend.close();
-            return Err(format!("setCallback failed: {error:?}"));
+            return compose_cleanup_result(
+                Err(format!("setCallbackに失敗しました: {error:?}")),
+                cleanup_frontend(&frontend, false),
+            );
         }
-        if let Err(error) = frontend.tune(&frontend_settings(&args)) {
-            let _ = frontend.close();
-            return Err(format!("tune failed: {error:?}"));
-        }
-        if let Err(error) = wait_for_lock(&frontend, Duration::from_millis(args.timeout_ms)) {
-            let _ = frontend.stopTune();
-            let _ = frontend.close();
-            return Err(error);
-        }
-
         let demux_ids = match tuner.getDemuxIds() {
             Ok(ids) => ids,
             Err(error) => {
-                let _ = frontend.stopTune();
-                let _ = frontend.close();
-                return Err(format!("getDemuxIds failed: {error:?}"));
+                return compose_cleanup_result(
+                    Err(format!("getDemuxIdsに失敗しました: {error:?}")),
+                    cleanup_frontend(&frontend, false),
+                );
             }
         };
         let demux_id = match demux_ids.first() {
             Some(id) => *id,
             None => {
-                let _ = frontend.stopTune();
-                let _ = frontend.close();
-                return Err("no demux available".to_string());
+                return compose_cleanup_result(
+                    Err("利用可能なdemuxがありません".to_string()),
+                    cleanup_frontend(&frontend, false),
+                );
             }
         };
         let demux = match tuner.openDemuxById(demux_id) {
             Ok(demux) => demux,
             Err(error) => {
-                let _ = frontend.stopTune();
-                let _ = frontend.close();
-                return Err(format!("openDemuxById failed: {error:?}"));
+                return compose_cleanup_result(
+                    Err(format!("openDemuxByIdに失敗しました: {error:?}")),
+                    cleanup_frontend(&frontend, false),
+                );
             }
         };
         if let Err(error) = demux.setFrontendDataSource(frontend_id) {
-            let _ = demux.close();
-            let _ = frontend.stopTune();
-            let _ = frontend.close();
-            return Err(format!("setFrontendDataSource failed: {error:?}"));
+            let mut cleanup_failures = Vec::new();
+            collect_cleanup_status(&mut cleanup_failures, "demux.close", demux.close());
+            if let Err(cleanup) = cleanup_frontend(&frontend, false) {
+                cleanup_failures.push(cleanup);
+            }
+            return compose_cleanup_result(
+                Err(format!("setFrontendDataSourceに失敗しました: {error:?}")),
+                if cleanup_failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(cleanup_failures.join("; "))
+                },
+            );
         }
 
         Ok(Self {
             args,
             frontend,
             demux,
+            tuned: false,
         })
     }
 
-    fn read_section(&self, pid: i32, table_id: i32) -> Result<Vec<u8>, String> {
+    fn read_section(&mut self, pid: i32, table_id: i32) -> Result<Vec<u8>, String> {
         if !(0..=0x1fff).contains(&pid) {
             return Err("pid must be in 0..8191".to_string());
         }
@@ -465,6 +520,14 @@ impl DeviceSession {
                 .start()
                 .map_err(|e| format!("start section filter failed: {e:?}"))?;
 
+            if !self.tuned {
+                self.frontend
+                    .tune(&frontend_settings(&self.args))
+                    .map_err(|error| format!("tuneに失敗しました: {error:?}"))?;
+                self.tuned = true;
+                wait_for_lock(&self.frontend, Duration::from_millis(self.args.timeout_ms))?;
+            }
+
             let deadline = Instant::now() + Duration::from_millis(self.args.timeout_ms);
             let mut bytes = Vec::new();
             let mut last_data_at: Option<Instant> = None;
@@ -490,17 +553,30 @@ impl DeviceSession {
             }
         })();
 
-        let _ = filter.stop();
-        let _ = filter.close();
-        result
+        let mut cleanup_failures = Vec::new();
+        collect_cleanup_status(&mut cleanup_failures, "filter.stop", filter.stop());
+        collect_cleanup_status(&mut cleanup_failures, "filter.close", filter.close());
+        compose_cleanup_result(
+            result,
+            if cleanup_failures.is_empty() {
+                Ok(())
+            } else {
+                Err(cleanup_failures.join("; "))
+            },
+        )
     }
-}
 
-impl Drop for DeviceSession {
-    fn drop(&mut self) {
-        let _ = self.demux.close();
-        let _ = self.frontend.stopTune();
-        let _ = self.frontend.close();
+    fn close(self) -> Result<(), String> {
+        let mut failures = Vec::new();
+        collect_cleanup_status(&mut failures, "demux.close", self.demux.close());
+        if let Err(error) = cleanup_frontend(&self.frontend, self.tuned) {
+            failures.push(error);
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
     }
 }
 
@@ -511,7 +587,7 @@ fn write_response(value: Value) -> Result<(), String> {
     stdout.flush().map_err(|e| e.to_string())
 }
 
-fn handle_request(session: &DeviceSession, request: &Value) -> Result<bool, String> {
+fn handle_request(session: &mut DeviceSession, request: &Value) -> Result<bool, String> {
     let op = request
         .get("op")
         .and_then(Value::as_str)
@@ -546,37 +622,40 @@ fn handle_request(session: &DeviceSession, request: &Value) -> Result<bool, Stri
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let session = DeviceSession::open(args)?;
-    write_response(json!({
-        "status": "ready",
-        "frequency_hz": session.args.frequency_hz,
-    }))?;
+    let mut session = DeviceSession::open(args)?;
+    let result = (|| {
+        write_response(json!({
+            "status": "ready",
+            "frequency_hz": session.args.frequency_hz,
+        }))?;
 
-    let stdin = std::io::stdin();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|e| format!("stdin read failed: {e}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request: Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(error) => {
-                write_response(json!({
-                    "status": "error",
-                    "message": format!("malformed request JSON: {error}"),
-                }))?;
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            let line = line.map_err(|e| format!("stdin読取りに失敗しました: {e}"))?;
+            if line.trim().is_empty() {
                 continue;
             }
-        };
-        match handle_request(&session, &request) {
-            Ok(true) => {}
-            Ok(false) => break,
-            Err(error) => {
-                write_response(json!({"status": "error", "message": error}))?;
+            let request: Value = match serde_json::from_str(&line) {
+                Ok(value) => value,
+                Err(error) => {
+                    write_response(json!({
+                        "status": "error",
+                        "message": format!("要求JSONが不正です: {error}"),
+                    }))?;
+                    continue;
+                }
+            };
+            match handle_request(&mut session, &request) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(error) => {
+                    write_response(json!({"status": "error", "message": error}))?;
+                }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })();
+    compose_cleanup_result(result, session.close())
 }
 
 fn main() {

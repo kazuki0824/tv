@@ -104,7 +104,7 @@ jobs:
               ),
               "tis/host_ci/robolectric/build.gradle.kts": (
                   'id("com.android.library") version "8.7.0"',
-                  'java.setSrcDirs(listOf("../../tests/src"))',
+                  'java.setSrcDirs(listOf("../../tests/src", "src/test/kotlin"))',
                   'testImplementation("org.robolectric:robolectric:4.16.1")',
               ),
               "tis/host_ci/robolectric/settings.gradle.kts": (
@@ -153,8 +153,10 @@ jobs:
               tis/src/*.kt|tis/tests/src/*.kt|\
               tis/arib_parental_rating/src/*.kt|tis/arib_parental_rating/tests/src/*.kt|\
               tis/host_ci/kotlin/*.kt|\
+              tis/host_ci/robolectric/src/test/kotlin/*.kt|\
               tis/host_ci/robolectric/build.gradle.kts|\
               tis/host_ci/robolectric/settings.gradle.kts|\
+              tis/host_ci/robolectric/src/test/kotlin/*.kt|\
               rec/tests/src/*.kt|\
               rec/src/com/maleicacid/tvinput/db/TvInputDatabase.kt|\
               rec/src/com/maleicacid/tvinput/reservation/ReservationPolicy.kt)
@@ -217,7 +219,9 @@ jobs:
         env:
           FILES_JSON: ${{ needs.all-kotlin.outputs.files }}
         run: |
-          mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
+          mapfile -t sources < <(
+            jq -r '.[] | select(startswith("tis/src/com/maleicacid/tvinput/aribsi/generated/") | not)' <<<"$FILES_JSON"
+          )
           "$KTLINT" "${sources[@]}"
 
   detekt:
@@ -252,6 +256,8 @@ jobs:
         env:
           FILES_JSON: ${{ needs.all-kotlin.outputs.files }}
         run: |
-          mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
+          mapfile -t sources < <(
+            jq -r '.[] | select(startswith("tis/src/com/maleicacid/tvinput/aribsi/generated/") | not)' <<<"$FILES_JSON"
+          )
           input="$(IFS=,; printf '%s' "${sources[*]}")"
           java -jar "$DETEKT" --input "$input"

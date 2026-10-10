@@ -5,17 +5,33 @@
 TIS は `TvInputService` としてシステムTVアプリから呼ばれ、Tuner HAL には Tuner SDK API 経由でアクセスする。HAL binder を直接呼ばない。
 TIS の setup / boot EPG sync / user unlock drain は、固定文字列や package 名を inputId とみなしてはならない。`TvInputManager.tvInputList` から自 `MaleicacidTvInputService` に一致する `TvInputInfo.id` を一意に解決し、その inputId だけを scan / sync / TvProvider writer へ渡す。解決不能または複数一致の場合、boot EPG sync は pending のまま延期し、setup scan は開始しない。
 
+### Runtime identity / generation の枯渇契約
+
+TISがstale callback fence、owner世代、runtime tokenとして使用するgeneration / IDは、silent wrap、saturating increment、live identityとの無検査reuseを行わない。単調世代（Tuner tune generation、scan generation、playback generation、broadcast-clock discontinuity generation、caption presentation epoch）はchecked incrementを使い、最大値到達時は現在のowner/stateをfail-closedにfenceして新しい世代を発行しない。枯渇後のsentinelを有効世代としてcallback比較・publish・playback開始へ使用しない。
+
+有限live-set内で再利用可能なtoken（caption frame token、Timing=10 pending/arm token）は正数空間を明示的に巡回してよいが、再利用候補が現在のlive-setに存在しないことを発行時に検査する。使用中tokenとの衝突がない候補を取得できなければ発行を失敗させる。wrapそのものをgeneration更新の代替にしない。
+
+SI parser内部のcollection generation / ingest sequence / parser handleは `../arib_si_engine_rs/DESIGN_JA.md` の枯渇契約を正とし、TISは `IDENTITY_EXHAUSTED` / internal failureを空snapshot、未観測SI、通常のcollection timeoutへ読み替えない。
+
 ### SI収集の期限と失敗境界
+
+JNIの実行失敗と正常な空値の契約は`../arib_si_engine_rs/DESIGN_JA.md`の「実行失敗と正常な空値の区別」を正とする。TISはJNIの実行失敗を呼出し元へ伝え、SI事実なし・番組キーなし・JSON内容不正へ変換しない。走査・番組更新では当該操作の失敗として扱い、失敗したスナップショットを登録・更新・削除判断へ使用しない。具体的な呼出しと受取補助関数の使用規則は、`CODE_CONVENTION.md`を正とする。
 
 走査の待機時間・安定待ち・最大期限は`SystemClock.elapsedRealtime()`の差で測り、端末の時刻補正に依存させない。SI境界のcollectionは`../arib_si_engine_rs/DESIGN_JA.md`の有限寿命・入力上限に従う。上限時に破棄されたsnapshotから登録完了・EPG完了を導出しない。継続視聴のdecoder資源寿命はSI collectionの再同期とは独立している。
 
+candidateのSI収集期限と、section filter停止後に受信済みfactを確定するfinal snapshot取得期限は別の有限区間とする。収集期限到達後は新しいcollection snapshot attemptを開始しない。section filter停止完了時点からfinalization用の`maxWaitMs`を開始し、同じnon-blocking typed snapshot入口を有限retryする。これにより、収集期限を使い切ってfilterを停止した正常経路を理由にfinal snapshot attemptを0回にしない。finalizationでもdeadline一致・超過後は新規attemptを開始せず、lock busyを空snapshotへ読み替えない。
+
+scan用Tunerのcurrent tune generationに対して`OnTuneEventListener.SIGNAL_NO_SIGNAL`または`OnTuneEventListener.SIGNAL_LOST_LOCK`を受けた場合、当該candidateのSI collectionを信号利用不能で終端し、そのcandidateの未完了snapshotをchannelまたはProgramのpublishへ使用しない。setup / explicit rescan / boot EPG sync / background maintenanceでは、資源喪失または取消しによるtask全体の終端が確定していない限り、次のcandidateへ進む。`OnTuneEventListener.SIGNAL_LOCKED`はSI collectionの終了条件とせず、既存の最短待機・安定待ち・最大期限を変更しない。SI collectionの終了が先に確定した後に到着したtune eventで、確定済みcollectionまたはpublish結果を遡って変更しない。
+
+scanのtune eventはtune generation付きで扱い、current candidateのgenerationに属する信号利用不能eventだけを当該collectionへ適用する。`Tuner.tune()`の結果をscan側が受け取ってgenerationをactive化する前に同世代eventが到着する競合は保持し、active化後のcollectionで観測できるようにする。後続candidateがactiveになった後の旧generation eventは後続collectionへ作用させない。active generation、resource-lost generation、信号利用不能eventの世代fenceは`ChannelScanController.ScanGenerationFence`に集約し、同じscan generationの第二の状態ownerを追加しない。
+
 ## BS と CS110 の選局契約
 
-BSはIF周波数とAOSP Tuner公開契約のtyped stream selectorを保持する。通常のscan候補、channel保存、再選局ではbackend種別に依存せず、`STREAM_ID`のTSID `0..65534`だけを使用する。TISはpx4の相対slot、Linux DVBの`DTV_STREAM_ID`、HAL内部のbackend種別・能力を取得・推測・保存しない。一方、AOSP Tuner SDKが公開する`FrontendInfo.type`と`statusCapabilities`はfrontend選択とBS候補source選択に使用する。CS110は周波数帯だけでscan candidateとtune selectorを作り、stream selectorを保存しない。
+BS/CS110の通常scan候補、channel保存、再選局でTISが生成する周波数・typed stream selectorの規範値は `../開発規則.md` の日本向けscan/選局契約を唯一の正本とする。TISはその候補をAOSP Tuner SDKのtyped settingsへ変換し、px4の相対slot、Linux DVBの`DTV_STREAM_ID`、HAL内部backend種別・能力を取得・推測・保存しない。AOSP公開`FrontendInfo.type`と`statusCapabilities`はfrontend選択とBS候補source選択に使用できる。
 
-CS110のTIS内部モデルとTvProvider保存形式では、frontend stream selectorを`None`／`null`として保持する。Android 15 Tuner API builderへ変換するときは`streamId`と`streamIdType`のsetterをどちらも呼ばない。builderが生成する`STREAM_ID`と`INVALID_STREAM_ID(0xFFFF)`の組を、Tuner HALが公開契約境界で`NoSelector`へ正規化する。TISから`UNDEFINED`、0、TSID、relative番号を「selectorなし」の代用として明示設定しない。CS110 の ONID / TSID / service_id は channel identity / サービス識別子として保持してよいが、HAL frontend selectorへ転用してはならない。BSの通常製品経路はIF周波数と`STREAM_ID`のTSIDを使う。TISはdriver固有slotへ変換せず、typed selectorの検証とbackend ABIへの写像はTuner HALへ委ねる。
+CS110では `../開発規則.md` が定めるselectorなしの製品requestをTIS内部モデルでも明示し、Android Tuner API builderではselector setterを呼ばない。SDK default表現をHALがどう正規化し、どの入力を拒否するかは `../TUNER_HAL_DESIGN_JA.md` を正とする。ONID / TSID / service_idはchannel/service identityとして保持してよいがHAL frontend selectorへ転用しない。BSについてもTISはdriver固有slotへ変換せず、typed selectorの検証とbackend ABIへの写像はTuner HALへ委ねる。
 
-TvProvider の channel internal provider data には JSON v1 `tune.streamIdType` と `tune.streamId` を保存する。通常製品経路で書き込む値は、`NONE` の `streamId=null`、または `TSID` の `0..65534`だけとする。`65535`はAOSP `INVALID_STREAM_ID`であり、実TSIDとして保存または再投入しない。`RELATIVE`はAOSP Tuner AIDLで合法なtune-time selector種別だが、本製品では永続channel tune identityとして採用しないため、TISの通常channelデータへ保存しない。
+TvProviderのchannel internal provider dataへ保存するtune情報は、`arib_si_engine_rs`のprovider-data schemaと `../開発規則.md` の日本向けscan/選局policyに従う。TISはHAL内部表現やdriver固有selectorを永続channel identityへ保存せず、schema上の具体値域・sentinelを本書で第二定義しない。
 
 
 ## 製品 scan 候補表の保持者
@@ -24,31 +40,39 @@ TvProvider の channel internal provider data には JSON v1 `tune.streamIdType`
 
 TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補と、dynamic discovery非対応frontend用の固定RF→absolute TSID候補を保持する。BS setup/rescanの候補source選択は`開発規則.md`の「製品 scan 候補の規範値」を正とする。TISは`Tuner.getAvailableFrontendInfos()`でISDB-S frontendを列挙し、`FrontendInfo.statusCapabilities`の`FRONTEND_STATUS_TYPE_STREAM_IDS`を持つ候補を優先して`Tuner.applyFrontend()`で確保する。確保したfrontendが同capabilityを持つ場合は物理RFごとにstream selector未指定の`IsdbsFrontendSettings`で`Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。 選択したfrontendはBS setup/rescanの候補source lifetime中保持し、RFごとの`cancelScanning()`後に`closeFrontend()`しない。explicit tuneと次RFのdynamic scanは同じ選択frontendを継続使用する。同capability frontendを確保できず、非対応frontendを確保できた場合は固定RF→absolute TSID候補を使う。dynamic scan開始後の失敗、timeout、空報告から固定候補へ切り替えない。候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。
 
+TunerControllerは同一Tuner SDK instanceへ最後に要求したFrontendSettings.typeを `frontendLeaseType` として保守的に追跡する。これはFrontendの実取得・リース存在・物理Frontend IDを示す事実ではない。Tuner.scan()/tune()は失敗時にもFrameworkがFrontendを確保済みの場合があるため、呼出し直前に要求typeを記録する。BS候補sourceのTuner.applyFrontend()成功時もそのtypeを記録する。異種typeの次回要求ではTuner.closeFrontend()で旧leaseを返し、成功時のみ追跡値を消去してからscan/tuneする。返却失敗時は追跡値を維持し、次のSDK選局・探索を発行しない。FrameworkによるonResourceLost()後、およびTuner.close()成功時も追跡値を消去する。物理Frontend選択・T/S専用機の能力判定・資源調停はFramework/TRMが担当し、TISでは再実装しない。
+
+通常の同type再選局・RF切替では既存Frontendを解放せず再利用する。ただしBS候補sourceの最初の確定では、特定のFrontendInfo.id/capabilityを指定するTuner.applyFrontend()が既存Frontend確保中にINVALID_STATEを返すため、同typeであっても既存leaseを先に解放してから選び直す。source確定後は同じISDB-S frontend leaseを保持し、BS RFごとのcancelScanning後には解放しない。
+
+異種type切替時の解放失敗は通常選局ではTuneOutcome(success=false)、BS stream-ID探索ではStreamIdDiscoveryOperation内部のOutcome.START_FAILEDへ遷移したうえでStreamIdDiscoveryResult(success=false, resultCode, message, generation)を返す。失敗理由による資源調停の違いではなく、選局と非同期探索で呼出元が要求する結果の違いである。setup scanでのTuner.tune()またはBS Tuner.scan()の同期失敗はTUNE_REJECTEDで後続candidateを停止する。BSのscanが正常に受理された後の空stream-ID報告や収集timeoutは、受信未完了と区別して当該RFを登録せず次のRFへ進める。cancelとresource-lostの終端をこの同期失敗へ書き換えない。
+
 ## サービス登録・公開・再生policy境界
 
-`arib_si_engine_rs` が返すservice / transport単位の `ServiceSemanticFacts` をAndroid channel登録、EPG公開、ライブ再生へ接続する判断はTISが所有する。`ServiceSemanticFacts` はONID / TSID / SID、ARIB `service_type`、PMT/PCRの存在・構文状態、ES/component一覧とcodec signaling、CA descriptor / free_CA_mode、CA descriptor等から導出した`requiresCas`、SMD意味状態、欠落・不正理由など放送由来の事実だけを含む。`channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackSupported`、`unsupportedCas`のような現在の製品能力・TIF policy結果は含まない。
+`arib_si_engine_rs/DESIGN_JA.md` が定義するservice / transport単位の `ServiceSemanticFacts` を入力とし、Android channel登録、EPG公開、ライブ再生へ接続するproduct policyの算出はTISが所有する。`ServiceSemanticFacts` のfield集合、放送意味、導出条件、包含・除外境界は同SI engine設計を唯一の正本とし、本書では再定義しない。
 
-TISはcurrent `ServiceSemanticFacts`から`requiresCas`を意味事実として受け取り、SI段階では現在releaseの対応service type/codecとCAS状態から `channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackStaticallyEligible`、`unsupportedCas` を算出する。`clearLivePlaybackStaticallyEligible` はdecoderを開く前の静的候補factであり、`clearLivePlaybackSupported`を表明しない。実decoder availabilityはlive playback開始時のMediaCodec選択・configure成功を正本とし、static eligibilityを満たしてもdecoderを利用できないserviceは再生成功扱いにしない。このpolicy結果はSI parserへ逆流させず、保存済みprovider-dataをcurrent policyのfallback sourceにしない。
+TISはcurrent `ServiceSemanticFacts`から`requiresCas`を意味事実として受け取り、SI段階では `../開発規則.md` が対象releaseで有効化したservice type / codec範囲とcurrent CAS状態から `channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackStaticallyEligible`、`unsupportedCas` を算出する。`clearLivePlaybackStaticallyEligible` はdecoderを開く前の静的候補factであり、`clearLivePlaybackSupported`を表明しない。実decoder availabilityはlive playback開始時のMediaCodec選択・configure成功を正本とし、static eligibilityを満たしてもdecoderを利用できないserviceは再生成功扱いにしない。このpolicy結果はSI parserへ逆流させず、保存済みprovider-dataをcurrent policyのfallback sourceにしない。
 
-SMDの通常受信対象判定では、`arib_si_engine_rs`が返す`broadcasting_flag` / `broadcasting_identifier`の放送由来事実と、TISが現在処理している`ScanCandidate.kind`を組み合わせる。`ISDB_T_UHF` / `ISDB_T_CATV`は地上デジタルテレビ`0b000011`、`ISDB_S_BS`はBSデジタル`0b000010`、`ISDB_S_110CS`は広帯域CSデジタル`0b000100`を期待値とする。`broadcasting_flag=0b00`の正常SMDでもcandidateと`broadcasting_identifier`が一致しないserviceは、そのcandidateでは`channelRegistrationReady` / `epgPublishable` / `clearLivePlaybackStaticallyEligible`にしない。ONIDから放送方式またはSMD期待値を推定せず、ONIDはnetwork/service identityとしてのみ用いる。
+SMDの通常受信対象判定では、`arib_si_engine_rs` がraw `broadcasting_identifier`から正規化したtyped broadcast system factと、TISが現在処理している`ScanCandidate.kind`を組み合わせる。candidateが期待するbroadcast systemとSI engineのtyped factが一致しないserviceは、そのcandidateでは`channelRegistrationReady` / `epgPublishable` / `clearLivePlaybackStaticallyEligible`にしない。raw SMD数値codingは `../arib_si_engine_rs/DESIGN_JA.md` を唯一の正本とし、TISで再解釈しない。ONIDから放送方式またはSMD期待値を推定せず、ONIDはnetwork/service identityとしてのみ用いる。
 
-partial snapshot はサービス単位の登録可能判定に使ってよい。ただし partial snapshot を無条件に channel 登録へ出してはならない。登録可能サービスは、ONID / TSID / SID、PMT PID と PMT、有効 PCR、後続更新可能な internal key、および現行ライブ視聴で対応するaudioまたはvideo ESを持つサービスとする。video-only / audio-onlyというtrack構成は`TvContract.Channels.COLUMN_SERVICE_TYPE`の再分類根拠にせず、同列は`../ARIB_SI_EPG_TvProvider投影方針.md`に従ってARIB `service_type`のcodingを保持する。audio-onlyの視聴セッションでは`VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY`を通知できるが、この値をchannel登録の禁止理由に使わない。音声・映像の欠落または未対応はTIS側のtrack別診断に残す。scrambled サービスはTIS policyでchannel登録してよいが、現行の平文ライブ視聴成功対応宣言対象にはしない。登録可能未満の partial snapshot は診断情報 / ライブ更新 / debugに限定し、channel insert に使わない。
+partial snapshot はサービス単位の登録可能判定に使ってよい。ただし partial snapshot を無条件に channel 登録へ出してはならない。地上デジタルの部分受信サービスは、ARIB `service_type=0xC0`だけでは判定せず、同一transportのNIT Partial Reception Descriptor (0xFB) に当該SIDが列挙されている`ServiceSemanticFacts.partialReception=true`を必須とする。この条件を満たし、通常のPMT/PCR・対応codec・物理選局条件を満たすserviceはchannel登録対象に含め、TvProviderでは`TYPE_1SEG`として通常ISDB-Tと分離する。登録可能条件はONID / TSID / SID、PMT/PCR、更新用internal key、および `../開発規則.md` が対象releaseで有効化したservice type / codec範囲を入力として本節のpolicy evaluatorで判定する。video-only / audio-onlyというruntime track構成をTvProviderのservice-type列へ逆流させず、同列のcodingは `../ARIB_SI_EPG_TvProvider投影方針.md` を正とする。audio-only時のTIF通知はchannel登録可否と分離し、音声・映像の欠落または未対応はtrack別診断に残す。scrambled serviceのrelease上の視聴成功scopeは `../開発規則.md` を参照する。登録可能未満のpartial snapshotは診断情報 / ライブ更新 / debugに限定し、channel insertに使わない。
 
 `TvTrackInfo` の `trackId` はAndroid/TIS runtimeの識別子であり、TISがcurrent serviceのcomponent identityからcurrent session内で一意になるよう決定する。ARIB意味objectや永続`internal_provider_data`に`trackId`を保存せず、Rust SI parserへ返さない。
 
-Audio track metadata はPMTとEITの責務を混同しない。実際にfilter/decoderへ渡すPIDと`stream_type`はcurrent PMT ESを正とし、current EIT `audio_component_descriptor`は同一`component_tag`のESに対する放送意味metadataとして相関する。ARIB STD-B10の`component_tag`はPMTのstream identifier descriptorの同fieldと同値であるため、この相関以外のPID順序やtrack順序による推測を行わない。descriptorが欠落・不正・`component_tag`不一致の場合はPMTで確定できるtrack identity/codec情報だけを通知し、EIT metadataを捏造しない。
+Audio track metadata はPMTとEITの責務を混同しない。実際にfilter/decoderへ渡すPIDと`stream_type`はcurrent PMT ESを正とし、current EITの音声component事実は同一`component_tag`のESにだけ相関する。`audio_component_descriptor`のraw bitfield、sampling code、accessibility bit、audio modeの意味解釈は `../arib_si_engine_rs/DESIGN_JA.md` とSI engine実装を正とし、TISで再解釈しない。descriptorが欠落・不正・`component_tag`不一致の場合はPMTで確定できるtrack identity/codec情報だけを通知し、EIT metadataを捏造しない。
 
-有効な`audio_component_descriptor`からAndroid `TvTrackInfo`へ自然対応する値だけを投影する。ISO 639 languageは`setLanguage()`、PMT `stream_type`から一意に決まるMIMEは`setEncoding()`、ARIB `sampling_rate`の明示値は`setAudioSampleRate()`、`component_type`下位5bitのaudio modeから一意に決まるchannel数は`setAudioChannelCount()`、`text_char`は`setDescription()`へ投影する。`component_type` b6-b5=`01`の視覚障害者向け音声解説は`setAudioDescription(true)`、`10`の聴覚障害者向け音声は`setHardOfHearing(true)`へ投影する。reserved/未定義audio mode、reserved sampling rate、PMTとdescriptorで意味が一致しない値を推測で標準fieldへ埋めない。`main_component_flag`、`ES_multi_lingual_flag`、`quality_indicator`、`simulcast_group_tag`等は放送由来factとして保持するが、意味の異なるAndroid標準fieldへ転用しない。dual monoの主/副/主副presentationは1 ESのpresentation stateとして`AudioTrack.setDualMonoMode()`へ接続し、別audio trackを捏造しない。
+SI engineが返すtyped audio factからAndroid `TvTrackInfo`へ自然対応する値だけを投影する。ISO 639 languageは`setLanguage()`、PMT `stream_type`から一意に決まるMIMEは`setEncoding()`、typed `sampleRateHz`は`setAudioSampleRate()`、typed `channelCount`は`setAudioChannelCount()`、textは`setDescription()`、typed accessibility factは`setAudioDescription()` / `setHardOfHearing()`へ投影する。SI engineが意味を確定できない値は未設定のままにし、TIS側でraw値から推測しない。dual monoはSI engineのtyped `dualMono` / `channelConfiguration` factを1 ESのpresentation stateとして`AudioTrack.setDualMonoMode()`へ接続し、別audio trackを捏造しない。
 
-AudioTrackへ渡すPCM topologyはdecoderの実出力を正本にする。decoder output `MediaFormat`に有効な`KEY_CHANNEL_MASK`がある場合はその`AudioFormat` positional maskを最優先で使用し、入力header、PMT、EITから別maskを上書き生成しない。`KEY_CHANNEL_MASK`が無い場合だけ、同一trackの有効なARIB `audio_component_descriptor.component_type`からspeaker topologyを一意に導出でき、かつdecoder outputの`KEY_CHANNEL_COUNT`と一致する場合にそのtopologyを使用する。それも確定できない場合はAOSPの`audio_channel_out_mask_from_count()`相当のcount→canonical maskをfallbackとして使用する。このcount fallbackはcontent channel mask不明時の便宜的配置であり、3ch等のARIB固有topologyを正確に復元した事実として扱わない。Android 13以降のdefault AAC decoderが3ch以上を出力するにもかかわらずoutput `KEY_CHANNEL_MASK`を提示しない場合は、fallbackで再生継続できてもCDD §5.1.2 C-7-2の適合を満たしたとは扱わず診断する。AudioTrackはdecoderのcurrent output formatに対して構成し、sample rate / channel count / channel maskが変わるoutput-format changeでは旧AudioTrackをそのまま使わず、既存のplayback generation / MediaSync再生成契約に従って新しい実出力形式へ同期する。
+AudioTrackへ渡すPCM topologyはdecoderの実出力を正本にする。decoder output `MediaFormat`に有効な`KEY_CHANNEL_MASK`がある場合はその`AudioFormat` positional maskを最優先で使用する。`KEY_CHANNEL_MASK`が無い場合だけ、SI engineが返すtyped `channelConfiguration`をAndroid `AudioFormat` channel maskへ写像し、decoder outputの`KEY_CHANNEL_COUNT`と一致する場合に使用する。それも確定できない場合はAOSPの`audio_channel_out_mask_from_count()`相当のcount→canonical maskをfallbackとして使用する。このcount fallbackはcontent channel mask不明時の便宜的配置であり、ARIB raw `component_type`をTISで再解釈した結果ではない。Android 13以降のdefault AAC decoderが3ch以上を出力するにもかかわらずoutput `KEY_CHANNEL_MASK`を提示しない場合は、fallbackで再生継続できてもCDD §5.1.2 C-7-2の適合を満たしたとは扱わず診断する。AudioTrackはdecoderのcurrent output formatに対して構成し、sample rate / channel count / channel maskが変わるoutput-format changeでは旧AudioTrackをそのまま使わず、既存のplayback generation / MediaSync再生成契約に従って新しい実出力形式へ同期する。
 
 Video track metadataもPMTとEITの責務を混同しない。filter/decoderへ渡すPIDと`stream_type`はcurrent PMT ESを正とし、current EIT `component_descriptor`は同一`component_tag`のvideo ESへだけ相関する。有効descriptorの`text_char`は`TvTrackInfo.setDescription()`へ投影してよいが、ARIBの`component_type`から得る480i/720p/1080i、aspect、scan等の放送形式factを、対応するexact Android標準fieldがない場合に別意味へ変換しない。特に`component_type`の「1080i」等だけから`1920x1080`等のpixel width/heightを推測して`setVideoWidth()` / `setVideoHeight()`へ設定しない。exact pixel geometryはdecoder output `MediaFormat`またはcodec headerから実値として確定したwidth/heightを正本とし、EIT descriptor factはprovider-data / diagnostic側で保持する。
 
-## 録画・予約の現行除外
+## 録画・予約のrelease境界
 
-現行 product では録画・予約を製品機能として表明しない。TIS メタデータの `android:canRecord` は `false` のまま維持し、`MaleicacidTvInputService.onCreateRecordingSession()` は `null` を返す。`RecordingSession`、DVR/file output、`RecordedPrograms` 登録、`notifyRecordingStopped()` / `notifyError()`、`TvRecordingClient` による予約録画開始は現行 product 対象外である。
+録画・予約を製品機能として有効化するrelease境界は `../開発規則.md` を正とする。同正本で録画機能が有効化されていないreleaseでは、TISは録画capabilityを広告せず、`onCreateRecordingSession()`から録画sessionを公開しない。具体的なpackage / manifest / receiver / test moduleの組込み条件は `INTEGRATION.md` を正とする。
 
-`rec/` 配下の実装とテストは録画・予約作業用の準備領域であり、現行 product package、TIS manifest、boot receiver、release確認条件へ混ぜない。現行 product で起動してよい receiver / サービスは TIS のライブ視聴・setup・EPG publish に必要なものだけとする。
+録画機能を有効化するreleaseでは、`rec/DESIGN_JA.md` にmodule固有runtime契約を確定してから、本節とTIS runtimeをその契約へ接続する。
+
+SI段階のproduct policyが出す`requiresCas`は放送由来のCA要否であり、既存の`ServicePolicyDecision.requiresCas`を唯一の型付き判断材料とする。`reasons`へ`CAS_REQUIRED`等の同義文字列を複製しない。SI段階ではMediaCas pluginの配置、初期容量通知、ECM処理、key token、Descramblerの結合状態を観測しないので、`requiresCas=true`のみを根拠に`CAS_NOT_IMPLEMENTED`やruntime失敗を宣言しない。`clearLivePlaybackStaticallyEligible=false`も非スクランブル静的候補ではないという別意味を維持する。r51のスクランブル視聴非対応宣言は`開発規則.md`のrelease契約を維持する。r52の視聴可否は既存の`livePlaybackEligible(currentCasLinkageReady())`とCasControllerのtyped failureを正とし、SI診断文字列を成功・失敗の代用にしない。
 
 ## CAS / descrambler の現行境界
 
@@ -134,11 +158,11 @@ r52の結合確認には、TRM登録とtyped sessionの管理、初期statusの�
 
 TISはMPEG-2 Video / H.264 / HEVC / AAC / MPEG audioのstart code、NAL、slice、ADTS frame、MPEG audio frameを通常入力経路で再解析してqueue境界を作らない。`MediaEvent`がpartial ESを含み得ることはTuner→MediaCodec境界の契約として受け入れ、`BUFFER_FLAG_PARTIAL_FRAME`の手動付与、TIS所有`LinearBlock`への再構成、ES全体またはAU単位のcopyを標準経路にしない。対象decoder/device profileがこのAOSP direct-input契約を満たさない場合は、その組合せをplayback capability qualificationで非対応にする。runtimeでcodec parser/reassemblerへfallbackしてAOSPの責務境界を複製しない。
 
-各`MediaEvent`のtimestamp metadataもevent単位で透過的に扱う。`MediaEvent.getOffset()`をPTSの適用位置またはPES header位置とは解釈しない。AOSP契約上、`isPtsPresent()`は元PES headerに明示PTSが存在したかというprovenanceを表し、`getPts()`はaudio/video frameの90 kHz presentation timestampを表す別フィールドである。本製品が成功対応として表明するclear / non-passthrough live media-filter profileでは、Tuner HAL / media-filter producerがすべてのnon-empty `MediaEvent`について、当該eventのESデータへ適用可能な有効な33-bit 90 kHz presentation timestampを`getPts()`で提供することをproducer/consumer契約とする。明示PTSの適用先、後続audio AUの時刻、前PESから継続するAUの時刻とprovenanceは、`../TUNER_HAL_DESIGN_JA.md` の「clear non-passthrough MediaEvent presentation timestamp 契約」を正とする。明示PTSはaudio PES内で最初に開始するAUに対応し、同じPES由来の全eventへ同じPTSを要求しない。PTSを明示しない合法なPES由来eventでは`isPtsPresent()==false`を維持し、hardware demux / driver / backend media extractor等のproducer側が当該eventのESデータに対応するpresentation timestampをauthoritative timing metadataとして既に確定できる場合に限り、その値を`getPts()`へ設定する。HAL共通層は定数0、単純な直前PTS carry-forward、PCR、wallclock、nominal frame rate、sample rate等からpresentation timestampを推測生成しない。producer側境界でも当該eventとのauthoritative associationを確定できないbackend/profileは、このlive direct-input成功対応profileとして表明しない。`isPtsPresent`をtimestamp validity flagへ読み替えず、provenanceを偽装して`true`へ丸めない。
+各`MediaEvent`のtimestamp metadataはevent単位で透過的に扱う。producerが`MediaEvent`へ設定するPTSのpresence/value、明示PTSの適用先、PTS-sparse時のassociation、fallback禁止条件、成功対応profileの成立条件は `../TUNER_HAL_DESIGN_JA.md` の「clear non-passthrough MediaEvent presentation timestamp 契約」を唯一の正本とし、本書では再定義しない。
 
-TISは`isPtsPresent()`をMediaCodecへqueueする／しない、drop、playback fatalの判定に使用しない。non-empty `MediaEvent`ではproducer-authoritativeな`getPts()`を33-bit range検証し、`PtsNormalizer`へ渡して同じeventの`QueueRequest.setPresentationTimeUs()`へ必ず設定してからdirect queueする。Android 15の`MediaCodec.QueueRequest`はpresentation timestampのabsenceを表現できずsetter未呼出しでは0がqueueされるため、setter未呼出しを「timestampなし」として利用しない。TISは0、直前PTS、PCR、wallclock、frame rate、sample rateからtimestampを補完せず、別eventやcodec AUへPTSを再関連付けせず、codec別AU parser、PES再解析、AU再構成も追加しない。producerが上記保証を満たせないbackend/profileはlive direct-input成功対応profileとしてqualificationを通さず、成功capabilityとして表明しない。これは公開Tuner AIDL/VINTF/VTSのフィールド意味を変更するものではなく、既存`MediaEvent.pts`を使って製品内producer/consumer責務を閉じる追加契約である。
+TISは同正本から受け取った`isPtsPresent()`をprovenanceとして扱い、queue可否やtimestamp validity flagへ読み替えない。non-empty `MediaEvent`ではproducerが提供した`getPts()`をrange検証して`PtsNormalizer`へ渡し、同じeventの`QueueRequest.setPresentationTimeUs()`へ設定する。`MediaEvent.getOffset()`をPTS適用位置またはPES header位置と解釈せず、TIS側で0、直前PTS、PCR、wallclock、frame rate、sample rate等からtimestampを生成したり、別event/codec AUへ再関連付けしたりしない。
 
-最低試験は、(1) explicit PTS video PESとaudio PES内で最初に開始するAUでは`getPts()`がその明示PTSとなり、後続AUと前PESから継続するAUではHAL正本のAU対応規則による値をTISが変更せずqueueすること、(2) 合法なPTS-sparse inputで`isPtsPresent()==false`でもbackendが当該media outputに対応するauthoritative timing metadataを持つ場合はその対応値を`getPts()`へ出し、TISがdrop/fatalせずqueue継続すること、(3) authoritative sourceがない場合にproducer共通層／TISのどちらも0、直前PTS、PCR、wallclock、frame rate、sample rate等からtimestampを推測生成せず、そのbackend/profileをlive direct-input成功capabilityとして表明しないこと、(4) 33-bit wrap前後とA/V間で本来のtimeline差を維持すること、(5) TISが`isPtsPresent()==false`だけを理由にdrop/fatalしないこと、を含める。
+TIS側の最低試験は、HAL正本が生成した各timestamp/provenance組を変更せずqueueすること、`isPtsPresent()==false`だけを理由にdrop/fatalしないこと、TIS側にtimestamp推測・AU/PES再解析fallbackがないこと、および33-bit wrap前後を`PtsNormalizer`が正しく扱うことを固定する。HAL producer側のPTS生成・association試験は `../TUNER_HAL_DESIGN_JA.md` の最低テストを正とする。
 
 `PlaybackPipeline` はplayback generationごとに1個の`PtsEpochCoordinator`と、active compressed trackごとの`PtsNormalizer`を持つ。これはcodec framingやAU identityを所有せず、**producer contractで有効な`getPts()`を持つ全non-empty `MediaEvent`のtimestamp変換だけ**を担当する。`PtsNormalizer`の`rawPrev` / `extendedPrev`はtrack別とし、33-bit wrap epochだけをgeneration内で共有する。`M = 2^33`、`H = 2^32`、`signedDelta(rawNew, rawRef) = ((rawNew - rawRef + H) mod M) - H`を`[-H, H-1]`の差とし、半周期差は`-H`に固定する。generationで最初のproducer-authoritative `getPts()`を共通extended seed `H`へ置き、後から開始または置換されるtrackはそのtrackで最初のproducer-authoritative `getPts()`をcurrent coordinator referenceに対してsigned-moduloで同じepochへjoinする。seed済みtrackはtrack-localにunwrapする。`isPtsPresent()==false`でも`getPts()`は通常どおりcoordinator / normalizerへ入力し、provenance bit自体はunwrap状態やqueue可否を変更しない。PTS deltaの大小、通常wrap、presentation-order reorderだけから独自discontinuityを推定しない。
 
@@ -151,6 +175,10 @@ source `MediaEvent` / `LinearBlock`とrangeに対応するbudget claimは、`Que
 secure-memory handle、tunneled playback、platform passthroughは本製品が提供しない恒久的なplayback capabilityであり、時点依存の一時除外ではない。TISはsecure `MediaEvent`をclear-memoryへcopyできると仮定せず、その経路をadvertiseしない。r52のCAS対応もdescramble後のclear ESをこのdirect non-passthrough経路へ接続できるサービスだけをライブ視聴成功対象とする。
 
 デコード後のA/V同期とSurface提示はAndroid標準`MediaSync`だけを使用する。decoder output の `BufferInfo.presentationTimeUs` をMediaSyncへ渡すmedia timeの正本とする。video decoder出力は`MediaSync.setSurface(sessionSurface)`後の`createInputSurface()`へ接続し、output timestampをMediaSyncへ渡す。audio decoder出力PCMは`MediaSync.queueAudio()`へpresentation time付きで渡し、`MediaSync.Callback.onAudioBufferConsumed()`を受けるまでaudio output bufferの所有権を保持する。独自media clock、PCR→wallclock変換、独自future render / late drop schedulerを設けない。
+
+AV overflowのplain flushでは、既存playback ownerがflushを開始する時点で当該Filterの入力identityを閉じる。既にdecoderで保持する未queue入力に加え、ownerで待機する旧MediaEvent/RestartEventも失効させる。overflow通知後・owner実行前の受理分もflush前の入力として破棄し、flush実行中のMediaEventはdecodeせず個別に解放する。flush成功後だけ新identityで受付を再開し、失敗時は既存診断を通知して受付を閉じたままにする。別Filterの入力、decoder/MediaSync/AudioTrack、playback generationは変更しない。PESのFMQ read通知とは異なり、個別所有するMediaEventの破棄であるため、捨てた通知に対応する未読PES bytesを後続readへ持ち越す経路は作らない。
+
+映像decoderのowner受付過負荷期限、decoder内queueの過負荷期限、header取得上限による構成不能は、既存の映像decoder失敗と同じ停止入口へ接続する。再生不能通知だけでdecoderを閉じてFilterを残さず、既存stopで世代失効・Filter参照解除/close・待機callback回収・decoder解放を行う。音声側は既存のaudio-only停止またはvideo-only新世代fallbackの入口を維持する。
 
 ### MediaSync Framework-private final-output observation
 
@@ -166,7 +194,7 @@ Exact modeのcallbackは物理display/compositorへのpresent fence完了を意�
 
 ## EIT と TvProvider
 
-現行releaseで収集するEIT table範囲、短期補完の用途、長期・他service・予約/追従利用のrelease境界は、tv直下の`開発規則.md`のr51到達点を唯一の正本とする。本書はそのscopeを再定義せず、TIS runtimeにおけるfilter起動・停止、Programs書き込み契機、retry、現在番組解決、視聴セッション利用だけを定義する。Programs の `internal_provider_data` には JSON v1 の stable `programKey`、start+durationのtiming、放送由来CAS意味事実、長形式イベント項目、component/audioメタデータ、series完全構造、`eventGroups`、linkage、free_CA_mode、ARIBレーティングraw値、診断JSONをTIS内部データとして保存する。音声言語は`components.audio[].language/secondLanguage`にだけ保持し、top-levelへ複製しない。runtimeで選択したaudio/video track、`TvTrackInfo.trackId`、Android canonical genre投影結果、Android rating文字列、decoder/CAS product capability、channel/EPG/live可否はprovider-dataへ保存しない。TvProvider の標準columnには title / short description / long description、broadcast genre、明示写像できる canonical genre、series id、episode display number、scrambled、audio language、コンテンツレーティングなど、`ARIB_SI_EPG_TvProvider投影方針.md`で自然対応が固定された範囲だけ反映する。last episode number は通常の `TvContract.Programs` 標準列へ投影しない。
+releaseごとのEIT収集範囲、短期補完、長期・他service・予約/追従利用の境界は、tv直下の`開発規則.md`を唯一の正本とする。本書はそのscopeを再定義せず、TIS runtimeにおけるfilter起動・停止、Programs書き込み契機、retry、現在番組解決、視聴セッション利用だけを定義する。`internal_provider_data` のfield集合・canonical encode・保存禁止項目は `arib_si_engine_rs/DESIGN_JA.md`、TvProvider標準列へ投影する項目と条件は `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、本書では再掲しない。
 
 TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とする。`internal_provider_data` の schema、canonical encode、保存上限、parser/descriptor診断schemaは `arib_si_engine_rs/DESIGN_JA.md` と Rust serde 構造体を正とする。本書はTIS runtimeにおける取得、policy算出、書き込み契機、retry、現在番組解決、視聴セッションでの利用だけを定義する。
 
@@ -174,11 +202,15 @@ TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投
 
 複数のtable instanceを包括的・継続的に取得する必要がある操作では、TISは`TableInfo repeat=true`を使用する。Tuner HALに未知の全instance集合の列挙や終端推測を要求しない。
 
+PMT本文を受信する前にPMT section filterを開くbootstrapだけは、`NativeAribSiParser.pmtPidsForSectionFilters()` を使用してよい。同入口は `arib_si_engine_rs/DESIGN_JA.md` が定めるcontrol snapshotのtyped投影であり、返却PIDをchannel identity、ServiceKey、登録可否、EPG公開可否、CAS判断、live playback可否へ使用してはならない。通常の意味判断とpublicationは同じnative transactionから得るbulk snapshotを正とし、bootstrap PID取得失敗を「PMTなし」の正常状態へ丸めない。
+
 TISは`SiCollectionRequirements`で操作目的に応じた必要集合を作り、同一bulkのscope別table完成状態とEIT instance状態で判定する。global discoveryStageを操作完了の代理にしない。
 
 | 操作 | 対象集合と必要instance | 更新・終了条件 |
 |---|---|---|
 | setup / explicit rescan | 同じcandidateのSDT actualに属する現在観測サービス。profileの必須SI集合のうち対象transportのSDT/NIT、対象サービスのPMT、およびPAT・profile必須補完表。EITは初期channel登録の必須にしない | 収集中のサービス追加・消失で集合を更新し安定待ちをやり直す。最短2秒かつ集合・完成状態が1.2秒安定し全必要instanceが完成すれば終了。登録可能な部分集合の安定による終了はSTABLE_PARTIALとする |
+
+setup/rescanの登録可否は現在TSのサービスの`ServiceSemanticFacts.missing_components`により評価する。BS/CS110のSDT-other/NIT-otherの未受信はcollection全体の`table_requirements`と不完全診断へ残すが、現在TSのPAT・NIT actual・SDT actual・当該PMT/PCR/codec/SMDが独立に成立したサービスの`registrationReady`だけをfalseにしない。全collectionの完成要件を緩和せず、安定した登録可能な部分集合は既存の`STABLE_PARTIAL`条件で処理する。
 | boot EPG sync / background maintenance | 開始時に問い合わせた既存channelのServiceKeyをfrequency/deliverySystem/selector/satelliteBandの物理候補ごとに固定する。上記の対象SIと各ServiceKeyのp/f actual EITを必要にする。表示番号の違いで対象を落とさない | 対象の消失は未完成に残し、対象外サービスの到着で代用しない。EITを待たず安定部分終了せず、全必要instance完成または最大12秒で終了する。必要集合の完成とprovider transaction成功は別条件とする |
 | live | 現在の選局世代のServiceKeyについてPSI/SI・EPG・CAの継続変化を監視する | 初回snapshotの完成を視聴中の更新監視の終了条件にしない。repeat=trueで監視を続け、選局変更・資源喪失・解放時に既存の終了処理でstopする。解析器の内部保持は有限collection寿命に従う |
 
@@ -188,7 +220,15 @@ live refreshは`LivePlaybackSnapshot`一つを取得し、その同じnative tra
 
 現在番組がないことのauthorityはServiceKey全体のProgram key集合の空判定から導出しない。ARIB STD-B10 Annex 1.4.1に従い、current p/f actualのsection 0が現在版で受信済み・構造安全・無矛盾であり、同sectionのeventが存在しない場合にrating resolverへ型付き`AUTHORITATIVE_EMPTY`を渡す。section 1にfollowing eventがある場合や、following sectionが未受信の場合でも、確定した空presentをProviderの旧current行で上書きしない。section 0の未受信・構造不正・同版矛盾は`UNCONFIRMED`として既存Provider fallbackを維持する。eventの有無には通常候補と公開除外event factsの双方を使い、不正eventを空presentへ読み替えない。authorityが確定した空presentならUNRATED/no-current identityへ進む。同sectionにeventを観測した場合は型付き`PresentObserved`へそのeventを渡し、時刻区間の有無に依存せずProviderより優先する。単一の`DEFINED`/`UNDEFINED_TIME` presentの受信済みrating descriptorは既存mapperで写像し、未対応・欠落ratingはUNRATEDとして扱う。`UNDEFINED_TIME`ではServiceKey/eventIdを保持するが、start/endは両方nullとし、時刻を推測した一時解除を許さない。複数presentまたは診断専用の不正eventだけの場合はUNRATED/no-current identityとし、古いProviderへ戻さない。全体の削除用key集合と削除区間の既存policyは独立して維持する。
 
-有限走査では成功・timeout・cancel・例外のいずれでも、最終snapshotを使う前に全section filterをstop/closeして読取りcallbackを無効化する。stop/close失敗は伝播し、収集完了成功に読み替えない。timeoutの部分成果から開始時のrequired ServiceKey全件を完了扱いしない。受信中に版・必要集合・完成状態が変われば同じsnapshotから再評価する。
+有限走査の反復判定では、`AribSiEngine` の単一owner lockとnative parser state mutexのいずれについても、取得待ちをdeadline内のpoll入口に持ち込まない。`AribSiEngine` の通常APIは従来どおり単一ownerによるblocking直列化を維持する一方、有限scanの反復snapshot入口は外側owner lockが使用中なら待機せず「snapshot未取得」として扱う。外側owner lockを取得できた場合もnative parser state mutexが使用中なら待機せず同じ結果とする。同じcandidateの事実は未取得のまま保持し、残りdeadline以内だけpollを継続する。busyを空snapshotまたは未完成SIへ読み替えない。deadline到達後は新しい反復snapshotを開始せず、section filterを停止して入力を遮断した後も同じnon-blocking snapshot入口だけを使って最終snapshot取得を有限retryする。各試行は開始直前にdeadlineを確認し、deadlineと一致または超過していれば新しいsnapshot取得を開始しない。lock busy待ちは期限外へ持ち越さず、busy後にdeadlineへ到達した場合はsleepや次試行へ進まずscan失敗として伝播する。deadline直前に開始できた軽量projectionについてはRust projection→JNI DTO構築→Kotlin mappingの途中preemptionまでは契約せず、その試行自体がdeadline後に完了することは許容する。busyを空snapshotへ読み替えず、blocking lock待ちへ戻さない。単一owner・相互排他・通常APIのblocking semanticsは変更せず、別owner、cache、shadow state、別parser executorは追加しない。
+
+有限走査では成功・timeout・cancel・例外のいずれでも、最終snapshotを使う前に全section filterをstop/closeして読取りcallbackを無効化する。setup scanで通常channelを新規insertする間は、`../ARIB_SI_EPG_TvProvider投影方針.md`が定義する初期可視性pending投影でstagingする。one-segは同投影正本が定義するnon-browsable / non-pending投影を用い、通常一覧への初期自動露出対象にしない。既存channel更新では初期可視性pending状態や確定済みのユーザー可視性を再scanで上書きしない。
+
+scan全体の終端意味は`ScanResult.terminal: ScanTerminal`を単一正本とし、`COMPLETED / CANCELLED / RESOURCE_LOST / TUNE_REJECTED / INTERNAL_FAILURE`を型付きで保持する。cancel/resource-lostのbooleanやnullable failure文字列をcallerが組み合わせて終端意味を再構成してはならない。setup scanの候補選局またはBSのstream-ID探索の開始時にframework/HALが同期失敗を返した場合は`TUNE_REJECTED`として保持し、`ChannelScanManager`は`Completed`ではなく`Failed`へ遷移する。`SIGNAL_NO_SIGNAL` / `SIGNAL_LOST_LOCK`による候補単位の非受信とは区別する。
+
+setup terminalが`COMPLETED`のときだけ、そのscanで正常に処理した初期可視性pending rowを、投影正本が定義する確定済み可視状態へcommitする。channel insert/updateまたはProgram publishのいずれかに失敗があれば、setup terminalを`INTERNAL_FAILURE`として後続候補を停止し、初期可視性finalizationをrollback側へ流す。前回process終了などでfinalizeされなかったpending rowは、次のsetupで同serviceを正常に再確認した場合にcommit候補へ復帰する。setupがcancel/resource-lost/tune-rejected/internal-failureで終端した場合は当該setupで新規insertしたrowだけをrollbackし、既存pending rowはhiddenのまま残す。可視化commit失敗時も当該setupの新規insert分だけをrollbackし、terminalを`INTERNAL_FAILURE`へ変換する。新規insertに成功した行IDは、後続SI/JNI処理およびProgram公開の前に、当該scanが所有するrollback集合へ直接引き渡す。upsert処理途中の例外も同じ集合でfinalizationする。具体的なTvProvider列値は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本書では再定義しない。
+
+filter停止後はservice registration用の最終snapshotを一度だけ取得し、その同一snapshotからcomplete・registrationReady・terminal outcome・setup channel publish対象を導出する。terminal reasonがcancel/resource-lost/signal-unavailableの場合は最終snapshotで成功へ昇格させない。timeout系では最終snapshotにregistration-ready serviceがあればTIMEOUT_PARTIAL、なければINCOMPLETE_NO_REGISTRATION_READY_SERVICEへ双方向に再評価し、判定後に別のregistration snapshotを再読してpublish可否を変えてはならない。stop/close失敗は伝播し、収集完了成功に読み替えない。timeoutの部分成果から開始時のrequired ServiceKey全件を完了扱いしない。受信中に版・必要集合・完成状態が変われば同じsnapshotから再評価する。
 
 ## 字幕・文字スーパー表示の責務
 
@@ -198,10 +238,12 @@ PMT `data_component_id=0x0008`は字幕と文字スーパーの共通値であ�
 
 caption management dataの`num_languages / language_tag / ISO_639_language_code / DMF / DC / Format / TCS / rollup_mode`等、TIF track discoveryとpresentation policyに必要な有限の管理fieldはTIS caption pathのRust JNI boundaryで構造化する。KotlinにSTD-B24のbinary parserを第二正本として持たず、字幕本文・DRCS・文字組版・renderingはlibaribcaptionへ委ねる。caption management dataのlanguage setを字幕/文字スーパー言語のSSOTとし、PMTのgeneric ISO639 descriptorを代用しない。STD-B24のgeneric syntaxとして`language_tag=0..7`は放送factとして保持できるが、現行ISDB-T/BS/CS110運用profileでplayableとしてadvertiseするのはTR-B14/TR-B15の同時最大2言語かつ現行JNIが選択可能な`language_tag=0/1`だけとする。parseできてもdecode/select不能な`language_tag=2..7`を`TvTrackInfo`としてadvertiseしない。management data更新でlanguage setが変化した場合は安定したtrack identityを維持できる範囲で`notifyTracksChanged()`を更新する。
 
-字幕PESはprogram-synchronous経路として`TYPE_TS / SUBTYPE_PES`、字幕PID、明示`streamId=0xBD`（`private_stream_1`）で取得し、独立PES dataの`data_identifier=0x80`を検証する。文字スーパーPESはasynchronous経路として同じAOSP PES filter APIを使うが、文字スーパーPID、明示`streamId=0xBF`（`private_stream_2`）、`data_identifier=0x81`を別契約として検証する。captionとsuperimposeを同じ`0xBD` parser/filter pathへ流用しない。これらはTISが選ぶARIB利用設定であり、Tuner HALのPES capabilityを`0xBD/0xBF`だけへ制限する契約ではない。HAL正本は広告済みPES能力について有効な明示`streamId 0..255`、wildcard `0xFFFF`等のAOSP公開契約をそのまま満たす。
+字幕PESはprogram-synchronous経路として`TYPE_TS / SUBTYPE_PES`、字幕PID、ARIB利用設定の`streamId=0xBD`（`private_stream_1`）で取得し、独立PES dataの`data_identifier=0x80`を検証する。文字スーパーPESはasynchronous経路として同じAOSP PES filter APIを使うが、文字スーパーPID、`streamId=0xBF`（`private_stream_2`）、`data_identifier=0x81`を別契約として検証する。captionとsuperimposeを同じparser/filter pathへ流用しない。これらはTISが選ぶARIB利用設定であり、Tuner HALのPES capability・受理値域・wildcard契約は `../TUNER_HAL_DESIGN_JA.md` を正とし、本書では再掲しない。
 
 `arib_si_engine_rs` の自前ARIB文字列decoderはサービス名・番組名・番組説明など字幕以外のSI/EPG文字列に限定し、字幕/文字スーパーPES本文を渡さない。libaribcaptionはC APIのみを使用し、独自C/C++薄層は書かない。Kotlinから直接C APIを呼ばず、TIS Kotlin → Rust JNI boundary → 安全なRustラッパー → libaribcaption C APIの順に接続する。BML / data broadcast実行環境、双方向データ放送UI、データ放送UIは恒久対象外である。
 
+
+ARIB字幕・文字スーパーownerのexecutorもlifecycle/controlをPES・clock等のdata callbackより優先し、data callback未処理数と同期control待ちを有限化する。caption presentation boundaryは1 layer当たり64件・RGBA payload合計8 MiB・current media timeから60秒先まで、Timing=10文字スーパーのpending PESは64件・2 MiB・broadcast deadline 60秒先までを製品liveness budgetとする。上限超過した新規presentation/PESは保持せず字幕診断へ計上し、既存pendingの順序とownerを維持する。clock未確定中に受理したpresentationは、時計確定・再arm時と新規入力の容量判定前にも同じ60秒horizonを再検査し、超過Displayとその従属Clearを診断付きで除去する。clock未確定中は時間上限を判定できないため件数・bytes上限で保持し、時計確定後の通常字幕の枠を遠未来入力が占有し続けない。これらはARIB規格値ではなく停止clock・遠未来STM・入力burstでmemoryを無制限保持しないための製品runtime上限である。
 
 ## libaribcaption renderer runtime 契約
 
@@ -300,6 +342,8 @@ CaptionPresentationEpoch:
 
 字幕filter自身のflush、stop/reconfigure/restartによりdata-group continuityが失われ得る場合はpending scheduler eventとoverlayをclearし、rendererをflushし、decoder/rendererを新subtitle generationとして再初期化する。A/V filterだけのplain flushは字幕generationを変更しない。
 
+字幕ownerのreset controlが待機dataを追い越しても、reset前に受理した通常PESとTiming=10 PESはreset後のdecode/pendingへ復活させない。continuity・再生世代・track・enableの変更要求は共通受付境界で順序番号を確保し、PESも同じ短いlock内で現在の受付番号を保持して既存ownerへ投入する。ownerは実際に状態が変わった要求の番号を入力失効の下限とし、それより古いPESだけを破棄する。変更のない要求では下限を進めず、要求後・owner実行前の新PESも保持する。controlとdataの優先度が異なっても下限は戻さない。受付番号はchecked incrementとし、枯渇時は既存の投入失敗経路でownerをfenceして解放する。UI clearのpresentation epochと混用せず、状態変更判定・renderer操作は既存owner内に保つ。別owner・queue・retry機構やowner完了待ちは設けない。
+
 物理retune、service/codec/PID graph変更、playback generation変更、Surface/MediaSync generation変更では旧subtitle generationを終了し、pending event cancel、overlay clear、renderer flush、decoder/renderer/context解放を行う。新playback generationでは新viewportとtiming epochが確定するまで字幕inputを表示成功にしない。playback rate変更時はcurrent canonical clockに対してpending subtitle eventをcancel/re-armするが、それだけを理由にdecoder stateを破棄しない。
 
 session releaseはpending event cancel、overlay clear、renderer flushの後、renderer → decoder → contextの依存関係を壊さない順で解放し、subtitle executor上のqueued stale workをreleased flag/generation tokenで破棄する。release後にnative callback/resultがUI stateを変更してはならない。
@@ -312,25 +356,19 @@ TIS のライブplaybackは、Tuner AV filterのclear-memory `MediaEvent.getLine
 
 本productはnon-tunneled MediaCodec + MediaSync経路をarchitectureとして採用し、tunneled / platform passthrough playback capabilityを恒久的に提供しない。`notifyVideoAvailable()`は、Exact modeでは本書「MediaSync Framework-private final-output observation」で定義したcurrent availability epochのfinal-output成功eventだけをcommitにする。Compatibility modeでは公開`MediaCodec.OnFrameRenderedListener`のframe render時刻がcurrent arm時刻以後で、current codec/generation/Surface/error gateを満たす最初のeventを近似commitに使用する。Compatibility modeのeventはMediaSync input Surface到達の観測でありfinal-output成功とはみなさない。`MediaSync.getTimestamp()`のclock進行はどちらのmodeでもavailability根拠にしない。
 
-setup scan の channel registration は global discovery complete を必須条件にしない。ただし partial snapshot を無条件に channel insert に使ってはならない。TvProvider のサービス単位の登録可否は本書の「サービス登録・公開・再生policy境界」を唯一の正本とし、この節で video ES 必須などの追加 gate を重複定義しない。したがって `service_type=0x01` は同節の audio-video / video-only 条件、`service_type=0x02` は対応 audio ES を持つ audio-only 条件に従い、`0x02` の登録に video ES を要求しない。登録可能未満の partial snapshot は診断情報 / ライブ更新 / debugにのみ使い、channel insertしない。scrambled サービスはchannel登録してよいが、CAS仮実装のまま平文ライブ視聴成功対応宣言してはならない。
+setup scan の channel registration は global discovery complete を必須条件にしない。ただし partial snapshot を無条件に channel insert に使ってはならない。TvProvider のサービス単位の登録可否は本書の「サービス登録・公開・再生policy境界」を唯一の正本とし、この節で video ES 必須などの追加 gate を重複定義しない。正本release scopeで有効なservice typeについて同節のregistration policyを適用し、audio-only serviceへvideo ESを要求しない。登録可能未満の partial snapshot は診断情報 / ライブ更新 / debugにのみ使い、channel insertしない。scrambled サービスはchannel登録してよいが、CAS仮実装のまま平文ライブ視聴成功対応宣言してはならない。
 
 ## codec header / A-V sync / publish mode の固定
 
-r51 のライブ playback codec は video=MPEG-2 video / H.264 AVC、audio=AAC / MPEG audio とする。r52では`開発規則.md`の到達点どおり、現行対象の従来TS profileでARIB signaling上HEVC/H.265が現れる場合を同じgeneric Tuner→MediaCodec経路の再生判定対象へ含め、PMT / descriptor認識、MediaFormat、MediaCodec capability照合、decoder起動、MediaSync first-output gate、unsupported診断を同一契約で扱う。codec追加を別の専用再生経路にせず、対象releaseのARIB本文選定規則とdecoder capabilityに従って同じdirect pathへ接続する。
+releaseごとの対応codec、対象transport profile、対応service type集合、恒久的な製品scope外は `../開発規則.md` を唯一の正本とする。本書ではr51/r52等のcodec一覧、service type数値集合、製品scope外方式を再掲しない。
 
-STD-B79のISDB-T2 / ISDB-T1.5およびSTD-B80のISDB-T3は`開発規則.md`で恒久的な製品scope外とされているため、それらの方式だけに依存するcodecを本productのplayback capabilityへ追加しない。
+TIS runtimeは、正本release scopeで有効なvideo/audio codecを同じgeneric Tuner→MediaCodec経路へ接続し、PMT / descriptor認識、MediaFormat、MediaCodec capability照合、decoder起動、MediaSync first-output gate、typed unsupported診断を一つの再生契約として扱う。codec追加を別の専用再生経路へ分裂させない。
 
-本productがchannel登録およびlive viewableとして対応するARIB `service_type`集合は、`0x01`の`Digital television service`と`0x02`の`Digital audio service`だけに恒久固定する。`TvContract.Channels.COLUMN_SERVICE_TYPE`は`../ARIB_SI_EPG_TvProvider投影方針.md`に従ってARIB `service_type`のcodingを保持し、Android generic `SERVICE_TYPE_AUDIO_VIDEO` / `SERVICE_TYPE_AUDIO`へ意味変換しない。その他のservice typeはparser / provider-data診断ではraw値を保持するが、既知typeへ丸めず`UNSUPPORTED_SERVICE_TYPE`を記録してchannel登録・live viewable対象にしない。
-
-`service_type=0x02`は本来的なaudio-only serviceである。少なくとも1本の現行対応audio ESと物理選局情報、`ServiceKey`、inputId、表示名が揃えば、video ESを要求せずARIB `service_type=0x02`のchannelとして登録し、audio filter・decoder・AudioTrackだけを開始する。視聴sessionでは映像filterを開かず、サービス分類確定後に`notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)`を通知し、audio再生の成否と映像なし通知を分離する。audio codec非対応またはaudio ES欠落は`AUDIO_ONLY`の正常理由ではなく、`UNSUPPORTED_AUDIO_CODEC`または`SERVICE_TYPE_PMT_MISMATCH`として再生不能にする。
-
-`service_type=0x01`はaudio-video serviceであり、対象releaseで対応するvideo ESがない場合にaudio-onlyへ再分類しない。弱信号またはlock喪失は`VIDEO_UNAVAILABLE_REASON_WEAK_SIGNAL`、有効なserviceでdecoder起動またはqueue補充を一時待機する場合だけ`VIDEO_UNAVAILABLE_REASON_BUFFERING`、video codec非対応またはPMT構成不整合は`VIDEO_UNAVAILABLE_REASON_UNKNOWN`と型付き診断`UNSUPPORTED_VIDEO_CODEC` / `SERVICE_TYPE_PMT_MISMATCH`へ分離する。HEVCはr51ではmetadata / 診断対象に留め、r52で`開発規則.md`の条件を満たす従来TS profileについてgeneric video playback selectionへ含める。
-
-現行対応 video ES が存在し、audio ES が存在しない、または audio codec だけが現行未対応の場合は、video-only サービスとして視聴可能にする。この場合、`notifyVideoUnavailable()` には落とさず、`audio absent` または `unsupported audio codec` を診断に残す。未対応 audio codec は、対応 video が存在する限り video-only 診断の対象であり、video unavailable の直接理由にしてはならない。STD-B32 4.0以降の改定概要で高度地上デジタルテレビジョン放送向けに追加された MPEG-H 3D Audio / AC-4 は、STD-B79 / STD-B80 の高度地上方式が現行product scope外であるため現行codec固定表へ追加しない。AC-3 / Enhanced AC-3 も現行対象transportに対する条項根拠を確認せず推測で追加しない。
+channel登録・live viewableのservice分類は、本書「サービス登録・公開・再生policy境界」のruntime policyを正とする。TvProvider上の `COLUMN_SERVICE_TYPE` codingは `../ARIB_SI_EPG_TvProvider投影方針.md` を正とし、本節では数値codingを再定義しない。audio-only / audio-video / video-only時のTIF通知、codec不成立、PMT不整合、fallback可否は本書のruntime状態契約として扱うが、どのcodec・service typeを対象releaseで対応宣言するかは `../開発規則.md` を参照する。
 
 PMTからcodec family、audio/video種別、PIDを確定した後、AV filter開始前に変更不能な`TisPlaybackBudgetSnapshot`を作る。snapshotは当該playback generationでTISが保持してよい`MediaEvent`の有限上限として、`singleEventLimitBytes`、`startupQueueBudgetBytes`、`startupQueueMaxSamples`、`startupQueueMaxDurationUs`、`pendingQueueBudgetBytes`、`pendingQueueMaxSamples`、`pendingQueueMaxDurationUs`、`decoderStartupDeadlineMs`、`steadyBackpressureDeadlineMs`を持つ。codec headerをまだ受信していないこと、またはdecoderが未構成であることを理由に開始済みgenerationの値を動的変更しない。値はcodec familyごとのTIS製品メモリ・待機時間policyであり、decoderが保持できる容量またはCDD/VTSの能力値を表明しない。したがってdecoder/device名別のprofile表やoffline測定結果をruntime入力として要求しない。実decoder/deviceとの適合は、`MediaCodecList.findDecoderForFormat`、configure、block-model queue、startup/steady deadlineの実結果で判定し、満たさない組合せはfail-closedにする。offline実機qualificationはrelease完了証拠として別に実施するが、その結果を固定queue上限へ転記して成功を捏造しない。snapshotはTIS側の保持量制御であり、最大上限相当の物理メモリをAV filter開始前に事前確保する契約ではない。
 
-有限な`TisPlaybackBudgetSnapshot`を確定した後にAV filterを開始し、上限内の`MediaEvent`からdecoder構成に必要なcodec configuration metadataだけを取得して`MediaFormat`を構成する。r51ではMPEG-2 sequence header、H.264 SPS/PPS、AAC ADTS/AudioSpecificConfig、MPEG audio headerを対象とし、r52でHEVCを再生判定対象にする場合はHEVC VPS/SPS/PPSも同じheader収集契約へ追加する。header解析に必要な最小rangeだけ`LinearBlock.map()`でread-only参照してよいが、通常payloadのqueue境界を作るcodec parserやES/AU copyへ拡張しない。decoder構成成功後は同じsnapshotのsteady-state上限へ遷移し、startup queueの各`MediaEvent` / `LinearBlock`は元rangeのままblock model QueueRequestへ渡してqueue成功時にcodecへ所有権を移す。runtimeで観測したdecoder block capabilityは各eventの投入可否と製品profile検証の診断にだけ用い、開始済み世代のsnapshotを書き換えない。AOSP direct-input契約を満たさないdecoder/profileではfilterを停止し、保持中のHAL handleを解放して`DECODER_CAPACITY_MISMATCH`または`DIRECT_INPUT_UNSUPPORTED`を記録し、成功対応として表明しない。
+有限な`TisPlaybackBudgetSnapshot`を確定した後にAV filterを開始し、上限内の`MediaEvent`から、`../開発規則.md` が対象releaseで有効化したcodecに必要なconfiguration metadataだけを取得して`MediaFormat`を構成する。header解析に必要な最小rangeだけ`LinearBlock.map()`でread-only参照してよいが、通常payloadのqueue境界を作るcodec parserやES/AU copyへ拡張しない。decoder構成成功後は同じsnapshotのsteady-state上限へ遷移し、startup queueの各`MediaEvent` / `LinearBlock`は元rangeのままblock model QueueRequestへ渡してqueue成功時にcodecへ所有権を移す。runtimeで観測したdecoder block capabilityは各eventの投入可否と製品profile検証の診断にだけ用い、開始済み世代のsnapshotを書き換えない。AOSP direct-input契約を満たさないdecoder/profileではfilterを停止し、保持中のHAL handleを解放してtyped診断へ落とし、成功対応として表明しない。
 
 MediaEvent payloadは、`offset >= 0`、`dataLength > 0`、加算overflowなし、`offset + dataLength <= LinearBlock capacity`を満たす場合だけstartup queueまたはblock model QueueRequestへ渡す。TISは共有領域方式とイベント固有fd方式の両方を受け付け、HALの`avPerFilterLiveBytes`、`avRuntimeBudgetBytes`その他の未解放payload集約台帳を公開・複製・1イベント上限化しない。
 
@@ -352,7 +390,7 @@ accepted live `onTune()`、service・codec/PID graph変更、明示的playback g
 
 TISが受け取る`MediaEvent.getPts()`は、producerが当該media outputへ対応付けて確定したauthoritative metadataとしてopaqueに扱う。HAL producerが対応codec headerを構造検証し、PESを跨ぐbounded residual、当該PES内で最初に開始するAU、actual sample rate、exact sample countからこのassociationを確定する経路は、TIS側で禁止するgeneric timestamp interpolationとは別のproducer責務である。TISはそのcodec parser／associationを再実行・複製せず、`isPtsPresent`を元PES headerのprovenanceとして保持したまま、`isPtsPresent=false`でも配送されたauthoritative `getPts()`を通常consumer pathへ透過する。本書はproducer側の個別実装が完成済みであることを主張せず、公開された値をTISがどう消費するかだけを固定する。
 
-最低試験契約は、AOSP Tunerのclear non-passthrough media filterから得た`MediaEvent.getLinearBlock()`の有効rangeをcodec別AU解析なしでblock model `QueueRequest.setLinearBlock()`へ直接queueすること、ESまたはpartial ESのevent列をTIS側で再構成・copyしないこと、MPEG-2 Video / H.264 / AAC / MPEG audio（r52では対象条件を満たすHEVCを追加）の選択decoder/deviceでこのdirect-input契約を満たすことを確認する。`isPtsPresent=true`では同じeventの`getPts()`だけをevent-level timestampとして使い、offsetをPTS位置と解釈しないこと、`isPtsPresent=false`のeventもpayloadをdropせず、0 / 前値 / PCR / wallclock等からPTSを捏造せず、別eventまたはcodec AUへPTSを再関連付けしないことを確認する。`PtsEpochCoordinator`は`isPtsPresent`をseed / advance / join条件に使わず、producer-authoritative `getPts()`を持つ全non-empty eventで進める。track-local `rawPrev` / `extendedPrev`とgeneration共有wrap epoch、`2^33-1 -> 0` wrap、`0 -> 2^33-1` reorder、半周期差=`-2^32`、generation最初のeventが`isPtsPresent=false`でもauthoritative `getPts()`を持つ場合、後発video/audio trackが`isPtsPresent=false`から開始する場合、generation開始時video=`2^33-100` / audio=`50`と逆順、双方が33-bit wrap近傍で開始する場合、後から開始／置換するtrackのjoinを検証し、A/V timeline差が本来の差を維持することを確認する。PTS deltaの大小だけではgeneration resetしない。plain `Filter.flush()`は未queue event / claimだけをclearし、coordinator / seed済みnormalizer / decoder / MediaSync / AudioTrack / generationを維持する。decoder再生成 / AudioTrack切替・再生成 / audio route変更 / Surface変更 / codec・PID・track graph変更を伴うretuneはfull generation resetにする。`MediaEvent`のlong offset / lengthについて負値、0 length、`Int.MAX_VALUE`境界、`Int.MAX_VALUE+1`、checked-add overflow、end==capacity、end>capacityをnarrow前に検査し、通常payloadをByteArray・別LinearBlock・通常input-bufferへcopyしないことを確認する。MediaSync rate-0有限prefillからstartup gate成立後speed 1.0へ遷移すること、`MEDIASYNC_ERROR_SURFACE_FAIL`と`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`の分離、audio-videoでAudioTrack failure時に旧MediaSync generationを破棄してvideo-only新generationへ再生成、audio-onlyでの再生不能遷移、video-onlyがAudioTrack error遷移を持たないこと、各accepted video `onTune()`でfresh availability armを作り、そのarm後のfinal-output成功前はvideo availableにしないこと、late-drop / attach失敗 / queue失敗でcurrent armを消費しないこと、成功event後だけ一回availability通知すること、`available -> recoverable unavailable -> available`で同MediaSync instanceを維持する場合にfresh armでre-armして次のfinal-output成功後だけ再availableにすること、arm Aの成功event配送を遅延させたままunavailable遷移とarm Bのre-armを行い遅延Aをarm sequence不一致で破棄すること、generation teardown後は新instanceのinitial armを使うこと、audio bufferのconsume callbackまでの寿命、A/V同期、video-only、audio-only、destructive retune / Surface変更 / AudioTrack切替・再生成 / audio route変更 / decoder再生成後のMediaSync再生成、各accepted `onTune()`で新playback generationを作り、そのgenerationのfresh initial arm後のfinal-output成功でavailabilityを通知すること、同一MediaSync instance内で旧arm sequenceを再利用しないこと、route変更後の旧generation非利用、MediaSync error写像、stale generation非描画を含む。試験のqueue数値上限はcodec familyごとの`TisPlaybackBudgetSnapshot`と一致させる。
+最低試験契約は、AOSP Tunerのclear non-passthrough media filterから得た`MediaEvent.getLinearBlock()`の有効rangeをcodec別AU解析なしでblock model `QueueRequest.setLinearBlock()`へ直接queueすること、ESまたはpartial ESのevent列をTIS側で再構成・copyしないこと、`../開発規則.md` が対象releaseのライブ再生codec集合として有効化した各codecの選択decoder/deviceでこのdirect-input契約を満たすことを確認する。`isPtsPresent=true`では同じeventの`getPts()`だけをevent-level timestampとして使い、offsetをPTS位置と解釈しないこと、`isPtsPresent=false`のeventもpayloadをdropせず、0 / 前値 / PCR / wallclock等からPTSを捏造せず、別eventまたはcodec AUへPTSを再関連付けしないことを確認する。`PtsEpochCoordinator`は`isPtsPresent`をseed / advance / join条件に使わず、producer-authoritative `getPts()`を持つ全non-empty eventで進める。track-local `rawPrev` / `extendedPrev`とgeneration共有wrap epoch、`2^33-1 -> 0` wrap、`0 -> 2^33-1` reorder、半周期差=`-2^32`、generation最初のeventが`isPtsPresent=false`でもauthoritative `getPts()`を持つ場合、後発video/audio trackが`isPtsPresent=false`から開始する場合、generation開始時video=`2^33-100` / audio=`50`と逆順、双方が33-bit wrap近傍で開始する場合、後から開始／置換するtrackのjoinを検証し、A/V timeline差が本来の差を維持することを確認する。PTS deltaの大小だけではgeneration resetしない。plain `Filter.flush()`は未queue event / claimだけをclearし、coordinator / seed済みnormalizer / decoder / MediaSync / AudioTrack / generationを維持する。decoder再生成 / AudioTrack切替・再生成 / audio route変更 / Surface変更 / codec・PID・track graph変更を伴うretuneはfull generation resetにする。`MediaEvent`のlong offset / lengthについて負値、0 length、`Int.MAX_VALUE`境界、`Int.MAX_VALUE+1`、checked-add overflow、end==capacity、end>capacityをnarrow前に検査し、通常payloadをByteArray・別LinearBlock・通常input-bufferへcopyしないことを確認する。MediaSync rate-0有限prefillからstartup gate成立後speed 1.0へ遷移すること、`MEDIASYNC_ERROR_SURFACE_FAIL`と`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`の分離、audio-videoでAudioTrack failure時に旧MediaSync generationを破棄してvideo-only新generationへ再生成、audio-onlyでの再生不能遷移、video-onlyがAudioTrack error遷移を持たないこと、各accepted video `onTune()`でfresh availability armを作り、そのarm後のfinal-output成功前はvideo availableにしないこと、late-drop / attach失敗 / queue失敗でcurrent armを消費しないこと、成功event後だけ一回availability通知すること、`available -> recoverable unavailable -> available`で同MediaSync instanceを維持する場合にfresh armでre-armして次のfinal-output成功後だけ再availableにすること、arm Aの成功event配送を遅延させたままunavailable遷移とarm Bのre-armを行い遅延Aをarm sequence不一致で破棄すること、generation teardown後は新instanceのinitial armを使うこと、audio bufferのconsume callbackまでの寿命、A/V同期、video-only、audio-only、destructive retune / Surface変更 / AudioTrack切替・再生成 / audio route変更 / decoder再生成後のMediaSync再生成、各accepted `onTune()`で新playback generationを作り、そのgenerationのfresh initial arm後のfinal-output成功でavailabilityを通知すること、同一MediaSync instance内で旧arm sequenceを再利用しないこと、route変更後の旧generation非利用、MediaSync error写像、stale generation非描画を含む。試験のqueue数値上限はcodec familyごとの`TisPlaybackBudgetSnapshot`と一致させる。
 
 前段の試験契約のうち、final-output成功、late-drop、attach／queue失敗、arm sequenceに関する項目はExact modeを採用する構成に適用する。未パッチOSのCompatibility modeでは、公開`MediaCodec.OnFrameRenderedListener`がcurrent codec／generation、current arm時刻、Surface、MediaSync errorの照合後に一回だけavailabilityを成立させ、Exact modeと同じ成功意味論を表明しないことを確認する。共通のgeneration、資源寿命、A/V同期、入力境界の試験は両構成に適用する。
 
@@ -362,15 +400,11 @@ TvProvider公開モードは `PublishMode` で channel row 追加を setup scan 
 
 ARIB SI/EPG の標準列投影は tv直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode は `arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。TISは、同文書で標準列投影が固定された項目だけを TvProvider 標準列へ出し、標準列へ自然対応しないARIB意味情報は JSON v1 `internal_provider_data` のみに構造化保存する。TIS/product policy結果やruntime track identityはinternal_provider_dataへ戻さない。
 
-`Programs.COLUMN_CANONICAL_GENRE` については、TIS が直接設定する値と、Android TvProvider が `Programs.COLUMN_BROADCAST_GENRE` から内部補完した読み出し結果を区別する。現行仕様では `ARIB_SI_EPG_TvProvider投影方針.md` の明示写像表に一致する分類だけを `ContentValues` に直接設定する。写像不能分類、reserved、extension、others、user_nibble 由来分類は直接設定しない。canonical genre投影結果をRust provider-dataへ保存しない。
-
-`Programs.COLUMN_BROADCAST_GENRE` には、`arib_si_engine_rs` から受け取った ARIB content_descriptor の分類値とARIB表示名を、TIS が `TvContract.Programs.Genres.encode(...)` 形式で格納する。TIS は ARIB分類を Android canonical genre に推測変換しない。
+genreを含む各TvProvider標準列への具体写像、直接設定可否、encode形式、写像不能時の扱いは `ARIB_SI_EPG_TvProvider投影方針.md` を唯一の正本とする。TISは同方針から得た投影結果を`ContentValues`へ適用するだけとし、Rust provider-dataへAndroid投影結果を戻さない。
 
 ## 視聴制限 / コンテンツレーティング契約
 
-TIS は `arib_si_engine_rs` から受け取った `parental_rating_descriptor` の構造化データを、AOSP system-defined ISDB レーティングドメイン（`com.android.tv / ISDB / ISDB_<age>`）の `TvContentRating` へ変換する。Android `TvContentRating` の domain / ratingSystem / レーティング文字列は TIS 側で固定し、Rust 側のSSOTまたはprovider-dataへ戻さない。
-
-TvProvider へ番組を登録または更新する場合、変換できるレーティングは `TvContentRating.flattenToString()` の結果を `Programs.COLUMN_CONTENT_RATING` に格納する。変換できないレーティングは推測で `COLUMN_CONTENT_RATING` に入れず、ARIB raw値とparse状態を`internal_provider_data`と診断に保持する。
+ARIB `parental_rating_descriptor` からAndroid `TvContentRating`および`Programs.COLUMN_CONTENT_RATING`への具体写像は `ARIB_SI_EPG_TvProvider投影方針.md` を唯一の正本とする。TISの`AribRatingMapper`は同方針のruntime実装であり、Rust側の意味fact/provider-dataへAndroid投影結果を戻さない。
 
 ライブセッションは、現在番組のレーティングとsystem視聴制限設定を同期して扱う。`TvInputManager.isParentalControlsEnabled()` が true の場合、TIS は現在番組の `TvContentRating`、またはレーティング未取得時の `TvContentRating.UNRATED` を `TvInputManager.isRatingBlocked(...)` に渡して判定する。blocked の場合は video frame を表示する前に再生を停止または抑止し、`notifyContentBlocked(rating)` を呼ぶ。許可された場合は `notifyContentAllowed()` を呼ぶ。
 
@@ -379,12 +413,12 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 ## TIS/arib_si_engine_rs 固定事項
 
 - LineageOS 22.1／Android 15の通常ライブセッション生成では`onCreateSession(inputId, sessionId, tvAppAttributionSource)`をoverrideする。framework由来`sessionId`は`Tuner(serviceContext, sessionId, useCase)`へ渡し、`tvAppAttributionSource`はsession固有Contextの生成へ渡す。2引数版`onCreateSession(inputId, sessionId)`と1引数版は明示的な互換経路だけに限定し、対象productの通常3引数入口を素のservice Contextへ委譲または後退させない。
-- r51 の video 対応宣言対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` とする。HEVC `0x24` はr51ではmetadata / 診断へ保持し、r52で`開発規則.md`の到達点どおり、現行対象の従来TS profileでARIB signaling上現れる場合をgeneric Tuner→MediaCodec playback selectionへ含める。r52のHEVC対応は規範対象の現行ARIB原文、検証証拠の版・条項と未証明差分、MediaFormat / decoder capability / first-output gate / unsupported診断を同じ契約で固定する。
-- ARIB 視聴年齢制限は raw `parental_rating_descriptor.rating` の意味を保ったまま Android `TvContentRating` へ写像する。`country_code=JPN` の `0x01..0x0F` は `age=raw+3` で AOSP system-defined `com.android.tv / ISDB / ISDB_4..ISDB_18`、BS/CSで運用される `0x10..0x11` は同式で `ISDB_19..ISDB_20` とする。明示的に受信した `0x12..0xFF` は年齢へ推測変換せず、product rating provider が定義する `com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像する。`0x00` と未対応countryはAndroid ratingを捏造せずraw値と診断に残す。`TvContentRating.UNRATED` は TvProvider current Program と latest EIT の双方から現在コンテンツに適用可能なratingが得られない場合だけに使用し、明示的な `0x12..0xFF` の代替値にはしない。
+- video codecのrelease別対応宣言対象は `../開発規則.md` を正とする。本書は、同scopeで有効化されたcodecをgeneric Tuner→MediaCodec playback selectionへ接続するruntime契約だけを所有する。
+- ARIB視聴年齢制限からAndroid `TvContentRating`への値写像は `ARIB_SI_EPG_TvProvider投影方針.md` を正とする。TIS runtimeは同じ`AribRatingMapper`をTvProvider投影とライブ視聴制限に使用し、写像表を本書へ複製しない。現在番組に適用可能なratingが得られない場合のruntime fallbackだけは後段の視聴制限契約に従う。
 - `notifyVideoAvailable()` はExact modeを使用する構成ではcurrent MediaSync availability epochでlate-dropを通過しcurrent final outputへのattach＋`queueBuffer()`成功後に発行されるFramework-private first-output eventを受け、current Surface有効、generation一致、視聴制限、Surface errorのgateを満たした場合だけ呼ぶ。private callbackをruntimeで発見できないCompatibility modeでは、公開`MediaCodec.OnFrameRenderedListener`を型付きで使い、current codec/generationかつcurrent arm時刻以後のframe renderを近似根拠として使用するが、これはMediaSync input Surface到達であってfinal-output成功と同値ではない。`MediaSync.getTimestamp()`のclock進行はavailability根拠にしない。
 - ライブ tune refresh では新規 channel row を作らず、既存 channel の program 更新だけを行う。setup/rescan のみ channel row を作成できる。
 - H.264 は SPS/PPS 検出だけでなく SPS 由来の width / height を MediaFormat へ反映する。SPS 解析不能時は固定 1920x1080 代替処理で成功扱いしない。
-- PMT 由来の video/audio/subtitle track は `TvTrackInfo` として通知し、TIS runtimeがcomponent identityから`trackId`を生成して `onSelectTrack(TYPE_AUDIO, trackId)` 等へ接続する。`trackId`はsession/runtime identityであり、ARIB SI意味データやprovider-dataへ保存しない。現行 product では字幕 track と libaribcaption 表示経路を実装対象に含める。別 video track と data track 選択は、対応 codec / 実行環境がない限り対応宣言しない。
+- PMT 由来の video/audio/subtitle track は `TvTrackInfo` として通知し、TIS runtimeがcomponent identityから`trackId`を生成して `onSelectTrack(TYPE_AUDIO, trackId)` 等へ接続する。`trackId`はsession/runtime identityであり、ARIB SI意味データやprovider-dataへ保存しない。字幕trackとlibaribcaption表示経路をrelease scopeへ含めるか、別video/data trackを対応宣言するかは `../開発規則.md` を正とする。本節は有効化されたtrack種別のruntime選択・表示契約だけを所有する。
 - CS110 は stream selector `NONE` のみ許可し、TSID / relative selector を HAL tune request へ渡さない。Android Tuner builder では NONE 時に selector setter を呼ばない。
 - boot 後 EPG 再同期は既存 channel の p/f 最小更新に限定し、新規 channel row は作成しない。`JapanIsdbScanPlan.defaultInitialScan()` は setup scan / explicit rescan 専用であり、boot EPG sync の既定候補に使わない。
 - background channel maintenance は現行スコープ内の必須実装とする。ただし boot critical path から分離し、boot EPG sync 完了後または明示的保守タイミングで実行開始を試行する。実行開始は scan/maintenance が未実行で、かつライブセッションが存在しない場合に限る。active ライブセッションまたは scan 実行中の場合は開始せず、skip 理由を診断情報に残す。対象は既存 channel と既存 transport メタデータ refresh までに限定し、新規 channel insert は行わない。
@@ -393,9 +427,9 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 
 ## 視聴年齢制限 / CAS current-state固定
 
-- `Programs.COLUMN_CONTENT_RATING` と Live session の視聴制限判定は同じ `AribRatingMapper` を使う。JPN raw `0x01..0x11` は AOSP system-defined `com.android.tv / ISDB / ISDB_4..20`、明示的な JPN raw `0x12..0xFF` は product rating provider の `com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像し、後者を `TvContentRating.UNRATED` へ潰さない。
+- `Programs.COLUMN_CONTENT_RATING` とLive sessionの視聴制限判定は同じ`AribRatingMapper`を使う。具体的なraw値→Android rating写像は `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、本節はcurrent Program/EITの選択、blocking、temporary unblock等のruntime policyだけを所有する。
 - `MaleicacidTvInput` APK自身はrating-system XML / receiverを所有しない。productは独立した `AribContentRatings` APKを `/product` に組み込み、TIF標準 `ACTION_QUERY_CONTENT_RATING_SYSTEMS` / `META_DATA_CONTENT_RATING_SYSTEMS` 機構でexceptional ratingを公開する。このAPKはpublic APIだけで成立させ、platform certificateやprivileged permissionを要求しない。
-- ARIB exceptional ratingのpolicy ownerはLive TV Appとする。rating定義は独立`AribContentRatings` APKがTIF標準providerとして公開し、System TV App本体へ直接patchを当てない。Android 15 / LineageOS 22.1系の既存`ContentRatingLevelPolicy`はTIF rating-provider XMLの`contentAgeHint`をpreset policyの入力として使い、`HIGH`は6以上、`MEDIUM`は12以上、`LOW`は各rating system内の最大age hint以上をblocked候補へ投影し、`NONE`は空集合にする。`ARIB_EXCEPTIONAL`は単一rating `BROADCASTER_DEFINED`を`contentAgeHint=12`で公開するため、既存policyでは`HIGH/MEDIUM/LOW`の各presetでblocked候補に含まれる。ここでの12はproduct preset policy分類用metadataであり、ARIB raw `parental_rating_descriptor.rating`を12歳へ解釈・変換した値ではない。明示受信した`0x12..0xFF`は従来どおり全て同一canonical exceptional ratingへ写像する。`CUSTOM`はstock TV Appの通常blocked-rating編集を正とし、このextensionがprivate stateを読んで強制上書きしない。第二policy APK、TV App private state reader、System TV App source patchを追加せず、PIN認証済みcurrent contentの`onUnblockContent()`一時解除と他domain/ratingSystemのpolicyを変更しない。TISはraw値から独自policyを実装せず`TvInputManager.isRatingBlocked()`の結果だけに従う。
+- ARIB exceptional ratingのpolicy ownerはLive TV Appとする。rating定義は独立`AribContentRatings` APKがTIF標準providerとして公開し、System TV App本体へ直接patchを当てない。Android 15 / LineageOS 22.1系の既存`ContentRatingLevelPolicy`はTIF rating-provider XMLの`contentAgeHint`をpreset policyの入力として使い、`HIGH`は6以上、`MEDIUM`は12以上、`LOW`は各rating system内の最大age hint以上をblocked候補へ投影し、`NONE`は空集合にする。`ARIB_EXCEPTIONAL`は単一rating `BROADCASTER_DEFINED`を`contentAgeHint=12`で公開するため、既存policyでは`HIGH/MEDIUM/LOW`の各presetでblocked候補に含まれる。ここでの12はproduct preset policy分類用metadataであり、ARIB raw `parental_rating_descriptor.rating`を12歳へ解釈・変換した値ではない。raw ratingからAndroid canonical ratingへの写像は `../ARIB_SI_EPG_TvProvider投影方針.md` を正とし、本節では値域を再定義しない。`CUSTOM`はstock TV Appの通常blocked-rating編集を正とし、このextensionがprivate stateを読んで強制上書きしない。第二policy APK、TV App private state reader、System TV App source patchを追加せず、PIN認証済みcurrent contentの`onUnblockContent()`一時解除と他domain/ratingSystemのpolicyを変更しない。TISはraw値から独自policyを実装せず`TvInputManager.isRatingBlocked()`の結果だけに従う。
 - Live session は、上記section 0の現在番組解決を先に適用する。present authority未確定の場合の時刻定義済みlatest EIT cacheとTvProvider current Programは、現在時刻の半開区間`start <= now < end`で絞り、`ServiceKey + eventId`とstart/endで同一番組・同一放送回を判定する。current generationのEITは、選局時にresetされgeneration違いのsectionがTunerControllerで破棄された後に受信した観測なので、同一放送回の保存済みProgramより新しいrating情報として優先する。eventIdが同じでもstart/endが変わった場合、またはeventIdが変わった場合も、旧Provider rowのratingを新しい放送回へ継承せずcurrent generationのEITを採用する。current generationに現在番組EITが無い場合だけTvProvider current Programへfallbackし、両方に現在時刻へ適用できる番組が無い場合だけ`TvContentRating.UNRATED`を使う。TvProvider query自体の失敗は情報不存在と同一視せず、直前のparental access状態を保持する。
 - parental blocked の通知は `notifyContentBlocked(rating)` と AV停止を主とし、parental block の通知手段として `notifyVideoUnavailable()` を呼ばない。
 - `onUnblockContent()` の解除範囲は同一 `channelUri + serviceKey + eventId + ratingString` の現在番組 / レーティングに限定する。start/end は stable identity ではなく、解除対象が現在表示中の同一 Program row であることを確認する補助条件としてのみ使ってよい。start/end/duration を provider-data `programKey`、unblock stable identity、または Program identity の SSOT にしてはならない。
@@ -408,7 +442,7 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 
 現行の EIT publish/delete 対象は、TvProvider に channel が存在する `ServiceKey`、または同一 setup/rescan transaction で channel insert が成功して channelId が確定した `ServiceKey` に限定する。ライブセッション の `currentService` だけには限定しない。Channelの存在・所有権・ServiceKeyの一致を公開の前提とする。新規Programの作成は既存Program行の存在を要求しない。更新・削除はその所有Channelの既存Program行だけを対象とする。
 
-現行r51の EIT publish/delete 対象 table は present/following actual `0x4E` のみとする。present/following other `0x4F`、schedule actual `0x50..0x5F`、schedule other `0x60..0x6F` は r51 の Programs publish/delete 対象外であり、更新区間を発生させない。r53以降で対象を拡張する場合は `開発規則.md` のrelease scopeを先に更新する。
+EIT publish/delete対象のtable範囲は `../開発規則.md` のrelease scopeを唯一の正本とする。TISは同scopeで有効化されたtableだけをpublication transactionへ接続し、未採用tableから更新・削除区間を生成しない。
 
 EIT 更新時の update/削除区間は、追加・変更・削除された event の既存 `[start,end)` と新 `[start,end)` の union とする。現行仕様では長期固定 lookahead window を導入しない。長期 EPG lookahead window を扱う場合は、EIT scope / version / event identity / authoritative 条件を設計正本へ固定してから併用する。EIT table scope の version 変更で既存 section が消えた場合は、消えた event の既存 window も廃止行削除対象に含める。
 
@@ -442,6 +476,8 @@ TvProvider query failure と channel なしは別状態として扱う。既存 
 
 TvProvider query は必須問い合わせと任意問い合わせを区別する。チャンネル・番組の追加または更新、廃止行削除、既存チャンネル・番組検索、Direct Boot準備完了判定に使う query は必須問い合わせとする。必須問い合わせで `ContentResolver.query()` が null cursor を返した場合は `TvProviderQueryFailure` とし、empty resultとみなさない。 自TISのchannel検索・一覧は `TvContract.buildChannelsUriForInput(inputId)`、channel単位のprogram検索は `TvContract.buildProgramsUriForChannel(...)` のURI制約を使い、`ACCESS_ALL_EPG_DATA`を要求せずSQL `selection`を渡さない。`TvProviderQueryFailure` が発生したサービス/windowでは channel insert、program insert/update、廃止行削除、publish fingerprint cache更新、`DirectBootEpgPending`解除に進まず、再試行区間を保持する。provider-dataはcurrent policyのfallback sourceにしないため、policy判定のためのprovider-data代替参照queryを設けない。
 
+setup scanで同一ServiceKeyの複数Programを公開する場合、既存行照合はProgramごとにTvProvider queryを繰り返さず、そのsnapshot内Program群とevent-id再利用guardを覆う一つの時間窓でService単位に一回indexを取得する。ただしunion windowはquery削減のための取得範囲に限り、既存rowのstart/endを保持して各新Program固有の24時間guardへ再filterした後にstable programKeyを照合する。union windowに含まれることだけを同一放送回の根拠にしてはならない。同一publicationの重複program keyはwrite構築時に拒否し、service batch全体を書き込まない。既存行indexは照合専用とし、書込み後に更新しない。 時刻付きindexのstore contractではstart/end不明のentryを同一放送回の根拠へ昇格させない。時刻付きindexを供給できないstoreはfail-closedとし、旧`programKey -> rowId`だけから更新対象を推測しない。
+
 Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator`のprocess-local queueに`ServiceKey + windowStartMs + windowEndMs`の再検証要求を保持する。entryはnotBeforeMsと診断用failure classだけを持ち、旧EpgUpdateWindow・旧validProgramKeys・旧deletionAuthoritativeを保存しない。固定cooldownは60秒。次回publish entrypointで期限到達した要求を取り出し、同じ入力snapshotのauthoritativeな更新区間が同一ServiceKeyの旧要求区間全体を含む場合だけ、その更新区間の現在のキー集合から削除権限を再構成する。ServiceKey単位のキー集合だけでは旧区間の範囲を証明できないため再試行しない。実行可能な再試行がある場合、過去のpublish fingerprintとの一致による早期終了を禁止し、現在のauthoritative windowに対するprovider処理の成功後に、その区間と一致する要求を除去する。同一区間の非authoritativeな通常upsert成功では、未実行の廃止行削除要求を除去しない。未完成・不整合・期限切れcollectionなどで現行の根拠がなければ削除せず要求を保持する。entrypointなしにwake-upしない。成功したkeyは削除、失敗したkeyは固定cooldownで末尾へ戻す。attempt段階、jitter、retention timer、failure class別queueは設けない。process restart時は破棄し、boot/background syncの再収集を正とする。失敗をpublish fingerprint更新や`DirectBootEpgPending`解除の根拠にしない。
 
 再試行の回復時間には上限を保証しない。長時間同一番組を視聴しSIの内容が変化しなくても、受理したSI sectionの通知から `TunerController.onSectionIngestedCallback → MaleicacidLiveSession.refreshDynamicSiAndCasFilters → publishLiveProgramsForCurrentService` を経て再試行入口へ到達する。ただし登録可能な現在snapshotと旧要求区間を覆うauthoritative windowが必要であり、受信停止や根拠不足では実行しない。60秒はcooldownであって受信・JobScheduler・TvProviderの成功期限ではない。プロセスだけの再起動はboot broadcastと同一ではなく、旧process-local要求は復元しない。再作成されたlive sessionの受信、利用者のscan、既に登録されたboot/background job等による再収集を待つ。DirectBoot pendingがない状態ではBootEpgSyncSchedulerは新jobを登録しない。再起動だけで再収集が必ず始まるとは保証しない。
@@ -452,11 +488,11 @@ SDT-other / NIT-other / BAT 由来で現在 candidate の actual transport に�
 
 ## provider-data 利用境界 / publish fingerprint
 
-`Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` の具体schema、正規化、安定キー抽出、保存上限は `arib_si_engine_rs/DESIGN_JA.md` の「provider-data / 診断情報 Rust SSOT」と `arib_si_engine_rs/schema/*.schema.json` を正とする。TIS は保存schemaを再定義しない。
+`Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` の具体schema、正規化、安定キー抽出、保存上限は `arib_si_engine_rs` のRust serde型・Rust validationと `arib_si_engine_rs/DESIGN_JA.md` を正とする。TIS は保存schemaを再定義しない。
 
 TIS Kotlin は provider-data JSON を `JSONObject.put()` や文字列連結で直接構築してはならない。TIS Kotlin は Rust JNI の build / 正規化 / key extraction API で得たbytesをTvProviderに書く。TIS が JNI へ渡す JSON は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。
 
-Program provider-data の top-level envelope、必須フィールド、検証規則、正規化、安定キー抽出は TIS では再定義しない。正本は `arib_si_engine_rs/DESIGN_JA.md`、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` とする。TIS instrumentation テスト用の期待値 JSON を置く場合は Rust 側テストデータとバイト単位で同一に保つ。
+Program provider-data の top-level envelope、必須フィールド、検証規則、正規化、安定キー抽出は TIS では再定義しない。正本は `arib_si_engine_rs` のRust serde型・Rust validationと `arib_si_engine_rs/DESIGN_JA.md` とする。JSON fixtureは回帰試験ベクトルであり、正本として扱わない。
 
 EIT文字列をTvProviderへ投影する際、TISはARIBの異なるlanguage codeを1つのtitle/descriptionへ連結しない。Rust snapshotが返す`shortEvents[] / extendedTexts[] / extendedItems[]`から`ARIB_SI_EPG_TvProvider投影方針.md`の単一言語選択規則に従って標準列用文字列を選び、候補列はprovider-data builderへ渡す。受信番組名が空の場合も`event-<eventId>`等の架空titleを生成しない。
 
@@ -489,7 +525,6 @@ TIS Kotlin は provider-data JSON を解釈せず、以下の Rust JNI API 相�
 // Kotlin facade。実JNIはclosed JSON result envelopeを返す。
 object ProviderDataBridge {
     fun buildProgramProviderData(program: ProgramRecord): ProviderDataResult
-    fun normalizeProgramProviderData(rawBytes: ByteArray): ProviderDataResult
     fun extractProgramKeyResult(rawBytes: ByteArray): ProgramKeyResult?
     fun buildChannelProviderData(channel: ChannelRecord): ProviderDataResult
     fun decodeChannelProviderData(rawBytes: ByteArray): ChannelProviderDataResult?
@@ -525,11 +560,11 @@ Rust JNIのclosed envelopeは`arib_si_engine_rs/DESIGN_JA.md`を正とし、faca
 
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。Kotlin は `String(rawBytes)` などで再解釈してから Rust へ渡してはならず、TvProvider から取得した `COLUMN_INTERNAL_PROVIDER_DATA` の BLOB バイト列をそのまま Rust JNI 境界へ渡す。TvProvider が文字列として返した場合の互換補助は、UTF-8 バイト列へ戻すだけに限定し、Kotlin側でJSON構造を解釈・再構築してはならない。
 
-`normalizeProgramProviderData(rawBytes)`、`extractProgramKey(rawBytes)`、`decodeChannelProviderData(rawBytes)`は、invalid UTF-8またはmalformed JSONをKotlin側で修復しない。Rustは診断付き失敗、key抽出失敗、またはchannel decode失敗へ落とし、通常実行経路で例外やpanicに変換しない。provider-data bytesだけのdigest APIと`ProviderDataResult.signature` / `contentDigest`は設けない。
+`extractProgramKey(rawBytes)`、`decodeChannelProviderData(rawBytes)`は、invalid UTF-8またはmalformed JSONをKotlin側で修復しない。Rustは診断付き失敗、key抽出失敗、またはchannel decode失敗へ落とし、通常実行経路で例外やpanicに変換しない。provider-data bytesだけのdigest APIと`ProviderDataResult.signature` / `contentDigest`は設けない。
 
 ### 診断情報 schema
 
-Descriptor診断の機械検証規則は `arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json` を正とする。TIS は `ProgramProviderDataV1.diagnostics.descriptorDiagnostics[]` 配下のオブジェクトを別 schema へ変換せず、Rust JNI が返した provider-data JSON 内の診断情報を保存する。ARIB視聴年齢制限は`ratings[]`にraw構造化値を残し、Android対応可否や写像結果はprovider-dataへ戻さない。TIS Kotlin は descriptor diagnostic JSON を独自生成しない。
+Descriptor診断の機械検証規則は `arib_si_engine_rs` のRust serde型・Rust validationを正とする。TIS は `ProgramProviderDataV1.diagnostics.descriptorDiagnostics[]` 配下のオブジェクトを別 schema へ変換せず、Rust JNI が返した provider-data JSON 内の診断情報を保存する。ARIB視聴年齢制限は`ratings[]`にraw構造化値を残し、Android対応可否や写像結果はprovider-dataへ戻さない。TIS Kotlin は descriptor diagnostic JSON を独自生成しない。
 
 ### provider-data 保存上限
 
@@ -541,7 +576,7 @@ TIS の PSI/SI section path は allocation 前に `SectionEvent.dataLength` を�
 
 ### transaction DTO API
 
-`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。Rust→TISのbulk JSONは`../arib_si_engine_rs/schema/si_snapshot_v1.schema.json`を唯一のwire contractとし、TISは対応する`schemaVersion`だけを受理する。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
+`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は用途別typed DTOを使う。Program/CAS等の完全snapshotはRust `BulkSnapshotDto`からcodegen生成Kotlin `BulkSnapshotDto` / nested DTOをJNIで直接構築する。`serviceRegistrationSnapshot()`は、Rust側の用途非依存な`SiCollectionSnapshotDto`をTISのchannel-registration用domain snapshotへ投影する。Rust側DTOは同じcollector stateから一回で構築し、event本文・event descriptor・CAT詳細等の反復SI判定に不要な大容量factをJNI objectへ投影しない。`SiCollectionSnapshotDto`はdiscovery stage / table requirements / transport facts / EIT instance / service semantic facts / parser diagnosticsだけを持ち、channel登録可否そのものはTISが判定する。Rust→TIS runtime境界は`../開発規則.md`の同時更新不変条件に従い、異なるRust/Kotlin版を組み合わせるための`schemaVersion` negotiation、旧snapshot DTO decoder、互換fallbackを持たない。DTO変更はRust/Kotlin/試験/設計を同一変更で更新する。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
 
 ```kotlin
 data class ExcludedEventDescriptorFacts(
@@ -593,6 +628,8 @@ data class ServiceRegistrationSnapshot(
 fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot
 ```
 
+`serviceRegistrationSnapshot()`はscanのpoll deadline内で反復取得するため、full `BulkSnapshotDto`を経由しない。Rustの用途非依存な`SiCollectionSnapshotDto`をtransport shapeとし、EITの完成判定に必要な`eitInstances`は含めるが、Program公開用`events` / descriptor本文は含めない。registrationという利用目的はこのTIS境界より下へ持ち込まない。snapshot作成中も同一parser state lockで一貫性を保ち、別readの合成やcached shadow stateを追加しない。
+
 ```kotlin
 data class CasDiscoverySnapshot(
     val services: List<AribService>,
@@ -610,7 +647,7 @@ fun casDiscoverySnapshot(): CasDiscoverySnapshot
 
 `MalformedCaDescriptorDiagnostic` は、少なくとも `pid`、`tableId`、`tableIdExtension`、`serviceId`、`elementaryPid`、`scope`、`offset`、`declaredLength`、`actualRemainingLength`、`reason`、`rawPrefixHex` を持つ。詳細診断の一次保存先は CAS discovery snapshot とし、Program provider-data は `malformedCaDescriptorCount` summary だけを保存する。
 
-`takeProgramPublishSnapshot()`と`programStateSnapshot()`は、同じロック内で一回取得したimmutable native transactionからevents / EIT instance / service semantic facts / 診断情報を読み、同じKotlin policyでupdateWindowsを投影する。区間queueのdrainは行わない。公開経路は前者、LiveSessionの現在番組判定・視聴年齢制限判定・映像メタデータ補完は後者を使う。`snapshotEvents()`と`takeEpgUpdateWindows()`を別々に呼んで合成する経路は設けない。
+`takeProgramPublishSnapshot()`は、同じロック内で一回取得したimmutable native transactionからevents / EIT instance / service semantic facts / 診断情報を読み、Kotlin policyでupdateWindowsを投影する。区間queueのdrainは行わない。LiveSessionの現在番組判定・視聴年齢制限判定・映像メタデータ補完は、live refreshで取得して保持した`LivePlaybackSnapshot.programs`を使い、途中でnative transactionを再読しない。`snapshotEvents()`と`takeEpgUpdateWindows()`を別々に呼んで合成する経路は設けない。
 
 `events`は公開policyを通過した候補だけとし、除外eventの完全な記述子事実は`excludedEventDescriptorFacts`へ保持する。この診断専用DTOは`AribEvent`ではなく、MapperのProgram入力へ渡さない。`descriptors.diagnostics.descriptorFactsCanonicalJson`はRustの構造化事実をそのまま保持し、不正parental descriptorの全raw bytes・entries・parse statusを64-byte診断prefixへ置き換えない。公開可否を再判定する第二policyや、診断専用の再parseは設けない。
 
@@ -621,6 +658,8 @@ eventの宣言descriptor loop長がsection残量を超える場合も、CRCを�
 廃止 snapshot wrapper は本番経路・公開通常境界・product build に残してはならない。テスト専用に必要な入口は test source または test-only 可視性に隔離し、本番 APK / JNI API / release API から参照不能にする。
 
 ### LiveSession / PlaybackPipeline / Scan の直列化
+
+ライブ選局開始直後は`AribSiEngine.reset()`後の新generationでSI sectionがまだ一件も確定していない期間を通常の`TUNING`状態として扱う。`ServicePolicyDecision.state`を`PENDING / READY / UNSUPPORTED / INVALID`のtyped stateとして正本化し、診断文字列`reasons`を制御分岐へ使用しない。再生状態が`Idle`で直前のSI判断も`PENDING`である初回待ちに限り、対象service未観測かつ`PENDING`の間は再生不能へ変換して`VIDEO_UNAVAILABLE_REASON_UNKNOWN`を通知してはならない。確立済みSIが矛盾PMT等で`READY`から`PENDING`へ失効した場合は初回待ちへ戻さず、既存CAS transactionでmetadataとECM/EMMを退役し、再生停止・字幕終了・利用不能通知を行う。section ingest後に同じlive generationで再評価し、`UNSUPPORTED` / `INVALID`またはCAS/playbackのterminal failureが確定した場合だけunavailableへ遷移する。
 
 非同期 `MediaCodec.Callback.onError()` は現行codec identityと再生generationが一致する場合だけ扱う。AOSP `CodecException` の `ERROR_RECLAIMED` は必ず解放し、回復不能なエラーも旧codecを再利用しない。回復可能なエラーでは既存の全再生generation終了・再生成を使い、transientの場合は100ms後、それ以外のrecoverableの場合は次のexecutor処理で再生成する。自動再生成は外部からの一回のstart要求につき一回までとし、再失敗は音声なら既存のvideo-only新generationへの移行（audio-onlyは再生不能）、映像なら再生不能通知と全generation終了へ渡す。待機中のstop・retune・releaseで再生成予約を無効にする。codec単体の独立した回復state machineや無限の再取得loopは設けない。この回数と待機時間はプロダクトの回復方針であり、CDD/ARIBが規定する値とは扱わない。
 
@@ -634,21 +673,33 @@ MediaSync音声エラー、AudioTrack初期化失敗、音声decoderの入力・
 
 通常の再生開始と音声トラック切替の同期要求では、開始中の例外を発行済みgeneration付き失敗結果へ変換し、呼出元Sessionが同じ状態確定・字幕失効・再生不能通知を行う。失敗例外でStartingや旧Startedを残さない。Failed確定済みgenerationへ遅延した開始途中の失敗通知が届いても、外部通知を重複させない。開始前の入力拒否は従来どおりgeneration未発行として旧状態を維持し、未解放資源は既存所有者に残して後続のstop/releaseで再試行する。
 
+MediaCodec output bufferとMediaEventは、framework releaseが成功するまでTIS側の所有参照または既存ResourceCleanupのrelease actionを保持する。release失敗をログだけで破棄せず、次のstop/restart/releaseの既存cleanup retryで再試行する。audio outputはMediaSync consume callbackやqueueAudio失敗でreleaseが失敗した場合もoutstanding mapから先に除去せず、release成功時だけ該当bufferIdを除去する。stop時も失敗したoutputを一括clearしない。MediaEventも同じResourceCleanupへ失敗actionごと移し、未完cleanupが残る間は次generationの開始・release完了を成功扱いしない。新しいcleanup ownerや独立schedulerは追加しない。
+
 AudioTrackの生成、音量・dual-mono設定、MediaSyncへの接続、routing listener登録は一つの初期化として扱い、全て成功した後だけ再生用AudioTrackを確定する。途中例外では生成済みtrackと部分登録listenerを既存cleanup所有者へ渡し、output-format callbackの例外境界から音声失敗処理へ進む。旧generationを終了してAVならvideo-only新generation、audio-onlyなら再生不能へ遷移し、解放失敗は既存ResourceCleanupに保持する。未接続のAudioTrackでcallback処理を継続しない。
 
 AV・字幕・文字スーパーのFilterも、取得直後から設定・開始を同じ初期化処理で囲む。設定値の構築、configure、startの途中例外と失敗戻り値では、当該Filterのcallback受理用参照を先に外し、停止・解放を試行する。解放失敗は既存ResourceCleanupへ保持し、部分初期化したFilterを未所有のまま失わない。AudioTrackとFilterは同じ準備・確定・巻戻し処理を使用し、資源の所有者を追加しない。
 
-`MaleicacidLiveSession` は session-level serial executor を持ち、currentサービス、generation、track state、unblock state、latest videoメタデータ、`ProgramPublishCoordinator`へのアクセスを同一executorに閉じる。AV開始lifecycleはSessionが`Idle / Starting(signature) / WaitingFirstOutput(signature,generation) / Started(signature,generation) / Failed(signature,generation?) / Stopped`のsealed stateを一つだけ所有する。current/pending signature、last attempted/started gate、pipeline generationを並行して保持しない。遷移判定は状態を持たない純粋関数とする。TunerController、PlaybackPipeline、parental receiverのコールバックは直接state mutationせず、session executorにenqueueする。
+`MaleicacidLiveSession` は lifecycle/control優先かつdata callback未処理数が有限のsession-level serial executorを持ち、currentサービス、generation、track state、unblock state、latest videoメタデータ、`ProgramPublishCoordinator`へのアクセスを同一executorに閉じる。TIF `onTune()` はURIと解放状態だけを同期検証してacceptedなら即時に返し、tune/reset/filter/CAS/SI初期化をsession control taskとして非同期実行する。zappingで複数のaccepted tuneが到着した場合は実行中1件に加えてlatest URIだけを保持し、中間の未実行tune要求をcontrol queueへ積み上げない。accepted後の初期化失敗はprocessへ例外を伝播せず同sessionのterminal unavailableへ閉じる。同期control待ちは有限budgetを持ちtimeoutなしの`Future.get()`を使用しない。section ingest後のlive refreshは同時に1件だけqueue/runningとし、実行中の追加ingestは終了後の1回の再評価へcoalesceする。AV開始lifecycleはSessionが`Idle / Starting(signature) / WaitingFirstOutput(signature,generation) / Started(signature,generation) / Failed(signature,generation?) / Stopped`のsealed stateを一つだけ所有する。current/pending signature、last attempted/started gate、pipeline generationを並行して保持しない。遷移判定は状態を持たない純粋関数とする。TunerController、PlaybackPipeline、parental receiverのコールバックは直接state mutationせず、session executorにenqueueする。
 
-`PlaybackPipeline` は playback-level serial executor を持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、availability arm sequenceの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。
+同期controlの待機期限は開始済みtaskにも適用する。未開始taskは実行権をatomicに取消し、開始済みtaskは取消し済み・未実行と偽らず`ControlResultUnknownException`で結果未確定として返す。割込みも同じ開始状態の区別を保つ。terminal cleanupのshutdownで未実行の通常control/cleanup controlを破棄する場合も、既存の破棄通知から同じ開始phase CASでcancel完了させ、callerへCancellationExceptionを返す。shutdownによる取消しを待機期限超過として報告しない。開始済みtaskの実行・資源所有権は元のexecutorに残し、session/playback/captionの呼出し境界は既存の解放flagを立て、同じownerへ既存の解放入口をqueueする。これにより後続data callbackを拒否し、遅延実行が終了してから同じownerで後片付けする。TIF同期Booleanは操作の成功を表明せず、当該sessionを閉鎖する。後片付け失敗は既存の未完解放を保持し、解放を再試行する入口を捨てない。字幕のterminal cleanupではpresentation epochを不可逆sentinelへ直接fenceし、新epochを発行しない。表示clearを含む後片付けが成功した後だけexecutorを停止し、失敗時は同じownerで再試行する。別executorや別資源所有者へ未確定taskを移さず、callerを無期限に待たせない。
+
+`PlaybackPipeline` は lifecycle/control優先かつdata callback未処理数が有限のplayback-level serial executorを持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。同期control待ちは有限budgetを持ち、timeoutなしの`Future.get()`を使用しない。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、availability arm sequenceの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。
+
+MediaEvent/PESを保持するFilter入力は既存data予算へ課金する。decoderのbuffer返却・入力可能通知、MediaSyncのconsume等の進捗通知と回収・期限通知は同じownerの既存control経路へ渡し、Filter入力の予算飽和だけで全再生を終端しない。字幕PESの容量喪失・overflow・読取り失敗では、同じownerでcurrent Filter参照を失効させ、continuity lostを通知し、旧Filterを既存close/ResourceCleanupで退役させる。解放完了を確認してから既存生成入口で同じstream/trackの新Filterを設定・開始する。flush後の同一FMQ再利用は行わず、旧待機通知・回収中の通知・未読bytesを新Filterの入力へ読み替えない。解放・再生成失敗時は字幕入力を閉じたまま診断し、解放義務は既存cleanupへ保持する。別owner、別queue、callback内の待機は追加しない。
 
 TIFの`Session.onSetStreamVolume(volume)`は各Live sessionが所有する相対音量要求であり、初期値を`1.0f`、受付範囲を`0.0f..1.0f`とする。範囲外は同区間へclampし、system/master volumeや他sessionの音量を変更しない。Session executorで保持した値をPlaybackPipeline executorへ渡し、現在のAudioTrackへ適用する。音声track切替、decoder再起動、video-only fallbackからの復帰などでAudioTrackを再生成するときも、そのsessionが保持する最新値を新しいAudioTrackへ一度適用してからMediaSyncへ接続する。音声経路が未生成の時点の要求も捨てず、次回生成時に適用する。
 
 `ChannelScanManager` は`ActiveScanTask(generation, purpose, context, cancelRequested, controller, engine)`を一つのatomic referenceとして所有する。running boolean、active generation/purpose、controller、engine、contextを別fieldに複製しない。cancel / cleanup taskは取得した同じtask identityにだけ作用し、stale cleanupが後続scanを変更してはならない。Tuner Framework/TRMへ渡すpriority hintは`ScanPurpose`から全列挙で一意に決め、setup scanを`PRIORITY_HINT_USE_CASE_TYPE_SCAN`、boot EPG同期とbackground maintenanceを`PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND`、liveを`PRIORITY_HINT_USE_CASE_TYPE_LIVE`とする。frontend等のhardware arbitrationは再実装しない。一方、ライブ中はboot/background作業の開始を延期するというTIS製品policyだけはManagerに残す。
 
-scan用TunerにもTuner Framework標準のresource-lost listenerを登録し、callbackのtune generationがそのscan candidateのactive generationと一致する場合だけ当該taskを`RESOURCE_LOST`で終端する。TunerControllerはresource-lost受付時に既存のtuneAcceptedをfalse、currentTuneをnullにして、caption言語・時刻のlogical状態も失効させる。以後の同世代section配送と重複lost通知は拒否する。scanはCasController、MediaCas session、Descrambler、ECM/EMM filterを所有せず、dynamic filter更新はPMTだけを対象にする。scanのdynamic PMT filter更新待機後にもlost通知を確認する。その後、再生停止、section filter解放、各caption parser解放を全件試行し、成否にかかわらずlost generationを上位callbackへ一度通知する。未解放filter/caption parserは既存の所有mapへ残して後続cleanupで再試行する。primary/suppressedの失敗は通知後に診断し、controller executorと選局失効を維持する。ChannelScanControllerは既存のactive/lost generationと公開lockをResourceLossFenceへ集約し、通知後のSI snapshot取得とTvProvider publishを拒否して残りcandidateへ進まない。収集ループ終了時のfilter再解放も失敗した場合は失敗を診断へ残し、終端理由RESOURCE_LOSTを一般例外や成功へ上書きしない。資源喪失を観測していない収集失敗は従来どおり伝播する。遅延した旧generationのresource-lostは後続candidate/taskへ伝播させない。setup scanは上位へ失敗を返し、利用者または正規setup flowの再要求を待つ。boot EPG同期はpendingを維持して既存schedulerへ再試行を返し、background maintenanceは失敗終了して次の既存scheduleに委ねる。TIS独自の優先度、resource pool、即時再取得loopは追加しない。
+scan用TunerにもTuner Framework標準のresource-lost listenerを登録し、callbackのtune generationがそのscan candidateのactive generationと一致する場合だけ当該taskを`RESOURCE_LOST`で終端する。TunerControllerはresource-lost受付時に既存のtuneAcceptedをfalse、currentTuneをnullにして、caption言語・時刻のlogical状態も失効させる。以後の同世代section配送と重複lost通知は拒否する。scanはCasController、MediaCas session、Descrambler、ECM/EMM filterを所有せず、dynamic filter更新はPMTだけを対象にする。scanのdynamic PMT filter更新待機後にもlost通知を確認する。
 
-BS事前stream-ID探索も一つのStreamIdDiscoveryOperationにgeneration・結果・待機完了を所有する。Tuner.scanとcallback・資源喪失・cancelは既存controller executorへ直列化し、latch待機だけを呼出元で行う。`onLocked()`を受けたときは同じsettings / `SCAN_TYPE_AUTO`の`Tuner.scan()`を正確に一度再発行してHALのscan継続契約へ進み、`onScanStopped()`までは結果を確定しない。重複`onLocked()`は再発行しない。明示tune前でtuneAcceptedがfalseでも探索中のresource-lostを受け付け、待機を解除してRESOURCE_LOSTをResourceLossFenceへ渡す。喪失後のstream-ID報告、候補展開、後続explicit tune、SI収集・公開を拒否する。cancel失敗でも喪失結果を別理由へ書き換えず、未解放operationは既存ownerに残してreset/closeで再試行する。古い待機の終了は新operationをcancelしない。探索の受信結果はSCANNINGから一度だけ確定する。正常停止はonScanStoppedのみで確定し、onProgressの100%では待機を解除しない。停止・timeout・開始失敗・取消し・喪失で結果確定後は遅延IDを拒否する。明示取消しはnative cancelのSUCCESS後だけ確定し、非SUCCESS/例外ではownerを保持する。受信結果と未解放ownerへの喪失通知は別の寿命とし、停止・timeout後もownerが残る間のresource-lostを上位fenceへ一度だけ通知する。確定済み受信結果は書き換えず、scan全体の喪失終端と公開拒否はResourceLossFenceを優先する。
+dynamic Section Filter の追加は framework の `Tuner.getDemuxCapabilities().getSectionFilterCount()` を同時利用上限の正本とし、現在所有中の **Filter object数** と追加要求が生成するobject数を足して事前検証する。PID数を代用しない。特にTDT/TOTは同一PID 0x0014で2つのSection Filter objectを使用する。容量超過が事前に確定している場合は `Tuner.openFilter()` を呼ばず、そのPIDを当該tune generationの動的filter開始失敗として記録する。
+
+PMT / ECM / EMM の動的filter開始失敗は `{tune generation, filter用途, PID}` ごとに保持し、同じgenerationで同じPIDが要求集合に連続して残る間は section callback ごとに再試行しない。同じPIDが要求集合から外れた時点でその用途の失敗記録を破棄し、後に再追加された場合は1回だけ再試行できる。新しいtune generationでは全失敗記録を破棄する。open / configure / startのいずれで失敗しても同じ規則を適用し、失敗を正常なfilter開始として扱わない。setup / explicit rescanでは既存契約どおり動的filterはPMTだけを対象にする。その後、再生停止、section filter解放、各caption parser解放を全件試行し、成否にかかわらずlost generationを上位callbackへ一度通知する。未解放filter/caption parserは既存の所有mapへ残して後続cleanupで再試行する。primary/suppressedの失敗は通知後に診断し、controller executorと選局失効を維持する。ChannelScanControllerは既存のactive/lost generationと公開lockをScanGenerationFenceへ集約し、通知後のSI snapshot取得とTvProvider publishを拒否して残りcandidateへ進まない。収集ループ終了時のfilter再解放も失敗した場合は失敗を診断へ残し、終端理由RESOURCE_LOSTを一般例外や成功へ上書きしない。資源喪失を観測していない収集失敗は従来どおり伝播する。遅延した旧generationのresource-lostは後続candidate/taskへ伝播させない。setup scanは上位へ失敗を返し、利用者または正規setup flowの再要求を待つ。boot EPG同期はpendingを維持して既存schedulerへ再試行を返し、background maintenanceは失敗終了して次の既存scheduleに委ねる。TIS独自の優先度、resource pool、即時再取得loopは追加しない。
+
+TunerControllerのcontroller executorは単一thread ownerを維持する。scan deadline後のfilter解放、retune reset、release等のblocking lifecycle/control境界をsection処理より優先するため、controller内部taskは「blocking lifecycle/control」と「drain済みsection data mutation」の2クラスで直列化し、controlを未実行data mutationより先に実行する。同一クラス内は投入順を維持し、実行中taskは割り込まない。Tuner Frameworkの`FilterCallback`自体はdrop可能queueへ渡さずcallback入口で直ちに`SectionEvent.dataLength`へ対応する`filter.read()`を実行してframework filter bufferをdrainする。読み出したsection bytesだけをcontroller data classへ非同期に渡す。Frameworkのcallback lockを保持する入口でowner完了やpermitを待たない。drain済みdata mutationは1 Filterの64KiB FMQ容量を最大section長4KiBで割った16 slotへ有限化する。これはTISの保持予算でありARIBのtable数上限ではない。ownerがcontrolを処理中でも通常のPAT/PMT/SDT/NIT集合を受理し、16 slotの真の飽和では入力喪失数を既存SectionIngestControllerのtransport診断へ保持する。収集側は未完了診断と、再送によって完成した場合の診断の双方から喪失を観測できる。未読callbackやsection payloadを無制限queueへ蓄積せず、拒否した入力をparserへ配送済みとは扱わない。resource-lost、tune event、scan callback、CAS ownership callbackはcontrol classへ固定する。control境界でfilter集合またはgenerationが失効した後のdrain済みsectionは既存のfilter identity / generation照合でparser投入前に破棄する。これはTuner Framework/TRMのhardware arbitration priorityを再実装するものではない。
+
+BS事前stream-ID探索も一つのStreamIdDiscoveryOperationにgeneration・結果・待機完了を所有する。Tuner.scanとcallback・資源喪失・cancelは既存controller executorへ直列化し、latch待機だけを呼出元で行う。`onLocked()`を受けたときは同じsettings / `SCAN_TYPE_AUTO`の`Tuner.scan()`を正確に一度再発行してHALのscan継続契約へ進み、`onScanStopped()`までは結果を確定しない。重複`onLocked()`は再発行しない。明示tune前でtuneAcceptedがfalseでも探索中のresource-lostを受け付け、待機を解除してRESOURCE_LOSTをScanGenerationFenceへ渡す。喪失後のstream-ID報告、候補展開、後続explicit tune、SI収集・公開を拒否する。cancel失敗でも喪失結果を別理由へ書き換えず、未解放operationは既存ownerに残してreset/closeで再試行する。古い待機の終了は新operationをcancelしない。探索の受信結果はSCANNINGから一度だけ確定する。正常停止はonScanStoppedのみで確定し、onProgressの100%では待機を解除しない。停止・timeout・開始失敗・取消し・喪失で結果確定後は遅延IDを拒否する。明示取消しはnative cancelのSUCCESS後だけ確定し、非SUCCESS/例外ではownerを保持する。受信結果と未解放ownerへの喪失通知は別の寿命とし、停止・timeout後もownerが残る間のresource-lostを上位fenceへ一度だけ通知する。確定済み受信結果は書き換えず、scan全体の喪失終端と公開拒否はScanGenerationFenceを優先する。onScanStoppedを受けてSTOPPEDへ到達してもAndroid 15のTuner SDKはscan callbackとexecutor登録を保持するため、同じTuner/frontend lease上で次RFを探索する前にcancelScanningで登録を解除する。STOPPEDの受信結果と報告stream IDsは保持し、この状態だけは停止済みnative scanのINVALID_STATE返却もSDK登録解除完了として受理する。その他の非SUCCESSと例外ではownerを保持する。timeout、開始失敗、明示取消し未完、資源喪失など停止が確定していないoperationはSUCCESSだけをcleanup完了として受理し、INVALID_STATEを成功へ丸めない。
 
 BS探索の開始失敗後もTuner SDK内にscan callbackが登録済みの場合があるため、cancelScanningによる後処理を試行する。後処理が非SUCCESSまたは例外でもSTART_FAILEDのresultCode/messageを上位へ返し、後処理失敗は診断と既存ownerに保持する。次のreset/closeで解放を再試行し、解放が成功するまで新しい探索を開始しない。開始失敗だけを根拠にownerを解放済みとしない。
 
@@ -693,9 +744,23 @@ SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan ge
 
 Channel provider-data の新規書き込み・読み取り正形式は JSON v1 のみとする。`key=value;...` 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` を持ち、保存項目と正規化は`arib_si_engine_rs/DESIGN_JA.md`とRust provider-data APIを正とする。表示名の正本は`Channels.COLUMN_DISPLAY_NAME`とし、provider-dataへ重複保存しない。`inputId`はprovider-dataへ重複保存せず、channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとする。`channelRegistrationReady`、`epgPublishable`、`unsupportedCas`、`clearLivePlaybackSupported`等のTIS policyを保存しない。
 
+### product更新時のProgram破棄と再収集
+
+`TvProvider.Programs` はSI/EITから再生成できる番組表キャッシュであり、product/TISのrelease間でprovider-data互換性を維持する永続データではない。`../開発規則.md`の更新不変条件に従い、旧product buildが書いたProgram行を現行buildへmigration、normalize、旧schema decodeして引き継がない。
+
+TISはdevice-protected storageに、最後にProgram cleanupを完了したsoftware identityとして `Build.FINGERPRINT` とTIS packageの `longVersionCode` の組を保存する。起動時に現在値と一致しない場合、boot EPG sync、background maintenance、live sessionでの既存Program参照、Program upsert/delete、現在番組解決より前に、current TIS inputに属するchannelのうち `TvContract.Programs.COLUMN_PACKAGE_NAME == context.packageName` のProgram行を全て削除する。削除が全件成功した後だけcurrent software identityをcommitする。
+
+cleanupのProvider・SharedPreferences・package照会はProgramUpgradeCleanupが所有する単一workerだけで実行する。ensureはメインスレッドでもI/Oやworker完了を待たず、process内の完了状態を返す。同時要求は一つの実行へ集約し、未完了中は受理済みlive/setup/EPG要求の処理開始を保留する。要求自体の拒否を意味せず、継続の扱いは「Program cleanup中の要求継続」に従う。旧Program参照・EPG/Program処理には進めない。成功後だけprocess内の完了状態を公開する。失敗時は次の利用要求で同じownerが再試行し、定期retryや重複queueを作らない。
+
+upgrade cleanupが失敗した場合は旧Program行を現行データとして使用せず、software identityを更新せず、EPG/Program処理を開始しない。既存行の旧provider-dataからprogramKey、service identity、時刻、rating、CAS状態その他を抽出してcleanup失敗を回避してはならない。cleanupは再実行可能かつ冪等にする。
+
+cleanup完了後は現行buildのSI/EITからProgramを再収集し、現行provider-dataだけで再登録する。Channel rowはこのcleanupの対象外であり、channel scan結果、表示番号、ユーザーが利用するchannel identityをProgram cleanupの副作用で削除・再作成しない。`RecordedPrograms`も対象外とする。
+
+`extractProgramKey(rawBytes)` はcurrent buildが書いた現行Program provider-dataの検査・利用に限定し、product更新時の旧Program migration APIとして使わない。旧release形式の受理を追加してupgrade cleanupを迂回してはならない。
+
 ### 旧 indexed JNI / 廃止経路の禁止
 
-TIS は `nativeSnapshotBulkJson()` と provider-data JNI API を通常境界とする。`nativeGetEventCount()`、`nativeGetEvent*` indexed JNI getter、旧 event JSON `canonicalGenres` フィールド、互換専用の空返却シンボル、未使用 private external 宣言は残してはならない。旧経路を使う呼び出し不能コードや test-only 以外の廃止予定 path は、互換維持ではなく削除する。
+TIS は同一product buildでRustと同時更新されるRust所有`BulkSnapshotDto`からcodegen生成Kotlin `BulkSnapshotDto` / nested DTOをJNIで直接構築し、`GeneratedSiSnapshotMapper.toDomainSnapshot()`でTIS側`NativeSiSnapshot`へ機械的に投影するtyped境界と、provider-data JNI API を通常境界とする。generated DTOと`GeneratedSiSnapshotMapper`はsame-build bindingであり、field値域・nullable条件・enum意味・cross-field不変条件をKotlin側で再検証しない。`nativeGetEventCount()`、`nativeGetEvent*` indexed JNI getter、旧 event JSON `canonicalGenres` フィールド、片側差し替え互換専用の空返却シンボル、旧snapshot DTO decoder、未使用 private external 宣言は残してはならない。旧経路を使う呼び出し不能コードや test-only 以外の廃止予定 path は、互換維持ではなく削除する。
 
 ### Program publish retry
 
@@ -707,7 +772,7 @@ Provider 必須問い合わせ failure、Program insert/update failure、廃止�
 
 LineageOS 22.1の通常経路では、`TvInputService.onCreateSession(inputId, sessionId, tvAppAttributionSource)`で受け取ったnon-null `tvAppAttributionSource`をsession寿命中のattribution正本とする。session生成時に`serviceContext.createContext(new ContextParams.Builder().setNextAttributionSource(tvAppAttributionSource).build())`で変更不能なsession固有`sessionContext`を作り、`sessionId`、`tvAppAttributionSource`、`sessionContext`を同じsession creation snapshotへ確定する。途中失敗ではSessionを公開せず、作成済みartifactを解放する。
 
-Tuner SDKのTRM接続にはframework由来`sessionId`を`Tuner(serviceContext, sessionId, useCase)`へ渡す。AudioTrack生成はAndroid 15（API 35）環境の公開`AudioTrack.Builder.setContext(sessionContext)`を必須とし、`sessionContext.getAttributionSource()`からTV app attribution chainとdevice固有audio session情報を伝播させる。通常経路で素の`serviceContext`をAudioTrackへ渡さず、2引数版／1引数版の互換経路から3引数通常経路へ黙示fallbackしない。生成したAudioTrackは同generationのMediaSyncへ設定し、session releaseまたは置換後は旧`sessionContext`と旧AudioTrackを新しいMediaSync generationへ再利用しない。
+TIS product本体・同梱JNI・rating providerの最小SDKはAndroid 15（API 35）とし、hostのRobolectric buildも同じ最小SDKで検証する。Tuner SDKのTRM接続にはframework由来`sessionId`を`Tuner(serviceContext, sessionId, useCase)`へ渡す。AudioTrack生成はAndroid 15（API 35）環境の公開`AudioTrack.Builder.setContext(sessionContext)`を必須とし、`sessionContext.getAttributionSource()`からTV app attribution chainとdevice固有audio session情報を伝播させる。通常経路で素の`serviceContext`をAudioTrackへ渡さず、2引数版／1引数版の互換経路から3引数通常経路へ黙示fallbackしない。生成したAudioTrackは同generationのMediaSyncへ設定し、session releaseまたは置換後は旧`sessionContext`と旧AudioTrackを新しいMediaSync generationへ再利用しない。
 
 `setAttributionSource()`を探索・呼出しするreflection、vendor独自AIDL、reflection失敗時の無言fallbackを通常経路に置かない。例外は本書で明示したMediaSync final-output観測用の任意Framework-private `@hide` contractだけとし、そのlistener型とsetterだけをruntime reflectionで解決する。API不存在または登録失敗では診断を残して公開`MediaCodec.OnFrameRenderedListener`へ切り替え、TISのbuildと起動に同一platform sourceの変更を要求しない。それ以外のnon-SDK APIを便乗して使用してはならない。
 
@@ -734,7 +799,7 @@ AVCのPMT記述子とESのSPSが共にある場合はprofile_idc・constraint fl
 |---|---|
 | MPEG-2 Video | 必須対応。PMT / component descriptor から codec、解像度、走査方式、aspect を認識し、MediaFormat、block model decoder起動、MediaSync first-frame gate、unsupported診断情報を固定する。 |
 | H.264 / MPEG-4 AVC | 必須対応。profile / level は AVC video descriptor と実 MediaCodec capability を照合し、未対応時は codec unsupported 診断に落とす。 |
-| H.265 / HEVC | codec として認識対象。r51はmetadata / 診断へ保持する。r52では現行対象の従来TS profileでARIB signaling上HEVCが現れる場合をgeneric direct playback selectionへ含め、MediaFormat / block model decoder / MediaSync first-output gate / unsupported診断まで必須とする。 |
+| H.265 / HEVC | codec signalingとして認識する。対象releaseで再生対応へ含めるかは `../開発規則.md` を正とし、有効化された場合は他のvideo codecと同じgeneric direct playback契約へ接続する。 |
 
 ISO/IEC 14496-2 Visual、JPEG 2000、auxiliary video、SVC、MVC、3D additional view は、今回の ISDB-T/S product scope のライブviewable codecとして対応宣言しない。必要ならprovider-data / 診断情報にARIB signalingを保持する。
 
@@ -770,3 +835,54 @@ TIS は保存データの型、正規化、必須項目判定、欠落補完、�
 `DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS は `DescriptorDiagnosticV1` を項目ごとに再構築してはならない。TIS が保持する場合は、Rust 生成の正規 JSON を不透明な文字列として透過保持する。
 
 TIS の試験は、受け渡し用 JSON の細部を保存形式として検査しない。検査対象は Rust provider-data builder が返した保存用JSON、識別子、拒否診断に寄せる。
+
+scan cancel受付は共有cancel flagの短いmonitor区間で行い、Provider I/Oを保持するpublication lockをUIから取得しない。受付後は最終SI snapshotのretryと次のchannel/program公開を拒否する。既に開始した公開はscan workerの所有で完了させ、取消しを過去の書込みのrollbackとは扱わない。
+
+service_typeが未解決のSI factはSERVICE_TYPE_UNRESOLVEDとしてPENDINGへ写像し、section ingest後の再評価を継続する。解決済みの非対応service_typeだけをUNSUPPORTED_SERVICE_TYPEとしてterminal UNSUPPORTEDへ写像する。Rust意味factのNoneを、Kotlinで非対応値が確定したかのように扱わない。
+
+### live SI初期待ちのPMT取得
+
+PENDING中もPATで得たPMT PIDを既存controllerのupdatePmtFiltersへ渡し、PMT取得を継続する。初期待ちは再生開始・Program公開・CAS確定を待つ条件であり、PMT filter開始を止める条件ではない。scanとliveは同じPMT更新入口を使い、新しい取得ownerやretryを持たない。
+live refreshのProgram publicationは同一入力snapshotのsignatureをProvider I/Oより前に確定し、dirty retryがなく`LIVE_TUNE_REFRESH`でsignatureが不変ならchannel/program query・write・readbackを開始しない。setup / boot / backgroundは各taskのcommit意味を保持するため、この早期skipを使用しない。既存channel IDはpublication単位で一括indexし、ServiceKeyごとの同一queryを繰り返さない。`ChannelStore.indexExistingChannelIds`を唯一の既存channel照会契約とし、production/testとも一括indexを直接供給する。Program insert/updateはService単位で最大64 operationのContentProvider batchへまとめ、canonical genre readbackもService単位の1 queryへまとめる。obsolete rowのdeleteも各authoritative window内で最大64 operationのbatchとし、Program件数分の個別Binder往復を設けない。batch failureは当該Service/windowのpublish failureとして既存dirty-window retryへ接続し、部分成功をfingerprint更新の根拠にしない。
+
+### Program書込みのIPC予算
+
+Program insert/update/obsolete deleteは最大64 operationと、IBinder.getSuggestedMaxIpcSizeBytesのrequest全体サイズ予算の両方で分割する。推奨値は実buffer容量・空き容量ではない。Android 15 applyBatchのinterface token・AttributionSource・authority・件数・各ContentProviderOperationをParcel化して計測し、公開推奨値自体がtransaction buffer上限から安全な余裕を設ける目安であるため、追加で半分へ縮めない。Rust正本が正常生成するprovider-dataの上限と標準列・envelopeを合わせた単一行を同予算内で受理する。単一operation超過は書込み前に日本語診断で失敗させ、schemaの切詰め・再解釈は行わない。正常空EITの必須サービスProgram照会は未実装storeで失敗し、明示query成功だけを公開完了として扱う。
+scan全体のtyped terminalの確定も同じpublication fenceへ直列化する。終端確定後のcancelは拒否し、既に確定したCOMPLETEDやcommit副作用を遡ってCancelledへ書き換えない。Managerの正常return経路はScanResult.terminalだけを状態へ写像し、task cancel flagを再混合しない。
+scan全体の終端処理はpublication fence上で行い、Provider最終commitに入る前にcancel flagのmonitorで取消し受付を閉じる。この確定点より前に受理した取消しをterminalへ反映し、以後のcancelはProvider完了を待たず拒否する。既に確定したCOMPLETEDやcommit副作用を遡ってCancelledへ書き換えない。Managerの正常return経路はScanResult.terminalだけを状態へ写像し、task cancel flagを再混合しない。
+既存Channelはsetup/rescanで同じIDのmutable列を更新し、immutable COLUMN_TYPEと初期可視性markerを通常updateに含めない。未公開版の方式誤登録を移行するためのChannel再作成・旧row削除は実装しない。
+
+### current callbackの投入・実行失敗
+
+caption/sessionのcurrent callbackとplaybackの通常task sequence枯渇・想定外投入拒否は、成功や無診断dropに読み替えない。原因をログへ保持し、既存release fenceを閉じた後、同じexecutorのterminal cleanup controlで診断/PlaybackUnavailable/Session video unavailableと解放を実行する。cleanupだけは通常sequenceを消費せず、枯渇後も既存ownerで解放を再試行できる。通常identityの再利用、別executor、第二の資源台帳は導入しない。release/shutdown競合の遅着callbackだけは無視する。
+
+受理後に実行を開始したcallbackのRuntimeExceptionも、同じ失敗通知とterminal cleanupへ渡す。開始済み入力の所有権はactionが管理し、失敗通知のためにonDiscardを重ねて呼ばない。
+
+Filter callback入口ではFrameworkのcallback lockを保持する区間でowner完了やdata permitを待たない。playbackのAV/PES callbackは即時入口から既存ownerへ待機なしで有限投入し、満杯はtask実行失敗と区別し、AVは既存decoderのbackpressure時計へ接続する。owner再開後の入力進捗で同時計を解除し、継続拒否だけを既存startup/steady期限でvideo codec failureまたはaudio unavailableへ写像する。PES容量喪失は既存字幕continuity lostとFilter退役・再生成で局所回収する。各Filterの未処理損失通知は一つに束ねて既存controlへ渡し、別queueやtimerを持たない。generationとFilter identityが失効した入力はこの通知を発行しない。受理されなかったMediaEventは入口で解放し、解放失敗は既存ResourceCleanupへ同期保護した登録だけを行う。登録listのlock内でnative解放を呼ばず、再試行は同じplayback ownerだけが行う。受理済みでrelease後に失効したcallback、未実行の破棄callbackもeventを解放し、Filter close後に未実行eventを回収して未完解放がないことを確認した後だけglobal再生登録を解除し、executorを停止する。PESはFilter closeで未読bufferを回収し、再選局後の旧Filter/generationを新しい受信へ読み替えない。別queue・cleanup owner・retry loopは追加しない。
+
+字幕presentationの同一PTS置換は、既存queueを変更せずに置換後のbytes/境界数を検査し、token確保成功後だけ既存Displayと同じframeTokenに従属するClearを同じcommitで削除して新境界を追加する。置換後容量はこの両境界を除いた集合で判定する。容量拒否またはidentity枯渇では受理済みqueueを保持する。
+
+### serial executorの共通投入機構
+
+ControllerSerialExecutorとLifecycleSerialExecutorはPrioritySerialExecutorを継承し、単一thread、control優先/FIFO順序、owner識別、受理したdataのpermit返却、未実行taskの破棄を共有する。追加threadや別ownerは作らない。汎用controllerの既定上限1、TunerControllerのsection配送上限16、sessionの既定上限64は各利用者の方針に残す。playbackだけは既存16MiB AV Filter容量を共有受付予算とし、既存Semaphoreを1KiB単位で消費する。payloadを切り上げた予約にcallbackと各eventにつき1KiBの保守的な帳簿予約を加えるため、sample bytesとevent数の両方が有限となる。既存owner再入の一時保留にも同じ16MiB上限を適用し、通常queueと一時保留を合わせた予約上限は32MiBとする。1KiBは製品の受付予約単位でありJVM実測サイズやAOSP/ARIB規範値ではない。満杯でowner・permitを待たず、新しいqueueや入力コピーを作らない。有限control待機、owner再投入、callback入力の解放は各executorの方針に残す。通常identity枯渇後のcleanup投入も同じqueueへ入り、通常sequenceを消費しない。TunerController.releaseも外部ownerからこのcleanup classへ投入し、失敗時はexecutorを停止せず同じ入口で再試行する。shutdown時に未実行の通常control/cleanup Futureを破棄する場合は同じQueuedTaskの破棄通知でcancel完了させ、同期callerを未完了Future待ちに残さない。既存の飽和・shutdown・取消し・投入/実行失敗試験は共通機構を経由する。
+
+### cleanup classのFIFO
+
+cleanup投入は通常task sequenceと独立した単調sequenceを同じPrioritySerialExecutor内で採番する。通常identity枯渇後もcleanup class内の順序を失わず、同順位commandをqueue実装依存にしない。cleanup sequence自体も最大値で明示失敗とし、wrap/reuseはしない。別thread・scheduler・cleanup台帳を追加せず、通常/control/dataの既存優先順位を維持する。
+AV callback配列の途中処理が失敗した場合、現在eventがdecoderへ移譲される前ならfinallyで解放し、未処理の残余eventも同じreleaseMediaEventからResourceCleanupへ渡す。処理済みeventとdecoder所有eventは再解放しない。残余解放が失敗した場合も、その義務を同じplayback ownerの停止・解放再試行まで保持する。
+
+
+汎用executeはdata配送に限定し、controlは明示入口から同じqueueへ投入する。Futureの型をmarkerで再分類しない。LifecycleのControlFutureTaskは開始前取消しと開始後結果不明の区別だけを担う。
+MediaCodecのrelease成功を、そのcodecに従属するoutput bufferの解放義務の終端とする。成功前は既存ResourceCleanupが子outputと親codecの失敗を保持する。成功後は同codec ownerの子actionと保持audio参照を完了し、閉鎖済みcodecへoutput releaseをretryしない。旧DecoderPipelineに遅着したoutput callbackも親release済みなら新たな子義務を作らない。他codecやMediaEventの未解放義務は同時に完了扱いにしない。
+
+MediaEvent解放の初回失敗では既存released fenceを立て、PLAYBACK_RECOVERY_FAILEDを通知し、既存terminal cleanupを同じplayback ownerへ一度投入する。通常AV入力の処理を継続せず、Filter closeによるcallback解除と有限の受理済みqueueの破棄を行う。AOSP Filter.closeはnative close失敗前にもcallbackを解除するため、保持量は既に受理したevent・decoder予算と既存資源の解放義務に閉じる。未解放義務は捨てず、同じResourceCleanupの再試行まで保持する。
+
+### Program cleanup中の要求継続
+
+cleanup未完了中は受理した要求の処理開始を保留する。session objectの同期作成拒否へ読み替えず、既存sessionのlatest tune要求を保持する。cleanup結果は同じsession control ownerへ一度通知し、成功時だけtune/Program利用へ進み、失敗時は既存accepted failure経路へ渡す。setupは既存ActiveScanTaskを予約してRunningを表示し、完了通知から同じscan executorで開始またはtyped失敗する。boot jobは既存pending/job再受付へ完了を接続する。I/Oは単一cleanup workerのままとし、完了と要求登録を同じlockで扱う。失敗時の旧Program使用は禁止し、新しいscheduler・migration・cleanup ownerは作らない。
+
+### MediaSync音声IDと遅延callback
+
+音声consume callbackはsync identityおよびplayback generationを照合してからoutstanding mapを変更する。同一MediaSyncではIDをchecked incrementし、解放済みIDも再利用しない。Int最大値ではfail-closedとし、callback寿命を推測する台帳は作らない。新MediaSync作成時だけIDを再開でき、旧sync callbackはidentity/generation fenceで拒否する。
+
+Program cleanupの完了通知は準備済み同期経路とworker完了経路で同じnotifyCompletionへ集約し、通知先例外は診断へ残してcleanup成否を変更せず、他の通知を妨げない。callbackはcompletion lock外で実行する。

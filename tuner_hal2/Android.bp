@@ -2,14 +2,6 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// external/rust/android-crates-io で libloom が供給される環境だけで使う任意defaults。
-// 通常testには適用しない。loom対象testを追加するときに defaults に指定する。
-rust_defaults {
-    name: "maleicacid_tuner_hal2_loom_test_defaults",
-    rustlibs: ["libloom"],
-    cfgs: ["loom"],
-}
-
 prebuilt_etc {
     name: "maleicacid_tuner_hal2_ueventd_rc",
     vendor: true,
@@ -116,6 +108,7 @@ rust_library {
     ],
     edition: "2021",
     rustlibs: [
+        "liblog_rust",
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_control_core",
         "libnix",
@@ -263,9 +256,9 @@ rust_library {
     ],
     edition: "2021",
     rustlibs: [
+        "liblog_rust",
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_control_core",
-        "libmaleicacid_tuner_hal2_binder_adapter",
         "libmaleicacid_tuner_hal2_domain_request",
         "libmaleicacid_tuner_hal2_device",
         "libmaleicacid_tuner_hal2_demux",
@@ -293,12 +286,6 @@ rust_library {
     crate_root: "binder_adapter/src/lib.rs",
     srcs: [
         "binder_adapter/src/lib.rs",
-        "binder_adapter/src/frontend.rs",
-        "binder_adapter/src/demux.rs",
-        "binder_adapter/src/filter.rs",
-        "binder_adapter/src/dvr.rs",
-        "binder_adapter/src/descrambler.rs",
-        "binder_adapter/src/lnb.rs",
         "binder_adapter/src/status.rs",
         "binder_adapter/src/aidl_method.rs",
         "binder_adapter/src/aidl_filter_config.rs",
@@ -355,6 +342,7 @@ rust_library {
         "libbinder_rs",
         "liblog_rust",
         "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_domain_request",
         "libmaleicacid_tuner_hal2_binder_adapter",
         "libmaleicacid_tuner_hal2_service_runtime",
         "libmaleicacid_tuner_hal2_device",
@@ -374,6 +362,8 @@ rust_binary {
     init_rc: ["init/android.hardware.tv.tuner-service.maleicacid2.rc"],
     vintf_fragments: ["manifest/android.hardware.tv.tuner-service.maleicacid2.xml"],
     rustlibs: [
+        "liblogger",
+        "liblog_rust",
         "libmaleicacid_tuner_hal2_aidl_service",
         "libbinder_rs",
     ],
@@ -626,13 +616,13 @@ rust_test {
     edition: "2021",
     rustlibs: [
         "libmaleicacid_tuner_hal2_common",
-        "libmaleicacid_tuner_hal2_binder_adapter",
         "libmaleicacid_tuner_hal2_domain_request",
         "libmaleicacid_tuner_hal2_device",
         "libmaleicacid_tuner_hal2_demux",
         "libmaleicacid_tuner_hal2_descrambler",
         "libmaleicacid_tuner_hal2_lnb",
         "libmaleicacid_tuner_hal2_resource_ledger",
+        "libstatic_assertions",
     ],
     static_libs: ["libmaleicacid_tuner_hal2_fmq_shim_static"],
     shared_libs: [
@@ -671,6 +661,7 @@ rust_test {
         "libmaleicacid_tuner_hal2_demux",
         "libmaleicacid_tuner_hal2_descrambler",
         "libmaleicacid_tuner_hal2_lnb",
+        "libstatic_assertions",
     ],
     static_libs: ["libmaleicacid_tuner_hal2_fmq_shim_static"],
     shared_libs: [
@@ -689,12 +680,6 @@ rust_test {
     crate_root: "binder_adapter/src/lib.rs",
     srcs: [
         "binder_adapter/src/lib.rs",
-        "binder_adapter/src/frontend.rs",
-        "binder_adapter/src/demux.rs",
-        "binder_adapter/src/filter.rs",
-        "binder_adapter/src/dvr.rs",
-        "binder_adapter/src/descrambler.rs",
-        "binder_adapter/src/lnb.rs",
         "binder_adapter/src/status.rs",
         "binder_adapter/src/aidl_method.rs",
         "binder_adapter/src/aidl_filter_config.rs",
@@ -753,6 +738,7 @@ rust_test {
         "libbinder_rs",
         "liblog_rust",
         "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_domain_request",
         "libmaleicacid_tuner_hal2_binder_adapter",
         "libmaleicacid_tuner_hal2_service_runtime",
         "libmaleicacid_tuner_hal2_device",
@@ -803,6 +789,8 @@ rust_test {
     srcs: ["compile_contract/src/lib.rs"],
     edition: "2021",
     rustlibs: [
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_control_core",
         "libmaleicacid_tuner_hal2_device",
         "libstatic_assertions",
     ],
@@ -810,26 +798,3 @@ rust_test {
     test_suites: ["general-tests"],
 }
 
-rust_test {
-    name: "maleicacid_tuner_hal2_service_runtime_loom_test",
-    vendor: true,
-    crate_name: "maleicacid_tuner_hal2_service_runtime_loom_test",
-    crate_root: "service_runtime/src/loom_tests.rs",
-    srcs: ["service_runtime/src/loom_tests.rs"],
-    edition: "2021",
-    defaults: ["maleicacid_tuner_hal2_loom_test_defaults"],
-    auto_gen_config: true,
-    test_suites: ["general-tests"],
-}
-
-rust_test {
-    name: "maleicacid_tuner_hal2_aidl_service_loom_test",
-    vendor: true,
-    crate_name: "maleicacid_tuner_hal2_aidl_service_loom_test",
-    crate_root: "aidl_service/src/loom_tests.rs",
-    srcs: ["aidl_service/src/loom_tests.rs"],
-    edition: "2021",
-    defaults: ["maleicacid_tuner_hal2_loom_test_defaults"],
-    auto_gen_config: true,
-    test_suites: ["general-tests"],
-}

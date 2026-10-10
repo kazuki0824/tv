@@ -95,7 +95,7 @@ pub use runtime::{
     FilterStatusEvent, PlaybackConsumeReport, PlaybackFlushDiagnostic, PlaybackQueueReadTxn,
     PlaybackStats, PreparedDvrFilterRelation, PreparedStreamBoundary, QueueDescriptorExportPlan,
     QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
-    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
+    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind, QueueRuntimeLockKind,
     RecordDvrFilterRelationState, SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep,
     StreamBoundaryReport, ValidatedPacketIngressRequest, WatermarkClassifier, WatermarkDecision,
     WatermarkPolicy, WatermarkQueueSnapshot,

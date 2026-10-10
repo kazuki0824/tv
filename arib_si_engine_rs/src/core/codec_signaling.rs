@@ -334,16 +334,14 @@ fn parse_program_config(bits: &mut AudioConfigBits<'_>) -> Option<ProgramConfig>
     })
 }
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "status", rename_all = "SCREAMING_SNAKE_CASE")]
+#[derive(Debug)]
 pub enum AacConfigurationProbe {
     Pending,
     Invalid { reason: &'static str },
     Ready { configuration: AacAdtsConfiguration },
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AacAdtsConfiguration {
     pub audio_object_type: u8,
     pub sampling_frequency: u32,

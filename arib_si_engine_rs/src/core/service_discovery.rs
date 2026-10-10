@@ -76,6 +76,23 @@ impl SmdSemanticState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BroadcastSystem {
+    IsdbSBs,
+    IsdbT,
+    IsdbS110Cs,
+}
+
+impl BroadcastSystem {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IsdbSBs => "ISDB_S_BS",
+            Self::IsdbT => "ISDB_T",
+            Self::IsdbS110Cs => "ISDB_S_110CS",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SystemManagementFacts {
     pub descriptor_present: bool,
@@ -83,6 +100,7 @@ pub struct SystemManagementFacts {
     pub system_management_id: Option<u16>,
     pub broadcasting_flag: Option<u8>,
     pub broadcasting_identifier: Option<u8>,
+    pub broadcast_system: Option<BroadcastSystem>,
     pub additional_broadcasting_identification: Option<u8>,
     pub additional_identification_info: Vec<u8>,
     pub semantic_state: SmdSemanticState,
@@ -95,6 +113,7 @@ pub struct DiscoveredService {
     pub original_network_id: u16,
     pub service_id: u16,
     pub service_type: Option<u8>,
+    pub partial_reception: bool,
     pub service_name: Option<String>,
     pub provider_name: Option<String>,
     pub bouquet_name: Option<String>,
@@ -182,6 +201,7 @@ pub struct ServiceSemanticFacts {
     pub transport_stream_id: u16,
     pub service_id: u16,
     pub service_type: Option<u8>,
+    pub partial_reception: bool,
     pub pmt_pid_resolved: bool,
     pub pmt_parsed: bool,
     pub pcr_pid_resolved: bool,
@@ -469,6 +489,7 @@ impl ServiceDiscoveryEngine {
                 service.network_name = None;
                 service.ts_name = None;
                 service.remote_control_key_id = None;
+                service.partial_reception = false;
                 service.system_management = SystemManagementFacts::default();
             }
         }
@@ -515,6 +536,7 @@ impl ServiceDiscoveryEngine {
                 original_network_id: onid,
                 service_id,
                 service_type: None,
+                partial_reception: false,
                 service_name: None,
                 provider_name: None,
                 bouquet_name: None,
@@ -572,6 +594,18 @@ impl ServiceDiscoveryEngine {
         if resolved_onid != onid {
             return;
         }
+
+        // PMT PID は PMT 本文ではなく PAT で確定する。
+        // PAT が SDT より先に到着した場合も、service が一意に解決できた時点で
+        // filter bootstrap 用の PID を公開し、PMT 受信前の循環依存を作らない。
+        {
+            let entry = self.service_entry_mut(tsid, onid, service_id);
+            if entry.pmt_pid != Some(pmt_pid) {
+                Self::clear_pmt_state(entry);
+                entry.pmt_pid = Some(pmt_pid);
+            }
+        }
+
         let full_key = (onid, tsid, service_id, pmt_pid);
         if let std::collections::btree_map::Entry::Vacant(e) = self.pending_pmts.entry(full_key) {
             if let Some(parsed) = self
@@ -832,21 +866,32 @@ impl ServiceDiscoveryEngine {
             self.transport_entry_mut(tsid, onid);
             self.transport_entry_mut(tsid, onid).system_management =
                 parse_system_management_descriptor(network_descriptors);
-            let (desc_network_name, ts_name, remote_control_key_id) =
-                parse_nit_transport_metadata(&section[desc_start..desc_end])
-                    .unwrap_or((None, None, None));
+            let metadata =
+                parse_nit_transport_metadata(&section[desc_start..desc_end]).unwrap_or_default();
+            for service_id in metadata.partial_reception_services {
+                self.transport_entry_mut(tsid, onid)
+                    .services
+                    .insert(service_id);
+                self.service_entry_mut(tsid, onid, service_id)
+                    .partial_reception = true;
+                self.apply_pending_pmt_to_service(tsid, onid, service_id);
+            }
             let transport = self.transport_entry_mut(tsid, onid);
             if transport.network_name.is_none() {
-                transport.network_name = desc_network_name
+                transport.network_name = metadata
+                    .network_name
                     .as_ref()
                     .map(|decoded| decoded.value.clone())
                     .or_else(|| network_name.as_ref().map(|decoded| decoded.value.clone()));
             }
             if transport.ts_name.is_none() {
-                transport.ts_name = ts_name.as_ref().map(|decoded| decoded.value.clone());
+                transport.ts_name = metadata
+                    .ts_name
+                    .as_ref()
+                    .map(|decoded| decoded.value.clone());
             }
             if transport.remote_control_key_id.is_none() {
-                transport.remote_control_key_id = remote_control_key_id;
+                transport.remote_control_key_id = metadata.remote_control_key_id;
             }
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
@@ -856,11 +901,11 @@ impl ServiceDiscoveryEngine {
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
-                desc_network_name.and_then(|decoded| decoded.diagnostic),
+                metadata.network_name.and_then(|decoded| decoded.diagnostic),
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
-                ts_name.and_then(|decoded| decoded.diagnostic),
+                metadata.ts_name.and_then(|decoded| decoded.diagnostic),
             );
             self.parse_service_list_descriptor(tsid, onid, &section[desc_start..desc_end]);
             if let Some(entry) = self.transports.get_mut(&(tsid, onid)) {
@@ -1247,8 +1292,11 @@ impl ServiceDiscoveryCollector {
             let mut missing_for_service = table_requirements
                 .iter()
                 .filter(|status| {
+                    // other network/transportの完成はcollection全体の条件。
+                    // 現在TSの単独service登録にまで他networkの未受信を波及させない。
                     status.required
                         && !status.complete
+                        && !matches!(status.component, "SDT-other" | "NIT-other")
                         && status
                             .original_network_id
                             .map(|value| value == service.original_network_id)
@@ -1316,6 +1364,7 @@ impl ServiceDiscoveryCollector {
                 transport_stream_id: service.transport_stream_id,
                 service_id: service.service_id,
                 service_type: service.service_type,
+                partial_reception: service.partial_reception,
                 pmt_pid_resolved,
                 pmt_parsed: service.pmt_parsed,
                 pcr_pid_resolved: service.pcr_pid.is_some(),
@@ -1730,10 +1779,14 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
                 u16::from_be_bytes([descriptors[body_start], descriptors[body_start + 1]]);
             let broadcasting_flag = ((system_management_id >> 14) & 0x03) as u8;
             let broadcasting_identifier = ((system_management_id >> 8) & 0x3f) as u8;
+            let broadcast_system = match (broadcasting_flag, broadcasting_identifier) {
+                (0, 0b000010) => Some(BroadcastSystem::IsdbSBs),
+                (0, 0b000011) => Some(BroadcastSystem::IsdbT),
+                (0, 0b000100) => Some(BroadcastSystem::IsdbS110Cs),
+                _ => None,
+            };
             let semantic_state = match broadcasting_flag {
-                0 if matches!(broadcasting_identifier, 0b000010..=0b000100) => {
-                    SmdSemanticState::SupportedBroadcast
-                }
+                0 if broadcast_system.is_some() => SmdSemanticState::SupportedBroadcast,
                 0 => SmdSemanticState::UnsupportedBroadcastSystem,
                 1 | 2 => SmdSemanticState::NonBroadcast,
                 _ => SmdSemanticState::UndefinedBroadcastClass,
@@ -1744,6 +1797,7 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
                 system_management_id: Some(system_management_id),
                 broadcasting_flag: Some(broadcasting_flag),
                 broadcasting_identifier: Some(broadcasting_identifier),
+                broadcast_system,
                 additional_broadcasting_identification: Some(system_management_id as u8),
                 additional_identification_info: descriptors[body_start + 2..body_end].to_vec(),
                 semantic_state,
@@ -1758,12 +1812,16 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
     })
 }
 
-fn parse_nit_transport_metadata(
-    descriptors: &[u8],
-) -> Option<(Option<DecodedSiText>, Option<DecodedSiText>, Option<u8>)> {
-    let mut network_name = None;
-    let mut ts_name = None;
-    let mut remote_control_key_id = None;
+#[derive(Default)]
+struct NitTransportMetadata {
+    network_name: Option<DecodedSiText>,
+    ts_name: Option<DecodedSiText>,
+    remote_control_key_id: Option<u8>,
+    partial_reception_services: BTreeSet<u16>,
+}
+
+fn parse_nit_transport_metadata(descriptors: &[u8]) -> Option<NitTransportMetadata> {
+    let mut metadata = NitTransportMetadata::default();
     let mut cursor = 0usize;
     while cursor + 2 <= descriptors.len() {
         let tag = descriptors[cursor];
@@ -1774,7 +1832,7 @@ fn parse_nit_transport_metadata(
         };
         match tag {
             0x40 => {
-                network_name = Some(decode_si_text_lossy(
+                metadata.network_name = Some(decode_si_text_lossy(
                     "networkName",
                     &descriptors[body_start..body_end],
                 ))
@@ -1782,27 +1840,38 @@ fn parse_nit_transport_metadata(
             0xcd => {
                 let body_len = body_end.saturating_sub(body_start);
                 if body_len >= 2 {
-                    remote_control_key_id = Some(descriptors[body_start]);
+                    metadata.remote_control_key_id = Some(descriptors[body_start]);
                     let ts_name_len = ((descriptors[body_start + 1] >> 2) & 0x3f) as usize;
                     let ts_name_start = body_start + 2;
                     let remaining = body_end.saturating_sub(ts_name_start);
                     if ts_name_len <= remaining {
                         let ts_name_end = ts_name_start + ts_name_len;
-                        ts_name = Some(decode_si_text_lossy(
+                        metadata.ts_name = Some(decode_si_text_lossy(
                             "transportStreamName",
                             &descriptors[ts_name_start..ts_name_end],
                         ));
                     }
                 }
             }
+            0xfb if len % 2 == 0 => {
+                for service in descriptors[body_start..body_end].chunks_exact(2) {
+                    metadata
+                        .partial_reception_services
+                        .insert(u16::from_be_bytes([service[0], service[1]]));
+                }
+            }
             _ => {}
         }
         cursor = body_end;
     }
-    if network_name.is_none() && ts_name.is_none() && remote_control_key_id.is_none() {
+    if metadata.network_name.is_none()
+        && metadata.ts_name.is_none()
+        && metadata.remote_control_key_id.is_none()
+        && metadata.partial_reception_services.is_empty()
+    {
         None
     } else {
-        Some((network_name, ts_name, remote_control_key_id))
+        Some(metadata)
     }
 }
 
@@ -2243,6 +2312,67 @@ mod tests {
             &section_with_crc(vec![0x41, 0xf0, 0x0d, 0, 3, 0xc1, 0, 1, 0xf0, 0, 0xf0, 0]),
         );
         assert!(!collector.state().is_complete());
+    }
+
+    #[test]
+    fn satellite_other_tables_still_gate_collection_but_not_current_service_facts() {
+        // PAT/PMT/SDT actualとNIT actualは完成。他TS/他networkのテーブルを故意に未受信にする。
+        // collection完全性と現在サービスの登録準備は別の契約である。
+        for profile in [DiscoveryProfile::Bs, DiscoveryProfile::Cs110] {
+            let mut collector = collector_with_pmt(&[], &[0x1b, 0xe1, 0x01, 0xf0, 0], 0x101);
+            collector.set_discovery_profile(profile);
+            collector.push_section(
+                0x10,
+                &section_with_crc(vec![
+                    0x40, 0xf0, 0x19, 0, 1, 0xc1, 0, 0, 0xf0, 0, 0xf0, 12, 0, 0x11, 0, 0x22, 0xf0,
+                    0, 0, 0x12, 0, 0x22, 0xf0, 0,
+                ]),
+            );
+            let state = collector.state();
+            assert!(
+                !state.is_complete(),
+                "satellite completion must still require other tables"
+            );
+            assert!(state.table_requirements.iter().any(|status| {
+                status.component == "SDT-other" && status.required && !status.complete
+            }));
+            if profile == DiscoveryProfile::Cs110 {
+                assert!(state.table_requirements.iter().any(|status| {
+                    status.component == "NIT-other" && status.required && !status.complete
+                }));
+            }
+            let current = state
+                .semantic_facts_by_service
+                .iter()
+                .find(|facts| facts.transport_stream_id == 0x11 && facts.service_id == 1)
+                .expect("current transport service");
+            assert!(
+                current.missing_components.is_empty(),
+                "unrelated satellite other tables must not block actual service: {:?}",
+                current.missing_components
+            );
+            assert!(current.pmt_parsed && current.pmt_pid_resolved && current.pcr_pid_resolved);
+        }
+    }
+
+    #[test]
+    fn satellite_actual_nit_is_still_required_for_current_service() {
+        let mut collector = collector_with_pmt(&[], &[0x1b, 0xe1, 0x01, 0xf0, 0], 0x101);
+        collector.set_discovery_profile(DiscoveryProfile::Cs110);
+        let state = collector.state();
+        let service = state
+            .semantic_facts_by_service
+            .iter()
+            .find(|facts| facts.service_id == 1)
+            .expect("service from current SDT");
+        assert!(
+            service.missing_components.contains(&"NIT"),
+            "missing NIT actual must remain a registration blocker"
+        );
+        assert!(
+            !service.missing_components.contains(&"NIT-other"),
+            "other-network table absence is collection-level, not service-level"
+        );
     }
 
     #[test]
@@ -2972,6 +3102,42 @@ mod current_version_tests {
     }
 
     #[test]
+    fn pat_before_sdt_exposes_pmt_pid_before_pmt_is_received() {
+        let pat = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
+        ]);
+        let sdt = section_with_crc(vec![
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x01, 0xfc,
+            0xf0, 0x07, 0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
+        ]);
+
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.push_section(0x0000, &pat);
+        collector.push_section(0x0011, &sdt);
+
+        let state = collector.state();
+        let facts = state
+            .semantic_facts_by_service
+            .iter()
+            .find(|facts| facts.service_id == 1)
+            .expect("サービス情報");
+
+        assert_eq!(facts.pmt_pid, Some(0x0100));
+        assert!(facts.pmt_pid_resolved);
+        assert!(!facts.pmt_parsed);
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x0100]);
+        assert_eq!(
+            state
+                .snapshot
+                .pmt_pids_by_service
+                .iter()
+                .find(|mapping| mapping.service_id == 1)
+                .map(|mapping| mapping.pmt_pid),
+            Some(0x0100)
+        );
+    }
+
+    #[test]
     fn version_change_replaces_changed_pat_state() {
         let mut collector = ServiceDiscoveryCollector::default();
         let pat_v1 = section_with_crc(vec![
@@ -3173,7 +3339,23 @@ mod service_scoped_ca_metadata_tests {
 
 #[cfg(test)]
 mod section_tracker_consistency_tests {
-    use super::SectionTracker;
+    use super::{parse_nit_transport_metadata, SectionTracker};
+
+    #[test]
+    fn partial_reception_descriptor_exposes_only_listed_service_ids() {
+        let descriptors = [0xfb, 4, 0x01, 0x01, 0x01, 0x02];
+        let metadata = parse_nit_transport_metadata(&descriptors).expect("descriptorを取得できる");
+        assert_eq!(
+            metadata
+                .partial_reception_services
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![0x0101, 0x0102],
+        );
+
+        let malformed = [0xfb, 3, 0x01, 0x01, 0xff];
+        assert!(parse_nit_transport_metadata(&malformed).is_none());
+    }
 
     #[test]
     fn conflicting_last_section_number_never_becomes_complete() {

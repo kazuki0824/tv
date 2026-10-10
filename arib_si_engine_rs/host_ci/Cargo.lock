@@ -92,7 +92,6 @@ version = "0.1.0"
 dependencies = [
  "jni",
  "maleicacid_arib_si_engine_core",
- "serde",
  "serde_json",
 ]
 

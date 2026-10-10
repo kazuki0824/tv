@@ -26,7 +26,7 @@ class CasControllerStateTest {
             var accepted = true
             var notifications = 0
             var creates = 0
-            val fence = ChannelScanController.ResourceLossFence().apply { activate(1L) }
+            val fence = ChannelScanController.ScanGenerationFence().apply { activate(1L) }
             controller.updateFromCaMetadata(metadata) {
                 creates++
                 old

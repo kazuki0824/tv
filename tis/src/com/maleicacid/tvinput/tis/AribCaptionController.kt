@@ -8,10 +8,6 @@ import com.maleicacid.tvinput.aribsi.NativeAribCaptionRenderer
 import com.maleicacid.tvinput.common.CaptionTimestamp
 import com.maleicacid.tvinput.common.LogTags
 import java.util.PriorityQueue
-import java.util.concurrent.Callable
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -25,7 +21,25 @@ class AribCaptionController(
     private val overlayLayerId: String = "caption",
     private val allowNoPts: Boolean = false,
     private val broadcastDeadline: ((AribBroadcastClock.StatementTime, Long?) -> AribBroadcastClock.Deadline?)? = null,
+    private val onDiagnostic: (CaptionDiagnostic) -> Unit = { diagnostic ->
+        Log.w(LogTags.TIS, "ARIB字幕診断 $diagnostic")
+    },
 ) : AutoCloseable {
+    data class CaptionDiagnostic(
+        val reason: Reason,
+        val playbackGeneration: Long,
+        val trackId: String?,
+        val count: Int,
+    ) {
+        enum class Reason {
+            NO_AUTHORITATIVE_PTS,
+            PRESENTATION_QUEUE_OVERFLOW,
+            PRESENTATION_HORIZON_EXCEEDED,
+            BROADCAST_TIMED_PES_OVERFLOW,
+            OWNER_SUBMISSION_FAILED,
+        }
+    }
+
     data class CaptionViewport(
         val overlayWidthPx: Int,
         val overlayHeightPx: Int,
@@ -52,19 +66,22 @@ class AribCaptionController(
         ) : Boundary
     }
 
-    @Volatile private var executorThread: Thread? = null
-    private val executor: ExecutorService =
-        Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "maleicacid-subtitle-$overlayLayerId").also { thread ->
-                thread.isDaemon = true
-                executorThread = thread
-            }
-        }
+    private val executor =
+        LifecycleSerialExecutor(
+            "maleicacid-subtitle-$overlayLayerId",
+            maxPendingDataTasks = CAPTION_MAX_PENDING_DATA_TASKS,
+        )
     private val mainHandler = Handler(Looper.getMainLooper())
     private val released = AtomicBoolean(false)
     private val presentationEpoch = AtomicLong(0L)
+
+    // UI clearと入力失効を分離する。受付番号はlock、失効下限は既存ownerが所有する。
+    private val pesAdmissionLock = Any()
+
+    private var pesAdmissionSequence = 0L
+    private var minimumPesSequence = 0L
     private val boundaries =
-        PriorityQueue<Boundary>(
+        PriorityQueue(
             compareBy<Boundary> { it.mediaTimeMillis }
                 .thenBy { it.frameToken }
                 .thenBy { if (it is Boundary.Display) 0 else 1 },
@@ -85,6 +102,7 @@ class AribCaptionController(
     private var displayedFrameToken: Long? = null
     private var noPtsRejectedCount: Int = 0
     private var invalidViewportCount: Int = 0
+    private var pendingOverflowCount: Int = 0
     private val broadcastTimedPesScheduler =
         BroadcastTimedPesScheduler(
             resolveDeadline = { statementTime, expectedGeneration ->
@@ -95,12 +113,12 @@ class AribCaptionController(
             dispatch = { action -> enqueue(action) },
             postDelayed = { runnable, delayMillis ->
                 mainHandler.postDelayed(runnable, delayMillis)
-                Unit
             },
             removeCallbacks = { runnable -> mainHandler.removeCallbacks(runnable) },
             onDue = { trackId, pesData ->
                 decodePesOnExecutor(trackId, pesData, CaptionTimestamp.NoPts, forceImmediate = true)
             },
+            onDrop = { recordPendingOverflow(CaptionDiagnostic.Reason.BROADCAST_TIMED_PES_OVERFLOW) },
         )
 
     init {
@@ -109,57 +127,121 @@ class AribCaptionController(
         }
     }
 
-    // 同期executor境界ではRuntimeException/Errorを再送し、それ以外の原因だけを既存のRuntimeExceptionへ包む。
-    @Suppress("TooGenericExceptionThrown")
-    private fun <T> runBlocking(action: () -> T): T {
-        if (Thread.currentThread() == executorThread) return action()
-        val future = executor.submit(Callable<T> { action() })
-        return try {
-            future.get()
-        } catch (error: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw RuntimeException("subtitle executor interrupted", error)
-        } catch (error: ExecutionException) {
-            throw RuntimeException(error.cause ?: error)
+    private fun <T> runBlocking(
+        cleanup: Boolean = false,
+        action: () -> T,
+    ): T =
+        try {
+            executor.callControl(CAPTION_CONTROL_WAIT_MS, cleanup = cleanup) {
+                check(cleanup || !released.get()) { "解放中のownerへ通常controlを実行できません" }
+                action()
+            }
+        } catch (error: ControlResultUnknownException) {
+            released.set(true)
+            executor.executeCleanupControl {
+                runCatching { close() }.onFailure {
+                    Log.w(LogTags.TIS, "結果未確定controlの後片付けを再試行まで保持します", it)
+                }
+            }
+            throw error
+        }
+
+    private fun enqueue(action: () -> Unit) {
+        executor.executeCallback(isReleased = released::get, onFailure = ::handleSubmissionFailure, action = action)
+    }
+
+    private fun enqueueControl(action: () -> Unit) {
+        executor.executeCallback(
+            control = true,
+            isReleased = released::get,
+            onFailure = ::handleSubmissionFailure,
+            action = action,
+        )
+    }
+
+    private fun enqueuePes(action: () -> Unit) {
+        synchronized(pesAdmissionLock) {
+            val sequence = pesAdmissionSequence
+            enqueue { if (sequence >= minimumPesSequence) action() }
         }
     }
 
-    private fun enqueue(action: () -> Unit) {
-        if (released.get()) return
-        if (Thread.currentThread() == executorThread) {
-            action()
-        } else {
-            runCatching { executor.execute { if (!released.get()) action() } }
+    private fun enqueuePresentationChange(
+        control: Boolean = true,
+        change: () -> Boolean,
+    ) {
+        synchronized(pesAdmissionLock) {
+            if (released.get()) return
+            val sequence =
+                try {
+                    RuntimeIdentity.nextLong(pesAdmissionSequence, "caption PES admission")
+                } catch (error: IllegalStateException) {
+                    handleSubmissionFailure(error)
+                    return
+                }
+            pesAdmissionSequence = sequence
+            val action = {
+                if (change()) {
+                    // 古いdata側の世代切替が後から実行されても失効境界を戻さない。
+                    minimumPesSequence = maxOf(minimumPesSequence, sequence)
+                    restartPresentation()
+                }
+            }
+            if (control) enqueueControl(action) else enqueue(action)
+        }
+    }
+
+    // 診断失敗より解放失敗を優先して記録し、未完解放は同じownerで再試行するためuseへ変換しない。
+    @Suppress("ConvertTryFinallyToUseCall")
+    private fun handleSubmissionFailure(error: RuntimeException) {
+        if (!released.compareAndSet(false, true)) return
+        Log.w(LogTags.TIS, "caption owner投入失敗: 同じownerで解放します", error)
+        executor.executeTerminalCleanup {
+            runCatching {
+                try {
+                    onDiagnostic(
+                        CaptionDiagnostic(
+                            CaptionDiagnostic.Reason.OWNER_SUBMISSION_FAILED,
+                            playbackGeneration,
+                            selectedTrack?.id,
+                            1,
+                        ),
+                    )
+                } finally {
+                    close()
+                }
+            }.onFailure { Log.w(LogTags.TIS, "投入失敗の後片付けを再試行まで保持します", it) }
         }
     }
 
     fun setEnabled(value: Boolean) =
-        enqueue {
-            if (enabled == value) return@enqueue
+        enqueuePresentationChange {
+            if (enabled == value) return@enqueuePresentationChange false
             enabled = value
-            restartPresentation()
+            true
         }
 
     fun selectTrack(track: TunerController.TisTrack?) =
-        enqueue {
+        enqueuePresentationChange {
             val normalized = track?.takeIf { it.type == TvTrackInfo.TYPE_SUBTITLE }
-            if (normalized?.id == selectedTrack?.id) return@enqueue
+            if (normalized?.id == selectedTrack?.id) return@enqueuePresentationChange false
             selectedTrack = normalized
-            restartPresentation()
+            true
         }
 
     fun beginPlaybackGeneration(
         generation: Long,
         hasVideo: Boolean,
-    ) = enqueue {
-        if (playbackGeneration == generation && videoPathExpected == hasVideo) return@enqueue
+    ) = enqueuePresentationChange(control = false) {
+        if (playbackGeneration == generation && videoPathExpected == hasVideo) return@enqueuePresentationChange false
         playbackGeneration = generation
+        noPtsRejectedCount = 0
         videoPathExpected = hasVideo
         videoWidth = 0
         videoHeight = 0
         videoDisplayAspectRatio = null
         viewport = null
-        restartPresentation()
+        true
     }
 
     fun updateVideoGeometry(
@@ -183,8 +265,8 @@ class AribCaptionController(
         trackId: String,
         pesData: ByteArray,
         statementTime: AribBroadcastClock.StatementTime,
-    ) = enqueue {
-        if (!allowNoPts || broadcastDeadline == null || selectedTrack?.id != trackId) return@enqueue
+    ) = enqueuePes {
+        if (!allowNoPts || broadcastDeadline == null || selectedTrack?.id != trackId) return@enqueuePes
         broadcastTimedPesScheduler.submit(trackId, pesData, statementTime)
     }
 
@@ -197,7 +279,7 @@ class AribCaptionController(
         trackId: String,
         pesData: ByteArray,
         timestamp: CaptionTimestamp,
-    ) = enqueue {
+    ) = enqueuePes {
         decodePesOnExecutor(trackId, pesData, timestamp, forceImmediate = false)
     }
 
@@ -210,9 +292,13 @@ class AribCaptionController(
         forceImmediate: Boolean,
     ) {
         val track = selectedTrack ?: return
+        if (!enabled || track.id != trackId) return
+        if (!allowNoPts && timestamp == CaptionTimestamp.NoPts) {
+            recordNoPtsRejected(trackId)
+            return
+        }
         val currentViewport = viewport ?: return
         val currentRenderer = renderer ?: return
-        if (!enabled || track.id != trackId) return
         when (
             val decoded =
                 runCatching { currentRenderer.decodePes(pesData, timestamp) }
@@ -220,12 +306,11 @@ class AribCaptionController(
                     .getOrNull() ?: return
         ) {
             NativeAribCaptionRenderer.DecodeResult.NoPtsRejected -> {
-                noPtsRejectedCount++
-                Log.w(LogTags.TIS, "この字幕serviceではauthoritative PTSなしPESを受理しません count=$noPtsRejectedCount")
+                recordNoPtsRejected(trackId)
             }
 
             NativeAribCaptionRenderer.DecodeResult.NoOutput -> {
-                Unit
+                // 描画する字幕がない。
             }
 
             is NativeAribCaptionRenderer.DecodeResult.Rendered -> {
@@ -235,11 +320,19 @@ class AribCaptionController(
         }
     }
 
-    fun flushForSubtitleContinuityLoss() = enqueue { restartPresentation() }
+    fun flushForSubtitleContinuityLoss() = enqueuePresentationChange { true }
 
-    fun noPtsRejectedCountForDiagnostic(): Int = runBlocking { noPtsRejectedCount }
-
-    fun invalidViewportCountForDiagnostic(): Int = runBlocking { invalidViewportCount }
+    private fun recordNoPtsRejected(trackId: String?) {
+        noPtsRejectedCount++
+        onDiagnostic(
+            CaptionDiagnostic(
+                reason = CaptionDiagnostic.Reason.NO_AUTHORITATIVE_PTS,
+                playbackGeneration = playbackGeneration,
+                trackId = trackId,
+                count = noPtsRejectedCount,
+            ),
+        )
+    }
 
     private fun updateOverlaySize(
         width: Int,
@@ -331,6 +424,7 @@ class AribCaptionController(
         renderer = created
     }
 
+    @Suppress("ReturnCount")
     private fun enqueueFrame(
         frame: NativeAribCaptionRenderer.RenderedCaptionFrame,
         currentViewport: CaptionViewport,
@@ -338,20 +432,131 @@ class AribCaptionController(
         val pts = frame.ptsMillis
         if (pts == null) {
             if (!allowNoPts) {
-                noPtsRejectedCount++
+                recordNoPtsRejected(selectedTrack?.id)
                 return
             }
             displayImmediate(frame, currentViewport)
             return
         }
-        val token = ++nextFrameToken
-        boundaries.removeIf { boundary -> boundary.mediaTimeMillis == pts && boundary is Boundary.Display }
-        boundaries += Boundary.Display(pts, token, frame, currentViewport)
-        frame.durationMillis?.let { duration ->
-            val clearAt = pts.checkedAdd(duration) ?: return@let
-            boundaries += Boundary.Clear(clearAt, token)
+        val nowMediaMillis = mediaClock()?.let(::currentMediaMillis)
+        nowMediaMillis?.let(::discardFramesOutsideHorizon)
+        val timing =
+            captionTimingWithinHorizon(
+                pts = pts,
+                durationMillis = frame.durationMillis,
+                nowMediaMillis = nowMediaMillis,
+            )
+        if (timing == null) {
+            recordPendingOverflow(CaptionDiagnostic.Reason.PRESENTATION_HORIZON_EXCEEDED)
+            return
         }
+        val clearAt = timing.clearAt
+        val replacedTokens =
+            boundaries
+                .filterIsInstance<Boundary.Display>()
+                .filter { it.mediaTimeMillis == pts }
+                .mapTo(linkedSetOf()) { it.frameToken }
+        val replaced = boundaries.filter { it.frameToken in replacedTokens }
+        val remainingCount = boundaries.size - replaced.size
+        val incomingCount = if (clearAt == null) 1 else 2
+        val queuedBytes =
+            boundaries
+                .asSequence()
+                .filterIsInstance<Boundary.Display>()
+                .filterNot { it in replaced }
+                .sumOf { boundary -> boundary.frame.images.sumOf { image -> image.rgba8888.size.toLong() } }
+        val incomingBytes = frame.images.sumOf { image -> image.rgba8888.size.toLong() }
+        if (
+            incomingBytes > CAPTION_MAX_PENDING_BYTES ||
+            remainingCount > CAPTION_MAX_BOUNDARIES - incomingCount ||
+            queuedBytes > CAPTION_MAX_PENDING_BYTES - incomingBytes
+        ) {
+            recordPendingOverflow(CaptionDiagnostic.Reason.PRESENTATION_QUEUE_OVERFLOW)
+            return
+        }
+        val token = allocateFrameToken()
+        boundaries.removeAll(replaced.toSet())
+        boundaries += Boundary.Display(pts, token, frame, currentViewport)
+        clearAt?.let { boundaries += Boundary.Clear(it, token) }
         armNextBoundary()
+    }
+
+    private data class CaptionTiming(
+        val clearAt: Long?,
+    )
+
+    private fun captionTimingWithinHorizon(
+        pts: Long,
+        durationMillis: Long?,
+        nowMediaMillis: Long?,
+    ): CaptionTiming? {
+        val clearAt = durationMillis?.let { duration -> pts.checkedAdd(duration) }
+        val clearBoundaryInvalid = durationMillis != null && clearAt == null
+        val outsideHorizon =
+            nowMediaMillis?.let { now ->
+                listOfNotNull(pts, clearAt).any { boundary ->
+                    val delta = runCatching { Math.subtractExact(boundary, now) }.getOrNull()
+                    delta == null || delta > CAPTION_MAX_FUTURE_HORIZON_MS
+                }
+            } ?: false
+        return if (clearBoundaryInvalid || outsideHorizon) null else CaptionTiming(clearAt)
+    }
+
+    private fun discardFramesOutsideHorizon(nowMediaMillis: Long) {
+        val expiredTokens =
+            boundaries
+                .filterIsInstance<Boundary.Display>()
+                .filter { boundary ->
+                    captionTimingWithinHorizon(
+                        pts = boundary.mediaTimeMillis,
+                        durationMillis = boundary.frame.durationMillis,
+                        nowMediaMillis = nowMediaMillis,
+                    ) == null
+                }.mapTo(linkedSetOf()) { it.frameToken }
+        boundaries.removeAll { it.frameToken in expiredTokens }
+        repeat(expiredTokens.size) { recordPendingOverflow(CaptionDiagnostic.Reason.PRESENTATION_HORIZON_EXCEEDED) }
+    }
+
+    private fun allocateFrameToken(): Long {
+        val live =
+            boundaries
+                .mapTo(linkedSetOf()) { it.frameToken }
+                .apply { displayedFrameToken?.let(::add) }
+        val next =
+            RuntimeIdentity.nextReusablePositiveLong(
+                current = nextFrameToken,
+                live = live,
+                label = "字幕frame token",
+            )
+        nextFrameToken = next
+        return next
+    }
+
+    private fun nextPresentationEpoch(): Long {
+        while (true) {
+            val current = presentationEpoch.get()
+            check(current != EXHAUSTED_PRESENTATION_EPOCH) { "字幕presentation epochは既に枯渇しています" }
+            val next =
+                try {
+                    RuntimeIdentity.nextLong(current, "字幕presentation epoch")
+                } catch (error: IllegalStateException) {
+                    presentationEpoch.compareAndSet(current, EXHAUSTED_PRESENTATION_EPOCH)
+                    throw error
+                }
+            if (presentationEpoch.compareAndSet(current, next)) return next
+        }
+    }
+
+    private fun recordPendingOverflow(reason: CaptionDiagnostic.Reason) {
+        pendingOverflowCount++
+        onDiagnostic(
+            CaptionDiagnostic(
+                reason = reason,
+                playbackGeneration = playbackGeneration,
+                trackId = selectedTrack?.id,
+                count = pendingOverflowCount,
+            ),
+        )
     }
 
     private fun displayImmediate(
@@ -360,7 +565,7 @@ class AribCaptionController(
     ) {
         cancelScheduledBoundary()
         boundaries.clear()
-        val token = ++nextFrameToken
+        val token = allocateFrameToken()
         displayedFrameToken = token
         postFrame(frame, currentViewport)
         frame.durationMillis?.let { duration ->
@@ -384,9 +589,11 @@ class AribCaptionController(
     private fun armNextBoundary() {
         cancelScheduledBoundary()
         while (true) {
-            val boundary = boundaries.peek() ?: return
+            if (boundaries.isEmpty()) return
             val snapshot = mediaClock() ?: return
             val nowMediaMillis = currentMediaMillis(snapshot)
+            discardFramesOutsideHorizon(nowMediaMillis)
+            val boundary = boundaries.peek() ?: return
             val remainingMediaMillis = boundary.mediaTimeMillis - nowMediaMillis
             if (remainingMediaMillis <= 0L) {
                 boundaries.poll()
@@ -440,6 +647,7 @@ class AribCaptionController(
         frameViewport: CaptionViewport,
     ) {
         val epoch = presentationEpoch.get()
+        if (epoch == EXHAUSTED_PRESENTATION_EPOCH) return
         mainHandler.post {
             if (presentationEpoch.get() != epoch) return@post
             if (frame.images.isEmpty()) {
@@ -462,31 +670,54 @@ class AribCaptionController(
     }
 
     private fun postClear() {
-        val epoch = presentationEpoch.incrementAndGet()
+        val epoch = nextPresentationEpoch()
         mainHandler.post { if (presentationEpoch.get() == epoch) overlayView.clearCaptionLayer(overlayLayerId) }
     }
 
     override fun close() {
         if (executor.isShutdown) return
         released.set(true)
-        runBlocking {
-            SectionFilterPolicy.completeCleanup(
-                { cancelScheduledBoundary() },
-                { broadcastTimedPesScheduler.cancelAll() },
-                { boundaries.clear() },
-                { renderer?.flush() },
-                {
-                    renderer?.close()
-                    renderer = null
+        runBlocking(cleanup = true) {
+            completeTerminalCleanup(
+                presentationEpoch,
+                cleanup = {
+                    SectionFilterPolicy.completeCleanup(
+                        { cancelScheduledBoundary() },
+                        { broadcastTimedPesScheduler.cancelAll() },
+                        { boundaries.clear() },
+                        { renderer?.flush() },
+                        {
+                            renderer?.close()
+                            renderer = null
+                        },
+                    )
                 },
-                { postClear() },
+                clear = { mainHandler.post { overlayView.clearCaptionLayer(overlayLayerId) } },
+                shutdown = { executor.shutdownNow() },
             )
         }
-        executor.shutdownNow()
     }
 
     companion object {
+        /** terminal fenceは世代を発行せず、解放成功後だけ同じownerを停止する。 */
+        internal fun completeTerminalCleanup(
+            presentationEpoch: AtomicLong,
+            cleanup: () -> Unit,
+            clear: () -> Unit,
+            shutdown: () -> Unit,
+        ) {
+            presentationEpoch.set(EXHAUSTED_PRESENTATION_EPOCH)
+            SectionFilterPolicy.completeCleanup(cleanup, clear)
+            shutdown()
+        }
+
+        private const val EXHAUSTED_PRESENTATION_EPOCH = -1L
         private const val ARIB_PROFILE_A_COMPONENT_ID = 0x0008
+        private const val CAPTION_CONTROL_WAIT_MS = 2_000L
+        private const val CAPTION_MAX_PENDING_DATA_TASKS = 64
+        private const val CAPTION_MAX_BOUNDARIES = 64
+        private const val CAPTION_MAX_PENDING_BYTES = 8L * 1024L * 1024L
+        private const val CAPTION_MAX_FUTURE_HORIZON_MS = 60_000L
 
         fun shouldDrawCaptionForTest(
             enabled: Boolean,

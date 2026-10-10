@@ -1,16 +1,15 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::IFrontendCallback::IFrontendCallback;
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ILnbCallback::ILnbCallback;
 use binder::{Result as BinderResult, Strong};
-#[cfg(test)]
-use maleicacid_tuner_hal2_binder_adapter::AidlApi;
-use maleicacid_tuner_hal2_binder_adapter::{
-    AidlFailureSource, AidlMethodCall, AidlStatusMapper, TunerStatusCode,
-};
+use maleicacid_tuner_hal2_binder_adapter::{AidlFailureSource, AidlStatusMapper, TunerStatusCode};
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
 use maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor;
 use maleicacid_tuner_hal2_device::FrontendWorkerCancelReason;
+#[cfg(test)]
+use maleicacid_tuner_hal2_domain_request::AidlApi;
+use maleicacid_tuner_hal2_domain_request::AidlMethodCall;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 #[cfg(test)]
 use maleicacid_tuner_hal2_service_runtime::CallbackRegistrationArtifactOutcome;
@@ -30,19 +29,16 @@ use maleicacid_tuner_hal2_service_runtime::{
 
 use crate::callback_store::PreparedCallbackArtifactToken;
 use crate::dvr_callback_delivery::finish_dvr_status_notifier_cleanup;
-use crate::error_bridge::{status_from_hal_error, status_from_tuner_status, status_unknown_error};
+#[cfg(test)]
+use crate::error_bridge::status_unknown_error;
+use crate::error_bridge::{status_from_hal_error, status_from_tuner_status};
 use crate::object_handle::AidlObjectHandle;
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 
 fn lock_runtime<'a>(
     runtime: &'a SharedTunerRuntime,
 ) -> Result<std::sync::MutexGuard<'a, TunerServiceRuntime>, HalError> {
-    runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned",
-        )
-    })
+    TunerServiceRuntime::lock_shared(runtime, "object runtime処理")
 }
 
 fn abort_prepared_callback_artifact_bridge(
@@ -823,14 +819,8 @@ impl<'a> ObjectCloseRuntimeExecutor for AidlObjectCloseRuntimeExecutor<'a> {
         command: ObjectRuntimeCleanupCommand,
     ) -> Result<(), ObjectCloseCleanupFailure> {
         let runtime = self.context.runtime();
-        let mut guard = runtime.lock().map_err(|_| {
-            ObjectCloseCleanupFailure::new(
-                CleanupStep::UnregisterRuntime,
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned during object close runtime cleanup command",
-                ),
-            )
+        let mut guard = lock_runtime(&runtime).map_err(|error| {
+            ObjectCloseCleanupFailure::new(CleanupStep::UnregisterRuntime, error)
         })?;
         command.execute(&mut guard)
     }
@@ -884,12 +874,7 @@ impl<'a> AidlObjectDomainCleanupExecutor<'a> {
 
     fn record_lnb_drop_leak(&self, command: ObjectDomainCleanupCommand) -> Result<(), HalError> {
         let runtime = self.context.runtime();
-        let mut guard = runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned during LNB drop-leak domain cleanup",
-            )
-        })?;
+        let mut guard = lock_runtime(&runtime)?;
         guard.record_lnb_drop_leak_after_domain_cleanup_command(command)
     }
 }
@@ -1015,13 +1000,17 @@ fn status_from_close_hal_error(
     phase: &'static str,
     error: HalError,
 ) -> binder::Status {
+    status_from_hal_error(log_close_hal_error(handle, phase, error))
+}
+
+fn log_close_hal_error(handle: AidlObjectHandle, phase: &'static str, error: HalError) -> HalError {
     log::error!(
         "object close failed: phase={phase} kind={:?} object_id={:?} generation={:?} error={error:?}",
         handle.object_kind(),
         handle.object_id(),
         handle.generation(),
     );
-    status_from_hal_error(error)
+    error
 }
 
 fn finish_object_close_plan(
@@ -1029,7 +1018,7 @@ fn finish_object_close_plan(
     handle: AidlObjectHandle,
     completion: CloseCleanupAttemptCompletion,
     cleanup_report: ObjectCleanupExecutionReport,
-) -> BinderResult<()> {
+) -> Result<(), HalError> {
     let cleanup_result = cleanup_report.clone().into_result();
     let public_error = cleanup_result
         .clone()
@@ -1043,14 +1032,11 @@ fn finish_object_close_plan(
             public_error,
         ));
     let runtime = context.runtime();
-    let finish_result = match runtime.lock() {
+    let finish_result = match lock_runtime(&runtime) {
         Ok(mut guard) => finish_object_close_use_case(&mut guard, completion, cleanup_result),
-        Err(_) => Err(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while finishing object close",
-        )),
+        Err(error) => Err(error),
     };
-    let result = match (finish_result, record_result) {
+    match (finish_result, record_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
         (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
@@ -1058,8 +1044,8 @@ fn finish_object_close_plan(
             primary,
             cleanup,
         )),
-    };
-    result.map_err(|error| status_from_close_hal_error(handle, "finish", error))
+    }
+    .map_err(|error| log_close_hal_error(handle, "finish", error))
 }
 
 mod drop_leak;
@@ -1075,7 +1061,8 @@ pub fn close_object_after_close_preflight(
     if object_close_is_idempotent_complete(context, handle)? {
         return Ok(());
     }
-    let result = execute_close_after_preflight_once(context, handle, method);
+    let result =
+        execute_close_after_preflight_once(context, handle, method).map_err(status_from_hal_error);
     if result.is_err() && object_close_is_idempotent_complete(context, handle)? {
         return Ok(());
     }
@@ -1098,9 +1085,7 @@ fn object_close_is_idempotent_complete(
     handle: AidlObjectHandle,
 ) -> BinderResult<bool> {
     let runtime = context.runtime();
-    let guard = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+    let guard = lock_runtime(&runtime).map_err(status_from_hal_error)?;
     ObjectCloseTxn::is_idempotent_complete(
         &guard,
         handle.object_id(),
@@ -1114,12 +1099,10 @@ fn execute_close_after_preflight_once(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
-) -> BinderResult<()> {
+) -> Result<(), HalError> {
     let close_plan = {
         let runtime = context.runtime();
-        let mut guard = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+        let mut guard = lock_runtime(&runtime)?;
         close_object_use_case(
             &mut guard,
             handle.object_id(),
@@ -1127,16 +1110,14 @@ fn execute_close_after_preflight_once(
             handle.object_kind(),
             method,
         )
-        .map_err(|error| status_from_close_hal_error(handle, "begin-close", error))?
+        .map_err(|error| log_close_hal_error(handle, "begin-close", error))?
     };
     let cleanup_attempt = {
         let runtime = context.runtime();
-        let mut guard = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+        let mut guard = lock_runtime(&runtime)?;
         close_plan
             .begin_cleanup_attempt(&mut guard)
-            .map_err(|error| status_from_close_hal_error(handle, "begin-cleanup", error))?
+            .map_err(|error| log_close_hal_error(handle, "begin-cleanup", error))?
     };
     let (completion, cleanup_report) =
         execute_close_cleanup_plan_with_executor(context, cleanup_attempt);
@@ -1147,7 +1128,7 @@ pub(crate) fn retry_cleanup_from_reaper(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
-) -> BinderResult<()> {
+) -> Result<(), HalError> {
     execute_close_after_preflight_once(context, handle, method)
 }
 
@@ -1158,11 +1139,32 @@ mod tests {
     use super::drop_leak::drop_leak_object;
     use super::*;
     use crate::service_context::AidlServiceContext;
-    use maleicacid_tuner_hal2_binder_adapter::{
+    use maleicacid_tuner_hal2_domain_request::{
         AidlApi, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
         RuntimeExecutableRequest,
     };
     use maleicacid_tuner_hal2_service_runtime::RuntimeOwnerRelation;
+
+    #[test]
+    fn poisoned_close_preflight_records_service_failure() {
+        let context = Arc::new(AidlServiceContext::new(TunerServiceRuntime::new()));
+        let runtime = context.runtime();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = runtime.lock().unwrap();
+            panic!("close事前確認を汚染");
+        }))
+        .is_err());
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Frontend,
+            AidlObjectId(1),
+            AidlObjectGeneration(1),
+        );
+        assert!(object_close_is_idempotent_complete(&context, handle).is_err());
+        let snapshot = failure_state.snapshot();
+        assert!(snapshot.service_critical);
+        assert_eq!(snapshot.runtime_lock_poison_count, 1);
+    }
 
     #[test]
     fn callback_cleanup_failure_does_not_reverse_committed_success() {
@@ -1277,8 +1279,8 @@ mod tests {
                     owner.generation(),
                     AidlObjectKind::Demux,
                     || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
-                        let request = maleicacid_tuner_hal2_binder_adapter::OpenDvrRequest {
-                            kind: maleicacid_tuner_hal2_binder_adapter::DvrOpenKind::Record,
+                        let request = maleicacid_tuner_hal2_domain_request::OpenDvrRequest {
+                            kind: maleicacid_tuner_hal2_domain_request::DvrOpenKind::Record,
                             buffer_size: 4096,
                         };
                         Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
@@ -1698,6 +1700,46 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn reaper_retry_preserves_domain_error_and_cleanup_diagnostic() {
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Lnb,
+            AidlObjectId(91_064),
+            AidlObjectGeneration(1),
+        );
+        let runtime = shared_runtime_with_live_object(
+            handle.object_kind(),
+            handle.object_id(),
+            handle.generation(),
+            91_064,
+        );
+        let context = context_for_runtime(&runtime);
+
+        for _ in 0..2 {
+            let error =
+                retry_cleanup_from_reaper(&context, handle, AidlMethodCall::LnbClose).unwrap_err();
+            assert!(matches!(
+                &error,
+                HalError::InvalidArgument {
+                    kind: HalInvalidArgumentKind::NumericRange,
+                    ..
+                }
+            ));
+            let snapshot = runtime
+                .lock()
+                .unwrap()
+                .object_cleanup_diagnostics()
+                .unwrap();
+            let record = snapshot.records().last().unwrap();
+            assert_eq!(record.object_id(), handle.object_id());
+            assert_eq!(record.generation(), handle.generation());
+            assert_eq!(record.public_error(), Some(&error));
+            let failure = record.report().clone().into_result().unwrap_err();
+            assert_eq!(failure.step(), CleanupStep::ReleaseBackend);
+            assert_eq!(failure.error(), &error);
+        }
     }
 
     #[test]

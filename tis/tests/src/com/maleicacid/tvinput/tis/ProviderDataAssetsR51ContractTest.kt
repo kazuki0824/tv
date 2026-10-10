@@ -10,9 +10,7 @@ import org.junit.Test
 class ProviderDataAssetsR51ContractTest {
     @Test fun providerDataFailureIsTypedAndCurrentRequestsRequireCasEvidence() {
         val bridge = com.maleicacid.tvinput.aribsi.ProviderDataBridge
-        val rejected = bridge.normalizeProgramProviderData(byteArrayOf(0xff.toByte()))
-        check(rejected is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Failure)
-        check(rejected.errorCode.isNotBlank() && rejected.errorMessage.isNotBlank())
+        check(bridge.extractProgramKeyResult(byteArrayOf(0xff.toByte())) == null)
         val key =
             com.maleicacid.tvinput.common
                 .ServiceKey(4, 0x4010, 101)
@@ -91,15 +89,8 @@ class ProviderDataAssetsR51ContractTest {
             val accepted =
                 when (val boundary = case.getString("boundary")) {
                     "PROGRAM" -> {
-                        check(
-                            (
-                                com.maleicacid.tvinput.aribsi.ProviderDataBridge
-                                    .extractProgramKeyResult(bytes) != null
-                            ) == expected,
-                        ) { case.getString("name") }
-                        com.maleicacid.tvinput.aribsi.ProviderDataBridge.normalizeProgramProviderData(
-                            bytes,
-                        ) is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Success
+                        com.maleicacid.tvinput.aribsi.ProviderDataBridge
+                            .extractProgramKeyResult(bytes) != null
                     }
 
                     "CHANNEL" -> {

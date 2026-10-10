@@ -3,6 +3,7 @@ use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
@@ -11,8 +12,8 @@ use maleicacid_tuner_hal2_common::os_abi::{
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
-    FrontendIsdbtPartialReceptionRequirement, FrontendTuneRequest, HalError, HalErrorDetail,
-    HalInternalKind, HalInvalidArgumentKind,
+    FrontendIsdbtPartialReceptionRequirement, FrontendSystem, FrontendTuneRequest, HalError,
+    HalErrorDetail, HalInternalKind, HalInvalidArgumentKind,
 };
 
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
@@ -26,7 +27,7 @@ use crate::dvb::abi::{
 use crate::px4;
 use crate::px4::abi::{
     ptx_enable_lnb_power_scalar, ptx_set_system_mode_scalar, PtxFreq, PtxTmccTsidList,
-    ERRNO_EAGAIN, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE,
+    ERRNO_EAGAIN, ERRNO_EALREADY, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE,
     PTX_DISABLE_LNB_POWER, PTX_GET_LOCK_STATUS, PTX_GET_TMCC_PARTIAL_RECEPTION,
     PTX_GET_TMCC_TSID_LIST, PTX_SET_CHANNEL, PTX_START_STREAMING, PTX_STOP_STREAMING,
 };
@@ -43,6 +44,10 @@ pub struct FrontendBackendTunePlan {
 }
 
 impl FrontendBackendTunePlan {
+    pub(super) fn worker_identity(&self) -> (i32, u64) {
+        (self.frontend_id, self.generation)
+    }
+
     pub fn new(
         frontend_id: i32,
         generation: u64,
@@ -66,7 +71,7 @@ impl FrontendBackendTunePlan {
         Err(HalError::internal(
             HalInternalKind::InvariantViolation,
             format!(
-                "frontend backend tune plan generation mismatch: plan={} worker={}",
+                "frontend backend選局planの世代が一致しません: plan={} worker={}",
                 self.generation, worker_generation
             ),
         ))
@@ -92,6 +97,8 @@ pub struct FrontendBackendSession {
     file: File,
     initial_signal_state: FrontendSignalState,
     partial_reception: FrontendIsdbtPartialReceptionRequirement,
+    px4_channel_apply_result: Option<Px4ChannelApplyResult>,
+    streaming_started: AtomicBool,
 }
 
 impl core::fmt::Debug for FrontendBackendSession {
@@ -101,6 +108,11 @@ impl core::fmt::Debug for FrontendBackendSession {
             .field("fd", &self.file.as_raw_fd())
             .field("initial_signal_state", &self.initial_signal_state)
             .field("partial_reception", &self.partial_reception)
+            .field("px4_channel_apply_result", &self.px4_channel_apply_result)
+            .field(
+                "streaming_started",
+                &self.streaming_started.load(Ordering::Acquire),
+            )
             .finish()
     }
 }
@@ -128,6 +140,7 @@ impl FrontendBackendSession {
                 error,
                 rollback_succeeded: true,
                 step: None,
+                rollback_failure: None,
             })?;
         let mut txn = BackendTuneTxn::new(plan.frontend_id, plan.generation, plan.request.clone());
         match txn.apply(&mut executor) {
@@ -139,6 +152,7 @@ impl FrontendBackendSession {
                         error,
                         rollback_succeeded: true,
                         step: None,
+                        rollback_failure: None,
                     })
             }
             BackendTuneOutcome::Failed {
@@ -150,16 +164,18 @@ impl FrontendBackendSession {
                 error,
                 rollback_succeeded: rollback.succeeded(),
                 step: Some(step),
+                rollback_failure: rollback.failure().cloned(),
             }),
             BackendTuneOutcome::RollbackFailed {
                 step,
                 error,
-                rollback: _,
+                rollback,
             } => Err(FrontendBackendSubmitFailure {
                 generation: plan.generation,
                 error,
                 rollback_succeeded: false,
                 step: Some(step),
+                rollback_failure: rollback.failure().cloned(),
             }),
         }
     }
@@ -170,6 +186,49 @@ impl FrontendBackendSession {
 
     pub fn partial_reception_requirement(&self) -> FrontendIsdbtPartialReceptionRequirement {
         self.partial_reception
+    }
+
+    pub fn px4_channel_apply_result(&self) -> Option<Px4ChannelApplyResult> {
+        self.px4_channel_apply_result
+    }
+
+    pub fn streaming_started(&self) -> bool {
+        self.streaming_started.load(Ordering::Acquire)
+    }
+
+    fn start_streaming_after_lock_with(
+        &self,
+        start_streaming: impl FnOnce() -> Result<(), HalError>,
+    ) -> Result<(), HalError> {
+        if self.streaming_started() {
+            return Ok(());
+        }
+        if self
+            .streaming_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        if let Err(error) = start_streaming() {
+            self.streaming_started.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn start_streaming_after_lock(&self) -> Result<(), HalError> {
+        let FrontendBackendSessionKind::Px4 { control_path } = &self.kind else {
+            return Ok(());
+        };
+        self.start_streaming_after_lock_with(|| {
+            px4_streaming_ioctl(
+                control_path,
+                self.file.as_raw_fd(),
+                PTX_START_STREAMING,
+                "PTX_START_STREAMING",
+            )
+        })
     }
 
     pub fn observe_signal_state(&self) -> Result<FrontendSignalState, HalError> {
@@ -208,7 +267,7 @@ impl FrontendBackendSession {
     ) -> Result<FrontendTmccPartialReceptionObservation, HalError> {
         let FrontendBackendSessionKind::Px4 { control_path } = &self.kind else {
             return Err(HalError::Unsupported(
-                "TMCC partial reception readback is available only on px4",
+                "TMCC部分受信情報の読み戻しはpx4でのみ利用できます",
             ));
         };
         classify_tmcc_partial_reception_read(read_px4_boolean(
@@ -222,7 +281,7 @@ impl FrontendBackendSession {
     pub fn observe_tmcc_tsid_list(&self) -> Result<FrontendTmccTsidListObservation, HalError> {
         let FrontendBackendSessionKind::Px4 { control_path } = &self.kind else {
             return Err(HalError::Unsupported(
-                "TMCC TSID list readback is available only on px4",
+                "TMCC TSID一覧の読み戻しはpx4でのみ利用できます",
             ));
         };
         let mut raw = PtxTmccTsidList::default();
@@ -244,11 +303,15 @@ impl FrontendBackendSession {
     ) -> Result<Box<dyn Read + Send>, HalError> {
         match (&self.kind, &descriptor.kind) {
             (
-                FrontendBackendSessionKind::Px4 { .. },
+                FrontendBackendSessionKind::Px4 { control_path },
                 FrontendLiveReaderDescriptorKind::Px4DuplicatedControlFd { .. },
             ) => {
-                let file = self.file.try_clone().map_err(|error| {
-                    HalError::cleanup_failed("px4 live reader fd duplication", error.to_string())
+                let file = self.file.try_clone().map_err(|error| HalError::Io {
+                    backend: "px4",
+                    operation: "live reader fd複製",
+                    path: Some(control_path.as_path().to_path_buf()),
+                    errno: error.raw_os_error(),
+                    detail: HalErrorDetail::new(error.to_string()),
                 })?;
                 Ok(Box::new(file))
             }
@@ -260,17 +323,18 @@ impl FrontendBackendSession {
                     .read(true)
                     .custom_flags(dvb::abi::O_NONBLOCK)
                     .open(dvr_path.as_path())
-                    .map_err(|error| {
-                        HalError::cleanup_failed(
-                            "dvb live dvr reader open",
-                            format!("{}: {error}", dvr_path.display()),
-                        )
+                    .map_err(|error| HalError::Io {
+                        backend: "dvb",
+                        operation: "live DVR readerのopen",
+                        path: Some(dvr_path.as_path().to_path_buf()),
+                        errno: error.raw_os_error(),
+                        detail: HalErrorDetail::new(error.to_string()),
                     })?;
                 Ok(Box::new(file))
             }
             _ => Err(HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "frontend backend session and live reader descriptor kind mismatch",
+                "frontend backend sessionとlive readerのdescriptor種別が一致しません",
             )),
         }
     }
@@ -284,13 +348,21 @@ impl FrontendBackendSession {
 
     pub fn stop(&self) -> Result<(), HalError> {
         match &self.kind {
-            FrontendBackendSessionKind::Px4 { control_path } => ioctl_noarg(
-                "px4",
-                Some(control_path.as_path().to_path_buf()),
-                self.file.as_raw_fd(),
-                PTX_STOP_STREAMING,
-                "PTX_STOP_STREAMING",
-            ),
+            FrontendBackendSessionKind::Px4 { control_path } => {
+                if !self.streaming_started() {
+                    return Ok(());
+                }
+                let result = px4_streaming_ioctl(
+                    control_path,
+                    self.file.as_raw_fd(),
+                    PTX_STOP_STREAMING,
+                    "PTX_STOP_STREAMING",
+                );
+                if result.is_ok() {
+                    self.streaming_started.store(false, Ordering::Release);
+                }
+                result
+            }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let mut prop = DtvProperty::with_data(DTV_CLEAR, 0);
                 let mut props = DtvProperties {
@@ -316,9 +388,18 @@ pub struct FrontendBackendSubmitFailure {
     pub error: HalError,
     pub rollback_succeeded: bool,
     pub step: Option<BackendTuneStep>,
+    pub rollback_failure: Option<super::tune_txn::BackendTuneRollbackFailure>,
 }
 
 impl FrontendBackendSubmitFailure {
+    pub fn cleanup_result(&self) -> Result<(), HalError> {
+        if self.rollback_succeeded {
+            Ok(())
+        } else {
+            Err(self.clone().into_error())
+        }
+    }
+
     pub fn indeterminate(generation: u64, error: HalError) -> Self {
         frontend_backend_submit_thread_failure(generation, error)
     }
@@ -327,22 +408,27 @@ impl FrontendBackendSubmitFailure {
         let Some(step) = self.step else {
             return self.error;
         };
-        let rollback_detail = if self.rollback_succeeded {
-            "rollback succeeded"
-        } else {
-            "rollback failed"
-        };
-        compose_primary_cleanup_failure(
-            "frontend backend submit failure",
-            self.error,
+        let rollback_error = self.rollback_failure.as_ref().map(|failure| {
             HalError::cleanup_failed(
-                "frontend backend tune transaction",
+                "frontend backend選局の巻き戻し",
+                format!("段階={:?} エラー={}", failure.step, failure.error),
+            )
+        });
+        let rollback_detail = if self.rollback_succeeded {
+            "巻き戻しに成功しました"
+        } else {
+            "巻き戻しに失敗しました"
+        };
+        let cleanup = rollback_error.unwrap_or_else(|| {
+            HalError::cleanup_failed(
+                "frontend backend選局トランザクション",
                 format!(
                     "generation={} step={step:?} {rollback_detail}",
                     self.generation
                 ),
-            ),
-        )
+            )
+        });
+        compose_primary_cleanup_failure("frontend backend submit失敗", self.error, cleanup)
     }
 }
 
@@ -366,7 +452,8 @@ enum FrontendBackendSubmitThreadOutcome {
 }
 
 #[derive(Debug)]
-pub struct FrontendBackendSubmitTicket {
+#[must_use = "frontend backend submit ticketは取得、取消し、または回収器への移管が必要です"]
+pub(super) struct FrontendBackendSubmitTicket {
     generation: u64,
     ready: Receiver<FrontendBackendSubmitReady>,
     disposition: SyncSender<FrontendBackendSubmitDisposition>,
@@ -374,7 +461,7 @@ pub struct FrontendBackendSubmitTicket {
 }
 
 #[derive(Debug)]
-pub enum FrontendBackendSubmitWait {
+pub(super) enum FrontendBackendSubmitWait {
     Completed(Result<FrontendBackendSession, FrontendBackendSubmitFailure>),
     TimedOut(FrontendBackendSubmitTicket),
 }
@@ -435,6 +522,34 @@ impl FrontendBackendSubmitTicket {
         })
     }
 
+    pub fn wait(
+        mut self,
+    ) -> Result<Result<FrontendBackendSession, FrontendBackendSubmitFailure>, HalError> {
+        let ready = self.ready.recv();
+        if matches!(ready, Ok(FrontendBackendSubmitReady::Submitted)) {
+            let _ = self
+                .disposition
+                .send(FrontendBackendSubmitDisposition::Claim);
+        }
+        let outcome = self.join_outcome()?;
+        match outcome {
+            FrontendBackendSubmitThreadOutcome::Claimed(session) => Ok(Ok(session)),
+            FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(Err(failure)),
+            FrontendBackendSubmitThreadOutcome::Aborted(stop_result) => {
+                let error = stop_result.err().unwrap_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend backend submitがエラーなしのabortで終了しました",
+                    )
+                });
+                Ok(Err(frontend_backend_submit_thread_failure(
+                    self.generation,
+                    error,
+                )))
+            }
+        }
+    }
+
     pub fn wait_until(mut self, deadline: Instant) -> Result<FrontendBackendSubmitWait, HalError> {
         let wait = deadline.saturating_duration_since(Instant::now());
         match self.ready.recv_timeout(wait) {
@@ -472,7 +587,7 @@ impl FrontendBackendSubmitTicket {
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend backend submit was aborted after claim",
+                                "取得後にfrontend backend submitを取り消しました",
                             )
                         });
                         Ok(FrontendBackendSubmitWait::Completed(Err(
@@ -506,7 +621,7 @@ impl FrontendBackendSubmitTicket {
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend backend submit reported failure but returned a session",
+                                "frontend backend submitは失敗を報告しましたがsessionを返しました",
                             )
                         });
                         Ok(FrontendBackendSubmitWait::Completed(Err(
@@ -517,7 +632,7 @@ impl FrontendBackendSubmitTicket {
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend backend submit failure changed to abort",
+                                "frontend backend submitの失敗状態が取消しへ変化しました",
                             )
                         });
                         Ok(FrontendBackendSubmitWait::Completed(Err(
@@ -559,7 +674,7 @@ impl FrontendBackendSubmitTicket {
                         let stop_error = session.close().err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend backend submit readiness disconnected after success",
+                                "成功後にfrontend backend submitの準備状態が切断されました",
                             )
                         });
                         Ok(FrontendBackendSubmitWait::Completed(Err(
@@ -570,7 +685,7 @@ impl FrontendBackendSubmitTicket {
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend backend submit readiness disconnected",
+                                "frontend backend submitの準備状態が切断されました",
                             )
                         });
                         Ok(FrontendBackendSubmitWait::Completed(Err(
@@ -588,36 +703,36 @@ impl FrontendBackendSubmitTicket {
             .ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend backend submit cleanup owner is missing",
+                    "frontend backend submitの後片付けownerがありません",
                 )
             })?
             .wait_until_finished(deadline)
     }
 
-    pub(crate) fn try_complete_cleanup(&mut self) -> Option<Result<(), HalError>> {
+    pub(crate) fn try_complete_cleanup(
+        &mut self,
+    ) -> Option<Result<(), FrontendBackendSubmitFailure>> {
         let outcome = match self.owner.as_mut()?.collect_if_finished() {
             ThreadResultPoll::Running => return None,
             ThreadResultPoll::Completed(outcome) => outcome,
         };
         self.owner = None;
-        Some(frontend_backend_submit_cleanup_result(outcome))
+        Some(frontend_backend_submit_cleanup_result(
+            self.generation,
+            outcome,
+        ))
     }
 
-    pub(crate) fn complete_cleanup(mut self) -> Result<(), HalError> {
-        let owner = self.owner.take().ok_or_else(|| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend backend submit cleanup owner is missing",
-            )
-        })?;
-        frontend_backend_submit_cleanup_result(owner.join_after_stop())
+    pub(crate) fn complete_cleanup(&mut self) -> Result<(), FrontendBackendSubmitFailure> {
+        let outcome = self.join_outcome();
+        frontend_backend_submit_cleanup_result(self.generation, outcome)
     }
 
     fn join_outcome(&mut self) -> Result<FrontendBackendSubmitThreadOutcome, HalError> {
         let owner = self.owner.take().ok_or_else(|| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend backend submit owner is missing",
+                "frontend backend submit ownerがありません",
             )
         })?;
         owner.join_after_stop()
@@ -632,11 +747,8 @@ impl Drop for FrontendBackendSubmitTicket {
         {
             Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
         }
-        if let Some(owner) = self.owner.take() {
-            // 明示claimまたはReaper移管を通らないDropでJoinHandleをdetachしない。
-            // Abort後のendpoint所有権をthreadへ残し、process lifetime中の再利用を防ぐ。
-            core::mem::forget(owner);
-        }
+        // 終了待ちや機器I/Oはしない。外側のWorkerRuntimeCleanupは結果不明の義務を
+        // 隔離して保持するため、ここで結果回収権限が失われても資源を再利用しない。
     }
 }
 
@@ -649,38 +761,37 @@ fn frontend_backend_submit_thread_failure(
         error,
         rollback_succeeded: false,
         step: None,
+        rollback_failure: None,
     }
 }
 
 fn frontend_backend_submit_cleanup_result(
+    generation: u64,
     outcome: Result<FrontendBackendSubmitThreadOutcome, HalError>,
-) -> Result<(), HalError> {
-    match outcome {
+) -> Result<(), FrontendBackendSubmitFailure> {
+    let result = match outcome {
         Ok(FrontendBackendSubmitThreadOutcome::Aborted(stop_result)) => stop_result,
         Ok(FrontendBackendSubmitThreadOutcome::Failed(failure)) => {
-            if failure.rollback_succeeded {
-                Ok(())
-            } else {
-                Err(failure.into_error())
-            }
+            return Err(failure);
         }
         Ok(FrontendBackendSubmitThreadOutcome::Claimed(session)) => {
             let stop_result = session.close();
             let invariant = HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend backend submit cleanup observed a claimed session",
+                "frontend backend submitの後片付けで取得済みsessionを検出しました",
             );
             match stop_result {
                 Ok(()) => Err(invariant),
                 Err(stop_error) => Err(compose_primary_cleanup_failure(
-                    "frontend backend submit cleanup",
+                    "frontend backend submitの後片付け",
                     invariant,
                     stop_error,
                 )),
             }
         }
         Err(error) => Err(error),
-    }
+    };
+    result.map_err(|error| frontend_backend_submit_thread_failure(generation, error))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -834,7 +945,7 @@ fn px4_lnb_voltage_value(voltage: FrontendLnbVoltage) -> Result<i32, HalError> {
         FrontendLnbVoltage::Voltage15V => Ok(15),
         FrontendLnbVoltage::Voltage11V => Err(HalError::invalid_argument(
             HalInvalidArgumentKind::NumericRange,
-            "px4 LNB backend accepts only NONE or 15V",
+            "px4 LNB backendはNONEまたは15Vのみ受け付けます",
         )),
     }
 }
@@ -870,12 +981,20 @@ pub struct FrontendBackendRollbackSnapshot {
     previous_request: Option<FrontendTuneRequest>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackendStreamingState {
+    NotStarted,
+    Started,
+}
+
 struct FrontendBackendTuneExecutor {
     plan: FrontendBackendTunePlan,
     previous_request: Option<FrontendTuneRequest>,
     kind: FrontendBackendSessionKind,
     file: Option<File>,
+    streaming_state: BackendStreamingState,
     initial_signal_state: FrontendSignalState,
+    px4_channel_apply_result: Option<Px4ChannelApplyResult>,
 }
 
 impl FrontendBackendTuneExecutor {
@@ -897,7 +1016,9 @@ impl FrontendBackendTuneExecutor {
             previous_request,
             kind,
             file: Some(file),
+            streaming_state: BackendStreamingState::NotStarted,
             initial_signal_state: FrontendSignalState::Unknown,
+            px4_channel_apply_result: None,
         })
     }
 
@@ -908,21 +1029,20 @@ impl FrontendBackendTuneExecutor {
             .ok_or_else(|| {
                 HalError::internal(
                     maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                    "backend tune executor file was already consumed",
+                    "backend選局executorのfileは既に消費されています",
                 )
             })
     }
 
-    fn stop_current(&self) -> Result<(), HalError> {
+    fn stop_current(&mut self) -> Result<(), HalError> {
+        if self.streaming_state == BackendStreamingState::NotStarted {
+            return Ok(());
+        }
         let fd = self.file_fd()?;
         match &self.kind {
-            FrontendBackendSessionKind::Px4 { control_path } => ioctl_noarg(
-                "px4",
-                Some(control_path.as_path().to_path_buf()),
-                fd,
-                PTX_STOP_STREAMING,
-                "PTX_STOP_STREAMING",
-            ),
+            FrontendBackendSessionKind::Px4 { control_path } => {
+                px4_streaming_ioctl(control_path, fd, PTX_STOP_STREAMING, "PTX_STOP_STREAMING")
+            }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let mut prop = DtvProperty::with_data(DTV_CLEAR, 0);
                 let mut props = DtvProperties {
@@ -938,7 +1058,9 @@ impl FrontendBackendTuneExecutor {
                     "FE_SET_PROPERTY(DTV_CLEAR)",
                 )
             }
-        }
+        }?;
+        self.streaming_state = BackendStreamingState::NotStarted;
+        Ok(())
     }
 
     fn apply_system_mode_for(&self, request: &FrontendTuneRequest) -> Result<(), HalError> {
@@ -959,7 +1081,7 @@ impl FrontendBackendTuneExecutor {
         }
     }
 
-    fn apply_channel_for(&self, request: &FrontendTuneRequest) -> Result<(), HalError> {
+    fn apply_channel_for(&mut self, request: &FrontendTuneRequest) -> Result<(), HalError> {
         match &self.kind {
             FrontendBackendSessionKind::Px4 { control_path } => {
                 let mapped = px4::map_tune_request_to_px4(request)?;
@@ -967,14 +1089,17 @@ impl FrontendBackendTuneExecutor {
                     freq_no: mapped.freq_no,
                     slot: mapped.slot,
                 };
-                ioctl_ptr(
+                let result = ioctl_ptr(
                     "px4",
                     Some(control_path.as_path().to_path_buf()),
                     self.file_fd()?,
                     PTX_SET_CHANNEL,
                     &mut freq,
                     "PTX_SET_CHANNEL",
-                )
+                );
+                self.px4_channel_apply_result =
+                    Some(classify_px4_channel_apply_result(request.system, result)?);
+                Ok(())
             }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let normalized = dvb::normalized_tune_request_from_common(request)?;
@@ -996,21 +1121,25 @@ impl FrontendBackendTuneExecutor {
         }
     }
 
-    fn start_streaming_current(&self) -> Result<(), HalError> {
+    fn start_streaming_current(&mut self) -> Result<(), HalError> {
         match &self.kind {
-            FrontendBackendSessionKind::Px4 { control_path } => ioctl_noarg(
-                "px4",
-                Some(control_path.as_path().to_path_buf()),
+            FrontendBackendSessionKind::Px4 { control_path } => px4_streaming_ioctl(
+                control_path,
                 self.file_fd()?,
                 PTX_START_STREAMING,
                 "PTX_START_STREAMING",
             ),
             // DVBはFE_SET_PROPERTY(DTV_TUNE)後に配送を開始するため、ここに別のuserspace start ioctlは置かない。
             FrontendBackendSessionKind::Dvb { .. } => Ok(()),
-        }
+        }?;
+        self.streaming_state = BackendStreamingState::Started;
+        Ok(())
     }
 
-    fn submit_request_for_rollback(&self, request: &FrontendTuneRequest) -> Result<(), HalError> {
+    fn submit_request_for_rollback(
+        &mut self,
+        request: &FrontendTuneRequest,
+    ) -> Result<(), HalError> {
         self.apply_system_mode_for(request)?;
         self.apply_channel_for(request)?;
         self.start_streaming_current()
@@ -1051,7 +1180,7 @@ impl FrontendBackendTuneExecutor {
         let file = self.file.take().ok_or_else(|| {
             HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "backend tune executor file was already consumed",
+                "backend選局executorのfileは既に消費されています",
             )
         })?;
         Ok(FrontendBackendSession {
@@ -1059,6 +1188,10 @@ impl FrontendBackendTuneExecutor {
             file,
             initial_signal_state: self.initial_signal_state,
             partial_reception: self.plan.request.partial_reception,
+            px4_channel_apply_result: self.px4_channel_apply_result,
+            streaming_started: AtomicBool::new(
+                self.streaming_state == BackendStreamingState::Started,
+            ),
         })
     }
 }
@@ -1072,16 +1205,16 @@ impl BackendTuneOps for FrontendBackendTuneExecutor {
         })
     }
 
-    fn stop_previous_tune(&mut self) -> Result<(), HalError> {
-        self.stop_current()
-    }
-
     fn apply_system_mode(&mut self, request: &FrontendTuneRequest) -> Result<(), HalError> {
         self.apply_system_mode_for(request)
     }
 
     fn apply_channel(&mut self, request: &FrontendTuneRequest) -> Result<(), HalError> {
         self.apply_channel_for(request)
+    }
+
+    fn defer_streaming_start_until_lock(&self) -> bool {
+        matches!(&self.kind, FrontendBackendSessionKind::Px4 { .. })
     }
 
     fn start_streaming(&mut self) -> Result<(), HalError> {
@@ -1132,10 +1265,10 @@ pub fn run_frontend_backend_tune_worker_with_previous(
                 .ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "frontend poll deadline overflow",
+                        "frontendポーリング期限が上限を超えました",
                     )
                 })?,
-        ))?;
+        ));
     }
     let reason = ctx.cancel_reason();
     let completion = if matches!(
@@ -1152,7 +1285,7 @@ pub fn run_frontend_backend_tune_worker_with_previous(
         (Ok(_), result) => result,
         (Err(error), Ok(())) => Err(error),
         (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
-            "frontend cancellation lookup and backend cleanup failed",
+            "frontendの取消し検索とbackend後片付けの両方に失敗しました",
             primary,
             cleanup,
         )),
@@ -1229,7 +1362,7 @@ fn decode_px4_boolean(
             operation: op,
             path: Some(path.as_path().to_path_buf()),
             errno: None,
-            detail: HalErrorDetail::new(format!("driver returned a non-boolean value: {value}")),
+            detail: HalErrorDetail::new(format!("ドライバーが真偽値以外を返しました: {value}")),
         }),
     }
 }
@@ -1246,6 +1379,26 @@ fn classify_tmcc_partial_reception_read(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Px4ChannelApplyResult {
+    Applied,
+    PendingUnlocked,
+}
+
+fn classify_px4_channel_apply_result(
+    system: FrontendSystem,
+    result: Result<(), HalError>,
+) -> Result<Px4ChannelApplyResult, HalError> {
+    match result {
+        Ok(()) => Ok(Px4ChannelApplyResult::Applied),
+        Err(HalError::IoctlFailed {
+            errno: ERRNO_EAGAIN,
+            ..
+        }) if system == FrontendSystem::IsdbT => Ok(Px4ChannelApplyResult::PendingUnlocked),
+        Err(error) => Err(error),
+    }
+}
+
 fn px4_signal_state_from_readback(
     result: Result<bool, HalError>,
 ) -> Result<FrontendSignalState, HalError> {
@@ -1256,6 +1409,29 @@ fn px4_signal_state_from_readback(
             FrontendSignalState::NoSignal
         }
     })
+}
+
+fn px4_streaming_ioctl(
+    path: &FrontendDevicePath,
+    fd: i32,
+    request: u64,
+    op: &'static str,
+) -> Result<(), HalError> {
+    px4_streaming_ioctl_result(
+        request,
+        ioctl_noarg("px4", Some(path.as_path().to_path_buf()), fd, request, op),
+    )
+}
+
+fn px4_streaming_ioctl_result(request: u64, result: Result<(), HalError>) -> Result<(), HalError> {
+    match result {
+        // px4_drvの停止済み応答だけを停止完了として扱う。STARTの同じerrnoは失敗のまま返す。
+        Err(HalError::IoctlFailed {
+            errno: ERRNO_EALREADY,
+            ..
+        }) if request == PTX_STOP_STREAMING => Ok(()),
+        result => result,
+    }
 }
 
 fn ioctl_noarg(
@@ -1304,6 +1480,286 @@ mod tests {
     use maleicacid_tuner_hal2_common::{FrontendStreamIdKind, FrontendSystem};
     use std::thread;
 
+    fn fresh_tune_executor(backend: FrontendBackendKind) -> FrontendBackendTuneExecutor {
+        let request = FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let plan = FrontendBackendTunePlan::new(
+            10,
+            1,
+            backend,
+            FrontendDevicePath::new("/dev/null"),
+            request,
+        );
+        FrontendBackendTuneExecutor::open(plan, None).unwrap()
+    }
+
+    #[test]
+    fn fresh_tune_failure_does_not_stop_an_unstarted_stream() {
+        for (backend, expected_step) in [
+            (
+                FrontendBackendKind::Px4CharDevice,
+                BackendTuneStep::ApplySystemMode,
+            ),
+            (FrontendBackendKind::LinuxDvb, BackendTuneStep::ApplyChannel),
+        ] {
+            let mut executor = fresh_tune_executor(backend);
+            let mut txn = BackendTuneTxn::new(10, 1, executor.plan.request.clone());
+            // /dev/nullは機器要求をENOTTYで拒否する。不要なSTOPがあれば巻戻しも失敗する。
+            match txn.apply(&mut executor) {
+                BackendTuneOutcome::Failed {
+                    step,
+                    error,
+                    rollback,
+                } => {
+                    assert_eq!(step, expected_step);
+                    assert!(matches!(
+                        error,
+                        HalError::IoctlFailed {
+                            errno: ERRNO_ENOTTY,
+                            ..
+                        }
+                    ));
+                    assert!(rollback.succeeded());
+                }
+                other => panic!("想定外の結果です: {other:?}"),
+            }
+            assert_eq!(executor.streaming_state, BackendStreamingState::NotStarted);
+        }
+    }
+
+    #[test]
+    fn failed_start_does_not_arm_rollback_stop() {
+        let mut executor = fresh_tune_executor(FrontendBackendKind::Px4CharDevice);
+        assert!(matches!(
+            executor.start_streaming(),
+            Err(HalError::IoctlFailed {
+                errno: ERRNO_ENOTTY,
+                ..
+            })
+        ));
+        assert_eq!(executor.streaming_state, BackendStreamingState::NotStarted);
+        assert!(executor.rollback_stop_streaming().is_ok());
+    }
+
+    #[test]
+    fn started_executor_attempts_stop_and_preserves_state_on_failure() {
+        let mut executor = fresh_tune_executor(FrontendBackendKind::LinuxDvb);
+        // DVBのStartStreaming段階には別ioctlがない。実行器の成功後の状態を検査する。
+        executor.start_streaming().unwrap();
+        assert_eq!(executor.streaming_state, BackendStreamingState::Started);
+        assert!(matches!(
+            executor.rollback_stop_streaming(),
+            Err(HalError::IoctlFailed {
+                op: "FE_SET_PROPERTY(DTV_CLEAR)",
+                errno: ERRNO_ENOTTY,
+                ..
+            })
+        ));
+        assert_eq!(executor.streaming_state, BackendStreamingState::Started);
+    }
+
+    #[test]
+    fn px4_streaming_start_is_always_deferred_to_the_worker() {
+        let mut px4 = fresh_tune_executor(FrontendBackendKind::Px4CharDevice);
+        px4.px4_channel_apply_result = Some(Px4ChannelApplyResult::Applied);
+        assert!(px4.defer_streaming_start_until_lock());
+
+        let dvb = fresh_tune_executor(FrontendBackendKind::LinuxDvb);
+        assert!(!dvb.defer_streaming_start_until_lock());
+    }
+
+    #[test]
+    fn px4_pending_result_survives_executor_commit() {
+        let mut executor = fresh_tune_executor(FrontendBackendKind::Px4CharDevice);
+        executor.px4_channel_apply_result = Some(Px4ChannelApplyResult::PendingUnlocked);
+        let session = executor.into_session().unwrap();
+        assert_eq!(
+            session.px4_channel_apply_result(),
+            Some(Px4ChannelApplyResult::PendingUnlocked)
+        );
+    }
+
+    #[test]
+    fn px4_isdbt_set_channel_eagain_is_pending_but_isdbs_remains_failure() {
+        let pending = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some(PathBuf::from("/dev/px4video0")),
+            op: "PTX_SET_CHANNEL",
+            errno: ERRNO_EAGAIN,
+        };
+        assert_eq!(
+            classify_px4_channel_apply_result(FrontendSystem::IsdbT, Err(pending.clone())),
+            Ok(Px4ChannelApplyResult::PendingUnlocked)
+        );
+        assert_eq!(
+            classify_px4_channel_apply_result(FrontendSystem::IsdbS, Err(pending.clone())),
+            Err(pending.clone())
+        );
+        let other = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some(PathBuf::from("/dev/px4video0")),
+            op: "PTX_SET_CHANNEL",
+            errno: ERRNO_ENOTTY,
+        };
+        assert_eq!(
+            classify_px4_channel_apply_result(FrontendSystem::IsdbT, Err(other.clone())),
+            Err(other)
+        );
+    }
+
+    #[test]
+    fn pending_session_starts_streaming_exactly_once_after_lock() {
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Px4 {
+                control_path: FrontendDevicePath::new("/dev/null"),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::Locked,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: Some(Px4ChannelApplyResult::PendingUnlocked),
+            streaming_started: AtomicBool::new(false),
+        };
+        let mut starts = 0;
+        session
+            .start_streaming_after_lock_with(|| {
+                starts += 1;
+                Ok(())
+            })
+            .unwrap();
+        session
+            .start_streaming_after_lock_with(|| {
+                starts += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(starts, 1);
+        assert!(session.streaming_started());
+    }
+
+    #[test]
+    fn pending_session_does_not_stop_before_streaming_starts() {
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Px4 {
+                control_path: FrontendDevicePath::new("/dev/null"),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::NoSignal,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: Some(Px4ChannelApplyResult::PendingUnlocked),
+            streaming_started: AtomicBool::new(false),
+        };
+        assert!(session.stop().is_ok());
+        assert!(!session.streaming_started());
+    }
+
+    #[test]
+    fn only_px4_stop_ealready_is_idempotent_success() {
+        for (request, op, errno, succeeds) in [
+            (
+                PTX_STOP_STREAMING,
+                "PTX_STOP_STREAMING",
+                ERRNO_EALREADY,
+                true,
+            ),
+            (
+                PTX_STOP_STREAMING,
+                "PTX_STOP_STREAMING",
+                ERRNO_ENOTTY,
+                false,
+            ),
+            (
+                PTX_STOP_STREAMING,
+                "PTX_STOP_STREAMING",
+                ERRNO_EINVAL,
+                false,
+            ),
+            (
+                PTX_START_STREAMING,
+                "PTX_START_STREAMING",
+                ERRNO_EALREADY,
+                false,
+            ),
+        ] {
+            let error = HalError::IoctlFailed {
+                backend: "px4",
+                path: Some(PathBuf::from("/dev/px4video0")),
+                op,
+                errno,
+            };
+            let result = px4_streaming_ioctl_result(request, Err(error.clone()));
+            if succeeds {
+                assert_eq!(result, Ok(()));
+            } else {
+                assert_eq!(result, Err(error));
+            }
+        }
+        assert_eq!(
+            px4_streaming_ioctl_result(PTX_STOP_STREAMING, Ok(())),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn dvb_live_reader_open_failure_keeps_io_context() {
+        let path = FrontendDevicePath::new("/dev/null/maleicacid-tuner-dvr");
+        let expected_errno = File::open(path.as_path()).unwrap_err().raw_os_error();
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Dvb {
+                frontend_path: FrontendDevicePath::new("/dev/null"),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::NoSignal,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
+            streaming_started: AtomicBool::new(false),
+        };
+        let descriptor = FrontendLiveReaderDescriptor::dvb_dvr_device(1, path.clone());
+        let error = session.open_live_reader(&descriptor).err().unwrap();
+        match error {
+            HalError::Io {
+                backend,
+                operation,
+                path: error_path,
+                errno,
+                ..
+            } => {
+                assert_eq!(backend, "dvb");
+                assert_eq!(operation, "live DVR readerのopen");
+                assert_eq!(error_path.as_deref(), Some(path.as_path()));
+                assert!(expected_errno.is_some());
+                assert_eq!(errno, expected_errno);
+            }
+            error => panic!("live reader openでI/O分類が失われました: {error:?}"),
+        }
+    }
+
+    #[test]
+    fn px4_live_reader_uses_existing_fd_without_reopening_path() {
+        let path = FrontendDevicePath::new("/dev/null/maleicacid-tuner-px4");
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Px4 {
+                control_path: path.clone(),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::NoSignal,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
+            streaming_started: AtomicBool::new(false),
+        };
+        let descriptor = FrontendLiveReaderDescriptor::px4_from_control_fd(1, path);
+        let mut reader = session.open_live_reader(&descriptor).unwrap();
+        assert_eq!(reader.read(&mut [0_u8; 1]).unwrap(), 0);
+    }
+
     #[test]
     fn dvb_close_does_not_require_a_tune_stop_ioctl() {
         let session = FrontendBackendSession {
@@ -1313,13 +1769,39 @@ mod tests {
             file: File::open("/dev/null").unwrap(),
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
+            streaming_started: AtomicBool::new(false),
         };
         assert!(session.stop().is_err());
         assert!(session.close().is_ok());
     }
 
     #[test]
-    fn px4_close_retains_stream_stop_failure() {
+    fn pending_px4_start_failure_after_lock_keeps_streaming_unstarted() {
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Px4 {
+                control_path: FrontendDevicePath::new("/dev/null"),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::Locked,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: Some(Px4ChannelApplyResult::PendingUnlocked),
+            streaming_started: AtomicBool::new(false),
+        };
+        assert!(matches!(
+            session.start_streaming_after_lock(),
+            Err(HalError::IoctlFailed {
+                op: "PTX_START_STREAMING",
+                errno: ERRNO_ENOTTY,
+                ..
+            })
+        ));
+        assert!(!session.streaming_started());
+        assert!(session.close().is_ok());
+    }
+
+    #[test]
+    fn px4_close_retains_stream_stop_failure_after_start() {
         let session = FrontendBackendSession {
             kind: FrontendBackendSessionKind::Px4 {
                 control_path: FrontendDevicePath::new("/dev/null"),
@@ -1327,6 +1809,8 @@ mod tests {
             file: File::open("/dev/null").unwrap(),
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
+            streaming_started: AtomicBool::new(true),
         };
         assert!(session.close().is_err());
     }
@@ -1534,6 +2018,7 @@ mod tests {
             },
             rollback_succeeded: false,
             step: Some(BackendTuneStep::ApplyChannel),
+            rollback_failure: None,
         };
         let error = failure.into_error();
         assert!(matches!(
@@ -1549,6 +2034,29 @@ mod tests {
     }
 
     #[test]
+    fn worker_owned_submit_waits_for_delayed_result_without_caller_deadline() {
+        let generation = 100;
+        let expected = FrontendBackendSubmitFailure {
+            generation,
+            error: HalError::internal(HalInternalKind::InvariantViolation, "遅延submit失敗を模擬"),
+            rollback_succeeded: true,
+            step: Some(BackendTuneStep::ApplyChannel),
+            rollback_failure: None,
+        };
+        let failure = expected.clone();
+        let ticket = FrontendBackendSubmitTicket::start_with(generation, move || {
+            thread::sleep(Duration::from_millis(25));
+            Err(failure)
+        })
+        .unwrap();
+        let failure = ticket
+            .wait()
+            .unwrap()
+            .expect_err("submitは失敗する必要があります");
+        assert_eq!(failure, expected);
+    }
+
+    #[test]
     fn submit_deadline_retains_cleanup_ownership_until_thread_exit() {
         let generation = 100;
         let ticket = FrontendBackendSubmitTicket::start_with(generation, move || {
@@ -1557,15 +2065,16 @@ mod tests {
                 generation,
                 error: HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "simulated delayed submit failure",
+                    "遅延submit失敗を模擬",
                 ),
                 rollback_succeeded: true,
                 step: None,
+                rollback_failure: None,
             })
         })
         .unwrap();
 
-        let ticket = match ticket
+        let mut ticket = match ticket
             .wait_until(Instant::now() + Duration::from_millis(1))
             .unwrap()
         {
@@ -1578,7 +2087,159 @@ mod tests {
         assert!(ticket
             .wait_until_cleanup(Some(Instant::now() + Duration::from_secs(1)))
             .unwrap());
-        assert!(ticket.complete_cleanup().is_ok());
+        let failure = ticket.complete_cleanup().unwrap_err();
+        assert_eq!(failure.generation, generation);
+        assert!(failure.rollback_succeeded);
+        assert!(failure.cleanup_result().is_ok());
+        assert_eq!(
+            failure.error,
+            HalError::internal(HalInternalKind::InvariantViolation, "遅延submit失敗を模擬",)
+        );
+    }
+
+    #[test]
+    fn delayed_submit_keeps_primary_and_rollback_failure_in_both_cleanup_paths() {
+        for poll in [false, true] {
+            let (release, wait) = mpsc::sync_channel(1);
+            let expected = FrontendBackendSubmitFailure {
+                generation: 101,
+                error: HalError::IoctlFailed {
+                    backend: "px4",
+                    path: None,
+                    op: "channel設定",
+                    errno: 5,
+                },
+                rollback_succeeded: false,
+                step: Some(BackendTuneStep::ApplyChannel),
+                rollback_failure: Some(super::super::tune_txn::BackendTuneRollbackFailure {
+                    step: super::super::tune_txn::BackendTuneRollbackStep::RollbackStopStreaming,
+                    error: HalError::IoctlFailed {
+                        backend: "px4",
+                        path: None,
+                        op: "streaming停止",
+                        errno: 16,
+                    },
+                }),
+            };
+            let failure = expected.clone();
+            let ticket = FrontendBackendSubmitTicket::start_with(101, move || {
+                wait.recv().unwrap();
+                Err(failure)
+            })
+            .unwrap();
+            let mut ticket = match ticket.wait_until(Instant::now()).unwrap() {
+                FrontendBackendSubmitWait::TimedOut(ticket) => ticket,
+                _ => panic!("blockされたsubmitは時間切れになる必要があります"),
+            };
+            release.send(()).unwrap();
+            assert!(ticket
+                .wait_until_cleanup(Some(Instant::now() + Duration::from_secs(1)))
+                .unwrap());
+            let result = if poll {
+                let deadline = Instant::now() + Duration::from_secs(1);
+                loop {
+                    if let Some(result) = ticket.try_complete_cleanup() {
+                        break result;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "submitスレッドが終了しませんでした"
+                    );
+                    thread::yield_now();
+                }
+            } else {
+                ticket.complete_cleanup()
+            };
+            let failure = result.unwrap_err();
+            assert_eq!(failure, expected);
+            assert!(failure.cleanup_result().is_err());
+        }
+    }
+
+    #[test]
+    fn lost_backend_cleanup_ticket_keeps_the_submit_owner_in_the_registry() {
+        use crate::{
+            FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry,
+            FrontendWorkerStopOutcome,
+        };
+
+        let (release_tx, release_rx) = mpsc::channel();
+        let ticket = FrontendBackendSubmitTicket::start_with(101, move || {
+            release_rx.recv().unwrap();
+            Err(FrontendBackendSubmitFailure {
+                generation: 101,
+                error: HalError::cleanup_failed("submit試験", "副作用前に拒否"),
+                rollback_succeeded: true,
+                step: None,
+                rollback_failure: None,
+            })
+        })
+        .unwrap();
+        let mut registry = FrontendWorkerRegistry::default();
+        let first =
+            registry.retain_backend_submit_cleanup(1, FrontendWorkerKind::Tune, 101, ticket);
+        std::mem::forget(first);
+        assert!(registry.has_cleanup_obligations());
+        let next = registry.request_stop_for_join(
+            1,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
+        );
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            next.complete(),
+            FrontendWorkerStopOutcome::BackendSubmitFailed {
+                generation: 101,
+                failure: FrontendBackendSubmitFailure {
+                    rollback_succeeded: true,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(!registry.has_cleanup_obligations());
+    }
+
+    #[test]
+    fn failed_backend_rollback_keeps_cleanup_pending_after_join() {
+        use crate::{
+            FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry,
+            FrontendWorkerStopOutcome,
+        };
+        let expected = FrontendBackendSubmitFailure {
+            generation: 102,
+            error: HalError::cleanup_failed("backend", "submit失敗"),
+            rollback_succeeded: false,
+            step: Some(BackendTuneStep::ApplyChannel),
+            rollback_failure: Some(super::super::tune_txn::BackendTuneRollbackFailure {
+                step: super::super::tune_txn::BackendTuneRollbackStep::RollbackStopStreaming,
+                error: HalError::cleanup_failed("backend", "停止失敗"),
+            }),
+        };
+        let failure = expected.clone();
+        let ticket = FrontendBackendSubmitTicket::start_with(102, move || Err(failure)).unwrap();
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket =
+            registry.retain_backend_submit_cleanup(1, FrontendWorkerKind::Tune, 102, ticket);
+        assert!(
+            matches!(ticket.complete(), FrontendWorkerStopOutcome::BackendSubmitFailed { failure, .. } if failure == expected)
+        );
+        assert!(registry.has_cleanup_obligations());
+        assert!(matches!(
+            registry
+                .request_stop_for_join(
+                    1,
+                    FrontendWorkerKind::Tune,
+                    FrontendWorkerCancelReason::StopRequested
+                )
+                .complete(),
+            FrontendWorkerStopOutcome::StopRequestFailed {
+                error: HalError::WorkerCleanupFailed {
+                    kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Quarantined
+                },
+                ..
+            }
+        ));
     }
 
     #[test]

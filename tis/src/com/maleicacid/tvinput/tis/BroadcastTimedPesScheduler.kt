@@ -18,8 +18,12 @@ internal class BroadcastTimedPesScheduler(
     private val postDelayed: (Runnable, Long) -> Unit,
     private val removeCallbacks: (Runnable) -> Unit,
     private val onDue: (String, ByteArray) -> Unit,
+    private val onDrop: (String) -> Unit = {},
+    private val maxPendingItems: Int = DEFAULT_MAX_PENDING_ITEMS,
+    private val maxPendingBytes: Long = DEFAULT_MAX_PENDING_BYTES,
+    private val maxFutureDelayMillis: Long = DEFAULT_MAX_FUTURE_DELAY_MILLIS,
 ) {
-    private data class Pending(
+    private class Pending(
         val trackId: String,
         val pesData: ByteArray,
         val statementTime: AribBroadcastClock.StatementTime,
@@ -36,7 +40,9 @@ internal class BroadcastTimedPesScheduler(
     private val armed = linkedMapOf<Long, Armed>()
     private var nextToken: Long = 0L
     private var nextArmSequence: Long = 0L
+    private var pendingBytes: Long = 0L
 
+    @Suppress("ReturnCount")
     fun submit(
         trackId: String,
         pesData: ByteArray,
@@ -44,15 +50,30 @@ internal class BroadcastTimedPesScheduler(
     ) {
         if (currentTrackId() != trackId) return
         val deadline = resolveDeadline(statementTime, null) ?: return
+        if (deadline.delayMillis > maxFutureDelayMillis) {
+            onDrop("将来時刻の上限を超過しました")
+            return
+        }
+        val copied = pesData.copyOf()
+        val byteCount = copied.size.toLong()
+        val budgetExceeded =
+            pending.size >= maxPendingItems ||
+                byteCount > maxPendingBytes ||
+                pendingBytes > maxPendingBytes - byteCount
+        if (budgetExceeded) {
+            onDrop("pending予算を使い切りました")
+            return
+        }
         val token = nextToken()
         pending[token] =
             Pending(
                 trackId = trackId,
-                pesData = pesData.copyOf(),
+                pesData = copied,
                 statementTime = statementTime,
                 playbackGeneration = currentPlaybackGeneration(),
                 clockGeneration = deadline.clockGeneration,
             )
+        pendingBytes += byteCount
         arm(token, deadline)
     }
 
@@ -72,6 +93,7 @@ internal class BroadcastTimedPesScheduler(
         armed.values.forEach { removeCallbacks(it.runnable) }
         armed.clear()
         pending.clear()
+        pendingBytes = 0L
     }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
@@ -86,16 +108,27 @@ internal class BroadcastTimedPesScheduler(
             item.clockGeneration != deadline.clockGeneration ||
             item.trackId != currentTrackId()
         ) {
-            pending.remove(token)
+            removePending(token)
+            return
+        }
+        if (deadline.delayMillis > maxFutureDelayMillis) {
+            removePending(token)
+            onDrop("将来時刻の上限を超過しました")
             return
         }
         if (deadline.delayMillis <= 0L) {
-            pending.remove(token)
+            removePending(token)
             onDue(item.trackId, item.pesData)
             return
         }
 
-        val sequence = nextArmSequence()
+        val sequence =
+            try {
+                nextArmSequence()
+            } catch (error: IllegalStateException) {
+                removePending(token)
+                throw error
+            }
         lateinit var runnable: Runnable
         runnable =
             Runnable {
@@ -106,7 +139,7 @@ internal class BroadcastTimedPesScheduler(
                     val current = pending[token] ?: return@dispatch
                     val remaining = resolveDeadline(current.statementTime, current.clockGeneration)
                     if (remaining == null) {
-                        pending.remove(token)
+                        removePending(token)
                     } else {
                         arm(token, remaining)
                     }
@@ -118,16 +151,36 @@ internal class BroadcastTimedPesScheduler(
 
     private fun cancel(token: Long) {
         armed.remove(token)?.let { removeCallbacks(it.runnable) }
-        pending.remove(token)
+        removePending(token)
+    }
+
+    private fun removePending(token: Long): Pending? {
+        val item = pending.remove(token) ?: return null
+        pendingBytes = (pendingBytes - item.pesData.size.toLong()).coerceAtLeast(0L)
+        return item
     }
 
     private fun nextToken(): Long {
-        nextToken = if (nextToken == Long.MAX_VALUE) 1L else nextToken + 1L
-        return nextToken
+        val live = pending.keys + armed.keys
+        val next =
+            RuntimeIdentity.nextReusablePositiveLong(
+                current = nextToken,
+                live = live,
+                label = "放送時刻連動PES token",
+            )
+        nextToken = next
+        return next
     }
 
     private fun nextArmSequence(): Long {
-        nextArmSequence = if (nextArmSequence == Long.MAX_VALUE) 1L else nextArmSequence + 1L
-        return nextArmSequence
+        val next = RuntimeIdentity.nextLong(nextArmSequence, "放送時刻連動PES arm sequence")
+        nextArmSequence = next
+        return next
+    }
+
+    private companion object {
+        const val DEFAULT_MAX_PENDING_ITEMS = 64
+        const val DEFAULT_MAX_PENDING_BYTES = 2L * 1024L * 1024L
+        const val DEFAULT_MAX_FUTURE_DELAY_MILLIS = 60_000L
     }
 }
