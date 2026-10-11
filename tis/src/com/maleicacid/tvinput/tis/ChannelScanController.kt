@@ -138,7 +138,9 @@ class ChannelScanController(
 
     init {
         tunerController.setSectionIngestController(ingestController)
-        tunerController.setOnSectionIngestedCallback { refreshDynamicSectionFilters() }
+        tunerController.setOnSectionIngestedCallback { pid ->
+            if (shouldRefreshPmtFiltersForSection(pid)) refreshDynamicSectionFilters()
+        }
         tunerController.setOnTunerResourceLostCallback { lostGeneration ->
             scanGenerationFence.onLost(lostGeneration)
         }
@@ -1038,6 +1040,9 @@ class ChannelScanController(
         ScanDiagnostic(candidate, "Tuner resource lostによりscan generationを失効しました generation=$generation; TvProvider publishを拒否します")
 
     companion object {
+        // PMT PID集合の根拠はPAT。非PAT SIやCAS接続変更では再計算しない。
+        internal fun shouldRefreshPmtFiltersForSection(pid: TsPid?): Boolean = pid == WellKnownSectionPid.PAT
+
         internal fun <T> acquireFinalSnapshotUnlessCancelled(
             cancelled: AtomicBoolean,
             attempt: () -> T?,

@@ -281,7 +281,8 @@ class TunerController(
 
     @Volatile private var sectionIngestController: SectionIngestController? = null
     private var casController: CasController? = null
-    private var onSectionIngestedCallback: (() -> Unit)? = null
+    // 同じownerから受理したPIDだけを渡す。nullはSectionでないCAS接続状態変更。
+    private var onSectionIngestedCallback: ((TsPid?) -> Unit)? = null
     private var onTunerResourceLostCallback: ((Long) -> Unit)? = null
     private var onTuneEventCallback: ((Long, Int) -> Unit)? = null
     private var onBroadcastClockUpdatedCallback: (() -> Unit)? = null
@@ -354,7 +355,7 @@ class TunerController(
                 else -> false
             }
         if (refresh) {
-            onSectionIngestedCallback?.invoke()
+            onSectionIngestedCallback?.invoke(null)
             return
         }
         try {
@@ -365,7 +366,7 @@ class TunerController(
     }
 
     @Suppress("MaxLineLength")
-    fun setOnSectionIngestedCallback(callback: (() -> Unit)?) = callOnController { onSectionIngestedCallback = callback }
+    fun setOnSectionIngestedCallback(callback: ((TsPid?) -> Unit)?) = callOnController { onSectionIngestedCallback = callback }
 
     @Suppress("MaxLineLength")
     fun setOnTunerResourceLostCallback(callback: ((Long) -> Unit)?) = callOnController { onTunerResourceLostCallback = callback }
@@ -1542,7 +1543,7 @@ class TunerController(
                         )
                     }
                 }
-                onSectionIngestedCallback?.invoke()
+                onSectionIngestedCallback?.invoke(pid)
                 startPlaybackIfStreamsKnown()
             },
             onEcm = { handleEcmSectionOnController(pid, section) },
