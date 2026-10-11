@@ -55,6 +55,45 @@ class ControllerSerialExecutorReviewBoundaryTest {
     }
 
     @Test
+    fun sdtReservationSurvivesOrdinarySectionQueueSaturation() {
+        val executor = ControllerSerialExecutor("sdt-reservation-test", maxPendingDataTasks = 4, reservedDataSlots = 2)
+        val entered = CountDownLatch(1)
+        val unblock = CountDownLatch(1)
+        val done = CountDownLatch(4)
+        val order = java.util.concurrent.CopyOnWriteArrayList<String>()
+        try {
+            executor.executeControl {
+                entered.countDown()
+                check(unblock.await(5, TimeUnit.SECONDS))
+            }
+            check(entered.await(5, TimeUnit.SECONDS))
+            repeat(2) {
+                executor.executeData {
+                    order += "ordinary"
+                    done.countDown()
+                }
+            }
+            check(runCatching { executor.executeData {} }.exceptionOrNull() is DataCapacityExceededException)
+            repeat(2) {
+                executor.executeReservedData {
+                    order += "SDT"
+                    done.countDown()
+                }
+            }
+            check(runCatching { executor.executeReservedData {} }.exceptionOrNull() is DataCapacityExceededException)
+            val control = CountDownLatch(1)
+            executor.executeControl { control.countDown() }
+            unblock.countDown()
+            check(control.await(5, TimeUnit.SECONDS))
+            check(done.await(5, TimeUnit.SECONDS))
+            check(order == listOf("ordinary", "ordinary", "SDT", "SDT"))
+        } finally {
+            unblock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun controllerExecutorOwnerUsesThreadIdentityNotName() {
         val executor = ControllerSerialExecutor("owner-identity-test")
         try {

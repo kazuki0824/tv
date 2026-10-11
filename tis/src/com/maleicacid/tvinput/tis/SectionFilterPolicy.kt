@@ -1,5 +1,8 @@
 package com.maleicacid.tvinput.tis
 
+import com.maleicacid.tvinput.aribsi.WellKnownSectionPid
+import com.maleicacid.tvinput.common.TsPid
+
 // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
 
 /** Android Tuner資源の所有から分離したsection-filterの判定・集合更新・配送。 */
@@ -130,6 +133,13 @@ object SectionFilterPolicy {
         if (pid in ecmPids) onEcm()
         if (pid in emmPids) onEmm()
     }
+
+    // SDT actual/otherだけに予約枠を使う。BATなど同じPIDの別tableは通常枠。
+    @Suppress("MagicNumber")
+    internal fun reservesSdtSlot(
+        pid: TsPid,
+        tableId: Int?,
+    ): Boolean = pid == WellKnownSectionPid.SDT_BAT && (tableId == 0x42 || tableId == 0x46)
 
     const val MAX_SECTION_EVENT_BYTES = 4096L
 

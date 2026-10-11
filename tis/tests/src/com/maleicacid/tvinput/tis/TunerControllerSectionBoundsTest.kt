@@ -24,6 +24,15 @@ class TunerControllerSectionBoundsTest {
         }
     }
 
+    @Test fun sdtActualAndOtherUseReservedAdmissionButBatDoesNot() {
+        val sdt = com.maleicacid.tvinput.aribsi.WellKnownSectionPid.SDT_BAT
+        check(SectionFilterPolicy.reservesSdtSlot(sdt, 0x42))
+        check(SectionFilterPolicy.reservesSdtSlot(sdt, 0x46))
+        check(!SectionFilterPolicy.reservesSdtSlot(sdt, 0x4a))
+        check(!SectionFilterPolicy.reservesSdtSlot(sdt, null))
+        check(!SectionFilterPolicy.reservesSdtSlot(com.maleicacid.tvinput.aribsi.WellKnownSectionPid.EIT, 0x42))
+    }
+
     @Test fun ordinarySectionFiltersKeepCrcEnabled() {
         val setting =
             TunerController

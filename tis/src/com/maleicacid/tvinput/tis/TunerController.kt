@@ -184,6 +184,7 @@ class TunerController(
         ControllerSerialExecutor(
             "maleicacid-tis-controller-$inputId",
             maxPendingDataTasks = (SECTION_FILTER_BUFFER_BYTES / SectionFilterPolicy.MAX_SECTION_EVENT_BYTES).toInt(),
+            reservedDataSlots = SDT_RESERVED_DATA_SLOTS,
         )
     private val controllerControlExecutor =
         java.util.concurrent.Executor { task -> sectionExecutor.executeControl(task) }
@@ -215,17 +216,19 @@ class TunerController(
 
     private fun postOnControllerData(
         block: () -> Unit,
+        reserved: Boolean = false,
         onRejected: (Throwable) -> Unit,
     ) {
         if (released) return
         runCatching {
-            sectionExecutor.executeData {
+            val guarded = Runnable {
                 if (!released) {
                     runCatching(block).onFailure { error ->
                         Log.w(LogTags.TIS, "section data処理に失敗しました inputId=$inputId", error)
                     }
                 }
             }
+            if (reserved) sectionExecutor.executeReservedData(guarded) else sectionExecutor.executeData(guarded)
         }.onFailure { error ->
             onRejected(error)
             if (!released && error !is DataCapacityExceededException) {
@@ -1239,7 +1242,7 @@ class TunerController(
                         return@postOnControllerData
                     }
                 }
-            }) {
+            }, reserved = SectionFilterPolicy.reservesSdtSlot(pid, tableId)) {
                 if (!released && tuneAccepted && generation == tuneGeneration) {
                     ingest?.recordInputDeliveryLoss(pid, tableId)
                 }
@@ -2102,6 +2105,7 @@ class TunerController(
 
         private const val EXHAUSTED_TUNE_GENERATION = -1L
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
+        private const val SDT_RESERVED_DATA_SLOTS = 2
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 
         @Suppress("MagicNumber", "MaxLineLength")
