@@ -4,6 +4,7 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
+import android.content.ContextWrapper
 import android.media.tv.TvContentRating
 import android.media.tv.TvContract
 import android.media.tv.TvInputService
@@ -19,6 +20,7 @@ import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.AribService
+import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.EitInstanceState
 import com.maleicacid.tvinput.aribsi.EventModelMapper
@@ -2193,16 +2195,20 @@ class TisR51FixedPlanAcceptanceTest {
         check(SectionIngestController.statusBucketForTest(SiStatus.MALFORMED_DESCRIPTOR) == "malformed")
         check(SectionIngestController.statusBucketForTest(SiStatus.INTERNAL_ERROR) == "malformed")
         // Sectionの受信は不要。選局単位の配送損失集計だけを検査する。
-        val engine = com.maleicacid.tvinput.aribsi.AribSiEngine(object : android.content.ContextWrapper(null) {})
+        val engine = AribSiEngine(object : ContextWrapper(null) {})
         try {
             val sections = SectionIngestController(engine)
             // 実放送のサービス名などを含まない最小構文。CRC-32/MPEG-2は有効。
             val actual =
                 "42f00c7fe3c100007fe3ffed225f15"
-                    .chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                    .chunked(2)
+                    .map { it.toInt(16).toByte() }
+                    .toByteArray()
             val other =
                 "46f00c7fe3c100007fe3ff06d36674"
-                    .chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                    .chunked(2)
+                    .map { it.toInt(16).toByte() }
+                    .toByteArray()
             check(sections.onSection(TsPid(0x11), actual).status == SiStatus.OK)
             check(sections.onSection(TsPid(0x11), other).status == SiStatus.OK)
             check("sdtActualAccepted=1 sdtOtherAccepted=1" in sections.sdtDeliveryDiagnostic())
