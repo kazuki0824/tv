@@ -182,7 +182,7 @@ class ChannelScanController(
             engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
             // setup登録にEIT scheduleは不要。EIT入力burstでSDT/PAT/PMTを落とさない。
-            val tune = tunerController.tuneForScan(candidate, eitPfOnly = true)
+            val tune = tunerController.tuneForScan(candidate, eitPfActualOnly = true)
             if (!tune.success) {
                 val message = "選局に失敗しました result=${tune.resultCode} ${tune.message}"
                 diagnostics += ScanDiagnostic(candidate, message)
