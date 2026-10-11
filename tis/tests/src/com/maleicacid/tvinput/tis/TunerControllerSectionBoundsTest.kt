@@ -39,8 +39,11 @@ class TunerControllerSectionBoundsTest {
         }
         // setup/boot EPG同期の設定は従来どおりschedule等を除外しない。
         check(scan.filterBytes.isEmpty() && scan.mask.isEmpty())
-        check(TunerController.sectionSettingsForPid(com.maleicacid.tvinput.aribsi.WellKnownSectionPid.PAT, liveEitPfOnly = true)
-            .single().filterBytes.isEmpty())
+        val pat =
+            TunerController
+                .sectionSettingsForPid(com.maleicacid.tvinput.aribsi.WellKnownSectionPid.PAT, liveEitPfOnly = true)
+                .single()
+        check(pat.filterBytes.isEmpty())
     }
 
     @Test fun ordinarySectionFiltersKeepCrcEnabled() {
