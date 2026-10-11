@@ -34,10 +34,35 @@ class SectionIngestController(
     @Volatile var inputDeliveryLossCount: Int = 0
         private set
 
-    // transport拒否の観測だけを同期保護し、SI意味解析は既存owner/JNIから移さない。
+    private val droppedByPid = linkedMapOf<TsPid, Int>()
+
+    // 同一Session内の別選局でSDT診断値を混同しない。
     @Synchronized
-    fun recordInputDeliveryLoss() {
+    fun resetForTune() {
+        inputDeliveryLossCount = 0
+        droppedByPid.clear()
+        counters.clear()
+    }
+
+    @Synchronized
+    fun recordInputDeliveryLoss(pid: TsPid? = null) {
         inputDeliveryLossCount++
+        if (pid != null) droppedByPid[pid] = (droppedByPid[pid] ?: 0) + 1
+    }
+
+    @Suppress("MagicNumber")
+    @Synchronized
+    fun sdtDeliveryDiagnostic(): String {
+        val pid = WellKnownSectionPid.SDT_BAT
+        val actual =
+            counters.entries
+                .filter { it.key.first == pid && it.key.second == 0x42 && it.key.third == SiStatus.OK }
+                .sumOf { it.value.accepted }
+        val other =
+            counters.entries
+                .filter { it.key.first == pid && it.key.second == 0x46 && it.key.third == SiStatus.OK }
+                .sumOf { it.value.accepted }
+        return "sdtActualAccepted=$actual sdtOtherAccepted=$other sdtPidDropped=${droppedByPid[pid] ?: 0}"
     }
 
     private val counters = linkedMapOf<Triple<TsPid, Int, Int>, MutableCounter>()
@@ -68,10 +93,14 @@ class SectionIngestController(
             )
         }
 
+    @Synchronized
+    private fun lossByPidSummary(): String =
+        droppedByPid.entries.sortedBy { it.key.value }.joinToString(",") { "${it.key.value}:${it.value}" }
+
     fun broadcastClockSnapshot(): AribBroadcastClockFact? = engine.broadcastClockSnapshot()
 
     fun diagnosticSummary(): String =
-        "inputDeliveryLoss=$inputDeliveryLossCount; " +
+        "inputDeliveryLoss=$inputDeliveryLossCount lostByPid=${lossByPidSummary()}; " +
             diagnostics().joinToString("; ") { c ->
                 "pid=${c.pid.value} table=${c.tableId} status=${c.status} ok=" +
                     "${c.acceptedCount} invalidSection=${c.invalidSectionCount} malformed=${c.malformedCount} " +

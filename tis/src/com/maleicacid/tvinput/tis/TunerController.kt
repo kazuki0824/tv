@@ -1235,7 +1235,7 @@ class TunerController(
                     }
                 }
             }) {
-                if (!released && tuneAccepted && generation == tuneGeneration) ingest?.recordInputDeliveryLoss()
+                if (!released && tuneAccepted && generation == tuneGeneration) ingest?.recordInputDeliveryLoss(pid)
             }
         }.onFailure { error ->
             if (!released) {

@@ -21,7 +21,9 @@ class AribSiEngine(
     ): SiIngestResult =
         lock.withLock {
             val status = nativeParser.ingestSection(pid, section)
-            Log.d(LogTags.ARIBSI, "section 取り込み pid=${pid.value} size=${section.size} status=$status")
+            if (status != SiStatus.OK) {
+                Log.w(LogTags.ARIBSI, "section 取り込み異常 pid=${pid.value} size=${section.size} status=$status")
+            }
             SiIngestResult(pid = pid, status = status)
         }
 

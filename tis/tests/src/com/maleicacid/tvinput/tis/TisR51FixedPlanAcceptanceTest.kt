@@ -2192,6 +2192,22 @@ class TisR51FixedPlanAcceptanceTest {
         check(SectionIngestController.statusBucketForTest(SiStatus.INVALID_SECTION) == "invalid_section")
         check(SectionIngestController.statusBucketForTest(SiStatus.MALFORMED_DESCRIPTOR) == "malformed")
         check(SectionIngestController.statusBucketForTest(SiStatus.INTERNAL_ERROR) == "malformed")
+        // Sectionの受信は不要。選局単位の配送損失集計だけを検査する。
+        val engine = com.maleicacid.tvinput.aribsi.AribSiEngine(object : android.content.ContextWrapper(null) {})
+        try {
+            val sections = SectionIngestController(engine)
+            sections.recordInputDeliveryLoss(TsPid(0x11))
+            sections.recordInputDeliveryLoss(TsPid(0))
+            check(sections.inputDeliveryLossCount == 2)
+            check("sdtPidDropped=1" in sections.sdtDeliveryDiagnostic())
+            check("17:1" in sections.diagnosticSummary())
+            check("0:1" in sections.diagnosticSummary())
+            sections.resetForTune()
+            check(sections.inputDeliveryLossCount == 0)
+            check("sdtPidDropped=0" in sections.sdtDeliveryDiagnostic())
+        } finally {
+            engine.close()
+        }
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

@@ -461,6 +461,18 @@ class PlaybackStartGateTest {
         }
     }
 
+    @Test fun repeatedUnavailableReasonIsSuppressedUntilChangeOrNewAvailability() {
+        val gate = VideoUnavailableNotificationGate()
+        check(gate.shouldNotify(android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING))
+        check(!gate.shouldNotify(android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING))
+        check(gate.shouldNotify(android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN))
+        check(!gate.shouldNotify(android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN))
+        check(gate.shouldNotify(android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN))
+        check(!gate.shouldNotify(android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN))
+        gate.reset()
+        check(gate.shouldNotify(android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN))
+    }
+
     private fun signature(
         videoPid: TsPid?,
         audioPid: TsPid?,
