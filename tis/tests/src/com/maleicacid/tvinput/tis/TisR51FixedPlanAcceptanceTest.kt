@@ -2202,15 +2202,24 @@ class TisR51FixedPlanAcceptanceTest {
             check(sections.onSection(TsPid(0x11), actual).status == SiStatus.OK)
             check(sections.onSection(TsPid(0x11), other).status == SiStatus.OK)
             check("sdtActualAccepted=1 sdtOtherAccepted=1" in sections.sdtDeliveryDiagnostic())
-            sections.recordInputDeliveryLoss(TsPid(0x11))
+            sections.recordSdtRead(TsPid(0x11), 0x42)
+            sections.recordSdtRead(TsPid(0x11), 0x46)
+            sections.recordSdtRead(TsPid(0), 0x42) // 他PIDはSDTとして計上しない
+            sections.recordInputDeliveryLoss(TsPid(0x11), tableId = 0x42)
             sections.recordInputDeliveryLoss(TsPid(0))
             check(sections.inputDeliveryLossCount == 2)
             check("sdtPidDropped=1" in sections.sdtDeliveryDiagnostic())
+            check("sdtActualRead=1 sdtOtherRead=1" in sections.sdtDeliveryDiagnostic())
+            check("sdtActualDropped=1 sdtOtherDropped=0" in sections.sdtDeliveryDiagnostic())
             check("17:1" in sections.diagnosticSummary())
             check("0:1" in sections.diagnosticSummary())
             sections.resetForTune()
             check(sections.inputDeliveryLossCount == 0)
-            check(sections.sdtDeliveryDiagnostic() == "sdtActualAccepted=0 sdtOtherAccepted=0 sdtPidDropped=0")
+            check(
+                sections.sdtDeliveryDiagnostic() ==
+                    "sdtActualAccepted=0 sdtOtherAccepted=0 sdtPidDropped=0 " +
+                    "sdtActualRead=0 sdtOtherRead=0 sdtActualDropped=0 sdtOtherDropped=0",
+            )
         } finally {
             engine.close()
         }

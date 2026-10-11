@@ -35,19 +35,46 @@ class SectionIngestController(
         private set
 
     private val droppedByPid = linkedMapOf<TsPid, Int>()
+    private var sdtActualReadCount = 0
+    private var sdtOtherReadCount = 0
+    private var sdtActualDroppedCount = 0
+    private var sdtOtherDroppedCount = 0
 
     // 同一Session内の別選局でSDT診断値を混同しない。
     @Synchronized
     fun resetForTune() {
         inputDeliveryLossCount = 0
         droppedByPid.clear()
+        sdtActualReadCount = 0
+        sdtOtherReadCount = 0
+        sdtActualDroppedCount = 0
+        sdtOtherDroppedCount = 0
         counters.clear()
     }
 
+    // 正常長のfilter.read()が得たSDT-actual/otherをcontroller queue投入前に観測する。
+    // これでHAL未配送・queue投入拒否・Rust解析拒否を区別できる。
+    @Suppress("MagicNumber")
     @Synchronized
-    fun recordInputDeliveryLoss(pid: TsPid? = null) {
+    fun recordSdtRead(pid: TsPid, tableId: Int) {
+        if (pid != WellKnownSectionPid.SDT_BAT) return
+        when (tableId) {
+            0x42 -> sdtActualReadCount++
+            0x46 -> sdtOtherReadCount++
+        }
+    }
+
+    @Suppress("MagicNumber")
+    @Synchronized
+    fun recordInputDeliveryLoss(pid: TsPid? = null, tableId: Int? = null) {
         inputDeliveryLossCount++
         if (pid != null) droppedByPid[pid] = (droppedByPid[pid] ?: 0) + 1
+        if (pid == WellKnownSectionPid.SDT_BAT) {
+            when (tableId) {
+                0x42 -> sdtActualDroppedCount++
+                0x46 -> sdtOtherDroppedCount++
+            }
+        }
     }
 
     @Suppress("MagicNumber")
@@ -62,7 +89,9 @@ class SectionIngestController(
             counters.entries
                 .filter { it.key.first == pid && it.key.second == 0x46 && it.key.third == SiStatus.OK }
                 .sumOf { it.value.accepted }
-        return "sdtActualAccepted=$actual sdtOtherAccepted=$other sdtPidDropped=${droppedByPid[pid] ?: 0}"
+        return "sdtActualAccepted=$actual sdtOtherAccepted=$other sdtPidDropped=${droppedByPid[pid] ?: 0} " +
+            "sdtActualRead=$sdtActualReadCount sdtOtherRead=$sdtOtherReadCount " +
+            "sdtActualDropped=$sdtActualDroppedCount sdtOtherDropped=$sdtOtherDroppedCount"
     }
 
     private val counters = linkedMapOf<Triple<TsPid, Int, Int>, MutableCounter>()
