@@ -275,4 +275,11 @@ jobs:
           for path in paths:
               ElementTree.parse(path)
               print(path)
+          # Mainline Codec2が初期無効にするTV domainの製品opt-inを検査する。
+          codec = ElementTree.parse("tis/config/media_codecs_c2.xml").getroot()
+          domain = codec.find("./Settings/Domain[@name='tv']")
+          assert domain is not None
+          assert domain.get("enabled") == "true" and domain.get("update") == "true"
+          integration = Path("tis/config/product_integration.mk").read_text()
+          assert "tis/config/media_codecs_c2.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/media_codecs_c2.xml" in integration
           PY
