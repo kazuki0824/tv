@@ -73,7 +73,6 @@ class MaleicacidLiveSession(
     private var captionEnabled: Boolean = false
     private var streamVolume: Float = 1.0f
     private var playbackState: PlaybackStartState = PlaybackStartState.Idle
-    private val videoUnavailableGate = VideoUnavailableNotificationGate()
 
     // セクション更新ごとの重複ログを抑える診断用の最終出力値.判定の正本ではない。
     private var lastPlaybackGateDiagnostic: String? = null
@@ -233,7 +232,7 @@ class MaleicacidLiveSession(
         sessionExecutor.executeTerminalCleanup {
             runCatching {
                 try {
-                    notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                    notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                 } finally {
                     onRelease()
                 }
@@ -273,13 +272,12 @@ class MaleicacidLiveSession(
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
         this.surface = surface
         tunerController.setSurface(surface)
-        if (surface != null) videoUnavailableGate.reset()
         tracePlaybackGate(if (surface == null) "SURFACE_DETACHED" else "SURFACE_ATTACHED")
         if (surface == null) {
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
-            notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
         } else {
             playbackState = PlaybackStartState.Idle
             refreshDynamicSiAndCasFilters()
@@ -398,7 +396,7 @@ class MaleicacidLiveSession(
             if (cleanup !== failure) failure.addSuppressed(cleanup)
         }
         runCatching {
-            notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
         }.onFailure { notification ->
             if (notification !== failure) failure.addSuppressed(notification)
         }
@@ -414,8 +412,7 @@ class MaleicacidLiveSession(
     private fun onTuneOnSessionExecutor(channelUri: Uri?): Boolean {
         if (channelUri == null) return false
         lastPlaybackGateDiagnostic = null
-        videoUnavailableGate.reset()
-        notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
+        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
         aribSiEngine.reset()
         sectionIngestController.resetForTune()
         playbackState = PlaybackStartState.Idle
@@ -445,7 +442,7 @@ class MaleicacidLiveSession(
         val outcome = tunerController.tuneForLive(channelUri)
         if (!outcome.success || outcome.channel == null) {
             tracePlaybackGate("TUNE_FAILED result=${outcome.resultCode} detail=${outcome.message}")
-            notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
             return false
         }
         currentService = outcome.channel.serviceKey
@@ -463,7 +460,7 @@ class MaleicacidLiveSession(
                 "serviceType=${outcome.channel.serviceType}",
         )
         if (PlaybackPolicy.isAudioOnlyService(outcome.channel.serviceType)) {
-            notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
         }
         refreshDynamicSiAndCasFilters()
         return true
@@ -525,7 +522,7 @@ class MaleicacidLiveSession(
                 try {
                     SectionFilterPolicy.completeCleanup(
                         { beginCaptionPresentationGeneration(-1L, false) },
-                        { notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
+                        { notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
                     )
                 } catch (cleanup: Exception) {
                     if (cleanup !== failure) failure.addSuppressed(cleanup)
@@ -545,7 +542,7 @@ class MaleicacidLiveSession(
             SectionFilterPolicy.completeCleanup(
                 { beginCaptionPresentationGeneration(-1L, false) },
                 {
-                    notifyVideoUnavailableIfChanged(
+                    notifyVideoUnavailable(
                         if (decision.registrationReady) {
                             TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN
                         } else {
@@ -576,7 +573,7 @@ class MaleicacidLiveSession(
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
-            notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
             return
         }
         if (service != null) {
@@ -593,11 +590,6 @@ class MaleicacidLiveSession(
     private fun currentServicePolicy() =
         com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
             .evaluateLive(latestLiveSnapshot, currentService)
-
-    // 同じ理由の通知だけを省き、状態変化・選局変更・映像復帰で再通知可能にする。
-    private fun notifyVideoUnavailableIfChanged(reason: Int) {
-        if (videoUnavailableGate.shouldNotify(reason)) notifyVideoUnavailable(reason)
-    }
 
     private fun tracePlaybackGate(stage: String) {
         val snapshot =
@@ -689,7 +681,7 @@ class MaleicacidLiveSession(
                         "audio-video serviceに現行対応のvideo ESがありません service=${service.serviceKey}",
                     )
                 }
-            notifyVideoUnavailableIfChanged(mapUnavailableReason(failure))
+            notifyVideoUnavailable(mapUnavailableReason(failure))
             return false
         }
         val signature = playbackSignatureFor(service, selection)
@@ -726,9 +718,9 @@ class MaleicacidLiveSession(
                 "firstFramePending=${result?.firstFramePending} pipelineGeneration=${result?.generation} " +
                 "diagnostics=${result?.diagnostics} next=$next",
         )
-        commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailableIfChanged(it) }
+        commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
         val started = next is PlaybackStartState.Started
-        if (started && audioOnly) notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
+        if (started && audioOnly) notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
         return started
     }
 
@@ -857,7 +849,7 @@ class MaleicacidLiveSession(
                             switched.firstFramePending,
                             switched.switchedAudio,
                         )
-                    commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailableIfChanged(it) }
+                    commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
                 }
                 if (switched?.switchedAudio == true) {
                     notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
@@ -1129,16 +1121,12 @@ class MaleicacidLiveSession(
             ContentAccessDecision.Allow -> {
                 rememberAllowedContent()
                 notifyContentAllowed()
-                videoUnavailableGate.reset()
                 notifyVideoAvailable()
             }
 
             is ContentAccessDecision.HoldPrevious -> {
                 holdPreviousParentalAccessState(decision.reason)
-                if (lastParentalAccessState == ParentalAccessState.ALLOWED) {
-                    videoUnavailableGate.reset()
-                    notifyVideoAvailable()
-                }
+                if (lastParentalAccessState == ParentalAccessState.ALLOWED) notifyVideoAvailable()
             }
         }
     }
@@ -1151,7 +1139,7 @@ class MaleicacidLiveSession(
                 if (restart.videoOnly) audioFallbackDisabled = true
                 updatePlaybackStartState(next)
             },
-            notifyUnavailable = { notifyVideoUnavailableIfChanged(it) },
+            notifyUnavailable = { notifyVideoUnavailable(it) },
         )
     }
 
@@ -1160,7 +1148,7 @@ class MaleicacidLiveSession(
         frontendSignalUnavailable = false
         playbackState = PlaybackStartState.Stopped
         beginCaptionPresentationGeneration(-1L, false)
-        notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
     }
 
     private fun handleFrontendTuneEvent(
@@ -1174,14 +1162,13 @@ class MaleicacidLiveSession(
                 playbackState = PlaybackStartState.Stopped
                 tunerController.stopPlayback()
                 beginCaptionPresentationGeneration(-1L, false)
-                notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_WEAK_SIGNAL)
+                notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_WEAK_SIGNAL)
             }
 
             OnTuneEventListener.SIGNAL_LOCKED -> {
                 if (!frontendSignalUnavailable) return
                 frontendSignalUnavailable = false
                 playbackState = PlaybackStartState.Idle
-                videoUnavailableGate.reset()
                 refreshDynamicSiAndCasFilters()
             }
         }
@@ -1200,7 +1187,7 @@ class MaleicacidLiveSession(
         if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED) {
             playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
             beginCaptionPresentationGeneration(-1L, false)
-            notifyVideoUnavailableIfChanged(mapUnavailableReason(reason))
+            notifyVideoUnavailable(mapUnavailableReason(reason))
             return
         }
         val audioFailure =
@@ -1218,7 +1205,7 @@ class MaleicacidLiveSession(
                 }
                 playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
                 beginCaptionPresentationGeneration(-1L, false)
-                notifyVideoUnavailableIfChanged(mapUnavailableReason(reason))
+                notifyVideoUnavailable(mapUnavailableReason(reason))
                 return
             }
             android.util.Log.w(
@@ -1246,7 +1233,7 @@ class MaleicacidLiveSession(
                     )
             }
         }
-        notifyVideoUnavailableIfChanged(mapUnavailableReason(reason))
+        notifyVideoUnavailable(mapUnavailableReason(reason))
     }
 
     private fun stopPlaybackForBlockedContent(blocked: BlockedContent) {
@@ -1329,7 +1316,7 @@ class MaleicacidLiveSession(
                 ) {
                     stopPlaybackForBlockedContent(blocked)
                 } else {
-                    notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                    notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                 }
             }
 
@@ -1338,7 +1325,7 @@ class MaleicacidLiveSession(
                     com.maleicacid.tvinput.common.LogTags.TIS,
                     "TvProvider rating query failure中で直前状態が無いため、許可通知を出さず映像不可にします reason=$reason",
                 )
-                notifyVideoUnavailableIfChanged(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
             }
         }
     }

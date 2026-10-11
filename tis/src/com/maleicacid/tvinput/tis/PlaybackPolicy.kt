@@ -21,20 +21,3 @@ object PlaybackPolicy {
             else -> true
         }
 }
-
-/** 同じ利用不能理由の連続通知だけを抑え、選局変更・映像復帰時にresetする。 */
-internal class VideoUnavailableNotificationGate {
-    private var lastReason: Int? = null
-
-    @Synchronized
-    fun shouldNotify(reason: Int): Boolean {
-        if (lastReason == reason) return false
-        lastReason = reason
-        return true
-    }
-
-    @Synchronized
-    fun reset() {
-        lastReason = null
-    }
-}
