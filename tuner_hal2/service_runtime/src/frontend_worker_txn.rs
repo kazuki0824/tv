@@ -3545,7 +3545,8 @@ fn run_frontend_backend_tune_session_worker(
         Ok(())
     })();
     // 例外経路でlive_pumpを保持していた場合も、joinより先にread待ちを解除する。
-    if body_result.is_err() && live_pump.is_some() && backend == FrontendBackendKind::Px4CharDevice {
+    if body_result.is_err() && live_pump.is_some() && backend == FrontendBackendKind::Px4CharDevice
+    {
         if let Err(stop_error) = session.stop() {
             body_result = Err(match std::mem::replace(&mut body_result, Ok(())) {
                 Err(primary) => compose_frontend_cleanup_error(
