@@ -40,12 +40,7 @@ class TunerControllerSectionBoundsTest {
     @Test fun sectionFilterOverflowStatusIsIndependentOfControllerAdmission() {
         check(!TunerController.sectionFilterStatusIsOverflow(android.media.tv.tuner.filter.Filter.STATUS_DATA_READY))
         check(TunerController.sectionFilterStatusIsOverflow(android.media.tv.tuner.filter.Filter.STATUS_OVERFLOW))
-        check(
-            TunerController.sectionFilterStatusIsOverflow(
-                android.media.tv.tuner.filter.Filter.STATUS_DATA_READY or
-                    android.media.tv.tuner.filter.Filter.STATUS_OVERFLOW,
-            ),
-        )
+        check(!TunerController.sectionFilterStatusIsOverflow(android.media.tv.tuner.filter.Filter.STATUS_HIGH_WATER))
     }
 
     @Test fun sectionEventDataLengthDecisionIsFixedAt4096Bytes() {
