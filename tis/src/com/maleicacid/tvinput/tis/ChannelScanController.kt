@@ -14,8 +14,10 @@ import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.TransportKey
+import com.maleicacid.tvinput.aribsi.WellKnownSectionPid
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -137,7 +139,9 @@ class ChannelScanController(
 
     init {
         tunerController.setSectionIngestController(ingestController)
-        tunerController.setOnSectionIngestedCallback { refreshDynamicSectionFilters() }
+        tunerController.setOnSectionIngestedCallback { pid ->
+            if (pid != null && shouldRefreshScanPmtFilters(pid)) refreshDynamicSectionFilters()
+        }
         tunerController.setOnTunerResourceLostCallback { lostGeneration ->
             scanGenerationFence.onLost(lostGeneration)
         }
@@ -724,6 +728,8 @@ class ChannelScanController(
         tuneGeneration: Long,
     ): SiCollectionResult {
         val policy = DEFAULT_SI_POLICY
+        val inputDeliveryLossAtStart = ingestController.inputDeliveryLossCount
+        val filterOverflowAtStart = ingestController.filterOverflowCount
         val startedAt = android.os.SystemClock.elapsedRealtime()
         var lastCounts: ServiceCounts? = null
         var stableSince = startedAt
@@ -842,10 +848,13 @@ class ChannelScanController(
                 finalRegistrationReadyServices = finalCounts.registrationReady,
             )
         val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+        val candidateInputDeliveryLoss = (ingestController.inputDeliveryLossCount - inputDeliveryLossAtStart).coerceAtLeast(0)
+        val candidateFilterOverflow = (ingestController.filterOverflowCount - filterOverflowAtStart).coerceAtLeast(0)
+        val candidateTransportDiagnostic = "candidateInputDeliveryLoss=$candidateInputDeliveryLoss candidateFilterOverflow=$candidateFilterOverflow"
         val message =
             when (outcome) {
                 SiCollectionOutcome.COMPLETE -> {
-                    if (ingestController.inputDeliveryLossCount == 0) null else ingestController.diagnosticSummary()
+                    if (candidateInputDeliveryLoss == 0 && candidateFilterOverflow == 0) null else "$candidateTransportDiagnostic; ${ingestController.diagnosticSummary()}"
                 }
 
                 SiCollectionOutcome.SIGNAL_UNAVAILABLE -> {
@@ -858,7 +867,7 @@ class ChannelScanController(
                         "clearLivePlaybackStaticallyEligibleServices=${finalCounts.clearLivePlaybackStaticallyEligible} " +
                         "registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} " +
                         "missingInstances=${finalCounts.collectionStatus.missing} " +
-                        "sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
+                        "$candidateTransportDiagnostic sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
                 }
             }
         Log.i(LogTags.TIS, "scan 候補の SI 収集結果 candidate=$candidate outcome=$outcome complete=$complete counts=$finalCounts message=$message")
@@ -1222,3 +1231,5 @@ internal fun tunerPriorityHintUseCase(purpose: ScanPurpose): Int =
         ScanPurpose.BACKGROUND_MAINTENANCE,
         -> TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND
     }
+
+internal fun shouldRefreshScanPmtFilters(pid: TsPid): Boolean = pid == WellKnownSectionPid.PAT
