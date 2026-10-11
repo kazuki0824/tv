@@ -29,7 +29,7 @@ use maleicacid_tuner_hal2_common::{
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
-    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLiveReaderDescriptor,
+    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpReport, FrontendLiveReaderDescriptor,
     FrontendScanPhase, FrontendSignalState, FrontendTmccPartialReceptionObservation,
     FrontendTmccTsidListObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
     FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
@@ -2810,6 +2810,22 @@ fn finish_started_px4_live_pump(
     Ok(Some(FrontendLockWaitOutcome::Locked))
 }
 
+// PX4のread()はbackend STOPがringbufferを起床させるまで戻らない場合がある。
+// STOP失敗ならpump ownerを保持し、joinの前に失敗を公開する。
+fn stop_stream_then_join_live_pump(
+    live_pump: &mut Option<FrontendLivePumpOwner>,
+    stop_streaming: impl FnOnce() -> Result<(), HalError>,
+) -> Result<Option<FrontendLivePumpReport>, HalError> {
+    if live_pump.is_none() {
+        return Ok(None);
+    }
+    stop_streaming()?;
+    live_pump
+        .take()
+        .map(FrontendLivePumpOwner::join_after_stop)
+        .transpose()
+}
+
 fn reconcile_px4_live_pump_consumer(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -2832,16 +2848,11 @@ fn reconcile_px4_live_pump_consumer(
         return Ok(());
     }
 
-    // px4_charのread待ちをringbuffer_stop/wake_upで解除してからpumpをjoinする。
-    // stop失敗時はpump所有を保持して失敗を伝える。
-    session.stop()?;
-    let Some(owner) = live_pump.take() else {
-        return Err(HalError::internal(
+    let report = stop_stream_then_join_live_pump(live_pump, || session.stop())?
+        .ok_or_else(|| HalError::internal(
             HalInternalKind::InvariantViolation,
             "consumer再検証時にlive pump所有が消失しました",
-        ));
-    };
-    let report = owner.join_after_stop()?;
+        ))?;
     {
         let mut guard = lock_runtime(
             runtime,
@@ -2855,6 +2866,82 @@ fn reconcile_px4_live_pump_consumer(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod px4_stop_before_join_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_device::FrontendLivePacketSink;
+    use std::io::{self, Read};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct ReadUntilStreamingStopped {
+        stopped: Arc<AtomicBool>,
+        started: Option<mpsc::Sender<()>>,
+    }
+
+    impl Read for ReadUntilStreamingStopped {
+        fn read(&mut self, _bytes: &mut [u8]) -> io::Result<usize> {
+            if let Some(started) = self.started.take() {
+                started.send(()).expect("read started");
+            }
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !self.stopped.load(Ordering::Acquire) {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "STOP not issued before join"));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(0)
+        }
+    }
+
+    struct DiscardPackets;
+    impl FrontendLivePacketSink for DiscardPackets {
+        fn deliver_ts_packet(
+            &mut self,
+            _packet: &[u8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE],
+        ) -> Result<(), HalError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stream_stop_precedes_blocked_reader_join_and_stop_failure_retains_owner() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut pump = Some(
+            FrontendLivePumpOwner::start(
+                FrontendLiveReaderDescriptor::px4_from_control_fd(
+                    1,
+                    FrontendDevicePath::new("/dev/test-px4"),
+                ),
+                Box::new(ReadUntilStreamingStopped {
+                    stopped: Arc::clone(&stopped),
+                    started: Some(started_tx),
+                }),
+                Box::new(DiscardPackets),
+            )
+            .expect("pump started"),
+        );
+        started_rx.recv_timeout(Duration::from_secs(1)).expect("reader entered");
+
+        let error = stop_stream_then_join_live_pump(&mut pump, || {
+            Err(HalError::Unsupported("stop error"))
+        })
+        .expect_err("stop failure cannot be treated as successful cleanup");
+        assert!(matches!(error, HalError::Unsupported(_)));
+        assert!(pump.is_some(), "failed stop must retain pump ownership");
+
+        let report = stop_stream_then_join_live_pump(&mut pump, || {
+            stopped.store(true, Ordering::Release);
+            Ok(())
+        })
+        .expect("streaming stop allows join")
+        .expect("pump report");
+        assert!(report.stopped_by_cancel || report.reached_eof);
+        assert!(pump.is_none());
+    }
 }
 
 fn wait_for_frontend_qualified_lock(
@@ -3525,12 +3612,15 @@ fn run_frontend_backend_tune_session_worker(
                     })?,
             ));
         }
-        // PX4 read()がリングバッファ待機中でも、capture停止でreadを解除してからjoinする。
-        if live_pump.is_some() && backend == FrontendBackendKind::Px4CharDevice {
-            session.stop()?;
-        }
-        if let Some(owner) = live_pump.take() {
-            let report = owner.join_after_stop()?;
+        let completed_pump = if backend == FrontendBackendKind::Px4CharDevice {
+            stop_stream_then_join_live_pump(&mut live_pump, || session.stop())?
+        } else {
+            live_pump
+                .take()
+                .map(FrontendLivePumpOwner::join_after_stop)
+                .transpose()?
+        };
+        if let Some(report) = completed_pump {
             let mut guard = lock_runtime(
                 &runtime,
                 "service runtime lock poisoned while recording stopped live pump report",
