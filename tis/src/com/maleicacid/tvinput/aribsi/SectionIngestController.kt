@@ -34,10 +34,19 @@ class SectionIngestController(
     @Volatile var inputDeliveryLossCount: Int = 0
         private set
 
+    @Volatile var filterOverflowCount: Int = 0
+        private set
+
     // transport拒否の観測だけを同期保護し、SI意味解析は既存owner/JNIから移さない。
     @Synchronized
     fun recordInputDeliveryLoss() {
         inputDeliveryLossCount++
+    }
+
+    // HAL Filter buffer満杯の通知は、TIS側の受付拒否件数と混同しない。
+    @Synchronized
+    fun recordFilterOverflow() {
+        filterOverflowCount++
     }
 
     private val counters = linkedMapOf<Triple<TsPid, Int, Int>, MutableCounter>()
@@ -71,7 +80,7 @@ class SectionIngestController(
     fun broadcastClockSnapshot(): AribBroadcastClockFact? = engine.broadcastClockSnapshot()
 
     fun diagnosticSummary(): String =
-        "inputDeliveryLoss=$inputDeliveryLossCount; " +
+        "inputDeliveryLoss=$inputDeliveryLossCount filterOverflow=$filterOverflowCount; " +
             diagnostics().joinToString("; ") { c ->
                 "pid=${c.pid.value} table=${c.tableId} status=${c.status} ok=" +
                     "${c.acceptedCount} invalidSection=${c.invalidSectionCount} malformed=${c.malformedCount} " +
