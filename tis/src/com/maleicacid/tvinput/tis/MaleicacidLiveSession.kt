@@ -73,7 +73,8 @@ class MaleicacidLiveSession(
     private var captionEnabled: Boolean = false
     private var streamVolume: Float = 1.0f
     private var playbackState: PlaybackStartState = PlaybackStartState.Idle
-    // セクション更新ごとの重複ログを抑える診断用の最終出力値。判定の正本ではない。
+
+    // セクション更新ごとの重複ログを抑える診断用の最終出力値.判定の正本ではない。
     private var lastPlaybackGateDiagnostic: String? = null
     private var latestLiveSnapshot: com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot? = null
     private val latestService: AribService?
@@ -453,7 +454,10 @@ class MaleicacidLiveSession(
         )
         currentRatingProfile = AribRatingMapper.profileForDeliverySystem(outcome.channel.deliverySystem)
         currentGeneration = outcome.generation
-        tracePlaybackGate("TUNE_ACCEPTED delivery=${outcome.channel.deliverySystem} serviceType=${outcome.channel.serviceType}")
+        tracePlaybackGate(
+            "TUNE_ACCEPTED delivery=${outcome.channel.deliverySystem} " +
+                "serviceType=${outcome.channel.serviceType}",
+        )
         if (PlaybackPolicy.isAudioOnlyService(outcome.channel.serviceType)) {
             notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
         }
@@ -601,7 +605,8 @@ class MaleicacidLiveSession(
         if (!servicePolicy.livePlaybackEligible(casLinkageReady)) {
             tracePlaybackGate(
                 "START_GATED state=${servicePolicy.state} casReady=${servicePolicy.casDecisionReady} " +
-                    "requiresCas=${servicePolicy.requiresCas} linkageReady=$casLinkageReady reasons=${servicePolicy.reasons}",
+                    "requiresCas=${servicePolicy.requiresCas} linkageReady=$casLinkageReady " +
+                    "reasons=${servicePolicy.reasons}",
             )
             return false
         }
@@ -669,7 +674,8 @@ class MaleicacidLiveSession(
             notifyVideoUnavailable(mapUnavailableReason(failure))
             return false
         }
-        val signature = playbackSignatureFor(service, selection) ?: run {
+        val signature = playbackSignatureFor(service, selection)
+        if (signature == null) {
             tracePlaybackGate("INVALID_PLAYBACK_SIGNATURE")
             return false
         }
