@@ -2055,7 +2055,7 @@ class TunerController(
         private const val EXHAUSTED_TUNE_GENERATION = -1L
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
 
-        internal fun sectionFilterStatusIsOverflow(status: Int): Boolean = (status and Filter.STATUS_OVERFLOW) != 0
+        internal fun sectionFilterStatusIsOverflow(status: Int): Boolean = status == Filter.STATUS_OVERFLOW
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 
         @Suppress("MagicNumber", "MaxLineLength")
