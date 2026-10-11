@@ -189,6 +189,9 @@ class TvProviderWriter private constructor(
             val values = channelValues(channel, providerData)
             val existingId = existingIds[channel.serviceKey]
             if (existingId == null) {
+                // 新規rowはProvider既定値に依存せず非表示で開始する。
+                // 初期可視化はsetup完了transactionだけが確定し、one-segは対象にしない。
+                values.put(TvContract.Channels.COLUMN_BROWSABLE, 0)
                 val insertedIdResult = channelStore.insertChannel(values)
                 if (insertedIdResult.isFailure) {
                     failures +=
@@ -210,6 +213,7 @@ class TvProviderWriter private constructor(
                 }
             } else {
                 values.remove(TvContract.Channels.COLUMN_TYPE)
+                values.remove(TvContract.Channels.COLUMN_BROWSABLE)
                 values.remove(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1)
                 val updateResult = channelStore.updateChannel(existingId, values)
                 if (updateResult.isFailure) {

@@ -73,6 +73,8 @@ class MaleicacidLiveSession(
     private var captionEnabled: Boolean = false
     private var streamVolume: Float = 1.0f
     private var playbackState: PlaybackStartState = PlaybackStartState.Idle
+    // セクション更新ごとの重複ログを抑える診断用の最終出力値。判定の正本ではない。
+    private var lastPlaybackGateDiagnostic: String? = null
     private var latestLiveSnapshot: com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot? = null
     private val latestService: AribService?
         get() = latestLiveSnapshot?.services?.firstOrNull { it.serviceKey == currentService }
@@ -269,6 +271,7 @@ class MaleicacidLiveSession(
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
         this.surface = surface
         tunerController.setSurface(surface)
+        tracePlaybackGate(if (surface == null) "SURFACE_DETACHED" else "SURFACE_ATTACHED")
         if (surface == null) {
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
@@ -407,6 +410,7 @@ class MaleicacidLiveSession(
     @Suppress("ReturnCount")
     private fun onTuneOnSessionExecutor(channelUri: Uri?): Boolean {
         if (channelUri == null) return false
+        lastPlaybackGateDiagnostic = null
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
         aribSiEngine.reset()
         playbackState = PlaybackStartState.Idle
@@ -435,6 +439,7 @@ class MaleicacidLiveSession(
         currentTrackSignature = emptySet()
         val outcome = tunerController.tuneForLive(channelUri)
         if (!outcome.success || outcome.channel == null) {
+            tracePlaybackGate("TUNE_FAILED result=${outcome.resultCode} detail=${outcome.message}")
             notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
             return false
         }
@@ -448,6 +453,7 @@ class MaleicacidLiveSession(
         )
         currentRatingProfile = AribRatingMapper.profileForDeliverySystem(outcome.channel.deliverySystem)
         currentGeneration = outcome.generation
+        tracePlaybackGate("TUNE_ACCEPTED delivery=${outcome.channel.deliverySystem} serviceType=${outcome.channel.serviceType}")
         if (PlaybackPolicy.isAudioOnlyService(outcome.channel.serviceType)) {
             notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
         }
@@ -482,6 +488,10 @@ class MaleicacidLiveSession(
         val pmtPids = transaction.pmtPidsFor(serviceKey)
         val decision = currentServicePolicy()
         if (playbackState == PlaybackStartState.Idle && previouslyPending && initialLiveSiPending(decision)) {
+            tracePlaybackGate(
+                "SI_PENDING servicePresent=${service != null} pmtPids=$pmtPids " +
+                    "state=${decision.state} reasons=${decision.reasons}",
+            )
             tunerController.updatePmtFilters(pmtPids, currentGeneration)
             return
         }
@@ -499,7 +509,7 @@ class MaleicacidLiveSession(
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
         val casResult =
             try {
-                tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, currentGeneration, decision.casDecisionReady) ?: return
+                tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, currentGeneration, decision.casDecisionReady)
             } catch (failure: Exception) {
                 playbackState = PlaybackStartState.Stopped
                 try {
@@ -512,7 +522,15 @@ class MaleicacidLiveSession(
                 }
                 throw failure
             }
+        if (casResult == null) {
+            tracePlaybackGate("CAS_FILTER_UPDATE_UNAVAILABLE state=${decision.state} reasons=${decision.reasons}")
+            return
+        }
         if (!decision.casDecisionReady) {
+            tracePlaybackGate(
+                "CAS_FACTS_PENDING state=${decision.state} registrationReady=${decision.registrationReady} " +
+                    "reasons=${decision.reasons}",
+            )
             playbackState = PlaybackStartState.Stopped
             SectionFilterPolicy.completeCleanup(
                 { beginCaptionPresentationGeneration(-1L, false) },
@@ -532,9 +550,14 @@ class MaleicacidLiveSession(
             refreshCurrentProgramRatingState()
         }
         if (!decision.casDecisionReady) return
+        val casLinkageReady = currentCasLinkageReady()
         if (casResult.diagnostics.any { it.state == CasController.State.ERROR } ||
-            !decision.livePlaybackEligible(currentCasLinkageReady())
+            !decision.livePlaybackEligible(casLinkageReady)
         ) {
+            tracePlaybackGate(
+                "CAS_NOT_ELIGIBLE requiresCas=${decision.requiresCas} linkageReady=$casLinkageReady " +
+                    "reasons=${decision.reasons} casStates=${casResult.diagnostics.map { it.state }}",
+            )
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
@@ -544,6 +567,8 @@ class MaleicacidLiveSession(
         if (service != null) {
             updateTracks(service)
             maybeStartPlayback(service)
+        } else {
+            tracePlaybackGate("SERVICE_NOT_RESOLVED state=${decision.state} reasons=${decision.reasons}")
         }
     }
 
@@ -554,15 +579,35 @@ class MaleicacidLiveSession(
         com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
             .evaluateLive(latestLiveSnapshot, currentService)
 
+    private fun tracePlaybackGate(stage: String) {
+        val snapshot =
+            "generation=$currentGeneration service=$currentService " +
+                "surfaceReady=${surface != null} playbackState=$playbackState stage=$stage"
+        if (snapshot == lastPlaybackGateDiagnostic) return
+        lastPlaybackGateDiagnostic = snapshot
+        android.util.Log.i(
+            com.maleicacid.tvinput.common.LogTags.TIS,
+            "live再生判定 sessionId=$sessionId $snapshot",
+        )
+    }
+
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount")
     private fun maybeStartPlayback(service: AribService): Boolean {
         val servicePolicy = currentServicePolicy()
-        if (!servicePolicy.livePlaybackEligible(currentCasLinkageReady())) return false
+        val casLinkageReady = currentCasLinkageReady()
+        if (!servicePolicy.livePlaybackEligible(casLinkageReady)) {
+            tracePlaybackGate(
+                "START_GATED state=${servicePolicy.state} casReady=${servicePolicy.casDecisionReady} " +
+                    "requiresCas=${servicePolicy.requiresCas} linkageReady=$casLinkageReady reasons=${servicePolicy.reasons}",
+            )
+            return false
+        }
         when (val decision = contentAccessDecision()) {
             is ContentAccessDecision.Block -> {
+                tracePlaybackGate("PARENTAL_BLOCKED")
                 rememberBlockedContent(decision.blocked)
                 stopPlaybackForBlockedContent(decision.blocked)
                 return false
@@ -575,7 +620,10 @@ class MaleicacidLiveSession(
 
             is ContentAccessDecision.HoldPrevious -> {
                 holdPreviousParentalAccessState(decision.reason)
-                if (lastParentalAccessState != ParentalAccessState.ALLOWED) return false
+                if (lastParentalAccessState != ParentalAccessState.ALLOWED) {
+                    tracePlaybackGate("PARENTAL_DECISION_PENDING reason=${decision.reason}")
+                    return false
+                }
             }
         }
         val initialSelection =
@@ -599,6 +647,10 @@ class MaleicacidLiveSession(
             )
         val audioOnly = PlaybackPolicy.isAudioOnlyService(service.serviceType)
         if (PlaybackPolicy.shouldRejectSelection(service.serviceType ?: -1, selection)) {
+            tracePlaybackGate(
+                "UNSUPPORTED_AV_SELECTION videoType=${selection.video?.streamType} " +
+                    "audioType=${selection.audio?.streamType} audioOnly=$audioOnly",
+            )
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
@@ -617,11 +669,20 @@ class MaleicacidLiveSession(
             notifyVideoUnavailable(mapUnavailableReason(failure))
             return false
         }
-        val signature = playbackSignatureFor(service, selection) ?: return false
+        val signature = playbackSignatureFor(service, selection) ?: run {
+            tracePlaybackGate("INVALID_PLAYBACK_SIGNATURE")
+            return false
+        }
         val stateBeforeAttempt = playbackState
         if (!PlaybackStartTransitions.shouldAttempt(stateBeforeAttempt, signature)) {
+            tracePlaybackGate("START_SKIPPED state=$stateBeforeAttempt")
             return stateBeforeAttempt is PlaybackStartState.Started && stateBeforeAttempt.signature == signature
         }
+        tracePlaybackGate(
+            "START_ATTEMPT videoPid=${selection.video?.elementaryPid} videoType=${selection.video?.streamType} " +
+                "audioPid=${selection.audio?.elementaryPid} audioType=${selection.audio?.streamType} " +
+                "requiresCas=${servicePolicy.requiresCas}",
+        )
         playbackState = PlaybackStartState.Starting(signature)
         val result = tunerController.startPlayback(selection, servicePolicy.requiresCas, currentGeneration)
         val next =
@@ -636,6 +697,11 @@ class MaleicacidLiveSession(
                     result.firstFramePending || (if (audioOnly) result.startedAudio else result.startedVideo),
                 )
             }
+        tracePlaybackGate(
+            "START_RESULT video=${result?.startedVideo} audio=${result?.startedAudio} " +
+                "firstFramePending=${result?.firstFramePending} pipelineGeneration=${result?.generation} " +
+                "diagnostics=${result?.diagnostics} next=$next",
+        )
         commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
         val started = next is PlaybackStartState.Started
         if (started && audioOnly) notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
@@ -1027,6 +1093,7 @@ class MaleicacidLiveSession(
         val state = playbackState as? PlaybackStartState.WaitingFirstOutput ?: return
         if (state.pipelineGeneration != generation) return
         playbackState = PlaybackStartState.Started(state.signature, state.pipelineGeneration)
+        tracePlaybackGate("FIRST_FRAME_AVAILABLE pipelineGeneration=$generation")
         onCaptionPlaybackClockChanged()
         when (val decision = contentAccessDecision()) {
             is ContentAccessDecision.Block -> {

@@ -124,7 +124,7 @@ class TvProviderWriterUpsertTest {
         check(
             store.rows.values
                 .single()
-                .get(TvContract.Channels.COLUMN_BROWSABLE) == null,
+                .getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 0,
         )
         check(
             store.rows.values
@@ -212,7 +212,7 @@ class TvProviderWriterUpsertTest {
                 ).isSuccess,
         )
         check(store.rows.getValue(normalId).getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 1)
-        check(store.rows.getValue(oneSegId).get(TvContract.Channels.COLUMN_BROWSABLE) == null)
+        check(store.rows.getValue(oneSegId).getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 0)
     }
 
     @Test fun rescanPreservesExistingHiddenChannel() {
@@ -314,7 +314,7 @@ class TvProviderWriterUpsertTest {
             )
         val channelId = requireNotNull(first.insertedChannelIds[key])
         check(first.initialBrowsablePendingChannelIds[key] == channelId)
-        check(store.rows.getValue(channelId).get(TvContract.Channels.COLUMN_BROWSABLE) == null)
+        check(store.rows.getValue(channelId).getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 0)
 
         val nextWriter = TvProviderWriter("input.test", store, testOnly = true)
         val next =
@@ -395,6 +395,12 @@ class TvProviderWriterUpsertTest {
         check(replacement.getAsString(TvContract.Channels.COLUMN_TYPE) == TvContract.Channels.TYPE_1SEG)
         check(replacement.getAsLong(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1) == 0L)
         check(replacement.getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 0)
+
+        // Live TV/ユーザーが明示的に可視化しても、再scanでは可視性を上書きしない。
+        store.rows.getValue(oldId).put(TvContract.Channels.COLUMN_BROWSABLE, 1)
+        val visibleRescan = writer.upsertChannels(listOf(normal.copy(displayName = "再確認")))
+        check(visibleRescan.updated == 1 && visibleRescan.failures.isEmpty())
+        check(store.rows.getValue(oldId).getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 1)
     }
 
     @Test
