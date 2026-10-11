@@ -2832,6 +2832,9 @@ fn reconcile_px4_live_pump_consumer(
         return Ok(());
     }
 
+    // px4_charのread待ちをringbuffer_stop/wake_upで解除してからpumpをjoinする。
+    // stop失敗時はpump所有を保持して失敗を伝える。
+    session.stop()?;
     let Some(owner) = live_pump.take() else {
         return Err(HalError::internal(
             HalInternalKind::InvariantViolation,
@@ -2851,7 +2854,7 @@ fn reconcile_px4_live_pump_consumer(
             ctx.cancel_reason()?,
         )?;
     }
-    session.stop()
+    Ok(())
 }
 
 fn wait_for_frontend_qualified_lock(
@@ -3522,6 +3525,10 @@ fn run_frontend_backend_tune_session_worker(
                     })?,
             ));
         }
+        // PX4 read()がリングバッファ待機中でも、capture停止でreadを解除してからjoinする。
+        if live_pump.is_some() && backend == FrontendBackendKind::Px4CharDevice {
+            session.stop()?;
+        }
         if let Some(owner) = live_pump.take() {
             let report = owner.join_after_stop()?;
             let mut guard = lock_runtime(
@@ -3537,6 +3544,19 @@ fn run_frontend_backend_tune_session_worker(
         }
         Ok(())
     })();
+    // 例外経路でlive_pumpを保持していた場合も、joinより先にread待ちを解除する。
+    if body_result.is_err() && live_pump.is_some() && backend == FrontendBackendKind::Px4CharDevice {
+        if let Err(stop_error) = session.stop() {
+            body_result = Err(match std::mem::replace(&mut body_result, Ok(())) {
+                Err(primary) => compose_frontend_cleanup_error(
+                    "frontend live pump停止前のPX4 streaming停止に失敗しました",
+                    primary,
+                    stop_error,
+                ),
+                Ok(()) => stop_error,
+            });
+        }
+    }
     stop_live_pump_after_worker_error(&mut live_pump, &mut body_result);
     finish_backend_session_after_worker_body(session, body_result, ctx.cancel_reason())
 }
