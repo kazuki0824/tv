@@ -2196,6 +2196,12 @@ class TisR51FixedPlanAcceptanceTest {
         val engine = com.maleicacid.tvinput.aribsi.AribSiEngine(object : android.content.ContextWrapper(null) {})
         try {
             val sections = SectionIngestController(engine)
+            // 実放送のサービス名などを含まない最小構文。CRC-32/MPEG-2は有効。
+            val actual = "42f00c7fe3c100007fe3ffed225f15".chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            val other = "46f00c7fe3c100007fe3ff06d36674".chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            check(sections.onSection(TsPid(0x11), actual).status == SiStatus.OK)
+            check(sections.onSection(TsPid(0x11), other).status == SiStatus.OK)
+            check("sdtActualAccepted=1 sdtOtherAccepted=1" in sections.sdtDeliveryDiagnostic())
             sections.recordInputDeliveryLoss(TsPid(0x11))
             sections.recordInputDeliveryLoss(TsPid(0))
             check(sections.inputDeliveryLossCount == 2)
@@ -2204,7 +2210,7 @@ class TisR51FixedPlanAcceptanceTest {
             check("0:1" in sections.diagnosticSummary())
             sections.resetForTune()
             check(sections.inputDeliveryLossCount == 0)
-            check("sdtPidDropped=0" in sections.sdtDeliveryDiagnostic())
+            check(sections.sdtDeliveryDiagnostic() == "sdtActualAccepted=0 sdtOtherAccepted=0 sdtPidDropped=0")
         } finally {
             engine.close()
         }
