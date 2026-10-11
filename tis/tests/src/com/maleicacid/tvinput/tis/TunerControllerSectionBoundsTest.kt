@@ -24,9 +24,9 @@ class TunerControllerSectionBoundsTest {
         }
     }
 
-    @Test fun liveEitAcceptsPresentFollowingOnlyWithoutChangingScanCollection() {
+    @Test fun liveAndSetupEitAcceptPresentFollowingWithoutChangingEpgMaintenance() {
         val eit = com.maleicacid.tvinput.aribsi.WellKnownSectionPid.EIT
-        val live = TunerController.sectionSettingsForPid(eit, liveEitPfOnly = true).single()
+        val live = TunerController.sectionSettingsForPid(eit, eitPfOnly = true).single()
         val scan = TunerController.sectionSettingsForPid(eit).single()
         check(live.isRepeat && live.isCrcEnabled)
         check(scan.isRepeat && scan.isCrcEnabled)
@@ -37,11 +37,11 @@ class TunerControllerSectionBoundsTest {
             val permitted = (tableId and mask) == (tableFilter and mask)
             check(permitted == (tableId == 0x4e || tableId == 0x4f))
         }
-        // setup/boot EPG同期の設定は従来どおりschedule等を除外しない。
+        // boot EPG同期・background maintenanceは従来どおりschedule等も収集する。
         check(scan.filterBytes.isEmpty() && scan.mask.isEmpty())
         val pat =
             TunerController
-                .sectionSettingsForPid(com.maleicacid.tvinput.aribsi.WellKnownSectionPid.PAT, liveEitPfOnly = true)
+                .sectionSettingsForPid(com.maleicacid.tvinput.aribsi.WellKnownSectionPid.PAT, eitPfOnly = true)
                 .single()
         check(pat.filterBytes.isEmpty())
     }
