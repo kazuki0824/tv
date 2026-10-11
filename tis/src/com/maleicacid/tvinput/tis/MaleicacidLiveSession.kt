@@ -651,7 +651,9 @@ class MaleicacidLiveSession(
                 audioDualMono = currentAudioComponent?.dualMono,
             )
         val audioOnly = PlaybackPolicy.isAudioOnlyService(service.serviceType)
-        if (PlaybackPolicy.shouldRejectSelection(service.serviceType ?: -1, selection)) {
+        val partialReception =
+            latestLiveSnapshot?.semanticFactsByServiceKey?.get(service.serviceKey)?.partialReception == true
+        if (PlaybackPolicy.shouldRejectSelection(service.serviceType ?: -1, selection, partialReception)) {
             tracePlaybackGate(
                 "UNSUPPORTED_AV_SELECTION videoType=${selection.video?.streamType} " +
                     "audioType=${selection.audio?.streamType} audioOnly=$audioOnly",

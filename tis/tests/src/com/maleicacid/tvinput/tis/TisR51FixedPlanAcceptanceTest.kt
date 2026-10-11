@@ -635,6 +635,20 @@ class TisR51FixedPlanAcceptanceTest {
         val oneSegValues = store.channels.values.single()
         check(oneSegValues.getAsString(TvContract.Channels.COLUMN_TYPE) == TvContract.Channels.TYPE_1SEG)
         check(oneSegValues.getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 0)
+
+        val selection =
+            TunerController.AvStreamSelection(
+                serviceKey = key,
+                pcrPid = TsPid(0x100),
+                video = video,
+                audio = audio,
+            )
+        // scan登録できるワンセグは、同じPartial Reception factで再生も許可する。
+        check(!PlaybackPolicy.shouldRejectSelection(0xc0, selection, partialReception = oneSegFacts.partialReception))
+        // service_type=0xC0だけではワンセグと推定せず、映像ES欠落も許容しない。
+        check(PlaybackPolicy.shouldRejectSelection(0xc0, selection, partialReception = false))
+        check(PlaybackPolicy.shouldRejectSelection(0xc0, selection.copy(video = null), partialReception = true))
+        check(PlaybackPolicy.shouldRejectSelection(0x03, selection, partialReception = true))
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
