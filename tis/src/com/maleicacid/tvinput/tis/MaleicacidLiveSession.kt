@@ -1030,16 +1030,18 @@ class MaleicacidLiveSession(
                     builder.build()
                 },
             )
+            // トラック集合が変わらないSI更新では、選択通知も繰り返さない。
+            // 明示的な選択操作はonSelectTrackで別途通知する。
+            tracks.firstOrNull { it.type == TvTrackInfo.TYPE_VIDEO }?.let { notifyTrackSelected(TvTrackInfo.TYPE_VIDEO, it.id) }
+            val selectedAudio =
+                preferredAudioTrackId?.let { wanted -> tracks.firstOrNull { it.id == wanted && it.type == TvTrackInfo.TYPE_AUDIO } }
+                    ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO }
+            selectedAudio?.let {
+                preferredAudioTrackId = it.id
+                notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id)
+            }
+            updateSubtitleSelection(tracks)
         }
-        tracks.firstOrNull { it.type == TvTrackInfo.TYPE_VIDEO }?.let { notifyTrackSelected(TvTrackInfo.TYPE_VIDEO, it.id) }
-        val selectedAudio =
-            preferredAudioTrackId?.let { wanted -> tracks.firstOrNull { it.id == wanted && it.type == TvTrackInfo.TYPE_AUDIO } }
-                ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO }
-        selectedAudio?.let {
-            preferredAudioTrackId = it.id
-            notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id)
-        }
-        updateSubtitleSelection(tracks)
         updateSuperimposeSelection(service)
     }
 
