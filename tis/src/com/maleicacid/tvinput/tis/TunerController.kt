@@ -2059,6 +2059,7 @@ class TunerController(
 
         private const val EXHAUSTED_TUNE_GENERATION = -1L
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
+
         // product内で最大1MiBのdrain済みsection payloadを保持する。1 Filter=64KiB。
         private const val MAX_CONTROLLER_SECTION_PENDING_BYTES = 1024 * 1024L
 
@@ -2068,6 +2069,7 @@ class TunerController(
                 minOf(filterCount * SECTION_FILTER_BUFFER_BYTES, MAX_CONTROLLER_SECTION_PENDING_BYTES)
             return (admissionBytes / SectionFilterPolicy.MAX_SECTION_EVENT_BYTES).toInt()
         }
+
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 
         @Suppress("MagicNumber", "MaxLineLength")
