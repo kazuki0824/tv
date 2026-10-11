@@ -54,6 +54,17 @@ internal abstract class PrioritySerialExecutor(
     protected val pendingDataSlots =
         Semaphore(maxPendingDataTasks.also { require(it > 0) { "maxPendingDataTasksは正でなければなりません" } })
 
+    // Tuner生成時に得たdemux能力から、owner受理開始前の上限を一方向に拡張する。
+    // 未処理taskからpermitを逆算しない。shutdownNow/完了後の返却は既存の同一Semaphoreが所有する。
+    private var configuredDataSlotCapacity = maxPendingDataTasks
+
+    @Synchronized
+    protected fun expandDataSlotCapacity(limit: Int) {
+        require(limit >= configuredDataSlotCapacity) { "data上限を使用中に縮小してはなりません" }
+        pendingDataSlots.release(limit - configuredDataSlotCapacity)
+        configuredDataSlotCapacity = limit
+    }
+
     override fun beforeExecute(
         thread: Thread,
         runnable: Runnable,
