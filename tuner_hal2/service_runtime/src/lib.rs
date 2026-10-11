@@ -878,11 +878,13 @@ mod tests {
             .frontend_txn()
             .commit_frontend_active_tune_request(1_000_000, generation, request.clone())
             .unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
         start_frontend_worker_fixture(&mut runtime,
                 1_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
                 generation,
-                |ctx| {
+                move |ctx| {
+                    started_tx.send(()).expect("previous worker entered its body");
                     while !ctx.cancel_requested() {
                         std::thread::sleep(Duration::from_millis(1));
                     }
@@ -896,6 +898,9 @@ mod tests {
                 },
             )
             .unwrap();
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("previous worker must start before replacement request");
 
         let reserved_generation = runtime
             .frontend_txn()

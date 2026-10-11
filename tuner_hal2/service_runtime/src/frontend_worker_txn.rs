@@ -29,11 +29,12 @@ use maleicacid_tuner_hal2_common::{
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
-    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpReport, FrontendLiveReaderDescriptor,
-    FrontendScanPhase, FrontendSignalState, FrontendTmccPartialReceptionObservation,
-    FrontendTmccTsidListObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
-    FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
-    FrontendWorkerStopPoll, FrontendWorkerStopTicket, PreparedFrontendLivePump,
+    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpReport,
+    FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendSignalState,
+    FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
+    FrontendWorkerStopTicket, PreparedFrontendLivePump,
 };
 #[cfg(test)]
 use maleicacid_tuner_hal2_device::{FrontendRuntimeSnapshot, FrontendWorkerRegistry};
@@ -2848,11 +2849,13 @@ fn reconcile_px4_live_pump_consumer(
         return Ok(());
     }
 
-    let report = stop_stream_then_join_live_pump(live_pump, || session.stop())?
-        .ok_or_else(|| HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "consumer再検証時にlive pump所有が消失しました",
-        ))?;
+    let report =
+        stop_stream_then_join_live_pump(live_pump, || session.stop())?.ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "consumer再検証時にlive pump所有が消失しました",
+            )
+        })?;
     {
         let mut guard = lock_runtime(
             runtime,
@@ -2888,7 +2891,10 @@ mod px4_stop_before_join_tests {
             let deadline = Instant::now() + Duration::from_secs(2);
             while !self.stopped.load(Ordering::Acquire) {
                 if Instant::now() >= deadline {
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "STOP not issued before join"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "STOP not issued before join",
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -2924,12 +2930,13 @@ mod px4_stop_before_join_tests {
             )
             .expect("pump started"),
         );
-        started_rx.recv_timeout(Duration::from_secs(1)).expect("reader entered");
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader entered");
 
-        let error = stop_stream_then_join_live_pump(&mut pump, || {
-            Err(HalError::Unsupported("stop error"))
-        })
-        .expect_err("stop failure cannot be treated as successful cleanup");
+        let error =
+            stop_stream_then_join_live_pump(&mut pump, || Err(HalError::Unsupported("stop error")))
+                .expect_err("stop failure cannot be treated as successful cleanup");
         assert!(matches!(error, HalError::Unsupported(_)));
         assert!(pump.is_some(), "failed stop must retain pump ownership");
 
