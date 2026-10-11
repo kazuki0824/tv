@@ -281,6 +281,7 @@ class TunerController(
 
     @Volatile private var sectionIngestController: SectionIngestController? = null
     private var casController: CasController? = null
+
     // 同じownerから受理したPIDだけを渡す。nullはSectionでないCAS接続状態変更。
     private var onSectionIngestedCallback: ((TsPid?) -> Unit)? = null
     private var onTunerResourceLostCallback: ((Long) -> Unit)? = null

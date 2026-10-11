@@ -152,6 +152,8 @@ class SectionFilterRetryPolicyTest {
         check(failed.isEmpty())
     }
 
+    // PAT/非PATによる具体的な試行回数は本番定数ではなく独立した期待値として固定する。
+    @Suppress("MagicNumber")
     @Test
     fun scanRefreshesPmtOnlyOnPatAndPreservesDynamicRetryRemoval() {
         val pat = com.maleicacid.tvinput.aribsi.WellKnownSectionPid.PAT
