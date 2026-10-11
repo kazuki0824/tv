@@ -140,7 +140,7 @@ class MaleicacidLiveSession(
     init {
         tunerController.setSectionIngestController(sectionIngestController)
         tunerController.setCasController(casController)
-        tunerController.setOnSectionIngestedCallback { requestSiRefresh() }
+        tunerController.setOnSectionIngestedCallback { _ -> requestSiRefresh() }
         tunerController.setPlaybackCallbacks(
             onVideoAvailable = { generation -> enqueueSessionAction { handleFirstFrameAvailable(generation) } },
             onVideoUnavailable = { reason -> enqueueSessionAction { handlePlaybackUnavailable(reason) } },
