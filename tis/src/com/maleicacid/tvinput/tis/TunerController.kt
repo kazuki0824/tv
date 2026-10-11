@@ -1078,10 +1078,14 @@ class TunerController(
                     filter: Filter,
                     status: Int,
                 ) {
-                    Log.d(
-                        LogTags.TIS,
-                        "section filter 状態 inputId=$inputId pid=$pid status=$status generation=$generation",
-                    )
+                    // DATA_READYはsectionごとに繰り返され、ログ喪失の原因になるため記録しない。
+                    if (status == Filter.STATUS_DATA_READY) return
+                    val message = "section filter 状態 inputId=$inputId pid=$pid status=$status generation=$generation"
+                    if ((status and Filter.STATUS_OVERFLOW) != 0) {
+                        Log.w(LogTags.TIS, message)
+                    } else {
+                        Log.d(LogTags.TIS, message)
+                    }
                 }
             }
         val artifacts = mutableListOf<SectionFilterArtifact>()
