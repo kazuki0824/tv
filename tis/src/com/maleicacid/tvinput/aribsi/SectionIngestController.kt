@@ -56,7 +56,10 @@ class SectionIngestController(
     // これでHAL未配送・queue投入拒否・Rust解析拒否を区別できる。
     @Suppress("MagicNumber")
     @Synchronized
-    fun recordSdtRead(pid: TsPid, tableId: Int) {
+    fun recordSdtRead(
+        pid: TsPid,
+        tableId: Int,
+    ) {
         if (pid != WellKnownSectionPid.SDT_BAT) return
         when (tableId) {
             0x42 -> sdtActualReadCount++
@@ -66,7 +69,10 @@ class SectionIngestController(
 
     @Suppress("MagicNumber")
     @Synchronized
-    fun recordInputDeliveryLoss(pid: TsPid? = null, tableId: Int? = null) {
+    fun recordInputDeliveryLoss(
+        pid: TsPid? = null,
+        tableId: Int? = null,
+    ) {
         inputDeliveryLossCount++
         if (pid != null) droppedByPid[pid] = (droppedByPid[pid] ?: 0) + 1
         if (pid == WellKnownSectionPid.SDT_BAT) {

@@ -1206,7 +1206,8 @@ class TunerController(
     ) {
         val ingest = sectionIngestController
         val tableId = if (read == section.size) section.firstOrNull()?.toUByte()?.toInt() else null
-        if (tableId != null && !released && tuneAccepted && generation == tuneGeneration) {
+        val currentTune = !released && tuneAccepted && generation == tuneGeneration
+        if (tableId != null && currentTune) {
             ingest?.recordSdtRead(pid, tableId)
         }
         runCatching {
@@ -1239,7 +1240,9 @@ class TunerController(
                     }
                 }
             }) {
-                if (!released && tuneAccepted && generation == tuneGeneration) ingest?.recordInputDeliveryLoss(pid, tableId)
+                if (!released && tuneAccepted && generation == tuneGeneration) {
+                    ingest?.recordInputDeliveryLoss(pid, tableId)
+                }
             }
         }.onFailure { error ->
             if (!released) {
