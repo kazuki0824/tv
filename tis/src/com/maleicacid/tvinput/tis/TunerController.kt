@@ -483,7 +483,7 @@ class TunerController(
                 Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)
                 return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())
             }
-        return tuneResolvedChannel(resolved, eitPfOnly = true)
+        return tuneResolvedChannel(resolved, eitPfActualOnly = true)
     }
 
     internal data class BsFrontendSelectionResult(
@@ -854,12 +854,12 @@ class TunerController(
     @Suppress("MaxLineLength")
     fun tuneForScan(
         candidate: ScanCandidate,
-        eitPfOnly: Boolean = false,
-    ): TuneOutcome = callOnController { tuneForScanOnController(candidate, eitPfOnly) }
+        eitPfActualOnly: Boolean = false,
+    ): TuneOutcome = callOnController { tuneForScanOnController(candidate, eitPfActualOnly) }
 
     private fun tuneForScanOnController(
         candidate: ScanCandidate,
-        eitPfOnly: Boolean,
+        eitPfActualOnly: Boolean,
     ): TuneOutcome {
         val synthetic =
             ResolvedChannel(
@@ -876,7 +876,7 @@ class TunerController(
                 backendHint = candidate.backendHint,
                 satelliteBand = candidate.satelliteBand,
             )
-        return tuneResolvedChannel(synthetic, eitPfOnly = eitPfOnly)
+        return tuneResolvedChannel(synthetic, eitPfActualOnly = eitPfActualOnly)
     }
 
     // cancelTuningはleaseを返さない。Frontend種類の切替では既存leaseをSDKへ返却し、
@@ -895,7 +895,7 @@ class TunerController(
     @Suppress("ReturnCount", "MaxLineLength")
     private fun tuneResolvedChannel(
         channel: ResolvedChannel,
-        eitPfOnly: Boolean,
+        eitPfActualOnly: Boolean,
     ): TuneOutcome {
         resetBeforeTune()
         val tunerInstance = tuner ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
@@ -931,7 +931,7 @@ class TunerController(
                 return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, e.message.orEmpty())
             }
         return if (result == Tuner.RESULT_SUCCESS) {
-            initializeAcceptedTune(channel, nextGeneration, eitPfOnly)
+            initializeAcceptedTune(channel, nextGeneration, eitPfActualOnly)
             TuneOutcome(true, result, channel, tuneGeneration)
         } else {
             val cleanupFailure = runCatching { tunerInstance.clearOnTuneEventListener() }.exceptionOrNull()
@@ -1000,12 +1000,12 @@ class TunerController(
     private fun initializeAcceptedTune(
         channel: ResolvedChannel?,
         generation: Long,
-        eitPfOnly: Boolean,
+        eitPfActualOnly: Boolean,
     ) {
         // 準備に失敗したgenerationも再使用しない。配送・CAS受付はcommitまでfalse。
         tuneGeneration = generation
         completeTuneInitialization(
-            prepare = { prepareInitialSectionFiltersOnController(generation, eitPfOnly) },
+            prepare = { prepareInitialSectionFiltersOnController(generation, eitPfActualOnly) },
             commit = {
                 currentTune = channel
                 tuneAccepted = true
@@ -1017,7 +1017,7 @@ class TunerController(
     @Suppress("MaxLineLength")
     private fun prepareInitialSectionFiltersOnController(
         generation: Long,
-        eitPfOnly: Boolean,
+        eitPfActualOnly: Boolean,
     ) {
         listOf(
             WellKnownSectionPid.PAT,
@@ -1029,7 +1029,7 @@ class TunerController(
         ).forEach { pid ->
             val handle =
                 SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) {
-                    createSectionFilter(pid, generation, eitPfOnly)
+                    createSectionFilter(pid, generation, eitPfActualOnly)
                 }
             check(handle.isOpen) { "初期section filterを開始できません pid=$pid" }
         }
@@ -1068,10 +1068,10 @@ class TunerController(
     private fun createSectionFilter(
         pid: TsPid,
         generation: Long,
-        eitPfOnly: Boolean = false,
+        eitPfActualOnly: Boolean = false,
     ): SectionFilterHandle {
         val tunerInstance = tuner ?: return UnavailableSectionFilterHandle(pid, "Tuner利用不可")
-        val requestedObjects = sectionSettingsForPid(pid, eitPfOnly).size
+        val requestedObjects = sectionSettingsForPid(pid, eitPfActualOnly).size
         val capacity = sectionFilterCapacity(tunerInstance)
         val currentObjects = currentSectionFilterObjectCount()
         if (capacity <= 0 || currentObjects > capacity - requestedObjects) {
@@ -1109,7 +1109,7 @@ class TunerController(
         val handle = TunerSectionFilterHandle(pid, artifacts, generation)
         sectionFilterHandles[pid] = handle
         try {
-            for (settings in sectionSettingsForPid(pid, eitPfOnly)) {
+            for (settings in sectionSettingsForPid(pid, eitPfActualOnly)) {
                 val filter =
                     tunerInstance.openFilter(
                         Filter.TYPE_TS,
@@ -2124,14 +2124,14 @@ class TunerController(
         @Suppress("MagicNumber", "MaxLineLength")
         internal fun sectionSettingsForPid(
             pid: TsPid,
-            eitPfOnly: Boolean = false,
+            eitPfActualOnly: Boolean = false,
         ): List<SectionSettingsWithSectionBits> {
-            // setupやliveにはp/fを使い、schedule全体はboot EPG同期と保守で収集する。
+            // 現在TSのp/f actualだけがライブ/初期登録に必要。other/scheduleはEPG同期と保守で収集する。
             // 第2 Filterや別queueを増やさず、既存Section Filterのtable_id maskのみを指定する。
             val tableIds: List<Int?> =
                 when {
                     pid == WellKnownSectionPid.TDT -> listOf(0x70, 0x73)
-                    pid == WellKnownSectionPid.EIT && eitPfOnly -> listOf(0x4e)
+                    pid == WellKnownSectionPid.EIT && eitPfActualOnly -> listOf(0x4e)
                     else -> listOf(null)
                 }
             return tableIds.map { tableId ->
@@ -2144,9 +2144,7 @@ class TunerController(
                     .apply {
                         if (tableId != null) {
                             setFilter(byteArrayOf(tableId.toByte()))
-                            // p/f actual(0x4e)とother(0x4f)を同じ1個のFilterで受理する。
-                            val mask = if (pid == WellKnownSectionPid.EIT && eitPfOnly) 0xfe else 0xff
-                            setMask(byteArrayOf(mask.toByte()))
+                            setMask(byteArrayOf(0xff.toByte()))
                             setMode(byteArrayOf(0))
                         }
                     }.build()
