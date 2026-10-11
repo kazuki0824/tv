@@ -288,7 +288,7 @@ class MaleicacidLiveSession(
     override fun onCreateOverlayView(): View = captionOverlayView
 
     override fun onSetStreamVolume(volume: Float) {
-        enqueueSessionAction { onSetStreamVolumeOnSessionExecutor(volume) }
+        enqueueSessionAction(control = true) { onSetStreamVolumeOnSessionExecutor(volume) }
     }
 
     private fun onSetStreamVolumeOnSessionExecutor(volume: Float) {
@@ -297,7 +297,7 @@ class MaleicacidLiveSession(
     }
 
     override fun onSetCaptionEnabled(enabled: Boolean) {
-        enqueueSessionAction {
+        enqueueSessionAction(control = true) {
             captionEnabled = enabled
             captionController.setEnabled(enabled)
             latestService?.let {
