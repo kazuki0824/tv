@@ -17,8 +17,8 @@ object SectionFilterPolicy {
 
     fun metadataForCasDecision(
         ready: Boolean,
-        metadata: List<com.maleicacid.tvinput.aribsi.CaMetadata>,
-    ): List<com.maleicacid.tvinput.aribsi.CaMetadata> = if (ready) metadata else emptyList()
+        metadata: List<CaMetadata>,
+    ): List<CaMetadata> = if (ready) metadata else emptyList()
 
     /** registryの所有はTunerControllerに残し、解放成功まで置換しない。 */
     internal fun openOwnedFilter(
