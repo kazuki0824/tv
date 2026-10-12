@@ -42,8 +42,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 
 /** 連続する同一CAS失敗の初回と二倍間隔の集約点だけを記録する。 */
-internal fun shouldLogCasDiagnosticOccurrence(count: Long): Boolean =
-    count > 0L && (count and (count - 1L)) == 0L
+internal fun shouldLogCasDiagnosticOccurrence(count: Long): Boolean = count > 0L && (count and (count - 1L)) == 0L
 
 /** ライブ視聴、スキャン、録画向けの Tuner 制御層。 */
 @Suppress(
@@ -1638,8 +1637,9 @@ class TunerController(
             return
         }
         diagnostics.forEach { diagnostic ->
-            val key = "$keyPrefix${diagnostic.caSystemId}:${diagnostic.errorCode}:" +
-                "${diagnostic.cause?.javaClass?.name}:${diagnostic.message}"
+            val key =
+                "$keyPrefix${diagnostic.caSystemId}:${diagnostic.errorCode}:" +
+                    "${diagnostic.cause?.javaClass?.name}:${diagnostic.message}"
             val count = (casWarningCounts[key] ?: 0L).let { if (it == Long.MAX_VALUE) it else it + 1 }
             casWarningCounts[key] = count
             if (shouldLogCasDiagnosticOccurrence(count)) {

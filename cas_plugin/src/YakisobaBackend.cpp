@@ -2,7 +2,9 @@
 #include "YakisobaBackend.h"
 
 #include <algorithm>
+#ifdef __ANDROID__
 #include <android/log.h>
+#endif
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -119,8 +121,13 @@ Result YakisobaBackend::credentialUnavailable(const char* stage, int errorNumber
     // The surrounding CAS mutex serializes this diagnostic with initialize().
     // Never log credential bytes, the card ID, or the key material.
     if (lastCredentialFailureStage_ != stage || lastCredentialFailureErrno_ != errorNumber) {
+#ifdef __ANDROID__
         __android_log_print(ANDROID_LOG_WARN, "MaleicacidCas",
                             "credential unavailable stage=%s errno=%d", stage, errorNumber);
+#else
+        std::fprintf(stderr, "MaleicacidCas: credential unavailable stage=%s errno=%d\n",
+                     stage, errorNumber);
+#endif
         lastCredentialFailureStage_ = stage;
         lastCredentialFailureErrno_ = errorNumber;
     }
@@ -161,8 +168,12 @@ Result YakisobaBackend::initialize() {
     if (restored != Result::Ok) return restored;
     initialized_ = true;
     if (!lastCredentialFailureStage_.empty()) {
+#ifdef __ANDROID__
         __android_log_print(ANDROID_LOG_INFO, "MaleicacidCas",
                             "credential source recovered");
+#else
+        std::fputs("MaleicacidCas: credential source recovered\n", stderr);
+#endif
         lastCredentialFailureStage_.clear();
         lastCredentialFailureErrno_ = 0;
     }
