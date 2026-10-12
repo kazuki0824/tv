@@ -251,9 +251,19 @@ class TvProviderWriter private constructor(
         if (!completed) {
             return channelStore.deleteChannels(insertedChannelIds).map {}
         }
-        if (initialBrowsablePendingChannelIds.isEmpty()) return Result.success(Unit)
+        if (initialBrowsablePendingChannelIds.isEmpty()) {
+            Log.i(LogTags.TIS, "setup channel初期可視化確定 inputId=$inputId pending=0 committed=0")
+            return Result.success(Unit)
+        }
         val committed = channelStore.commitInitialBrowsable(initialBrowsablePendingChannelIds)
-        if (committed.isSuccess) return Result.success(Unit)
+        if (committed.isSuccess) {
+            Log.i(
+                LogTags.TIS,
+                "setup channel初期可視化確定 inputId=$inputId pending=${initialBrowsablePendingChannelIds.size} " +
+                    "committed=${committed.getOrThrow()}",
+            )
+            return Result.success(Unit)
+        }
         val primary =
             committed.exceptionOrNull()
                 ?: IllegalStateException("setup channel初期可視化に失敗しました")

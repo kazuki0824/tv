@@ -64,6 +64,21 @@ class TvProviderVisibilityTransactionTest {
     }
 
     @Test
+    fun oneSegNotInPendingRowsRemainsHiddenOnSetupCompletion() {
+        val oneSegId = 4L
+        val oneSegValues =
+            ContentValues().apply {
+                put(TvContract.Channels._ID, oneSegId)
+                put(TvContract.Channels.COLUMN_BROWSABLE, 0)
+                put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1, 0L)
+            }
+        RuntimeEnvironment.getApplication().contentResolver.insert(TvContract.Channels.CONTENT_URI, oneSegValues)
+        check(writer.finalizeSetupChannels(true, setOf(oneSegId), setOf(1L, 2L, 3L)).isSuccess)
+        check(rowState(oneSegId) == (0 to 0L))
+        for (id in 1L..3L) check(rowState(id) == (1 to 0L))
+    }
+
+    @Test
     fun successfulBatchMakesAllPendingRowsBrowsable() {
         check(writer.finalizeSetupChannels(true, setOf(2L), setOf(1L, 2L, 3L)).isSuccess)
         for (id in 1L..3L) check(rowState(id) == (1 to 0L))
