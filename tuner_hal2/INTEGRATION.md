@@ -90,6 +90,16 @@ service list に tv_tuner_resource_mgr が存在する
 android.hardware.tv.tuner.ITuner/default が登録されている
 ```
 
+### mediatunerとTRMのFramework再起動時の登録寿命
+
+LineageOS 22.1 `frameworks/av/services/tuner/TunerService.cpp` は`TunerService`の生成時に`updateTunerResources()`を一度実行し、HALの`getFrontendIds()/getFrontendInfo()`から得た情報を`tv_tuner_resource_mgr`へ登録する。TRMは`system_server`が所有するため、`stop && start`やzygote再起動でTRMが新しくなっても、旧`mediatuner`が存続するとFrontend一覧が空のままになり、`Tuner.tune()`がFrontend資源取得時に`RESULT_UNAVAILABLE`を返す。
+
+通常の`tuner.server.enable` propertyによるLineageOSの`media.tuner`起動契約を変更せず、製品の`init/mediatuner-trm-lifecycle.rc`をHALの`init_rc`として`/vendor/etc/init`へ導入する。primary `zygote`が`stopped`または`restarting`となった場合、古いTRMへ登録済みの`media.tuner`を停止する。zygoteが`running`へ戻り、非lazy構成を示す`tuner.server.enable=true`が成立した時だけ再起動する。再生成された`mediatuner`はLineageOS標準の`waitForService("tv_tuner_resource_mgr")`を経由して新TRMへFrontendを登録する。
+
+起動に任意のsleepを挿入せず、Tuner HALのregistry、capability、Frontend種別、資源個数、Backendの成功条件を変更しない。TRMの空状態をHALが回避して直接Frontendを開くこともしない。lazy HAL構成は既存のon-demand起動に任せ、`tuner.server.enable`が偽のまま強制起動しない。
+
+実機受入れでは`getprop init.svc.media.tuner`と`pidof mediatuner`をFramework停止前後で確認し、`dumpsys tv_tuner_resource_mgr`にHAL由来のFrontendResourcesが再登録された後に`Tuner.tune()`を実行する。Frontend再登録の確認とCodec2へのFD使用許可（#200）の試験を混同しない。
+
 ## 4.1 CAS descrambler依存
 
 `libmaleicacid_tuner_hal2_descrambler` は `libmaleicacid_cas_key_client` を静的リンクする。共通product入口からCAS pluginと標準MediaCasServiceも製品へ組み込み、CAS側のvendor sepolicyを共通BoardConfig入口から取り込む。Tuner HALだけを単独で配置した構成ではproduction tokenの鍵解決は成立しない。

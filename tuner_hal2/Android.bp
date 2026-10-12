@@ -359,7 +359,10 @@ rust_binary {
     crate_name: "maleicacid_tuner_hal2_service_main",
     srcs: ["aidl_service/src/main.rs"],
     edition: "2021",
-    init_rc: ["init/android.hardware.tv.tuner-service.maleicacid2.rc"],
+    init_rc: [
+        "init/android.hardware.tv.tuner-service.maleicacid2.rc",
+        "init/mediatuner-trm-lifecycle.rc",
+    ],
     vintf_fragments: ["manifest/android.hardware.tv.tuner-service.maleicacid2.xml"],
     rustlibs: [
         "liblogger",

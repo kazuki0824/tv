@@ -1,0 +1,13 @@
+# Framework (zygote/system_server) replacement drops TRM's in-memory frontend map.
+# LineageOS mediatuner registers it only in the native TunerService constructor.
+# Restart the existing framework tuner service, not the vendor tuner HAL.
+on property:init.svc.zygote=stopped
+    stop media.tuner
+
+on property:init.svc.zygote=restarting
+    stop media.tuner
+
+# Keep the standard non-lazy tuner.server.enable gate. The mediatuner constructor
+# waits for tv_tuner_resource_mgr and repopulates its frontend resources.
+on property:init.svc.zygote=running && property:tuner.server.enable=true
+    start media.tuner
