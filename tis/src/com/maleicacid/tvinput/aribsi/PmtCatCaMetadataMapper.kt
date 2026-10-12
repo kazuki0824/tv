@@ -20,11 +20,12 @@ class PmtCatCaMetadataMapper {
         services: List<AribService>,
     ): List<CaMetadata> {
         val serviceByKey = services.associateBy { it.serviceKey }
-        // PMT第2ループのECM_PID=0x1FFFは非スクランブルESの明示。raw fact自体は削除しない。
-        val clearEsKeys =
+        // 第2ループでESのCA方式が明示されていれば、第1ループの同方式のECMを
+        // そのESへ重複展開しない。ECM_PID=0x1FFFも明示的な非スクランブル指定。
+        val explicitEsKeys =
             metadata
                 .filter {
-                    it.source == CaMetadataSource.ELEMENTARY_STREAM && it.ecmPid == TsPid.NULL &&
+                    it.source == CaMetadataSource.ELEMENTARY_STREAM &&
                         it.serviceKey != null && it.elementaryPid != null
                 }.map { Triple(it.serviceKey, it.caSystemId, it.elementaryPid) }
                 .toSet()
@@ -42,7 +43,7 @@ class PmtCatCaMetadataMapper {
             val service = serviceByKey[programCa.serviceKey] ?: return@forEach
             val ecmPid = programCa.ecmPid ?: return@forEach
             service.streams.forEach stream@{ stream ->
-                if (Triple(programCa.serviceKey, programCa.caSystemId, stream.elementaryPid) in clearEsKeys) return@stream
+                if (Triple(programCa.serviceKey, programCa.caSystemId, stream.elementaryPid) in explicitEsKeys) return@stream
                 val key = EsBindingKey(programCa.serviceKey.toString(), programCa.caSystemId, ecmPid, stream.elementaryPid)
                 if (existingEsKeys.add(key)) {
                     expanded +=

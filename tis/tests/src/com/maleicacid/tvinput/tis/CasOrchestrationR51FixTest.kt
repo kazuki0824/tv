@@ -51,6 +51,11 @@ class CasOrchestrationR51FixTest {
         check(result.any { it.ecmPid == TsPid(0x0031) && it.elementaryPid == videoPid })
         check(result.any { it.ecmPid == TsPid(0x0031) && it.elementaryPid == audioPid })
         check(result.none { it.elementaryPid == dataPid })
+        // 第2ループの実ECMが第1ループのECMと異なる場合も、ESの明示指定を優先する。
+        val esSpecific = clearData.copy(ecmPid = TsPid(0x0032))
+        val mappedSpecific = mapper.expandProgramLevelToElementaryStreams(listOf(program, esSpecific), listOf(service))
+        check(mappedSpecific.count { it.elementaryPid == dataPid } == 1)
+        check(mappedSpecific.single { it.elementaryPid == dataPid }.ecmPid == TsPid(0x0032))
         check(mapper.expandProgramLevelToElementaryStreams(listOf(program.copy(ecmPid = TsPid(0x1fff))), listOf(service)).isEmpty())
 
         val rawClear = CaDescriptor(0x0005, TsPid(0x1fff), CaDescriptorScope.ES, dataPid, byteArrayOf(0x09))
