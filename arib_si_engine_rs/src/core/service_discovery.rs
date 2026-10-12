@@ -1314,18 +1314,24 @@ impl ServiceDiscoveryCollector {
                 .collect::<Vec<_>>();
             missing_for_service.sort_unstable();
             missing_for_service.dedup();
-            // TR-B14: 0x1FFFはECM非送出であり、raw CA descriptorの存在だけではCASを要求しない。
-            let has_program_ca_descriptor = service
-                .program_ca_descriptors
-                .iter()
-                .any(|ca| ca.ca_pid != 0x1fff);
-            let pmt_pid_resolved = service.pmt_pid.is_some();
-
-            let semantic_requires_cas = has_program_ca_descriptor
-                || service
+            // 0x1FFFはECM非送出。ES第2ループは同方式のPROGRAMに優先する。
+            // raw CA descriptorは引き続きsnapshotに保持する。
+            let semantic_requires_cas = service.streams.iter().any(|stream| {
+                let es_descriptors = service
                     .es_ca_descriptors
                     .iter()
-                    .any(|metadata| metadata.descriptors.iter().any(|ca| ca.ca_pid != 0x1fff));
+                    .filter(|group| group.elementary_pid == stream.elementary_pid)
+                    .flat_map(|group| &group.descriptors)
+                    .collect::<Vec<_>>();
+                es_descriptors.iter().any(|ca| ca.ca_pid != 0x1fff)
+                    || service.program_ca_descriptors.iter().any(|program_ca| {
+                        program_ca.ca_pid != 0x1fff
+                            && !es_descriptors
+                                .iter()
+                                .any(|es_ca| es_ca.ca_system_id == program_ca.ca_system_id)
+                    })
+            });
+            let pmt_pid_resolved = service.pmt_pid.is_some();
             let ca_descriptors_resolved = service.pmt_parsed
                 && !snapshot
                     .malformed_ca_descriptor_diagnostics
@@ -3075,6 +3081,49 @@ mod semantic_facts_coverage_tests {
             }],
         });
         assert!(!semantic_facts_for(null_es).requires_cas);
+
+        // PROGRAM ECMがあっても全ESが同方式のclearを明示すればCAS不要。
+        let mut all_clear = base_service(vec![stream(0x0101, 0x1b), stream(0x0102, 0x0f)]);
+        all_clear.program_ca_descriptors.push(CaDescriptor {
+            ca_system_id: 0x0005,
+            ca_pid: 0x0031,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe0, 0x31],
+        });
+        let null_descriptor = CaDescriptor {
+            ca_system_id: 0x0005,
+            ca_pid: 0x1fff,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xff, 0xff],
+        };
+        all_clear.es_ca_descriptors = vec![
+            EsCaMetadata {
+                elementary_pid: 0x0101,
+                descriptors: vec![null_descriptor.clone()],
+            },
+            EsCaMetadata {
+                elementary_pid: 0x0102,
+                descriptors: vec![null_descriptor],
+            },
+        ];
+        let facts = semantic_facts_for(all_clear.clone());
+        assert!(!facts.requires_cas);
+        assert_eq!(facts.program_ca_descriptors.len(), 1);
+        assert_eq!(facts.es_ca_descriptors.len(), 2);
+
+        // 一部のESだけclearであれば、残るESにはPROGRAM ECMを適用する。
+        all_clear.es_ca_descriptors.pop();
+        assert!(semantic_facts_for(all_clear.clone()).requires_cas);
+        all_clear.es_ca_descriptors.push(EsCaMetadata {
+            elementary_pid: 0x0102,
+            descriptors: vec![CaDescriptor {
+                ca_system_id: 0x0005,
+                ca_pid: 0x0032,
+                private_data: Vec::new(),
+                raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe0, 0x32],
+            }],
+        });
+        assert!(semantic_facts_for(all_clear).requires_cas);
     }
 
     #[test]

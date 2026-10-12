@@ -111,7 +111,7 @@ discovery profileはTISの選局候補から`ISDB_T / BS / CS110`を明示して
 
 `arib_si_engine_rs` は、service / transport単位の `ServiceSemanticFacts` として、ONID / TSID / SID、ARIB `service_type`のraw 8-bit値、NIT Partial Reception Descriptor (0xFB) に列挙されたSIDから導出する`partialReception`放送fact、PMT/PCRの存在・構文状態、audio/video/subtitle/data ES一覧とcodec signaling、caption/superimpose用Data Component Descriptorの`data_component_id / DMF / Timing / automatic-presentation`等の放送fact、CA descriptor / free_CA_mode、CA descriptor等から導出した`requiresCas`、SMD意味状態、欠落・不正理由を構造化してTISへ渡す。`ServiceSemanticFacts` は放送信号から導ける事実と構文・意味解析結果だけを持ち、Android channel登録可否、EPG公開可否、現行productのdecoder/CAS対応可否、字幕言語のplayable capability、ライブ再生可否を算出しない。caption management data由来のlanguage set/TMD/STMはPES runtime factなので本snapshotへ混ぜない。Android channelを登録するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。`Channels.COLUMN_SERVICE_TYPE`への最終投影は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本crateはAndroid generic `TvContract.Channels.SERVICE_TYPE_*`への意味変換を行わない。
 
-CA_descriptorはraw値を保持する一方、`CA_PID=0x1FFF`はECM非送出であり、単独では`requiresCas`を肯定しない。他の実ECMを示すCA descriptorは独立に評価する。ARIB TR-B14 6.0-E1 第5編 §4.10.1・§4.10.3（https://www.arib.or.jp/english/html/overview/doc/8-TR-B14v6_0-5p5-E1.pdf）に従う。
+CA_descriptorはraw値を保持する一方、`CA_PID=0x1FFF`はECM非送出であり、単独では`requiresCas`を肯定しない。`ServiceSemanticFacts.requires_cas`はサービスの各ESへ実効的に適用するCAをCA方式別に評価する。第2ループの明示CA descriptorは同方式のPROGRAM指定に優先するため、全ESが非スクランブルを明示すればPROGRAMに有効ECMがあっても`false`、一部ESにだけ非スクランブル指定があれば残るESのPROGRAM ECMを判定する。raw descriptorと実効復号要否は区別する。他の実ECMを示すCA descriptorは独立に評価する。ARIB TR-B14 6.0-E1 第5編 §4.10.1・§4.10.3（https://www.arib.or.jp/english/html/overview/doc/8-TR-B14v6_0-5p5-E1.pdf）に従う。
 
 ## system_management_descriptor と通常受信判定
 

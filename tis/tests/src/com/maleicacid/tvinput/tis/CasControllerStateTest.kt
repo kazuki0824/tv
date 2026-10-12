@@ -596,6 +596,23 @@ class CasControllerStateTest {
         check(factory.created.getValue(CasController.SupportedCasSystemIds.ARIB_STD_B25).processedEmmCount == 1)
     }
 
+    @Test
+    fun clearServiceWithCatDoesNotInvokeUnavailablePluginOrBlockPlayback() {
+        val cat = CaMetadata(null, 0x0005, null, TsPid(0x0010), null, source = CaMetadataSource.CAT)
+        val decision = ServicePolicyDecision(serviceKey, true, false, true, emptyList())
+        check(decision.livePlaybackEligible(casLinkageReady = false))
+        val runtime = SectionFilterPolicy.metadataForLiveService(decision.requiresCas, serviceKey, listOf(cat))
+        check(runtime.isEmpty())
+        CasController(mediaCasFactory = UnavailableMediaCasBridgeFactory()).use { controller ->
+            val update = controller.updateFromCaMetadata(runtime, generation = 1)
+            check(update.diagnostics.isEmpty() && update.ecmPids.isEmpty() && update.emmPids.isEmpty())
+            check(controller.lastDiagnostic().state == CasController.State.IDLE)
+            // 同じfactoryへCATだけを直接渡すとpluginエラーになる反例を固定。
+            val invalid = controller.updateFromCaMetadata(listOf(cat), generation = 1)
+            check(invalid.diagnostics.any { it.errorCode == CasController.ErrorCode.PLUGIN_UNAVAILABLE })
+        }
+    }
+
     @Test fun emptyMetadataKeepsClearPlaybackPathIdle() {
         val factory = FakeMediaCasBridgeFactory()
         val controller = CasController(mediaCasFactory = factory)

@@ -5,8 +5,6 @@ package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.AribService
-import com.maleicacid.tvinput.aribsi.CaDescriptor
-import com.maleicacid.tvinput.aribsi.CaDescriptorScope
 import com.maleicacid.tvinput.aribsi.CaMetadata
 import com.maleicacid.tvinput.aribsi.CaMetadataSource
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
@@ -58,9 +56,18 @@ class CasOrchestrationR51FixTest {
         check(mappedSpecific.single { it.elementaryPid == dataPid }.ecmPid == TsPid(0x0032))
         check(mapper.expandProgramLevelToElementaryStreams(listOf(program.copy(ecmPid = TsPid(0x1fff))), listOf(service)).isEmpty())
 
-        val rawClear = CaDescriptor(0x0005, TsPid(0x1fff), CaDescriptorScope.ES, dataPid, byteArrayOf(0x09))
-        check(!service.copy(serviceScopedCaDescriptors = listOf(rawClear)).requiresCas)
-        check(service.copy(serviceScopedCaDescriptors = listOf(rawClear.copy(caPid = TsPid(0x0031)))).requiresCas)
+        val allClear = listOf(videoPid, audioPid, dataPid).map { clearData.copy(elementaryPid = it) }
+        val allClearResult = mapper.expandProgramLevelToElementaryStreams(listOf(program) + allClear, listOf(service))
+        check(allClearResult.isEmpty()) // Rustのraw factとは別にruntimeの不要PROGRAM sessionを除外
+
+        val allSpecific =
+            listOf(videoPid, audioPid, dataPid).mapIndexed { i, pid ->
+                clearData.copy(elementaryPid = pid, ecmPid = TsPid(0x0032 + i))
+            }
+        val allSpecificResult = mapper.expandProgramLevelToElementaryStreams(listOf(program) + allSpecific, listOf(service))
+        check(allSpecificResult.size == 3)
+        check(allSpecificResult.none { it.source == CaMetadataSource.PROGRAM })
+        check(allSpecificResult.mapNotNull { it.ecmPid }.toSet().size == 3)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
