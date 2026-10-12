@@ -3,12 +3,12 @@
 
 package com.maleicacid.tvinput.tis
 
-import com.maleicacid.tvinput.aribsi.CaMetadata
-import com.maleicacid.tvinput.aribsi.CaMetadataSource
-import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.CaDescriptor
 import com.maleicacid.tvinput.aribsi.CaDescriptorScope
+import com.maleicacid.tvinput.aribsi.CaMetadata
+import com.maleicacid.tvinput.aribsi.CaMetadataSource
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
