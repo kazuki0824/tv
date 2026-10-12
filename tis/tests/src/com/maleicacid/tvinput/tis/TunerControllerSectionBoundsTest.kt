@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 
 class TunerControllerSectionBoundsTest {
     @Test fun clockFiltersSelectDisjointTablesWithTheRequiredCrcPolicy() {
-        val settings = TunerController.sectionSettingsForPid(com.maleicacid.tvinput.aribsi.WellKnownSectionPid.TDT)
+        val settings = TunerController.sectionSettingsForPid(WellKnownSectionPid.TDT)
         check(settings.size == 2)
         for (tableId in 0..255) {
             val selected =
@@ -34,7 +34,7 @@ class TunerControllerSectionBoundsTest {
     }
 
     @Test fun liveAndSetupEitAcceptOnlyActualPfWithoutChangingEpgMaintenance() {
-        val eit = com.maleicacid.tvinput.aribsi.WellKnownSectionPid.EIT
+        val eit = WellKnownSectionPid.EIT
         val live = TunerController.sectionSettingsForPid(eit, eitPfActualOnly = true).single()
         val scan = TunerController.sectionSettingsForPid(eit).single()
         check(live.isRepeat && live.isCrcEnabled)
@@ -50,7 +50,7 @@ class TunerControllerSectionBoundsTest {
         check(scan.filterBytes.isEmpty() && scan.mask.isEmpty())
         val pat =
             TunerController
-                .sectionSettingsForPid(com.maleicacid.tvinput.aribsi.WellKnownSectionPid.PAT, eitPfActualOnly = true)
+                .sectionSettingsForPid(WellKnownSectionPid.PAT, eitPfActualOnly = true)
                 .single()
         check(pat.filterBytes.isEmpty())
     }
@@ -137,8 +137,7 @@ class TunerControllerSectionBoundsTest {
         val setting =
             TunerController
                 .sectionSettingsForPid(
-                    com.maleicacid.tvinput.common
-                        .TsPid(0),
+                    TsPid(0),
                 ).single()
         check(setting.isCrcEnabled)
         check(setting.isRepeat)
