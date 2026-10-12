@@ -31,7 +31,8 @@ use maleicacid_tuner_hal2_descrambler::{
     DescramblerPidClaimError,
 };
 use maleicacid_tuner_hal2_device::{
-    FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
+    FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpProgress,
+    FrontendLivePumpReport,
     FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendSignalState,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerRegistry,
     FrontendWorkerStartError, FrontendWorkerStopOutcome,

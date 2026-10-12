@@ -29,7 +29,8 @@ use maleicacid_tuner_hal2_common::{
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
-    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpReport,
+    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpProgress,
+    FrontendLivePumpReport,
     FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendSignalState,
     FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
@@ -2639,6 +2640,21 @@ fn try_begin_frontend_demux_streaming_start(
     guard.try_begin_frontend_demux_start(frontend_id)
 }
 
+fn record_current_live_pump_progress(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    generation: u64,
+    progress: Arc<FrontendLivePumpProgress>,
+) -> Result<(), HalError> {
+    let mut guard = lock_runtime(
+        runtime,
+        "稼働中live pump診断の登録時にservice runtime lockが汚染されました",
+    )?;
+    guard
+        .frontend_txn()
+        .record_live_pump_progress(frontend_id, generation, progress)
+}
+
 fn start_px4_live_pump_for_current_consumer(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -2717,6 +2733,9 @@ fn start_px4_live_pump_for_current_consumer(
     }
 
     let outcome = finish_started_px4_live_pump(ctx, prepared, start_guard, live_pump)?;
+    if let Some(pump) = live_pump.as_ref() {
+        record_current_live_pump_progress(runtime, frontend_id, ctx.generation(), pump.progress())?;
+    }
     reconcile_px4_live_pump_consumer(runtime, ctx, session, backend, frontend_id, live_pump)?;
     Ok(outcome)
 }
@@ -3574,12 +3593,19 @@ fn run_frontend_backend_tune_session_worker(
                     };
                     if let Some(descriptor) = live_reader_descriptor {
                         let reader = session.open_live_reader(&descriptor)?;
-                        live_pump = Some(start_frontend_demux_live_pump_from_reader(
+                        let pump = start_frontend_demux_live_pump_from_reader(
                             Arc::clone(&runtime),
                             frontend_id,
                             reader,
                             descriptor,
-                        )?);
+                        )?;
+                        record_current_live_pump_progress(
+                            &runtime,
+                            frontend_id,
+                            generation,
+                            pump.progress(),
+                        )?;
+                        live_pump = Some(pump);
                     }
                 }
             }
