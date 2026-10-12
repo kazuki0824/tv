@@ -2654,6 +2654,28 @@ fn record_current_live_pump_progress(
         .record_live_pump_progress(frontend_id, generation, progress)
 }
 
+// 診断登録に失敗しても、準備済みworkerの停止・物理join責務を失わない。
+fn register_prepared_px4_live_pump_progress(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    generation: u64,
+    prepared: PreparedFrontendLivePump,
+) -> Result<PreparedFrontendLivePump, HalError> {
+    if let Err(primary) =
+        record_current_live_pump_progress(runtime, frontend_id, generation, prepared.progress())
+    {
+        return match prepared.join_after_stop() {
+            Ok(_) => Err(primary),
+            Err(cleanup) => Err(compose_frontend_cleanup_error(
+                "準備済みPX4 live pump診断登録失敗後の停止に失敗しました",
+                primary,
+                cleanup,
+            )),
+        };
+    }
+    Ok(prepared)
+}
+
 fn start_px4_live_pump_for_current_consumer(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -2692,9 +2714,9 @@ fn start_px4_live_pump_for_current_consumer(
     let Some(prepared) = prepared else {
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
     };
-    // START前の準備済み状態も既存frontend診断へ登録する。
-    // 世代更新済みであれば正常な旧世代として記録せずに継続する。
-    record_current_live_pump_progress(runtime, frontend_id, ctx.generation(), prepared.progress())?;
+    // START前の準備済み状態も登録する。失敗時は既存の停止・join手順を完了する。
+    let prepared =
+        register_prepared_px4_live_pump_progress(runtime, frontend_id, ctx.generation(), prepared)?;
     if ctx.cancel_requested() {
         prepared.join_after_stop()?;
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
@@ -3601,15 +3623,13 @@ fn run_frontend_backend_tune_session_worker(
                             reader,
                             descriptor,
                         )?;
+                        let progress = pump.progress();
                         live_pump = Some(pump);
                         record_current_live_pump_progress(
                             &runtime,
                             frontend_id,
                             generation,
-                            live_pump
-                                .as_ref()
-                                .expect("live pump ownership committed")
-                                .progress(),
+                            progress,
                         )?;
                     }
                 }
