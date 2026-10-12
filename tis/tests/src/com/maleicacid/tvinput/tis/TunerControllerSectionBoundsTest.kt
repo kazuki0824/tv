@@ -72,16 +72,28 @@ class TunerControllerSectionBoundsTest {
             check(ownerEntered.await(5, TimeUnit.SECONDS))
 
             // 実際のFilter条件を用い、callbackがdrainしたsectionを既存data ownerへ有限投入する。
-            fun deliver(pid: TsPid, hex: String) {
+            fun deliver(
+                pid: TsPid,
+                hex: String,
+            ) {
                 val bytes =
-                    hex.chunked(2)
+                    hex
+                        .chunked(2)
                         .map { it.toInt(16).toByte() }
                         .toByteArray()
                 val tableId = bytes[0].toUByte().toInt()
                 val setting = TunerController.sectionSettingsForPid(pid, eitPfActualOnly = true).single()
-                val mask = setting.mask.firstOrNull()?.toUByte()?.toInt()
+                val mask =
+                    setting.mask
+                        .firstOrNull()
+                        ?.toUByte()
+                        ?.toInt()
                 if (mask != null) {
-                    val selectedTableId = setting.filterBytes.single().toUByte().toInt()
+                    val selectedTableId =
+                        setting.filterBytes
+                            .single()
+                            .toUByte()
+                            .toInt()
                     if ((tableId and mask) != (selectedTableId and mask)) return
                 }
                 if (pid == WellKnownSectionPid.SDT_BAT) ingest.recordSdtRead(pid, tableId)
