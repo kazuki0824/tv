@@ -366,7 +366,10 @@ impl FrontendRuntime {
             terminal_events_dropped_count: self.terminal_events_dropped_count,
             live_pump_reports: self.live_pump_reports.clone(),
             live_pump_reports_dropped_count: self.live_pump_reports_dropped_count,
-            active_live_pump_progress: self.active_live_pump_progress.as_ref().map(|progress| progress.snapshot()),
+            active_live_pump_progress: self
+                .active_live_pump_progress
+                .as_ref()
+                .map(|progress| progress.snapshot()),
             diagnostic_write_failures: self.diagnostic_write_failures.clone(),
             diagnostic_write_failures_dropped_count: self.diagnostic_write_failures_dropped_count,
             scan_session: self.scan_session.clone(),

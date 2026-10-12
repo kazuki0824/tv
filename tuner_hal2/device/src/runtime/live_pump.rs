@@ -243,12 +243,19 @@ impl FrontendLivePumpOwner {
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
                 worker_progress.started.store(true, Ordering::Release);
                 let result = run_frontend_live_pump_with_progress(
-                    &mut reader, &mut sink, &control, &descriptor, &worker_progress,
+                    &mut reader,
+                    &mut sink,
+                    &control,
+                    &descriptor,
+                    &worker_progress,
                 );
                 worker_progress.finished.store(true, Ordering::Release);
                 result
             })?;
-        Ok(Self { thread_result, progress })
+        Ok(Self {
+            thread_result,
+            progress,
+        })
     }
 
     pub fn prepare(
@@ -323,7 +330,11 @@ impl PreparedFrontendLivePump {
                 }
                 worker_progress.started.store(true, Ordering::Release);
                 let result = run_frontend_live_pump_with_progress(
-                    &mut reader, &mut sink, &control, &descriptor, &worker_progress,
+                    &mut reader,
+                    &mut sink,
+                    &control,
+                    &descriptor,
+                    &worker_progress,
                 );
                 worker_progress.finished.store(true, Ordering::Release);
                 result
@@ -386,7 +397,11 @@ where
     S: FrontendLivePacketSink + ?Sized,
 {
     run_frontend_live_pump_with_progress(
-        reader, sink, control, descriptor, &FrontendLivePumpProgress::default(),
+        reader,
+        sink,
+        control,
+        descriptor,
+        &FrontendLivePumpProgress::default(),
     )
 }
 
@@ -448,7 +463,10 @@ where
             report.reached_eof = true;
             break;
         }
-        FrontendLivePumpProgress::add(&progress.bytes_read, u64::try_from(read_len).unwrap_or(u64::MAX));
+        FrontendLivePumpProgress::add(
+            &progress.bytes_read,
+            u64::try_from(read_len).unwrap_or(u64::MAX),
+        );
 
         let drain = completion.push(&buf[..read_len]);
         report.add_malformed(
@@ -459,7 +477,9 @@ where
             sink.deliver_ts_packet(packet)?;
         }
         report.add_packets(drain.packets.len())?;
-        progress.packets_delivered.store(report.packets_delivered, Ordering::Relaxed);
+        progress
+            .packets_delivered
+            .store(report.packets_delivered, Ordering::Relaxed);
     }
 
     let boundary = completion.drain_for_boundary();
@@ -991,7 +1011,10 @@ mod tests {
     #[test]
     fn pump_progress_snapshot_reports_counters_without_exposing_packets() {
         let progress = FrontendLivePumpProgress::default();
-        assert_eq!(progress.snapshot(), FrontendLivePumpProgressSnapshot::default());
+        assert_eq!(
+            progress.snapshot(),
+            FrontendLivePumpProgressSnapshot::default()
+        );
         progress.started.store(true, Ordering::Release);
         FrontendLivePumpProgress::add(&progress.bytes_read, 188);
         FrontendLivePumpProgress::add(&progress.packets_delivered, 1);

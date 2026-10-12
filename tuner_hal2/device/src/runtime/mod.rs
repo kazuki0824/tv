@@ -31,8 +31,8 @@ pub use frontend_worker::{
 };
 pub use live_pump::{
     FrontendLivePacketSink, FrontendLivePumpJoinOutcome, FrontendLivePumpOwner,
-    FrontendLivePumpProgress, FrontendLivePumpProgressSnapshot,
-    FrontendLivePumpReport, PreparedFrontendLivePump,
+    FrontendLivePumpProgress, FrontendLivePumpProgressSnapshot, FrontendLivePumpReport,
+    PreparedFrontendLivePump,
 };
 pub use reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 pub use scan_session::{FrontendScanPhase, FrontendScanSession, FrontendScanTerminalReason};
