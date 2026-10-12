@@ -1314,14 +1314,18 @@ impl ServiceDiscoveryCollector {
                 .collect::<Vec<_>>();
             missing_for_service.sort_unstable();
             missing_for_service.dedup();
-            let has_program_ca_descriptor = !service.program_ca_descriptors.is_empty();
+            // TR-B14: 0x1FFFはECM非送出であり、raw CA descriptorの存在だけではCASを要求しない。
+            let has_program_ca_descriptor = service
+                .program_ca_descriptors
+                .iter()
+                .any(|ca| ca.ca_pid != 0x1fff);
             let pmt_pid_resolved = service.pmt_pid.is_some();
 
             let semantic_requires_cas = has_program_ca_descriptor
                 || service
                     .es_ca_descriptors
                     .iter()
-                    .any(|metadata| !metadata.descriptors.is_empty());
+                    .any(|metadata| metadata.descriptors.iter().any(|ca| ca.ca_pid != 0x1fff));
             let ca_descriptors_resolved = service.pmt_parsed
                 && !snapshot
                     .malformed_ca_descriptor_diagnostics
@@ -3050,6 +3054,27 @@ mod semantic_facts_coverage_tests {
         });
         let facts = semantic_facts_for(es_ca);
         assert!(facts.requires_cas);
+
+        let mut null_program = base_service(vec![stream(0x0101, 0x1b)]);
+        null_program.program_ca_descriptors.push(CaDescriptor {
+            ca_system_id: 0x0005,
+            ca_pid: 0x1fff,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xff, 0xff],
+        });
+        assert!(!semantic_facts_for(null_program).requires_cas);
+
+        let mut null_es = base_service(vec![stream(0x0101, 0x1b)]);
+        null_es.es_ca_descriptors.push(EsCaMetadata {
+            elementary_pid: 0x0101,
+            descriptors: vec![CaDescriptor {
+                ca_system_id: 0x0005,
+                ca_pid: 0x1fff,
+                private_data: Vec::new(),
+                raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xff, 0xff],
+            }],
+        });
+        assert!(!semantic_facts_for(null_es).requires_cas);
     }
 
     #[test]

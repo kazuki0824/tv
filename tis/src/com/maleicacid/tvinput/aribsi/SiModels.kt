@@ -137,7 +137,8 @@ data class AribService(
     val streams: List<AribElementaryStream> = emptyList(),
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
 ) {
-    val requiresCas: Boolean get() = serviceScopedCaDescriptors.isNotEmpty()
+    // raw CA descriptorは残し、ECM非送出のnull PIDを復号要件へ数えない。
+    val requiresCas: Boolean get() = serviceScopedCaDescriptors.any { it.caPid?.value?.let { pid -> pid != 0x1fff } == true }
 }
 
 data class AribBroadcastClockFact(

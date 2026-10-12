@@ -20,18 +20,29 @@ class PmtCatCaMetadataMapper {
         services: List<AribService>,
     ): List<CaMetadata> {
         val serviceByKey = services.associateBy { it.serviceKey }
-        val existingEsKeys =
+        // PMT第2ループのECM_PID=0x1FFFは非スクランブルESの明示。raw fact自体は削除しない。
+        val clearEsKeys =
             metadata
+                .filter {
+                    it.source == CaMetadataSource.ELEMENTARY_STREAM && it.ecmPid?.value == NO_ECM_PID &&
+                        it.serviceKey != null && it.elementaryPid != null
+                }.map { Triple(it.serviceKey, it.caSystemId, it.elementaryPid) }
+                .toSet()
+        // MediaCasへ配送するmetadataはECMを実際に送出するものだけにする。
+        val activeMetadata = metadata.filter { it.ecmPid?.value != NO_ECM_PID }
+        val existingEsKeys =
+            activeMetadata
                 .filter {
                     it.source == CaMetadataSource.ELEMENTARY_STREAM && it.serviceKey != null && it.ecmPid != null &&
                         it.elementaryPid != null
                 }.map { EsBindingKey(it.serviceKey.toString(), it.caSystemId, it.ecmPid!!, it.elementaryPid!!) }
                 .toMutableSet()
         val expanded = mutableListOf<CaMetadata>()
-        programLevel(metadata).forEach { programCa ->
+        programLevel(activeMetadata).forEach { programCa ->
             val service = serviceByKey[programCa.serviceKey] ?: return@forEach
             val ecmPid = programCa.ecmPid ?: return@forEach
             service.streams.forEach { stream ->
+                if (Triple(programCa.serviceKey, programCa.caSystemId, stream.elementaryPid) in clearEsKeys) return@forEach
                 val key = EsBindingKey(programCa.serviceKey.toString(), programCa.caSystemId, ecmPid, stream.elementaryPid)
                 if (existingEsKeys.add(key)) {
                     expanded +=
@@ -42,7 +53,11 @@ class PmtCatCaMetadataMapper {
                 }
             }
         }
-        return metadata + expanded
+        return activeMetadata + expanded
+    }
+
+    private companion object {
+        const val NO_ECM_PID = 0x1fff
     }
 
     private data class EsBindingKey(
