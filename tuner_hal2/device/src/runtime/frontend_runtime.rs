@@ -2,10 +2,13 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendTuneRequest, HalError, HalInternalKind,
 };
 
+use std::sync::Arc;
+
 use super::backend_worker::FrontendBackendSubmitFailure;
 use super::tune_txn::{BackendTuneRollbackFailure, BackendTuneStep};
 use super::{
-    FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendScanSession,
+    FrontendLivePumpProgress, FrontendLivePumpProgressSnapshot, FrontendLivePumpReport,
+    FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendScanSession,
     FrontendWorkerCancelReason, FrontendWorkerKind,
 };
 
@@ -92,6 +95,7 @@ pub struct FrontendLivePumpDiagnostic {
     pub malformed_bytes: u64,
     pub malformed_byte_counter_saturated: bool,
     pub read_retries: u64,
+    pub would_block_retries: u64,
     pub read_retry_counter_saturated: bool,
     pub stopped_by_cancel: bool,
     pub reached_eof: bool,
@@ -166,6 +170,7 @@ impl FrontendLivePumpDiagnostic {
             malformed_bytes: report.malformed_bytes,
             malformed_byte_counter_saturated: report.malformed_byte_counter_saturated,
             read_retries: report.read_retries,
+            would_block_retries: report.would_block_retries,
             read_retry_counter_saturated: report.read_retry_counter_saturated,
             stopped_by_cancel: report.stopped_by_cancel,
             reached_eof: report.reached_eof,
@@ -186,6 +191,7 @@ pub struct FrontendRuntimeSnapshot {
     pub terminal_events_dropped_count: u64,
     pub live_pump_reports: Vec<FrontendLivePumpDiagnostic>,
     pub live_pump_reports_dropped_count: u64,
+    pub active_live_pump_progress: Option<FrontendLivePumpProgressSnapshot>,
     pub diagnostic_write_failures: Vec<FrontendDiagnosticWriteFailure>,
     pub diagnostic_write_failures_dropped_count: u64,
     pub scan_session: Option<FrontendScanSession>,
@@ -209,6 +215,7 @@ pub struct FrontendRuntime {
     terminal_events_dropped_count: u64,
     live_pump_reports: Vec<FrontendLivePumpDiagnostic>,
     live_pump_reports_dropped_count: u64,
+    active_live_pump_progress: Option<Arc<FrontendLivePumpProgress>>,
     diagnostic_write_failures: Vec<FrontendDiagnosticWriteFailure>,
     diagnostic_write_failures_dropped_count: u64,
     px4_backend_failure_diagnostics: Vec<FrontendBackendFailureDiagnostic>,
@@ -239,6 +246,7 @@ impl FrontendRuntime {
             terminal_events_dropped_count: 0,
             live_pump_reports: Vec::new(),
             live_pump_reports_dropped_count: 0,
+            active_live_pump_progress: None,
             diagnostic_write_failures: Vec::new(),
             diagnostic_write_failures_dropped_count: 0,
             px4_backend_failure_diagnostics: Vec::new(),
@@ -291,6 +299,7 @@ impl FrontendRuntime {
             ));
         }
         self.generation = generation;
+        self.active_live_pump_progress = None;
         self.stream_id_list = None;
         self.tune_lock_qualified = false;
         Ok(())
@@ -357,6 +366,7 @@ impl FrontendRuntime {
             terminal_events_dropped_count: self.terminal_events_dropped_count,
             live_pump_reports: self.live_pump_reports.clone(),
             live_pump_reports_dropped_count: self.live_pump_reports_dropped_count,
+            active_live_pump_progress: self.active_live_pump_progress.as_ref().map(|progress| progress.snapshot()),
             diagnostic_write_failures: self.diagnostic_write_failures.clone(),
             diagnostic_write_failures_dropped_count: self.diagnostic_write_failures_dropped_count,
             scan_session: self.scan_session.clone(),
@@ -378,6 +388,8 @@ impl FrontendRuntime {
         self.terminal_events_dropped_count = snapshot.terminal_events_dropped_count;
         self.live_pump_reports = snapshot.live_pump_reports;
         self.live_pump_reports_dropped_count = snapshot.live_pump_reports_dropped_count;
+        // Rollback never revives an already superseded live packet reader.
+        self.active_live_pump_progress = None;
         self.diagnostic_write_failures = snapshot.diagnostic_write_failures;
         self.diagnostic_write_failures_dropped_count =
             snapshot.diagnostic_write_failures_dropped_count;
@@ -764,6 +776,21 @@ impl FrontendRuntime {
         Ok(())
     }
 
+    pub fn record_live_pump_progress(
+        &mut self,
+        generation: u64,
+        progress: Arc<FrontendLivePumpProgress>,
+    ) -> Result<(), HalError> {
+        if generation != self.generation {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "live pump progress generation is not the current frontend generation",
+            ));
+        }
+        self.active_live_pump_progress = Some(progress);
+        Ok(())
+    }
+
     pub fn record_live_pump_report(
         &mut self,
         generation: u64,
@@ -789,6 +816,7 @@ impl FrontendRuntime {
             self.last_error = Some(error.clone());
             return Err(error);
         }
+        self.active_live_pump_progress = None;
         push_bounded(
             &mut self.live_pump_reports,
             &mut self.live_pump_reports_dropped_count,

@@ -7,7 +7,7 @@ use super::frontend_worker::FrontendWorkerContext;
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 use maleicacid_tuner_hal2_control_core::WorkerContext;
 use std::io::{self, Read};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -129,6 +129,7 @@ pub struct FrontendLivePumpReport {
     pub malformed_bytes: u64,
     pub malformed_byte_counter_saturated: bool,
     pub read_retries: u64,
+    pub would_block_retries: u64,
     pub read_retry_counter_saturated: bool,
     pub stopped_by_cancel: bool,
     pub reached_eof: bool,
@@ -155,6 +156,47 @@ impl FrontendLivePumpReport {
     }
 }
 
+/// Read-only counters of the current pump, scoped by the owning frontend tune generation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FrontendLivePumpProgressSnapshot {
+    pub started: bool,
+    pub finished: bool,
+    pub bytes_read: u64,
+    pub packets_delivered: u64,
+    pub interrupted_retries: u64,
+    pub would_block_retries: u64,
+}
+
+/// Only the packet reader updates these atomics; the frontend owner provides the dump view.
+#[derive(Debug, Default)]
+pub struct FrontendLivePumpProgress {
+    started: AtomicBool,
+    finished: AtomicBool,
+    bytes_read: AtomicU64,
+    packets_delivered: AtomicU64,
+    interrupted_retries: AtomicU64,
+    would_block_retries: AtomicU64,
+}
+
+impl FrontendLivePumpProgress {
+    pub fn snapshot(&self) -> FrontendLivePumpProgressSnapshot {
+        FrontendLivePumpProgressSnapshot {
+            started: self.started.load(Ordering::Acquire),
+            finished: self.finished.load(Ordering::Acquire),
+            bytes_read: self.bytes_read.load(Ordering::Relaxed),
+            packets_delivered: self.packets_delivered.load(Ordering::Relaxed),
+            interrupted_retries: self.interrupted_retries.load(Ordering::Relaxed),
+            would_block_retries: self.would_block_retries.load(Ordering::Relaxed),
+        }
+    }
+
+    fn add(counter: &AtomicU64, value: u64) {
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.saturating_add(value))
+        });
+    }
+}
+
 #[derive(Debug)]
 pub enum FrontendLivePumpJoinOutcome {
     Running,
@@ -171,12 +213,14 @@ impl core::fmt::Debug for FrontendLivePumpOwner {
 
 pub struct FrontendLivePumpOwner {
     thread_result: ThreadResultOwner<FrontendLivePumpReport>,
+    progress: Arc<FrontendLivePumpProgress>,
 }
 
 #[must_use = "準備済みライブTSポンプはactivateまたはjoin_after_stopで消費してください"]
 pub struct PreparedFrontendLivePump {
     thread_result: ThreadResultOwner<FrontendLivePumpReport>,
     start_gate: Arc<AtomicBool>,
+    progress: Arc<FrontendLivePumpProgress>,
 }
 
 impl core::fmt::Debug for PreparedFrontendLivePump {
@@ -193,11 +237,18 @@ impl FrontendLivePumpOwner {
         mut reader: Box<dyn Read + Send>,
         mut sink: Box<dyn FrontendLivePacketSink>,
     ) -> Result<Self, HalError> {
+        let progress = Arc::new(FrontendLivePumpProgress::default());
+        let worker_progress = Arc::clone(&progress);
         let thread_result =
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
-                run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
+                worker_progress.started.store(true, Ordering::Release);
+                let result = run_frontend_live_pump_with_progress(
+                    &mut reader, &mut sink, &control, &descriptor, &worker_progress,
+                );
+                worker_progress.finished.store(true, Ordering::Release);
+                result
             })?;
-        Ok(Self { thread_result })
+        Ok(Self { thread_result, progress })
     }
 
     pub fn prepare(
@@ -207,6 +258,10 @@ impl FrontendLivePumpOwner {
         caller: &FrontendWorkerContext,
     ) -> Result<Option<PreparedFrontendLivePump>, HalError> {
         PreparedFrontendLivePump::start(descriptor, reader, sink, caller)
+    }
+
+    pub fn progress(&self) -> Arc<FrontendLivePumpProgress> {
+        Arc::clone(&self.progress)
     }
 
     pub fn request_stop(&self) {
@@ -227,6 +282,10 @@ impl FrontendLivePumpOwner {
 }
 
 impl PreparedFrontendLivePump {
+    pub fn progress(&self) -> Arc<FrontendLivePumpProgress> {
+        Arc::clone(&self.progress)
+    }
+
     fn start(
         descriptor: FrontendLiveReaderDescriptor,
         mut reader: Box<dyn Read + Send>,
@@ -240,6 +299,8 @@ impl PreparedFrontendLivePump {
         let worker_ready = Arc::clone(&ready);
         let start_gate = Arc::new(AtomicBool::new(false));
         let worker_start_gate = Arc::clone(&start_gate);
+        let progress = Arc::new(FrontendLivePumpProgress::default());
+        let worker_progress = Arc::clone(&progress);
         let thread_result =
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
                 #[cfg(test)]
@@ -249,6 +310,7 @@ impl PreparedFrontendLivePump {
                 caller_wake.wake();
                 loop {
                     if control.stop_requested() {
+                        worker_progress.finished.store(true, Ordering::Release);
                         return Ok(FrontendLivePumpReport {
                             stopped_by_cancel: true,
                             ..FrontendLivePumpReport::default()
@@ -259,7 +321,12 @@ impl PreparedFrontendLivePump {
                     }
                     control.wait_until(None);
                 }
-                run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
+                worker_progress.started.store(true, Ordering::Release);
+                let result = run_frontend_live_pump_with_progress(
+                    &mut reader, &mut sink, &control, &descriptor, &worker_progress,
+                );
+                worker_progress.finished.store(true, Ordering::Release);
+                result
             })?;
 
         if caller.cancel_requested() {
@@ -288,6 +355,7 @@ impl PreparedFrontendLivePump {
         Ok(Some(Self {
             thread_result,
             start_gate,
+            progress,
         }))
     }
 
@@ -296,6 +364,7 @@ impl PreparedFrontendLivePump {
         self.thread_result.wake();
         FrontendLivePumpOwner {
             thread_result: self.thread_result,
+            progress: self.progress,
         }
     }
 
@@ -305,11 +374,28 @@ impl PreparedFrontendLivePump {
     }
 }
 
+#[cfg(test)]
 fn run_frontend_live_pump<R, S>(
     reader: &mut R,
     sink: &mut S,
     control: &WorkerContext,
     descriptor: &FrontendLiveReaderDescriptor,
+) -> Result<FrontendLivePumpReport, HalError>
+where
+    R: Read,
+    S: FrontendLivePacketSink + ?Sized,
+{
+    run_frontend_live_pump_with_progress(
+        reader, sink, control, descriptor, &FrontendLivePumpProgress::default(),
+    )
+}
+
+fn run_frontend_live_pump_with_progress<R, S>(
+    reader: &mut R,
+    sink: &mut S,
+    control: &WorkerContext,
+    descriptor: &FrontendLiveReaderDescriptor,
+    progress: &FrontendLivePumpProgress,
 ) -> Result<FrontendLivePumpReport, HalError>
 where
     R: Read,
@@ -327,6 +413,7 @@ where
         let read_len = match reader.read(&mut buf) {
             Ok(length) => length,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                FrontendLivePumpProgress::add(&progress.interrupted_retries, 1);
                 match report.read_retries.checked_add(1) {
                     Some(count) => report.read_retries = count,
                     None if !report.read_retry_counter_saturated => {
@@ -341,6 +428,8 @@ where
                 continue;
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                FrontendLivePumpProgress::add(&progress.would_block_retries, 1);
+                report.would_block_retries = report.would_block_retries.saturating_add(1);
                 let deadline = Instant::now()
                     .checked_add(Duration::from_millis(20))
                     .ok_or_else(|| {
@@ -359,6 +448,7 @@ where
             report.reached_eof = true;
             break;
         }
+        FrontendLivePumpProgress::add(&progress.bytes_read, u64::try_from(read_len).unwrap_or(u64::MAX));
 
         let drain = completion.push(&buf[..read_len]);
         report.add_malformed(
@@ -369,6 +459,7 @@ where
             sink.deliver_ts_packet(packet)?;
         }
         report.add_packets(drain.packets.len())?;
+        progress.packets_delivered.store(report.packets_delivered, Ordering::Relaxed);
     }
 
     let boundary = completion.drain_for_boundary();
@@ -898,8 +989,31 @@ mod tests {
     }
 
     #[test]
+    fn pump_progress_snapshot_reports_counters_without_exposing_packets() {
+        let progress = FrontendLivePumpProgress::default();
+        assert_eq!(progress.snapshot(), FrontendLivePumpProgressSnapshot::default());
+        progress.started.store(true, Ordering::Release);
+        FrontendLivePumpProgress::add(&progress.bytes_read, 188);
+        FrontendLivePumpProgress::add(&progress.packets_delivered, 1);
+        FrontendLivePumpProgress::add(&progress.would_block_retries, 3);
+        progress.finished.store(true, Ordering::Release);
+        assert_eq!(
+            progress.snapshot(),
+            FrontendLivePumpProgressSnapshot {
+                started: true,
+                finished: true,
+                bytes_read: 188,
+                packets_delivered: 1,
+                interrupted_retries: 0,
+                would_block_retries: 3,
+            }
+        );
+    }
+
+    #[test]
     fn live_pump_owner_missing_report_is_error() {
         let owner = FrontendLivePumpOwner {
+            progress: Arc::new(FrontendLivePumpProgress::default()),
             thread_result: ThreadResultOwner::start(
                 "live-pump-owner-failure-test",
                 || -> Result<FrontendLivePumpReport, HalError> {
@@ -914,6 +1028,7 @@ mod tests {
     #[test]
     fn live_pump_owner_missing_report_is_error_after_join() {
         let owner = FrontendLivePumpOwner {
+            progress: Arc::new(FrontendLivePumpProgress::default()),
             thread_result: ThreadResultOwner::start(
                 "live-pump-owner-failure-test",
                 || -> Result<FrontendLivePumpReport, HalError> {
