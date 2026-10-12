@@ -627,6 +627,44 @@ mod tests {
     }
 
     #[test]
+    fn prepared_active_and_cancelled_progress_follow_real_pump_owner() {
+        use crate::runtime::frontend_runtime::FrontendRuntime;
+        use maleicacid_tuner_hal2_common::FrontendBackendKind;
+
+        let prepared = prepare_for_test(Cursor::new(packet(9).to_vec()), VecSink::default());
+        let progress = prepared.progress();
+        let mut frontend = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        frontend.commit_generation(1).unwrap();
+        frontend
+            .record_live_pump_progress(1, Arc::clone(&progress))
+            .unwrap();
+        let observed = frontend.snapshot().active_live_pump_progress.unwrap();
+        assert!(observed.prepared);
+        assert!(!observed.started);
+        assert!(!observed.finished);
+
+        let mut active = prepared.activate();
+        let mut completed = false;
+        for _ in 0..100 {
+            if let FrontendLivePumpJoinOutcome::Completed(result) = active.collect_if_finished() {
+                assert_eq!(result.unwrap().packets_delivered, 1);
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(completed);
+        let observed = frontend.snapshot().active_live_pump_progress.unwrap();
+        assert!(observed.prepared);
+        assert!(observed.started);
+        assert!(observed.finished);
+        assert_eq!(observed.packets_delivered, 1);
+
+        drop(progress);
+        assert!(frontend.snapshot().active_live_pump_progress.is_none());
+    }
+
+    #[test]
     fn caller_cancel_while_waiting_for_child_ready_stops_child_and_returns_none() {
         use crate::runtime::frontend_worker::{
             FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry,
