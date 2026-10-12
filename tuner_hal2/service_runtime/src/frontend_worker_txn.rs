@@ -29,8 +29,8 @@ use maleicacid_tuner_hal2_common::{
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
-    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpReport,
-    FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendSignalState,
+    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpProgress,
+    FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendSignalState,
     FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
@@ -2639,6 +2639,43 @@ fn try_begin_frontend_demux_streaming_start(
     guard.try_begin_frontend_demux_start(frontend_id)
 }
 
+fn record_current_live_pump_progress(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    generation: u64,
+    progress: Arc<FrontendLivePumpProgress>,
+) -> Result<(), HalError> {
+    let mut guard = lock_runtime(
+        runtime,
+        "稼働中live pump診断の登録時にservice runtime lockが汚染されました",
+    )?;
+    guard
+        .frontend_txn()
+        .record_live_pump_progress(frontend_id, generation, progress)
+}
+
+// 診断登録に失敗しても、準備済みworkerの停止・物理join責務を失わない。
+fn register_prepared_px4_live_pump_progress(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    generation: u64,
+    prepared: PreparedFrontendLivePump,
+) -> Result<PreparedFrontendLivePump, HalError> {
+    if let Err(primary) =
+        record_current_live_pump_progress(runtime, frontend_id, generation, prepared.progress())
+    {
+        return match prepared.join_after_stop() {
+            Ok(_) => Err(primary),
+            Err(cleanup) => Err(compose_frontend_cleanup_error(
+                "準備済みPX4 live pump診断登録失敗後の停止に失敗しました",
+                primary,
+                cleanup,
+            )),
+        };
+    }
+    Ok(prepared)
+}
+
 fn start_px4_live_pump_for_current_consumer(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -2677,6 +2714,9 @@ fn start_px4_live_pump_for_current_consumer(
     let Some(prepared) = prepared else {
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
     };
+    // START前の準備済み状態も登録する。失敗時は既存の停止・join手順を完了する。
+    let prepared =
+        register_prepared_px4_live_pump_progress(runtime, frontend_id, ctx.generation(), prepared)?;
     if ctx.cancel_requested() {
         prepared.join_after_stop()?;
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
@@ -2717,6 +2757,9 @@ fn start_px4_live_pump_for_current_consumer(
     }
 
     let outcome = finish_started_px4_live_pump(ctx, prepared, start_guard, live_pump)?;
+    if let Some(pump) = live_pump.as_ref() {
+        record_current_live_pump_progress(runtime, frontend_id, ctx.generation(), pump.progress())?;
+    }
     reconcile_px4_live_pump_consumer(runtime, ctx, session, backend, frontend_id, live_pump)?;
     Ok(outcome)
 }
@@ -2869,6 +2912,92 @@ fn reconcile_px4_live_pump_consumer(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod prepared_progress_registration_failure_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_device::FrontendLivePacketSink;
+    use std::io::{self, Read};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropObservedReader(Arc<AtomicBool>);
+    impl Read for DropObservedReader {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+    impl Drop for DropObservedReader {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    struct NoopSink;
+    impl FrontendLivePacketSink for NoopSink {
+        fn deliver_ts_packet(
+            &mut self,
+            _: &[u8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE],
+        ) -> Result<(), HalError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn failed_registration_joins_prepared_worker_without_starting_capture() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let mut workers = FrontendWorkerRegistry::default();
+        let (tx, rx) = mpsc::channel();
+        let observed = Arc::clone(&dropped);
+        let runtime_for_worker = Arc::clone(&runtime);
+        workers
+            .start(31337, FrontendWorkerKind::Tune, 1, move |ctx| {
+                let prepared = FrontendLivePumpOwner::prepare(
+                    FrontendLiveReaderDescriptor::dvb_dvr_device(
+                        31337,
+                        FrontendDevicePath::new("/dev/null"),
+                    ),
+                    Box::new(DropObservedReader(observed)),
+                    Box::new(NoopSink),
+                    &ctx,
+                )?
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "準備済みworkerが存在しません",
+                    )
+                })?;
+                let result = register_prepared_px4_live_pump_progress(
+                    &runtime_for_worker,
+                    31337,
+                    ctx.generation(),
+                    prepared,
+                );
+                tx.send(result.err()).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let failure = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            failure.is_some(),
+            "存在しないfrontendへの診断登録は失敗しなければなりません"
+        );
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "診断失敗から復帰する前にreaderをjoin回収します"
+        );
+        for _ in 0..100 {
+            if let Some(completed) = workers.take_completed(31337, FrontendWorkerKind::Tune) {
+                assert!(matches!(
+                    completed,
+                    FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
+                ));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("試験workerが終了していません");
+    }
 }
 
 #[cfg(test)]
@@ -3574,12 +3703,20 @@ fn run_frontend_backend_tune_session_worker(
                     };
                     if let Some(descriptor) = live_reader_descriptor {
                         let reader = session.open_live_reader(&descriptor)?;
-                        live_pump = Some(start_frontend_demux_live_pump_from_reader(
+                        let pump = start_frontend_demux_live_pump_from_reader(
                             Arc::clone(&runtime),
                             frontend_id,
                             reader,
                             descriptor,
-                        )?);
+                        )?;
+                        let progress = pump.progress();
+                        live_pump = Some(pump);
+                        record_current_live_pump_progress(
+                            &runtime,
+                            frontend_id,
+                            generation,
+                            progress,
+                        )?;
                     }
                 }
             }

@@ -2,10 +2,13 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendTuneRequest, HalError, HalInternalKind,
 };
 
+use std::sync::{Arc, Weak};
+
 use super::backend_worker::FrontendBackendSubmitFailure;
 use super::tune_txn::{BackendTuneRollbackFailure, BackendTuneStep};
 use super::{
-    FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendScanSession,
+    FrontendLivePumpProgress, FrontendLivePumpProgressSnapshot, FrontendLivePumpReport,
+    FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendScanSession,
     FrontendWorkerCancelReason, FrontendWorkerKind,
 };
 
@@ -89,10 +92,13 @@ pub enum FrontendLivePumpJoinResult {
 pub struct FrontendLivePumpDiagnostic {
     pub generation: u64,
     pub packets_delivered: u64,
+    pub packet_counter_saturated: bool,
     pub malformed_bytes: u64,
     pub malformed_byte_counter_saturated: bool,
     pub read_retries: u64,
+    pub would_block_retries: u64,
     pub read_retry_counter_saturated: bool,
+    pub would_block_counter_saturated: bool,
     pub stopped_by_cancel: bool,
     pub reached_eof: bool,
     pub cancel_reason: Option<FrontendWorkerCancelReason>,
@@ -163,9 +169,12 @@ impl FrontendLivePumpDiagnostic {
         Self {
             generation,
             packets_delivered: report.packets_delivered,
+            packet_counter_saturated: report.packet_counter_saturated,
             malformed_bytes: report.malformed_bytes,
             malformed_byte_counter_saturated: report.malformed_byte_counter_saturated,
             read_retries: report.read_retries,
+            would_block_retries: report.would_block_retries,
+            would_block_counter_saturated: report.would_block_counter_saturated,
             read_retry_counter_saturated: report.read_retry_counter_saturated,
             stopped_by_cancel: report.stopped_by_cancel,
             reached_eof: report.reached_eof,
@@ -186,6 +195,7 @@ pub struct FrontendRuntimeSnapshot {
     pub terminal_events_dropped_count: u64,
     pub live_pump_reports: Vec<FrontendLivePumpDiagnostic>,
     pub live_pump_reports_dropped_count: u64,
+    pub active_live_pump_progress: Option<FrontendLivePumpProgressSnapshot>,
     pub diagnostic_write_failures: Vec<FrontendDiagnosticWriteFailure>,
     pub diagnostic_write_failures_dropped_count: u64,
     pub scan_session: Option<FrontendScanSession>,
@@ -209,6 +219,7 @@ pub struct FrontendRuntime {
     terminal_events_dropped_count: u64,
     live_pump_reports: Vec<FrontendLivePumpDiagnostic>,
     live_pump_reports_dropped_count: u64,
+    active_live_pump_progress: Option<Weak<FrontendLivePumpProgress>>,
     diagnostic_write_failures: Vec<FrontendDiagnosticWriteFailure>,
     diagnostic_write_failures_dropped_count: u64,
     px4_backend_failure_diagnostics: Vec<FrontendBackendFailureDiagnostic>,
@@ -239,6 +250,7 @@ impl FrontendRuntime {
             terminal_events_dropped_count: 0,
             live_pump_reports: Vec::new(),
             live_pump_reports_dropped_count: 0,
+            active_live_pump_progress: None,
             diagnostic_write_failures: Vec::new(),
             diagnostic_write_failures_dropped_count: 0,
             px4_backend_failure_diagnostics: Vec::new(),
@@ -291,6 +303,7 @@ impl FrontendRuntime {
             ));
         }
         self.generation = generation;
+        self.active_live_pump_progress = None;
         self.stream_id_list = None;
         self.tune_lock_qualified = false;
         Ok(())
@@ -357,6 +370,11 @@ impl FrontendRuntime {
             terminal_events_dropped_count: self.terminal_events_dropped_count,
             live_pump_reports: self.live_pump_reports.clone(),
             live_pump_reports_dropped_count: self.live_pump_reports_dropped_count,
+            active_live_pump_progress: self
+                .active_live_pump_progress
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .map(|progress| progress.snapshot()),
             diagnostic_write_failures: self.diagnostic_write_failures.clone(),
             diagnostic_write_failures_dropped_count: self.diagnostic_write_failures_dropped_count,
             scan_session: self.scan_session.clone(),
@@ -378,6 +396,8 @@ impl FrontendRuntime {
         self.terminal_events_dropped_count = snapshot.terminal_events_dropped_count;
         self.live_pump_reports = snapshot.live_pump_reports;
         self.live_pump_reports_dropped_count = snapshot.live_pump_reports_dropped_count;
+        // rollbackでは旧世代のTS読取りworkerを復活させない。
+        self.active_live_pump_progress = None;
         self.diagnostic_write_failures = snapshot.diagnostic_write_failures;
         self.diagnostic_write_failures_dropped_count =
             snapshot.diagnostic_write_failures_dropped_count;
@@ -764,6 +784,26 @@ impl FrontendRuntime {
         Ok(())
     }
 
+    pub fn record_live_pump_progress(
+        &mut self,
+        generation: u64,
+        progress: Arc<FrontendLivePumpProgress>,
+    ) -> Result<(), HalError> {
+        if generation < self.generation {
+            // 正常な再選局競合: 旧世代の診断を新世代の失敗へ昇格させない。
+            return Ok(());
+        }
+        if generation > self.generation {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "live pump progress generation is in the future",
+            ));
+        }
+        // 停止・START失敗では既存pump ownerの解放だけで診断参照も消える。
+        self.active_live_pump_progress = Some(Arc::downgrade(&progress));
+        Ok(())
+    }
+
     pub fn record_live_pump_report(
         &mut self,
         generation: u64,
@@ -789,6 +829,7 @@ impl FrontendRuntime {
             self.last_error = Some(error.clone());
             return Err(error);
         }
+        self.active_live_pump_progress = None;
         push_bounded(
             &mut self.live_pump_reports,
             &mut self.live_pump_reports_dropped_count,
@@ -1382,6 +1423,9 @@ mod tests {
                     malformed_bytes: 2,
                     malformed_byte_counter_saturated: false,
                     read_retries: 0,
+                    would_block_retries: 0,
+                    packet_counter_saturated: false,
+                    would_block_counter_saturated: false,
                     read_retry_counter_saturated: false,
                     stopped_by_cancel: false,
                     reached_eof: true,
@@ -1410,6 +1454,9 @@ mod tests {
                     malformed_bytes: 9,
                     malformed_byte_counter_saturated: false,
                     read_retries: 0,
+                    would_block_retries: 0,
+                    packet_counter_saturated: false,
+                    would_block_counter_saturated: false,
                     read_retry_counter_saturated: false,
                     stopped_by_cancel: true,
                     reached_eof: false,
@@ -1444,6 +1491,9 @@ mod tests {
                     malformed_bytes: 4,
                     malformed_byte_counter_saturated: false,
                     read_retries: 0,
+                    would_block_retries: 0,
+                    packet_counter_saturated: false,
+                    would_block_counter_saturated: false,
                     read_retry_counter_saturated: false,
                     stopped_by_cancel: true,
                     reached_eof: false,
@@ -1466,6 +1516,9 @@ mod tests {
                 malformed_bytes: 4,
                 malformed_byte_counter_saturated: false,
                 read_retries: 0,
+                would_block_retries: 0,
+                packet_counter_saturated: false,
+                would_block_counter_saturated: false,
                 read_retry_counter_saturated: false,
                 stopped_by_cancel: true,
                 reached_eof: false,
@@ -1502,6 +1555,9 @@ mod tests {
                         malformed_bytes: 0,
                         malformed_byte_counter_saturated: false,
                         read_retries: 0,
+                        would_block_retries: 0,
+                        packet_counter_saturated: false,
+                        would_block_counter_saturated: false,
                         read_retry_counter_saturated: false,
                         stopped_by_cancel: false,
                         reached_eof: true,
@@ -1882,6 +1938,58 @@ mod tests {
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         assert!(runtime.begin_scan_session(2, "bad", vec![request]).is_err());
+    }
+
+    #[test]
+    fn stale_live_pump_registration_does_not_fail_or_replace_new_generation() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        runtime.commit_generation(2).unwrap();
+        let old = Arc::new(FrontendLivePumpProgress::default());
+        assert!(runtime.record_live_pump_progress(1, old).is_ok());
+        assert_eq!(runtime.snapshot().active_live_pump_progress, None);
+        let current = Arc::new(FrontendLivePumpProgress::default());
+        runtime
+            .record_live_pump_progress(2, Arc::clone(&current))
+            .unwrap();
+        assert_eq!(
+            runtime.snapshot().active_live_pump_progress,
+            Some(current.snapshot())
+        );
+        assert!(runtime.record_live_pump_progress(3, current).is_err());
+    }
+
+    #[test]
+    fn prepared_progress_reference_does_not_outlive_its_pump_owner() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        let prepared = Arc::new(FrontendLivePumpProgress::default());
+        runtime
+            .record_live_pump_progress(1, Arc::clone(&prepared))
+            .unwrap();
+        assert!(runtime.snapshot().active_live_pump_progress.is_some());
+        drop(prepared);
+        assert_eq!(runtime.snapshot().active_live_pump_progress, None);
+    }
+
+    #[test]
+    fn live_pump_progress_is_visible_only_for_current_generation() {
+        use std::sync::Arc;
+
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        let progress = Arc::new(FrontendLivePumpProgress::default());
+        runtime
+            .record_live_pump_progress(1, Arc::clone(&progress))
+            .unwrap();
+        assert_eq!(
+            runtime.snapshot().active_live_pump_progress,
+            Some(FrontendLivePumpProgressSnapshot::default())
+        );
+        runtime.commit_generation(2).unwrap();
+        assert_eq!(runtime.snapshot().active_live_pump_progress, None);
+        assert!(runtime.record_live_pump_progress(1, progress).is_ok());
+        assert_eq!(runtime.snapshot().active_live_pump_progress, None);
     }
 
     #[test]

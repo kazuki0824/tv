@@ -113,7 +113,7 @@ device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを�
 
 パケット処理の破棄・配送失敗は`boot/packet_ops.rs::record_packet_pipeline_diagnostics`が入力元共通の記録入口となる。`TunerServiceRuntime`の`BoundedDiagnosticStore<PacketPipelineDiagnosticRecord>`が分離器ID・世代・型付き診断を保持し、既存`DiagnosticSnapshot`を通して`ServiceDiagnosticSnapshot.packet_pipeline`へ渡す。鍵に関する診断の保持先は既存のデスクランブラ診断領域を使用する。
 
-受信報告の実装は`device/src/runtime/live_pump.rs::FrontendLivePumpReport`、既存の診断への転記は`frontend_runtime.rs::FrontendLivePumpDiagnostic::from_report()`に置く。飽和の有無と読み取り再試行回数も同じ診断へ転記する。診断の論理契約は`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」「診断counter飽和契約」、取得手順は`INTEGRATION.md`を参照する。
+受信報告の実装は`device/src/runtime/live_pump.rs::FrontendLivePumpReport`、既存の診断への転記は`frontend_runtime.rs::FrontendLivePumpDiagnostic::from_report()`に置く。飽和の有無と読み取り再試行回数も同じ診断へ転記する。加えて稼働中ポンプの読取進捗をgenerationに帰属するread-only `FrontendLivePumpProgressSnapshot`として既存Frontend診断から取得できるものとし、prepared/active、受信byte、配送TS packet、EINTR、WouldBlockの累積を区別する。既存のfrontend ownerがこの観測参照を保持し、次generationへの更新時に古い参照を切り離す。進捗観測に第二の制御owner、watchdog thread、TS本文の収集を追加しない。診断の論理契約は`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」「診断counter飽和契約」、取得手順は`INTEGRATION.md`を参照する。
 
 ### TMCC TSID observation の frontend owner 接続
 

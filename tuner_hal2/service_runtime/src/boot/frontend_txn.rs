@@ -2,10 +2,10 @@
 use super::FrontendRuntimeSnapshot;
 use super::{
     live_reader_descriptor_for_frontend_entry, DemuxRuntimeId, DemuxRuntimeRollbackToken,
-    FrontendLivePumpReport, FrontendSignalState, FrontendTuneRequest, FrontendWorkerCancelReason,
-    FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
-    HalError, HalInternalKind, HalInvalidStateKind, PipelineBoundaryReason, StreamBoundaryReport,
-    TunerServiceRuntime,
+    FrontendLivePumpProgress, FrontendLivePumpReport, FrontendSignalState, FrontendTuneRequest,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome, HalError, HalInternalKind,
+    HalInvalidStateKind, PipelineBoundaryReason, StreamBoundaryReport, TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_demux::{
     DemuxRuntimeRollbackCommitRequest, DemuxRuntimeRollbackRestoreRequest,
@@ -23,6 +23,24 @@ impl TunerServiceRuntime {
     ) -> Result<(), HalError> {
         self.frontend_txn()
             .mark_frontend_scan_session_callback_failed(frontend_id, generation)
+    }
+
+    fn transact_record_live_pump_progress(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        progress: std::sync::Arc<FrontendLivePumpProgress>,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for active pump progress",
+                )
+            })?;
+        runtime.record_live_pump_progress(generation, progress)
     }
 
     fn transact_record_live_pump_report(
@@ -519,6 +537,16 @@ impl<'a> FrontendTxn<'a> {
                 )
             })?;
         runtime.record_tune_lock_qualified(generation)
+    }
+
+    pub(crate) fn record_live_pump_progress(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        progress: std::sync::Arc<FrontendLivePumpProgress>,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_record_live_pump_progress(frontend_id, generation, progress)
     }
 
     pub(crate) fn record_live_pump_report(

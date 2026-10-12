@@ -31,10 +31,10 @@ use maleicacid_tuner_hal2_descrambler::{
     DescramblerPidClaimError,
 };
 use maleicacid_tuner_hal2_device::{
-    FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
-    FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendSignalState,
-    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerRegistry,
-    FrontendWorkerStartError, FrontendWorkerStopOutcome,
+    FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpProgress,
+    FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot,
+    FrontendSignalState, FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
+    FrontendWorkerRegistry, FrontendWorkerStartError, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrConfigureKind,
