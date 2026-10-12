@@ -13,13 +13,7 @@ object SectionFilterPolicy {
         requiresCas: Boolean,
         serviceKey: ServiceKey?,
         metadata: List<CaMetadata>,
-    ): List<CaMetadata> {
-        return if (requiresCas) {
-            metadata.filter { it.serviceKey == null || it.serviceKey == serviceKey }
-        } else {
-            emptyList()
-        }
-    }
+    ): List<CaMetadata> = metadata.filter { requiresCas && (it.serviceKey == null || it.serviceKey == serviceKey) }
 
     fun metadataForCasDecision(
         ready: Boolean,
