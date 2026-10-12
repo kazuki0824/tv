@@ -80,7 +80,10 @@ class TunerControllerSectionBoundsTest {
                 val tableId = bytes[0].toUByte().toInt()
                 val setting = TunerController.sectionSettingsForPid(pid, eitPfActualOnly = true).single()
                 val mask = setting.mask.firstOrNull()?.toUByte()?.toInt()
-                if (mask != null && tableId and mask != setting.filterBytes.single().toUByte().toInt() and mask) return
+                if (mask != null) {
+                    val selectedTableId = setting.filterBytes.single().toUByte().toInt()
+                    if ((tableId and mask) != (selectedTableId and mask)) return
+                }
                 if (pid == WellKnownSectionPid.SDT_BAT) ingest.recordSdtRead(pid, tableId)
                 try {
                     executor.executeData {
