@@ -1913,6 +1913,26 @@ mod tests {
     }
 
     #[test]
+    fn live_pump_progress_is_visible_only_for_current_generation() {
+        use std::sync::Arc;
+
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        let progress = Arc::new(FrontendLivePumpProgress::default());
+        runtime
+            .record_live_pump_progress(1, Arc::clone(&progress))
+            .unwrap();
+        assert_eq!(
+            runtime.snapshot().active_live_pump_progress,
+            Some(FrontendLivePumpProgressSnapshot::default())
+        );
+        runtime.commit_generation(2).unwrap();
+        assert_eq!(runtime.snapshot().active_live_pump_progress, None);
+        assert!(runtime.record_live_pump_progress(1, progress).is_err());
+        assert_eq!(runtime.snapshot().active_live_pump_progress, None);
+    }
+
+    #[test]
     fn active_tune_failure_records_terminal_and_failed_state() {
         let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
         runtime.commit_generation(1).unwrap();
