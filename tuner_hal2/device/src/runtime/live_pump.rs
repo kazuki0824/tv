@@ -465,6 +465,7 @@ where
                     &progress.interrupted_retries,
                     &progress.interrupted_retries_saturated,
                     1,
+                    "interrupted_retries",
                 );
                 match report.read_retries.checked_add(1) {
                     Some(count) => report.read_retries = count,
@@ -484,6 +485,7 @@ where
                     &progress.would_block_retries,
                     &progress.would_block_retries_saturated,
                     1,
+                    "would_block_retries",
                 );
                 report.would_block_retries = report.would_block_retries.saturating_add(1);
                 report.would_block_counter_saturated |= report.would_block_retries == u64::MAX;
