@@ -70,6 +70,29 @@ class CasOrchestrationR51FixTest {
         check(allSpecificResult.mapNotNull { it.ecmPid }.toSet().size == 3)
     }
 
+    @Test
+    fun clearServiceWithCatDoesNotInvokeUnavailablePluginOrBlockPlayback() {
+        val key = ServiceKey(4, 16625, 101)
+        val cat = CaMetadata(null, 0x0005, null, TsPid(0x0010), null, source = CaMetadataSource.CAT)
+        val decision = ServicePolicyDecision(key, true, false, true, emptyList())
+        check(decision.livePlaybackEligible(casLinkageReady = false))
+        val runtime = SectionFilterPolicy.metadataForLiveService(decision.requiresCas, key, listOf(cat))
+        check(runtime.isEmpty())
+        val unavailableFactory =
+            object : CasController.MediaCasBridgeFactory {
+                override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> =
+                    Result.failure(IllegalStateException("B25 plugin unavailable"))
+            }
+        CasController(mediaCasFactory = unavailableFactory).use { controller ->
+            val update = controller.updateFromCaMetadata(runtime, generation = 1)
+            check(update.diagnostics.isEmpty() && update.ecmPids.isEmpty() && update.emmPids.isEmpty())
+            check(controller.lastDiagnostic().state == CasController.State.IDLE)
+            // CATのみを直接渡した場合はplugin失敗となることも同じfactoryで確認。
+            val invalid = controller.updateFromCaMetadata(listOf(cat), generation = 1)
+            check(invalid.diagnostics.any { it.errorCode == CasController.ErrorCode.PLUGIN_UNAVAILABLE })
+        }
+    }
+
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
