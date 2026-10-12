@@ -3,7 +3,16 @@
 
 package com.maleicacid.tvinput.tis
 
+import android.content.ContextWrapper
+import com.maleicacid.tvinput.aribsi.AribSiEngine
+import com.maleicacid.tvinput.aribsi.SectionIngestController
+import com.maleicacid.tvinput.aribsi.SiStatus
+import com.maleicacid.tvinput.aribsi.WellKnownSectionPid
+import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class TunerControllerSectionBoundsTest {
     @Test fun clockFiltersSelectDisjointTablesWithTheRequiredCrcPolicy() {
@@ -44,6 +53,69 @@ class TunerControllerSectionBoundsTest {
                 .sectionSettingsForPid(com.maleicacid.tvinput.aribsi.WellKnownSectionPid.PAT, eitPfActualOnly = true)
                 .single()
         check(pat.filterBytes.isEmpty())
+    }
+
+    @Test
+    fun scheduleBurstIsRejectedBeforeBoundedAdmissionAndPatSdtAreIngested() {
+        val engine = AribSiEngine(ContextWrapper(null))
+        val ingest = SectionIngestController(engine)
+        val executor = ControllerSerialExecutor("live-eit-admission-test", maxPendingDataTasks = 2)
+        val ownerEntered = CountDownLatch(1)
+        val allowOwner = CountDownLatch(1)
+        val accepted = CountDownLatch(2)
+        val ingested = CopyOnWriteArrayList<Pair<TsPid, Int>>()
+        try {
+            executor.executeControl {
+                ownerEntered.countDown()
+                check(allowOwner.await(5, TimeUnit.SECONDS))
+            }
+            check(ownerEntered.await(5, TimeUnit.SECONDS))
+
+            // 実際のFilter条件を用い、callbackがdrainしたsectionを既存data ownerへ有限投入する。
+            fun deliver(pid: TsPid, hex: String) {
+                val bytes =
+                    hex.chunked(2)
+                        .map { it.toInt(16).toByte() }
+                        .toByteArray()
+                val tableId = bytes[0].toUByte().toInt()
+                val setting = TunerController.sectionSettingsForPid(pid, eitPfActualOnly = true).single()
+                val mask = setting.mask.firstOrNull()?.toUByte()?.toInt()
+                if (mask != null && tableId and mask != setting.filterBytes.single().toUByte().toInt() and mask) return
+                if (pid == WellKnownSectionPid.SDT_BAT) ingest.recordSdtRead(pid, tableId)
+                try {
+                    executor.executeData {
+                        ingested += pid to ingest.onSection(pid, bytes).status
+                        accepted.countDown()
+                    }
+                } catch (_: DataCapacityExceededException) {
+                    ingest.recordInputDeliveryLoss(pid, tableId)
+                }
+            }
+
+            // schedule (0x50) とp/f other (0x4f)が大半を占めてもqueueに蓄積しない。
+            repeat(92) { deliver(WellKnownSectionPid.EIT, "50") }
+            repeat(4) { deliver(WellKnownSectionPid.EIT, "4f") }
+            check(executor.queue.isEmpty())
+            val pat = "00b01d7fe3db00000000e0100418e1010419e1020598ffc8049fe7f029c30f6e"
+            val sdt = "42f00c7fe3c100007fe3ffed225f15"
+            deliver(WellKnownSectionPid.PAT, pat)
+            deliver(WellKnownSectionPid.SDT_BAT, sdt)
+            check(executor.queue.size == 2)
+            deliver(WellKnownSectionPid.SDT_BAT, sdt) // 真の容量飽和だけは従来どおり損失計上
+            check(ingest.inputDeliveryLossCount == 1)
+            check("sdtActualDropped=1" in ingest.sdtDeliveryDiagnostic())
+            allowOwner.countDown()
+            check(accepted.await(5, TimeUnit.SECONDS))
+            check(ingested.map { it.first }.toSet() == setOf(WellKnownSectionPid.PAT, WellKnownSectionPid.SDT_BAT))
+            check(ingested.all { it.second == SiStatus.OK })
+            check("sdtActualAccepted=1" in ingest.sdtDeliveryDiagnostic())
+            check("sdtActualRead=2" in ingest.sdtDeliveryDiagnostic())
+            // 本試験はproducerに対するFilter maskとowner受理を検証する。実HALの損失解消は別途実測する。
+        } finally {
+            allowOwner.countDown()
+            executor.shutdownNow()
+            engine.close()
+        }
     }
 
     @Test fun ordinarySectionFiltersKeepCrcEnabled() {
