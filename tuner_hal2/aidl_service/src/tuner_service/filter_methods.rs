@@ -270,7 +270,9 @@ impl IFilter for FilterAidlObject {
         })?;
         *av_memory = TunerNativeHandle {
             fds: vec![ParcelFileDescriptor::new(export.file)],
-            ints: vec![0],
+            // JNIはintsの存在をCodec2 global INFO indexとして解釈する。
+            // 未定義index=0を通知せず、単一fdのみを公開する。
+            ints: vec![],
         };
         Ok(size_bytes)
     }
@@ -308,7 +310,7 @@ impl IFilter for FilterAidlObject {
             av_data_id,
             || match (av_memory.fds.as_slice(), av_memory.ints.as_slice()) {
                 ([], []) => Ok(AvHandleReleaseDescriptor::Empty),
-                ([file], [0]) => {
+                ([file], []) => {
                     let metadata = std::fs::metadata(format!("/proc/self/fd/{}", file.as_raw_fd()))
                         .map_err(|_| {
                             HalError::internal(
