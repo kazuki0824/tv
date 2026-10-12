@@ -74,7 +74,10 @@ class CasControllerSessionTest {
             check(update.diagnostics.isEmpty())
             check(update.ecmPids == setOf(TsPid(0x032), TsPid(0x033)))
             check(factory.plugins.single().sessions.size == 2)
-            val assignedPidSets = descramblers.map { it.pids.toSet() }.toSet()
+            val assignedPidSets =
+                descramblers
+                    .map { it.pids.toSet() }
+                    .toSet()
             check(assignedPidSets == setOf(setOf(video.value), setOf(audio.value)))
             check(!controller.isServiceDescramblingReady(key, 3))
             update.ecmPids.forEach { check(controller.onEcmSection(it, byteArrayOf(1)).isEmpty()) }
