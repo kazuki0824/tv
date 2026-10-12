@@ -527,8 +527,13 @@ where
     if !report.stopped_by_cancel {
         for packet in &boundary.packets {
             sink.deliver_ts_packet(packet)?;
+            report.add_packets(1)?;
+            FrontendLivePumpProgress::add(
+                &progress.packets_delivered,
+                &progress.packets_delivered_saturated,
+                1,
+            );
         }
-        report.add_packets(boundary.packets.len())?;
     }
     Ok(report)
 }
@@ -1073,6 +1078,68 @@ mod tests {
                 would_block_retries_saturated: false,
             }
         );
+    }
+
+    #[test]
+    fn completed_packets_remain_visible_if_later_packet_delivery_fails() {
+        struct SecondFails(u8);
+        impl FrontendLivePacketSink for SecondFails {
+            fn deliver_ts_packet(&mut self, _: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError> {
+                self.0 += 1;
+                if self.0 == 2 {
+                    return Err(HalError::cleanup_failed("test", "second packet failure"));
+                }
+                Ok(())
+            }
+        }
+        let mut data = packet(1).to_vec();
+        data.extend_from_slice(&packet(2));
+        let mut owner = FrontendLivePumpOwner::start(
+            descriptor(),
+            Box::new(Cursor::new(data)),
+            Box::new(SecondFails(0)),
+        ).unwrap();
+        let progress = owner.progress();
+        let mut completed = false;
+        for _ in 0..100 {
+            if let FrontendLivePumpJoinOutcome::Completed(result) = owner.collect_if_finished() {
+                assert!(result.is_err());
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(completed);
+        let snapshot = progress.snapshot();
+        assert_eq!(snapshot.packets_delivered, 1);
+        assert!(snapshot.finished);
+    }
+
+    #[test]
+    fn panic_in_reader_marks_existing_pump_finished() {
+        struct PanickingReader;
+        impl Read for PanickingReader {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("test reader panic");
+            }
+        }
+        let mut owner = FrontendLivePumpOwner::start(
+            descriptor(),
+            Box::new(PanickingReader),
+            Box::new(VecSink::default()),
+        ).unwrap();
+        let progress = owner.progress();
+        let mut completed = false;
+        for _ in 0..100 {
+            if let FrontendLivePumpJoinOutcome::Completed(result) = owner.collect_if_finished() {
+                assert!(result.is_err());
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(completed);
+        assert!(progress.snapshot().finished);
     }
 
     #[test]
