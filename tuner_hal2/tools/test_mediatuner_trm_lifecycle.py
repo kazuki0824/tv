@@ -48,8 +48,7 @@ class MediatunerTrmLifecycleIntegrationTest(unittest.TestCase):
             actions["property:init.svc.zygote=running && property:tuner.server.enable=true"],
             ["start media.tuner"],
         )
-        # Do not start the native tuner service when ro.tuner.lazyhal keeps
-        # tuner.server.enable unset or false.
+        # ro.tuner.lazyhal構成ではtuner.server.enableによる強制起動を行わない。
         self.assertNotIn("property:init.svc.zygote=running", actions)
         self.assertFalse(any("start vendor.maleicacid-tuner2" in v for vs in actions.values() for v in vs))
 

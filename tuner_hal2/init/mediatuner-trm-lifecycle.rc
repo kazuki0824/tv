@@ -1,13 +1,13 @@
-# Framework (zygote/system_server) replacement drops TRM's in-memory frontend map.
-# LineageOS mediatuner registers it only in the native TunerService constructor.
-# Restart the existing framework tuner service, not the vendor tuner HAL.
+# system_server再生成でTRM内のfrontend資源登録が失われる。
+# LineageOSのmediatunerはTunerService生成時だけTRMへ登録するため、
+# Framework再起動に合わせて既存media.tunerを再生成する。vendor Tuner HALは停止しない。
 on property:init.svc.zygote=stopped
     stop media.tuner
 
 on property:init.svc.zygote=restarting
     stop media.tuner
 
-# Keep the standard non-lazy tuner.server.enable gate. The mediatuner constructor
-# waits for tv_tuner_resource_mgr and repopulates its frontend resources.
+# 非lazy構成の既定tuner.server.enable条件を維持する。
+# 新mediatunerはtv_tuner_resource_mgrを待ってfrontend資源を再登録する。
 on property:init.svc.zygote=running && property:tuner.server.enable=true
     start media.tuner
