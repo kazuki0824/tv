@@ -3606,7 +3606,10 @@ fn run_frontend_backend_tune_session_worker(
                             &runtime,
                             frontend_id,
                             generation,
-                            live_pump.as_ref().expect("live pump ownership committed").progress(),
+                            live_pump
+                                .as_ref()
+                                .expect("live pump ownership committed")
+                                .progress(),
                         )?;
                     }
                 }
