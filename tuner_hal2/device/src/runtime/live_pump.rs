@@ -217,7 +217,9 @@ impl FrontendLivePumpProgress {
         if let Ok(previous) = result {
             if value > 0 && previous >= u64::MAX - value {
                 if !saturated.swap(true, Ordering::AcqRel) {
-                    eprintln!("diagnostic_counter_saturated owner=frontend_live_pump counter={name}");
+                    eprintln!(
+                        "diagnostic_counter_saturated owner=frontend_live_pump counter={name}"
+                    );
                 }
             }
         }
@@ -1100,7 +1102,12 @@ mod tests {
             FrontendLivePumpProgressSnapshot::default()
         );
         progress.started.store(true, Ordering::Release);
-        FrontendLivePumpProgress::add(&progress.bytes_read, &progress.bytes_read_saturated, 188, "bytes_read");
+        FrontendLivePumpProgress::add(
+            &progress.bytes_read,
+            &progress.bytes_read_saturated,
+            188,
+            "bytes_read",
+        );
         FrontendLivePumpProgress::add(
             &progress.packets_delivered,
             &progress.packets_delivered_saturated,
