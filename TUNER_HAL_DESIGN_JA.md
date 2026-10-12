@@ -1068,11 +1068,12 @@ PES parserがDTSまたはprivate-data presenceを有効入力として既に確�
 | 項目 | 固定値 | 理由 |
 |---|---|---|
 | fd数 | 1 | shared backing fd を framework/JNI へ渡すため |
-| ints数 | 1 | Android framework/JNI が参照する memory index だけを公開するため |
-| `ints[0]` | 0 | 単一 shared memory の index。HAL内部識別子ではない |
-| `ints[1..]` | 出さない | HAL内部識別子を framework/JNI へ公開しないため |
+| ints数 | 0 | 本製品はCodec2のglobal INFO indexを発行しないため |
+| `ints[0]` | 存在しない | 0を代入するとAndroid 15の`C2DataIdInfo`に不正なglobal INFO indexとして解釈され`CHECK(isGlobal())`でabortする |
 | `slot_size` / `slot_count` | 出さない | HAL内部の領域管理値であり、`NativeHandle.ints` ではないため |
-| magic / generation / filter id | 出さない | JNI が int を memory index として読むため |
+| magic / generation / filter id | 出さない | JNIにHAL内部識別子を渡さないため |
+
+event-local AV FDと`IFilter.getAvSharedHandle()`の両経路で`fds=[AV FD], ints=[]`を使用する。`MediaEvent.getLinearBlock()`にintを渡す場合、AOSPは先頭要素をCodec2のglobal INFO indexとして解釈する。`IFilter.releaseAvHandle()`も単一FD・空intのshapeを一致させ、FD identity検証と既存のactive `avDataId`解放確定点を保持する。AV payload、offset、size、PTS/DTS、data ID、使用権の寿命は変更しない。
 
 ### AV転送方式とクライアント側の存続期間
 
@@ -1780,10 +1781,3 @@ presentation timestampと当該media outputのassociation責務は`MediaEvent`�
 一方、同3.11-E1 Fascicle 2 Attachment Chapter 2 2.1のaudio規定はparameter切替等の境界における先頭frameへのPTSを要求するが、全audio PESへの明示を保証しない。Fascicle 3 Chapter 3 3.1が参照するH.222.0 2.4.3.7ではaudio PTSは当該PES内で開始する最初のaudio access unitへ対応し、Fascicle 2 Chapter 5.2.2の製品対象MPEG-2 AAC LC ADTSはheaderにactual sampling frequencyを持ち、`number_of_raw_data_blocks_in_frame=0`により1 raw-data-block/frameへ固定される。さらにARIB TR-B15 4.6-E1 Fascicle 3 4.2.2はBS／広帯域CSのMPEG-2 AACについてPES packetとaudio frameのnon-synchronizationを許容する。製品既定producerはMPEG-2 AAC LC ADTSとMPEG audioについて、PESを跨いで連続するframe header／lengthを上限付きで追跡し、この規格上のanchor、actual sample rate、exact sample countを結合してPTS-sparse eventのauthoritativeな33-bit 90 kHz時刻を確定する。parameter変更後の明示PTSで最初に開始するAUへ再anchorし、未通知変更、unsupported／malformed frame、gapまたは各lifecycle境界では配送を抑止して型付き診断を残す。この成立範囲に対応する`numAudioFilter=1`とaudio/video各1件を閉じる有限AV予算を製品既定profileで広告する。`getAvSyncTime()`用のPCR/wallclock補間を個別eventのPTSとして流用しない。TR-B15の証拠は公式英訳4.6-E1の精読範囲であり、現行日本語版8.9との差分は未証明とする。
 
 最低試験は、(1) explicit PTS video PESの出力とaudio PES内で最初に開始するAUでは`isPtsPresent=true`かつ`pts`がその明示PTSと一致し、音声の後続AU・前PESから継続するAUは上記AU対応規則に従うこと、(2) `isPtsPresent=false`の合法なPTS-sparse inputでもbackend metadataまたはframe境界・timing parameterを構造検証済みのframe列からauthoritative associationを確定できる場合は当該media outputに対応する値を`pts`へ出すこと、(3) authoritative sourceがない場合は定数0、直前PTS、PCR、wallclock、nominal frame rate / sample rate等のgeneric interpolationを行わず、そのeventを成功配送しないこと、(4) exact sample countの有理数累積、33-bit wrapとA/V timeline差を維持すること、(5) `isPtsPresent=false`だけを理由にpayload破棄/fatalせず、associationが成立するeventはprovenanceをfalseのまま配送すること、(6) flush、transport discontinuity、source/generation変更後は明示PTSまで再開しないこと、(7) ADTS／MPEG audioのframe bodyおよびheader途中にPES境界を置いても有限残余で明示anchorからPTS-sparse eventへ継続し、最初に開始するAUの時刻とpresence=falseを維持すること、(8)未anchorかつ`data_alignment_indicator=false`の最初のPESが先行AUのcontinuationから始まる場合に、sync-likeな偽候補を次frame境界の構造不一致で拒否し、最初に開始する検証済みAUへだけ明示PTSをanchorして後続PTS-sparse eventへ継続すること、(9)先行する偽`HeaderOnly`候補と真のfirst AUがともに次PESへ跨ぐ場合は後続境界確認までevent/anchorを公開せず、確認後に真のAUだけを採用すること、(10)continuation tailとnew AUが同じPESにある場合も、最終`MediaEvent.offset/dataLength`が各完成AUの正確なrangeとなり、付与PTS/provenanceが同じAUへ対応すること、(11)製品snapshotのTS AUDIOが公開demux open-filter use-caseを通り、audio-only serviceがvideo filterなしで既存TIS start gateを通ること、を含める。
-
-
-### AIDL AV NativeHandleのCodec2メタデータindex契約
-
-AOSP Android 15の`MediaEvent.getLinearBlock()`は、AV NativeHandleにintが1個以上ある場合、その先頭値をCodec2のglobal INFO indexとして`C2DataIdInfo`へ渡す。indexがglobal INFOの符号化条件を満たさない場合、frameworkは`CHECK(isGlobal())`によりprocessをabortする。
-
-本製品のevent-local AV FDおよび`IFilter.getAvSharedHandle()`はCodec2 global INFO indexを発行しない。そのため、公開NativeHandleは`fds=[AV FD], ints=[]`とする。存在しないindexを0で代用しない。`IFilter.releaseAvHandle()`は同じ単一FD・空intのshapeをidentity検証と解放に使用し、empty handleの意味を変更しない。AV payload、offset、size、PTS/DTS、data ID、共有参照の所有権・release確定点は変更しない。
