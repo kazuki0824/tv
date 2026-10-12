@@ -513,7 +513,7 @@ class MaleicacidLiveSession(
                 serviceScopedCa + catCa,
                 transaction.services,
             )
-        val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
+        val caMetadata = SectionFilterPolicy.metadataForLiveService(decision.requiresCas, serviceKey, expanded)
         val casResult =
             try {
                 tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, currentGeneration, decision.casDecisionReady)

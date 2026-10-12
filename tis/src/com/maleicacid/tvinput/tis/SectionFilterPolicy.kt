@@ -1,13 +1,24 @@
 package com.maleicacid.tvinput.tis
 
+import com.maleicacid.tvinput.aribsi.CaMetadata
+import com.maleicacid.tvinput.common.ServiceKey
+
 // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
 
 /** Android Tuner資源の所有から分離したsection-filterの判定・集合更新・配送。 */
 object SectionFilterPolicy {
+    // CAT/EMMは放送factとして保持するが、CAS不要の現在サービスではpluginを
+    // 初期化せず、EMM専用plugin失敗を平文再生の失敗にしない。
+    internal fun metadataForLiveService(
+        requiresCas: Boolean,
+        serviceKey: ServiceKey?,
+        metadata: List<CaMetadata>,
+    ): List<CaMetadata> = metadata.filter { requiresCas && (it.serviceKey == null || it.serviceKey == serviceKey) }
+
     fun metadataForCasDecision(
         ready: Boolean,
-        metadata: List<com.maleicacid.tvinput.aribsi.CaMetadata>,
-    ): List<com.maleicacid.tvinput.aribsi.CaMetadata> = if (ready) metadata else emptyList()
+        metadata: List<CaMetadata>,
+    ): List<CaMetadata> = if (ready) metadata else emptyList()
 
     /** registryの所有はTunerControllerに残し、解放成功まで置換しない。 */
     internal fun openOwnedFilter(

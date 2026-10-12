@@ -136,9 +136,7 @@ data class AribService(
     val freeCaMode: Boolean? = null,
     val streams: List<AribElementaryStream> = emptyList(),
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
-) {
-    val requiresCas: Boolean get() = serviceScopedCaDescriptors.isNotEmpty()
-}
+)
 
 data class AribBroadcastClockFact(
     val tableId: Int,
