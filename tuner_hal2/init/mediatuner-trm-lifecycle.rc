@@ -1,13 +1,8 @@
-# system_server再生成でTRM内のfrontend資源登録が失われる。
-# LineageOSのmediatunerはTunerService生成時だけTRMへ登録するため、
-# Framework再起動に合わせて既存media.tunerを再生成する。vendor Tuner HALは停止しない。
+# system_serverの再生成でTRMのFrontend登録が失われるため、
+# TRMに一度だけ登録する既存mediatunerをzygote停止時に再生成する。
+# 未起動のlazy media.tunerを起動せず、vendor HALは停止しない。
 on property:init.svc.zygote=stopped
-    stop media.tuner
+    restart --only-if-running media.tuner
 
 on property:init.svc.zygote=restarting
-    stop media.tuner
-
-# 非lazy構成の既定tuner.server.enable条件を維持する。
-# 新mediatunerはtv_tuner_resource_mgrを待ってfrontend資源を再登録する。
-on property:init.svc.zygote=running && property:tuner.server.enable=true
-    start media.tuner
+    restart --only-if-running media.tuner

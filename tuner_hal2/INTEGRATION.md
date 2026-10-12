@@ -92,13 +92,13 @@ android.hardware.tv.tuner.ITuner/default が登録されている
 
 ### mediatunerとTRMのFramework再起動時の登録寿命
 
-LineageOS 22.1 `frameworks/av/services/tuner/TunerService.cpp` は`TunerService`の生成時に`updateTunerResources()`を一度実行し、HALの`getFrontendIds()/getFrontendInfo()`から得た情報を`tv_tuner_resource_mgr`へ登録する。TRMは`system_server`が所有するため、`stop && start`やzygote再起動でTRMが新しくなっても、旧`mediatuner`が存続するとFrontend一覧が空のままになり、`Tuner.tune()`がFrontend資源取得時に`RESULT_UNAVAILABLE`を返す。
+LineageOS 22.1 `frameworks/av/services/tuner/TunerService.cpp` は`TunerService`の生成時に`updateTunerResources()`を実行し、HALの`getFrontendIds()/getFrontendInfo()`から得た情報を`tv_tuner_resource_mgr`へ登録する。TRMは`system_server`が所有するため、`stop && start`等でTRMだけが再生成され、`mediatuner`が存続するとFrontend登録が空のままになる。
 
-通常の`tuner.server.enable` propertyによるLineageOSの`media.tuner`起動契約を変更せず、製品の`init/mediatuner-trm-lifecycle.rc`をHALの`init_rc`として`/vendor/etc/init`へ導入する。primary `zygote`が`stopped`または`restarting`となった場合、古いTRMへ登録済みの`media.tuner`を停止する。zygoteが`running`へ戻り、非lazy構成を示す`tuner.server.enable=true`が成立した時だけ再起動する。再生成された`mediatuner`はLineageOS標準の`waitForService("tv_tuner_resource_mgr")`を経由して新TRMへFrontendを登録する。
+製品側の`init/mediatuner-trm-lifecycle.rc`を、既存HALサービスの`init_rc`として導入する。公開された`init.svc.zygote`の`stopped`または`restarting`への遷移時に、Android init標準の`restart --only-if-running media.tuner`を実行する。現在起動している`media.tuner`に限り再生成し、未起動のlazyサービスや意図的に停止済みのサービスを強制起動しない。`tuner.server.enable`はAndroid 15でsystem-internalなpropertyのため、vendor init rcのaction triggerから参照しない。
 
-起動に任意のsleepを挿入せず、Tuner HALのregistry、capability、Frontend種別、資源個数、Backendの成功条件を変更しない。TRMの空状態をHALが回避して直接Frontendを開くこともしない。lazy HAL構成は既存のon-demand起動に任せ、`tuner.server.enable`が偽のまま強制起動しない。
+`mediatuner`は生成時に既存の`AServiceManager_waitForService("tv_tuner_resource_mgr")`を用いて新しいTRMの公開を待ち、その後`setFrontendInfoList()`でHAL由来のFrontendを再登録する。再登録の成否はHALの有効なFrontend情報とTRM側の受付にも依存する。HALのregistryやcapability、Backend処理、Frameworkの資源割当契約は変更しない。
 
-実機受入れでは`getprop init.svc.media.tuner`と`pidof mediatuner`をFramework停止前後で確認し、`dumpsys tv_tuner_resource_mgr`にHAL由来のFrontendResourcesが再登録された後に`Tuner.tune()`を実行する。Frontend再登録の確認とCodec2へのFD使用許可（#200）の試験を混同しない。
+実機受入れでは、`stop && start`前後の`pidof mediatuner`、`getprop init.svc.media.tuner`、`dumpsys tv_tuner_resource_mgr`を照合し、再生成後のFrontendResources登録および`Tuner.tune()`の再実行を確認する。これは製品の実機検証であり、init rcのテキスト検査だけをTRM復旧の回帰試験と呼ばない。Codec2へのFD利用許可（#200）は別に検証する。
 
 ## 4.1 CAS descrambler依存
 
