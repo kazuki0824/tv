@@ -126,11 +126,13 @@ where
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FrontendLivePumpReport {
     pub packets_delivered: u64,
+    pub packet_counter_saturated: bool,
     pub malformed_bytes: u64,
     pub malformed_byte_counter_saturated: bool,
     pub read_retries: u64,
     pub would_block_retries: u64,
     pub read_retry_counter_saturated: bool,
+    pub would_block_counter_saturated: bool,
     pub stopped_by_cancel: bool,
     pub reached_eof: bool,
 }
@@ -138,9 +140,8 @@ pub struct FrontendLivePumpReport {
 impl FrontendLivePumpReport {
     fn add_packets(&mut self, amount: usize) -> Result<(), HalError> {
         let amount = u64::try_from(amount).unwrap_or(u64::MAX);
-        self.packets_delivered = self.packets_delivered.checked_add(amount).ok_or_else(|| {
-            HalError::cleanup_failed("frontend live pump", "delivered packet counter overflow")
-        })?;
+        self.packets_delivered = self.packets_delivered.saturating_add(amount);
+        self.packet_counter_saturated |= self.packets_delivered == u64::MAX;
         Ok(())
     }
 
@@ -163,9 +164,13 @@ pub struct FrontendLivePumpProgressSnapshot {
     pub started: bool,
     pub finished: bool,
     pub bytes_read: u64,
+    pub bytes_read_saturated: bool,
     pub packets_delivered: u64,
+    pub packets_delivered_saturated: bool,
     pub interrupted_retries: u64,
+    pub interrupted_retries_saturated: bool,
     pub would_block_retries: u64,
+    pub would_block_retries_saturated: bool,
 }
 
 /// packet読取りworkerがcounterを更新し、Frontend ownerが診断を公開する。
@@ -175,9 +180,13 @@ pub struct FrontendLivePumpProgress {
     started: AtomicBool,
     finished: AtomicBool,
     bytes_read: AtomicU64,
+    bytes_read_saturated: AtomicBool,
     packets_delivered: AtomicU64,
+    packets_delivered_saturated: AtomicBool,
     interrupted_retries: AtomicU64,
+    interrupted_retries_saturated: AtomicBool,
     would_block_retries: AtomicU64,
+    would_block_retries_saturated: AtomicBool,
 }
 
 impl FrontendLivePumpProgress {
@@ -187,16 +196,29 @@ impl FrontendLivePumpProgress {
             started: self.started.load(Ordering::Acquire),
             finished: self.finished.load(Ordering::Acquire),
             bytes_read: self.bytes_read.load(Ordering::Relaxed),
+            bytes_read_saturated: self.bytes_read_saturated.load(Ordering::Relaxed),
             packets_delivered: self.packets_delivered.load(Ordering::Relaxed),
+            packets_delivered_saturated: self.packets_delivered_saturated.load(Ordering::Relaxed),
             interrupted_retries: self.interrupted_retries.load(Ordering::Relaxed),
+            interrupted_retries_saturated: self.interrupted_retries_saturated.load(Ordering::Relaxed),
             would_block_retries: self.would_block_retries.load(Ordering::Relaxed),
+            would_block_retries_saturated: self.would_block_retries_saturated.load(Ordering::Relaxed),
         }
     }
 
-    fn add(counter: &AtomicU64, value: u64) {
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    fn add(
+        counter: &AtomicU64,
+        saturated: &AtomicBool,
+        value: u64,
+    ) {
+        let result = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.saturating_add(value))
         });
+        if let Ok(previous) = result {
+            if value > 0 && previous >= u64::MAX - value {
+                saturated.store(true, Ordering::Release);
+            }
+        }
     }
 }
 
@@ -439,7 +461,7 @@ where
         let read_len = match reader.read(&mut buf) {
             Ok(length) => length,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                FrontendLivePumpProgress::add(&progress.interrupted_retries, 1);
+                FrontendLivePumpProgress::add(&progress.interrupted_retries, &progress.interrupted_retries_saturated, 1);
                 match report.read_retries.checked_add(1) {
                     Some(count) => report.read_retries = count,
                     None if !report.read_retry_counter_saturated => {
@@ -454,8 +476,9 @@ where
                 continue;
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                FrontendLivePumpProgress::add(&progress.would_block_retries, 1);
+                FrontendLivePumpProgress::add(&progress.would_block_retries, &progress.would_block_retries_saturated, 1);
                 report.would_block_retries = report.would_block_retries.saturating_add(1);
+                report.would_block_counter_saturated |= report.would_block_retries == u64::MAX;
                 let deadline = Instant::now()
                     .checked_add(Duration::from_millis(20))
                     .ok_or_else(|| {
@@ -476,6 +499,7 @@ where
         }
         FrontendLivePumpProgress::add(
             &progress.bytes_read,
+            &progress.bytes_read_saturated,
             u64::try_from(read_len).unwrap_or(u64::MAX),
         );
 
@@ -487,7 +511,11 @@ where
         for packet in &drain.packets {
             sink.deliver_ts_packet(packet)?;
             report.add_packets(1)?;
-            progress.packets_delivered.store(report.packets_delivered, Ordering::Relaxed);
+            FrontendLivePumpProgress::add(
+                &progress.packets_delivered,
+                &progress.packets_delivered_saturated,
+                1,
+            );
         }
     }
 
@@ -1025,9 +1053,9 @@ mod tests {
             FrontendLivePumpProgressSnapshot::default()
         );
         progress.started.store(true, Ordering::Release);
-        FrontendLivePumpProgress::add(&progress.bytes_read, 188);
-        FrontendLivePumpProgress::add(&progress.packets_delivered, 1);
-        FrontendLivePumpProgress::add(&progress.would_block_retries, 3);
+        FrontendLivePumpProgress::add(&progress.bytes_read, &progress.bytes_read_saturated, 188);
+        FrontendLivePumpProgress::add(&progress.packets_delivered, &progress.packets_delivered_saturated, 1);
+        FrontendLivePumpProgress::add(&progress.would_block_retries, &progress.would_block_retries_saturated, 3);
         progress.finished.store(true, Ordering::Release);
         assert_eq!(
             progress.snapshot(),
@@ -1036,9 +1064,13 @@ mod tests {
                 started: true,
                 finished: true,
                 bytes_read: 188,
+                bytes_read_saturated: false,
                 packets_delivered: 1,
+                packets_delivered_saturated: false,
                 interrupted_retries: 0,
+                interrupted_retries_saturated: false,
                 would_block_retries: 3,
+                would_block_retries_saturated: false,
             }
         );
     }
