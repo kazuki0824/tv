@@ -41,6 +41,10 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 
+/** 連続する同一CAS失敗の初回と二倍間隔の集約点だけを記録する。 */
+internal fun shouldLogCasDiagnosticOccurrence(count: Long): Boolean =
+    count > 0L && (count and (count - 1L)) == 0L
+
 /** ライブ視聴、スキャン、録画向けの Tuner 制御層。 */
 @Suppress(
     // Android Tuner資源の単一ownerとして状態遷移を直列化するため、機械的な責務分割は行わない。
@@ -271,6 +275,8 @@ class TunerController(
     private val failedDynamicPmtPids = linkedSetOf<TsPid>()
     private val failedDynamicEcmPids = linkedSetOf<TsPid>()
     private val failedDynamicEmmPids = linkedSetOf<TsPid>()
+    private val casWarningCounts = linkedMapOf<String, Long>()
+    private var casWarningGeneration = -1L
     private val captionLanguagesByPid = ConcurrentHashMap<TsPid, List<NativeAribCaptionFactParser.Language>>()
     private val captionFactParsers = ConcurrentHashMap<TsPid, NativeAribCaptionFactParser>()
     private val superimposeTimingByPid = ConcurrentHashMap<TsPid, Int>()
@@ -1550,7 +1556,7 @@ class TunerController(
             onEcm = { handleEcmSectionOnController(pid, section) },
             onEmm = {
                 val diagnostics = casController?.onEmmSection(pid, section).orEmpty()
-                diagnostics.forEach { Log.w(LogTags.TIS, "EMM 処理診断 $it") }
+                logCasSectionDiagnostics("EMM", pid, diagnostics)
                 if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
                     finishUnavailableCasOnController(diagnostics)
                 }
@@ -1605,9 +1611,40 @@ class TunerController(
         section: ByteArray,
     ) {
         val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
-        diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
+        logCasSectionDiagnostics("ECM", pid, diagnostics)
         if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
             finishUnavailableCasOnController(diagnostics)
+        }
+    }
+
+    // Only the first occurrence and doubling milestones are logged. Section processing continues.
+    // The diagnostic remains available through CasController.lastDiagnostic().
+    private fun logCasSectionDiagnostics(
+        kind: String,
+        pid: TsPid,
+        diagnostics: List<CasController.Diagnostic>,
+    ) {
+        if (casWarningGeneration != tuneGeneration) {
+            casWarningCounts.clear()
+            casWarningGeneration = tuneGeneration
+        }
+        val keyPrefix = "$kind:${pid.value}:"
+        if (diagnostics.isEmpty()) {
+            val resolved = casWarningCounts.keys.filter { it.startsWith(keyPrefix) }
+            if (resolved.isNotEmpty()) {
+                Log.i(LogTags.TIS, "$kind 処理が回復しました inputId=$inputId pid=$pid generation=$tuneGeneration")
+                resolved.forEach { casWarningCounts.remove(it) }
+            }
+            return
+        }
+        diagnostics.forEach { diagnostic ->
+            val key = "$keyPrefix${diagnostic.caSystemId}:${diagnostic.errorCode}:" +
+                "${diagnostic.cause?.javaClass?.name}:${diagnostic.message}"
+            val count = (casWarningCounts[key] ?: 0L).let { if (it == Long.MAX_VALUE) it else it + 1 }
+            casWarningCounts[key] = count
+            if (shouldLogCasDiagnosticOccurrence(count)) {
+                Log.w(LogTags.TIS, "$kind 処理診断 occurrences=$count $diagnostic")
+            }
         }
     }
 

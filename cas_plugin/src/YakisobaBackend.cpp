@@ -2,6 +2,7 @@
 #include "YakisobaBackend.h"
 
 #include <algorithm>
+#include <android/log.h>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -114,18 +115,39 @@ Result YakisobaBackend::restorePersistentState(const std::array<uint8_t, 6>& car
     return Result::Ok;
 }
 
+Result YakisobaBackend::credentialUnavailable(const char* stage, int errorNumber) {
+    // The surrounding CAS mutex serializes this diagnostic with initialize().
+    // Never log credential bytes, the card ID, or the key material.
+    if (lastCredentialFailureStage_ != stage || lastCredentialFailureErrno_ != errorNumber) {
+        __android_log_print(ANDROID_LOG_WARN, "MaleicacidCas",
+                            "credential unavailable stage=%s errno=%d", stage, errorNumber);
+        lastCredentialFailureStage_ = stage;
+        lastCredentialFailureErrno_ = errorNumber;
+    }
+    return Result::NotProvisioned;
+}
+
 Result YakisobaBackend::initialize() {
     if (revoked_) return Result::Revoked;
     if (initialized_) return Result::Ok;
     const int fd = open(credentialPath_.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-    if (fd < 0) return Result::NotProvisioned;
+    if (fd < 0) return credentialUnavailable("open", errno);
     struct stat info {};
-    if (fstat(fd, &info) || !validInputFile(info)) { close(fd); return Result::NotProvisioned; }
+    if (fstat(fd, &info) != 0) {
+        const int failure = errno;
+        close(fd);
+        return credentialUnavailable("fstat", failure);
+    }
+    if (!validInputFile(info)) {
+        close(fd);
+        return credentialUnavailable("invalid_regular_file_or_size", 0);
+    }
     Secret<kMaxCredentialSize + 1> content;
     const auto size = static_cast<size_t>(info.st_size);
     const auto count = pread(fd, content.bytes.data(), size + 1, 0);
+    const int readError = count < 0 ? errno : 0;
     close(fd);
-    if (count != static_cast<ssize_t>(size)) return Result::NotProvisioned;
+    if (count != static_cast<ssize_t>(size)) return credentialUnavailable("pread", readError);
     initialInput = reinterpret_cast<char*>(content.bytes.data());
     initialSize = size;
     initialReadFailed = false;
@@ -138,6 +160,12 @@ Result YakisobaBackend::initialize() {
     const auto restored = restorePersistentState(cardId);
     if (restored != Result::Ok) return restored;
     initialized_ = true;
+    if (!lastCredentialFailureStage_.empty()) {
+        __android_log_print(ANDROID_LOG_INFO, "MaleicacidCas",
+                            "credential source recovered");
+        lastCredentialFailureStage_.clear();
+        lastCredentialFailureErrno_ = 0;
+    }
     return Result::Ok;
 }
 

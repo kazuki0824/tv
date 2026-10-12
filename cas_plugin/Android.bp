@@ -33,7 +33,7 @@ cc_defaults {
         "src/KeySocket.cpp",
     ],
     static_libs: ["libyakisoba"],
-    shared_libs: ["libutils"],
+    shared_libs: ["libutils", "liblog"],
     header_libs: ["media_plugin_headers", "libstagefright_headers"],
     ldflags: ["-Wl,--wrap=fopen"],
 }
