@@ -30,6 +30,7 @@ class PlaybackFailureCallbacksTest {
     @Suppress("LongMethod")
     @Test
     fun casFilterRejectRollbackKeepsProductionRetryMarker() {
+        MediaCas.Faults.reset()
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         try {
             val fixture =
@@ -94,6 +95,7 @@ class PlaybackFailureCallbacksTest {
             cas.close()
         } finally {
             executor.shutdownNow()
+            MediaCas.Faults.reset()
         }
     }
 
@@ -336,6 +338,9 @@ class PlaybackFailureCallbacksTest {
                             set("failedDynamicEmmPids", linkedSetOf<TsPid>())
                             set("sectionFilterHandles", linkedMapOf(pmt.pid to pmt, ecm.pid to ecm, emm.pid to emm))
                             set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+                            // Unsafe生成ではfield initializerが走らないため、診断ownerの初期状態を再現する。
+                            set("casWarningCounts", linkedMapOf<String, Long>())
+                            set("casWarningGeneration", -1L)
                             faults.invalidateAt = operation
                             faults.pluginFailure = failCleanup
                             val pid = if (operation == MediaCas.Operation.ECM) ecm.pid else emm.pid
@@ -369,6 +374,7 @@ class PlaybackFailureCallbacksTest {
                 }.get(10, TimeUnit.SECONDS)
         } finally {
             executor.shutdownNow()
+            MediaCas.Faults.reset()
         }
     }
 
