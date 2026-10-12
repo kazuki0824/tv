@@ -1949,7 +1949,9 @@ mod tests {
         assert!(runtime.record_live_pump_progress(1, old).is_ok());
         assert_eq!(runtime.snapshot().active_live_pump_progress, None);
         let current = Arc::new(FrontendLivePumpProgress::default());
-        runtime.record_live_pump_progress(2, Arc::clone(&current)).unwrap();
+        runtime
+            .record_live_pump_progress(2, Arc::clone(&current))
+            .unwrap();
         assert_eq!(
             runtime.snapshot().active_live_pump_progress,
             Some(current.snapshot())
@@ -1962,7 +1964,9 @@ mod tests {
         let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
         runtime.commit_generation(1).unwrap();
         let prepared = Arc::new(FrontendLivePumpProgress::default());
-        runtime.record_live_pump_progress(1, Arc::clone(&prepared)).unwrap();
+        runtime
+            .record_live_pump_progress(1, Arc::clone(&prepared))
+            .unwrap();
         assert!(runtime.snapshot().active_live_pump_progress.is_some());
         drop(prepared);
         assert_eq!(runtime.snapshot().active_live_pump_progress, None);
