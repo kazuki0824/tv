@@ -276,14 +276,13 @@ impl FrontendLivePumpOwner {
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
                 let _finish = PumpFinishGuard(Arc::clone(&worker_progress));
                 worker_progress.started.store(true, Ordering::Release);
-                let result = run_frontend_live_pump_with_progress(
+                run_frontend_live_pump_with_progress(
                     &mut reader,
                     &mut sink,
                     &control,
                     &descriptor,
                     &worker_progress,
-                );
-                result
+                )
             })?;
         Ok(Self {
             thread_result,
@@ -363,14 +362,13 @@ impl PreparedFrontendLivePump {
                     control.wait_until(None);
                 }
                 worker_progress.started.store(true, Ordering::Release);
-                let result = run_frontend_live_pump_with_progress(
+                run_frontend_live_pump_with_progress(
                     &mut reader,
                     &mut sink,
                     &control,
                     &descriptor,
                     &worker_progress,
-                );
-                result
+                )
             })?;
 
         if caller.cancel_requested() {
