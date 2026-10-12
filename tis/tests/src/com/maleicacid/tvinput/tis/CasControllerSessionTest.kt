@@ -75,13 +75,15 @@ class CasControllerSessionTest {
             check(update.ecmPids == setOf(TsPid(0x032), TsPid(0x033)))
             check(factory.plugins.size == 1)
             check(factory.plugins[0].sessions.size == 2)
+            // 初回ECMにより実key tokenを取得するまでは、ES PIDを物理結合しない。
+            check(descramblers.size == 2 && descramblers.all { it.pids.isEmpty() })
+            check(!controller.isServiceDescramblingReady(key, 3))
+            update.ecmPids.forEach { check(controller.onEcmSection(it, byteArrayOf(1)).isEmpty()) }
             val assignedPidSets =
                 descramblers
                     .map { it.pids.toSet() }
                     .toSet()
             check(assignedPidSets == setOf(setOf(video.value), setOf(audio.value)))
-            check(!controller.isServiceDescramblingReady(key, 3))
-            update.ecmPids.forEach { check(controller.onEcmSection(it, byteArrayOf(1)).isEmpty()) }
             check(controller.isServiceDescramblingReady(key, 3))
         }
     }
