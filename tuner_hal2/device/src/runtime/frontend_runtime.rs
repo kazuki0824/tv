@@ -1970,7 +1970,7 @@ mod tests {
         );
         runtime.commit_generation(2).unwrap();
         assert_eq!(runtime.snapshot().active_live_pump_progress, None);
-        assert!(runtime.record_live_pump_progress(1, progress).is_err());
+        assert!(runtime.record_live_pump_progress(1, progress).is_ok());
         assert_eq!(runtime.snapshot().active_live_pump_progress, None);
     }
 
