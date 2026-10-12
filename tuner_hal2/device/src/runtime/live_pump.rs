@@ -156,9 +156,10 @@ impl FrontendLivePumpReport {
     }
 }
 
-/// Read-only counters of the current pump, scoped by the owning frontend tune generation.
+/// 現在世代のライブTSポンプが公開する読取り専用の進捗。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FrontendLivePumpProgressSnapshot {
+    pub prepared: bool,
     pub started: bool,
     pub finished: bool,
     pub bytes_read: u64,
@@ -167,9 +168,10 @@ pub struct FrontendLivePumpProgressSnapshot {
     pub would_block_retries: u64,
 }
 
-/// Only the packet reader updates these atomics; the frontend owner provides the dump view.
+/// packet読取りworkerがcounterを更新し、Frontend ownerが診断を公開する。
 #[derive(Debug, Default)]
 pub struct FrontendLivePumpProgress {
+    prepared: AtomicBool,
     started: AtomicBool,
     finished: AtomicBool,
     bytes_read: AtomicU64,
@@ -181,6 +183,7 @@ pub struct FrontendLivePumpProgress {
 impl FrontendLivePumpProgress {
     pub fn snapshot(&self) -> FrontendLivePumpProgressSnapshot {
         FrontendLivePumpProgressSnapshot {
+            prepared: self.prepared.load(Ordering::Acquire),
             started: self.started.load(Ordering::Acquire),
             finished: self.finished.load(Ordering::Acquire),
             bytes_read: self.bytes_read.load(Ordering::Relaxed),
@@ -194,6 +197,14 @@ impl FrontendLivePumpProgress {
         let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.saturating_add(value))
         });
+    }
+}
+
+/// 既存workerのpanic unwindでも完了状態を更新する局所guard。
+struct PumpFinishGuard(Arc<FrontendLivePumpProgress>);
+impl Drop for PumpFinishGuard {
+    fn drop(&mut self) {
+        self.0.finished.store(true, Ordering::Release);
     }
 }
 
@@ -241,6 +252,7 @@ impl FrontendLivePumpOwner {
         let worker_progress = Arc::clone(&progress);
         let thread_result =
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
+                let _finish = PumpFinishGuard(Arc::clone(&worker_progress));
                 worker_progress.started.store(true, Ordering::Release);
                 let result = run_frontend_live_pump_with_progress(
                     &mut reader,
@@ -249,7 +261,6 @@ impl FrontendLivePumpOwner {
                     &descriptor,
                     &worker_progress,
                 );
-                worker_progress.finished.store(true, Ordering::Release);
                 result
             })?;
         Ok(Self {
@@ -310,14 +321,15 @@ impl PreparedFrontendLivePump {
         let worker_progress = Arc::clone(&progress);
         let thread_result =
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
+                let _finish = PumpFinishGuard(Arc::clone(&worker_progress));
                 #[cfg(test)]
                 wait_at_prepare_ready_test_barrier(frontend_id);
 
+                worker_progress.prepared.store(true, Ordering::Release);
                 worker_ready.store(true, Ordering::Release);
                 caller_wake.wake();
                 loop {
                     if control.stop_requested() {
-                        worker_progress.finished.store(true, Ordering::Release);
                         return Ok(FrontendLivePumpReport {
                             stopped_by_cancel: true,
                             ..FrontendLivePumpReport::default()
@@ -336,7 +348,6 @@ impl PreparedFrontendLivePump {
                     &descriptor,
                     &worker_progress,
                 );
-                worker_progress.finished.store(true, Ordering::Release);
                 result
             })?;
 
@@ -475,11 +486,9 @@ where
         );
         for packet in &drain.packets {
             sink.deliver_ts_packet(packet)?;
+            report.add_packets(1)?;
+            progress.packets_delivered.store(report.packets_delivered, Ordering::Relaxed);
         }
-        report.add_packets(drain.packets.len())?;
-        progress
-            .packets_delivered
-            .store(report.packets_delivered, Ordering::Relaxed);
     }
 
     let boundary = completion.drain_for_boundary();
@@ -1023,6 +1032,7 @@ mod tests {
         assert_eq!(
             progress.snapshot(),
             FrontendLivePumpProgressSnapshot {
+                prepared: false,
                 started: true,
                 finished: true,
                 bytes_read: 188,
