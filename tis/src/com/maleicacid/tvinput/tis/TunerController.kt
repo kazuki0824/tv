@@ -281,7 +281,9 @@ class TunerController(
 
     @Volatile private var sectionIngestController: SectionIngestController? = null
     private var casController: CasController? = null
-    private var onSectionIngestedCallback: (() -> Unit)? = null
+
+    // 同じownerから受理したPIDだけを渡す。nullはSectionでないCAS接続状態変更。
+    private var onSectionIngestedCallback: ((TsPid?) -> Unit)? = null
     private var onTunerResourceLostCallback: ((Long) -> Unit)? = null
     private var onTuneEventCallback: ((Long, Int) -> Unit)? = null
     private var onBroadcastClockUpdatedCallback: (() -> Unit)? = null
@@ -354,7 +356,7 @@ class TunerController(
                 else -> false
             }
         if (refresh) {
-            onSectionIngestedCallback?.invoke()
+            onSectionIngestedCallback?.invoke(null)
             return
         }
         try {
@@ -365,7 +367,7 @@ class TunerController(
     }
 
     @Suppress("MaxLineLength")
-    fun setOnSectionIngestedCallback(callback: (() -> Unit)?) = callOnController { onSectionIngestedCallback = callback }
+    fun setOnSectionIngestedCallback(callback: ((TsPid?) -> Unit)?) = callOnController { onSectionIngestedCallback = callback }
 
     @Suppress("MaxLineLength")
     fun setOnTunerResourceLostCallback(callback: ((Long) -> Unit)?) = callOnController { onTunerResourceLostCallback = callback }
@@ -483,7 +485,7 @@ class TunerController(
                 Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)
                 return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())
             }
-        return tuneResolvedChannel(resolved)
+        return tuneResolvedChannel(resolved, eitPfActualOnly = true)
     }
 
     internal data class BsFrontendSelectionResult(
@@ -852,9 +854,15 @@ class TunerController(
     }
 
     @Suppress("MaxLineLength")
-    fun tuneForScan(candidate: ScanCandidate): TuneOutcome = callOnController { tuneForScanOnController(candidate) }
+    fun tuneForScan(
+        candidate: ScanCandidate,
+        eitPfActualOnly: Boolean = false,
+    ): TuneOutcome = callOnController { tuneForScanOnController(candidate, eitPfActualOnly) }
 
-    private fun tuneForScanOnController(candidate: ScanCandidate): TuneOutcome {
+    private fun tuneForScanOnController(
+        candidate: ScanCandidate,
+        eitPfActualOnly: Boolean,
+    ): TuneOutcome {
         val synthetic =
             ResolvedChannel(
                 uri = null,
@@ -870,7 +878,7 @@ class TunerController(
                 backendHint = candidate.backendHint,
                 satelliteBand = candidate.satelliteBand,
             )
-        return tuneResolvedChannel(synthetic)
+        return tuneResolvedChannel(synthetic, eitPfActualOnly = eitPfActualOnly)
     }
 
     // cancelTuningはleaseを返さない。Frontend種類の切替では既存leaseをSDKへ返却し、
@@ -887,7 +895,10 @@ class TunerController(
         }.exceptionOrNull()
 
     @Suppress("ReturnCount", "MaxLineLength")
-    private fun tuneResolvedChannel(channel: ResolvedChannel): TuneOutcome {
+    private fun tuneResolvedChannel(
+        channel: ResolvedChannel,
+        eitPfActualOnly: Boolean,
+    ): TuneOutcome {
         resetBeforeTune()
         val tunerInstance = tuner ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
         val settings =
@@ -922,7 +933,7 @@ class TunerController(
                 return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, e.message.orEmpty())
             }
         return if (result == Tuner.RESULT_SUCCESS) {
-            initializeAcceptedTune(channel, nextGeneration)
+            initializeAcceptedTune(channel, nextGeneration, eitPfActualOnly)
             TuneOutcome(true, result, channel, tuneGeneration)
         } else {
             val cleanupFailure = runCatching { tunerInstance.clearOnTuneEventListener() }.exceptionOrNull()
@@ -991,11 +1002,12 @@ class TunerController(
     private fun initializeAcceptedTune(
         channel: ResolvedChannel?,
         generation: Long,
+        eitPfActualOnly: Boolean,
     ) {
         // 準備に失敗したgenerationも再使用しない。配送・CAS受付はcommitまでfalse。
         tuneGeneration = generation
         completeTuneInitialization(
-            prepare = { prepareInitialSectionFiltersOnController(generation) },
+            prepare = { prepareInitialSectionFiltersOnController(generation, eitPfActualOnly) },
             commit = {
                 currentTune = channel
                 tuneAccepted = true
@@ -1005,7 +1017,10 @@ class TunerController(
     }
 
     @Suppress("MaxLineLength")
-    private fun prepareInitialSectionFiltersOnController(generation: Long) {
+    private fun prepareInitialSectionFiltersOnController(
+        generation: Long,
+        eitPfActualOnly: Boolean,
+    ) {
         listOf(
             WellKnownSectionPid.PAT,
             WellKnownSectionPid.CAT,
@@ -1014,7 +1029,10 @@ class TunerController(
             WellKnownSectionPid.EIT,
             WellKnownSectionPid.TDT,
         ).forEach { pid ->
-            val handle = SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) { createSectionFilter(pid, generation) }
+            val handle =
+                SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) {
+                    createSectionFilter(pid, generation, eitPfActualOnly)
+                }
             check(handle.isOpen) { "初期section filterを開始できません pid=$pid" }
         }
         Log.d(LogTags.TIS, "初期 section filter を開きます inputId=$inputId pids=${sectionFilterHandles.keys} generation=$generation")
@@ -1052,9 +1070,10 @@ class TunerController(
     private fun createSectionFilter(
         pid: TsPid,
         generation: Long,
+        eitPfActualOnly: Boolean = false,
     ): SectionFilterHandle {
         val tunerInstance = tuner ?: return UnavailableSectionFilterHandle(pid, "Tuner利用不可")
-        val requestedObjects = sectionSettingsForPid(pid).size
+        val requestedObjects = sectionSettingsForPid(pid, eitPfActualOnly).size
         val capacity = sectionFilterCapacity(tunerInstance)
         val currentObjects = currentSectionFilterObjectCount()
         if (capacity <= 0 || currentObjects > capacity - requestedObjects) {
@@ -1092,7 +1111,7 @@ class TunerController(
         val handle = TunerSectionFilterHandle(pid, artifacts, generation)
         sectionFilterHandles[pid] = handle
         try {
-            for (settings in sectionSettingsForPid(pid)) {
+            for (settings in sectionSettingsForPid(pid, eitPfActualOnly)) {
                 val filter =
                     tunerInstance.openFilter(
                         Filter.TYPE_TS,
@@ -1525,7 +1544,7 @@ class TunerController(
                         )
                     }
                 }
-                onSectionIngestedCallback?.invoke()
+                onSectionIngestedCallback?.invoke(pid)
                 startPlaybackIfStreamsKnown()
             },
             onEcm = { handleEcmSectionOnController(pid, section) },
@@ -2105,8 +2124,18 @@ class TunerController(
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 
         @Suppress("MagicNumber", "MaxLineLength")
-        internal fun sectionSettingsForPid(pid: TsPid): List<SectionSettingsWithSectionBits> {
-            val tableIds: List<Int?> = if (pid == WellKnownSectionPid.TDT) listOf(0x70, 0x73) else listOf(null)
+        internal fun sectionSettingsForPid(
+            pid: TsPid,
+            eitPfActualOnly: Boolean = false,
+        ): List<SectionSettingsWithSectionBits> {
+            // 現在TSのp/f actualだけがライブ/初期登録に必要。other/scheduleはEPG同期と保守で収集する。
+            // 第2 Filterや別queueを増やさず、既存Section Filterのtable_id maskのみを指定する。
+            val tableIds: List<Int?> =
+                when {
+                    pid == WellKnownSectionPid.TDT -> listOf(0x70, 0x73)
+                    pid == WellKnownSectionPid.EIT && eitPfActualOnly -> listOf(0x4e)
+                    else -> listOf(null)
+                }
             return tableIds.map { tableId ->
                 SectionSettingsWithSectionBits
                     .builder(Filter.TYPE_TS)

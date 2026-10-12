@@ -15,8 +15,10 @@ import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.TransportKey
+import com.maleicacid.tvinput.aribsi.WellKnownSectionPid
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -138,7 +140,9 @@ class ChannelScanController(
 
     init {
         tunerController.setSectionIngestController(ingestController)
-        tunerController.setOnSectionIngestedCallback { refreshDynamicSectionFilters() }
+        tunerController.setOnSectionIngestedCallback { pid ->
+            if (shouldRefreshPmtFiltersForSection(pid)) refreshDynamicSectionFilters()
+        }
         tunerController.setOnTunerResourceLostCallback { lostGeneration ->
             scanGenerationFence.onLost(lostGeneration)
         }
@@ -181,7 +185,8 @@ class ChannelScanController(
             if (cancelled.get() || terminalResourceLostObserved) return false
             engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
-            val tune = tunerController.tuneForScan(candidate)
+            // setup登録にEIT scheduleは不要。EIT入力burstでSDT/PAT/PMTを落とさない。
+            val tune = tunerController.tuneForScan(candidate, eitPfActualOnly = true)
             if (!tune.success) {
                 val message = "選局に失敗しました result=${tune.resultCode} ${tune.message}"
                 diagnostics += ScanDiagnostic(candidate, message)
@@ -1037,6 +1042,9 @@ class ChannelScanController(
         ScanDiagnostic(candidate, "Tuner resource lostによりscan generationを失効しました generation=$generation; TvProvider publishを拒否します")
 
     companion object {
+        // PMT PID集合の根拠はPAT。非PAT SIやCAS接続変更では再計算しない。
+        internal fun shouldRefreshPmtFiltersForSection(pid: TsPid?): Boolean = pid == WellKnownSectionPid.PAT
+
         internal fun <T> acquireFinalSnapshotUnlessCancelled(
             cancelled: AtomicBoolean,
             attempt: () -> T?,
