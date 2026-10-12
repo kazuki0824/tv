@@ -14,8 +14,8 @@ class MediatunerTrmLifecycleIntegrationTest(unittest.TestCase):
     def test_init_rc_installed_by_existing_hal_binary(self) -> None:
         bp = ANDROID_BP.read_text(encoding="utf-8")
         match = re.search(
-            r'rust_binary\\s*\\{\\s*name:\\s*"android\\.hardware\\.tv\\.tuner-service\\.maleicacid2".*?'
-            r'init_rc:\\s*\\[([^]]+)\\]',
+            r'rust_binary\s*\{\s*name:\s*"android\.hardware\.tv\.tuner-service\.maleicacid2".*?'
+            r'init_rc:\s*\[([^]]+)\]',
             bp,
             flags=re.DOTALL,
         )
