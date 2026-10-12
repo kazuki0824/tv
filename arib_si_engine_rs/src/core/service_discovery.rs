@@ -1331,6 +1331,13 @@ impl ServiceDiscoveryCollector {
                                 .any(|es_ca| es_ca.ca_system_id == program_ca.ca_system_id)
                     })
             });
+            // free_CA_modeの整合診断はPMTのraw CA descriptor有無を見る。
+            // 復号対象ESの有無を表すrequires_casとは別の放送事実。
+            let has_raw_ca_descriptor = !service.program_ca_descriptors.is_empty()
+                || service
+                    .es_ca_descriptors
+                    .iter()
+                    .any(|metadata| !metadata.descriptors.is_empty());
             let pmt_pid_resolved = service.pmt_pid.is_some();
             let ca_descriptors_resolved = service.pmt_parsed
                 && !snapshot
@@ -1352,7 +1359,7 @@ impl ServiceDiscoveryCollector {
             {
                 semantic_diagnostics.push("RESERVED_DATA_COMPONENT_TIMING");
             }
-            if service.pmt_parsed && service.free_ca_mode == Some(true) && !semantic_requires_cas {
+            if service.pmt_parsed && service.free_ca_mode == Some(true) && !has_raw_ca_descriptor {
                 semantic_diagnostics.push("FREE_CA_MODE_WITHOUT_CA_DESCRIPTOR");
             }
             if service.service_type.is_none() {
@@ -3124,6 +3131,59 @@ mod semantic_facts_coverage_tests {
             }],
         });
         assert!(semantic_facts_for(all_clear).requires_cas);
+    }
+
+    #[test]
+    fn free_ca_mode_diagnostic_uses_raw_descriptor_presence_not_effective_cas() {
+        let mut without_ca = base_service(vec![stream(0x0101, 0x1b)]);
+        without_ca.pmt_parsed = true;
+        without_ca.free_ca_mode = Some(true);
+        let missing = semantic_facts_for(without_ca);
+        assert!(!missing.requires_cas);
+        assert!(missing.program_ca_descriptors.is_empty());
+        assert!(missing.es_ca_descriptors.is_empty());
+        assert!(missing
+            .semantic_diagnostics
+            .contains(&"FREE_CA_MODE_WITHOUT_CA_DESCRIPTOR"));
+
+        // PROGRAM ECMは全ESの0x1FFF明示で無効でもraw descriptorは残る。
+        let mut all_clear = base_service(vec![stream(0x0101, 0x1b), stream(0x0102, 0x0f)]);
+        all_clear.pmt_parsed = true;
+        all_clear.free_ca_mode = Some(true);
+        all_clear.program_ca_descriptors.push(CaDescriptor {
+            ca_system_id: 0x0005,
+            ca_pid: 0x0031,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe0, 0x31],
+        });
+        let clear = CaDescriptor {
+            ca_system_id: 0x0005,
+            ca_pid: 0x1fff,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xff, 0xff],
+        };
+        all_clear.es_ca_descriptors = vec![
+            EsCaMetadata {
+                elementary_pid: 0x0101,
+                descriptors: vec![clear.clone()],
+            },
+            EsCaMetadata {
+                elementary_pid: 0x0102,
+                descriptors: vec![clear],
+            },
+        ];
+        let overridden = semantic_facts_for(all_clear);
+        assert_eq!(overridden.free_ca_mode, Some(true));
+        assert!(!overridden.requires_cas);
+        assert_eq!(overridden.program_ca_descriptors.len(), 1);
+        assert_eq!(overridden.program_ca_descriptors[0].ca_pid, 0x0031);
+        assert_eq!(overridden.es_ca_descriptors.len(), 2);
+        assert!(overridden.es_ca_descriptors.iter().all(|group| {
+            group.descriptors.len() == 1 && group.descriptors[0].ca_pid == 0x1fff
+        }));
+        assert!(!overridden
+            .semantic_diagnostics
+            .contains(&"FREE_CA_MODE_WITHOUT_CA_DESCRIPTOR"));
     }
 
     #[test]
