@@ -2915,6 +2915,74 @@ fn reconcile_px4_live_pump_consumer(
 }
 
 #[cfg(test)]
+mod prepared_progress_registration_failure_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_device::FrontendLivePacketSink;
+    use std::io::{self, Read};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropObservedReader(Arc<AtomicBool>);
+    impl Read for DropObservedReader {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+    impl Drop for DropObservedReader {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    struct NoopSink;
+    impl FrontendLivePacketSink for NoopSink {
+        fn deliver_ts_packet(
+            &mut self,
+            _: &[u8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE],
+        ) -> Result<(), HalError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn failed_registration_joins_prepared_worker_without_starting_capture() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let mut workers = FrontendWorkerRegistry::default();
+        let (tx, rx) = mpsc::channel();
+        let observed = Arc::clone(&dropped);
+        let runtime_for_worker = Arc::clone(&runtime);
+        workers.start(31337, FrontendWorkerKind::Tune, 1, move |ctx| {
+            let prepared = FrontendLivePumpOwner::prepare(
+                FrontendLiveReaderDescriptor::dvb_dvr_device(
+                    31337,
+                    FrontendDevicePath::new("/dev/null"),
+                ),
+                Box::new(DropObservedReader(observed)),
+                Box::new(NoopSink),
+                &ctx,
+            )?.ok_or_else(|| HalError::internal(
+                HalInternalKind::InvariantViolation, "準備済みworkerが存在しません",
+            ))?;
+            let result = register_prepared_px4_live_pump_progress(
+                &runtime_for_worker, 31337, ctx.generation(), prepared,
+            );
+            tx.send(result.err()).unwrap();
+            Ok(())
+        }).unwrap();
+        let failure = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(failure.is_some(), "存在しないfrontendへの診断登録は失敗しなければなりません");
+        assert!(dropped.load(Ordering::Acquire), "診断失敗から復帰する前にreaderをjoin回収します");
+        for _ in 0..100 {
+            if let Some(completed) = workers.take_completed(31337, FrontendWorkerKind::Tune) {
+                assert!(matches!(completed, FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("試験workerが終了していません");
+    }
+}
+
+#[cfg(test)]
 mod px4_stop_before_join_tests {
     use super::*;
     use maleicacid_tuner_hal2_device::FrontendLivePacketSink;
