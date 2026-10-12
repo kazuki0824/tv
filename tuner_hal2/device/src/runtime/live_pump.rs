@@ -200,17 +200,17 @@ impl FrontendLivePumpProgress {
             packets_delivered: self.packets_delivered.load(Ordering::Relaxed),
             packets_delivered_saturated: self.packets_delivered_saturated.load(Ordering::Relaxed),
             interrupted_retries: self.interrupted_retries.load(Ordering::Relaxed),
-            interrupted_retries_saturated: self.interrupted_retries_saturated.load(Ordering::Relaxed),
+            interrupted_retries_saturated: self
+                .interrupted_retries_saturated
+                .load(Ordering::Relaxed),
             would_block_retries: self.would_block_retries.load(Ordering::Relaxed),
-            would_block_retries_saturated: self.would_block_retries_saturated.load(Ordering::Relaxed),
+            would_block_retries_saturated: self
+                .would_block_retries_saturated
+                .load(Ordering::Relaxed),
         }
     }
 
-    fn add(
-        counter: &AtomicU64,
-        saturated: &AtomicBool,
-        value: u64,
-    ) {
+    fn add(counter: &AtomicU64, saturated: &AtomicBool, value: u64) {
         let result = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.saturating_add(value))
         });
@@ -459,7 +459,11 @@ where
         let read_len = match reader.read(&mut buf) {
             Ok(length) => length,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                FrontendLivePumpProgress::add(&progress.interrupted_retries, &progress.interrupted_retries_saturated, 1);
+                FrontendLivePumpProgress::add(
+                    &progress.interrupted_retries,
+                    &progress.interrupted_retries_saturated,
+                    1,
+                );
                 match report.read_retries.checked_add(1) {
                     Some(count) => report.read_retries = count,
                     None if !report.read_retry_counter_saturated => {
@@ -474,7 +478,11 @@ where
                 continue;
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                FrontendLivePumpProgress::add(&progress.would_block_retries, &progress.would_block_retries_saturated, 1);
+                FrontendLivePumpProgress::add(
+                    &progress.would_block_retries,
+                    &progress.would_block_retries_saturated,
+                    1,
+                );
                 report.would_block_retries = report.would_block_retries.saturating_add(1);
                 report.would_block_counter_saturated |= report.would_block_retries == u64::MAX;
                 let deadline = Instant::now()
@@ -1057,8 +1065,16 @@ mod tests {
         );
         progress.started.store(true, Ordering::Release);
         FrontendLivePumpProgress::add(&progress.bytes_read, &progress.bytes_read_saturated, 188);
-        FrontendLivePumpProgress::add(&progress.packets_delivered, &progress.packets_delivered_saturated, 1);
-        FrontendLivePumpProgress::add(&progress.would_block_retries, &progress.would_block_retries_saturated, 3);
+        FrontendLivePumpProgress::add(
+            &progress.packets_delivered,
+            &progress.packets_delivered_saturated,
+            1,
+        );
+        FrontendLivePumpProgress::add(
+            &progress.would_block_retries,
+            &progress.would_block_retries_saturated,
+            3,
+        );
         progress.finished.store(true, Ordering::Release);
         assert_eq!(
             progress.snapshot(),
@@ -1096,7 +1112,8 @@ mod tests {
             descriptor(),
             Box::new(Cursor::new(data)),
             Box::new(SecondFails(0)),
-        ).unwrap();
+        )
+        .unwrap();
         let progress = owner.progress();
         let mut completed = false;
         for _ in 0..100 {
@@ -1125,7 +1142,8 @@ mod tests {
             descriptor(),
             Box::new(PanickingReader),
             Box::new(VecSink::default()),
-        ).unwrap();
+        )
+        .unwrap();
         let progress = owner.progress();
         let mut completed = false;
         for _ in 0..100 {
