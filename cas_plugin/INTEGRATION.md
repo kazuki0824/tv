@@ -19,7 +19,7 @@ $(call inherit-product, vendor/maleicacid/tv/config/product_integration.mk)
 
 入力は空白とwildcardを含まない単一の既存ファイルにする。未指定ではcredentialを生成・配置しないため、Yakisobaの実復号に必要な入力は成立しない。初期読込みの入力検査はCAS側、構文の解釈は採用libyakisobaが行う。
 
-配置先は `/vendor/etc/maleicacid/bcas_keys` とする。`config/config.fs` によりimage作成時にroot所有・media group・0640を設定し、既存の `sepolicy/file_contexts` により `maleicacid_bcas_credential` を付与する。読取り専用vendor領域へ固定配置する。所有者・権限は製品設定とSELinuxで制御し、CASの初期化後に入力ファイルの変更を監視しない。製品側の別のfs-config入力に同じ配置先の定義を重複させない。
+配置先は `/vendor/etc/maleicacid/bcas_keys` とする。`config/config.fs` によりimage作成時にroot所有・mediadrm group・0640を設定し、既存の `sepolicy/file_contexts` により `maleicacid_bcas_credential` を付与する。読取り専用vendor領域へ固定配置する。AOSP CAS serviceの実効groupはmediadrm（AID_MEDIA_DRM=1031）のため、DACのgroup readとhal_cas_defaultのSELinux読取り許可の両方が成立するよう製品設定で制御する。CASの初期化後に入力ファイルの変更を監視しない。製品側の別のfs-config入力に同じ配置先の定義を重複させない。
 
 Yakisoba可変状態の保存先は `/data/vendor/maleicacid/cas/yakisoba_state` とする。`maleicacid_cas_data_init` がpost-fs-dataで親ディレクトリとCAS用ディレクトリをmedia所有で作成し、`maleicacid_cas_data_file` のSELinux labelを適用する。CAS向けpolicyはこのディレクトリ内での状態ファイルの作成・読取り・更新・置換を許可する。保存対象、所有者、更新・失効・破損時の意味は [DESIGN_JA.md](DESIGN_JA.md) §6を正とし、本書では再定義しない。
 
