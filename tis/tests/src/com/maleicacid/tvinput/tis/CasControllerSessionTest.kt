@@ -73,7 +73,8 @@ class CasControllerSessionTest {
                 }
             check(update.diagnostics.isEmpty())
             check(update.ecmPids == setOf(TsPid(0x032), TsPid(0x033)))
-            check(factory.plugins.single().sessions.size == 2)
+            check(factory.plugins.size == 1)
+            check(factory.plugins[0].sessions.size == 2)
             val assignedPidSets =
                 descramblers
                     .map { it.pids.toSet() }
