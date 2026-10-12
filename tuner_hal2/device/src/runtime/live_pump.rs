@@ -215,12 +215,10 @@ impl FrontendLivePumpProgress {
             Some(current.saturating_add(value))
         });
         if let Ok(previous) = result {
-            if value > 0 && previous >= u64::MAX - value {
-                if !saturated.swap(true, Ordering::AcqRel) {
-                    eprintln!(
-                        "diagnostic_counter_saturated owner=frontend_live_pump counter={name}"
-                    );
-                }
+            if value > 0 && previous >= u64::MAX - value && !saturated.swap(true, Ordering::AcqRel) {
+                eprintln!(
+                    "diagnostic_counter_saturated owner=frontend_live_pump counter={name}"
+                );
             }
         }
     }
