@@ -24,12 +24,12 @@ class PmtCatCaMetadataMapper {
         val clearEsKeys =
             metadata
                 .filter {
-                    it.source == CaMetadataSource.ELEMENTARY_STREAM && it.ecmPid?.value == NO_ECM_PID &&
+                    it.source == CaMetadataSource.ELEMENTARY_STREAM && it.ecmPid == TsPid.NULL &&
                         it.serviceKey != null && it.elementaryPid != null
                 }.map { Triple(it.serviceKey, it.caSystemId, it.elementaryPid) }
                 .toSet()
         // MediaCasへ配送するmetadataはECMを実際に送出するものだけにする。
-        val activeMetadata = metadata.filter { it.ecmPid?.value != NO_ECM_PID }
+        val activeMetadata = metadata.filter { it.ecmPid != TsPid.NULL }
         val existingEsKeys =
             activeMetadata
                 .filter {
@@ -41,8 +41,8 @@ class PmtCatCaMetadataMapper {
         programLevel(activeMetadata).forEach { programCa ->
             val service = serviceByKey[programCa.serviceKey] ?: return@forEach
             val ecmPid = programCa.ecmPid ?: return@forEach
-            service.streams.forEach { stream ->
-                if (Triple(programCa.serviceKey, programCa.caSystemId, stream.elementaryPid) in clearEsKeys) return@forEach
+            service.streams.forEach stream@{ stream ->
+                if (Triple(programCa.serviceKey, programCa.caSystemId, stream.elementaryPid) in clearEsKeys) return@stream
                 val key = EsBindingKey(programCa.serviceKey.toString(), programCa.caSystemId, ecmPid, stream.elementaryPid)
                 if (existingEsKeys.add(key)) {
                     expanded +=
@@ -54,10 +54,6 @@ class PmtCatCaMetadataMapper {
             }
         }
         return activeMetadata + expanded
-    }
-
-    private companion object {
-        const val NO_ECM_PID = 0x1fff
     }
 
     private data class EsBindingKey(

@@ -117,6 +117,7 @@ value class TsPid(
         val SDT_BAT = TsPid(0x0011)
         val EIT = TsPid(0x0012)
         val TDT = TsPid(0x0014)
+        val NULL = TsPid(0x1fff)
 
         fun fromOrNull(value: Int?): TsPid? = value?.takeIf { it in TS_PID_RANGE }?.let(::TsPid)
     }
