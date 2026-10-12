@@ -2,7 +2,7 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendTuneRequest, HalError, HalInternalKind,
 };
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use super::backend_worker::FrontendBackendSubmitFailure;
 use super::tune_txn::{BackendTuneRollbackFailure, BackendTuneStep};
@@ -215,7 +215,7 @@ pub struct FrontendRuntime {
     terminal_events_dropped_count: u64,
     live_pump_reports: Vec<FrontendLivePumpDiagnostic>,
     live_pump_reports_dropped_count: u64,
-    active_live_pump_progress: Option<Arc<FrontendLivePumpProgress>>,
+    active_live_pump_progress: Option<Weak<FrontendLivePumpProgress>>,
     diagnostic_write_failures: Vec<FrontendDiagnosticWriteFailure>,
     diagnostic_write_failures_dropped_count: u64,
     px4_backend_failure_diagnostics: Vec<FrontendBackendFailureDiagnostic>,
@@ -369,6 +369,7 @@ impl FrontendRuntime {
             active_live_pump_progress: self
                 .active_live_pump_progress
                 .as_ref()
+                .and_then(Weak::upgrade)
                 .map(|progress| progress.snapshot()),
             diagnostic_write_failures: self.diagnostic_write_failures.clone(),
             diagnostic_write_failures_dropped_count: self.diagnostic_write_failures_dropped_count,
@@ -391,7 +392,7 @@ impl FrontendRuntime {
         self.terminal_events_dropped_count = snapshot.terminal_events_dropped_count;
         self.live_pump_reports = snapshot.live_pump_reports;
         self.live_pump_reports_dropped_count = snapshot.live_pump_reports_dropped_count;
-        // Rollback never revives an already superseded live packet reader.
+        // rollbackでは旧世代のTS読取りworkerを復活させない。
         self.active_live_pump_progress = None;
         self.diagnostic_write_failures = snapshot.diagnostic_write_failures;
         self.diagnostic_write_failures_dropped_count =
@@ -784,13 +785,18 @@ impl FrontendRuntime {
         generation: u64,
         progress: Arc<FrontendLivePumpProgress>,
     ) -> Result<(), HalError> {
-        if generation != self.generation {
+        if generation < self.generation {
+            // 正常な再選局競合: 旧世代の診断を新世代の失敗へ昇格させない。
+            return Ok(());
+        }
+        if generation > self.generation {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "live pump progress generation is not the current frontend generation",
+                "live pump progress generation is in the future",
             ));
         }
-        self.active_live_pump_progress = Some(progress);
+        // 停止・START失敗では既存pump ownerの解放だけで診断参照も消える。
+        self.active_live_pump_progress = Some(Arc::downgrade(&progress));
         Ok(())
     }
 
@@ -1918,6 +1924,34 @@ mod tests {
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         assert!(runtime.begin_scan_session(2, "bad", vec![request]).is_err());
+    }
+
+    #[test]
+    fn stale_live_pump_registration_does_not_fail_or_replace_new_generation() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        runtime.commit_generation(2).unwrap();
+        let old = Arc::new(FrontendLivePumpProgress::default());
+        assert!(runtime.record_live_pump_progress(1, old).is_ok());
+        assert_eq!(runtime.snapshot().active_live_pump_progress, None);
+        let current = Arc::new(FrontendLivePumpProgress::default());
+        runtime.record_live_pump_progress(2, Arc::clone(&current)).unwrap();
+        assert_eq!(
+            runtime.snapshot().active_live_pump_progress,
+            Some(current.snapshot())
+        );
+        assert!(runtime.record_live_pump_progress(3, current).is_err());
+    }
+
+    #[test]
+    fn prepared_progress_reference_does_not_outlive_its_pump_owner() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        let prepared = Arc::new(FrontendLivePumpProgress::default());
+        runtime.record_live_pump_progress(1, Arc::clone(&prepared)).unwrap();
+        assert!(runtime.snapshot().active_live_pump_progress.is_some());
+        drop(prepared);
+        assert_eq!(runtime.snapshot().active_live_pump_progress, None);
     }
 
     #[test]
