@@ -210,13 +210,15 @@ impl FrontendLivePumpProgress {
         }
     }
 
-    fn add(counter: &AtomicU64, saturated: &AtomicBool, value: u64) {
+    fn add(counter: &AtomicU64, saturated: &AtomicBool, value: u64, name: &'static str) {
         let result = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.saturating_add(value))
         });
         if let Ok(previous) = result {
             if value > 0 && previous >= u64::MAX - value {
-                saturated.store(true, Ordering::Release);
+                if !saturated.swap(true, Ordering::AcqRel) {
+                    eprintln!("diagnostic_counter_saturated owner=frontend_live_pump counter={name}");
+                }
             }
         }
     }
@@ -507,6 +509,7 @@ where
             &progress.bytes_read,
             &progress.bytes_read_saturated,
             u64::try_from(read_len).unwrap_or(u64::MAX),
+            "bytes_read",
         );
 
         let drain = completion.push(&buf[..read_len]);
@@ -521,6 +524,7 @@ where
                 &progress.packets_delivered,
                 &progress.packets_delivered_saturated,
                 1,
+                "packets_delivered",
             );
         }
     }
@@ -538,6 +542,7 @@ where
                 &progress.packets_delivered,
                 &progress.packets_delivered_saturated,
                 1,
+                "packets_delivered",
             );
         }
     }
@@ -1057,6 +1062,35 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_counter_saturates_without_wrapping_or_stopping() {
+        let progress = FrontendLivePumpProgress::default();
+        progress.bytes_read.store(u64::MAX - 1, Ordering::Relaxed);
+        FrontendLivePumpProgress::add(
+            &progress.bytes_read,
+            &progress.bytes_read_saturated,
+            2,
+            "bytes_read",
+        );
+        assert_eq!(progress.snapshot().bytes_read, u64::MAX);
+        assert!(progress.snapshot().bytes_read_saturated);
+        FrontendLivePumpProgress::add(
+            &progress.bytes_read,
+            &progress.bytes_read_saturated,
+            1,
+            "bytes_read",
+        );
+        assert_eq!(progress.snapshot().bytes_read, u64::MAX);
+
+        let mut report = FrontendLivePumpReport {
+            packets_delivered: u64::MAX - 1,
+            ..FrontendLivePumpReport::default()
+        };
+        report.add_packets(2).unwrap();
+        assert_eq!(report.packets_delivered, u64::MAX);
+        assert!(report.packet_counter_saturated);
+    }
+
+    #[test]
     fn pump_progress_snapshot_reports_counters_without_exposing_packets() {
         let progress = FrontendLivePumpProgress::default();
         assert_eq!(
@@ -1064,16 +1098,18 @@ mod tests {
             FrontendLivePumpProgressSnapshot::default()
         );
         progress.started.store(true, Ordering::Release);
-        FrontendLivePumpProgress::add(&progress.bytes_read, &progress.bytes_read_saturated, 188);
+        FrontendLivePumpProgress::add(&progress.bytes_read, &progress.bytes_read_saturated, 188, "bytes_read");
         FrontendLivePumpProgress::add(
             &progress.packets_delivered,
             &progress.packets_delivered_saturated,
             1,
+            "packets_delivered",
         );
         FrontendLivePumpProgress::add(
             &progress.would_block_retries,
             &progress.would_block_retries_saturated,
             3,
+            "would_block_retries",
         );
         progress.finished.store(true, Ordering::Release);
         assert_eq!(
