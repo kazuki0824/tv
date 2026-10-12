@@ -38,8 +38,18 @@ class PmtCatCaMetadataMapper {
                         it.elementaryPid != null
                 }.map { EsBindingKey(it.serviceKey.toString(), it.caSystemId, it.ecmPid!!, it.elementaryPid!!) }
                 .toMutableSet()
+        // 全ESが同方式の第2ループで明示されているPROGRAM ECMは実効sessionを所有しない。
+        // ES一覧が未確定ならPROGRAM行を従来どおり保持し、PIDを推測しない。
+        val applicablePrograms =
+            programLevel(activeMetadata).filter { programCa ->
+                val streams = serviceByKey[programCa.serviceKey]?.streams.orEmpty()
+                streams.isEmpty() ||
+                    streams.any { stream ->
+                        Triple(programCa.serviceKey, programCa.caSystemId, stream.elementaryPid) !in explicitEsKeys
+                    }
+            }
         val expanded = mutableListOf<CaMetadata>()
-        programLevel(activeMetadata).forEach { programCa ->
+        applicablePrograms.forEach { programCa ->
             val service = serviceByKey[programCa.serviceKey] ?: return@forEach
             val ecmPid = programCa.ecmPid ?: return@forEach
             service.streams.forEach stream@{ stream ->
@@ -54,7 +64,7 @@ class PmtCatCaMetadataMapper {
                 }
             }
         }
-        return activeMetadata + expanded
+        return activeMetadata.filter { it.source != CaMetadataSource.PROGRAM || it in applicablePrograms } + expanded
     }
 
     private data class EsBindingKey(
