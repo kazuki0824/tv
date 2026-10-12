@@ -660,6 +660,7 @@ mod tests {
         assert!(observed.finished);
         assert_eq!(observed.packets_delivered, 1);
 
+        drop(active);
         drop(progress);
         assert!(frontend.snapshot().active_live_pump_progress.is_none());
     }
