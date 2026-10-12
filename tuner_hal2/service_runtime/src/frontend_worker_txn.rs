@@ -2692,6 +2692,9 @@ fn start_px4_live_pump_for_current_consumer(
     let Some(prepared) = prepared else {
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
     };
+    // START前の準備済み状態も既存frontend診断へ登録する。
+    // 世代更新済みであれば正常な旧世代として記録せずに継続する。
+    record_current_live_pump_progress(runtime, frontend_id, ctx.generation(), prepared.progress())?;
     if ctx.cancel_requested() {
         prepared.join_after_stop()?;
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
@@ -3598,13 +3601,13 @@ fn run_frontend_backend_tune_session_worker(
                             reader,
                             descriptor,
                         )?;
+                        live_pump = Some(pump);
                         record_current_live_pump_progress(
                             &runtime,
                             frontend_id,
                             generation,
-                            pump.progress(),
+                            live_pump.as_ref().expect("live pump ownership committed").progress(),
                         )?;
-                        live_pump = Some(pump);
                     }
                 }
             }
