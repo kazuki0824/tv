@@ -244,7 +244,7 @@ struct EventLocalAllocation {
     length: usize,
 }
 
-/// Diagnose allocation/release progress without changing AV token ownership.
+/// AV tokenの所有権を変更せず、割当・解放の進捗を診断する。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AvFlowDiagnosticSnapshot {
     pub delivered: u64,
@@ -369,17 +369,18 @@ impl AvSharedBacking {
         }
     }
 
-    /// Snapshot of the authoritative live slots and diagnostic-only totals.
+    /// 正本の使用中スロットと診断専用の累計値を取得する。
     pub fn diagnostic_snapshot(&self) -> AvFlowDiagnosticSnapshot {
         let active_shared_slots = self
             .slots
             .iter()
             .filter(|slot| slot.active_data_id.is_some())
             .count();
-        let shared_bytes = self.slots.iter().filter(|slot| slot.active_data_id.is_some()).fold(
-            0usize,
-            |total, slot| total.saturating_add(slot.data_length),
-        );
+        let shared_bytes = self
+            .slots
+            .iter()
+            .filter(|slot| slot.active_data_id.is_some())
+            .fold(0usize, |total, slot| total.saturating_add(slot.data_length));
         AvFlowDiagnosticSnapshot {
             delivered: self.diagnostics.delivered,
             released: self.diagnostics.released,
@@ -988,7 +989,10 @@ mod tests {
             AvPayloadDeliveryOutcome::Delivered(event) => event,
             other => panic!("unexpected outcome: {other:?}"),
         };
-        assert_eq!(backing.allocate_payload(100), AvPayloadDeliveryOutcome::NoFreeSlot);
+        assert_eq!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::NoFreeSlot
+        );
         let saturated = backing.diagnostic_snapshot();
         assert_eq!(saturated.delivered, 2);
         assert_eq!(saturated.no_free_slot, 1);
@@ -1006,7 +1010,9 @@ mod tests {
                 first.data_id,
                 AvFilterReleaseState::OpenAv,
             ),
-            AvHandleReleaseOutcome::SlotReleased { data_id: first.data_id },
+            AvHandleReleaseOutcome::SlotReleased {
+                data_id: first.data_id
+            },
         );
         assert!(backing.discard_undelivered_data_id(second.data_id));
         assert!(!backing.discard_undelivered_data_id(second.data_id));
