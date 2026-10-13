@@ -2,6 +2,7 @@
 
 - 既存playback executor上の`PlaybackDataPathProgress`にMediaEvent受理、正常sample、Decoder入力・出力、描画callback、OVERFLOW、flush成否、LinearBlock欠落・入力拒否を計数する診断専用counterを追加し、playback世代の開始時に初期化する。first-frameとDecoder起動期限の失敗detailへsnapshotを接続し、再生可否判定やAV資源寿命には用いない。
 - 進捗counterの更新、初期未到達値、世代resetを回帰試験で固定。既存sample解析のComplexMethodを増やさず、診断のための分岐により発生したKotlin整形とDetektの指摘を修正した。
+- 診断用fieldを追加した後、従来のUnsafe.allocateInstanceで本番constructorを省くPlaybackFailureCallbacksTest fixtureが未初期化fieldを参照して3試験を失敗させていたため、fixtureで同fieldを明示初期化する。testを除外せず、本番ロジックへnull fallbackを入れない。
 - テストクラス追加に伴いTISホストCIの固定期待値を49クラス（実行45クラス）・398試験へ更新する。追加時の旧固定値48/44/397に起因する失敗を除去した。実CIでの試験成功は別途確認する。
 - MediaSync最終出力patchを当てないAndroid 15/LineageOS 22.1を前提とし、実機でMXワンセグ1とNHK総合1の映像表示・持続再生・再選局を確認する必要がある。黒画面の根本原因確定、Soong/device atest/VTS、実機での映像回復は未達。
 
