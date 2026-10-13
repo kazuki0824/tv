@@ -418,9 +418,9 @@ mod tests {
             Err(HalError::InvalidArgument { .. })
         ));
         handle.ints.clear();
-        handle
-            .fds
-            .push(ParcelFileDescriptor::new(std::fs::File::open("/dev/null").unwrap()));
+        handle.fds.push(ParcelFileDescriptor::new(
+            std::fs::File::open("/dev/null").unwrap(),
+        ));
         assert!(matches!(
             classify_av_release_handle(&handle),
             Err(HalError::InvalidArgument { .. })
