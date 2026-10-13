@@ -399,7 +399,9 @@ impl AvSharedBacking {
 
     fn increment_diagnostic_counter(counter: &mut u64, name: &'static str) {
         if *counter == u64::MAX - 1 {
-            eprintln!("diagnostic_counter_saturated counter={name} owner=AvSharedBacking");
+            eprintln!(
+                "diagnostic_counter_saturated counter={name} owner=AvSharedBacking instance={counter:p}"
+            );
         }
         *counter = counter.saturating_add(1);
     }
