@@ -244,6 +244,28 @@ struct EventLocalAllocation {
     length: usize,
 }
 
+/// Diagnose allocation/release progress without changing AV token ownership.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AvFlowDiagnosticSnapshot {
+    pub delivered: u64,
+    pub released: u64,
+    pub discarded_undelivered: u64,
+    pub no_free_slot: u64,
+    pub active_shared_slots: usize,
+    pub active_event_local: usize,
+    pub active_bytes: usize,
+    pub slot_capacity: usize,
+    pub max_outstanding_events: usize,
+}
+
+#[derive(Debug, Default)]
+struct AvFlowDiagnosticCounters {
+    delivered: u64,
+    released: u64,
+    discarded_undelivered: u64,
+    no_free_slot: u64,
+}
+
 #[derive(Debug)]
 pub struct AvSharedBacking {
     state: ClientHandleState,
@@ -259,6 +281,7 @@ pub struct AvSharedBacking {
     shared_handle_identity: Option<AvFileIdentity>,
     event_local_allocations: BTreeMap<AvDataId, EventLocalAllocation>,
     event_local_bytes: usize,
+    diagnostics: AvFlowDiagnosticCounters,
 }
 
 impl AvSharedBacking {
@@ -339,7 +362,41 @@ impl AvSharedBacking {
             shared_handle_identity: None,
             event_local_allocations: BTreeMap::new(),
             event_local_bytes: 0,
+            diagnostics: AvFlowDiagnosticCounters::default(),
         }
+    }
+
+    /// Snapshot of the authoritative live slots and diagnostic-only totals.
+    pub fn diagnostic_snapshot(&self) -> AvFlowDiagnosticSnapshot {
+        let active_shared_slots = self
+            .slots
+            .iter()
+            .filter(|slot| slot.active_data_id.is_some())
+            .count();
+        let shared_bytes = self.slots.iter().filter(|slot| slot.active_data_id.is_some()).fold(
+            0usize,
+            |total, slot| total.saturating_add(slot.data_length),
+        );
+        AvFlowDiagnosticSnapshot {
+            delivered: self.diagnostics.delivered,
+            released: self.diagnostics.released,
+            discarded_undelivered: self.diagnostics.discarded_undelivered,
+            no_free_slot: self.diagnostics.no_free_slot,
+            active_shared_slots,
+            active_event_local: self.event_local_allocations.len(),
+            active_bytes: shared_bytes.saturating_add(self.event_local_bytes),
+            slot_capacity: self.slots.len(),
+            max_outstanding_events: self.max_outstanding_events,
+        }
+    }
+
+    fn record_delivery_outcome(&mut self, outcome: &AvPayloadDeliveryOutcome) {
+        let counter = match outcome {
+            AvPayloadDeliveryOutcome::Delivered(_) => &mut self.diagnostics.delivered,
+            AvPayloadDeliveryOutcome::NoFreeSlot => &mut self.diagnostics.no_free_slot,
+            _ => return,
+        };
+        *counter = counter.saturating_add(1);
     }
 
     #[cfg(test)]
@@ -392,6 +449,18 @@ impl AvSharedBacking {
     }
 
     pub fn allocate_payload_bytes(
+        &mut self,
+        payload: &[u8],
+        metadata: AvMediaEventMetadata,
+    ) -> Result<AvPayloadDeliveryOutcome, AvSharedBackingError> {
+        let result = self.allocate_payload_bytes_inner(payload, metadata);
+        if let Ok(outcome) = &result {
+            self.record_delivery_outcome(outcome);
+        }
+        result
+    }
+
+    fn allocate_payload_bytes_inner(
         &mut self,
         payload: &[u8],
         metadata: AvMediaEventMetadata,
@@ -594,6 +663,12 @@ impl AvSharedBacking {
     }
 
     pub fn allocate_payload(&mut self, data_length: usize) -> AvPayloadDeliveryOutcome {
+        let outcome = self.allocate_payload_inner(data_length);
+        self.record_delivery_outcome(&outcome);
+        outcome
+    }
+
+    fn allocate_payload_inner(&mut self, data_length: usize) -> AvPayloadDeliveryOutcome {
         let slot_index = match self.shared_slot_candidate(data_length) {
             Ok(slot_index) => slot_index,
             Err(outcome) => return outcome,
@@ -687,7 +762,7 @@ impl AvSharedBacking {
     }
 
     pub(crate) fn discard_undelivered_data_id(&mut self, data_id: AvDataId) -> bool {
-        if let Some(allocation) = self.event_local_allocations.get(&data_id) {
+        let discarded = if let Some(allocation) = self.event_local_allocations.get(&data_id) {
             let Some(next_live_bytes) = self.event_local_bytes.checked_sub(allocation.length)
             else {
                 return false;
@@ -700,7 +775,12 @@ impl AvSharedBacking {
             true
         } else {
             self.release_slot(data_id)
+        };
+        if discarded {
+            self.diagnostics.discarded_undelivered =
+                self.diagnostics.discarded_undelivered.saturating_add(1);
         }
+        discarded
     }
 
     pub fn classify_release(
@@ -771,6 +851,7 @@ impl AvSharedBacking {
                 } else if !self.release_slot(data_id) {
                     return AvHandleReleaseOutcome::RegistryFailure;
                 }
+                self.diagnostics.released = self.diagnostics.released.saturating_add(1);
             }
             _ => {}
         }
@@ -888,6 +969,47 @@ impl Drop for AvSharedBacking {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_snapshot_distinguishes_client_release_and_undelivered_discard() {
+        let mut backing = AvSharedBacking::with_layout(2, 188);
+        backing.mark_exported();
+        let first = match backing.allocate_payload(100) {
+            AvPayloadDeliveryOutcome::Delivered(event) => event,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        let second = match backing.allocate_payload(100) {
+            AvPayloadDeliveryOutcome::Delivered(event) => event,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert_eq!(backing.allocate_payload(100), AvPayloadDeliveryOutcome::NoFreeSlot);
+        let saturated = backing.diagnostic_snapshot();
+        assert_eq!(saturated.delivered, 2);
+        assert_eq!(saturated.no_free_slot, 1);
+        assert_eq!(saturated.active_shared_slots, 2);
+        assert_eq!(saturated.active_bytes, 200);
+        assert_eq!(saturated.slot_capacity, 2);
+        assert_eq!(saturated.max_outstanding_events, 2);
+
+        assert_eq!(
+            backing.apply_release(
+                AvHandleReleaseDescriptor::Empty,
+                first.data_id,
+                AvFilterReleaseState::OpenAv,
+            ),
+            AvHandleReleaseOutcome::SlotReleased { data_id: first.data_id },
+        );
+        assert!(backing.discard_undelivered_data_id(second.data_id));
+        assert!(!backing.discard_undelivered_data_id(second.data_id));
+        let drained = backing.diagnostic_snapshot();
+        assert_eq!(drained.delivered, 2);
+        assert_eq!(drained.released, 1);
+        assert_eq!(drained.discarded_undelivered, 1);
+        assert_eq!(drained.no_free_slot, 1);
+        assert_eq!(drained.active_shared_slots, 0);
+        assert_eq!(drained.active_event_local, 0);
+        assert_eq!(drained.active_bytes, 0);
+    }
 
     #[test]
     fn payload_delivery_requires_exported_active_client_handle() {
