@@ -40,6 +40,8 @@ include vendor/maleicacid/tv/tuner_hal2/config/BoardConfigVendorSePolicy.mk
 
 `BoardConfigVendorSePolicy.mk` は `vendor/maleicacid/tv/tuner_hal2/sepolicy` を既定Tuner HAL用のvendor sepolicyとして追加し、`config/config.fs` を `TARGET_FS_CONFIG_GEN` へ追加する。
 
+AV media filterから`MediaEvent.getLinearBlock()`を通じて`MediaCodec.queueLinearBlock()`へ渡すDMA-BUF FDは、Tuner HALの`hal_tv_tuner_default`ドメインが発行し、AOSP Codec2 software serviceの`mediaswcodec`が受け取る。Android 15のBinder FD変換は受け取る側に送信元domainへの`fd use`権限を要求する。`tuner_hal2/sepolicy/tuner_hal2.te`では`allow mediaswcodec hal_tv_tuner_default:fd use;`に限定して許可し、Codec2への任意のdevice node操作権限やHALからの新規fd公開能力を追加しない。未許可では`avc: denied { use } ... tclass=fd`と`translate fd failed`から`MediaCodec.native_queueLinearBlock`失敗へ進むため、製品イメージでポリシーが反映され、実再生で拒否が解消することを確認する。`/dev/dma_heap/system`のdevice node権限は本設定では変更しない。
+
 ## 3. ueventd import
 
 製品側の vendor ueventd rc から次を import する。
