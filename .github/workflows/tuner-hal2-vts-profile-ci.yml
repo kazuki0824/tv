@@ -99,18 +99,10 @@ jobs:
               line.strip() for line in rc.splitlines()
               if line.strip() and not line.lstrip().startswith("#")
           ]
-          # 明示的stopではzygoteの標準onrestartが実行されないため、stoppedだけが必須。
-          # 現行rcのrestarting側は標準onrestartと重複するが、ここでは削除を要求しない。
-          required = [
+          # 明示的stopだけを補完する。通常restartは標準zygote onrestartが担当。
+          assert actions == [
               "on property:init.svc.zygote=stopped",
               "restart --only-if-running media.tuner",
-          ]
-          existing_redundant = [
-              "on property:init.svc.zygote=restarting",
-              "restart --only-if-running media.tuner",
-          ]
-          assert actions in (required, required + existing_redundant), (
-              "the stopped-only repair is required; unrelated init actions are forbidden"
-          )
+          ], "only the explicit-stop recovery action is permitted"
           print("system init packaging: static contract satisfied (device recovery untested)")
           PY
