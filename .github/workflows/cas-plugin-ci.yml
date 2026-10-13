@@ -112,7 +112,7 @@ jobs:
           MAKE
           tuner_input=$(mktemp "$RUNNER_TEMP/tuner-product-input.XXXXXX")
           tuner_make=(make --no-print-directory -s -f "$RUNNER_TEMP/tuner-product.mk")
-          tuner_packages='android.hardware.tv.tuner-service.maleicacid2 fs_config_files maleicacid_tuner_hal2_ueventd_rc'
+          tuner_packages='android.hardware.tv.tuner-service.maleicacid2 fs_config_files maleicacid_mediatuner_trm_lifecycle_rc maleicacid_tuner_hal2_ueventd_rc'
           tuner_copy='frameworks/native/data/etc/android.hardware.tv.tuner.xml:vendor/etc/permissions/android.hardware.tv.tuner.xml'
           test "$("${tuner_make[@]}")" = "$tuner_packages"$'\n'"$tuner_copy"
           test "$("${tuner_make[@]}" "MALEICACID_B25_MULTI2_PARAMETERS_FILE=$tuner_input")" = "$tuner_packages"$'\n'"$tuner_copy $tuner_input:vendor/etc/maleicacid/b25_multi2_parameters"
