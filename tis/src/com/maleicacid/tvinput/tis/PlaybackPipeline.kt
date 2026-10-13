@@ -102,6 +102,7 @@ class PlaybackPipeline(
     private var subtitleMissingPtsSamples: Int = 0
     private val released = AtomicBoolean(false)
     private val resourceCleanup = ResourceCleanup()
+    private val dataPathProgress = PlaybackDataPathProgress()
     private var resourceActivityReported = false
 
     private enum class VideoAvailabilityMode {
@@ -481,6 +482,7 @@ class PlaybackPipeline(
         stopOnPlaybackExecutor()
         val startGeneration = nextPlaybackGenerationOrFence()
         playbackGeneration = startGeneration
+        dataPathProgress.reset()
         val currentSurface = surface
         val audioOnly = channel.serviceType == SERVICE_TYPE_DIGITAL_AUDIO
         activeChannel = channel
@@ -743,10 +745,12 @@ class PlaybackPipeline(
                                                 continue
                                             }
                                             if (event !is MediaEvent) continue
+                                            dataPathProgress.record(PlaybackDataPathProgress.Stage.MEDIA_EVENT)
                                             var decoderOwnsEvent = false
                                             try {
                                                 if (!inputIsCurrent()) continue
                                                 val sample = sampleFromEvent(event, isAudio) ?: continue
+                                                dataPathProgress.record(PlaybackDataPathProgress.Stage.VALID_SAMPLE)
                                                 if (!inputIsCurrent()) continue
                                                 val target = (if (isAudio) targetAudioDecoder else targetVideoDecoder) ?: continue
                                                 // queueは受理・拒否とも入力を所有し、自身の失敗時にも解放を保持する。
@@ -788,10 +792,12 @@ class PlaybackPipeline(
                                     "AV filter 状態 inputId=$inputId pid=$pid isAudio=$isAudio status=$status",
                                 )
                                 if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
+                                    dataPathProgress.record(PlaybackDataPathProgress.Stage.OVERFLOW)
                                     inputIdentity.set(null)
                                     (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
                                     val result = filter.flush()
                                     if (result == Tuner.RESULT_SUCCESS) {
+                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_SUCCEEDED)
                                         inputIdentity.set(Any())
                                     } else {
                                         emitUnavailableForGeneration(
@@ -1287,7 +1293,7 @@ class PlaybackPipeline(
         mainHandler.postDelayed({
             enqueuePlaybackAction {
                 if (shouldTriggerFirstFrameTimeoutForTest(generation, playbackGeneration, videoAvailableNotified.get())) {
-                    emitUnavailable(PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT, "最初のフレーム待機が期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms")
+                    emitUnavailable(PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT, "最初のフレーム待機が期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms progress=${dataPathProgress.summary()}")
                     stopOnPlaybackExecutor()
                 }
             }
@@ -1355,7 +1361,10 @@ class PlaybackPipeline(
             }
             return null
         }
-        val block = event.linearBlock ?: return null
+        val block = event.linearBlock ?: run {
+            dataPathProgress.record(PlaybackDataPathProgress.Stage.MISSING_LINEAR_BLOCK)
+            return null
+        }
         val capacity =
             runCatching {
                 block
@@ -1418,7 +1427,7 @@ class PlaybackPipeline(
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration || startupDeadline !== deadline) return@enqueuePlaybackAction
                         val expired = deadline.expire(SystemClock.elapsedRealtime()) ?: return@enqueuePlaybackAction
-                        val detail = "DECODER_STARTUP_TIMEOUT stage=$expired deadlineMs=${budget.decoderStartupDeadlineMs}"
+                        val detail = "DECODER_STARTUP_TIMEOUT stage=$expired deadlineMs=${budget.decoderStartupDeadlineMs} progress=${dataPathProgress.summary()}"
                         if (this@DecoderPipeline is AudioDecoderPipeline) {
                             handleAudioFailure(
                                 PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
@@ -1450,12 +1459,14 @@ class PlaybackPipeline(
                 if (sample.size > budget.singleEventLimitBytes) {
                     oversizedSamplesDropped++
                     releaseMediaEvent(sample.event)
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED)
                     onSampleRejected("SAMPLE_TOO_LARGE size=${sample.size} limit=${budget.singleEventLimitBytes}")
                     return
                 }
                 val queueBudget = if (codec == null) budget.startup else budget.pending
                 if (!withinQueueBudget(sample, queueBudget)) {
                     decoderBackpressureDrops++
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED)
                     releaseMediaEvent(sample.event)
                     val nowMs = SystemClock.elapsedRealtime()
                     val startedAtMs = backpressureStartedAtMs ?: nowMs.also { backpressureStartedAtMs = it }
@@ -1571,6 +1582,7 @@ class PlaybackPipeline(
                                 }
                                 completeCurrentDecoderOutputAction(::onDecoderFailure) {
                                     if (info.size > 0) {
+                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_OUTPUT)
                                         startupDeadline?.onFirstOutput()
                                         startupTimeout?.let(mainHandler::removeCallbacks)
                                         startupTimeout = null
@@ -1639,6 +1651,7 @@ class PlaybackPipeline(
                         .queue()
                     backpressureStartedAtMs = null
                     releaseMediaEvent(sample.event)
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT)
                     onCompressedInputQueued(sample)
                 } catch (error: RuntimeException) {
                     releaseMediaEvent(sample.event)
@@ -1748,6 +1761,7 @@ class PlaybackPipeline(
                         ) {
                             return@enqueuePlaybackAction
                         }
+                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FRAME_RENDERED)
                         commitCompatibilityVideoAvailability(generation, nanoTime)
                     }
                 },
