@@ -2,8 +2,8 @@
 
 - LineageOS 22.1の`TunerService`は生成時にHALからFrontend一覧を取得し、TRMへ登録する。Frameworkの`system_server`が再生成されたときも旧`mediatuner`が存続するとTRMのFrontend登録が失われる問題に対し、製品initが稼働中`media.tuner`だけを再生成するactionを追加した。
 - 当初のvendor HALの`init_rc`へFramework用actionを同梱する構成を訂正し、`prebuilt_etc`(`maleicacid_mediatuner_trm_lifecycle_rc`)を既存製品makefileからsystem partitionの`/system/etc/init`へ配置する構成へ変更した。vendor HAL本体の`init_rc`はHAL自身の定義だけを保持する。system所有`init.svc.zygote`へのvendor init subcontextのproperty可視性に依存しない。
-- Frameworkのzygoteが`stopped`または`restarting`へ移行するとき、Android標準`restart --only-if-running media.tuner`を実行する。未起動・意図的停止中・lazy待機中のサービスは強制起動せず、Tuner HALのRegistry/Capability/BackendやTuner SDKを変更しない。
-- 当初の本体rcを文字列照合するだけの専用Python試験ファイルは削除した。既存のVTS profile CIにSoong moduleと製品makefileの配置整合・rcの狭い起動条件だけを確認する補助的な静的検査をインラインで追加し、対象rc/Android.bpの変更もCI起動条件へ含めた。静的検査はTRM復元の成功証拠と扱わない。
+- 明示的なzygote停止時は標準`onrestart`が呼ばれず`stopped`へ遷移するため、製品rcの`stopped` actionが稼働中の`media.tuner`再起動を補完する。一方、標準`init.zygote*.rc`は自動再起動時に既に`onrestart restart --only-if-running media.tuner`を実行しており、現行製品rcに残る`restarting` actionは重複である。今回の追補では製品rc自体を変更せず、CI・統合文書でこの区別を明記する。未起動・意図的停止中・lazy待機中のサービスの強制起動、およびTuner HALのRegistry/Capability/BackendやTuner SDKの変更は行わない。
+- 当初の本体rcを文字列照合するだけの専用Python試験ファイルは削除した。既存のVTS profile CIにSoong moduleと製品makefileの配置整合・rcの狭い起動条件だけを確認する補助的な静的検査をインラインで追加し、対象rc/Android.bpの変更もCI起動条件へ含めた。追加の修正では`stopped` actionだけを必須とし、現行rcに残る重複`restarting` actionを検査上は受理する一方で必要条件にはしない。静的検査はTRM復元の成功証拠と扱わない。
 - 製品makefileへsystem init moduleを追加したことに合わせ、既存CAS plugin CIの`CAS・Tuner製品設定`工程が比較するTuner `PRODUCT_PACKAGES`の期待値も更新した。更新前に旧期待値との不一致で同工程が失敗した一方、CAS C++本体と通常のVTS profile CIは成功していた。
 - 統合手順を更新し、system imageとvendor imageの新旧混在を避けて配置を確認すること、Soongによる対象モジュールのビルド確認、Framework再起動前後の`mediatuner` PID・TRM登録資源・実際の`Tuner.tune()`結果を実機で確認する条件を明記した。
 - Soong system imageへの実配置、Android initのruntime action、TRM再登録、実機VTSとMXワンセグ再生は未実施。ホストの静的検査・VTS profile CIの成功をこれらの実証へ読み替えない。
