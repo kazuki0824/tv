@@ -1293,7 +1293,10 @@ class PlaybackPipeline(
         mainHandler.postDelayed({
             enqueuePlaybackAction {
                 if (shouldTriggerFirstFrameTimeoutForTest(generation, playbackGeneration, videoAvailableNotified.get())) {
-                    emitUnavailable(PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT, "最初のフレーム待機が期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms progress=${dataPathProgress.summary()}")
+                    emitUnavailable(
+                        PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
+                        "最初のフレーム待機が期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms progress=${dataPathProgress.summary()}",
+                    )
                     stopOnPlaybackExecutor()
                 }
             }
@@ -1325,6 +1328,20 @@ class PlaybackPipeline(
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("LongMethod", "MaxLineLength", "ReturnCount")
+    private fun rejectSecureMediaEvent(isAudio: Boolean) {
+        if (isAudio) {
+            logAudioUnavailable(
+                PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
+                "audio secure MediaEvent は clear playback 対象外です",
+            )
+        } else {
+            emitUnavailable(
+                PlaybackUnavailableReason.VIDEO_CODEC_ERROR,
+                "video secure MediaEvent は clear playback 対象外です",
+            )
+        }
+    }
+
     private fun sampleFromEvent(
         event: MediaEvent,
         isAudio: Boolean,
@@ -1351,20 +1368,14 @@ class PlaybackPipeline(
             return null
         }
         if (event.isSecureMemory) {
-            if (isAudio) {
-                logAudioUnavailable(
-                    PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                    "audio secure MediaEvent は clear playback 対象外です",
-                )
-            } else {
-                emitUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "video secure MediaEvent は clear playback 対象外です")
+            rejectSecureMediaEvent(isAudio)
+            return null
+        }
+        val block =
+            event.linearBlock ?: run {
+                dataPathProgress.record(PlaybackDataPathProgress.Stage.MISSING_LINEAR_BLOCK)
+                return null
             }
-            return null
-        }
-        val block = event.linearBlock ?: run {
-            dataPathProgress.record(PlaybackDataPathProgress.Stage.MISSING_LINEAR_BLOCK)
-            return null
-        }
         val capacity =
             runCatching {
                 block
@@ -1427,7 +1438,9 @@ class PlaybackPipeline(
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration || startupDeadline !== deadline) return@enqueuePlaybackAction
                         val expired = deadline.expire(SystemClock.elapsedRealtime()) ?: return@enqueuePlaybackAction
-                        val detail = "DECODER_STARTUP_TIMEOUT stage=$expired deadlineMs=${budget.decoderStartupDeadlineMs} progress=${dataPathProgress.summary()}"
+                        val detail =
+                            "DECODER_STARTUP_TIMEOUT stage=$expired deadlineMs=${budget.decoderStartupDeadlineMs} " +
+                                "progress=${dataPathProgress.summary()}"
                         if (this@DecoderPipeline is AudioDecoderPipeline) {
                             handleAudioFailure(
                                 PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
