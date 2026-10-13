@@ -1,7 +1,7 @@
-use crate::descrambler_key_table::DescramblerPacketKeys;
-use std::time::Instant;
 #[cfg(target_os = "android")]
 use super::{DemuxRuntimeId, PipelineDiagnostic};
+use crate::descrambler_key_table::DescramblerPacketKeys;
+use std::time::Instant;
 
 use super::{
     demux_runtime_error_to_hal, DescrambleFailure, DescramblePacketDecision, DescramblePacketFlow,
@@ -301,9 +301,9 @@ impl TunerServiceRuntime {
             ) {
                 continue;
             }
-            // The bounded in-memory diagnostic store can evict older AV failures.
-            // Android logcat also records the authoritative backing occupancy at
-            // exponentially spaced shortage counts, without changing delivery.
+            // 有界のメモリ診断記録は古いAV失敗情報を破棄することがある。
+            // Androidのlogcatへ正本backingの使用状態を併記する。
+            // 枯渇件数が2の累乗に達したときのみ出力し、配送動作は変えない。
             #[cfg(target_os = "android")]
             match diagnostic {
                 PipelineDiagnostic::AvNoFreeSlot { pid, filter_id } => {
