@@ -546,8 +546,8 @@ impl TunerServiceRuntime {
             maleicacid_tuner_hal2_demux::AvHandleReleaseOutcome::SlotReleased { .. }
         ) {
             if let Some(snapshot) = demux.av_flow_diagnostic_snapshot(filter_id) {
-                // Only report releases after an observed shortage, and sample
-                // exponentially to avoid flooding logcat on the hot AV path.
+                // 枯渇を一度観測した後の解放だけを間引いて記録する。
+                // 頻繁なAVデータ処理でlogcatを過剰に出力しない。
                 if snapshot.no_free_slot > 0 && snapshot.released.is_power_of_two() {
                     log::warn!(
                         "HAL_AV_FLOW kind=slot_released demux={} generation={} filter={} shortage={} delivered={} released={} discarded={} active_slots={} event_local={} active_bytes={} runtime_used={} runtime_limit={}",
