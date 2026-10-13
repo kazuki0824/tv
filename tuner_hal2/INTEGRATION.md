@@ -89,7 +89,7 @@ LineageOS 22.1 `frameworks/av/services/tuner/TunerService.cpp` は`TunerService`
 
 Framework側の`media.tuner`を制御する`init/mediatuner-trm-lifecycle.rc`は、既存vendor HALの`init_rc`ではなく、`prebuilt_etc`(`maleicacid_mediatuner_trm_lifecycle_rc`)として`/system/etc/init/mediatuner-trm-lifecycle.rc`へ配置する。製品側`config/product_integration.mk`から同moduleを含める。Android initは`/system/etc/init`からsystem側actionとして読み込むため、vendor init subcontextのproperty trigger制約に依存せずsystem所有の`init.svc.zygote`を監視できる。対象Frameworkサービスとその制御actionの配置先をsystemで一致させ、vendor HALの起動定義・VINTF・実行主体は変更しない。
 
-`init.svc.zygote`が`stopped`または`restarting`へ遷移した場合、Android initの`restart --only-if-running media.tuner`を使って稼働中の既存サービスだけを再生成する。`media.tuner`が未起動・意図的な停止中・lazy待機中なら起動しない。LineageOS側の`tuner.server.enable`に基づくサービスの初回有効化契約は維持し、製品rcでは同propertyの独立解釈・変更を行わない。
+LineageOS 22.1標準の`init.zygote*.rc`は既に`onrestart restart --only-if-running media.tuner`を持つ。zygoteの自動再起動では、この標準`onrestart`が実行された後に`init.svc.zygote=restarting`が通知される。一方、明示的な`stop`では`stopped`へ遷移して標準`onrestart`が実行されないため、製品rcの`init.svc.zygote=stopped` actionはこの経路を補完する。現在の製品rcには`restarting` actionも残存するが、これは標準`onrestart`と同じ`media.tuner`再起動を要求する重複経路であり、TRM復元の必要条件ではない。静的CIは`stopped` actionだけを必須とし、現行の重複`restarting` actionの残存は許容するが、重複処理を必要な設計契約とは扱わない。どちらも`restart --only-if-running media.tuner`で稼働中のサービスだけを対象とし、未起動・意図的停止中・lazy待機中のサービスを強制起動しない。LineageOS側の`tuner.server.enable`に基づく初回有効化契約は維持し、製品rcで同propertyの独立解釈・変更は行わない。
 
 `mediatuner`は生成時に既存の`AServiceManager_waitForService("tv_tuner_resource_mgr")`を用いて新しいTRMの公開を待ち、その後`setFrontendInfoList()`でHAL由来のFrontendを再登録する。再登録の成否はHALの有効なFrontend情報とTRM側の受付にも依存する。HALのregistryやcapability、Backend処理、Frameworkの資源割当契約は変更しない。
 
