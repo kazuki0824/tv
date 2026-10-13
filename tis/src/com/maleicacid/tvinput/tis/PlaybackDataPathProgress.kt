@@ -31,6 +31,5 @@ internal class PlaybackDataPathProgress {
         counts.fill(0L)
     }
 
-    fun summary(): String =
-        Stage.entries.joinToString(separator = " ") { stage -> "${stage.name}=${count(stage)}" }
+    fun summary(): String = Stage.entries.joinToString(separator = " ") { stage -> "${stage.name}=${count(stage)}" }
 }
