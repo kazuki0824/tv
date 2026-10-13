@@ -293,6 +293,32 @@ impl TunerServiceRuntime {
         demux_generation: u64,
         report: &PipelineReport,
     ) {
+        #[cfg(target_os = "android")]
+        for event in &report.generated_events {
+            if let maleicacid_tuner_hal2_demux::PipelineGeneratedEvent::AvMedia {
+                filter_id, ..
+            } = event
+            {
+                if let Some(snapshot) = self
+                    .registry
+                    .demux_runtime(DemuxRuntimeId(demux_id))
+                    .and_then(|demux| demux.av_flow_diagnostic_snapshot(*filter_id))
+                {
+                    // 最初の成功したAV領域割当を含め、件数の2の累乗だけを出力する。
+                    if snapshot.delivered.is_power_of_two() {
+                        log::info!(
+                            "HAL_AV_FLOW kind=av_event_allocated demux={} generation={} filter={} allocated={} client_released={} undelivered_discarded={} shortage={} active_slots={} event_local={} active_bytes={} runtime_used={} runtime_limit={}",
+                            demux_id, demux_generation, filter_id,
+                            snapshot.delivered, snapshot.released,
+                            snapshot.discarded_undelivered, snapshot.no_free_slot,
+                            snapshot.active_shared_slots, snapshot.active_event_local,
+                            snapshot.active_bytes, snapshot.runtime_used_bytes,
+                            snapshot.runtime_limit_bytes,
+                        );
+                    }
+                }
+            }
+        }
         for diagnostic in &report.diagnostics {
             // 正常な無ペイロードと、既存の鍵診断の保持対象は重複記録しない。
             if matches!(diagnostic,
