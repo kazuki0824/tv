@@ -7,12 +7,11 @@ use maleicacid_tuner_hal2_common::{FmqFailureKind, TS_PACKET_SIZE};
 use maleicacid_tuner_hal2_control_core::{FmqDeliveryAction, FmqDeliveryTxn, FmqObjectKind};
 
 use crate::av::{
-    AvDataId, AvDataIdAllocator, AvDataIdState, AvFilterReleaseState, AvHandleReleaseDescriptor,
-    AvFlowDiagnosticSnapshot, AvHandleReleaseInput, AvHandleReleaseKind, AvHandleReleaseOutcome,
-    AvHandleReleaseTxn,
-    AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking, AvSharedHandleExport,
-    ClientHandleState, DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
-    DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    AvDataId, AvDataIdAllocator, AvDataIdState, AvFilterReleaseState, AvFlowDiagnosticSnapshot,
+    AvHandleReleaseDescriptor, AvHandleReleaseInput, AvHandleReleaseKind, AvHandleReleaseOutcome,
+    AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking,
+    AvSharedHandleExport, ClientHandleState, DEFAULT_AV_MAX_EVENT_BYTES,
+    DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER, DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };
 use crate::config::{
     AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterDelayReadiness, FilterOpenType,
@@ -1299,11 +1298,8 @@ impl DemuxRuntime {
             .map_err(|_| DemuxRuntimeError::av_backing_failure(filter_id))
     }
 
-    /// Read-only AV diagnostics from the backing that owns the active data IDs.
-    pub fn av_flow_diagnostic_snapshot(
-        &self,
-        filter_id: i32,
-    ) -> Option<AvFlowDiagnosticSnapshot> {
+    /// 使用中data IDを所有するbackingから診断snapshotを読み取る。
+    pub fn av_flow_diagnostic_snapshot(&self, filter_id: i32) -> Option<AvFlowDiagnosticSnapshot> {
         self.filter_av_backings
             .get(&filter_id)
             .map(AvSharedBacking::diagnostic_snapshot)
