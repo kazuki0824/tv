@@ -359,10 +359,7 @@ rust_binary {
     crate_name: "maleicacid_tuner_hal2_service_main",
     srcs: ["aidl_service/src/main.rs"],
     edition: "2021",
-    init_rc: [
-        "init/android.hardware.tv.tuner-service.maleicacid2.rc",
-        "init/mediatuner-trm-lifecycle.rc",
-    ],
+    init_rc: ["init/android.hardware.tv.tuner-service.maleicacid2.rc"],
     vintf_fragments: ["manifest/android.hardware.tv.tuner-service.maleicacid2.xml"],
     rustlibs: [
         "liblogger",
@@ -370,6 +367,14 @@ rust_binary {
         "libmaleicacid_tuner_hal2_aidl_service",
         "libbinder_rs",
     ],
+}
+
+// Frameworkサービスに対するactionはsystem側のinitへ配置する。
+// vendor HALのinit_rcではsystem propertyに対するvendor triggerを作らない。
+prebuilt_etc {
+    name: "maleicacid_mediatuner_trm_lifecycle_rc",
+    src: "init/mediatuner-trm-lifecycle.rc",
+    sub_dir: "init",
 }
 
 rust_test {

@@ -94,11 +94,15 @@ android.hardware.tv.tuner.ITuner/default が登録されている
 
 LineageOS 22.1 `frameworks/av/services/tuner/TunerService.cpp` は`TunerService`の生成時に`updateTunerResources()`を実行し、HALの`getFrontendIds()/getFrontendInfo()`から得た情報を`tv_tuner_resource_mgr`へ登録する。TRMは`system_server`が所有するため、`stop && start`等でTRMだけが再生成され、`mediatuner`が存続するとFrontend登録が空のままになる。
 
-製品側の`init/mediatuner-trm-lifecycle.rc`を、既存HALサービスの`init_rc`として導入する。公開された`init.svc.zygote`の`stopped`または`restarting`への遷移時に、Android init標準の`restart --only-if-running media.tuner`を実行する。現在起動している`media.tuner`に限り再生成し、未起動のlazyサービスや意図的に停止済みのサービスを強制起動しない。`tuner.server.enable`はAndroid 15でsystem-internalなpropertyのため、vendor init rcのaction triggerから参照しない。
+Framework側の`media.tuner`を制御する`init/mediatuner-trm-lifecycle.rc`は、既存vendor HALの`init_rc`ではなく、`prebuilt_etc`(`maleicacid_mediatuner_trm_lifecycle_rc`)として`/system/etc/init/mediatuner-trm-lifecycle.rc`へ配置する。製品側`config/product_integration.mk`から同moduleを含める。Android initは`/system/etc/init`からsystem側actionとして読み込むため、vendor init subcontextのproperty trigger制約に依存せずsystem所有の`init.svc.zygote`を監視できる。対象Frameworkサービスとその制御actionの配置先をsystemで一致させ、vendor HALの起動定義・VINTF・実行主体は変更しない。
+
+`init.svc.zygote`が`stopped`または`restarting`へ遷移した場合、Android initの`restart --only-if-running media.tuner`を使って稼働中の既存サービスだけを再生成する。`media.tuner`が未起動・意図的な停止中・lazy待機中なら起動しない。LineageOS側の`tuner.server.enable`に基づくサービスの初回有効化契約は維持し、製品rcでは同propertyの独立解釈・変更を行わない。
 
 `mediatuner`は生成時に既存の`AServiceManager_waitForService("tv_tuner_resource_mgr")`を用いて新しいTRMの公開を待ち、その後`setFrontendInfoList()`でHAL由来のFrontendを再登録する。再登録の成否はHALの有効なFrontend情報とTRM側の受付にも依存する。HALのregistryやcapability、Backend処理、Frameworkの資源割当契約は変更しない。
 
-実機受入れでは、`stop && start`前後の`pidof mediatuner`、`getprop init.svc.media.tuner`、`dumpsys tv_tuner_resource_mgr`を照合し、再生成後のFrontendResources登録および`Tuner.tune()`の再実行を確認する。これは製品の実機検証であり、init rcのテキスト検査だけをTRM復旧の回帰試験と呼ばない。Codec2へのFD利用許可（#200）は別に検証する。
+製品buildでは`m maleicacid_mediatuner_trm_lifecycle_rc android.hardware.tv.tuner-service.maleicacid2`でSoongの実モジュール生成を検証し、配置先が`/system/etc/init/mediatuner-trm-lifecycle.rc`であることと、旧`/vendor/etc/init/mediatuner-trm-lifecycle.rc`が生成されないことを確認する。旧版のvendor rcが残る差し替え配置を用いず、更新後のsystem/vendor両imageを使う。
+
+実機受入れでは`adb shell ls -lZ /system/etc/init/mediatuner-trm-lifecycle.rc`で配置を確認し、通常起動後と`stop && start`前後の`pidof mediatuner`、`getprop init.svc.media.tuner`、`dumpsys tv_tuner_resource_mgr`を照合する。起動中のFrontendResourcesが再生成後に登録され、`Tuner.tune()`がFrontend取得段階を通過することを確認する。これは実機確認が必要であり、rc文字列の検査やVTS profile CIの成功をTRM復旧の実動作証拠とは扱わない。Codec2 FD利用許可（#200）は別の試験とする。
 
 ## 4.1 CAS descrambler依存
 
