@@ -1,10 +1,12 @@
 use crate::descrambler_key_table::DescramblerPacketKeys;
 use std::time::Instant;
+#[cfg(target_os = "android")]
+use super::{DemuxRuntimeId, PipelineDiagnostic};
 
 use super::{
     demux_runtime_error_to_hal, DescrambleFailure, DescramblePacketDecision, DescramblePacketFlow,
-    DemuxRuntimeId, FilterEventDeliverySnapshot, FrontendRuntimeId, HalError, HalInvalidStateKind,
-    PipelineBoundaryReason, PipelineDiagnostic, PipelineReport, StreamBoundaryReport, TsInputOrigin,
+    FilterEventDeliverySnapshot, FrontendRuntimeId, HalError, HalInvalidStateKind,
+    PipelineBoundaryReason, PipelineReport, StreamBoundaryReport, TsInputOrigin,
     TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
 use crate::registry::ResolvedDescramblerPacketFlow;
