@@ -1068,11 +1068,12 @@ PES parserがDTSまたはprivate-data presenceを有効入力として既に確�
 | 項目 | 固定値 | 理由 |
 |---|---|---|
 | fd数 | 1 | shared backing fd を framework/JNI へ渡すため |
-| ints数 | 1 | Android framework/JNI が参照する memory index だけを公開するため |
-| `ints[0]` | 0 | 単一 shared memory の index。HAL内部識別子ではない |
-| `ints[1..]` | 出さない | HAL内部識別子を framework/JNI へ公開しないため |
+| ints数 | 0 | 本製品はCodec2のglobal INFO indexを発行しないため |
+| `ints[0]` | 存在しない | 0を代入するとAndroid 15の`C2DataIdInfo`に不正なglobal INFO indexとして解釈され`CHECK(isGlobal())`でabortする |
 | `slot_size` / `slot_count` | 出さない | HAL内部の領域管理値であり、`NativeHandle.ints` ではないため |
-| magic / generation / filter id | 出さない | JNI が int を memory index として読むため |
+| magic / generation / filter id | 出さない | JNIにHAL内部識別子を渡さないため |
+
+event-local AV FDと`IFilter.getAvSharedHandle()`の両経路で`fds=[AV FD], ints=[]`を使用する。`MediaEvent.getLinearBlock()`にintを渡す場合、AOSPは先頭要素をCodec2のglobal INFO indexとして解釈する。`IFilter.releaseAvHandle()`も単一FD・空intのshapeを一致させ、FD identity検証と既存のactive `avDataId`解放確定点を保持する。AV payload、offset、size、PTS/DTS、data ID、使用権の寿命は変更しない。
 
 ### AV転送方式とクライアント側の存続期間
 

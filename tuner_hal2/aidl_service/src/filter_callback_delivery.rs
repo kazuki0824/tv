@@ -205,7 +205,9 @@ fn event_from_snapshot(
                             )
                         },
                     )?)],
-                    ints: vec![0],
+                    // JNIはintsの存在をCodec2 global INFO indexとして解釈する。
+                    // 対応する有効なindexを発行しないため、int配列は空にする。
+                    ints: vec![],
                 },
                 None => Default::default(),
             };
@@ -545,6 +547,25 @@ mod tests {
             filter_id: 3,
             event,
         }
+    }
+
+    #[test]
+    fn event_local_av_handle_does_not_supply_invalid_codec2_global_info_index() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let event = AvMediaEventDescriptor {
+            data_id: AvDataId(7),
+            slot_id: AvSlotId(0),
+            offset: 0,
+            data_length: 188,
+            metadata: AvMediaEventMetadata::default(),
+            event_local_file: Some(file),
+        };
+        let result = event_from_snapshot(snapshot(FilterEventDelivery::Media(event))).unwrap();
+        let AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(media)) = result else {
+            panic!("AV snapshot must become a media event");
+        };
+        assert_eq!(media.avMemory.fds.len(), 1);
+        assert!(media.avMemory.ints.is_empty());
     }
 
     #[test]
