@@ -369,6 +369,14 @@ rust_binary {
     ],
 }
 
+// Frameworkサービスに対するactionはsystem側のinitへ配置する。
+// vendor HALのinit_rcではsystem propertyに対するvendor triggerを作らない。
+prebuilt_etc {
+    name: "maleicacid_mediatuner_trm_lifecycle_rc",
+    src: "init/mediatuner-trm-lifecycle.rc",
+    sub_dir: "init",
+}
+
 rust_test {
     name: "maleicacid_tuner_hal2_common_test",
     vendor: true,

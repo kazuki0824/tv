@@ -19,14 +19,7 @@
 $(call inherit-product, vendor/maleicacid/tv/tuner_hal2/config/product_integration.mk)
 ```
 
-`config/product_integration.mk` は次だけを `PRODUCT_PACKAGES` に追加する。
-
-```make
-PRODUCT_PACKAGES += \
-    android.hardware.tv.tuner-service.maleicacid2 \
-    maleicacid_tuner_hal2_ueventd_rc \
-    fs_config_files
-```
+`config/product_integration.mk` を製品統合の正本とし、`PRODUCT_PACKAGES` / `PRODUCT_COPY_FILES` の一覧は同ファイルを参照する。本節へ同じモジュール一覧を複製しない。Framework再起動時のTRM再登録に必要な `maleicacid_mediatuner_trm_lifecycle_rc` のsystem側配置と検証手順は後段の「mediatunerとTRMのFramework再起動時の登録寿命」を参照する。
 
 旧 `tuner_hal` の `maleicacid.tv.tuner_hal-service` は追加しない。
 
@@ -89,6 +82,20 @@ pm list features に feature:android.hardware.tv.tuner が存在する
 service list に tv_tuner_resource_mgr が存在する
 android.hardware.tv.tuner.ITuner/default が登録されている
 ```
+
+### mediatunerとTRMのFramework再起動時の登録寿命
+
+LineageOS 22.1 `frameworks/av/services/tuner/TunerService.cpp` は`TunerService`の生成時に`updateTunerResources()`を実行し、HALの`getFrontendIds()/getFrontendInfo()`から得た情報を`tv_tuner_resource_mgr`へ登録する。TRMは`system_server`が所有するため、`stop && start`等でTRMだけが再生成され、`mediatuner`が存続するとFrontend登録が空のままになる。
+
+Framework側の`media.tuner`を制御する`init/mediatuner-trm-lifecycle.rc`は、既存vendor HALの`init_rc`ではなく、`prebuilt_etc`(`maleicacid_mediatuner_trm_lifecycle_rc`)として`/system/etc/init/mediatuner-trm-lifecycle.rc`へ配置する。製品側`config/product_integration.mk`から同moduleを含める。Android initは`/system/etc/init`からsystem側actionとして読み込むため、vendor init subcontextのproperty trigger制約に依存せずsystem所有の`init.svc.zygote`を監視できる。対象Frameworkサービスとその制御actionの配置先をsystemで一致させ、vendor HALの起動定義・VINTF・実行主体は変更しない。
+
+LineageOS 22.1標準の`init.zygote*.rc`は既に`onrestart restart --only-if-running media.tuner`を持ち、zygoteの自動再起動では標準`onrestart`実行後に`init.svc.zygote=restarting`が通知される。一方、明示的な`stop`では標準`onrestart`を実行せず`stopped`へ遷移する。したがって製品rcは`init.svc.zygote=stopped`だけを監視して稼働中の`media.tuner`を再起動し、`restarting` actionは重複のため設けない。静的CIもこの2行のみを許可する。`restart --only-if-running`により、未起動・停止中・lazy待機中のサービスを強制起動しない。LineageOS側の`tuner.server.enable`による初回有効化を維持し、製品rcでは同propertyを解釈・変更しない。
+
+`mediatuner`は生成時に既存の`AServiceManager_waitForService("tv_tuner_resource_mgr")`を用いて新しいTRMの公開を待ち、その後`setFrontendInfoList()`でHAL由来のFrontendを再登録する。再登録の成否はHALの有効なFrontend情報とTRM側の受付にも依存する。HALのregistryやcapability、Backend処理、Frameworkの資源割当契約は変更しない。
+
+製品buildでは`m maleicacid_mediatuner_trm_lifecycle_rc android.hardware.tv.tuner-service.maleicacid2`でSoongの実モジュール生成を検証し、配置先が`/system/etc/init/mediatuner-trm-lifecycle.rc`であることと、旧`/vendor/etc/init/mediatuner-trm-lifecycle.rc`が生成されないことを確認する。旧版のvendor rcが残る差し替え配置を用いず、更新後のsystem/vendor両imageを使う。
+
+実機受入れでは`adb shell ls -lZ /system/etc/init/mediatuner-trm-lifecycle.rc`で配置を確認し、通常起動後と`stop && start`前後の`pidof mediatuner`、`getprop init.svc.media.tuner`、`dumpsys tv_tuner_resource_mgr`を照合する。起動中のFrontendResourcesが再生成後に登録され、`Tuner.tune()`がFrontend取得段階を通過することを確認する。これは実機確認が必要であり、rc文字列の検査やVTS profile CIの成功をTRM復旧の実動作証拠とは扱わない。Codec2 FD利用許可（#200）は別の試験とする。
 
 ## 4.1 CAS descrambler依存
 
