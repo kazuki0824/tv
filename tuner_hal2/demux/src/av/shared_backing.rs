@@ -996,6 +996,9 @@ mod tests {
         assert_eq!(saturated.active_bytes, 200);
         assert_eq!(saturated.slot_capacity, 2);
         assert_eq!(saturated.max_outstanding_events, 2);
+        assert_eq!(saturated.per_filter_live_bytes, 376);
+        assert_eq!(saturated.runtime_used_bytes, 200);
+        assert_eq!(saturated.runtime_limit_bytes, usize::MAX);
 
         assert_eq!(
             backing.apply_release(
@@ -1015,6 +1018,7 @@ mod tests {
         assert_eq!(drained.active_shared_slots, 0);
         assert_eq!(drained.active_event_local, 0);
         assert_eq!(drained.active_bytes, 0);
+        assert_eq!(drained.runtime_used_bytes, 0);
     }
 
     #[test]
@@ -1246,6 +1250,11 @@ mod tests {
             second.allocate_payload(100),
             AvPayloadDeliveryOutcome::NoFreeSlot
         );
+        let budget_exhausted = second.diagnostic_snapshot();
+        assert_eq!(budget_exhausted.no_free_slot, 1);
+        assert_eq!(budget_exhausted.active_shared_slots, 0);
+        assert_eq!(budget_exhausted.runtime_used_bytes, 188);
+        assert_eq!(budget_exhausted.runtime_limit_bytes, 250);
         assert_eq!(
             first.apply_release(
                 AvHandleReleaseDescriptor::Empty,
