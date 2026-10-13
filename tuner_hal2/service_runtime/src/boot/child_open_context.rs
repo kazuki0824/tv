@@ -533,15 +533,41 @@ impl TunerServiceRuntime {
                     "owner demux runtimeが見つかりません",
                 )
             })?;
-        Self::map_av_handle_release_outcome(
-            demux
-                .release_filter_av_handle_from_typed_request(
-                    maleicacid_tuner_hal2_demux::FilterAvHandleReleaseRequest::new(
-                        filter_id, descriptor, av_data_id,
-                    ),
-                )
-                .map_err(Self::map_filter_runtime_error)?,
-        )
+        let outcome = demux
+            .release_filter_av_handle_from_typed_request(
+                maleicacid_tuner_hal2_demux::FilterAvHandleReleaseRequest::new(
+                    filter_id, descriptor, av_data_id,
+                ),
+            )
+            .map_err(Self::map_filter_runtime_error)?;
+        #[cfg(target_os = "android")]
+        if matches!(
+            outcome,
+            maleicacid_tuner_hal2_demux::AvHandleReleaseOutcome::SlotReleased { .. }
+        ) {
+            if let Some(snapshot) = demux.av_flow_diagnostic_snapshot(filter_id) {
+                // Only report releases after an observed shortage, and sample
+                // exponentially to avoid flooding logcat on the hot AV path.
+                if snapshot.no_free_slot > 0 && snapshot.released.is_power_of_two() {
+                    log::warn!(
+                        "HAL_AV_FLOW kind=slot_released demux={} generation={} filter={} shortage={} delivered={} released={} discarded={} active_slots={} event_local={} active_bytes={} runtime_used={} runtime_limit={}",
+                        owner_demux_id,
+                        demux.generation(),
+                        filter_id,
+                        snapshot.no_free_slot,
+                        snapshot.delivered,
+                        snapshot.released,
+                        snapshot.discarded_undelivered,
+                        snapshot.active_shared_slots,
+                        snapshot.active_event_local,
+                        snapshot.active_bytes,
+                        snapshot.runtime_used_bytes,
+                        snapshot.runtime_limit_bytes,
+                    );
+                }
+            }
+        }
+        Self::map_av_handle_release_outcome(outcome)
     }
 
     fn map_av_handle_release_outcome(
