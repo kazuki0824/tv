@@ -42,7 +42,8 @@ impl TsInputOrigin {
 }
 
 pub use av::{
-    AvDataId, AvDataIdAllocator, AvFileIdentity, AvHandleReleaseDescriptor, AvHandleReleaseOutcome,
+    AvDataId, AvDataIdAllocator, AvFileIdentity, AvFlowDiagnosticSnapshot,
+    AvHandleReleaseDescriptor, AvHandleReleaseOutcome,
     AvMediaEventDescriptor, AvMediaEventMetadata, AvPayloadDeliveryOutcome, AvRuntimeBudget,
     AvSharedBacking, AvSharedBackingError, AvSharedHandleExport, AvSlotId,
     DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
