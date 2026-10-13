@@ -1324,10 +1324,6 @@ class PlaybackPipeline(
         }
     }
 
-    // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("LongMethod", "MaxLineLength", "ReturnCount")
     private fun rejectSecureMediaEvent(isAudio: Boolean) {
         if (isAudio) {
             logAudioUnavailable(
@@ -1342,6 +1338,8 @@ class PlaybackPipeline(
         }
     }
 
+    // 入力・資源寿命を保ちながら、既存の入力拒否を発生点で返す。
+    @Suppress("LongMethod", "MaxLineLength", "ReturnCount")
     private fun sampleFromEvent(
         event: MediaEvent,
         isAudio: Boolean,
