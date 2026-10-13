@@ -8,7 +8,8 @@ use maleicacid_tuner_hal2_control_core::{FmqDeliveryAction, FmqDeliveryTxn, FmqO
 
 use crate::av::{
     AvDataId, AvDataIdAllocator, AvDataIdState, AvFilterReleaseState, AvHandleReleaseDescriptor,
-    AvHandleReleaseInput, AvHandleReleaseKind, AvHandleReleaseOutcome, AvHandleReleaseTxn,
+    AvFlowDiagnosticSnapshot, AvHandleReleaseInput, AvHandleReleaseKind, AvHandleReleaseOutcome,
+    AvHandleReleaseTxn,
     AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking, AvSharedHandleExport,
     ClientHandleState, DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
     DEFAULT_AV_PER_FILTER_LIVE_BYTES,
@@ -1296,6 +1297,16 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::av_backing_failure(filter_id))?
             .export_handle()
             .map_err(|_| DemuxRuntimeError::av_backing_failure(filter_id))
+    }
+
+    /// Read-only AV diagnostics from the backing that owns the active data IDs.
+    pub fn av_flow_diagnostic_snapshot(
+        &self,
+        filter_id: i32,
+    ) -> Option<AvFlowDiagnosticSnapshot> {
+        self.filter_av_backings
+            .get(&filter_id)
+            .map(AvSharedBacking::diagnostic_snapshot)
     }
 
     pub fn release_filter_av_handle_from_typed_request(
