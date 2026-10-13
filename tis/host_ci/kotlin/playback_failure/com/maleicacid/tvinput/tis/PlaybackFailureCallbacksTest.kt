@@ -1399,6 +1399,8 @@ class PlaybackFailureCallbacksTest {
             set("released", AtomicBoolean(false))
             set("videoAvailableNotified", AtomicBoolean(!waiting))
             set("resourceCleanup", cleanup)
+            // Unsafe fixtureはconstructor初期化を省くため、本番の診断専用fieldを明示初期化する。
+            set("dataPathProgress", PlaybackDataPathProgress())
             set("outstandingAudioOutputs", linkedMapOf<Int, Any>())
             set("pendingAudioOutputReleases", mutableSetOf<Int>())
             val ptsType = field("ptsEpochCoordinator").type
