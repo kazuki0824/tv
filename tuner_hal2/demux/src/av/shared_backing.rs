@@ -406,7 +406,9 @@ impl AvSharedBacking {
 
     fn record_delivery_outcome(&mut self, outcome: &AvPayloadDeliveryOutcome) {
         let (counter, name) = match outcome {
-            AvPayloadDeliveryOutcome::Delivered(_) => (&mut self.diagnostics.delivered, "delivered"),
+            AvPayloadDeliveryOutcome::Delivered(_) => {
+                (&mut self.diagnostics.delivered, "delivered")
+            }
             AvPayloadDeliveryOutcome::NoFreeSlot => {
                 (&mut self.diagnostics.no_free_slot, "no_free_slot")
             }
