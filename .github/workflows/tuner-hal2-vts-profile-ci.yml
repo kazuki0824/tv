@@ -61,7 +61,7 @@ jobs:
       # 設定の静的整合だけを検証する。TRM実動作の代替試験ではない。
       - name: Check mediatuner init product packaging (static)
         run: |
-          python - <<'PY'
+          uv run python - <<'PY'
           import re
           from pathlib import Path
 

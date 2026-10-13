@@ -19,14 +19,7 @@
 $(call inherit-product, vendor/maleicacid/tv/tuner_hal2/config/product_integration.mk)
 ```
 
-`config/product_integration.mk` は次だけを `PRODUCT_PACKAGES` に追加する。
-
-```make
-PRODUCT_PACKAGES += \
-    android.hardware.tv.tuner-service.maleicacid2 \
-    maleicacid_tuner_hal2_ueventd_rc \
-    fs_config_files
-```
+`config/product_integration.mk` を製品統合の正本とし、`PRODUCT_PACKAGES` / `PRODUCT_COPY_FILES` の一覧は同ファイルを参照する。本節へ同じモジュール一覧を複製しない。Framework再起動時のTRM再登録に必要な `maleicacid_mediatuner_trm_lifecycle_rc` のsystem側配置と検証手順は後段の「mediatunerとTRMのFramework再起動時の登録寿命」を参照する。
 
 旧 `tuner_hal` の `maleicacid.tv.tuner_hal-service` は追加しない。
 
