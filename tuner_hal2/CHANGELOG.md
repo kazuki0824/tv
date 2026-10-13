@@ -1,3 +1,11 @@
+# PR #116 黒画面診断向けAV共有領域の進捗可視化
+
+- AV共有領域の正本ownerである`AvSharedBacking`へ、配送成功・client解放・未配送破棄・枯渇の診断専用飽和counterを追加。使用中shared slot数、event-local数、payload byte数、filter許容量、runtime全体のbudget使用量を読み取り専用snapshotとして提供する。counter飽和は既存設計の必須`diagnostic_counter_saturated`へ記録する。
+- demuxからservice_runtimeへの読み取り専用参照のみを追加。AV所有権、dataId発行、AIDL公開interface、既存flush/close/releaseの確定点と失敗結果を変更しない。
+- AV共有slot枯渇の累計が2の累乗に到達した時、既存packet diagnosticのdemux ID・generation・PID・filter IDと正本snapshotをAndroidのlogcatに間引いて記録する。枯渇後のclient解放も同様にサンプリングする。共有領域の異常を検出した場合は既存のtyped diagnosticと併せてlogcatへ記録する。ホストCIではAndroid専用ログだけを除外する。
+- 同じownerの実allocation/releaseを呼ぶテストで枯渇、budget、client解放、未配送破棄、既存slot復旧、counter飽和と進捗値を検証する。Rust 1.81用rustfmtのCI差分に合わせて整形済み。
+- Android全体のSoongビルド・実機選局・LineageOS 22.1未パッチ環境での映像再生・CodecからSurfaceへの描画確認は未実施。HAL診断導入を黒画面解消とは判定しない。該当commitのCI結果は別途確認する。
+
 # PR #202 mediatunerとTRMのFramework再起動時の登録寿命
 
 - LineageOS 22.1の`TunerService`は生成時にHALからFrontend一覧を取得し、TRMへ登録する。Frameworkの`system_server`が再生成されたときも旧`mediatuner`が存続するとTRMのFrontend登録が失われる問題に対し、製品initが稼働中`media.tuner`だけを再生成するactionを追加した。
