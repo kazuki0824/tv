@@ -397,13 +397,22 @@ impl AvSharedBacking {
         }
     }
 
+    fn increment_diagnostic_counter(counter: &mut u64, name: &'static str) {
+        if *counter == u64::MAX - 1 {
+            eprintln!("diagnostic_counter_saturated counter={name} owner=AvSharedBacking");
+        }
+        *counter = counter.saturating_add(1);
+    }
+
     fn record_delivery_outcome(&mut self, outcome: &AvPayloadDeliveryOutcome) {
-        let counter = match outcome {
-            AvPayloadDeliveryOutcome::Delivered(_) => &mut self.diagnostics.delivered,
-            AvPayloadDeliveryOutcome::NoFreeSlot => &mut self.diagnostics.no_free_slot,
+        let (counter, name) = match outcome {
+            AvPayloadDeliveryOutcome::Delivered(_) => (&mut self.diagnostics.delivered, "delivered"),
+            AvPayloadDeliveryOutcome::NoFreeSlot => {
+                (&mut self.diagnostics.no_free_slot, "no_free_slot")
+            }
             _ => return,
         };
-        *counter = counter.saturating_add(1);
+        Self::increment_diagnostic_counter(counter, name);
     }
 
     #[cfg(test)]
@@ -784,8 +793,10 @@ impl AvSharedBacking {
             self.release_slot(data_id)
         };
         if discarded {
-            self.diagnostics.discarded_undelivered =
-                self.diagnostics.discarded_undelivered.saturating_add(1);
+            Self::increment_diagnostic_counter(
+                &mut self.diagnostics.discarded_undelivered,
+                "discarded_undelivered",
+            );
         }
         discarded
     }
@@ -858,7 +869,7 @@ impl AvSharedBacking {
                 } else if !self.release_slot(data_id) {
                     return AvHandleReleaseOutcome::RegistryFailure;
                 }
-                self.diagnostics.released = self.diagnostics.released.saturating_add(1);
+                Self::increment_diagnostic_counter(&mut self.diagnostics.released, "released");
             }
             _ => {}
         }
@@ -976,6 +987,31 @@ impl Drop for AvSharedBacking {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_counter_saturation_does_not_prevent_av_delivery() {
+        let mut backing = AvSharedBacking::with_layout(1, 188);
+        backing.mark_exported();
+        backing.diagnostics.delivered = u64::MAX - 1;
+        let first = match backing.allocate_payload(100) {
+            AvPayloadDeliveryOutcome::Delivered(event) => event,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert_eq!(backing.diagnostic_snapshot().delivered, u64::MAX);
+        assert!(matches!(
+            backing.apply_release(
+                AvHandleReleaseDescriptor::Empty,
+                first.data_id,
+                AvFilterReleaseState::OpenAv,
+            ),
+            AvHandleReleaseOutcome::SlotReleased { .. }
+        ));
+        assert!(matches!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
+        assert_eq!(backing.diagnostic_snapshot().delivered, u64::MAX);
+    }
 
     #[test]
     fn diagnostic_snapshot_distinguishes_client_release_and_undelivered_discard() {
