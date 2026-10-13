@@ -3,6 +3,3 @@
 # 未起動のlazy media.tunerを起動せず、vendor HALは停止しない。
 on property:init.svc.zygote=stopped
     restart --only-if-running media.tuner
-
-on property:init.svc.zygote=restarting
-    restart --only-if-running media.tuner
