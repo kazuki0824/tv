@@ -256,6 +256,9 @@ pub struct AvFlowDiagnosticSnapshot {
     pub active_bytes: usize,
     pub slot_capacity: usize,
     pub max_outstanding_events: usize,
+    pub per_filter_live_bytes: usize,
+    pub runtime_used_bytes: usize,
+    pub runtime_limit_bytes: usize,
 }
 
 #[derive(Debug, Default)]
@@ -387,6 +390,9 @@ impl AvSharedBacking {
             active_bytes: shared_bytes.saturating_add(self.event_local_bytes),
             slot_capacity: self.slots.len(),
             max_outstanding_events: self.max_outstanding_events,
+            per_filter_live_bytes: self.per_filter_live_bytes,
+            runtime_used_bytes: self.runtime_budget.used_bytes.load(Ordering::Acquire),
+            runtime_limit_bytes: self.runtime_budget.limit_bytes,
         }
     }
 
