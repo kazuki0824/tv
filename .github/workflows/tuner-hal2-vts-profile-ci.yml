@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "tuner_hal2/tools/**"
+      - "tuner_hal2/Android.bp"
+      - "tuner_hal2/init/mediatuner-trm-lifecycle.rc"
       - "tuner_hal2/config/vts_channel_plan*.json"
       - "tuner_hal2/config/product_integration.mk"
       - "tuner_hal2/config/vts_test_agent_integration.mk"
@@ -17,6 +19,8 @@ on:
     branches: [main]
     paths:
       - "tuner_hal2/tools/**"
+      - "tuner_hal2/Android.bp"
+      - "tuner_hal2/init/mediatuner-trm-lifecycle.rc"
       - "tuner_hal2/config/vts_channel_plan*.json"
       - "tuner_hal2/config/product_integration.mk"
       - "tuner_hal2/config/vts_test_agent_integration.mk"
@@ -53,3 +57,53 @@ jobs:
 
       - name: Compile-check VTS profile Python
         run: uv run python -m compileall -q .
+
+      # 設定の静的整合だけを検証する。TRM実動作の代替試験ではない。
+      - name: Check mediatuner init product packaging (static)
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          root = Path("..")
+          bp = (root / "Android.bp").read_text(encoding="utf-8")
+          mk = (root / "config/product_integration.mk").read_text(encoding="utf-8")
+          rc = (root / "init/mediatuner-trm-lifecycle.rc").read_text(encoding="utf-8")
+          modules = [
+              block
+              for block in re.findall(r"prebuilt_etc\s*\{([^}]*)\}", bp, re.DOTALL)
+              if 'name: "maleicacid_mediatuner_trm_lifecycle_rc"' in block
+          ]
+          assert len(modules) == 1, "system init module must be unique"
+          module = modules[0]
+          assert 'src: "init/mediatuner-trm-lifecycle.rc"' in module
+          assert 'sub_dir: "init"' in module
+          assert not any(
+              flag in module
+              for flag in (
+                  "vendor: true", "soc_specific: true", "device_specific: true",
+                  "product_specific: true", "system_ext_specific: true",
+              )
+          ), "framework action must install to /system/etc/init"
+          assert mk.count("maleicacid_mediatuner_trm_lifecycle_rc") == 1
+          hal = re.search(
+              r'rust_binary\s*\{\s*name:\s*"android\.hardware\.tv\.tuner-service\.maleicacid2"'
+              r'([^}]*)\}',
+              bp,
+              re.DOTALL,
+          )
+          assert hal is not None
+          assert 'init/android.hardware.tv.tuner-service.maleicacid2.rc' in hal[1]
+          assert 'init/mediatuner-trm-lifecycle.rc' not in hal[1]
+          actions = [
+              line.strip() for line in rc.splitlines()
+              if line.strip() and not line.lstrip().startswith("#")
+          ]
+          assert actions == [
+              "on property:init.svc.zygote=stopped",
+              "restart --only-if-running media.tuner",
+              "on property:init.svc.zygote=restarting",
+              "restart --only-if-running media.tuner",
+          ], "do not force-start a lazy/stopped mediatuner"
+          print("system init packaging: static contract satisfied (device recovery untested)")
+          PY
