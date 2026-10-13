@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use super::{
     demux_runtime_error_to_hal, DescrambleFailure, DescramblePacketDecision, DescramblePacketFlow,
-    FilterEventDeliverySnapshot, FrontendRuntimeId, HalError, HalInvalidStateKind,
-    PipelineBoundaryReason, PipelineReport, StreamBoundaryReport, TsInputOrigin,
+    DemuxRuntimeId, FilterEventDeliverySnapshot, FrontendRuntimeId, HalError, HalInvalidStateKind,
+    PipelineBoundaryReason, PipelineDiagnostic, PipelineReport, StreamBoundaryReport, TsInputOrigin,
     TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
 use crate::registry::ResolvedDescramblerPacketFlow;
@@ -298,6 +298,40 @@ impl TunerServiceRuntime {
                 | maleicacid_tuner_hal2_demux::PipelineDiagnostic::KeylessScrambledAssemblySuppressed { .. }
             ) {
                 continue;
+            }
+            // The bounded in-memory diagnostic store can evict older AV failures.
+            // Android logcat also records the authoritative backing occupancy at
+            // exponentially spaced shortage counts, without changing delivery.
+            #[cfg(target_os = "android")]
+            match diagnostic {
+                PipelineDiagnostic::AvNoFreeSlot { pid, filter_id } => {
+                    if let Some(snapshot) = self
+                        .registry
+                        .demux_runtime(DemuxRuntimeId(demux_id))
+                        .and_then(|demux| demux.av_flow_diagnostic_snapshot(*filter_id))
+                    {
+                        if snapshot.no_free_slot.is_power_of_two() {
+                            log::warn!(
+                                "HAL_AV_FLOW kind=no_free_slot demux={} generation={} pid={:?} filter={} shortage={} delivered={} released={} discarded={} active_slots={} event_local={} active_bytes={} slot_capacity={} max_outstanding={} filter_byte_limit={} runtime_used={} runtime_limit={}",
+                                demux_id, demux_generation, pid, filter_id,
+                                snapshot.no_free_slot, snapshot.delivered, snapshot.released,
+                                snapshot.discarded_undelivered, snapshot.active_shared_slots,
+                                snapshot.active_event_local, snapshot.active_bytes,
+                                snapshot.slot_capacity, snapshot.max_outstanding_events,
+                                snapshot.per_filter_live_bytes, snapshot.runtime_used_bytes,
+                                snapshot.runtime_limit_bytes,
+                            );
+                        }
+                    }
+                }
+                PipelineDiagnostic::AvSharedBackingFailure { pid, filter_id, .. }
+                | PipelineDiagnostic::AvSharedBackingMissing { pid, filter_id } => {
+                    log::error!(
+                        "HAL_AV_FLOW kind=backing_failure demux={} generation={} pid={:?} filter={} diagnostic={:?}",
+                        demux_id, demux_generation, pid, filter_id, diagnostic,
+                    );
+                }
+                _ => {}
             }
             self.packet_pipeline_diagnostics.push(
                 crate::diagnostics::PacketPipelineDiagnosticRecord {
