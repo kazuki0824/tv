@@ -783,6 +783,53 @@ mod tests {
     }
 
     #[test]
+    fn demux_frontend_bind_rejection_does_not_prevent_a_later_valid_bind() {
+        use maleicacid_tuner_hal2_service_runtime::{
+            FrontendCapabilitySnapshot, FrontendProbeOutcome, FrontendRuntimeId,
+            FrontendScalarCapability, SatellitePowerTopology, ServiceBootOutcome,
+        };
+
+        let mut runtime = TunerServiceRuntime::new();
+        assert_eq!(
+            runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+                id: FrontendRuntimeId(7),
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                path: "/dev/null".into(),
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 473_142_857,
+                        max_frequency_hz: 473_142_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 7,
+                    isdbt_segment: None,
+                },
+            }]),
+            ServiceBootOutcome::Ready
+        );
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(runtime);
+        let _frontend = service.openFrontendById(7).expect("Frontendを開く");
+        let mut demux_ids = Vec::new();
+        let demux = service.openDemux(&mut demux_ids).expect("Demuxを開く");
+
+        assert!(
+            demux.setFrontendDataSource(99).is_err(),
+            "無効なFrontend IDへの接続を成功として公開してはならない"
+        );
+        demux
+            .setFrontendDataSource(7)
+            .expect("拒否済み要求の後でも有効なFrontendへ接続できる");
+        demux
+            .setFrontendDataSource(7)
+            .expect("同じFrontendへの再接続は冪等に成功する");
+    }
+
+    #[test]
     fn binder_dump_exposes_nonzero_fmq_failure_totals_from_real_ts_delivery() {
         use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
             DemuxFilterEvent::DemuxFilterEvent,
