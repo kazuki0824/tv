@@ -267,6 +267,7 @@ struct AvFlowDiagnosticCounters {
     released: u64,
     discarded_undelivered: u64,
     no_free_slot: u64,
+    last_sampled_delivery_threshold: u64,
 }
 
 #[derive(Debug)]
@@ -395,6 +396,25 @@ impl AvSharedBacking {
             runtime_used_bytes: self.runtime_budget.used_bytes.load(Ordering::Acquire),
             runtime_limit_bytes: self.runtime_budget.limit_bytes,
         }
+    }
+
+    // 配送イベントはreport内で複数件まとめられる。実割当済みの累積値で
+    // 通過した2の累乗閾値を一度だけ消費し、同じreportの複数eventで再出力しない。
+    // callback保留中でreport.generated_eventsが空でも割当進捗を観測できる。
+    pub(crate) fn take_delivery_sample(
+        &mut self,
+    ) -> Option<(u64, u64, AvFlowDiagnosticSnapshot)> {
+        let delivered = self.diagnostics.delivered;
+        if delivered == 0 {
+            return None;
+        }
+        let threshold = 1u64 << (u64::BITS - 1 - delivered.leading_zeros());
+        let previous = self.diagnostics.last_sampled_delivery_threshold;
+        if threshold <= previous {
+            return None;
+        }
+        self.diagnostics.last_sampled_delivery_threshold = threshold;
+        Some((previous, threshold, self.diagnostic_snapshot()))
     }
 
     fn increment_diagnostic_counter(counter: &mut u64, name: &'static str) {
@@ -991,6 +1011,70 @@ impl Drop for AvSharedBacking {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampled_delivery_reports_batched_two_and_three_frames_without_duplicates() {
+        // 1packetの音声PESから2frameが生成されても、report後の観測は一度だけ。
+        let mut two = AvSharedBacking::with_layout(8, 188);
+        two.mark_exported();
+        for _ in 0..2 {
+            assert!(matches!(
+                two.allocate_payload(100),
+                AvPayloadDeliveryOutcome::Delivered(_)
+            ));
+        }
+        let (previous, threshold, snapshot) =
+            two.take_delivery_sample().expect("two-frame report must sample");
+        assert_eq!((previous, threshold, snapshot.delivered), (0, 2, 2));
+        assert!(two.take_delivery_sample().is_none());
+
+        // 終了時の累積値が3でも、途中で通過した閾値2を取りこぼさない。
+        let mut three = AvSharedBacking::with_layout(8, 188);
+        three.mark_exported();
+        for _ in 0..3 {
+            assert!(matches!(
+                three.allocate_payload(100),
+                AvPayloadDeliveryOutcome::Delivered(_)
+            ));
+        }
+        let (previous, threshold, snapshot) =
+            three.take_delivery_sample().expect("three-frame report must sample");
+        assert_eq!((previous, threshold, snapshot.delivered), (0, 2, 3));
+        assert!(three.take_delivery_sample().is_none());
+
+        // 後続packetで4へ達した時だけ新しい閾値として再度記録する。
+        assert!(matches!(
+            three.allocate_payload(100),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
+        let (previous, threshold, snapshot) =
+            three.take_delivery_sample().expect("fourth allocation must sample");
+        assert_eq!((previous, threshold, snapshot.delivered), (2, 4, 4));
+        assert!(three.take_delivery_sample().is_none());
+    }
+
+    #[test]
+    fn sampled_delivery_starts_at_one_and_never_repeats_after_counter_saturation() {
+        let mut backing = AvSharedBacking::with_layout(2, 188);
+        backing.mark_exported();
+        assert!(backing.take_delivery_sample().is_none());
+        assert!(matches!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
+        let (previous, threshold, snapshot) =
+            backing.take_delivery_sample().expect("initial success");
+        assert_eq!((previous, threshold, snapshot.delivered), (0, 1, 1));
+        assert!(backing.take_delivery_sample().is_none());
+
+        backing.diagnostics.delivered = u64::MAX - 1;
+        let (previous, threshold, snapshot) =
+            backing.take_delivery_sample().expect("highest power-of-two threshold");
+        assert_eq!((previous, threshold, snapshot.delivered), (1, 1u64 << 63, u64::MAX - 1));
+        assert!(backing.take_delivery_sample().is_none());
+        backing.diagnostics.delivered = u64::MAX;
+        assert!(backing.take_delivery_sample().is_none());
+    }
 
     #[test]
     fn diagnostic_counter_saturation_does_not_prevent_av_delivery() {
