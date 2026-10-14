@@ -312,9 +312,15 @@ impl TunerServiceRuntime {
         if let Some(demux) = self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)) {
             for (filter_id, previous, threshold, snapshot) in demux.take_av_flow_shortage_samples()
             {
+                // 同一report内の診断はfilterの正本PIDを保持している。
+                let pid = report.diagnostics.iter().find_map(|diagnostic| match diagnostic {
+                    PipelineDiagnostic::AvNoFreeSlot { pid, filter_id: reported_id }
+                        if *reported_id == filter_id => Some(*pid),
+                    _ => None,
+                });
                 log::warn!(
-                    "HAL_AV_FLOW kind=no_free_slot demux={} generation={} filter={} shortage={} crossed_threshold={} previous_threshold={} delivered={} released={} discarded={} active_slots={} event_local={} active_bytes={} slot_capacity={} max_outstanding={} filter_byte_limit={} runtime_used={} runtime_limit={}",
-                    demux_id, demux_generation, filter_id,
+                    "HAL_AV_FLOW kind=no_free_slot demux={} generation={} pid={:?} filter={} shortage={} crossed_threshold={} previous_threshold={} delivered={} released={} discarded={} active_slots={} event_local={} active_bytes={} slot_capacity={} max_outstanding={} filter_byte_limit={} runtime_used={} runtime_limit={}",
+                    demux_id, demux_generation, pid, filter_id,
                     snapshot.no_free_slot, threshold, previous, snapshot.delivered,
                     snapshot.released, snapshot.discarded_undelivered,
                     snapshot.active_shared_slots, snapshot.active_event_local,
