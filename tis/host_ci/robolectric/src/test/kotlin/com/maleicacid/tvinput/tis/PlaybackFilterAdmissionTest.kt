@@ -930,6 +930,9 @@ class PlaybackFilterAdmissionTest {
         val outputReleased = CountDownLatch(1)
 
         @Implementation
+        protected fun native_start() = Unit
+
+        @Implementation
         @Suppress("UNUSED_PARAMETER")
         protected fun native_queueLinearBlock(
             index: Int,
