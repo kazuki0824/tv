@@ -6890,36 +6890,41 @@ mod scan_contract_tests {
             let demux = service.allocate_demux_runtime().unwrap();
             demux.id.0
         };
-        assert!(current_bound_demux_generation_snapshot(&runtime.lock().unwrap(), frontend_id)
-            .unwrap().is_empty());
+        assert!(
+            current_bound_demux_generation_snapshot(&runtime.lock().unwrap(), frontend_id)
+                .unwrap()
+                .is_empty()
+        );
         runtime
             .lock()
             .unwrap()
             .set_demux_frontend_data_source(demux_id, frontend_id)
             .unwrap();
-        let first = current_bound_demux_generation_snapshot(&runtime.lock().unwrap(), frontend_id)
-            .unwrap();
+        let first =
+            current_bound_demux_generation_snapshot(&runtime.lock().unwrap(), frontend_id)
+                .unwrap();
         assert_eq!(first.len(), 1);
         // MX→NHK→MXと同じ連続同type選局では、接続を消さずdemux世代を更新する。
         let mut prior = first;
         for _ in 0..3 {
-            let current = current_bound_demux_generation_snapshot(
-                &runtime.lock().unwrap(),
-                frontend_id,
-            )
-            .unwrap();
+            let current =
+                current_bound_demux_generation_snapshot(&runtime.lock().unwrap(), frontend_id)
+                    .unwrap();
+            let expected = PreparedFrontendConsumerSnapshot {
+                demux_generations: current.clone(),
+            };
             assert_eq!(current.len(), 1);
             let start_guard = try_begin_frontend_demux_streaming_start(
                 &runtime,
                 frontend_id,
-                &current,
+                &expected,
             )
             .unwrap()
             .expect("現在のDemux関係はPX4 STARTを許可する");
             assert!(try_begin_frontend_demux_streaming_start(
                 &runtime,
                 frontend_id,
-                &current,
+                &expected,
             )
             .unwrap()
             .is_none());
@@ -6929,53 +6934,63 @@ mod scan_contract_tests {
                 .unwrap()
                 .reset_bound_demuxes_for_frontend_tune_start(frontend_id)
                 .unwrap();
-            let updated = current_bound_demux_generation_snapshot(
-                &runtime.lock().unwrap(),
-                frontend_id,
-            )
-            .unwrap();
+            let updated =
+                current_bound_demux_generation_snapshot(&runtime.lock().unwrap(), frontend_id)
+                    .unwrap();
             assert_eq!(updated.len(), 1);
-            assert_eq!(updated[0].0 .0, demux_id);
+            assert_eq!(updated[0].0, crate::registry::DemuxRuntimeId(demux_id));
             assert!(updated[0].1 > prior[0].1);
-            assert!(try_begin_frontend_demux_streaming_start(
-                &runtime,
-                frontend_id,
-                &prior,
-            )
-            .unwrap()
-            .is_none());
+            assert!(
+                try_begin_frontend_demux_streaming_start(
+                    &runtime,
+                    frontend_id,
+                    &PreparedFrontendConsumerSnapshot {
+                        demux_generations: prior.clone(),
+                    },
+                )
+                .unwrap()
+                .is_none()
+            );
             prior = updated;
         }
         runtime
             .lock()
             .unwrap()
-            .reset_and_unbind_bound_demuxes_for_frontend(
-                frontend_id,
-                PipelineBoundaryReason::FrontendUnbind,
-            )
+            .frontend_txn()
+            .stop_frontend_live_data_and_unbind(frontend_id)
             .unwrap();
-        assert!(current_bound_demux_generation_snapshot(&runtime.lock().unwrap(), frontend_id)
-            .unwrap().is_empty());
+        assert!(
+            current_bound_demux_generation_snapshot(&runtime.lock().unwrap(), frontend_id)
+                .unwrap()
+                .is_empty()
+        );
         runtime
             .lock()
             .unwrap()
             .set_demux_frontend_data_source(demux_id, frontend_id)
             .unwrap();
-        let rebound = current_bound_demux_generation_snapshot(&runtime.lock().unwrap(), frontend_id)
-            .unwrap();
+        let rebound =
+            current_bound_demux_generation_snapshot(&runtime.lock().unwrap(), frontend_id)
+                .unwrap();
         assert_eq!(rebound.len(), 1);
-        assert_eq!(rebound[0].0 .0, demux_id);
-        assert!(try_begin_frontend_demux_streaming_start(
-            &runtime,
-            frontend_id,
-            &prior,
-        )
-        .unwrap()
-        .is_none());
+        assert_eq!(rebound[0].0, crate::registry::DemuxRuntimeId(demux_id));
+        assert!(
+            try_begin_frontend_demux_streaming_start(
+                &runtime,
+                frontend_id,
+                &PreparedFrontendConsumerSnapshot {
+                    demux_generations: prior,
+                },
+            )
+            .unwrap()
+            .is_none()
+        );
         let guard = try_begin_frontend_demux_streaming_start(
             &runtime,
             frontend_id,
-            &rebound,
+            &PreparedFrontendConsumerSnapshot {
+                demux_generations: rebound,
+            },
         )
         .unwrap()
         .expect("再接続後のDemux世代でSTART許可を再取得する");
