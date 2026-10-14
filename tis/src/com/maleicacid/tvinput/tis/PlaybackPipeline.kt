@@ -1099,7 +1099,7 @@ class PlaybackPipeline(
             return
         }
         waitingAvailabilityArm = null
-        if (videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable(generation)
+        notifyVideoAvailable(generation)
     }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
@@ -1118,7 +1118,19 @@ class PlaybackPipeline(
             return
         }
         waitingAvailabilityArm = null
-        if (videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable(generation)
+        notifyVideoAvailable(generation)
+    }
+
+    // 既存の通知一回性確定点だけから成功時の進捗を記録する。
+    // compatibility modeでは入力Surfaceへのframe callbackであり最終表示の確証ではない。
+    private fun notifyVideoAvailable(generation: Long) {
+        if (!videoAvailableNotified.compareAndSet(false, true)) return
+        Log.i(
+            LogTags.TIS,
+            "VIDEO_AVAILABILITY_COMMITTED inputId=$inputId sessionId=$sessionId " +
+                "generation=$generation mode=$videoAvailabilityMode progress=${dataPathProgress.summary()}",
+        )
+        onVideoAvailable(generation)
     }
 
     private fun onAudioBufferConsumedOnPlaybackExecutor(
