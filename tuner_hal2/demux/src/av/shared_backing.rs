@@ -401,9 +401,7 @@ impl AvSharedBacking {
     // 配送イベントはreport内で複数件まとめられる。実割当済みの累積値で
     // 通過した2の累乗閾値を一度だけ消費し、同じreportの複数eventで再出力しない。
     // callback保留中でreport.generated_eventsが空でも割当進捗を観測できる。
-    pub(crate) fn take_delivery_sample(
-        &mut self,
-    ) -> Option<(u64, u64, AvFlowDiagnosticSnapshot)> {
+    pub(crate) fn take_delivery_sample(&mut self) -> Option<(u64, u64, AvFlowDiagnosticSnapshot)> {
         let delivered = self.diagnostics.delivered;
         if delivered == 0 {
             return None;
@@ -1023,8 +1021,9 @@ mod tests {
                 AvPayloadDeliveryOutcome::Delivered(_)
             ));
         }
-        let (previous, threshold, snapshot) =
-            two.take_delivery_sample().expect("two-frame report must sample");
+        let (previous, threshold, snapshot) = two
+            .take_delivery_sample()
+            .expect("two-frame report must sample");
         assert_eq!((previous, threshold, snapshot.delivered), (0, 2, 2));
         assert!(two.take_delivery_sample().is_none());
 
@@ -1037,8 +1036,9 @@ mod tests {
                 AvPayloadDeliveryOutcome::Delivered(_)
             ));
         }
-        let (previous, threshold, snapshot) =
-            three.take_delivery_sample().expect("three-frame report must sample");
+        let (previous, threshold, snapshot) = three
+            .take_delivery_sample()
+            .expect("three-frame report must sample");
         assert_eq!((previous, threshold, snapshot.delivered), (0, 2, 3));
         assert!(three.take_delivery_sample().is_none());
 
@@ -1047,8 +1047,9 @@ mod tests {
             three.allocate_payload(100),
             AvPayloadDeliveryOutcome::Delivered(_)
         ));
-        let (previous, threshold, snapshot) =
-            three.take_delivery_sample().expect("fourth allocation must sample");
+        let (previous, threshold, snapshot) = three
+            .take_delivery_sample()
+            .expect("fourth allocation must sample");
         assert_eq!((previous, threshold, snapshot.delivered), (2, 4, 4));
         assert!(three.take_delivery_sample().is_none());
     }
@@ -1068,9 +1069,13 @@ mod tests {
         assert!(backing.take_delivery_sample().is_none());
 
         backing.diagnostics.delivered = u64::MAX - 1;
-        let (previous, threshold, snapshot) =
-            backing.take_delivery_sample().expect("highest power-of-two threshold");
-        assert_eq!((previous, threshold, snapshot.delivered), (1, 1u64 << 63, u64::MAX - 1));
+        let (previous, threshold, snapshot) = backing
+            .take_delivery_sample()
+            .expect("highest power-of-two threshold");
+        assert_eq!(
+            (previous, threshold, snapshot.delivered),
+            (1, 1u64 << 63, u64::MAX - 1)
+        );
         assert!(backing.take_delivery_sample().is_none());
         backing.diagnostics.delivered = u64::MAX;
         assert!(backing.take_delivery_sample().is_none());
