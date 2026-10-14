@@ -369,6 +369,7 @@ impl TunerServiceRuntime {
             | DemuxRuntimeErrorKind::InvalidDvrFilter
             | DemuxRuntimeErrorKind::QueueMissing
             | DemuxRuntimeErrorKind::QueueRuntimeFailure
+            | DemuxRuntimeErrorKind::QueueCapacityExceeded
             | DemuxRuntimeErrorKind::AvBackingFailure => HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "filter runtime pipeline操作に失敗しました",
@@ -1239,6 +1240,7 @@ impl TunerServiceRuntime {
             | DemuxRuntimeErrorKind::RelationCommitUnknown
             | DemuxRuntimeErrorKind::QueueMissing
             | DemuxRuntimeErrorKind::QueueRuntimeFailure
+            | DemuxRuntimeErrorKind::QueueCapacityExceeded
             | DemuxRuntimeErrorKind::AvBackingFailure
             | DemuxRuntimeErrorKind::SourceLifecycle
             | DemuxRuntimeErrorKind::SinkLifecycle

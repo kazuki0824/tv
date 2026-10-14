@@ -111,6 +111,7 @@ pub enum DemuxRuntimeErrorKind {
     PipelineFailed,
     GenerationExhausted,
     QueueRuntimeFailure,
+    QueueCapacityExceeded,
     QueueRuntimeFailureWithContext(QueueRuntimeError),
     QueueRuntimeFailureWithRollback {
         primary: QueueRuntimeError,
@@ -1910,22 +1911,21 @@ impl DemuxRuntime {
         let queue = self.filter_queue_runtimes.get(&filter_id).ok_or_else(|| {
             FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_missing(filter_id))
         })?;
-        queue
-            .retry_pending_wake(TUNER_EVENT_DATA_READY)
-            .map_err(|error| {
-                FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_error(
-                    filter_id, error,
-                ))
-            })?;
+        queue.retry_pending_wake(TUNER_EVENT_DATA_READY).map_err(|error| {
+            FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_error(
+                filter_id, error,
+            ))
+        })?;
         let available = queue.available_to_write().map_err(|error| {
             FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_error(
                 filter_id, error,
             ))
         })?;
         if available < payload_len {
-            return Err(FilterQueuePayloadError::Overflow(
-                DemuxRuntimeError::queue_runtime_failure(filter_id),
-            ));
+            return Err(FilterQueuePayloadError::Overflow(DemuxRuntimeError {
+                kind: DemuxRuntimeErrorKind::QueueCapacityExceeded,
+                id: Some(filter_id),
+            }));
         }
         Ok(())
     }
@@ -1946,11 +1946,9 @@ impl DemuxRuntime {
             queue
                 .write_checked(&payload)
                 .map_err(|_| FmqFailureKind::WriteFailed),
-            || {
-                queue
-                    .wake(TUNER_EVENT_DATA_READY)
-                    .map_err(|_| FmqFailureKind::EventFlagWakeFailed)
-            },
+            queue
+                .wake(TUNER_EVENT_DATA_READY)
+                .map_err(|_| FmqFailureKind::EventFlagWakeFailed),
         );
         match result.action {
             FmqDeliveryAction::Continue | FmqDeliveryAction::WakePending => {
@@ -1967,7 +1965,10 @@ impl DemuxRuntime {
                 Ok(())
             }
             FmqDeliveryAction::Overflow => Err(FilterQueuePayloadError::Overflow(
-                DemuxRuntimeError::queue_runtime_failure(filter_id),
+                DemuxRuntimeError {
+                    kind: DemuxRuntimeErrorKind::QueueCapacityExceeded,
+                    id: Some(filter_id),
+                },
             )),
             FmqDeliveryAction::RuntimeFailed(failure) => {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
@@ -3399,11 +3400,9 @@ impl DemuxRuntime {
             queue
                 .write_checked(data)
                 .map_err(|_| FmqFailureKind::WriteFailed),
-            || {
-                queue
-                    .wake(TUNER_EVENT_DATA_READY)
-                    .map_err(|_| FmqFailureKind::EventFlagWakeFailed)
-            },
+            queue
+                .wake(TUNER_EVENT_DATA_READY)
+                .map_err(|_| FmqFailureKind::EventFlagWakeFailed),
         );
         match result.action {
             FmqDeliveryAction::Continue | FmqDeliveryAction::WakePending => {
@@ -5147,11 +5146,9 @@ impl DemuxRuntime {
             queue
                 .write_checked(packet)
                 .map_err(|_| FmqFailureKind::WriteFailed),
-            || {
-                queue
-                    .wake(TUNER_EVENT_DATA_READY)
-                    .map_err(|_| FmqFailureKind::EventFlagWakeFailed)
-            },
+            queue
+                .wake(TUNER_EVENT_DATA_READY)
+                .map_err(|_| FmqFailureKind::EventFlagWakeFailed),
         );
         if matches!(
             result.action,
