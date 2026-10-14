@@ -7,20 +7,26 @@ import org.junit.Test
 
 class PlaybackDataPathProgressTest {
     @Test
-    fun countersTrackEachStageWithoutInventingProgress() {
+    fun audioOutputCannotMasqueradeAsVideoOutputAndResetClearsBoth() {
         val progress = PlaybackDataPathProgress()
-        check(PlaybackDataPathProgress.Stage.entries.all { progress.count(it) == 0L })
-        progress.record(PlaybackDataPathProgress.Stage.MEDIA_EVENT)
-        progress.record(PlaybackDataPathProgress.Stage.MEDIA_EVENT)
-        progress.record(PlaybackDataPathProgress.Stage.VALID_SAMPLE)
-        progress.record(PlaybackDataPathProgress.Stage.OVERFLOW)
-        check(progress.count(PlaybackDataPathProgress.Stage.MEDIA_EVENT) == 2L)
-        check(progress.count(PlaybackDataPathProgress.Stage.VALID_SAMPLE) == 1L)
-        check(progress.count(PlaybackDataPathProgress.Stage.OVERFLOW) == 1L)
-        check(progress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT) == 0L)
-        check(progress.summary().contains("MEDIA_EVENT=2"))
-        check(progress.summary().contains("CODEC_INPUT=0"))
+        check(PlaybackDataPathProgress.Stage.entries.all { stage ->
+            !listOf(false, true).any { progress.count(stage, it) != 0L }
+        })
+        progress.record(PlaybackDataPathProgress.Stage.MEDIA_EVENT, true)
+        progress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT, true)
+        progress.record(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, true)
+        progress.record(PlaybackDataPathProgress.Stage.MEDIA_EVENT, false)
+        progress.record(PlaybackDataPathProgress.Stage.OVERFLOW, false)
+        progress.record(PlaybackDataPathProgress.Stage.FLUSH_FAILED, false)
+        check(progress.count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, true) == 1L)
+        check(progress.count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, false) == 0L)
+        check(progress.count(PlaybackDataPathProgress.Stage.FLUSH_FAILED, true) == 0L)
+        check(progress.count(PlaybackDataPathProgress.Stage.FLUSH_FAILED, false) == 1L)
+        check(progress.summary().contains("AUDIO.CODEC_OUTPUT=1"))
+        check(progress.summary().contains("VIDEO.CODEC_OUTPUT=0"))
         progress.reset()
-        check(PlaybackDataPathProgress.Stage.entries.all { progress.count(it) == 0L })
+        check(PlaybackDataPathProgress.Stage.entries.all { stage ->
+            !listOf(false, true).any { progress.count(stage, it) != 0L }
+        })
     }
 }
