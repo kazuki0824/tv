@@ -943,7 +943,7 @@ class PlaybackFilterAdmissionTest {
         val outputReleased = CountDownLatch(1)
 
         @Implementation
-        protected fun native_start() = Unit
+        protected override fun native_start() = Unit
 
         @Implementation
         @Suppress("UNUSED_PARAMETER")
@@ -961,13 +961,13 @@ class PlaybackFilterAdmissionTest {
 
         @Implementation
         @Suppress("UNUSED_PARAMETER")
-        protected fun releaseOutputBuffer(index: Int, renderTimestampNs: Long) {
+        protected override fun releaseOutputBuffer(index: Int, renderTimestampNs: Long) {
             outputReleased.countDown()
         }
 
         @Implementation
         @Suppress("UNUSED_PARAMETER")
-        protected fun releaseOutputBuffer(index: Int, render: Boolean) {
+        protected override fun releaseOutputBuffer(index: Int, render: Boolean) {
             outputReleased.countDown()
         }
     }
