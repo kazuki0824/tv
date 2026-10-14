@@ -2084,6 +2084,27 @@ impl DemuxRuntime {
         Ok(vec![drained])
     }
 
+    // 実FMQのread pointerを進める試験用読取り。mirrorではない。
+    #[cfg(test)]
+    pub(crate) fn read_filter_fmq_bytes_for_test(
+        &self,
+        filter_id: i32,
+    ) -> Result<Vec<u8>, DemuxRuntimeError> {
+        let queue = self
+            .filter_queue_runtimes
+            .get(&filter_id)
+            .ok_or(DemuxRuntimeError::queue_missing(filter_id))?;
+        let available = queue
+            .available_to_read()
+            .map_err(|error| DemuxRuntimeError::queue_runtime_error(filter_id, error))?;
+        let mut bytes = vec![0; available];
+        let read = queue
+            .read_into(&mut bytes)
+            .map_err(|error| DemuxRuntimeError::queue_runtime_error(filter_id, error))?;
+        bytes.truncate(read);
+        Ok(bytes)
+    }
+
     #[cfg(test)]
     pub(crate) fn snapshot_filter_queue_bytes_for_test(&self, filter_id: i32) -> Option<Vec<u8>> {
         let queue = self.filter_queue_mirror.get(&filter_id)?;

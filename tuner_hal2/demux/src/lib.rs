@@ -4027,12 +4027,9 @@ mod tests {
                 } if *id == filter_id
             )
         }));
-        assert_eq!(
-            demux
-                .snapshot_filter_queue_bytes_for_test(filter_id)
-                .unwrap(),
-            first
-        );
+        let first_read = demux.read_filter_fmq_bytes_for_test(filter_id).unwrap();
+        assert_eq!(first_read, first);
+        assert!(demux.read_filter_fmq_bytes_for_test(filter_id).unwrap().is_empty());
         let second = raw_ts_packet(0x0030, 1, &[5, 6, 7, 8]);
         let retried = demux.push_ts_packet_from_origin(&second, TsInputOrigin::frontend(1));
         assert!(!retried.diagnostics.iter().any(|diagnostic| {
@@ -4043,12 +4040,12 @@ mod tests {
         }));
         let mut expected = first.to_vec();
         expected.extend_from_slice(&second);
-        assert_eq!(
-            demux
-                .snapshot_filter_queue_bytes_for_test(filter_id)
-                .unwrap(),
-            expected
-        );
+        let second_read = demux.read_filter_fmq_bytes_for_test(filter_id).unwrap();
+        assert_eq!(second_read, second);
+        assert!(demux.read_filter_fmq_bytes_for_test(filter_id).unwrap().is_empty());
+        let mut readback = first_read;
+        readback.extend_from_slice(&second_read);
+        assert_eq!(readback, expected);
     }
 
     #[test]
@@ -4080,12 +4077,10 @@ mod tests {
                 }
             )
         }));
-        assert_eq!(
-            demux
-                .snapshot_filter_queue_bytes_for_test(filter_id)
-                .unwrap(),
-            first
-        );
+        let first_read = demux.read_filter_fmq_bytes_for_test(filter_id).unwrap();
+        assert_eq!(first_read, first);
+        // 再試行失敗したpacketは書き込まず、read位置も進めない。
+        assert!(demux.read_filter_fmq_bytes_for_test(filter_id).unwrap().is_empty());
         let third = raw_ts_packet(0x0030, 2, &[9, 10, 11, 12]);
         let after_recovery = demux.push_ts_packet_from_origin(&third, TsInputOrigin::frontend(1));
         assert!(!after_recovery.diagnostics.iter().any(|diagnostic| {
@@ -4096,12 +4091,12 @@ mod tests {
         }));
         let mut expected = first.to_vec();
         expected.extend_from_slice(&third);
-        assert_eq!(
-            demux
-                .snapshot_filter_queue_bytes_for_test(filter_id)
-                .unwrap(),
-            expected
-        );
+        let third_read = demux.read_filter_fmq_bytes_for_test(filter_id).unwrap();
+        assert_eq!(third_read, third);
+        assert!(demux.read_filter_fmq_bytes_for_test(filter_id).unwrap().is_empty());
+        let mut readback = first_read;
+        readback.extend_from_slice(&third_read);
+        assert_eq!(readback, expected);
     }
 
     #[test]
