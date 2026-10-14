@@ -1,3 +1,10 @@
+# PR #116 block model MediaCodec callback の結合回帰試験
+
+- 既存RobolectricのAndroid 15 Filter fixtureにMediaCodec用shadowを接続し、本番VideoDecoderPipelineが登録する実MediaCodec.Callbackを発火する試験を追加する。Video MediaEventの受理からInputBufferAvailable→block model QueueRequest.queue→OutputBufferAvailable→Video onOutput→FrameRenderedListenerへ進む診断値を確認する。
+- 別試験ではInputBufferAvailableとQueueRequest投入が成功しても映像OutputBufferAvailableが来なければ、既存first-frame期限からVIDEO.CODEC_OUTPUT=0・VIDEO.FRAME_RENDERED=0を含む失敗通知が出ることを検査する。
+- MediaCodecのnative queue/releaseだけをRobolectric shadowに置き換える。製品runtimeの公開API、Codec判定契約、再生状態機械、資源寿命、callback generationは変更しない。実機codec挙動とLineageOS 22.1の最終描画結果は引き続き実機で検証する。
+- 追加直後のCI結果は未確認。テスト成功前には検証済みと記載しない。
+
 # PR #116 再生診断レビュー指摘の是正
 
 - 再生progressを同一owner内の映像・音声別counterへ分離し、音声Decoderだけに非空出力がある状況を映像出力成功と誤認しないようにした。再生制御、MediaCodec callback、resource lifetimeの契約は変更しない。
