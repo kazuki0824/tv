@@ -295,8 +295,7 @@ impl TunerServiceRuntime {
     ) {
         #[cfg(target_os = "android")]
         if let Some(demux) = self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)) {
-            for (filter_id, previous, threshold, snapshot) in
-                demux.take_av_flow_delivery_samples()
+            for (filter_id, previous, threshold, snapshot) in demux.take_av_flow_delivery_samples()
             {
                 log::info!(
                     "HAL_AV_FLOW kind=av_event_allocated demux={} generation={} filter={} allocated={} crossed_threshold={} previous_threshold={} client_released={} undelivered_discarded={} shortage={} active_slots={} event_local={} active_bytes={} runtime_used={} runtime_limit={}",
