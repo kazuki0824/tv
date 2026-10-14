@@ -124,10 +124,7 @@ pub struct PacketDeliveryFailureTotals {
 }
 
 impl PacketDeliveryFailureTotals {
-    pub(crate) fn record(
-        &mut self,
-        diagnostic: &maleicacid_tuner_hal2_demux::PipelineDiagnostic,
-    ) {
+    pub(crate) fn record(&mut self, diagnostic: &maleicacid_tuner_hal2_demux::PipelineDiagnostic) {
         use maleicacid_tuner_hal2_common::FmqFailureKind;
         use maleicacid_tuner_hal2_demux::{DemuxRuntimeErrorKind, PipelineDiagnostic};
         let PipelineDiagnostic::FilterQueuePayloadDeliveryFailure { error, .. } = diagnostic else {

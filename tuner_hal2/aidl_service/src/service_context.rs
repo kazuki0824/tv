@@ -91,10 +91,8 @@ pub(crate) struct ServiceDiagnosticSnapshot {
     >,
     pub(crate) demux:
         Result<maleicacid_tuner_hal2_service_runtime::DemuxTransactionDiagnosticSnapshot, HalError>,
-    pub(crate) packet_delivery_failure_totals: Result<
-        maleicacid_tuner_hal2_service_runtime::PacketDeliveryFailureTotals,
-        HalError,
-    >,
+    pub(crate) packet_delivery_failure_totals:
+        Result<maleicacid_tuner_hal2_service_runtime::PacketDeliveryFailureTotals, HalError>,
     pub(crate) packet_pipeline: Result<
         maleicacid_tuner_hal2_service_runtime::DiagnosticSnapshot<
             maleicacid_tuner_hal2_service_runtime::PacketPipelineDiagnosticRecord,

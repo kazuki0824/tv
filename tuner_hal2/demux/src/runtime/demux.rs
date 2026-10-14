@@ -1911,11 +1911,13 @@ impl DemuxRuntime {
         let queue = self.filter_queue_runtimes.get(&filter_id).ok_or_else(|| {
             FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_missing(filter_id))
         })?;
-        queue.retry_pending_wake(TUNER_EVENT_DATA_READY).map_err(|error| {
-            FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_error(
-                filter_id, error,
-            ))
-        })?;
+        queue
+            .retry_pending_wake(TUNER_EVENT_DATA_READY)
+            .map_err(|error| {
+                FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_error(
+                    filter_id, error,
+                ))
+            })?;
         let available = queue.available_to_write().map_err(|error| {
             FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_error(
                 filter_id, error,
@@ -1964,12 +1966,12 @@ impl DemuxRuntime {
                 }
                 Ok(())
             }
-            FmqDeliveryAction::Overflow => Err(FilterQueuePayloadError::Overflow(
-                DemuxRuntimeError {
+            FmqDeliveryAction::Overflow => {
+                Err(FilterQueuePayloadError::Overflow(DemuxRuntimeError {
                     kind: DemuxRuntimeErrorKind::QueueCapacityExceeded,
                     id: Some(filter_id),
-                },
-            )),
+                }))
+            }
             FmqDeliveryAction::RuntimeFailed(failure) => {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.mark_failed();
