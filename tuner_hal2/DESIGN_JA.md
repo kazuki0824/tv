@@ -111,7 +111,7 @@ device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを�
 
 `FrontendBackendDiagnosticSnapshot`と`FrontendDiagnosticSnapshot`の取得入口を`ServiceDiagnosticSnapshot`へ集約する。各snapshotの保持先・記録処理・状態変更権限は既存所有者に残し、コールバックの取得入口を呼ぶ前にサービス状態ロックを解放し、出力I/Oも全ロックの解放後に行う。領域別取得失敗と取得済み記録の論理semanticsは`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」を正とする。
 
-パケット処理の破棄・配送失敗は`boot/packet_ops.rs::record_packet_pipeline_diagnostics`が入力元共通の記録入口となる。`TunerServiceRuntime`の`BoundedDiagnosticStore<PacketPipelineDiagnosticRecord>`が分離器ID・世代・型付き診断を保持し、既存`DiagnosticSnapshot`を通して`ServiceDiagnosticSnapshot.packet_pipeline`へ渡す。鍵に関する診断の保持先は既存のデスクランブラ診断領域を使用する。
+パケット処理の破棄・配送失敗は`boot/packet_ops.rs::record_packet_pipeline_diagnostics`が入力元共通の記録入口となる。`TunerServiceRuntime`の`BoundedDiagnosticStore<PacketPipelineDiagnosticRecord>`が分離器ID・世代・型付き診断を保持し、既存`DiagnosticSnapshot`を通して`ServiceDiagnosticSnapshot.packet_pipeline`へ渡す。Filter FMQ配送の容量不足・queue runtime障害・write失敗・short write・EventFlag wake失敗・その他は、同じservice runtime ownerに属する累積`PacketDeliveryFailureTotals`として分類・集計し、`ServiceDiagnosticSnapshot.packet_delivery_failure_totals`で公開する。boundedイベント履歴が脱落しても累積件数を保持し、明示的な診断clearで初期化する。別の配送制御ownerを作らず、同じ`record_packet_pipeline_diagnostics()`で計上する。鍵に関する診断の保持先は既存のデスクランブラ診断領域を使用する。
 
 受信報告の実装は`device/src/runtime/live_pump.rs::FrontendLivePumpReport`、既存の診断への転記は`frontend_runtime.rs::FrontendLivePumpDiagnostic::from_report()`に置く。飽和の有無と読み取り再試行回数も同じ診断へ転記する。加えて稼働中ポンプの読取進捗をgenerationに帰属するread-only `FrontendLivePumpProgressSnapshot`として既存Frontend診断から取得できるものとし、prepared/active、受信byte、配送TS packet、EINTR、WouldBlockの累積を区別する。既存のfrontend ownerがこの観測参照を保持し、次generationへの更新時に古い参照を切り離す。進捗観測に第二の制御owner、watchdog thread、TS本文の収集を追加しない。診断の論理契約は`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」「診断counter飽和契約」、取得手順は`INTEGRATION.md`を参照する。
 
