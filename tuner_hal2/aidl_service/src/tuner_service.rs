@@ -783,6 +783,44 @@ mod tests {
     }
 
     #[test]
+    fn binder_dump_exposes_nonzero_fmq_failure_totals() {
+        use maleicacid_tuner_hal2_service_runtime::PacketDeliveryFailureTotals;
+
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.set_packet_delivery_failure_totals_for_host_test(PacketDeliveryFailureTotals {
+            capacity_exceeded: 3,
+            queue_runtime_failed: 5,
+            write_failed: 7,
+            short_write: 11,
+            wake_failed: 13,
+            other_failed: 17,
+        });
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(runtime);
+        let snapshot = service.context.diagnostic_snapshot();
+        assert!(!snapshot.retrieval_failed());
+        let totals = snapshot.packet_delivery_failure_totals.unwrap();
+        assert_eq!(totals.capacity_exceeded, 3);
+        assert_eq!(totals.queue_runtime_failed, 5);
+        assert_eq!(totals.write_failed, 7);
+        assert_eq!(totals.short_write, 11);
+        assert_eq!(totals.wake_failed, 13);
+        assert_eq!(totals.other_failed, 17);
+        let mut output = Vec::new();
+        Interface::dump(&service, &mut output, &[]).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        for value in [
+            "capacity_exceeded: 3",
+            "queue_runtime_failed: 5",
+            "write_failed: 7",
+            "short_write: 11",
+            "wake_failed: 13",
+            "other_failed: 17",
+        ] {
+            assert!(rendered.contains(value), "Binder dumpに{value}がありません");
+        }
+    }
+
+    #[test]
     fn binder_dump_retains_fmq_worker_and_callback_failures() {
         use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FmqFailureKind};
         use maleicacid_tuner_hal2_device::FrontendWorkerKind;

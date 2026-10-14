@@ -2046,6 +2046,16 @@ impl TunerServiceRuntime {
         self.packet_delivery_failure_totals
     }
 
+    // ホスト統合試験から既存Binder診断の非ゼロ値投影を検証するための入口。
+    // Android本番には含めず、診断状態の実ownerは変更しない。
+    #[cfg(not(target_os = "android"))]
+    pub fn set_packet_delivery_failure_totals_for_host_test(
+        &mut self,
+        totals: crate::diagnostics::PacketDeliveryFailureTotals,
+    ) {
+        self.packet_delivery_failure_totals = totals;
+    }
+
     pub fn packet_pipeline_diagnostics(
         &self,
     ) -> crate::diagnostics::DiagnosticSnapshot<crate::diagnostics::PacketPipelineDiagnosticRecord>
