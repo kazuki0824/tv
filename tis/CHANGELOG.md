@@ -1,3 +1,11 @@
+# PR #116 再生診断レビュー指摘の是正
+
+- 再生progressを同一owner内の映像・音声別counterへ分離し、音声Decoderだけに非空出力がある状況を映像出力成功と誤認しないようにした。再生制御、MediaCodec callback、resource lifetimeの契約は変更しない。
+- MediaEvent受信と有効sample計数を各input identityの現行性確認後へ移動し、OVERFLOW/flush・再選局で失効した旧入力の現行進捗誤計上を防止した。
+- Filter.flush失敗を音声・映像別のFLUSH_FAILEDとして記録し、失敗通知へ同時点のprogress snapshotを含める。
+- progress値型の音声/映像別・reset試験に加え、既存Robolectricの実Filter callback経路で旧入力失効、正常入力受理、OVERFLOW、flush失敗通知、復帰の診断値を検証する。MediaCodecの実入出力callbackから初回フレーム表示期限までを一貫して実行する統合試験、およびSoong/実機は未実施。CIの確認結果と区別する。
+- レビューの4件へスレッドで個別返信。Rebase・Resolveは実施しない。
+
 # PR #116 黒画面解析の再生進捗診断
 
 - 既存playback executor上の`PlaybackDataPathProgress`にMediaEvent受理、正常sample、Decoder入力・出力、描画callback、OVERFLOW、flush成否、LinearBlock欠落・入力拒否を計数する診断専用counterを追加し、playback世代の開始時に初期化する。first-frameとDecoder起動期限の失敗detailへsnapshotを接続し、再生可否判定やAV資源寿命には用いない。
