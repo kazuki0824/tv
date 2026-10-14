@@ -1,3 +1,10 @@
+# PR #116 AV成功ログのreport一括frame閾値判定
+
+- 旧実装は単一packetから同一Filterの複数AV MediaEventが生成される際、report処理終了後の同一累計値を各eventごとに検査していたため、成功ログが重複・閾値通過を見逃していた。
+- 既存`AvSharedBacking`の診断専用`last_sampled_delivery_threshold`で、2の累乗境界を通過した最初のreportだけ観測する。demuxは既存backingの報告時snapshotを各Filter一回取り、Android HALの成功ログに累積割当件数、通過閾値、前回閾値、使用中slot/budgetを併記する。配送待ちで`generated_events`が空でも割当累積は保持する。
+- `AvSharedBacking`の実allocate操作に対する回帰で1件、同一report相当の2/3件、次の4件目、重複観測の抑制、u64飽和近傍の閾値を検査する。AIDL公開contract、dataId所有、TS/AUDIO timestampのframe分割、flush/close/解放は変更しない。
+- 最新HEADのCIは別途確認する。実機再生・黒画面解消は未検証。Rebase/Resolveは行わない。
+
 # PR #116 黒画面診断向けAV共有領域の進捗可視化
 
 - AV共有領域の正本ownerである`AvSharedBacking`へ、配送成功・client解放・未配送破棄・枯渇の診断専用飽和counterを追加。使用中shared slot数、event-local数、payload byte数、filter許容量、runtime全体のbudget使用量を読み取り専用snapshotとして提供する。counter飽和は既存設計の必須`diagnostic_counter_saturated`へ記録する。
