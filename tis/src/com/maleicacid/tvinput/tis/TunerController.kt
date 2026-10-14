@@ -309,6 +309,9 @@ class TunerController(
     private val sectionOversizedCounters = linkedMapOf<TsPid, Int>()
     private val playbackPipeline = PlaybackPipeline(inputId, tvInputSessionId, sessionContext)
 
+    // close成功後の再生成失敗は次の公開操作で再試行する。閉鎖済みinstanceは再利用しない。
+    private fun availableTuner(): Tuner? = tuner ?: createTuner()?.also { tuner = it }
+
     @Suppress("TooGenericExceptionCaught", "MaxLineLength")
     private fun createTuner(): Tuner? {
         var created: Tuner? = null
@@ -510,9 +513,11 @@ class TunerController(
     private fun prepareBsCandidateSourceOnController(): BsFrontendSelectionResult {
         resetBeforeTune()
         val existingTuner =
-            tuner
+            availableTuner()
                 ?: return BsFrontendSelectionResult(null, Tuner.RESULT_UNAVAILABLE, "Tunerを利用できません")
-        val replacementFailure = releaseFrontendBeforeTypeChange(existingTuner, FrontendSettings.TYPE_ISDBS)
+        // applyFrontendで選び直す場合は同typeでも旧Demuxを残さない。
+        val replacementFailure =
+            releaseFrontendBeforeTypeChange(existingTuner, FrontendSettings.TYPE_ISDBS, reselectSpecificFrontend = true)
         if (replacementFailure != null) {
             return BsFrontendSelectionResult(
                 null,
@@ -523,17 +528,19 @@ class TunerController(
         val tunerInstance =
             tuner
                 ?: return BsFrontendSelectionResult(null, Tuner.RESULT_UNAVAILABLE, "Tuner再作成に失敗しました")
-        // applyFrontendは既存Frontendを保持したままではINVALID_STATEになる。
-        // 特定id/capabilityで選び直すBS候補source確定時は同typeでも旧leaseを返す。
-        val closeFailure = runCatching { tunerInstance.closeFrontend() }.exceptionOrNull()
-        if (closeFailure != null) {
-            return BsFrontendSelectionResult(
-                null,
-                Tuner.RESULT_UNKNOWN_ERROR,
-                "既存frontendの解放に失敗しました: ${closeFailure.message}",
-            )
+        // 初回でTunerを再生成しなかった場合だけ、既存Frontendを閉じる。
+        // 既に再生成したTunerにcloseFrontend()を再発行しない。
+        if (tunerInstance === existingTuner) {
+            val closeFailure = runCatching { tunerInstance.closeFrontend() }.exceptionOrNull()
+            if (closeFailure != null) {
+                return BsFrontendSelectionResult(
+                    null,
+                    Tuner.RESULT_UNKNOWN_ERROR,
+                    "既存frontendの解放に失敗しました: ${closeFailure.message}",
+                )
+            }
+            frontendLeaseType = null
         }
-        frontendLeaseType = null
         val infos =
             runCatching { tunerInstance.availableFrontendInfos.orEmpty() }.getOrElse { error ->
                 return BsFrontendSelectionResult(
@@ -646,7 +653,7 @@ class TunerController(
         val generation = nextTuneGenerationOrFence()
         tuneGeneration = generation
         val operation = StreamIdDiscoveryOperation(generation)
-        val tunerInstance = tuner
+        val tunerInstance = availableTuner()
         if (tunerInstance == null) {
             operation.startFailed(Tuner.RESULT_UNAVAILABLE, "Tunerを利用できません")
             return operation
@@ -907,9 +914,10 @@ class TunerController(
     private fun releaseFrontendBeforeTypeChange(
         tunerInstance: Tuner,
         nextType: Int,
+        reselectSpecificFrontend: Boolean = false,
     ): Throwable? =
         runCatching {
-            if (frontendLeaseType != null && frontendLeaseType != nextType) {
+            if (frontendLeaseType != null && (frontendLeaseType != nextType || reselectSpecificFrontend)) {
                 tunerInstance.close()
                 tuner = null
                 frontendLeaseType = null
@@ -923,7 +931,8 @@ class TunerController(
         eitPfActualOnly: Boolean,
     ): TuneOutcome {
         resetBeforeTune()
-        val tunerInstance = tuner ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
+        val tunerInstance = availableTuner()
+            ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
         val settings =
             buildFrontendSettings(channel).getOrElse { e ->
                 Log.w(LogTags.TIS, "frontend settings 構築に失敗しました channel=$channel", e)
