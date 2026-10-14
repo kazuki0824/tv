@@ -804,7 +804,8 @@ class PlaybackPipeline(
                                         emitUnavailableForGeneration(
                                             filterGeneration,
                                             PlaybackUnavailableReason.UNKNOWN,
-                                            "AV filterのflushに失敗しました result=$result progress=${dataPathProgress.summary()}",
+                                            "AV filterのflushに失敗しました result=$result " +
+                                                "progress=${dataPathProgress.summary()}",
                                         )
                                     }
                                 }
@@ -1594,7 +1595,10 @@ class PlaybackPipeline(
                                 }
                                 completeCurrentDecoderOutputAction(::onDecoderFailure) {
                                     if (info.size > 0) {
-                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, this@DecoderPipeline is AudioDecoderPipeline)
+                                        dataPathProgress.record(
+                                            PlaybackDataPathProgress.Stage.CODEC_OUTPUT,
+                                            this@DecoderPipeline is AudioDecoderPipeline,
+                                        )
                                         startupDeadline?.onFirstOutput()
                                         startupTimeout?.let(mainHandler::removeCallbacks)
                                         startupTimeout = null
