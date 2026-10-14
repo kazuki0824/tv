@@ -466,7 +466,7 @@ class PlaybackFilterAdmissionTest {
     fun codecBlockModelCallbackReportsVideoInputOutputAndRenderedFrameSeparately() {
         Fixture().use { fixture ->
             fixture.decoder()
-            val codec = fixture.attachVideoCodec()
+            val codec = fixture.attachCodec()
             val nativeCodec = Shadow.extract<NativeCodec>(codec)
             val video = fixture.avFilter(false)
             val packet = mappedMediaEvent()
@@ -520,10 +520,39 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun audioCodecCallbackDoesNotMasqueradeAsVideoOutputOrCountStaleOutput() {
+        Fixture().use { fixture ->
+            fixture.decoder(audio = true)
+            val codec = fixture.attachCodec(audio = true)
+            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            val audio = fixture.avFilter(true)
+            deliver(audio, mappedMediaEvent())
+            fixture.drain()
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, true))
+            postCodecCallback(codec, 2, 0, MediaCodec.BufferInfo().apply { set(0, 1, 90_000L, 0) })
+            assertTrue(nativeCodec.outputReleased.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, true))
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, false))
+            // 終了済み世代のCodec callbackは、現世代の映像・音声進捗へ算入しない。
+            fixture.executor.callControl(5_000L) {
+                ReflectionHelpers.setField(fixture.pipeline, "playbackGeneration", 8L)
+            }
+            postCodecCallback(codec, 2, 0, MediaCodec.BufferInfo().apply { set(0, 1, 90_001L, 0) })
+            fixture.drain()
+            assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, true))
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, false))
+        }
+    }
+
+    @Test
     fun codecInputWithoutOutputIsReportedAtRealFirstFrameDeadline() {
         Fixture().use { fixture ->
             fixture.decoder()
-            val codec = fixture.attachVideoCodec()
+            val codec = fixture.attachCodec()
             val nativeCodec = Shadow.extract<NativeCodec>(codec)
             val video = fixture.avFilter(false)
             deliver(video, mappedMediaEvent())
@@ -548,38 +577,49 @@ class PlaybackFilterAdmissionTest {
         ShadowLog.getLogsForTag(LogTags.TIS).map { it.msg }
             .filter { it.startsWith("VIDEO_AVAILABILITY_COMMITTED inputId=admission-test ") }
 
-    private fun Fixture.attachVideoCodec(): MediaCodec {
-        val caps = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 4096, 4096)
+    private fun Fixture.attachCodec(audio: Boolean = false): MediaCodec {
+        val codecName = if (audio) "maleicacid.test.mpeg.decoder" else "maleicacid.test.avc.decoder"
+        val caps =
+            if (audio) {
+                MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, 44_100, 2)
+            } else {
+                MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 4096, 4096)
+            }
+        val capabilityBuilder =
+            MediaCodecInfoBuilder.CodecCapabilitiesBuilder
+                .newBuilder()
+                .setMediaFormat(caps)
+        if (!audio) {
+            capabilityBuilder.setColorFormats(
+                intArrayOf(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible),
+            )
+        }
         val codecInfo =
             MediaCodecInfoBuilder
                 .newBuilder()
-                .setName("maleicacid.test.avc.decoder")
-                .setCapabilities(
-                    MediaCodecInfoBuilder.CodecCapabilitiesBuilder
-                        .newBuilder()
-                        .setMediaFormat(caps)
-                        .setColorFormats(intArrayOf(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible))
-                        .build(),
-                )
+                .setName(codecName)
+                .setCapabilities(capabilityBuilder.build())
                 .build()
         ShadowMediaCodecList.addCodec(codecInfo)
-        val decoder = ReflectionHelpers.getField<Any>(pipeline, "videoDecoder")
-        val texture = SurfaceTexture(0)
-        val surface = Surface(texture)
-        ReflectionHelpers.setField(decoder, "outputSurface", surface)
-        codecSurface = surface
-        codecTexture = texture
+        val decoder = ReflectionHelpers.getField<Any>(pipeline, if (audio) "audioDecoder" else "videoDecoder")
+        if (!audio) {
+            val texture = SurfaceTexture(0)
+            val surface = Surface(texture)
+            ReflectionHelpers.setField(decoder, "outputSurface", surface)
+            codecSurface = surface
+            codecTexture = texture
+        }
         val method =
             decoder.javaClass.superclass
-                .getDeclaredMethod(
-                    "createBlockModelDecoder",
-                    MediaFormat::class.java,
-                )
+                .getDeclaredMethod("createBlockModelDecoder", MediaFormat::class.java)
                 .apply { isAccessible = true }
-        val codec = method.invoke(
-            decoder,
-            MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 32, 32),
-        ) as MediaCodec
+        val format =
+            if (audio) {
+                MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, 44_100, 2)
+            } else {
+                MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 32, 32)
+            }
+        val codec = method.invoke(decoder, format) as MediaCodec
         ReflectionHelpers.setField(decoder, "codec", codec)
         return codec
     }
