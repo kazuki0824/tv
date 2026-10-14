@@ -27,13 +27,15 @@ class TunerFrontendLeaseTransitionTest {
         try {
             check(!controller.tuneForScan(terrestrial()).success)
             check(!controller.tuneForScan(terrestrial()).success)
-            check(sdk.closed == 0)
+            check(sdk.fullClosed == 0)
             check(!controller.tuneForScan(satellite()).success)
-            check(sdk.closed == 1)
+            check(sdk.fullClosed == 1)
+            val satelliteSdk = checkNotNull(NativeTuner.current)
+            check(satelliteSdk !== sdk)
             check(!controller.tuneForScan(terrestrial()).success)
-            check(sdk.closed == 2)
+            check(satelliteSdk.fullClosed == 1)
             check(
-                sdk.requested ==
+                NativeTuner.instances.flatMap { it.requested } ==
                     listOf(
                         FrontendSettings.TYPE_ISDBT,
                         FrontendSettings.TYPE_ISDBT,
@@ -55,38 +57,38 @@ class TunerFrontendLeaseTransitionTest {
             check(!result.success)
             check(sdk.scanned == listOf(FrontendSettings.TYPE_ISDBS))
             check(!controller.tuneForScan(terrestrial()).success)
-            check(sdk.closed == 1)
-            check(sdk.requested == listOf(FrontendSettings.TYPE_ISDBT))
+            check(sdk.fullClosed == 1)
+            check(NativeTuner.instances.flatMap { it.requested } == listOf(FrontendSettings.TYPE_ISDBT))
         } finally {
             controller.release()
         }
     }
 
     @Test
-    fun failedFrontendClosePreventsTuneAndAllowsLaterRetry() {
+    fun failedTunerClosePreventsTuneAndAllowsLaterRetry() {
         val controller = controller()
         val sdk = checkNotNull(NativeTuner.current)
         try {
             check(!controller.tuneForScan(satellite()).success)
-            sdk.failNextClose = true
+            sdk.failNextFullClose = true
             val failure = controller.tuneForScan(terrestrial())
             check(!failure.success && failure.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
             check(sdk.requested == listOf(FrontendSettings.TYPE_ISDBS))
             check(!controller.tuneForScan(terrestrial()).success)
-            check(sdk.closed == 1)
-            check(sdk.requested == listOf(FrontendSettings.TYPE_ISDBS, FrontendSettings.TYPE_ISDBT))
+            check(sdk.fullClosed == 1)
+            check(NativeTuner.instances.flatMap { it.requested } == listOf(FrontendSettings.TYPE_ISDBS, FrontendSettings.TYPE_ISDBT))
         } finally {
             controller.release()
         }
     }
 
     @Test
-    fun failedFrontendClosePreventsSatelliteDiscoveryAndReturnsFailure() {
+    fun failedTunerClosePreventsSatelliteDiscoveryAndReturnsFailure() {
         val controller = controller()
         val sdk = checkNotNull(NativeTuner.current)
         try {
             check(!controller.tuneForScan(terrestrial()).success)
-            sdk.failNextClose = true
+            sdk.failNextFullClose = true
             val outcome = controller.discoverIsdbsStreamIds(JapanIsdbScanPlan.isdbsBsBands().first())
             check(!outcome.success && outcome.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
             check(outcome.message.contains("frontend解放"))
@@ -97,11 +99,14 @@ class TunerFrontendLeaseTransitionTest {
         }
     }
 
-    private fun controller(): TunerController =
-        TunerController(
+    private fun controller(): TunerController {
+        NativeTuner.instances.clear()
+        NativeTuner.current = null
+        return TunerController(
             RuntimeEnvironment.getApplication(),
             "lease-integration-test",
         )
+    }
 
     private fun terrestrial(): ScanCandidate =
         ScanCandidate(
@@ -119,11 +124,13 @@ class TunerFrontendLeaseTransitionTest {
         val requested = mutableListOf<Int>()
         val scanned = mutableListOf<Int>()
         var closed = 0
-        var failNextClose = false
+        var fullClosed = 0
+        var failNextFullClose = false
         private var heldType: Int? = null
 
         companion object {
             var current: NativeTuner? = null
+            val instances = mutableListOf<NativeTuner>()
         }
 
         @Implementation(methodName = "__constructor__")
@@ -137,6 +144,7 @@ class TunerFrontendLeaseTransitionTest {
             // clearOnTuneEventListener()が使うSDK既存のlockだけをテスト側で復元する。
             ReflectionHelpers.setField(actual, "mOnTuneEventLock", Any())
             current = this
+            instances += this
         }
 
         @Implementation
@@ -176,15 +184,18 @@ class TunerFrontendLeaseTransitionTest {
 
         @Implementation
         fun closeFrontend() {
-            if (failNextClose) {
-                failNextClose = false
-                error("frontend close failed")
-            }
             closed++
             heldType = null
         }
 
         @Implementation
-        fun close() = Unit
+        fun close() {
+            if (failNextFullClose) {
+                failNextFullClose = false
+                error("tuner close failed")
+            }
+            fullClosed++
+            heldType = null
+        }
     }
 }
