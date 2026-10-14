@@ -1321,6 +1321,22 @@ impl DemuxRuntime {
             .collect()
     }
 
+    /// reportごとに枯渇閾値の通過を一度だけ取得する。
+    pub fn take_av_flow_shortage_samples(
+        &mut self,
+    ) -> Vec<(i32, u64, u64, AvFlowDiagnosticSnapshot)> {
+        self.filter_av_backings
+            .iter_mut()
+            .filter_map(|(filter_id, backing)| {
+                backing
+                    .take_shortage_sample()
+                    .map(|(previous, threshold, snapshot)| {
+                        (*filter_id, previous, threshold, snapshot)
+                    })
+            })
+            .collect()
+    }
+
     pub fn release_filter_av_handle_from_typed_request(
         &mut self,
         request: FilterAvHandleReleaseRequest,
