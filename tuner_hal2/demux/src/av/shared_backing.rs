@@ -268,6 +268,7 @@ struct AvFlowDiagnosticCounters {
     discarded_undelivered: u64,
     no_free_slot: u64,
     last_sampled_delivery_threshold: u64,
+    last_sampled_shortage_threshold: u64,
 }
 
 #[derive(Debug)]
@@ -412,6 +413,21 @@ impl AvSharedBacking {
             return None;
         }
         self.diagnostics.last_sampled_delivery_threshold = threshold;
+        Some((previous, threshold, self.diagnostic_snapshot()))
+    }
+
+    // 直前に観測した閾値より高い2の累乗へ達した場合だけ消費する。
+    pub(crate) fn take_shortage_sample(&mut self) -> Option<(u64, u64, AvFlowDiagnosticSnapshot)> {
+        let shortage = self.diagnostics.no_free_slot;
+        if shortage == 0 {
+            return None;
+        }
+        let threshold = 1u64 << (u64::BITS - 1 - shortage.leading_zeros());
+        let previous = self.diagnostics.last_sampled_shortage_threshold;
+        if threshold <= previous {
+            return None;
+        }
+        self.diagnostics.last_sampled_shortage_threshold = threshold;
         Some((previous, threshold, self.diagnostic_snapshot()))
     }
 
