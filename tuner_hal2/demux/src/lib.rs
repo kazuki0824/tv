@@ -42,11 +42,11 @@ impl TsInputOrigin {
 }
 
 pub use av::{
-    AvDataId, AvDataIdAllocator, AvFileIdentity, AvHandleReleaseDescriptor, AvHandleReleaseOutcome,
-    AvMediaEventDescriptor, AvMediaEventMetadata, AvPayloadDeliveryOutcome, AvRuntimeBudget,
-    AvSharedBacking, AvSharedBackingError, AvSharedHandleExport, AvSlotId,
-    DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
-    DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    AvDataId, AvDataIdAllocator, AvFileIdentity, AvFlowDiagnosticSnapshot,
+    AvHandleReleaseDescriptor, AvHandleReleaseOutcome, AvMediaEventDescriptor,
+    AvMediaEventMetadata, AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking,
+    AvSharedBackingError, AvSharedHandleExport, AvSlotId, DEFAULT_AV_MAX_EVENT_BYTES,
+    DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER, DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };
 pub use config::{
     AvSettings, AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterConfigKind, FilterDelayHint,
@@ -95,7 +95,7 @@ pub use runtime::{
     FilterStatusEvent, PlaybackConsumeReport, PlaybackFlushDiagnostic, PlaybackQueueReadTxn,
     PlaybackStats, PreparedDvrFilterRelation, PreparedStreamBoundary, QueueDescriptorExportPlan,
     QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
-    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
+    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind, QueueRuntimeLockKind,
     RecordDvrFilterRelationState, SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep,
     StreamBoundaryReport, ValidatedPacketIngressRequest, WatermarkClassifier, WatermarkDecision,
     WatermarkPolicy, WatermarkQueueSnapshot,
@@ -2268,6 +2268,66 @@ mod tests {
     }
 
     #[test]
+    fn record_dvr_closed_gate_generates_delivery_failure_without_filter_fmq_payload() {
+        let filter_id = 47;
+        let dvr_id = 48;
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsRecord,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: Some(RecordIndexSettings {
+                        ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET,
+                        sc_index_type: RECORD_SC_TYPE_NONE,
+                        sc_index_mask: 0,
+                    }),
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                dvr_id,
+                1,
+                crate::runtime::DvrKind::Record,
+                4096,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(dvr_id).unwrap();
+        demux.attach_dvr_filter(dvr_id, filter_id).unwrap();
+        demux.start_dvr_runtime(dvr_id).unwrap();
+        // 実データ配送より先にRecord Gateだけを閉じ、既存の失敗診断経路を通す。
+        demux.close_filter_producer_gate_for_test(filter_id);
+        let packet = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::frontend(1));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueuePayloadDeliveryFailure {
+                    filter_id: reported_id,
+                    ..
+                } if *reported_id == filter_id
+            )
+        }));
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(dvr_id).unwrap(),
+            Vec::<u8>::new()
+        );
+        assert!(!FilterOpenType::TsRecord.uses_filter_fmq_for_payload());
+    }
+
+    #[test]
     fn record_dvr_mirror_overflow_is_diagnostic() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
@@ -3984,6 +4044,131 @@ mod tests {
             demux.snapshot_filter_queue_bytes_for_test(34).unwrap(),
             packet.to_vec()
         );
+    }
+
+    // host native FMQ shimのwake失敗を通し、payloadと再通知の実状態を検証する。
+    fn started_raw_filter_with_fmq(filter_id: i32) -> DemuxRuntime {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsRaw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(0x0030),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+        demux
+    }
+
+    #[test]
+    fn failed_event_flag_wake_commits_payload_then_retries_without_duplicate() {
+        let filter_id = 45;
+        let mut demux = started_raw_filter_with_fmq(filter_id);
+        demux.fail_next_filter_wakes_for_test(filter_id, 1);
+        let first = raw_ts_packet(0x0030, 0, &[1, 2, 3, 4]);
+        let report = demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueueWakeDeferred {
+                    filter_id: id,
+                    ..
+                } if *id == filter_id
+            )
+        }));
+        let first_read = demux.read_filter_fmq_bytes_for_test(filter_id).unwrap();
+        assert_eq!(first_read, first);
+        assert!(demux
+            .read_filter_fmq_bytes_for_test(filter_id)
+            .unwrap()
+            .is_empty());
+        let second = raw_ts_packet(0x0030, 1, &[5, 6, 7, 8]);
+        let retried = demux.push_ts_packet_from_origin(&second, TsInputOrigin::frontend(1));
+        assert!(!retried.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueueWakeDeferred { .. }
+            )
+        }));
+        let mut expected = first.to_vec();
+        expected.extend_from_slice(&second);
+        let second_read = demux.read_filter_fmq_bytes_for_test(filter_id).unwrap();
+        assert_eq!(second_read, second);
+        assert!(demux
+            .read_filter_fmq_bytes_for_test(filter_id)
+            .unwrap()
+            .is_empty());
+        let mut readback = first_read;
+        readback.extend_from_slice(&second_read);
+        assert_eq!(readback, expected);
+    }
+
+    #[test]
+    fn failed_event_flag_retry_keeps_committed_payload_and_records_failure() {
+        let filter_id = 46;
+        let mut demux = started_raw_filter_with_fmq(filter_id);
+        demux.fail_next_filter_wakes_for_test(filter_id, 2);
+        let first = raw_ts_packet(0x0030, 0, &[1, 2, 3, 4]);
+        let deferred = demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
+        assert!(deferred.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueueWakeDeferred { .. }
+            )
+        }));
+        let second = raw_ts_packet(0x0030, 1, &[5, 6, 7, 8]);
+        let rejected = demux.push_ts_packet_from_origin(&second, TsInputOrigin::frontend(1));
+        assert!(rejected.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueuePayloadDeliveryFailure {
+                    error: DemuxRuntimeError {
+                        kind: DemuxRuntimeErrorKind::FmqDeliveryFailed(
+                            maleicacid_tuner_hal2_common::FmqFailureKind::EventFlagWakeFailed
+                        ),
+                        ..
+                    },
+                    ..
+                }
+            )
+        }));
+        let first_read = demux.read_filter_fmq_bytes_for_test(filter_id).unwrap();
+        assert_eq!(first_read, first);
+        // 再試行失敗したpacketは書き込まず、read位置も進めない。
+        assert!(demux
+            .read_filter_fmq_bytes_for_test(filter_id)
+            .unwrap()
+            .is_empty());
+        let third = raw_ts_packet(0x0030, 2, &[9, 10, 11, 12]);
+        let after_recovery = demux.push_ts_packet_from_origin(&third, TsInputOrigin::frontend(1));
+        assert!(!after_recovery.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueuePayloadDeliveryFailure { .. }
+            )
+        }));
+        let mut expected = first.to_vec();
+        expected.extend_from_slice(&third);
+        let third_read = demux.read_filter_fmq_bytes_for_test(filter_id).unwrap();
+        assert_eq!(third_read, third);
+        assert!(demux
+            .read_filter_fmq_bytes_for_test(filter_id)
+            .unwrap()
+            .is_empty());
+        let mut readback = first_read;
+        readback.extend_from_slice(&third_read);
+        assert_eq!(readback, expected);
     }
 
     #[test]

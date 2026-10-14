@@ -1,3 +1,4 @@
+use super::{DemuxRuntimeId, PipelineDiagnostic};
 use crate::descrambler_key_table::DescramblerPacketKeys;
 use std::time::Instant;
 
@@ -124,6 +125,7 @@ impl TunerServiceRuntime {
                 DescramblePacketFlow::Drop | DescramblePacketFlow::DiagnoseOnly => {
                     let mut report = PipelineReport::default();
                     report.diagnostics.extend(decision.diagnostics);
+                    self.record_packet_pipeline_diagnostics(demux_id.0, generation, &report);
                     reports.push(report);
                     continue;
                 }
@@ -159,7 +161,7 @@ impl TunerServiceRuntime {
                 (demux_generation, report)
             };
             report.diagnostics.extend(pending_descrambler_diagnostics);
-            self.record_descrambler_packet_diagnostics(demux_id.0, demux_generation, &report);
+            self.record_packet_pipeline_diagnostics(demux_id.0, demux_generation, &report);
             reports.push(report);
         }
         Ok(reports)
@@ -191,7 +193,7 @@ impl TunerServiceRuntime {
                 reports.push(report);
             }
         }
-        let snapshots = self.filter_event_delivery_snapshots(&reports);
+        let snapshots = self.filter_event_delivery_snapshots(&reports)?;
         let next_deadline = demux_ids
             .into_iter()
             .filter_map(|demux_id| {
@@ -208,7 +210,7 @@ impl TunerServiceRuntime {
     pub fn filter_event_delivery_snapshots_for_playback_report(
         &mut self,
         report: &PlaybackConsumeReport,
-    ) -> Vec<FilterEventDeliverySnapshot> {
+    ) -> Result<Vec<FilterEventDeliverySnapshot>, HalError> {
         self.filter_event_delivery_snapshots(&report.packet_reports)
     }
 
@@ -284,12 +286,97 @@ impl TunerServiceRuntime {
         }
     }
 
-    pub(super) fn record_descrambler_packet_diagnostics(
+    pub(super) fn record_packet_pipeline_diagnostics(
         &mut self,
         demux_id: i32,
         demux_generation: u64,
         report: &PipelineReport,
     ) {
+        #[cfg(target_os = "android")]
+        if let Some(demux) = self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)) {
+            for (filter_id, previous, threshold, snapshot) in demux.take_av_flow_delivery_samples()
+            {
+                log::info!(
+                    "HAL_AV_FLOW kind=av_event_allocated demux={} generation={} filter={} allocated={} crossed_threshold={} previous_threshold={} client_released={} undelivered_discarded={} shortage={} active_slots={} event_local={} active_bytes={} runtime_used={} runtime_limit={}",
+                    demux_id, demux_generation, filter_id,
+                    snapshot.delivered, threshold, previous, snapshot.released,
+                    snapshot.discarded_undelivered, snapshot.no_free_slot,
+                    snapshot.active_shared_slots, snapshot.active_event_local,
+                    snapshot.active_bytes, snapshot.runtime_used_bytes,
+                    snapshot.runtime_limit_bytes,
+                );
+            }
+        }
+        #[cfg(target_os = "android")]
+        if let Some(demux) = self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)) {
+            for (filter_id, previous, threshold, snapshot) in demux.take_av_flow_shortage_samples()
+            {
+                // 同一report内の診断はfilterの正本PIDを保持している。
+                let pid = report
+                    .diagnostics
+                    .iter()
+                    .find_map(|diagnostic| match diagnostic {
+                        PipelineDiagnostic::AvNoFreeSlot {
+                            pid,
+                            filter_id: reported_id,
+                        } if *reported_id == filter_id => Some(*pid),
+                        _ => None,
+                    });
+                log::warn!(
+                    "HAL_AV_FLOW kind=no_free_slot demux={} generation={} pid={:?} filter={} shortage={} crossed_threshold={} previous_threshold={} delivered={} released={} discarded={} active_slots={} event_local={} active_bytes={} slot_capacity={} max_outstanding={} filter_byte_limit={} runtime_used={} runtime_limit={}",
+                    demux_id, demux_generation, pid, filter_id,
+                    snapshot.no_free_slot, threshold, previous, snapshot.delivered,
+                    snapshot.released, snapshot.discarded_undelivered,
+                    snapshot.active_shared_slots, snapshot.active_event_local,
+                    snapshot.active_bytes, snapshot.slot_capacity,
+                    snapshot.max_outstanding_events, snapshot.per_filter_live_bytes,
+                    snapshot.runtime_used_bytes, snapshot.runtime_limit_bytes,
+                );
+            }
+        }
+        for diagnostic in &report.diagnostics {
+            // 正常な無ペイロードと、既存の鍵診断の保持対象は重複記録しない。
+            if matches!(diagnostic,
+                maleicacid_tuner_hal2_demux::PipelineDiagnostic::NoPayloadAssemblySuppressed { .. }
+                | maleicacid_tuner_hal2_demux::PipelineDiagnostic::KeylessScrambledAssemblySuppressed { .. }
+            ) {
+                continue;
+            }
+            // 有界のメモリ診断記録は古いAV失敗情報を破棄することがある。
+            // Androidのlogcatへ正本backingの使用状態を併記する。
+            // 枯渇件数が2の累乗に達したときのみ出力し、配送動作は変えない。
+            #[cfg(target_os = "android")]
+            match diagnostic {
+                PipelineDiagnostic::AvSharedBackingFailure { pid, filter_id, .. }
+                | PipelineDiagnostic::AvSharedBackingMissing { pid, filter_id } => {
+                    log::error!(
+                        "HAL_AV_FLOW kind=backing_failure demux={} generation={} pid={:?} filter={} diagnostic={:?}",
+                        demux_id, demux_generation, pid, filter_id, diagnostic,
+                    );
+                }
+                _ => {}
+            }
+            // Record DVRのGate障害はFilter FMQ payload配送とは別のdata plane。
+            let is_filter_fmq_payload = match diagnostic {
+                PipelineDiagnostic::FilterQueuePayloadDeliveryFailure { filter_id, .. }
+                | PipelineDiagnostic::FilterQueueWakeDeferred { filter_id, .. } => self
+                    .registry
+                    .demux_runtime(DemuxRuntimeId(demux_id))
+                    .and_then(|demux| demux.filter_snapshot(*filter_id).ok())
+                    .is_some_and(|snapshot| snapshot.open_type.uses_filter_fmq_for_payload()),
+                _ => false,
+            };
+            if is_filter_fmq_payload {
+                self.packet_delivery_failure_totals.record(diagnostic);
+            }
+            self.packet_pipeline_diagnostics.push(
+                crate::diagnostics::PacketPipelineDiagnosticRecord {
+                    demux_id,
+                    demux_generation,
+                    diagnostic: diagnostic.clone(),
+                },
+            );
+        }
         let records = self
             .registry
             .packet_pipeline_diagnostic_records_for_demux_report(

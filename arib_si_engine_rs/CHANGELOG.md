@@ -1,3 +1,30 @@
+# 2026-10-09 PR #186 nativeCreate例外生成前のregistryロック解放
+
+- nativeCreateはregistryロック内でhandleまたは既存typed failureだけを確定し、guardを解放した後に共通throw_si_failureからJava例外を生成する。handle枯渇とregistry poisonの両分岐でJVM処理をロック外へ移した。
+- 公開戻り値、例外reason、handle割当、poison記録は維持し、新しいowner・wrapper・状態は追加しない。64bit handle空間の実機枯渇やdeadlock再現を根拠にした修正ではない。
+- ローカルは差分とRust 1.81整形を確認し、build・試験は既存ARIB SI host CIへ委ねる。Soong/device atest/VTS/実機確認は未実施。
+
+# 2026-10-09 Program normalize未使用APIの削除
+
+- 本番呼出元のないProgram normalizeのKotlin facade・native宣言・JNI export・Rust公開関数を削除し、設計のAPI一覧も揃えた。
+- 既存の境界試験は本番Program builder・key抽出・共通validationへ接続し、Program更新時のcleanup・再収集とkey抽出に必要な内部helperを維持した。互換migrationや代替ownerは追加しない。
+- ローカルは差分・参照・整形を確認し、buildと試験は既存CIで検証する。Soong/device atest/VTS/実波は未実施。
+
+# Kotlin生成物のEOF整形
+
+- generatorの最終出力を末尾LF一つへ正規化し、全Kotlin生成物へ反映した。DTO schemaとSI契約は不変。再生成整合性は既存CIへ委ねる。
+
+# Partial Reception Descriptorをtyped snapshotへ接続
+
+- 地上デジタルNITのPartial Reception Descriptor (0xFB)を解析し、列挙SIDだけを`ServiceSemanticFacts.partialReception=true`とする。service_type=0xC0単独では推定しない。
+- Rust runtime snapshot DTO、JNI object生成、生成Kotlin DTO、Kotlin mapperまで同じtyped factを接続した。
+- TISがこのfactをone-seg登録可否と`TYPE_1SEG`投影に利用できるようにした。
+
+# collection registry取得の待機拒否
+
+- Make collection try-snapshot registry acquisition non-blocking while preserving typed poison and invalid-handle failures.
+- 既存typed failureと共有snapshot契約を維持する。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
 # r51_pr91_review_truncated_loop_and_identity
 
 - event loopがsection残量を超えても、受信境界内の共通descriptor解析と全bytesの診断保持を行う。未受信部分を補完せず、構造不正状態を維持する。

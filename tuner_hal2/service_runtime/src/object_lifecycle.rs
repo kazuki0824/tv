@@ -11,6 +11,22 @@ pub enum AidlObjectCloseability {
     BeginClose,
 }
 
+fn invalid_close_lifecycle(lifecycle: RuntimeObjectLifecycle) -> HalError {
+    let detail = match lifecycle {
+        RuntimeObjectLifecycle::Prepared => {
+            "AIDL objectはPreparedでありLiveとして公開されていません"
+        }
+        RuntimeObjectLifecycle::Closed => "AIDL objectは既にClosedです",
+        RuntimeObjectLifecycle::Quarantined => {
+            "AIDL objectはQuarantinedでありfail-closed処理が必要です"
+        }
+        RuntimeObjectLifecycle::Live
+        | RuntimeObjectLifecycle::Closing { .. }
+        | RuntimeObjectLifecycle::CleanupPending { .. } => "AIDL objectはcloseできません",
+    };
+    HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, detail)
+}
+
 pub fn aidl_object_entry_for_kind(
     runtime: &TunerServiceRuntime,
     object_id: AidlObjectId,
@@ -63,10 +79,7 @@ pub fn aidl_object_closeable(
         | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(AidlObjectCloseability::BeginClose),
         RuntimeObjectLifecycle::Prepared
         | RuntimeObjectLifecycle::Closed
-        | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "AIDL object is not closeable",
-        )),
+        | RuntimeObjectLifecycle::Quarantined => Err(invalid_close_lifecycle(entry.lifecycle)),
     }
 }
 
@@ -179,16 +192,9 @@ pub fn aidl_object_entry_for_close_cleanup(
         RuntimeObjectLifecycle::Live
         | RuntimeObjectLifecycle::Closing { .. }
         | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(entry.clone()),
-        RuntimeObjectLifecycle::Prepared => Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "AIDL object is not live for close cleanup",
-        )),
-        RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {
-            Err(HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "AIDL object is terminal",
-            ))
-        }
+        RuntimeObjectLifecycle::Prepared
+        | RuntimeObjectLifecycle::Closed
+        | RuntimeObjectLifecycle::Quarantined => Err(invalid_close_lifecycle(entry.lifecycle)),
     }
 }
 
@@ -251,7 +257,7 @@ mod closeable_lifecycle_tests {
                 AidlObjectGeneration(1),
                 CleanupStep::UnregisterRuntime,
             )
-            .expect("begin close succeeds");
+            .expect("close開始が成功する");
         runtime
             .object_table_mut()
             .mark_cleanup_failed_cascade(
@@ -273,6 +279,70 @@ mod closeable_lifecycle_tests {
         );
     }
 
+    fn invalid_state_detail(error: HalError) -> String {
+        match error {
+            HalError::InvalidState { detail, .. } => detail.detail,
+            other => panic!("InvalidStateを期待しましたが{other:?}でした"),
+        }
+    }
+
+    fn assert_closeable_state_detail(runtime: &TunerServiceRuntime, expected: &str) {
+        let error = aidl_object_closeable(
+            runtime,
+            AidlObjectId(501),
+            AidlObjectGeneration(1),
+            AidlObjectKind::Filter,
+        )
+        .expect_err("状態がclose可能ではありません");
+        assert_eq!(invalid_state_detail(error), expected);
+    }
+
+    #[test]
+    fn aidl_object_closeable_reports_state_without_collapsing_diagnostics() {
+        let mut prepared = TunerServiceRuntime::new();
+        prepared
+            .object_table_mut()
+            .insert_prepared(RuntimeObjectEntry {
+                object_kind: AidlObjectKind::Filter,
+                object_id: AidlObjectId(501),
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(501),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("Prepared objectのinsertが成功する");
+        assert_closeable_state_detail(
+            &prepared,
+            "AIDL objectはPreparedでありLiveとして公開されていません",
+        );
+
+        let mut closed = runtime_with_filter();
+        closed
+            .object_table_mut()
+            .begin_close_cascade(
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                CleanupStep::UnregisterRuntime,
+            )
+            .expect("close開始が成功する");
+        closed
+            .object_table_mut()
+            .commit_close_cascade(AidlObjectId(501), AidlObjectGeneration(1))
+            .expect("close commitが成功する");
+        assert_closeable_state_detail(&closed, "AIDL objectは既にClosedです");
+
+        let mut quarantined = runtime_with_filter();
+        quarantined
+            .object_table_mut()
+            .quarantine_cascade(AidlObjectId(501), AidlObjectGeneration(1))
+            .expect("quarantineが成功する");
+        assert_closeable_state_detail(
+            &quarantined,
+            "AIDL objectはQuarantinedでありfail-closed処理が必要です",
+        );
+    }
+
     #[test]
     fn aidl_object_closeable_rejects_closed() {
         let mut runtime = runtime_with_filter();
@@ -283,11 +353,11 @@ mod closeable_lifecycle_tests {
                 AidlObjectGeneration(1),
                 CleanupStep::UnregisterRuntime,
             )
-            .expect("begin close succeeds");
+            .expect("close開始が成功する");
         runtime
             .object_table_mut()
             .commit_close_cascade(AidlObjectId(501), AidlObjectGeneration(1))
-            .expect("commit close succeeds");
+            .expect("close commitが成功する");
         assert!(aidl_object_closeable(
             &runtime,
             AidlObjectId(501),
@@ -307,7 +377,7 @@ mod closeable_lifecycle_tests {
                 AidlObjectGeneration(1),
                 CleanupStep::UnregisterRuntime,
             )
-            .expect("begin close succeeds");
+            .expect("close開始が成功する");
         assert_eq!(
             aidl_object_closeable(
                 &closing,
@@ -323,7 +393,7 @@ mod closeable_lifecycle_tests {
         quarantined
             .object_table_mut()
             .quarantine_cascade(AidlObjectId(501), AidlObjectGeneration(1))
-            .expect("quarantine succeeds");
+            .expect("quarantineが成功する");
         assert!(aidl_object_closeable(
             &quarantined,
             AidlObjectId(501),
@@ -343,11 +413,11 @@ mod closeable_lifecycle_tests {
                 AidlObjectGeneration(1),
                 CleanupStep::UnregisterRuntime,
             )
-            .expect("begin close succeeds");
+            .expect("close開始が成功する");
         closed
             .object_table_mut()
             .commit_close_cascade(AidlObjectId(501), AidlObjectGeneration(1))
-            .expect("commit close succeeds");
+            .expect("close commitが成功する");
         assert!(aidl_object_closeable(
             &closed,
             AidlObjectId(501),

@@ -10,7 +10,9 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 };
 use binder::ParcelFileDescriptor;
 use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
-use maleicacid_tuner_hal2_common::{FirstErrorCollector, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{
+    FirstErrorCollector, HalError, HalErrorDetail, HalInternalKind,
+};
 use maleicacid_tuner_hal2_demux::{
     FilterStatusEvent, TsRecordEventData, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC,
     RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC,
@@ -54,11 +56,12 @@ impl AidlFilterEventDispatcher {
             move |control| run_filter_delay_delivery(worker_context, control),
             || {},
         )
-        .map_err(|error| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("filter delay delivery worker spawn failed: {error}"),
-            )
+        .map_err(|error| HalError::Io {
+            backend: "filter遅延配送",
+            operation: "スレッド生成",
+            path: None,
+            errno: error.raw_os_error(),
+            detail: HalErrorDetail::new(error.to_string()),
         })?;
         Ok(Self {
             context: Arc::downgrade(context),
@@ -77,7 +80,7 @@ impl AidlFilterEventDispatcher {
 impl Drop for AidlFilterEventDispatcher {
     fn drop(&mut self) {
         if let Some(worker) = self.delay_worker.as_ref() {
-            worker.request_stop_and_wake();
+            worker.request_stop();
         }
     }
 }
@@ -106,12 +109,11 @@ fn run_filter_delay_delivery(
         };
         let runtime = context.runtime();
         let (snapshots, deadline) = {
-            let mut guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
+            let mut guard =
+                maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+                    runtime.as_ref(),
                     "service runtime lock poisoned while polling delayed filter events",
-                )
-            })?;
+                )?;
             guard.poll_filter_delay_delivery()?
         };
         if !snapshots.is_empty() {
@@ -123,7 +125,7 @@ fn run_filter_delay_delivery(
         if control.stop_requested() {
             return Ok(());
         }
-        control.wait_until(deadline)?;
+        control.wait_until(deadline);
     }
 }
 
@@ -203,7 +205,9 @@ fn event_from_snapshot(
                             )
                         },
                     )?)],
-                    ints: vec![0],
+                    // JNIはintsの存在をCodec2 global INFO indexとして解釈する。
+                    // 対応する有効なindexを発行しないため、int配列は空にする。
+                    ints: vec![],
                 },
                 None => Default::default(),
             };
@@ -308,7 +312,7 @@ fn finish_filter_callback_delivery_failure(
     phase: CallbackDeliveryFailurePhase,
     primary: HalError,
 ) -> Result<(), HalError> {
-    match runtime.lock() {
+    match TunerServiceRuntime::lock_shared(runtime, "filter callback失敗") {
         Ok(mut runtime) => runtime.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::filter(
                 handle.object_id(),
@@ -317,7 +321,12 @@ fn finish_filter_callback_delivery_failure(
                 primary,
             ),
         ),
-        Err(_) => {
+        Err(lock_error) => {
+            let primary = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                "filter callback失敗時のruntimeロック",
+                primary,
+                lock_error,
+            );
             let record = FilterCallbackDeliveryDiagnosticRecord::new(
                 filter_callback_diagnostic_phase(phase),
                 handle.object_id(),
@@ -454,14 +463,11 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                 continue;
             }
             if let Some(start_id) = pending_start_id {
-                let commit_result = runtime
-                    .lock()
-                    .map_err(|_| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "service runtime lock poisoned while committing filter startId delivery",
-                        )
-                    })
+                let commit_result =
+                    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+                        runtime.as_ref(),
+                        "filter startId配送の確定中にservice runtimeのロックが汚染されました",
+                    )
                     .and_then(|mut runtime| {
                         runtime.commit_filter_start_id_delivery(
                             handle.object_id(),
@@ -541,6 +547,25 @@ mod tests {
             filter_id: 3,
             event,
         }
+    }
+
+    #[test]
+    fn event_local_av_handle_does_not_supply_invalid_codec2_global_info_index() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let event = AvMediaEventDescriptor {
+            data_id: AvDataId(7),
+            slot_id: AvSlotId(0),
+            offset: 0,
+            data_length: 188,
+            metadata: AvMediaEventMetadata::default(),
+            event_local_file: Some(file),
+        };
+        let result = event_from_snapshot(snapshot(FilterEventDelivery::Media(event))).unwrap();
+        let AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(media)) = result else {
+            panic!("AV snapshot must become a media event");
+        };
+        assert_eq!(media.avMemory.fds.len(), 1);
+        assert!(media.avMemory.ints.is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use maleicacid_tuner_hal2_binder_adapter::{
+use maleicacid_tuner_hal2_domain_request::{
     AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
 };
 use maleicacid_tuner_hal2_service_runtime::{RuntimeOwnerRelation, TunerServiceRuntime};

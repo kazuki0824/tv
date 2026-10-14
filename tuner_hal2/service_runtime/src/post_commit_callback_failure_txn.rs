@@ -2,7 +2,8 @@ use maleicacid_tuner_hal2_common::HalError;
 
 use crate::boot::CallbackDeliveryFailureReport;
 use crate::boot::TunerServiceRuntime;
-use crate::worker_failure_classifier::{ClassifiedCallbackFailure, WorkerFailureCategory};
+use crate::diagnostics::WorkerFailureCategory;
+use crate::worker_failure_classifier::ClassifiedCallbackFailure;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CallbackHealthEffect {

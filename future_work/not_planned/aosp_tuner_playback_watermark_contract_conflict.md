@@ -16,18 +16,11 @@ Android 14向けsample VTS configurationもPlayback DVRに `statusMask=15`、`lo
 
 したがって、製品側で単に `lowThreshold` / `highThreshold` の測定量を `availableToWrite` へ変更するだけでは、Stable AIDL文面の一部を採る代わりにdefault HAL / VTSのstatus意味と逆向きの挙動を導入し得る。逆に現行の `availableToRead` 基準を維持すると、Stable AIDLの「unused space size」という明文とは一致しない。
 
-## 現行製品方針
+## 現行製品契約との関係
 
-本製品のAndroid 14 profileでは、実際のframework/VTSとの相互運用を壊さないため、AOSP default HAL / VTSの歴史的なPlayback status挙動を維持する。
+現行製品が採用するPlayback status判定、threshold意味、statusMask、callback挙動は `TUNER_HAL_DESIGN_JA.md` の正本契約だけを参照する。本書はその判定式・戻り値・成功/拒否条件を再掲せず、上流文面と参照実装/VTSの競合が残るという再評価理由だけを記録する。
 
-ただし、この方針を frozen Stable AIDL の `PlaybackSettings.lowThreshold/highThreshold` 文面にも完全適合していると宣言してはならない。本件はAOSP上流の仕様文と参照実装・試験挙動の競合として扱い、どちらか一方を根拠に他方も満たしたとみなさない。
-
-また、本件を隠すために次を行ってはならない。
-
-- vendor独自のAIDL fieldまたはstatusを追加して標準契約を置換する。
-- statusMaskで要求されたALMOST statusを成功no-opとして永久に抑止する。
-- queue snapshotやthresholdを恣意的に変換し、AIDL文面とVTS挙動の双方を満たしたように見せる。
-- VTSだけを通す特殊分岐を製品runtimeへ追加する。
+再評価時も、vendor独自AIDLやVTS専用runtime分岐で上流競合を隠す案は採用候補にしない。
 
 ## AOSP根拠
 

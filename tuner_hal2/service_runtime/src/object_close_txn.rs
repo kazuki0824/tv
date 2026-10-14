@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
 
-use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_domain_request::{
-    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
-    RuntimeExecutableRequest,
+    AidlApi, AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+    CommandPlan, RuntimeExecutableRequest,
 };
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 
@@ -1294,7 +1293,7 @@ pub(crate) fn plan_and_begin_object_close_method_call_dispatch(
         generation,
         object_kind,
         method_plan.command_plan,
-        method_plan.command.runtime_executable_request(),
+        method_plan.executable_request.clone(),
         step,
     )
 }
@@ -1537,6 +1536,137 @@ mod tests {
     }
 
     #[test]
+    fn demux_close_unregisters_runtime_while_start_guard_is_active() {
+        use crate::boot::{FrontendProbeOutcome, ServiceBootOutcome};
+        use crate::registry::{
+            FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
+            SatellitePowerTopology,
+        };
+        use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
+        use maleicacid_tuner_hal2_demux::{FilterOpenType, OpenFilterRequest};
+
+        let frontend_id = 1_000_000;
+        let mut runtime = TunerServiceRuntime::new();
+        assert_eq!(
+            runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+                id: FrontendRuntimeId(frontend_id),
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                path: "/dev/px4video0".into(),
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 110_642_857,
+                        max_frequency_hz: 767_642_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 0x1000_0000,
+                    isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                        is_segment_auto: true,
+                        is_full_segment: true,
+                    }),
+                },
+            }]),
+            ServiceBootOutcome::Ready,
+        );
+
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &OpenFilterRequest {
+                    open_type: FilterOpenType::TsRaw,
+                    buffer_size: 4096,
+                    callback_present: false,
+                },
+            )
+            .unwrap();
+        runtime
+            .set_demux_frontend_data_source(demux.id.0, frontend_id)
+            .unwrap();
+
+        let demux_object_id = AidlObjectId(90);
+        let filter_object_id = AidlObjectId(91);
+        runtime
+            .object_table_mut()
+            .insert(RuntimeObjectEntry {
+                object_kind: AidlObjectKind::Demux,
+                object_id: demux_object_id,
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(i64::from(demux.id.0)),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: crate::RuntimeObjectLifecycle::Live,
+            })
+            .unwrap();
+        runtime
+            .object_table_mut()
+            .insert(RuntimeObjectEntry {
+                object_kind: AidlObjectKind::Filter,
+                object_id: filter_object_id,
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(i64::from(filter.id.0)),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Demux {
+                    demux: demux_object_id,
+                    generation: AidlObjectGeneration(1),
+                },
+                lifecycle: crate::RuntimeObjectLifecycle::Live,
+            })
+            .unwrap();
+
+        let start_guard = runtime
+            .try_begin_frontend_demux_start(frontend_id)
+            .unwrap()
+            .unwrap();
+
+        let first = close_object_use_case(
+            &mut runtime,
+            demux_object_id,
+            AidlObjectGeneration(1),
+            AidlObjectKind::Demux,
+            AidlMethodCall::DemuxClose,
+        )
+        .unwrap()
+        .begin_cleanup_attempt(&mut runtime)
+        .unwrap();
+
+        // START一回性guardはrelation変更やcloseの拒否条件ではない。
+        unregister_public_runtime_entries_for_close(&mut runtime, &first.cascade_entries)
+            .expect("START中もdemuxと子filterを解除できる");
+        assert!(runtime.registry().demux(demux.id).is_none());
+        assert!(runtime.registry().filter(filter.id).is_none());
+        assert!(runtime
+            .registry()
+            .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
+            .is_empty());
+        finish_object_close_use_case(&mut runtime, first.completion, Ok(()))
+            .expect("close所有者が終端を確定する");
+        assert_eq!(
+            runtime
+                .object_table()
+                .entry(demux_object_id)
+                .unwrap()
+                .lifecycle,
+            crate::RuntimeObjectLifecycle::Closed
+        );
+        assert_eq!(
+            runtime
+                .object_table()
+                .entry(filter_object_id)
+                .unwrap()
+                .lifecycle,
+            crate::RuntimeObjectLifecycle::Closed
+        );
+        start_guard.release();
+    }
+
+    #[test]
     fn close_cleanup_authority_can_cross_the_reaper_thread_boundary() {
         fn assert_send<T: Send>() {}
 
@@ -1550,7 +1680,7 @@ mod tests {
         drop(first);
 
         let retry = begin_filter_close_plan(&mut runtime, 3);
-        retry
+        let _attempt = retry
             .begin_cleanup_attempt(&mut runtime)
             .expect("dropped authority leaves the obligation reissuable");
     }
@@ -1561,7 +1691,7 @@ mod tests {
         let first = begin_filter_close_plan(&mut runtime, 30);
         let competing = begin_filter_close_plan(&mut runtime, 30);
 
-        first
+        let _attempt = first
             .begin_cleanup_attempt(&mut runtime)
             .expect("first cleanup attempt starts");
         assert!(competing.begin_cleanup_attempt(&mut runtime).is_err());
@@ -1597,12 +1727,31 @@ mod tests {
     }
 
     #[test]
+    fn closed_filter_is_not_idempotent_complete() {
+        let mut runtime = runtime_with_filter_for_close_attempt(41);
+        let close_plan = begin_filter_close_plan(&mut runtime, 41);
+        let cleanup_attempt = close_plan
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("cleanup試行開始が成功する");
+        finish_object_close_use_case(&mut runtime, cleanup_attempt.completion, Ok(()))
+            .expect("filter closeが成功する");
+
+        assert!(!ObjectCloseTxn::is_idempotent_complete(
+            &runtime,
+            AidlObjectId(41),
+            AidlObjectGeneration(1),
+            AidlObjectKind::Filter,
+        )
+        .expect("Closed filterのidentityを引き続き読める"));
+    }
+
+    #[test]
     fn finish_close_use_case_commits_after_successful_cleanup_report() {
         let mut runtime = runtime_with_filter_for_close_attempt(4);
         let close_plan = begin_filter_close_plan(&mut runtime, 4);
         let cleanup_attempt = close_plan
             .begin_cleanup_attempt(&mut runtime)
-            .expect("cleanup attempt begins");
+            .expect("cleanup試行開始が成功する");
         let completion = cleanup_attempt.completion;
 
         finish_object_close_use_case(&mut runtime, completion, Ok(())).expect("finish succeeds");
@@ -1623,7 +1772,7 @@ mod tests {
         let close_plan = begin_filter_close_plan(&mut runtime, 5);
         let cleanup_attempt = close_plan
             .begin_cleanup_attempt(&mut runtime)
-            .expect("cleanup attempt begins");
+            .expect("cleanup試行開始が成功する");
         let completion = cleanup_attempt.completion;
 
         let result = finish_object_close_use_case(
@@ -1698,5 +1847,186 @@ mod tests {
                 .lifecycle,
             crate::RuntimeObjectLifecycle::Closed
         );
+    }
+}
+
+#[cfg(test)]
+mod frontend_root_reopen_tests {
+    use super::*;
+    use crate::boot::{FrontendProbeOutcome, ServiceBootOutcome};
+    use crate::registry::{
+        FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
+        SatellitePowerTopology,
+    };
+    use crate::RuntimeObjectLifecycleSnapshot;
+    use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
+    use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlObjectKind};
+    use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
+
+    fn open_method() -> AidlMethodCall {
+        AidlMethodCall::PublicApi {
+            object: AidlObjectKind::Tuner,
+            api: AidlApi::TunerOpenFrontendById,
+        }
+    }
+
+    fn runtime_with_frontend(frontend_id: i32) -> TunerServiceRuntime {
+        let mut runtime = TunerServiceRuntime::new();
+        assert_eq!(
+            runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+                id: FrontendRuntimeId(frontend_id),
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                path: "/dev/null".into(),
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 473_142_857,
+                        max_frequency_hz: 473_142_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 0x1000_0007,
+                    isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                        is_segment_auto: true,
+                        is_full_segment: true,
+                    }),
+                },
+            }]),
+            ServiceBootOutcome::Ready
+        );
+        runtime
+    }
+
+    #[test]
+    fn active_frontend_lease_stays_unavailable_and_has_typed_diagnostic() {
+        let frontend_id = 7;
+        let mut runtime = runtime_with_frontend(frontend_id);
+        let first = runtime
+            .root_open_txn()
+            .open_frontend_root_object_for_id(frontend_id, open_method())
+            .expect("最初のfrontend openが成功する");
+
+        assert!(matches!(
+            runtime
+                .root_open_txn()
+                .open_frontend_root_object_for_id(frontend_id, open_method()),
+            Err(HalError::UnsupportedDetail {
+                feature: "frontend.open",
+                ..
+            })
+        ));
+
+        let occupant = runtime
+            .runtime_object_diagnostic_snapshots()
+            .into_iter()
+            .find(|snapshot| {
+                snapshot.object_kind() == AidlObjectKind::Frontend
+                    && snapshot.public_runtime_id().0 == i64::from(frontend_id)
+            })
+            .expect("active frontend occupantが診断に存在する");
+        assert_eq!(occupant.object_id(), first.object_id());
+        assert_eq!(occupant.generation(), first.generation());
+        assert_eq!(occupant.lifecycle(), RuntimeObjectLifecycleSnapshot::Live);
+    }
+
+    #[test]
+    fn cleanup_pending_frontend_reopens_only_after_close_owner_completion() {
+        let frontend_id = 8;
+        let mut runtime = runtime_with_frontend(frontend_id);
+        let first = runtime
+            .root_open_txn()
+            .open_frontend_root_object_for_id(frontend_id, open_method())
+            .expect("最初のfrontend openが成功する");
+
+        let first_close = crate::close_object_use_case(
+            &mut runtime,
+            first.object_id(),
+            first.generation(),
+            AidlObjectKind::Frontend,
+            AidlMethodCall::FrontendClose,
+        )
+        .expect("close plan開始が成功する");
+        let first_attempt = first_close
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("最初のcleanup試行開始が成功する");
+        crate::finish_object_close_use_case(
+            &mut runtime,
+            first_attempt.completion,
+            Err(crate::ObjectCloseCleanupFailure::new(
+                CleanupStep::ReleaseBackend,
+                HalError::cleanup_failed(
+                    "Issue #181の遅延cleanup",
+                    "worker cleanupは引き続きreaperが所有しています",
+                ),
+            )),
+        )
+        .expect_err("未完了cleanupがpendingのまま残る");
+
+        assert!(matches!(
+            runtime
+                .root_open_txn()
+                .open_frontend_root_object_for_id(frontend_id, open_method()),
+            Err(HalError::UnsupportedDetail {
+                feature: "frontend.open",
+                ..
+            })
+        ));
+        assert!(runtime
+            .runtime_object_diagnostic_snapshots()
+            .iter()
+            .any(|snapshot| {
+                snapshot.object_id() == first.object_id()
+                    && matches!(
+                        snapshot.lifecycle(),
+                        RuntimeObjectLifecycleSnapshot::CleanupPending { .. }
+                    )
+            }));
+
+        let retry_close = crate::close_object_use_case(
+            &mut runtime,
+            first.object_id(),
+            first.generation(),
+            AidlObjectKind::Frontend,
+            AidlMethodCall::FrontendClose,
+        )
+        .expect("既存close ownerがretryを受理する");
+        let retry_attempt = retry_close
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("retry cleanup試行開始が成功する");
+        crate::finish_object_close_use_case(&mut runtime, retry_attempt.completion, Ok(()))
+            .expect("既存close ownerがClosedへ到達する");
+
+        let reopened = runtime
+            .root_open_txn()
+            .open_frontend_root_object_for_id(frontend_id, open_method())
+            .expect("Closed後にfrontendを再openできる");
+        assert_ne!(reopened.object_id(), first.object_id());
+    }
+
+    #[test]
+    fn quarantined_frontend_remains_fail_closed() {
+        let frontend_id = 9;
+        let mut runtime = runtime_with_frontend(frontend_id);
+        let first = runtime
+            .root_open_txn()
+            .open_frontend_root_object_for_id(frontend_id, open_method())
+            .expect("最初のfrontend openが成功する");
+        runtime
+            .object_table_mut()
+            .quarantine_cascade(first.object_id(), first.generation())
+            .expect("quarantineが成功する");
+
+        assert!(matches!(
+            runtime
+                .root_open_txn()
+                .open_frontend_root_object_for_id(frontend_id, open_method()),
+            Err(HalError::UnsupportedDetail {
+                feature: "frontend.open",
+                ..
+            })
+        ));
     }
 }

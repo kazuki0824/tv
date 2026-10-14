@@ -15,9 +15,9 @@ pub(crate) use release_txn::{
 };
 pub(crate) use shared_backing::ClientHandleState;
 pub use shared_backing::{
-    AvDataIdAllocator, AvFileIdentity, AvHandleReleaseDescriptor, AvPayloadDeliveryOutcome,
-    AvRuntimeBudget, AvSharedBacking, AvSharedBackingError, AvSharedHandleExport,
-    DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+    AvDataIdAllocator, AvFileIdentity, AvFlowDiagnosticSnapshot, AvHandleReleaseDescriptor,
+    AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking, AvSharedBackingError,
+    AvSharedHandleExport, DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
     DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };
 pub use slot::{AvDataId, AvSlotId};

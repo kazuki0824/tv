@@ -19,14 +19,9 @@ ARIB TR-B14 / TR-B15 の日本向け運用では、SDT / EIT の `free_CA_mode` 
 
 このため `COLUMN_SCRAMBLED` という公開名称と「scrambled or not」という説明は、AOSPが同時に要求する `free_ca_mode` codingをARIBへ適用した場合にミスリーディングである。
 
-## 本製品の扱い
+## 本製品契約との関係
 
-本製品はAOSP公開契約を変更しない。
-
-- ARIB EIT / SDT の `free_CA_mode` をAOSP契約に従って対応する `COLUMN_SCRAMBLED` へ投影する。
-- この値を実スクランブル状態として解釈しない。
-- 無料/有料判定と、TS componentの実際のscramble/non-scramble判定を別の意味情報として扱う。
-- AOSP公開APIの列名をvendor独自に置換したり、別codingへ変更したりしない。
+本製品のARIB `free_CA_mode` とTvProvider標準列の投影、実スクランブル状態との意味分離は `ARIB_SI_EPG_TvProvider投影方針.md` を唯一の正本とする。本書は現行投影規則を再定義せず、AOSP公開APIの名称・説明と放送規格codingの間に上流課題が残るという理由だけを記録する。
 
 ## AOSP upstream で必要な対応
 
@@ -46,4 +41,4 @@ ARIB TR-B14 / TR-B15 の日本向け運用では、SDT / EIT の `free_CA_mode` 
 - AOSPへJavadoc修正パッチを提出し、upstreamで扱いが確定した。
 - Android Issue Trackerへ報告し、AOSP側で仕様・文書・APIの扱いが確定した。
 
-upstreamの結論が出るまでは、本製品のARIB投影契約で `COLUMN_SCRAMBLED` と実スクランブル状態を明示的に分離する。
+upstreamの結論に応じて現行投影契約を変更する必要が生じた場合は、まず `ARIB_SI_EPG_TvProvider投影方針.md` を更新し、本future_workは判断理由と再評価履歴だけを追従させる。

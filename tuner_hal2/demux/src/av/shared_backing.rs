@@ -244,6 +244,33 @@ struct EventLocalAllocation {
     length: usize,
 }
 
+/// AV tokenの所有権を変更せず、割当・解放の進捗を診断する。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AvFlowDiagnosticSnapshot {
+    pub delivered: u64,
+    pub released: u64,
+    pub discarded_undelivered: u64,
+    pub no_free_slot: u64,
+    pub active_shared_slots: usize,
+    pub active_event_local: usize,
+    pub active_bytes: usize,
+    pub slot_capacity: usize,
+    pub max_outstanding_events: usize,
+    pub per_filter_live_bytes: usize,
+    pub runtime_used_bytes: usize,
+    pub runtime_limit_bytes: usize,
+}
+
+#[derive(Debug, Default)]
+struct AvFlowDiagnosticCounters {
+    delivered: u64,
+    released: u64,
+    discarded_undelivered: u64,
+    no_free_slot: u64,
+    last_sampled_delivery_threshold: u64,
+    last_sampled_shortage_threshold: u64,
+}
+
 #[derive(Debug)]
 pub struct AvSharedBacking {
     state: ClientHandleState,
@@ -259,6 +286,7 @@ pub struct AvSharedBacking {
     shared_handle_identity: Option<AvFileIdentity>,
     event_local_allocations: BTreeMap<AvDataId, EventLocalAllocation>,
     event_local_bytes: usize,
+    diagnostics: AvFlowDiagnosticCounters,
 }
 
 impl AvSharedBacking {
@@ -339,7 +367,90 @@ impl AvSharedBacking {
             shared_handle_identity: None,
             event_local_allocations: BTreeMap::new(),
             event_local_bytes: 0,
+            diagnostics: AvFlowDiagnosticCounters::default(),
         }
+    }
+
+    /// 正本の使用中スロットと診断専用の累計値を取得する。
+    pub fn diagnostic_snapshot(&self) -> AvFlowDiagnosticSnapshot {
+        let active_shared_slots = self
+            .slots
+            .iter()
+            .filter(|slot| slot.active_data_id.is_some())
+            .count();
+        let shared_bytes = self
+            .slots
+            .iter()
+            .filter(|slot| slot.active_data_id.is_some())
+            .fold(0usize, |total, slot| total.saturating_add(slot.data_length));
+        AvFlowDiagnosticSnapshot {
+            delivered: self.diagnostics.delivered,
+            released: self.diagnostics.released,
+            discarded_undelivered: self.diagnostics.discarded_undelivered,
+            no_free_slot: self.diagnostics.no_free_slot,
+            active_shared_slots,
+            active_event_local: self.event_local_allocations.len(),
+            active_bytes: shared_bytes.saturating_add(self.event_local_bytes),
+            slot_capacity: self.slots.len(),
+            max_outstanding_events: self.max_outstanding_events,
+            per_filter_live_bytes: self.per_filter_live_bytes,
+            runtime_used_bytes: self.runtime_budget.used_bytes.load(Ordering::Acquire),
+            runtime_limit_bytes: self.runtime_budget.limit_bytes,
+        }
+    }
+
+    // 配送イベントはreport内で複数件まとめられる。実割当済みの累積値で
+    // 通過した2の累乗閾値を一度だけ消費し、同じreportの複数eventで再出力しない。
+    // callback保留中でreport.generated_eventsが空でも割当進捗を観測できる。
+    pub(crate) fn take_delivery_sample(&mut self) -> Option<(u64, u64, AvFlowDiagnosticSnapshot)> {
+        let delivered = self.diagnostics.delivered;
+        if delivered == 0 {
+            return None;
+        }
+        let threshold = 1u64 << (u64::BITS - 1 - delivered.leading_zeros());
+        let previous = self.diagnostics.last_sampled_delivery_threshold;
+        if threshold <= previous {
+            return None;
+        }
+        self.diagnostics.last_sampled_delivery_threshold = threshold;
+        Some((previous, threshold, self.diagnostic_snapshot()))
+    }
+
+    // 直前に観測した閾値より高い2の累乗へ達した場合だけ消費する。
+    pub(crate) fn take_shortage_sample(&mut self) -> Option<(u64, u64, AvFlowDiagnosticSnapshot)> {
+        let shortage = self.diagnostics.no_free_slot;
+        if shortage == 0 {
+            return None;
+        }
+        let threshold = 1u64 << (u64::BITS - 1 - shortage.leading_zeros());
+        let previous = self.diagnostics.last_sampled_shortage_threshold;
+        if threshold <= previous {
+            return None;
+        }
+        self.diagnostics.last_sampled_shortage_threshold = threshold;
+        Some((previous, threshold, self.diagnostic_snapshot()))
+    }
+
+    fn increment_diagnostic_counter(counter: &mut u64, name: &'static str) {
+        if *counter == u64::MAX - 1 {
+            eprintln!(
+                "diagnostic_counter_saturated counter={name} owner=AvSharedBacking instance={counter:p}"
+            );
+        }
+        *counter = counter.saturating_add(1);
+    }
+
+    fn record_delivery_outcome(&mut self, outcome: &AvPayloadDeliveryOutcome) {
+        let (counter, name) = match outcome {
+            AvPayloadDeliveryOutcome::Delivered(_) => {
+                (&mut self.diagnostics.delivered, "delivered")
+            }
+            AvPayloadDeliveryOutcome::NoFreeSlot => {
+                (&mut self.diagnostics.no_free_slot, "no_free_slot")
+            }
+            _ => return,
+        };
+        Self::increment_diagnostic_counter(counter, name);
     }
 
     #[cfg(test)]
@@ -364,13 +475,13 @@ impl AvSharedBacking {
             .checked_mul(self.slots.len())
             .ok_or(AvSharedBackingError::InvariantViolation)?;
         if self.file.is_none() {
-            // 安全性: size_bytesは上で検査済みで、allocatorへRust pointerを渡さず、新規FDまたは負のerrorだけを受け取る。
+            // SAFETY: size_bytesは上で検査済みで、allocatorへRust pointerを渡さず、新規FDまたは負のerrorだけを受け取る。
             let raw_fd = unsafe { tuner_dmabuf_heap_alloc_system(size_bytes) };
             // 事後条件: 非負の新規FDだけを一意なFile所有権へ移管する。
             if raw_fd < 0 {
                 return Err(AvSharedBackingError::AllocationFailed);
             }
-            // 安全性: raw_fdは非負かつ新規でRust ownerを持たず、ここで所有権を正確に1回だけ移管する。
+            // SAFETY: raw_fdは非負かつ新規でRust ownerを持たず、ここで所有権を正確に1回だけ移管する。
             self.file = Some(unsafe { File::from_raw_fd(raw_fd) });
             // 事後条件: self.fileがFDのcloseを担当する唯一のRust ownerになる。
         }
@@ -396,6 +507,18 @@ impl AvSharedBacking {
         payload: &[u8],
         metadata: AvMediaEventMetadata,
     ) -> Result<AvPayloadDeliveryOutcome, AvSharedBackingError> {
+        let result = self.allocate_payload_bytes_inner(payload, metadata);
+        if let Ok(outcome) = &result {
+            self.record_delivery_outcome(outcome);
+        }
+        result
+    }
+
+    fn allocate_payload_bytes_inner(
+        &mut self,
+        payload: &[u8],
+        metadata: AvMediaEventMetadata,
+    ) -> Result<AvPayloadDeliveryOutcome, AvSharedBackingError> {
         let slot_index = match self.shared_slot_candidate(payload.len()) {
             Ok(slot_index) => slot_index,
             Err(_) => return self.allocate_event_local_payload(payload, metadata),
@@ -413,7 +536,7 @@ impl AvSharedBacking {
             .slot_size
             .checked_mul(self.slots.len())
             .ok_or(AvSharedBackingError::InvariantViolation)?;
-        // 安全性: fileはliveで、map_lenは検査済みの全backing範囲、offsetは0で、要求mappingとaliasするRust参照はない。
+        // SAFETY: fileはliveで、map_lenは検査済みの全backing範囲、offsetは0で、要求mappingとaliasするRust参照はない。
         let mapped = unsafe {
             mmap(
                 ptr::null_mut(),
@@ -428,7 +551,7 @@ impl AvSharedBacking {
         if mapped == MAP_FAILED {
             return Err(AvSharedBackingError::MappingFailed);
         }
-        // 安全性: slot検証でoffset + payload.len() <= map_lenを保証し、sourceは読取り可能、destinationは書込み可能で領域は重ならない。
+        // SAFETY: slot検証でoffset + payload.len() <= map_lenを保証し、sourceは読取り可能、destinationは書込み可能で領域は重ならない。
         unsafe {
             ptr::copy_nonoverlapping(
                 payload.as_ptr(),
@@ -437,7 +560,7 @@ impl AvSharedBacking {
             );
         }
         // 事後条件: 選択したmapped slotへpayload.len() byteを正確にcopyする。
-        // 安全性: mappedは成功した同一mmap pointerで、map_lenも同一mapping長であり、mapped参照を外へ持ち出さない。
+        // SAFETY: mappedは成功した同一mmap pointerで、map_lenも同一mapping長であり、mapped参照を外へ持ち出さない。
         if unsafe { munmap(mapped, map_len) } != 0 {
             return Err(AvSharedBackingError::UnmappingFailed);
         }
@@ -504,16 +627,16 @@ impl AvSharedBacking {
         else {
             return Ok(AvPayloadDeliveryOutcome::NoFreeSlot);
         };
-        // 安全性: payloadは非emptyでlenは値渡しし、allocatorは新規FDまたは負のerrorを返す。
+        // SAFETY: payloadは非emptyでlenは値渡しし、allocatorは新規FDまたは負のerrorを返す。
         let raw_fd = unsafe { tuner_dmabuf_heap_alloc_system(payload.len()) };
         // 事後条件: 非負の新規FDだけを一意なFile所有権へ移管する。
         if raw_fd < 0 {
             return Err(AvSharedBackingError::AllocationFailed);
         }
-        // 安全性: raw_fdは新規かつ非負でRust ownerを持たず、Fileへ所有権を正確に1回だけ移管する。
+        // SAFETY: raw_fdは新規かつ非負でRust ownerを持たず、Fileへ所有権を正確に1回だけ移管する。
         let file = Arc::new(unsafe { File::from_raw_fd(raw_fd) });
         // 事後条件: Arc<File>がclose責務を所有し、raw_fdを別途wrapまたはcloseしない。
-        // 安全性: fileはliveで、payload.len()は非0のmapping範囲、offsetは0で、要求mappingとaliasするRust参照はない。
+        // SAFETY: fileはliveで、payload.len()は非0のmapping範囲、offsetは0で、要求mappingとaliasするRust参照はない。
         let mapped = unsafe {
             mmap(
                 ptr::null_mut(),
@@ -528,12 +651,12 @@ impl AvSharedBacking {
         if mapped == MAP_FAILED {
             return Err(AvSharedBackingError::MappingFailed);
         }
-        // 安全性: payloadはlen byte読取り可能、mappedは同じlenを書込み可能で、独立dmabuf storageはsliceと重ならない。
+        // SAFETY: payloadはlen byte読取り可能、mappedは同じlenを書込み可能で、独立dmabuf storageはsliceと重ならない。
         unsafe {
             ptr::copy_nonoverlapping(payload.as_ptr(), mapped as *mut u8, payload.len());
         }
         // 事後条件: 完全なevent payloadがmapped dmabuf領域を占有する。
-        // 安全性: mappedは成功した同一mmap pointerで、payload.len()も同一mapping長であり、mapped参照を外へ持ち出さない。
+        // SAFETY: mappedは成功した同一mmap pointerで、payload.len()も同一mapping長であり、mapped参照を外へ持ち出さない。
         if unsafe { munmap(mapped, payload.len()) } != 0 {
             return Err(AvSharedBackingError::UnmappingFailed);
         }
@@ -594,6 +717,12 @@ impl AvSharedBacking {
     }
 
     pub fn allocate_payload(&mut self, data_length: usize) -> AvPayloadDeliveryOutcome {
+        let outcome = self.allocate_payload_inner(data_length);
+        self.record_delivery_outcome(&outcome);
+        outcome
+    }
+
+    fn allocate_payload_inner(&mut self, data_length: usize) -> AvPayloadDeliveryOutcome {
         let slot_index = match self.shared_slot_candidate(data_length) {
             Ok(slot_index) => slot_index,
             Err(outcome) => return outcome,
@@ -687,7 +816,7 @@ impl AvSharedBacking {
     }
 
     pub(crate) fn discard_undelivered_data_id(&mut self, data_id: AvDataId) -> bool {
-        if let Some(allocation) = self.event_local_allocations.get(&data_id) {
+        let discarded = if let Some(allocation) = self.event_local_allocations.get(&data_id) {
             let Some(next_live_bytes) = self.event_local_bytes.checked_sub(allocation.length)
             else {
                 return false;
@@ -700,7 +829,14 @@ impl AvSharedBacking {
             true
         } else {
             self.release_slot(data_id)
+        };
+        if discarded {
+            Self::increment_diagnostic_counter(
+                &mut self.diagnostics.discarded_undelivered,
+                "discarded_undelivered",
+            );
         }
+        discarded
     }
 
     pub fn classify_release(
@@ -771,6 +907,7 @@ impl AvSharedBacking {
                 } else if !self.release_slot(data_id) {
                     return AvHandleReleaseOutcome::RegistryFailure;
                 }
+                Self::increment_diagnostic_counter(&mut self.diagnostics.released, "released");
             }
             _ => {}
         }
@@ -888,6 +1025,223 @@ impl Drop for AvSharedBacking {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampled_delivery_reports_batched_two_and_three_frames_without_duplicates() {
+        // 1packetの音声PESから2frameが生成されても、report後の観測は一度だけ。
+        let mut two = AvSharedBacking::with_layout(8, 188);
+        two.mark_exported();
+        for _ in 0..2 {
+            assert!(matches!(
+                two.allocate_payload(100),
+                AvPayloadDeliveryOutcome::Delivered(_)
+            ));
+        }
+        let (previous, threshold, snapshot) = two
+            .take_delivery_sample()
+            .expect("two-frame report must sample");
+        assert_eq!((previous, threshold, snapshot.delivered), (0, 2, 2));
+        assert!(two.take_delivery_sample().is_none());
+
+        // 終了時の累積値が3でも、途中で通過した閾値2を取りこぼさない。
+        let mut three = AvSharedBacking::with_layout(8, 188);
+        three.mark_exported();
+        for _ in 0..3 {
+            assert!(matches!(
+                three.allocate_payload(100),
+                AvPayloadDeliveryOutcome::Delivered(_)
+            ));
+        }
+        let (previous, threshold, snapshot) = three
+            .take_delivery_sample()
+            .expect("three-frame report must sample");
+        assert_eq!((previous, threshold, snapshot.delivered), (0, 2, 3));
+        assert!(three.take_delivery_sample().is_none());
+
+        // 後続packetで4へ達した時だけ新しい閾値として再度記録する。
+        assert!(matches!(
+            three.allocate_payload(100),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
+        let (previous, threshold, snapshot) = three
+            .take_delivery_sample()
+            .expect("fourth allocation must sample");
+        assert_eq!((previous, threshold, snapshot.delivered), (2, 4, 4));
+        assert!(three.take_delivery_sample().is_none());
+    }
+
+    #[test]
+    fn sampled_delivery_starts_at_one_and_never_repeats_after_counter_saturation() {
+        let mut backing = AvSharedBacking::with_layout(2, 188);
+        backing.mark_exported();
+        assert!(backing.take_delivery_sample().is_none());
+        assert!(matches!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
+        let (previous, threshold, snapshot) =
+            backing.take_delivery_sample().expect("initial success");
+        assert_eq!((previous, threshold, snapshot.delivered), (0, 1, 1));
+        assert!(backing.take_delivery_sample().is_none());
+
+        backing.diagnostics.delivered = u64::MAX - 1;
+        let (previous, threshold, snapshot) = backing
+            .take_delivery_sample()
+            .expect("highest power-of-two threshold");
+        assert_eq!(
+            (previous, threshold, snapshot.delivered),
+            (1, 1u64 << 63, u64::MAX - 1)
+        );
+        assert!(backing.take_delivery_sample().is_none());
+        backing.diagnostics.delivered = u64::MAX;
+        assert!(backing.take_delivery_sample().is_none());
+    }
+
+    #[test]
+    fn sampled_shortage_handles_batched_two_three_four_without_duplicate() {
+        for (rejections, expected_threshold) in [(2, 2), (3, 2), (4, 4)] {
+            let mut backing = AvSharedBacking::with_layout(1, 188);
+            backing.mark_exported();
+            assert!(matches!(
+                backing.allocate_payload(100),
+                AvPayloadDeliveryOutcome::Delivered(_)
+            ));
+            for _ in 0..rejections {
+                assert_eq!(
+                    backing.allocate_payload(100),
+                    AvPayloadDeliveryOutcome::NoFreeSlot
+                );
+            }
+            let (previous, threshold, snapshot) = backing.take_shortage_sample().expect("shortage");
+            assert_eq!(previous, 0);
+            assert_eq!(threshold, expected_threshold);
+            assert_eq!(snapshot.no_free_slot, rejections);
+            assert!(backing.take_shortage_sample().is_none());
+            if rejections == 3 {
+                assert_eq!(
+                    backing.allocate_payload(100),
+                    AvPayloadDeliveryOutcome::NoFreeSlot
+                );
+                let (previous, threshold, snapshot) =
+                    backing.take_shortage_sample().expect("fourth");
+                assert_eq!((previous, threshold, snapshot.no_free_slot), (2, 4, 4));
+            }
+            assert!(backing.take_shortage_sample().is_none());
+        }
+    }
+
+    #[test]
+    fn sampled_shortage_saturates_after_real_allocation_failures() {
+        let mut backing = AvSharedBacking::with_layout(1, 188);
+        backing.mark_exported();
+        assert!(matches!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
+        assert!(backing.take_shortage_sample().is_none());
+        assert_eq!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::NoFreeSlot
+        );
+        let (previous, threshold, _) = backing.take_shortage_sample().expect("first rejection");
+        assert_eq!((previous, threshold), (0, 1));
+        backing.diagnostics.no_free_slot = u64::MAX - 2;
+        assert_eq!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::NoFreeSlot
+        );
+        let (previous, threshold, snapshot) =
+            backing.take_shortage_sample().expect("last threshold");
+        assert_eq!(
+            (previous, threshold, snapshot.no_free_slot),
+            (1, 1u64 << 63, u64::MAX - 1)
+        );
+        assert_eq!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::NoFreeSlot
+        );
+        assert_eq!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::NoFreeSlot
+        );
+        assert_eq!(backing.diagnostic_snapshot().no_free_slot, u64::MAX);
+        assert!(backing.take_shortage_sample().is_none());
+    }
+
+    #[test]
+    fn diagnostic_counter_saturation_does_not_prevent_av_delivery() {
+        let mut backing = AvSharedBacking::with_layout(1, 188);
+        backing.mark_exported();
+        backing.diagnostics.delivered = u64::MAX - 1;
+        let first = match backing.allocate_payload(100) {
+            AvPayloadDeliveryOutcome::Delivered(event) => event,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert_eq!(backing.diagnostic_snapshot().delivered, u64::MAX);
+        assert!(matches!(
+            backing.apply_release(
+                AvHandleReleaseDescriptor::Empty,
+                first.data_id,
+                AvFilterReleaseState::OpenAv,
+            ),
+            AvHandleReleaseOutcome::SlotReleased { .. }
+        ));
+        assert!(matches!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
+        assert_eq!(backing.diagnostic_snapshot().delivered, u64::MAX);
+    }
+
+    #[test]
+    fn diagnostic_snapshot_distinguishes_client_release_and_undelivered_discard() {
+        let mut backing = AvSharedBacking::with_layout(2, 188);
+        backing.mark_exported();
+        let first = match backing.allocate_payload(100) {
+            AvPayloadDeliveryOutcome::Delivered(event) => event,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        let second = match backing.allocate_payload(100) {
+            AvPayloadDeliveryOutcome::Delivered(event) => event,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert_eq!(
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::NoFreeSlot
+        );
+        let saturated = backing.diagnostic_snapshot();
+        assert_eq!(saturated.delivered, 2);
+        assert_eq!(saturated.no_free_slot, 1);
+        assert_eq!(saturated.active_shared_slots, 2);
+        assert_eq!(saturated.active_bytes, 200);
+        assert_eq!(saturated.slot_capacity, 2);
+        assert_eq!(saturated.max_outstanding_events, 2);
+        assert_eq!(saturated.per_filter_live_bytes, 376);
+        assert_eq!(saturated.runtime_used_bytes, 200);
+        assert_eq!(saturated.runtime_limit_bytes, usize::MAX);
+
+        assert_eq!(
+            backing.apply_release(
+                AvHandleReleaseDescriptor::Empty,
+                first.data_id,
+                AvFilterReleaseState::OpenAv,
+            ),
+            AvHandleReleaseOutcome::SlotReleased {
+                data_id: first.data_id
+            },
+        );
+        assert!(backing.discard_undelivered_data_id(second.data_id));
+        assert!(!backing.discard_undelivered_data_id(second.data_id));
+        let drained = backing.diagnostic_snapshot();
+        assert_eq!(drained.delivered, 2);
+        assert_eq!(drained.released, 1);
+        assert_eq!(drained.discarded_undelivered, 1);
+        assert_eq!(drained.no_free_slot, 1);
+        assert_eq!(drained.active_shared_slots, 0);
+        assert_eq!(drained.active_event_local, 0);
+        assert_eq!(drained.active_bytes, 0);
+        assert_eq!(drained.runtime_used_bytes, 0);
+    }
 
     #[test]
     fn payload_delivery_requires_exported_active_client_handle() {
@@ -1118,6 +1472,11 @@ mod tests {
             second.allocate_payload(100),
             AvPayloadDeliveryOutcome::NoFreeSlot
         );
+        let budget_exhausted = second.diagnostic_snapshot();
+        assert_eq!(budget_exhausted.no_free_slot, 1);
+        assert_eq!(budget_exhausted.active_shared_slots, 0);
+        assert_eq!(budget_exhausted.runtime_used_bytes, 188);
+        assert_eq!(budget_exhausted.runtime_limit_bytes, 250);
         assert_eq!(
             first.apply_release(
                 AvHandleReleaseDescriptor::Empty,

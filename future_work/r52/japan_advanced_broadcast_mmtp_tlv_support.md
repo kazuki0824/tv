@@ -2,7 +2,7 @@
 
 ## 位置付け
 
-この文書は、現行製品で採用しない将来拡張範囲を記録する。現行製品の Tuner HAL は MPEG-2 TS 系の日本向け放送を対象とし、demux capability / filter capability / VTS profile は TS-only とする。この方針の正本は `TUNER_HAL_DESIGN_JA.md` および製品スコープを定める文書であり、本書は現行仕様を再定義しない。
+この文書は、日本の高度放送を製品対象へ追加する場合に再設計が必要となる論点を記録する。現行製品のtransport capability / VTS profileと製品スコープは `TUNER_HAL_DESIGN_JA.md` と `開発規則.md` を正とし、本書では現行値を再掲しない。
 
 日本の現行2K放送が終了すること自体を確定済みの移行条件とはしない。将来、製品対象を高度広帯域衛星デジタル放送（ISDB-S3）または高度地上デジタルテレビジョン放送へ拡張し、あるいは現行TS系の対象をそれらへ置き換える場合に、本項目を再評価する。
 
@@ -40,6 +40,6 @@ Android Tuner HAL AIDL V2 の `DemuxFilterMainType` は `TS` に加えて `MMTP`
 
 ## 非採用範囲の管理境界
 
-- 現行製品では `MMTP` / `TLV` / `IP` / `ALP` を対応 capability として広告せず、TS-only 方針を維持する。
+- 現行製品の広告capabilityは `TUNER_HAL_DESIGN_JA.md` を参照し、本項目を根拠に変更しない。
 - 本書の存在を理由に、未実装 main type を VTS profile や `filterCaps` / `linkCaps` へ先行して追加しない。
 - 日本の高度放送を製品スコープへ追加する判断が行われた場合、本書を単なる実装 TODO として消化せず、放送規格から AOSP-facing capability、data path、TIS までを横断する設計変更として再評価する。

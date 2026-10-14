@@ -19,6 +19,7 @@ use crate::registry::{
     FrontendRuntimeId, LnbPhysicalIoPermit, LnbRegistryProfile, LnbRuntimeId,
     PreparedLnbAssignmentLease,
 };
+use crate::LnbBackendFailureDiagnosticRecord;
 
 #[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 
@@ -99,20 +100,24 @@ pub(crate) struct ExecutedLnbLifecycleClose {
     lnb_key: LnbRuntimeId,
     runtime_close: PreparedLnbClose,
     backend_result: LnbBackendApplyOutcome,
+    failure_diagnostic: Option<LnbBackendFailureDiagnosticRecord>,
 }
 
 impl PreparedLnbLifecycleClose {
     pub(crate) fn execute(self, permit: &LnbPhysicalIoPermit<'_>) -> ExecutedLnbLifecycleClose {
-        let backend_result = if self.runtime_close.requires_backend_io() {
+        let (backend_result, failure_diagnostic) = if self.runtime_close.requires_backend_io() {
             let mut backend = ServiceRuntimeLnbProfileAdapter::new(self.backend, permit);
-            backend.apply_lnb_state(self.runtime_close.lnb_id(), LnbElectricalState::safe())
+            let result =
+                backend.apply_lnb_state(self.runtime_close.lnb_id(), LnbElectricalState::safe());
+            (result, backend.take_failure_diagnostic())
         } else {
-            LnbBackendApplyOutcome::Applied
+            (LnbBackendApplyOutcome::Applied, None)
         };
         ExecutedLnbLifecycleClose {
             lnb_key: self.lnb_key,
             runtime_close: self.runtime_close,
             backend_result,
+            failure_diagnostic,
         }
     }
 }
@@ -386,6 +391,9 @@ impl<'a> LnbMutationContext<'a> {
         &mut self,
         executed: ExecutedLnbLifecycleClose,
     ) -> Result<(), HalError> {
+        if let Some(record) = executed.failure_diagnostic.clone() {
+            self.runtime.record_lnb_backend_failure_diagnostic(record);
+        }
         self.runtime
             .registry_mut()
             .finish_lnb_close(

@@ -5,15 +5,239 @@ package com.maleicacid.tvinput.tis
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.StreamSelectorType
 import com.maleicacid.tvinput.common.TransportStreamId16
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-@Suppress("TooManyFunctions")
+// scanの終端と公開拒否を同じ契約群で検証し、取消しの反例を別fixtureへ分散しない。
+@Suppress("TooManyFunctions", "LargeClass")
 class ScanPlanPolicyTest {
+    @Test
+    fun finalizedScanTerminalRejectsLateCancelWithoutRewritingCommit() {
+        val cancelled = AtomicBoolean(false)
+        val fence = ChannelScanController.ScanGenerationFence(Any(), cancelled)
+        var committed = false
+        val terminal =
+            fence.finishScan {
+                committed = true
+                ChannelScanController.ScanTerminal(ChannelScanController.ScanTerminalOutcome.COMPLETED)
+            }
+        assertFalse(fence.cancel())
+        assertFalse(cancelled.get())
+        assertTrue(committed)
+        assertEquals(ChannelScanController.ScanTerminalOutcome.COMPLETED, terminal.outcome)
+        val before = ChannelScanController.ScanGenerationFence(Any(), cancelled)
+        assertTrue(before.cancel())
+        val cancelledTerminal =
+            before.finishScan {
+                ChannelScanController.ScanTerminal(
+                    if (cancelled.get()) {
+                        ChannelScanController.ScanTerminalOutcome.CANCELLED
+                    } else {
+                        ChannelScanController.ScanTerminalOutcome.COMPLETED
+                    },
+                )
+            }
+        assertEquals(ChannelScanController.ScanTerminalOutcome.CANCELLED, cancelledTerminal.outcome)
+    }
+
+    @Test
+    fun cancellationDuringFinalSnapshotRetryStopsAcquisitionAndPublication() {
+        val cancelled = AtomicBoolean(false)
+        var attempts = 0
+        val snapshot =
+            ChannelScanController.acquireFinalSnapshotUnlessCancelled<String>(
+                cancelled,
+                attempt = {
+                    attempts++
+                    null
+                },
+                waitForRetry = { cancelled.set(true) },
+            )
+        assertEquals(1, attempts)
+        assertEquals(null, snapshot)
+        val result =
+            ChannelScanController.SiCollectionResult(
+                ChannelScanController.SiCollectionOutcome.CANCELLED,
+                null,
+                1,
+            )
+        assertFalse(result.mayPublishChannels)
+    }
+
+    @Test
+    fun cancellationBeforePublicationGatePreventsProviderSideEffects() {
+        val cancelled = AtomicBoolean(false)
+        val lock = Any()
+        val fence = ChannelScanController.ScanGenerationFence(lock, cancelled)
+        synchronized(lock) { cancelled.set(true) }
+        var writes = 0
+        assertEquals(null, fence.publishIfCurrent(1L) { writes++ })
+        assertEquals(0, writes)
+    }
+
+    @Test
+    fun setupScanResultCarriesFatalSynchronousTuneFailure() {
+        val result =
+            ChannelScanController.ScanResult(
+                scanned = 1,
+                published = 0,
+                diagnostics = emptyList(),
+                terminal =
+                    ChannelScanController.ScanTerminal(
+                        ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED,
+                        "選局に失敗しました result=3 InvalidLifecycle",
+                    ),
+            )
+        check(result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED)
+        check(result.terminal.detail.contains("InvalidLifecycle"))
+    }
+
+    @Test
+    fun finalSiSnapshotAttemptMayStartImmediatelyBeforeDeadline() {
+        assertTrue(ChannelScanController.shouldStartFinalSiSnapshot(999L, 1_000L))
+    }
+
+    @Test
+    fun finalSiSnapshotAttemptCannotStartAtOrAfterDeadline() {
+        assertFalse(ChannelScanController.shouldStartFinalSiSnapshot(1_000L, 1_000L))
+        assertFalse(ChannelScanController.shouldStartFinalSiSnapshot(1_001L, 1_000L))
+    }
+
+    @Test
+    fun finalSiSnapshotBusyAtDeadlineDoesNotSleepOrRetry() {
+        assertEquals(null, ChannelScanController.finalSiSnapshotRetrySleepMs(1_000L, 1_000L, 200L))
+        assertEquals(1L, ChannelScanController.finalSiSnapshotRetrySleepMs(999L, 1_000L, 200L))
+    }
+
+    @Test
+    fun controllerControlBoundaryOvertakesQueuedSectionWorkWithoutReorderingControls() {
+        val executor =
+            ControllerSerialExecutor(
+                "maleicacid-tis-controller-priority-test",
+                maxPendingDataTasks = 3,
+            )
+        val firstStarted = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val order = Collections.synchronizedList(mutableListOf<String>())
+        try {
+            executor.execute {
+                order += "data-running"
+                firstStarted.countDown()
+                check(releaseFirst.await(1, TimeUnit.SECONDS))
+            }
+            check(firstStarted.await(1, TimeUnit.SECONDS))
+            executor.execute { order += "data-queued-1" }
+            val control1 = executor.submitControl { order += "control-1" }
+            val control2 = executor.submitControl { order += "control-2" }
+            executor.execute { order += "data-queued-2" }
+
+            releaseFirst.countDown()
+            control1.get(1, TimeUnit.SECONDS)
+            control2.get(1, TimeUnit.SECONDS)
+            executor.shutdown()
+            check(executor.awaitTermination(1, TimeUnit.SECONDS))
+
+            assertEquals(
+                listOf(
+                    "data-running",
+                    "control-1",
+                    "control-2",
+                    "data-queued-1",
+                    "data-queued-2",
+                ),
+                order,
+            )
+        } finally {
+            releaseFirst.countDown()
+            executor.shutdownNow()
+        }
+        assertControllerDataBackpressure()
+    }
+
+    private fun assertControllerDataBackpressure() {
+        val executor =
+            ControllerSerialExecutor(
+                "maleicacid-tis-controller-bounded-backpressure-test",
+                maxPendingDataTasks = 1,
+            )
+        val firstStarted = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val secondExecuted = CountDownLatch(1)
+        try {
+            executor.executeData {
+                firstStarted.countDown()
+                check(releaseFirst.await(1, TimeUnit.SECONDS))
+            }
+            check(firstStarted.await(1, TimeUnit.SECONDS))
+            assertFailsWith<RejectedExecutionException> {
+                executor.executeData { secondExecuted.countDown() }
+            }
+            assertEquals(1L, secondExecuted.count)
+            releaseFirst.countDown()
+            // 実行中dataのfinallyによる枠返却までownerのcontrol境界で待つ。
+            executor.submitControl {}.get(1, TimeUnit.SECONDS)
+            executor.executeData { secondExecuted.countDown() }
+            assertTrue(secondExecuted.await(1, TimeUnit.SECONDS))
+        } finally {
+            releaseFirst.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun finalSiSnapshotReprojectsTerminalOutcomeInBothDirections() {
+        assertEquals(
+            ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL,
+            ChannelScanController.finalizeSiCollectionOutcome(
+                ChannelScanController.SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE,
+                finalSnapshotComplete = false,
+                finalRegistrationReadyServices = 3,
+            ),
+        )
+        assertEquals(
+            ChannelScanController.SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE,
+            ChannelScanController.finalizeSiCollectionOutcome(
+                ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL,
+                finalSnapshotComplete = false,
+                finalRegistrationReadyServices = 0,
+            ),
+        )
+        assertEquals(
+            ChannelScanController.SiCollectionOutcome.COMPLETE,
+            ChannelScanController.finalizeSiCollectionOutcome(
+                ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL,
+                finalSnapshotComplete = true,
+                finalRegistrationReadyServices = 3,
+            ),
+        )
+        val terminalOutcomes =
+            listOf(
+                ChannelScanController.SiCollectionOutcome.CANCELLED,
+                ChannelScanController.SiCollectionOutcome.RESOURCE_LOST,
+                ChannelScanController.SiCollectionOutcome.SIGNAL_UNAVAILABLE,
+            )
+        for (terminal in terminalOutcomes) {
+            assertEquals(
+                terminal,
+                ChannelScanController.finalizeSiCollectionOutcome(
+                    terminal,
+                    finalSnapshotComplete = true,
+                    finalRegistrationReadyServices = 3,
+                ),
+            )
+        }
+    }
+
     @Test
     fun bsLockContinuesTheSameScanExactlyOnceAndWaitsForStopped() {
         val operation = TunerController.StreamIdDiscoveryOperation(25L)
@@ -30,6 +254,24 @@ class ScanPlanPolicyTest {
         operation.complete()
         assertTrue(operation.await(1))
         assertEquals(setOf(16400), operation.result(true).streamIds)
+    }
+
+    @Test
+    fun bsStoppedDiscoveryCleanupReleasesSdkRegistrationAndPreservesResult() {
+        val operation = TunerController.StreamIdDiscoveryOperation(28L)
+        operation.reportIds(intArrayOf(16400))
+        operation.complete()
+        val stopped = operation.result(true)
+        var cancelCalls = 0
+
+        operation.cancel {
+            cancelCalls++
+            android.media.tv.tuner.Tuner.RESULT_INVALID_STATE
+        }
+
+        assertEquals(1, cancelCalls)
+        assertEquals(stopped, operation.result(true))
+        assertEquals(setOf(16400), stopped.streamIds)
     }
 
     @Test
@@ -131,7 +373,7 @@ class ScanPlanPolicyTest {
     fun bsFailedCancelRetainsResourceLossAdmissionAndTerminalOutcome() {
         for (prior in listOf("scanning", "stopped", "timeout")) {
             val operation = TunerController.StreamIdDiscoveryOperation(23L)
-            val fence = ChannelScanController.ResourceLossFence().apply { activate(23L) }
+            val fence = ChannelScanController.ScanGenerationFence().apply { activate(23L) }
             if (prior == "stopped") {
                 operation.reportIds(intArrayOf(16400))
                 operation.complete()
@@ -139,11 +381,11 @@ class ScanPlanPolicyTest {
             if (prior == "timeout") {
                 operation.result(false)
             }
-            check(
+            val firstCancel =
                 runCatching {
                     operation.cancel { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE }
-                }.isFailure,
-            )
+                }
+            check(firstCancel.isFailure)
             check(operation.acceptsResourceLoss)
             var notifications = 0
 
@@ -166,7 +408,8 @@ class ScanPlanPolicyTest {
                     },
                 )
 
-            check(runCatching { lose() }.isFailure)
+            val firstLoss = runCatching { lose() }
+            check(firstLoss.isFailure)
             lose()
             check(notifications == 1 && fence.terminalObserved && operation.await(1))
             val result = operation.result(true)
@@ -183,7 +426,7 @@ class ScanPlanPolicyTest {
     fun bsResourceLossWakesCallerAndRejectsCandidatesAndPublication() {
         val controller = Executors.newSingleThreadExecutor()
         val caller = Executors.newSingleThreadExecutor()
-        val fence = ChannelScanController.ResourceLossFence()
+        val fence = ChannelScanController.ScanGenerationFence()
         val operation = TunerController.StreamIdDiscoveryOperation(9L)
         val waiting = java.util.concurrent.CountDownLatch(1)
         var notifications = 0

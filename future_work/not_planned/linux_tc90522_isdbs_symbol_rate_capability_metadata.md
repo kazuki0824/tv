@@ -4,13 +4,13 @@
 
 この文書は、upstream Linuxの`tc90522` ISDB-S frontendが固定symbol rateを使用する一方、`FE_GET_INFO`用のcapability metadataへその値を公開していない点について、上流改善の調査候補と再評価条件を記録する。
 
-現行製品のcapability、public settings受付、backend投影の規範正本は`../../TUNER_HAL_DESIGN_JA.md`とし、本書を現行仕様、実装済み範囲、対応宣言または完了判定の根拠にしない。現行製品runtimeはupstream変更へ依存せず、pinned earth-pt1 / tc90522 / qm1d1b0004 profileの固定28,860,000 sym/s契約だけで完結する。
+現行製品のcapability、public settings受付、backend投影の規範正本は`../../TUNER_HAL_DESIGN_JA.md`とし、本書を現行仕様、実装済み範囲、対応宣言または完了判定の根拠にしない。本書はupstream capability metadata改善の必要性と観測証拠だけを記録する。
 
 ## 現状
 
 Linux v6.6 `drivers/media/dvb-frontends/tc90522.c`の`tc90522_ops_sat.info`はISDB-Sの周波数範囲を設定するが、`symbol_rate_min` / `symbol_rate_max`を設定しない。このためDVB coreの`FE_GET_INFO`が返すsymbol-rate capabilityは0/0となる。
 
-同driverの`tc90522s_get_frontend()`はcurrent propertyへ`symbol_rate=28,860,000`を設定する。採用tuner `drivers/media/tuners/qm1d1b0004.c`もproperty cacheのsymbol rateをLPF設定に使用し、28.86 Mbaud時の設定を記載している。現行製品ではこのpinned module構成を固定profileの証拠とし、`FE_GET_INFO`の0/0を受信不能または0 sym/s能力とは解釈しない。
+調査時点のdriverでは`tc90522s_get_frontend()`がcurrent propertyへ`symbol_rate=28,860,000`を設定し、採用tuner `drivers/media/tuners/qm1d1b0004.c`もproperty cacheのsymbol rateをLPF設定に使用していた。これはupstream改善候補を評価するための観測証拠であり、現行製品の公開capability値または受付条件は `../../TUNER_HAL_DESIGN_JA.md` を参照する。
 
 ## upstream候補
 

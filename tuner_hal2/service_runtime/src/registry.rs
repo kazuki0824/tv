@@ -1,6 +1,7 @@
 use crate::descrambler_key_table::DescramblerPacketKeys;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::descrambler_key_table::{
@@ -56,6 +57,32 @@ pub struct DvrRuntimeId(pub i32);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DescramblerRuntimeId(pub i32);
+
+#[must_use = "フロントエンド取り込み開始guardはreleaseまたはDropで解放してください"]
+#[derive(Debug)]
+pub(crate) struct FrontendDemuxStartGuard {
+    active: Arc<AtomicBool>,
+}
+
+impl FrontendDemuxStartGuard {
+    pub(crate) fn release(self) {
+        drop(self);
+    }
+}
+
+impl Drop for FrontendDemuxStartGuard {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
+#[must_use = "Demux-Frontend関係変更はcommitで消費してください"]
+#[derive(Debug)]
+pub(crate) struct PreparedDemuxFrontendBindingChange {
+    demux_id: DemuxRuntimeId,
+    previous_frontend_id: Option<FrontendRuntimeId>,
+    next_frontend_id: Option<FrontendRuntimeId>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendRegistryEntry {
@@ -830,6 +857,7 @@ pub enum RuntimeRegistryKind {
 pub struct RuntimeRegistry {
     frontends: BTreeMap<FrontendRuntimeId, FrontendRegistryEntry>,
     frontend_runtimes: BTreeMap<FrontendRuntimeId, FrontendRuntime>,
+    frontend_demux_start_in_flight: BTreeMap<FrontendRuntimeId, Arc<AtomicBool>>,
     demuxes: BTreeMap<DemuxRuntimeId, DemuxRegistryEntry>,
     demux_runtimes: BTreeMap<DemuxRuntimeId, DemuxRuntime>,
     demux_frontend_bindings: BTreeMap<DemuxRuntimeId, FrontendRuntimeId>,
@@ -858,6 +886,7 @@ impl Default for RuntimeRegistry {
         Self {
             frontends: BTreeMap::new(),
             frontend_runtimes: BTreeMap::new(),
+            frontend_demux_start_in_flight: BTreeMap::new(),
             demuxes: BTreeMap::new(),
             demux_runtimes: BTreeMap::new(),
             demux_frontend_bindings: BTreeMap::new(),
@@ -908,6 +937,8 @@ impl RuntimeRegistry {
         }
         let runtime = FrontendRuntime::new(entry.id.0, entry.backend);
         self.frontend_runtimes.insert(entry.id, runtime);
+        self.frontend_demux_start_in_flight
+            .insert(entry.id, Arc::new(AtomicBool::new(false)));
         self.frontends.insert(entry.id, entry);
         Ok(())
     }
@@ -915,6 +946,7 @@ impl RuntimeRegistry {
     pub fn clear_frontends(&mut self) {
         self.frontends.clear();
         self.frontend_runtimes.clear();
+        self.frontend_demux_start_in_flight.clear();
         self.frontend_lnb_bindings.clear();
         self.lnb_registry.clear_assignment_state();
     }
@@ -983,10 +1015,14 @@ impl RuntimeRegistry {
         Ok(())
     }
 
-    pub fn unregister_demux(&mut self, id: DemuxRuntimeId) -> Option<DemuxRegistryEntry> {
-        self.demux_frontend_bindings.remove(&id);
+    pub fn unregister_demux(
+        &mut self,
+        id: DemuxRuntimeId,
+    ) -> Result<Option<DemuxRegistryEntry>, HalError> {
+        let prepared = self.prepare_demux_frontend_binding_change(id, None)?;
+        self.commit_prepared_demux_frontend_binding_change(prepared)?;
         self.demux_runtimes.remove(&id);
-        self.demuxes.remove(&id)
+        Ok(self.demuxes.remove(&id))
     }
 
     pub fn demux_runtime(&self, id: DemuxRuntimeId) -> Option<&DemuxRuntime> {
@@ -997,20 +1033,79 @@ impl RuntimeRegistry {
         self.demux_runtimes.get_mut(&id)
     }
 
-    pub fn bind_demux_frontend(
+    pub(crate) fn try_begin_frontend_demux_start(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Result<Option<FrontendDemuxStartGuard>, HalError> {
+        let active = self
+            .frontend_demux_start_in_flight
+            .get(&frontend_id)
+            .cloned()
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "フロントエンドdemux関係の取り込み開始状態がありません",
+                )
+            })?;
+        if active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(None);
+        }
+        Ok(Some(FrontendDemuxStartGuard { active }))
+    }
+
+    pub(crate) fn validate_demux_frontend_binding_change(
+        &self,
+        _demux_id: DemuxRuntimeId,
+        _next_frontend_id: Option<FrontendRuntimeId>,
+    ) -> Result<(), HalError> {
+        Ok(())
+    }
+
+    pub(crate) fn prepare_demux_frontend_binding_change(
         &mut self,
         demux_id: DemuxRuntimeId,
-        frontend_id: FrontendRuntimeId,
-    ) {
-        self.demux_frontend_bindings.insert(demux_id, frontend_id);
+        next_frontend_id: Option<FrontendRuntimeId>,
+    ) -> Result<PreparedDemuxFrontendBindingChange, HalError> {
+        let previous_frontend_id = self.demux_frontend_bindings.get(&demux_id).copied();
+        Ok(PreparedDemuxFrontendBindingChange {
+            demux_id,
+            previous_frontend_id,
+            next_frontend_id,
+        })
+    }
+
+    pub(crate) fn commit_prepared_demux_frontend_binding_change(
+        &mut self,
+        prepared: PreparedDemuxFrontendBindingChange,
+    ) -> Result<(), HalError> {
+        if self
+            .demux_frontend_bindings
+            .get(&prepared.demux_id)
+            .copied()
+            != prepared.previous_frontend_id
+        {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "Demux-Frontend関係が準備後に変更されました",
+            ));
+        }
+        match prepared.next_frontend_id {
+            Some(frontend_id) => {
+                self.demux_frontend_bindings
+                    .insert(prepared.demux_id, frontend_id);
+            }
+            None => {
+                self.demux_frontend_bindings.remove(&prepared.demux_id);
+            }
+        }
+        Ok(())
     }
 
     pub fn frontend_bound_to_demux(&self, demux_id: DemuxRuntimeId) -> Option<FrontendRuntimeId> {
         self.demux_frontend_bindings.get(&demux_id).copied()
-    }
-
-    pub fn unbind_demux_frontend(&mut self, demux_id: DemuxRuntimeId) {
-        self.demux_frontend_bindings.remove(&demux_id);
     }
 
     pub fn frontend_bound_demux_ids(&self, frontend_id: FrontendRuntimeId) -> Vec<DemuxRuntimeId> {
@@ -2255,5 +2350,190 @@ impl RuntimeRegistry {
     #[cfg(test)]
     pub(crate) fn descrambler_key_table_mut(&mut self) -> &mut DescramblerKeyTable {
         &mut self.descrambler_key_table
+    }
+}
+
+#[cfg(test)]
+mod single_use_contract_tests {
+    use super::*;
+
+    #[test]
+    fn frontend_demux_start_guard_is_single_use() {
+        static_assertions::assert_not_impl_any!(FrontendDemuxStartGuard: Clone, Copy);
+
+        fn release_by_value(guard: FrontendDemuxStartGuard) {
+            guard.release();
+        }
+
+        let _: fn(FrontendDemuxStartGuard) = release_by_value;
+    }
+
+    fn register_frontend_for_relation_test(registry: &mut RuntimeRegistry, id: FrontendRuntimeId) {
+        registry
+            .register_frontend(FrontendRegistryEntry {
+                id,
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                device_path: PathBuf::from(format!("/dev/px4video{}", id.0)),
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 110_642_857,
+                        max_frequency_hz: 767_642_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: id.0,
+                    isdbt_segment: Some(IsdbtSegmentCapability {
+                        is_segment_auto: true,
+                        is_full_segment: true,
+                    }),
+                },
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn relation_switch_is_committable_while_previous_frontend_start_is_active() {
+        let old = FrontendRuntimeId(10);
+        let new = FrontendRuntimeId(11);
+        let demux = DemuxRuntimeId(20);
+        let mut registry = RuntimeRegistry::default();
+        register_frontend_for_relation_test(&mut registry, old);
+        register_frontend_for_relation_test(&mut registry, new);
+        registry
+            .register_demux(DemuxRegistryEntry { id: demux })
+            .unwrap();
+
+        let initial = registry
+            .prepare_demux_frontend_binding_change(demux, Some(old))
+            .unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(initial)
+            .unwrap();
+
+        let guard = registry
+            .try_begin_frontend_demux_start(old)
+            .unwrap()
+            .unwrap();
+        let prepared = registry
+            .prepare_demux_frontend_binding_change(demux, Some(new))
+            .unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(prepared)
+            .unwrap();
+        assert_eq!(registry.frontend_bound_to_demux(demux), Some(new));
+        guard.release();
+    }
+
+    #[test]
+    fn relation_switch_is_committable_while_next_frontend_start_is_active() {
+        let old = FrontendRuntimeId(12);
+        let new = FrontendRuntimeId(13);
+        let demux = DemuxRuntimeId(21);
+        let mut registry = RuntimeRegistry::default();
+        register_frontend_for_relation_test(&mut registry, old);
+        register_frontend_for_relation_test(&mut registry, new);
+        registry
+            .register_demux(DemuxRegistryEntry { id: demux })
+            .unwrap();
+
+        let initial = registry
+            .prepare_demux_frontend_binding_change(demux, Some(old))
+            .unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(initial)
+            .unwrap();
+
+        let guard = registry
+            .try_begin_frontend_demux_start(new)
+            .unwrap()
+            .unwrap();
+        let prepared = registry
+            .prepare_demux_frontend_binding_change(demux, Some(new))
+            .unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(prepared)
+            .unwrap();
+        assert_eq!(registry.frontend_bound_to_demux(demux), Some(new));
+        guard.release();
+    }
+
+    #[test]
+    fn no_op_binding_change_remains_ready_while_start_guard_is_active() {
+        let frontend = FrontendRuntimeId(14);
+        let demux = DemuxRuntimeId(22);
+        let mut registry = RuntimeRegistry::default();
+        register_frontend_for_relation_test(&mut registry, frontend);
+        registry
+            .register_demux(DemuxRegistryEntry { id: demux })
+            .unwrap();
+
+        let initial = registry
+            .prepare_demux_frontend_binding_change(demux, Some(frontend))
+            .unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(initial)
+            .unwrap();
+
+        let guard = registry
+            .try_begin_frontend_demux_start(frontend)
+            .unwrap()
+            .unwrap();
+        let prepared = registry
+            .prepare_demux_frontend_binding_change(demux, Some(frontend))
+            .unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(prepared)
+            .unwrap();
+        guard.release();
+    }
+
+    #[test]
+    fn prepared_binding_commit_rejects_relation_changed_after_prepare() {
+        let old = FrontendRuntimeId(15);
+        let new = FrontendRuntimeId(16);
+        let demux = DemuxRuntimeId(23);
+        let mut registry = RuntimeRegistry::default();
+        register_frontend_for_relation_test(&mut registry, old);
+        register_frontend_for_relation_test(&mut registry, new);
+        registry
+            .register_demux(DemuxRegistryEntry { id: demux })
+            .unwrap();
+
+        let prepared = registry
+            .prepare_demux_frontend_binding_change(demux, Some(old))
+            .unwrap();
+
+        let competing = registry
+            .prepare_demux_frontend_binding_change(demux, Some(new))
+            .unwrap();
+        registry
+            .commit_prepared_demux_frontend_binding_change(competing)
+            .unwrap();
+
+        assert!(matches!(
+            registry.commit_prepared_demux_frontend_binding_change(prepared),
+            Err(HalError::InvalidState { .. })
+        ));
+    }
+
+    #[test]
+    fn prepared_demux_frontend_binding_change_is_single_use() {
+        static_assertions::assert_not_impl_any!(PreparedDemuxFrontendBindingChange: Clone, Copy);
+
+        fn commit_by_value(
+            registry: &mut RuntimeRegistry,
+            prepared: PreparedDemuxFrontendBindingChange,
+        ) -> Result<(), HalError> {
+            registry.commit_prepared_demux_frontend_binding_change(prepared)
+        }
+
+        let _: fn(
+            &mut RuntimeRegistry,
+            PreparedDemuxFrontendBindingChange,
+        ) -> Result<(), HalError> = commit_by_value;
     }
 }

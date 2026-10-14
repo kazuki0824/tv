@@ -49,7 +49,7 @@ pub const fn scan_candidate_owner() -> ScanCandidateOwner {
 
 pub fn configure_ip_cid_result(_ip_cid: i32) -> Result<(), HalError> {
     Err(HalError::Unsupported(
-        "IP CID is outside the product TS-only capability/profile",
+        "IP CIDは製品のTS専用capability/profileの範囲外です",
     ))
 }
 
@@ -58,7 +58,7 @@ pub fn configure_monitor_event_result(monitor_event_types: i32) -> Result<(), Ha
         Ok(())
     } else {
         Err(HalError::Unsupported(
-            "monitor event is not declared by this profile",
+            "monitor eventはこのprofileで宣言されていません",
         ))
     }
 }
@@ -73,9 +73,17 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::IoctlFailed { .. } => RuntimeFailureDomain::RuntimeIoctl,
         HalError::Io { .. } => RuntimeFailureDomain::RuntimeReadWrite,
         HalError::CallbackFailed { .. } => RuntimeFailureDomain::Callback,
-        HalError::FmqFailed { .. } => RuntimeFailureDomain::Fmq,
+        HalError::FmqDeliveryFailed {
+            kind: maleicacid_tuner_hal2_common::FmqFailureKind::EventFlagWakeFailed,
+            ..
+        } => RuntimeFailureDomain::EventFlag,
+        HalError::FmqFailed { .. } | HalError::FmqDeliveryFailed { .. } => {
+            RuntimeFailureDomain::Fmq
+        }
         HalError::EventFlagFailed { .. } => RuntimeFailureDomain::EventFlag,
-        HalError::CleanupFailed { .. } => RuntimeFailureDomain::Cleanup,
+        HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => {
+            RuntimeFailureDomain::Cleanup
+        }
         HalError::OutOfMemory { .. } => RuntimeFailureDomain::ResourceExhausted,
         HalError::InvalidArgument { .. } => RuntimeFailureDomain::ClientArgument,
         HalError::InvalidState { .. } => RuntimeFailureDomain::ObjectState,
@@ -83,7 +91,14 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::Unsupported(_) | HalError::UnsupportedDetail { .. } => {
             RuntimeFailureDomain::UnsupportedByDesign
         }
-        HalError::Internal { .. } => RuntimeFailureDomain::InternalInvariant,
+        HalError::Internal { .. }
+        | HalError::QueueEpochLockPoisoned { .. }
+        | HalError::LockPoisoned(_)
+        | HalError::WorkerLockPoisoned { .. }
+        | HalError::WorkerReaperUnavailable
+        | HalError::FilterGateLockPoisoned { .. }
+        | HalError::ServiceRuntimeLockPoisoned { .. }
+        | HalError::CapabilitySelectionFailed(_) => RuntimeFailureDomain::InternalInvariant,
     }
 }
 
@@ -150,6 +165,7 @@ mod tests {
             HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "closed");
         let unsupported = HalError::Unsupported("unsupported");
         let internal = HalError::internal(HalInternalKind::InvariantViolation, "broken");
+        let reaper_unavailable = HalError::WorkerReaperUnavailable;
 
         assert_eq!(
             failure_domain(&missing),
@@ -177,6 +193,10 @@ mod tests {
             failure_domain(&internal),
             RuntimeFailureDomain::InternalInvariant
         );
+        assert_eq!(
+            failure_domain(&reaper_unavailable),
+            RuntimeFailureDomain::InternalInvariant
+        );
     }
 
     #[test]
@@ -186,5 +206,29 @@ mod tests {
             scan_candidate_owner(),
             ScanCandidateOwner::TisExplicitCandidate
         );
+    }
+
+    #[test]
+    fn delivery_failure_keeps_wake_distinct_from_write() {
+        use maleicacid_tuner_hal2_common::FmqFailureKind;
+        for (kind, expected) in [
+            (FmqFailureKind::WriteFailed, RuntimeFailureDomain::Fmq),
+            (FmqFailureKind::ShortWrite, RuntimeFailureDomain::Fmq),
+            (
+                FmqFailureKind::EventFlagWakeFailed,
+                RuntimeFailureDomain::EventFlag,
+            ),
+        ] {
+            let primary = HalError::FmqDeliveryFailed {
+                kind,
+                object_id: Some(17),
+            };
+            let composed = HalError::composed_failure(
+                "配送と巻戻し",
+                primary,
+                HalError::cleanup_failed("queue", "巻戻し失敗"),
+            );
+            assert_eq!(failure_domain(&composed), expected);
+        }
     }
 }

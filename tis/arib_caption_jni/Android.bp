@@ -8,7 +8,7 @@ rust_ffi_shared {
     srcs: ["src/lib.rs"],
     edition: "2021",
     system_ext_specific: true,
-    min_sdk_version: "31",
+    min_sdk_version: "35",
     rustlibs: [
         "libjni",
     ],
