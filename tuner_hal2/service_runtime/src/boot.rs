@@ -1441,7 +1441,10 @@ mod raw_filter_event_projection_tests {
                     diagnostics: vec![PipelineDiagnostic::filter_queue_payload_delivery_failure(
                         pid,
                         filter_id,
-                        DemuxRuntimeError { kind, id: Some(filter_id) },
+                        DemuxRuntimeError {
+                            kind,
+                            id: Some(filter_id),
+                        },
                     )],
                     ..PipelineReport::default()
                 },
@@ -1486,7 +1489,10 @@ mod raw_filter_event_projection_tests {
                 ..PipelineReport::default()
             },
         );
-        assert_eq!(runtime.packet_delivery_failure_totals().wake_failed, u64::MAX);
+        assert_eq!(
+            runtime.packet_delivery_failure_totals().wake_failed,
+            u64::MAX
+        );
         runtime.record_packet_pipeline_diagnostics(
             demux_id,
             1,
@@ -1495,7 +1501,10 @@ mod raw_filter_event_projection_tests {
                 ..PipelineReport::default()
             },
         );
-        assert_eq!(runtime.packet_delivery_failure_totals().wake_failed, u64::MAX);
+        assert_eq!(
+            runtime.packet_delivery_failure_totals().wake_failed,
+            u64::MAX
+        );
         // 診断の実クリア入口であるservice boot resetを使用し、fieldへの直接代入で済ませない。
         let _ = runtime.boot_from_probe_results(std::iter::empty::<FrontendProbeOutcome>());
         assert_eq!(

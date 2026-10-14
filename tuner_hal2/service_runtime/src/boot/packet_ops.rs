@@ -1,4 +1,3 @@
-#[cfg(target_os = "android")]
 use super::{DemuxRuntimeId, PipelineDiagnostic};
 use crate::descrambler_key_table::DescramblerPacketKeys;
 use std::time::Instant;

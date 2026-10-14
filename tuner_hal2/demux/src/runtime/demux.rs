@@ -5346,10 +5346,7 @@ impl DemuxRuntime {
                 }
             };
             if wake_deferred {
-                diagnostics.push(PipelineDiagnostic::FilterQueueWakeDeferred {
-                    pid,
-                    filter_id,
-                });
+                diagnostics.push(PipelineDiagnostic::FilterQueueWakeDeferred { pid, filter_id });
             }
             let unqueued_event = if callback_event {
                 if let Err(error) = permit.enqueue_event(event) {

@@ -4027,15 +4027,28 @@ mod tests {
                 } if *id == filter_id
             )
         }));
-        assert_eq!(demux.snapshot_filter_queue_bytes_for_test(filter_id).unwrap(), first);
+        assert_eq!(
+            demux
+                .snapshot_filter_queue_bytes_for_test(filter_id)
+                .unwrap(),
+            first
+        );
         let second = raw_ts_packet(0x0030, 1, &[5, 6, 7, 8]);
         let retried = demux.push_ts_packet_from_origin(&second, TsInputOrigin::frontend(1));
         assert!(!retried.diagnostics.iter().any(|diagnostic| {
-            matches!(diagnostic, PipelineDiagnostic::FilterQueueWakeDeferred { .. })
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueueWakeDeferred { .. }
+            )
         }));
         let mut expected = first.to_vec();
         expected.extend_from_slice(&second);
-        assert_eq!(demux.snapshot_filter_queue_bytes_for_test(filter_id).unwrap(), expected);
+        assert_eq!(
+            demux
+                .snapshot_filter_queue_bytes_for_test(filter_id)
+                .unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -4046,7 +4059,10 @@ mod tests {
         let first = raw_ts_packet(0x0030, 0, &[1, 2, 3, 4]);
         let deferred = demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
         assert!(deferred.diagnostics.iter().any(|diagnostic| {
-            matches!(diagnostic, PipelineDiagnostic::FilterQueueWakeDeferred { .. })
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueueWakeDeferred { .. }
+            )
         }));
         let second = raw_ts_packet(0x0030, 1, &[5, 6, 7, 8]);
         let rejected = demux.push_ts_packet_from_origin(&second, TsInputOrigin::frontend(1));
@@ -4064,7 +4080,12 @@ mod tests {
                 }
             )
         }));
-        assert_eq!(demux.snapshot_filter_queue_bytes_for_test(filter_id).unwrap(), first);
+        assert_eq!(
+            demux
+                .snapshot_filter_queue_bytes_for_test(filter_id)
+                .unwrap(),
+            first
+        );
         let third = raw_ts_packet(0x0030, 2, &[9, 10, 11, 12]);
         let after_recovery = demux.push_ts_packet_from_origin(&third, TsInputOrigin::frontend(1));
         assert!(!after_recovery.diagnostics.iter().any(|diagnostic| {
@@ -4075,7 +4096,12 @@ mod tests {
         }));
         let mut expected = first.to_vec();
         expected.extend_from_slice(&third);
-        assert_eq!(demux.snapshot_filter_queue_bytes_for_test(filter_id).unwrap(), expected);
+        assert_eq!(
+            demux
+                .snapshot_filter_queue_bytes_for_test(filter_id)
+                .unwrap(),
+            expected
+        );
     }
 
     #[test]
