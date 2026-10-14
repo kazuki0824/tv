@@ -1875,6 +1875,15 @@ impl DemuxRuntime {
         self.reset_filter_source_boundary(filter_id)
     }
 
+    #[cfg(test)]
+    pub(crate) fn close_filter_producer_gate_for_test(&self, filter_id: i32) {
+        self.filter_producer_gates
+            .get(&filter_id)
+            .expect("record FilterのGateが存在すること")
+            .close()
+            .expect("試験でGateを閉じられること");
+    }
+
     #[cfg(all(test, not(target_os = "android")))]
     pub(crate) fn fail_next_filter_wakes_for_test(&self, filter_id: i32, count: usize) {
         self.filter_queue_runtimes

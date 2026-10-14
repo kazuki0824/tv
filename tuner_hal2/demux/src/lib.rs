@@ -2268,6 +2268,66 @@ mod tests {
     }
 
     #[test]
+    fn record_dvr_closed_gate_generates_delivery_failure_without_filter_fmq_payload() {
+        let filter_id = 47;
+        let dvr_id = 48;
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsRecord,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: Some(RecordIndexSettings {
+                        ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET,
+                        sc_index_type: RECORD_SC_TYPE_NONE,
+                        sc_index_mask: 0,
+                    }),
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                dvr_id,
+                1,
+                crate::runtime::DvrKind::Record,
+                4096,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(dvr_id).unwrap();
+        demux.attach_dvr_filter(dvr_id, filter_id).unwrap();
+        demux.start_dvr_runtime(dvr_id).unwrap();
+        // 実データ配送より先にRecord Gateだけを閉じ、既存の失敗診断経路を通す。
+        demux.close_filter_producer_gate_for_test(filter_id);
+        let packet = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::frontend(1));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueuePayloadDeliveryFailure {
+                    filter_id: reported_id,
+                    ..
+                } if *reported_id == filter_id
+            )
+        }));
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(dvr_id).unwrap(),
+            Vec::<u8>::new()
+        );
+        assert!(!FilterOpenType::TsRecord.uses_filter_fmq_for_payload());
+    }
+
+    #[test]
     fn record_dvr_mirror_overflow_is_diagnostic() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
