@@ -118,7 +118,7 @@ impl FmqQueue {
         if self
             .wake_failures_remaining
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                (remaining > 0).then_some(remaining - 1)
+                (remaining > 0).then(|| remaining - 1)
             })
             .is_ok()
         {
