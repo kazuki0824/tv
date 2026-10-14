@@ -1496,11 +1496,56 @@ mod raw_filter_event_projection_tests {
             },
         );
         assert_eq!(runtime.packet_delivery_failure_totals().wake_failed, u64::MAX);
-        runtime.packet_pipeline_diagnostics.clear();
-        runtime.packet_delivery_failure_totals = Default::default();
+        // 診断の実クリア入口であるservice boot resetを使用し、fieldへの直接代入で済ませない。
+        let _ = runtime.boot_from_probe_results(std::iter::empty());
         assert_eq!(
             runtime.packet_delivery_failure_totals(),
             crate::diagnostics::PacketDeliveryFailureTotals::default()
+        );
+        assert!(runtime.packet_pipeline_diagnostics().records().is_empty());
+    }
+
+    #[test]
+    fn record_dvr_gate_failure_remains_in_history_without_counting_filter_fmq_failure() {
+        use maleicacid_tuner_hal2_demux::{
+            DemuxRuntimeError, DemuxRuntimeErrorKind, RecordIndexSettings,
+        };
+        let (mut runtime, demux_id, filter_id) = configured_raw_filter(
+            FilterOpenType::TsRecord,
+            0x123,
+            FilterConfigKind::TsRecord(RecordIndexSettings {
+                ts_index_mask: 0,
+                sc_index_type: 0,
+                sc_index_mask: 0,
+            }),
+        );
+        let packet = packet_with_payload(0x123, true, &[0, 0, 1]);
+        let pid = ValidatedTsPacket::validate(&packet)
+            .expect("valid TS packet")
+            .pid();
+        let failure = PipelineDiagnostic::filter_queue_payload_delivery_failure(
+            pid,
+            filter_id,
+            DemuxRuntimeError {
+                kind: DemuxRuntimeErrorKind::QueueRuntimeFailure,
+                id: Some(filter_id),
+            },
+        );
+        runtime.record_packet_pipeline_diagnostics(
+            demux_id,
+            1,
+            &PipelineReport {
+                diagnostics: vec![failure.clone()],
+                ..PipelineReport::default()
+            },
+        );
+        assert_eq!(
+            runtime.packet_delivery_failure_totals(),
+            crate::diagnostics::PacketDeliveryFailureTotals::default()
+        );
+        assert_eq!(
+            runtime.packet_pipeline_diagnostics().records()[0].diagnostic,
+            failure
         );
     }
 
