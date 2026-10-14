@@ -629,6 +629,11 @@ pub enum PipelineDiagnostic {
         filter_id: i32,
         error: DemuxRuntimeError,
     },
+    /// 書込み済みFilter FMQデータのEventFlag通知が失敗し、再試行待ちになった。
+    FilterQueueWakeDeferred {
+        pid: PacketPid,
+        filter_id: i32,
+    },
     AvSharedBackingFailure {
         pid: PacketPid,
         filter_id: i32,
@@ -689,6 +694,7 @@ impl PipelineDiagnostic {
             Self::RecordDvrMirrorFailure { pid, .. }
             | Self::RecordDvrMirrorOverflow { pid, .. }
             | Self::FilterQueuePayloadDeliveryFailure { pid, .. }
+            | Self::FilterQueueWakeDeferred { pid, .. }
             | Self::AvSharedBackingFailure { pid, .. }
             | Self::AvSharedBackingMissing { pid, .. }
             | Self::AvAuthoritativeTimestampUnavailable { pid, .. }

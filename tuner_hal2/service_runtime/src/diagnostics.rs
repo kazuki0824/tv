@@ -112,6 +112,58 @@ pub struct PacketPipelineDiagnosticRecord {
     pub diagnostic: maleicacid_tuner_hal2_demux::PipelineDiagnostic,
 }
 
+/// 有界パケット診断履歴の古い記録が脱落しても、配送失敗の累積件数を保持する。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PacketDeliveryFailureTotals {
+    pub capacity_exceeded: u64,
+    pub queue_runtime_failed: u64,
+    pub write_failed: u64,
+    pub short_write: u64,
+    pub wake_failed: u64,
+    pub other_failed: u64,
+}
+
+impl PacketDeliveryFailureTotals {
+    pub(crate) fn record(&mut self, diagnostic: &maleicacid_tuner_hal2_demux::PipelineDiagnostic) {
+        use maleicacid_tuner_hal2_common::FmqFailureKind;
+        use maleicacid_tuner_hal2_demux::{DemuxRuntimeErrorKind, PipelineDiagnostic};
+        let (counter, kind) = match diagnostic {
+            PipelineDiagnostic::FilterQueueWakeDeferred { .. } => {
+                (&mut self.wake_failed, "wake_failed")
+            }
+            PipelineDiagnostic::FilterQueuePayloadDeliveryFailure { error, .. } => {
+                match error.kind {
+                    DemuxRuntimeErrorKind::QueueCapacityExceeded => {
+                        (&mut self.capacity_exceeded, "capacity_exceeded")
+                    }
+                    DemuxRuntimeErrorKind::QueueRuntimeFailureWithContext(_)
+                    | DemuxRuntimeErrorKind::QueueRuntimeFailure => {
+                        (&mut self.queue_runtime_failed, "queue_runtime_failed")
+                    }
+                    DemuxRuntimeErrorKind::FmqDeliveryFailed(FmqFailureKind::WriteFailed) => {
+                        (&mut self.write_failed, "write_failed")
+                    }
+                    DemuxRuntimeErrorKind::FmqDeliveryFailed(FmqFailureKind::ShortWrite) => {
+                        (&mut self.short_write, "short_write")
+                    }
+                    DemuxRuntimeErrorKind::FmqDeliveryFailed(
+                        FmqFailureKind::EventFlagWakeFailed,
+                    ) => (&mut self.wake_failed, "wake_failed"),
+                    _ => (&mut self.other_failed, "other_failed"),
+                }
+            }
+            _ => return,
+        };
+        let previous = *counter;
+        *counter = previous.saturating_add(1);
+        if previous == u64::MAX - 1 {
+            eprintln!(
+                "diagnostic_counter_saturated counter={kind} owner=PacketDeliveryFailureTotals"
+            );
+        }
+    }
+}
+
 fn saturating_increment_atomic_u64(counter: &AtomicU64, owner: &'static str) {
     let previous = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))

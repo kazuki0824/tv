@@ -91,6 +91,8 @@ pub(crate) struct ServiceDiagnosticSnapshot {
     >,
     pub(crate) demux:
         Result<maleicacid_tuner_hal2_service_runtime::DemuxTransactionDiagnosticSnapshot, HalError>,
+    pub(crate) packet_delivery_failure_totals:
+        Result<maleicacid_tuner_hal2_service_runtime::PacketDeliveryFailureTotals, HalError>,
     pub(crate) packet_pipeline: Result<
         maleicacid_tuner_hal2_service_runtime::DiagnosticSnapshot<
             maleicacid_tuner_hal2_service_runtime::PacketPipelineDiagnosticRecord,
@@ -126,6 +128,7 @@ impl ServiceDiagnosticSnapshot {
             || self.runtime_objects.is_err()
             || self.demux.is_err()
             || self.packet_pipeline.is_err()
+            || self.packet_delivery_failure_totals.is_err()
             || self
                 .filter_callback
                 .as_ref()
@@ -444,6 +447,7 @@ impl AidlServiceContext {
             runtime_objects,
             demux,
             packet_pipeline,
+            packet_delivery_failure_totals,
         ) = {
             match TunerServiceRuntime::lock_shared(&self.runtime, "診断取得") {
                 Ok(runtime) => (
@@ -453,8 +457,10 @@ impl AidlServiceContext {
                     Ok(runtime.runtime_object_diagnostic_snapshots()),
                     Ok(runtime.demux_transaction_diagnostics()),
                     Ok(runtime.packet_pipeline_diagnostics()),
+                    Ok(runtime.packet_delivery_failure_totals()),
                 ),
                 Err(error) => (
+                    Err(error.clone()),
                     Err(error.clone()),
                     Err(error.clone()),
                     Err(error.clone()),
@@ -479,6 +485,7 @@ impl AidlServiceContext {
             runtime_objects,
             demux,
             packet_pipeline,
+            packet_delivery_failure_totals,
             filter_callback: self.filter_callback_delivery_diagnostic_snapshot(),
             frontend_callback: self.frontend_callback_delivery_diagnostic_snapshot(),
         }

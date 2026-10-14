@@ -76,7 +76,7 @@ pub use diagnostics::{
     FilterCallbackDeliveryDiagnosticSnapshot, FrontendBackendDiagnosticSnapshot,
     FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
     FrontendCallbackDeliveryDiagnosticSnapshot, FrontendDiagnosticSnapshot, LnbBackendFailureClass,
-    LnbBackendFailureDiagnosticRecord, PacketPipelineDiagnosticRecord,
+    LnbBackendFailureDiagnosticRecord, PacketDeliveryFailureTotals, PacketPipelineDiagnosticRecord,
     QueueDescriptorQueryDiagnosticRecord, QueueDescriptorQueryDiagnosticSnapshot,
     SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
     SharedDvrStatusNotifierCleanupDiagnostics, StartupDiagnosticKind, StartupDiagnosticPhase,

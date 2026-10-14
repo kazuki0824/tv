@@ -713,6 +713,11 @@ impl QueueRuntime {
         self.wake(event_mask)
     }
 
+    #[cfg(all(test, not(target_os = "android")))]
+    pub(crate) fn fail_next_wakes_for_test(&self, count: usize) {
+        self.queue.host_ci_fail_next_wakes(count);
+    }
+
     pub(crate) fn descriptor_export_handle(&self) -> QueueDescriptorExportHandle {
         QueueDescriptorExportHandle {
             queue: Arc::clone(&self.queue),

@@ -594,6 +594,7 @@ pub struct TunerServiceRuntime {
     demux_transaction_diagnostics: BoundedDiagnosticStore<DemuxTransactionDiagnosticRecord>,
     packet_pipeline_diagnostics:
         BoundedDiagnosticStore<crate::diagnostics::PacketPipelineDiagnosticRecord>,
+    packet_delivery_failure_totals: crate::diagnostics::PacketDeliveryFailureTotals,
     object_cleanup_diagnostics: SharedObjectCleanupDiagnostics,
     frontend_worker_cleanup_diagnostics: SharedFrontendWorkerCleanupDiagnostics,
     next_demux_transaction_diagnostic_id: u64,
@@ -1398,6 +1399,166 @@ mod raw_filter_event_projection_tests {
     }
 
     #[test]
+    fn filter_fmq_failure_totals_count_and_survive_bounded_eviction() {
+        use maleicacid_tuner_hal2_common::FmqFailureKind;
+        use maleicacid_tuner_hal2_demux::{DemuxRuntimeError, DemuxRuntimeErrorKind};
+
+        let (mut runtime, demux_id, filter_id) = configured_raw_filter(
+            FilterOpenType::TsSection,
+            0x123,
+            FilterConfigKind::TsSection {
+                check_crc: false,
+                repeat: true,
+                raw: true,
+                length_field_bits: 12,
+                condition: SectionCondition {
+                    kind: SectionConditionKind::SectionBits,
+                    filter: Vec::new(),
+                    mask: Vec::new(),
+                    mode: Vec::new(),
+                    table_id: None,
+                    version: None,
+                },
+            },
+        );
+        let packet = packet_with_payload(0x123, true, &[0, 0, 1]);
+        let pid = maleicacid_tuner_hal2_demux::ValidatedTsPacket::validate(&packet)
+            .expect("valid TS packet")
+            .pid();
+        runtime.packet_pipeline_diagnostics = BoundedDiagnosticStore::new(1);
+        for kind in [
+            DemuxRuntimeErrorKind::QueueCapacityExceeded,
+            DemuxRuntimeErrorKind::QueueRuntimeFailure,
+            DemuxRuntimeErrorKind::FmqDeliveryFailed(FmqFailureKind::WriteFailed),
+            DemuxRuntimeErrorKind::FmqDeliveryFailed(FmqFailureKind::ShortWrite),
+            DemuxRuntimeErrorKind::FmqDeliveryFailed(FmqFailureKind::EventFlagWakeFailed),
+            DemuxRuntimeErrorKind::FilterMissing,
+        ] {
+            runtime.record_packet_pipeline_diagnostics(
+                demux_id,
+                1,
+                &PipelineReport {
+                    diagnostics: vec![PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                        pid,
+                        filter_id,
+                        DemuxRuntimeError {
+                            kind,
+                            id: Some(filter_id),
+                        },
+                    )],
+                    ..PipelineReport::default()
+                },
+            );
+        }
+        runtime.record_packet_pipeline_diagnostics(
+            demux_id,
+            1,
+            &PipelineReport {
+                diagnostics: vec![PipelineDiagnostic::FilterQueueWakeDeferred { pid, filter_id }],
+                ..PipelineReport::default()
+            },
+        );
+        let totals = runtime.packet_delivery_failure_totals();
+        assert_eq!(
+            (
+                totals.capacity_exceeded,
+                totals.queue_runtime_failed,
+                totals.write_failed,
+                totals.short_write,
+                totals.wake_failed,
+                totals.other_failed,
+            ),
+            (1, 1, 1, 1, 2, 1)
+        );
+        assert_eq!(runtime.packet_pipeline_diagnostics().dropped_count(), 6);
+        runtime.record_packet_pipeline_diagnostics(
+            demux_id,
+            1,
+            &PipelineReport {
+                diagnostics: vec![PipelineDiagnostic::ResidualBytesDrop],
+                ..PipelineReport::default()
+            },
+        );
+        assert_eq!(runtime.packet_delivery_failure_totals(), totals);
+        runtime.packet_delivery_failure_totals.wake_failed = u64::MAX - 1;
+        runtime.record_packet_pipeline_diagnostics(
+            demux_id,
+            1,
+            &PipelineReport {
+                diagnostics: vec![PipelineDiagnostic::FilterQueueWakeDeferred { pid, filter_id }],
+                ..PipelineReport::default()
+            },
+        );
+        assert_eq!(
+            runtime.packet_delivery_failure_totals().wake_failed,
+            u64::MAX
+        );
+        runtime.record_packet_pipeline_diagnostics(
+            demux_id,
+            1,
+            &PipelineReport {
+                diagnostics: vec![PipelineDiagnostic::FilterQueueWakeDeferred { pid, filter_id }],
+                ..PipelineReport::default()
+            },
+        );
+        assert_eq!(
+            runtime.packet_delivery_failure_totals().wake_failed,
+            u64::MAX
+        );
+        // 診断の実クリア入口であるservice boot resetを使用し、fieldへの直接代入で済ませない。
+        let _ = runtime.boot_from_probe_results(std::iter::empty::<FrontendProbeOutcome>());
+        assert_eq!(
+            runtime.packet_delivery_failure_totals(),
+            crate::diagnostics::PacketDeliveryFailureTotals::default()
+        );
+        assert!(runtime.packet_pipeline_diagnostics().records().is_empty());
+    }
+
+    #[test]
+    fn record_dvr_gate_failure_remains_in_history_without_counting_filter_fmq_failure() {
+        use maleicacid_tuner_hal2_demux::{
+            DemuxRuntimeError, DemuxRuntimeErrorKind, RecordIndexSettings,
+        };
+        let (mut runtime, demux_id, filter_id) = configured_raw_filter(
+            FilterOpenType::TsRecord,
+            0x123,
+            FilterConfigKind::TsRecord(RecordIndexSettings {
+                ts_index_mask: maleicacid_tuner_hal2_demux::DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+                sc_index_type: maleicacid_tuner_hal2_demux::RECORD_SC_TYPE_NONE,
+                sc_index_mask: 0,
+            }),
+        );
+        let packet = packet_with_payload(0x123, true, &[0, 0, 1]);
+        let pid = ValidatedTsPacket::validate(&packet)
+            .expect("valid TS packet")
+            .pid();
+        let failure = PipelineDiagnostic::filter_queue_payload_delivery_failure(
+            pid,
+            filter_id,
+            DemuxRuntimeError {
+                kind: DemuxRuntimeErrorKind::QueueRuntimeFailure,
+                id: Some(filter_id),
+            },
+        );
+        runtime.record_packet_pipeline_diagnostics(
+            demux_id,
+            1,
+            &PipelineReport {
+                diagnostics: vec![failure.clone()],
+                ..PipelineReport::default()
+            },
+        );
+        assert_eq!(
+            runtime.packet_delivery_failure_totals(),
+            crate::diagnostics::PacketDeliveryFailureTotals::default()
+        );
+        assert_eq!(
+            runtime.packet_pipeline_diagnostics().records()[0].diagnostic,
+            failure
+        );
+    }
+
+    #[test]
     fn packet_drop_diagnostics_retain_generation_and_bounded_loss_count() {
         let mut runtime = TunerServiceRuntime::new();
         runtime.packet_pipeline_diagnostics = BoundedDiagnosticStore::new(2);
@@ -1565,6 +1726,7 @@ impl TunerServiceRuntime {
             frontend_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
             demux_transaction_diagnostics: BoundedDiagnosticStore::default(),
             packet_pipeline_diagnostics: BoundedDiagnosticStore::default(),
+            packet_delivery_failure_totals: Default::default(),
             object_cleanup_diagnostics: SharedObjectCleanupDiagnostics::default(),
             frontend_worker_cleanup_diagnostics: SharedFrontendWorkerCleanupDiagnostics::default(),
             next_demux_transaction_diagnostic_id: 1,
@@ -1876,6 +2038,12 @@ impl TunerServiceRuntime {
             self.demux_transaction_diagnostics.as_slice().to_vec(),
             self.demux_transaction_diagnostics.dropped_count(),
         )
+    }
+
+    pub fn packet_delivery_failure_totals(
+        &self,
+    ) -> crate::diagnostics::PacketDeliveryFailureTotals {
+        self.packet_delivery_failure_totals
     }
 
     pub fn packet_pipeline_diagnostics(
@@ -3158,6 +3326,7 @@ impl TunerServiceRuntime {
         self.frontend_callback_delivery_diagnostics.clear();
         self.demux_transaction_diagnostics.clear();
         self.packet_pipeline_diagnostics.clear();
+        self.packet_delivery_failure_totals = Default::default();
         if let Err(error) = self.object_cleanup_diagnostics.clear() {
             self.diagnostics.push(
                 StartupDiagnosticRecord::object_cleanup_diagnostic_clear_failed(error.clone()),

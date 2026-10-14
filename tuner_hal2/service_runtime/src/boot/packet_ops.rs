@@ -1,4 +1,3 @@
-#[cfg(target_os = "android")]
 use super::{DemuxRuntimeId, PipelineDiagnostic};
 use crate::descrambler_key_table::DescramblerPacketKeys;
 use std::time::Instant;
@@ -356,6 +355,19 @@ impl TunerServiceRuntime {
                     );
                 }
                 _ => {}
+            }
+            // Record DVRのGate障害はFilter FMQ payload配送とは別のdata plane。
+            let is_filter_fmq_payload = match diagnostic {
+                PipelineDiagnostic::FilterQueuePayloadDeliveryFailure { filter_id, .. }
+                | PipelineDiagnostic::FilterQueueWakeDeferred { filter_id, .. } => self
+                    .registry
+                    .demux_runtime(DemuxRuntimeId(demux_id))
+                    .and_then(|demux| demux.filter_snapshot(*filter_id).ok())
+                    .is_some_and(|snapshot| snapshot.open_type.uses_filter_fmq_for_payload()),
+                _ => false,
+            };
+            if is_filter_fmq_payload {
+                self.packet_delivery_failure_totals.record(diagnostic);
             }
             self.packet_pipeline_diagnostics.push(
                 crate::diagnostics::PacketPipelineDiagnosticRecord {

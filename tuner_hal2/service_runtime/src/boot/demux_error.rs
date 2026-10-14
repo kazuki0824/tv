@@ -91,6 +91,7 @@ pub(crate) fn demux_runtime_error_to_hal(
             context,
         ) => queue_error_to_hal(error.id, context),
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailure
+        | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueCapacityExceeded
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::AvBackingFailure => {
             HalError::internal(
                 HalInternalKind::InvariantViolation,

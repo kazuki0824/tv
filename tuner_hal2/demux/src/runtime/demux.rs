@@ -111,6 +111,7 @@ pub enum DemuxRuntimeErrorKind {
     PipelineFailed,
     GenerationExhausted,
     QueueRuntimeFailure,
+    QueueCapacityExceeded,
     QueueRuntimeFailureWithContext(QueueRuntimeError),
     QueueRuntimeFailureWithRollback {
         primary: QueueRuntimeError,
@@ -1875,6 +1876,23 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn close_filter_producer_gate_for_test(&self, filter_id: i32) {
+        self.filter_producer_gates
+            .get(&filter_id)
+            .expect("record FilterのGateが存在すること")
+            .close()
+            .expect("試験でGateを閉じられること");
+    }
+
+    #[cfg(all(test, not(target_os = "android")))]
+    pub(crate) fn fail_next_filter_wakes_for_test(&self, filter_id: i32, count: usize) {
+        self.filter_queue_runtimes
+            .get(&filter_id)
+            .expect("試験用Filter FMQが存在すること")
+            .fail_next_wakes_for_test(count);
+    }
+
+    #[cfg(test)]
     pub(crate) fn enqueue_filter_queue_payload(
         &mut self,
         filter_id: i32,
@@ -1891,6 +1909,7 @@ impl DemuxRuntime {
             .begin_producer()
             .map_err(|error| DemuxRuntimeError::queue_runtime_error(filter_id, error))?;
         self.enqueue_filter_queue_payload_with_permit(filter_id, payload, &mut permit)
+            .map(|_| ())
             .map_err(FilterQueuePayloadError::runtime_error)?;
         permit
             .commit()
@@ -1912,9 +1931,10 @@ impl DemuxRuntime {
         })?;
         queue
             .retry_pending_wake(TUNER_EVENT_DATA_READY)
-            .map_err(|error| {
-                FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_error(
-                    filter_id, error,
+            .map_err(|_| {
+                FilterQueuePayloadError::Runtime(DemuxRuntimeError::fmq_delivery_failure(
+                    filter_id,
+                    FmqFailureKind::EventFlagWakeFailed,
                 ))
             })?;
         let available = queue.available_to_write().map_err(|error| {
@@ -1923,9 +1943,10 @@ impl DemuxRuntime {
             ))
         })?;
         if available < payload_len {
-            return Err(FilterQueuePayloadError::Overflow(
-                DemuxRuntimeError::queue_runtime_failure(filter_id),
-            ));
+            return Err(FilterQueuePayloadError::Overflow(DemuxRuntimeError {
+                kind: DemuxRuntimeErrorKind::QueueCapacityExceeded,
+                id: Some(filter_id),
+            }));
         }
         Ok(())
     }
@@ -1935,7 +1956,7 @@ impl DemuxRuntime {
         filter_id: i32,
         payload: Vec<u8>,
         _permit: &mut FilterProducerPermit,
-    ) -> Result<(), FilterQueuePayloadError> {
+    ) -> Result<bool, FilterQueuePayloadError> {
         let Some(queue) = self.filter_queue_runtimes.get(&filter_id) else {
             return Err(FilterQueuePayloadError::Runtime(
                 DemuxRuntimeError::queue_missing(filter_id),
@@ -1964,11 +1985,14 @@ impl DemuxRuntime {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.note_payload_queued(result.bytes);
                 }
-                Ok(())
+                Ok(matches!(result.action, FmqDeliveryAction::WakePending))
             }
-            FmqDeliveryAction::Overflow => Err(FilterQueuePayloadError::Overflow(
-                DemuxRuntimeError::queue_runtime_failure(filter_id),
-            )),
+            FmqDeliveryAction::Overflow => {
+                Err(FilterQueuePayloadError::Overflow(DemuxRuntimeError {
+                    kind: DemuxRuntimeErrorKind::QueueCapacityExceeded,
+                    id: Some(filter_id),
+                }))
+            }
             FmqDeliveryAction::RuntimeFailed(failure) => {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.mark_failed();
@@ -2067,6 +2091,27 @@ impl DemuxRuntime {
             }
         }
         Ok(vec![drained])
+    }
+
+    // 実FMQのread pointerを進める試験用読取り。mirrorではない。
+    #[cfg(test)]
+    pub(crate) fn read_filter_fmq_bytes_for_test(
+        &self,
+        filter_id: i32,
+    ) -> Result<Vec<u8>, DemuxRuntimeError> {
+        let queue = self
+            .filter_queue_runtimes
+            .get(&filter_id)
+            .ok_or(DemuxRuntimeError::queue_missing(filter_id))?;
+        let available = queue
+            .available_to_read()
+            .map_err(|error| DemuxRuntimeError::queue_runtime_error(filter_id, error))?;
+        let mut bytes = vec![0; available];
+        let read = queue
+            .read_into(&mut bytes)
+            .map_err(|error| DemuxRuntimeError::queue_runtime_error(filter_id, error))?;
+        bytes.truncate(read);
+        Ok(bytes)
     }
 
     #[cfg(test)]
@@ -5316,22 +5361,28 @@ impl DemuxRuntime {
                 Some(payload) => {
                     self.enqueue_filter_queue_payload_with_permit(filter_id, payload, &mut permit)
                 }
-                None => Ok(()),
+                None => Ok(false),
             };
-            if let Err(error) = payload_result {
-                drop(permit);
-                if error.is_overflow() {
-                    committed_events.push(PipelineGeneratedEvent::FilterStatus {
+            let wake_deferred = match payload_result {
+                Ok(wake_deferred) => wake_deferred,
+                Err(error) => {
+                    drop(permit);
+                    if error.is_overflow() {
+                        committed_events.push(PipelineGeneratedEvent::FilterStatus {
+                            filter_id,
+                            status: FilterStatusEvent::Overflow,
+                        });
+                    }
+                    diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                        pid,
                         filter_id,
-                        status: FilterStatusEvent::Overflow,
-                    });
+                        error.runtime_error(),
+                    ));
+                    continue;
                 }
-                diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                    pid,
-                    filter_id,
-                    error.runtime_error(),
-                ));
-                continue;
+            };
+            if wake_deferred {
+                diagnostics.push(PipelineDiagnostic::FilterQueueWakeDeferred { pid, filter_id });
             }
             let unqueued_event = if callback_event {
                 if let Err(error) = permit.enqueue_event(event) {

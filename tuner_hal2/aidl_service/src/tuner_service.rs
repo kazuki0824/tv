@@ -783,6 +783,131 @@ mod tests {
     }
 
     #[test]
+    fn binder_dump_exposes_nonzero_fmq_failure_totals_from_real_ts_delivery() {
+        use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
+            DemuxFilterEvent::DemuxFilterEvent,
+            DemuxFilterMainType::DemuxFilterMainType,
+            DemuxFilterStatus::DemuxFilterStatus,
+            DemuxFilterSubType::DemuxFilterSubType,
+            DemuxTsFilterSettings::DemuxTsFilterSettings,
+            DemuxTsFilterSettingsFilterSettings::DemuxTsFilterSettingsFilterSettings,
+            DemuxTsFilterType::DemuxTsFilterType,
+            IFilterCallback::{BnFilterCallback, IFilterCallback},
+        };
+        use maleicacid_tuner_hal2_device::FrontendLivePacketSink;
+        use maleicacid_tuner_hal2_service_runtime::{
+            FilterEventDeliverySnapshot, FilterEventDispatcher, FrontendCapabilitySnapshot,
+            FrontendDemuxPacketSink, FrontendProbeOutcome, FrontendRuntimeId,
+            FrontendScalarCapability, SatellitePowerTopology, ServiceBootOutcome,
+        };
+        use std::sync::{Arc, Mutex};
+
+        struct SilentFilterCallback;
+        impl Interface for SilentFilterCallback {}
+        impl IFilterCallback for SilentFilterCallback {
+            fn onFilterEvent(&self, _events: &[DemuxFilterEvent]) -> BinderResult<()> {
+                Ok(())
+            }
+            fn onFilterStatus(&self, _status: DemuxFilterStatus) -> BinderResult<()> {
+                Ok(())
+            }
+        }
+
+        struct DiscardFilterEvents;
+        impl FilterEventDispatcher for DiscardFilterEvents {
+            fn wake(&self) -> Result<(), HalError> {
+                Ok(())
+            }
+            fn dispatch(
+                &self,
+                _runtime: &Arc<Mutex<TunerServiceRuntime>>,
+                _events: Vec<FilterEventDeliverySnapshot>,
+            ) -> Result<(), HalError> {
+                Ok(())
+            }
+        }
+
+        let mut runtime = TunerServiceRuntime::new();
+        assert_eq!(
+            runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+                id: FrontendRuntimeId(7),
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                path: "/dev/null".into(),
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 473_142_857,
+                        max_frequency_hz: 473_142_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 7,
+                    isdbt_segment: None,
+                },
+            }]),
+            ServiceBootOutcome::Ready
+        );
+        let service = TunerAidlService::new(runtime).expect("Filter dispatcherの登録に成功する");
+        let _frontend = service.openFrontendById(7).expect("Frontendを開く");
+        let mut demux_ids = Vec::new();
+        let demux = service.openDemux(&mut demux_ids).expect("Demuxを開く");
+        demux
+            .setFrontendDataSource(7)
+            .expect("FrontendとDemuxを接続する");
+        let callback =
+            BnFilterCallback::new_binder(SilentFilterCallback, BinderFeatures::default());
+        let filter = demux
+            .openFilter(
+                &DemuxFilterType {
+                    mainType: DemuxFilterMainType::TS,
+                    subType: DemuxFilterSubType::TsFilterType(DemuxTsFilterType::TS),
+                },
+                188,
+                &callback,
+            )
+            .expect("TS Raw Filterを開く");
+        filter
+            .configure(&DemuxFilterSettings::Ts(DemuxTsFilterSettings {
+                tpid: 0x30,
+                filterSettings: DemuxTsFilterSettingsFilterSettings::Noinit(false),
+            }))
+            .expect("TS Raw Filterを構成する");
+        filter.start().expect("TS Raw Filterを開始する");
+
+        // Filter FMQは188 bytes。実TS payloadを2個送ることで容量不足を発生させ、
+        // productionの同一診断ownerを通じて累積値を更新する。
+        let mut sink = FrontendDemuxPacketSink::new(
+            service.context.runtime(),
+            7,
+            Arc::new(DiscardFilterEvents),
+        );
+        for counter in 0..3u8 {
+            let mut packet = [0xffu8; 188];
+            packet[0] = 0x47;
+            packet[1] = 0;
+            packet[2] = 0x30;
+            packet[3] = 0x10 | counter;
+            sink.deliver_ts_packet(&packet)
+                .expect("本番TS→Filter FMQ経路を配送する");
+        }
+
+        let snapshot = service.context.diagnostic_snapshot();
+        assert!(!snapshot.retrieval_failed());
+        let totals = snapshot.packet_delivery_failure_totals.unwrap();
+        assert_eq!(totals.capacity_exceeded, 2);
+        assert_eq!(totals.queue_runtime_failed, 0);
+        assert_eq!(totals.write_failed, 0);
+        let mut output = Vec::new();
+        Interface::dump(&service, &mut output, &[]).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("capacity_exceeded: 2"));
+        assert!(rendered.contains("queue_runtime_failed: 0"));
+    }
+
+    #[test]
     fn binder_dump_retains_fmq_worker_and_callback_failures() {
         use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FmqFailureKind};
         use maleicacid_tuner_hal2_device::FrontendWorkerKind;
