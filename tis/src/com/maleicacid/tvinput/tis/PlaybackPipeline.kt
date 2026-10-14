@@ -745,13 +745,13 @@ class PlaybackPipeline(
                                                 continue
                                             }
                                             if (event !is MediaEvent) continue
-                                            dataPathProgress.record(PlaybackDataPathProgress.Stage.MEDIA_EVENT)
                                             var decoderOwnsEvent = false
                                             try {
                                                 if (!inputIsCurrent()) continue
+                                                dataPathProgress.record(PlaybackDataPathProgress.Stage.MEDIA_EVENT, isAudio)
                                                 val sample = sampleFromEvent(event, isAudio) ?: continue
-                                                dataPathProgress.record(PlaybackDataPathProgress.Stage.VALID_SAMPLE)
                                                 if (!inputIsCurrent()) continue
+                                                dataPathProgress.record(PlaybackDataPathProgress.Stage.VALID_SAMPLE, isAudio)
                                                 val target = (if (isAudio) targetAudioDecoder else targetVideoDecoder) ?: continue
                                                 // queueは受理・拒否とも入力を所有し、自身の失敗時にも解放を保持する。
                                                 decoderOwnsEvent = true
@@ -792,18 +792,19 @@ class PlaybackPipeline(
                                     "AV filter 状態 inputId=$inputId pid=$pid isAudio=$isAudio status=$status",
                                 )
                                 if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
-                                    dataPathProgress.record(PlaybackDataPathProgress.Stage.OVERFLOW)
+                                    dataPathProgress.record(PlaybackDataPathProgress.Stage.OVERFLOW, isAudio)
                                     inputIdentity.set(null)
                                     (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
                                     val result = filter.flush()
                                     if (result == Tuner.RESULT_SUCCESS) {
-                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_SUCCEEDED)
+                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_SUCCEEDED, isAudio)
                                         inputIdentity.set(Any())
                                     } else {
+                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_FAILED, isAudio)
                                         emitUnavailableForGeneration(
                                             filterGeneration,
                                             PlaybackUnavailableReason.UNKNOWN,
-                                            "AV filterのflushに失敗しました result=$result",
+                                            "AV filterのflushに失敗しました result=$result progress=${dataPathProgress.summary()}",
                                         )
                                     }
                                 }
@@ -1371,7 +1372,7 @@ class PlaybackPipeline(
         }
         val block =
             event.linearBlock ?: run {
-                dataPathProgress.record(PlaybackDataPathProgress.Stage.MISSING_LINEAR_BLOCK)
+                dataPathProgress.record(PlaybackDataPathProgress.Stage.MISSING_LINEAR_BLOCK, isAudio)
                 return null
             }
         val capacity =
@@ -1470,14 +1471,14 @@ class PlaybackPipeline(
                 if (sample.size > budget.singleEventLimitBytes) {
                     oversizedSamplesDropped++
                     releaseMediaEvent(sample.event)
-                    dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED)
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
                     onSampleRejected("SAMPLE_TOO_LARGE size=${sample.size} limit=${budget.singleEventLimitBytes}")
                     return
                 }
                 val queueBudget = if (codec == null) budget.startup else budget.pending
                 if (!withinQueueBudget(sample, queueBudget)) {
                     decoderBackpressureDrops++
-                    dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED)
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
                     releaseMediaEvent(sample.event)
                     val nowMs = SystemClock.elapsedRealtime()
                     val startedAtMs = backpressureStartedAtMs ?: nowMs.also { backpressureStartedAtMs = it }
@@ -1593,7 +1594,7 @@ class PlaybackPipeline(
                                 }
                                 completeCurrentDecoderOutputAction(::onDecoderFailure) {
                                     if (info.size > 0) {
-                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_OUTPUT)
+                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, this@DecoderPipeline is AudioDecoderPipeline)
                                         startupDeadline?.onFirstOutput()
                                         startupTimeout?.let(mainHandler::removeCallbacks)
                                         startupTimeout = null
@@ -1662,7 +1663,7 @@ class PlaybackPipeline(
                         .queue()
                     backpressureStartedAtMs = null
                     releaseMediaEvent(sample.event)
-                    dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT)
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
                     onCompressedInputQueued(sample)
                 } catch (error: RuntimeException) {
                     releaseMediaEvent(sample.event)
@@ -1772,7 +1773,7 @@ class PlaybackPipeline(
                         ) {
                             return@enqueuePlaybackAction
                         }
-                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FRAME_RENDERED)
+                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false)
                         commitCompatibilityVideoAvailability(generation, nanoTime)
                     }
                 },
