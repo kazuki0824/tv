@@ -5,6 +5,8 @@ package com.maleicacid.tvinput.tis
 
 import android.content.Context
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.TunerUtils
 import android.media.tv.tuner.filter.Filter
@@ -22,14 +24,19 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.MediaCodecInfoBuilder
+import org.robolectric.shadows.ShadowMediaCodec
+import org.robolectric.shadows.ShadowMediaCodecList
 import org.robolectric.shadows.ShadowSystemClock
 import org.robolectric.util.ReflectionHelpers
 import java.nio.ByteBuffer
 import java.time.Duration
+import android.os.Looper
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
@@ -47,6 +54,7 @@ import kotlin.test.assertTrue
         PlaybackFilterAdmissionTest.NativeFilter::class,
         PlaybackFilterAdmissionTest.NativeMediaEvent::class,
         PlaybackFilterAdmissionTest.NativeLinearBlock::class,
+        PlaybackFilterAdmissionTest.NativeCodec::class,
     ],
 )
 // 同じproduction ownerとAndroid境界fixtureを共有する。
@@ -450,6 +458,107 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    // MediaCodecのJava callback配送を使用し、ネイティブqueueだけをhost shadowへ置き換える。
+    @Test
+    fun codecBlockModelCallbackReportsVideoInputOutputAndRenderedFrameSeparately() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachVideoCodec()
+            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            val video = fixture.avFilter(false)
+            val packet = mappedMediaEvent()
+            deliver(video, packet)
+            fixture.drain()
+            assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.MEDIA_EVENT, false))
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, false))
+            val output = MediaCodec.BufferInfo().apply { set(0, 1, 90_000L, 0) }
+            postCodecCallback(codec, 2, 0, output)
+            assertTrue(nativeCodec.outputReleased.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, false))
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, true))
+            val listener = ReflectionHelpers.getField<MediaCodec.OnFrameRenderedListener>(
+                codec,
+                "mOnFrameRenderedListener",
+            )
+            listener.onFrameRendered(codec, 90_000L, 1_000_000L)
+            fixture.drain()
+            assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
+        }
+    }
+
+    @Test
+    fun codecInputWithoutOutputIsReportedAtRealFirstFrameDeadline() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachVideoCodec()
+            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            val video = fixture.avFilter(false)
+            deliver(video, mappedMediaEvent())
+            fixture.drain()
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            fixture.invoke("scheduleFirstFrameTimeout", 7L)
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(10, TimeUnit.SECONDS)
+            fixture.drain()
+            val failure = fixture.unavailable.single()
+            assertEquals(PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT, failure.reason)
+            assertTrue(failure.detail.contains("VIDEO.MEDIA_EVENT=1"))
+            assertTrue(failure.detail.contains("VIDEO.CODEC_INPUT=1"))
+            assertTrue(failure.detail.contains("VIDEO.CODEC_OUTPUT=0"))
+            assertTrue(failure.detail.contains("AUDIO.CODEC_OUTPUT=0"))
+            assertTrue(failure.detail.contains("VIDEO.FRAME_RENDERED=0"))
+        }
+    }
+
+    private fun Fixture.attachVideoCodec(): MediaCodec {
+        val caps = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 4096, 4096)
+        val codecInfo =
+            MediaCodecInfoBuilder.newBuilder()
+                .setName("maleicacid.test.avc.decoder")
+                .setCapabilities(
+                    MediaCodecInfoBuilder.CodecCapabilitiesBuilder.newBuilder()
+                        .setMediaFormat(caps)
+                        .setColorFormats(intArrayOf(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible))
+                        .build(),
+                ).build()
+        ShadowMediaCodecList.addCodec(codecInfo)
+        val decoder = ReflectionHelpers.getField<Any>(pipeline, "videoDecoder")
+        val method = decoder.javaClass.superclass.getDeclaredMethod(
+            "createBlockModelDecoder",
+            MediaFormat::class.java,
+        ).apply { isAccessible = true }
+        val codec = method.invoke(
+            decoder,
+            MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 32, 32),
+        ) as MediaCodec
+        ReflectionHelpers.setField(decoder, "codec", codec)
+        return codec
+    }
+
+    private fun postCodecCallback(
+        codec: MediaCodec,
+        kind: Int,
+        index: Int,
+        info: MediaCodec.BufferInfo?,
+    ) {
+        ReflectionHelpers.callInstanceMethod<Unit>(
+            codec,
+            "postEventFromNative",
+            ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 1),
+            ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, kind),
+            ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, index),
+            ReflectionHelpers.ClassParameter.from(Any::class.java, info),
+        )
+    }
+
     private inner class Fixture : AutoCloseable {
         val pipeline = PlaybackPipeline("admission-test", null)
         val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
@@ -812,6 +921,38 @@ class PlaybackFilterAdmissionTest {
             releases++
             releaseThread = Thread.currentThread().name
             onRelease()
+        }
+    }
+
+    @Implements(MediaCodec::class)
+    class NativeCodec : ShadowMediaCodec() {
+        val inputQueued = CountDownLatch(1)
+        val outputReleased = CountDownLatch(1)
+
+        @Implementation
+        @Suppress("UNUSED_PARAMETER")
+        protected fun native_queueLinearBlock(
+            index: Int,
+            block: MediaCodec.LinearBlock,
+            cryptoInfos: Array<Any>?,
+            bufferInfos: Array<Any>,
+            keys: ArrayList<String>,
+            values: ArrayList<Any>,
+        ) {
+            assertEquals(1, bufferInfos.size)
+            inputQueued.countDown()
+        }
+
+        @Implementation
+        @Suppress("UNUSED_PARAMETER")
+        protected fun releaseOutputBuffer(index: Int, renderTimestampNs: Long) {
+            outputReleased.countDown()
+        }
+
+        @Implementation
+        @Suppress("UNUSED_PARAMETER")
+        protected fun releaseOutputBuffer(index: Int, render: Boolean) {
+            outputReleased.countDown()
         }
     }
 
