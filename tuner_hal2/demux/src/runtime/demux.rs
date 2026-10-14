@@ -1910,13 +1910,15 @@ impl DemuxRuntime {
         let queue = self.filter_queue_runtimes.get(&filter_id).ok_or_else(|| {
             FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_missing(filter_id))
         })?;
-        if queue.retry_pending_wake(TUNER_EVENT_DATA_READY).is_err() {
-            return Err(FilterQueuePayloadError::Runtime(
-                DemuxRuntimeError::queue_runtime_failure(filter_id),
-            ));
-        }
-        let available = queue.available_to_write().map_err(|_| {
-            FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_failure(filter_id))
+        queue.retry_pending_wake(TUNER_EVENT_DATA_READY).map_err(|error| {
+            FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_error(
+                filter_id, error,
+            ))
+        })?;
+        let available = queue.available_to_write().map_err(|error| {
+            FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_error(
+                filter_id, error,
+            ))
         })?;
         if available < payload_len {
             return Err(FilterQueuePayloadError::Overflow(

@@ -2851,6 +2851,12 @@ fn finish_started_px4_live_pump(
     let active_pump = prepared.activate();
     start_guard.release();
     *live_pump = Some(active_pump);
+    #[cfg(target_os = "android")]
+    log::info!(
+        "HAL_LIVE_PUMP_ACTIVATED frontend={} generation={}",
+        control.frontend_id(),
+        control.generation(),
+    );
     Ok(Some(FrontendLockWaitOutcome::Locked))
 }
 
@@ -2892,6 +2898,12 @@ fn reconcile_px4_live_pump_consumer(
         return Ok(());
     }
 
+    #[cfg(target_os = "android")]
+    log::warn!(
+        "HAL_LIVE_PUMP_STOP frontend={} generation={} reason=bound_demux_disappeared",
+        frontend_id,
+        ctx.generation(),
+    );
     let report =
         stop_stream_then_join_live_pump(live_pump, || session.stop())?.ok_or_else(|| {
             HalError::internal(
@@ -3596,6 +3608,8 @@ fn run_frontend_backend_tune_session_worker(
             FrontendLockWaitOutcome::Cancelled => {}
         }
         let mut lock_announced = true;
+        #[cfg(target_os = "android")]
+        let mut next_pump_wait_diagnostic = Instant::now();
         while !ctx.cancel_requested() {
             let (signal_state, qualification) = if lock_announced {
                 let signal_state = session.observe_signal_state()?;
@@ -3719,6 +3733,54 @@ fn run_frontend_backend_tune_session_worker(
                         )?;
                     }
                 }
+            }
+            // Missing Section callbacks alone do not identify the stalled boundary.
+            // Emit one bounded observation per five seconds without retaining a
+            // second owner of Frontend/Demux relation or streaming state.
+            #[cfg(target_os = "android")]
+            if backend == FrontendBackendKind::Px4CharDevice
+                && signal_state == FrontendSignalState::Locked
+                && live_pump.is_none()
+                && Instant::now() >= next_pump_wait_diagnostic
+            {
+                let (bound_demuxes, has_reader) = {
+                    let guard = lock_runtime(
+                        &runtime,
+                        "live pump未開始診断中にservice runtime lockが汚染されました",
+                    )?;
+                    (
+                        current_bound_demux_generation_snapshot(&guard, frontend_id)?,
+                        guard
+                            .query()
+                            .frontend_runtime_snapshot(frontend_id)?
+                            .live_reader_descriptor
+                            .is_some(),
+                    )
+                };
+                let reason = if bound_demuxes.is_empty() {
+                    "no_bound_demux"
+                } else if !has_reader {
+                    "missing_live_reader"
+                } else {
+                    "start_or_activation_pending"
+                };
+                log::warn!(
+                    "HAL_LIVE_PUMP_WAIT frontend={} generation={} reason={} bound_demuxes={:?} has_reader={} streaming_started={}",
+                    frontend_id,
+                    generation,
+                    reason,
+                    bound_demuxes,
+                    has_reader,
+                    session.streaming_started(),
+                );
+                next_pump_wait_diagnostic = Instant::now()
+                    .checked_add(Duration::from_secs(5))
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "live pump diagnostic deadline overflow",
+                        )
+                    })?;
             }
             let completed_live_pump =
                 live_pump
