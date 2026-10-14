@@ -1103,14 +1103,14 @@ mod tests {
             let mut backing = AvSharedBacking::with_layout(1, 188);
             backing.mark_exported();
             assert!(matches!(
-                backing.allocate_payload(100),
-                AvPayloadDeliveryOutcome::Delivered(_)
-            ));
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
             for _ in 0..rejections {
                 assert_eq!(
-                backing.allocate_payload(100),
-                AvPayloadDeliveryOutcome::NoFreeSlot
-            );
+                    backing.allocate_payload(100),
+                    AvPayloadDeliveryOutcome::NoFreeSlot
+                );
             }
             let (previous, threshold, snapshot) = backing.take_shortage_sample().expect("shortage");
             assert_eq!(previous, 0);
@@ -1119,9 +1119,9 @@ mod tests {
             assert!(backing.take_shortage_sample().is_none());
             if rejections == 3 {
                 assert_eq!(
-                backing.allocate_payload(100),
-                AvPayloadDeliveryOutcome::NoFreeSlot
-            );
+                    backing.allocate_payload(100),
+                    AvPayloadDeliveryOutcome::NoFreeSlot
+                );
                 let (previous, threshold, snapshot) =
                     backing.take_shortage_sample().expect("fourth");
                 assert_eq!((previous, threshold, snapshot.no_free_slot), (2, 4, 4));
@@ -1135,21 +1135,21 @@ mod tests {
         let mut backing = AvSharedBacking::with_layout(1, 188);
         backing.mark_exported();
         assert!(matches!(
-                backing.allocate_payload(100),
-                AvPayloadDeliveryOutcome::Delivered(_)
-            ));
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
         assert!(backing.take_shortage_sample().is_none());
         assert_eq!(
-                backing.allocate_payload(100),
-                AvPayloadDeliveryOutcome::NoFreeSlot
-            );
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::NoFreeSlot
+        );
         let (previous, threshold, _) = backing.take_shortage_sample().expect("first rejection");
         assert_eq!((previous, threshold), (0, 1));
         backing.diagnostics.no_free_slot = u64::MAX - 2;
         assert_eq!(
-                backing.allocate_payload(100),
-                AvPayloadDeliveryOutcome::NoFreeSlot
-            );
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::NoFreeSlot
+        );
         let (previous, threshold, snapshot) =
             backing.take_shortage_sample().expect("last threshold");
         assert_eq!(
@@ -1157,13 +1157,13 @@ mod tests {
             (1, 1u64 << 63, u64::MAX - 1)
         );
         assert_eq!(
-                backing.allocate_payload(100),
-                AvPayloadDeliveryOutcome::NoFreeSlot
-            );
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::NoFreeSlot
+        );
         assert_eq!(
-                backing.allocate_payload(100),
-                AvPayloadDeliveryOutcome::NoFreeSlot
-            );
+            backing.allocate_payload(100),
+            AvPayloadDeliveryOutcome::NoFreeSlot
+        );
         assert_eq!(backing.diagnostic_snapshot().no_free_slot, u64::MAX);
         assert!(backing.take_shortage_sample().is_none());
     }
