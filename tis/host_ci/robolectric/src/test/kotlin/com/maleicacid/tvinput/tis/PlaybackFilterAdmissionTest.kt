@@ -21,6 +21,7 @@ import android.os.Looper
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -34,6 +35,7 @@ import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.MediaCodecInfoBuilder
 import org.robolectric.shadows.ShadowMediaCodec
 import org.robolectric.shadows.ShadowMediaCodecList
+import org.robolectric.shadows.ShadowLog
 import org.robolectric.shadows.ShadowSystemClock
 import org.robolectric.util.ReflectionHelpers
 import java.nio.ByteBuffer
@@ -489,9 +491,31 @@ class PlaybackFilterAdmissionTest {
                     codec,
                     "mOnFrameRenderedListener",
                 )
-            listener.onFrameRendered(codec, 90_000L, 1_000_000L)
+            val logCountBefore = availabilityLogMessages().size
+            val armedAt = System.nanoTime()
+            fixture.armCompatibilityAvailability(7L, armedAt)
+            listener.onFrameRendered(codec, 90_000L, armedAt + 1L)
             fixture.drain()
             assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
+            assertEquals(listOf(7L), fixture.available)
+            val committed = availabilityLogMessages()
+            assertEquals(logCountBefore + 1, committed.size)
+            assertTrue(committed.last().contains("generation=7 mode=MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT"))
+            assertTrue(committed.last().contains("VIDEO.CODEC_OUTPUT=1"))
+            assertTrue(committed.last().contains("AUDIO.CODEC_OUTPUT=0"))
+            assertTrue(committed.last().contains("VIDEO.FRAME_RENDERED=1"))
+            // 同じframeの再通知では、既存の一回限りのavailability確定を再実行しない。
+            listener.onFrameRendered(codec, 90_000L, armedAt + 2L)
+            fixture.drain()
+            assertEquals(listOf(7L), fixture.available)
+            assertEquals(logCountBefore + 1, availabilityLogMessages().size)
+            // 次の世代が始まった後は旧Decoder callbackが成功通知も計数も行わない。
+            fixture.armCompatibilityAvailability(8L, System.nanoTime())
+            listener.onFrameRendered(codec, 90_000L, System.nanoTime())
+            fixture.drain()
+            assertEquals(listOf(7L), fixture.available)
+            assertEquals(logCountBefore + 1, availabilityLogMessages().size)
+            assertEquals(2L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
         }
     }
 
@@ -519,6 +543,10 @@ class PlaybackFilterAdmissionTest {
             assertTrue(failure.detail.contains("VIDEO.FRAME_RENDERED=0"))
         }
     }
+
+    private fun availabilityLogMessages(): List<String> =
+        ShadowLog.getLogsForTag(LogTags.TIS).map { it.msg }
+            .filter { it.startsWith("VIDEO_AVAILABILITY_COMMITTED inputId=admission-test ") }
 
     private fun Fixture.attachVideoCodec(): MediaCodec {
         val caps = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 4096, 4096)
@@ -579,12 +607,16 @@ class PlaybackFilterAdmissionTest {
         val failures = mutableListOf<Pair<PlaybackPipeline.PlaybackUnavailableReason, String>>()
         val unavailable = mutableListOf<PlaybackPipeline.PlaybackUnavailable>()
         val captionPayloads = mutableListOf<ByteArray>()
+        val available = mutableListOf<Long>()
         var codecSurface: Surface? = null
         var codecTexture: SurfaceTexture? = null
         var captionDiscontinuities = 0
 
         init {
             ReflectionHelpers.setField(pipeline, "playbackGeneration", 7L)
+            ReflectionHelpers.setField(pipeline, "onVideoAvailable", { generation: Long ->
+                available += generation
+            })
             ReflectionHelpers.setField(
                 pipeline,
                 "onVideoUnavailable",
@@ -603,6 +635,26 @@ class PlaybackFilterAdmissionTest {
         fun released(): Boolean = ReflectionHelpers.getField<AtomicBoolean>(pipeline, "released").get()
 
         fun progress(): PlaybackDataPathProgress = ReflectionHelpers.getField(pipeline, "dataPathProgress")
+
+        // 未パッチOSのcompatibility modeを既存のavailability arm契約のまま再現する。
+        fun armCompatibilityAvailability(
+            generation: Long,
+            armedAtNanoTime: Long,
+        ) {
+            val armType = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "AvailabilityArm" }
+            val arm = armType.declaredConstructors.single().apply { isAccessible = true }
+                .newInstance(generation, 1L, armedAtNanoTime)
+            val mode = PlaybackPipeline::class.java.declaredClasses
+                .single { it.simpleName == "VideoAvailabilityMode" }
+                .enumConstants.single { it.toString() == "MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT" }
+            executor.callControl(5_000L) {
+                ReflectionHelpers.setField(pipeline, "surface", requireNotNull(codecSurface))
+                ReflectionHelpers.setField(pipeline, "playbackGeneration", generation)
+                ReflectionHelpers.setField(pipeline, "waitingAvailabilityArm", arm)
+                ReflectionHelpers.setField(pipeline, "videoAvailabilityMode", mode)
+                ReflectionHelpers.getField<AtomicBoolean>(pipeline, "videoAvailableNotified").set(false)
+            }
+        }
 
         fun currentCaptionFilter(): Filter = ReflectionHelpers.getField(pipeline, "subtitleFilter")
 
