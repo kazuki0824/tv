@@ -1684,7 +1684,7 @@ impl FmqDeliveryTxn {
         self,
         expected_bytes: usize,
         write_result: Result<usize, FmqFailureKind>,
-        wake_result: Result<(), FmqFailureKind>,
+        wake: impl FnOnce() -> Result<(), FmqFailureKind>,
     ) -> FmqDeliveryResult {
         let written_bytes = match write_result {
             Ok(written_bytes) if written_bytes == expected_bytes => written_bytes,
@@ -1706,7 +1706,8 @@ impl FmqDeliveryTxn {
             }
         };
 
-        match wake_result {
+        // write失敗・short writeでは未確定データを起床通知しない。
+        match wake() {
             Ok(()) => FmqDeliveryResult {
                 object_kind: self.object_kind,
                 phase: FmqDeliveryPhase::Wake,
@@ -2698,16 +2699,55 @@ mod tests {
         let result = FmqDeliveryTxn::new(FmqObjectKind::Filter).commit_payload(
             188,
             Ok(188),
-            Err(FmqFailureKind::EventFlagWakeFailed),
+            || Err(FmqFailureKind::EventFlagWakeFailed),
         );
         assert_eq!(result.action, FmqDeliveryAction::WakePending);
         assert_eq!(result.bytes, 188);
     }
 
     #[test]
+    fn fmq_write_failure_or_short_write_never_wakes_any_queue() {
+        use std::cell::Cell;
+        for kind in [
+            FmqObjectKind::Filter,
+            FmqObjectKind::DvrPlayback,
+            FmqObjectKind::DvrRecord,
+        ] {
+            let wake_calls = Cell::new(0u32);
+            let write_failed = FmqDeliveryTxn::new(kind).commit_payload(
+                188,
+                Err(FmqFailureKind::WriteFailed),
+                || {
+                    wake_calls.set(wake_calls.get() + 1);
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                write_failed.action,
+                FmqDeliveryAction::RuntimeFailed(FmqFailureKind::WriteFailed)
+            );
+            let short_write = FmqDeliveryTxn::new(kind).commit_payload(188, Ok(187), || {
+                wake_calls.set(wake_calls.get() + 1);
+                Ok(())
+            });
+            assert_eq!(
+                short_write.action,
+                FmqDeliveryAction::RuntimeFailed(FmqFailureKind::ShortWrite)
+            );
+            assert_eq!(wake_calls.get(), 0, "write不成立で通知してはならない");
+            let committed = FmqDeliveryTxn::new(kind).commit_payload(188, Ok(188), || {
+                wake_calls.set(wake_calls.get() + 1);
+                Ok(())
+            });
+            assert_eq!(committed.action, FmqDeliveryAction::Continue);
+            assert_eq!(wake_calls.get(), 1);
+        }
+    }
+
+    #[test]
     fn fmq_short_write_fails_before_wake_commit() {
         let result =
-            FmqDeliveryTxn::new(FmqObjectKind::Filter).commit_payload(188, Ok(187), Ok(()));
+            FmqDeliveryTxn::new(FmqObjectKind::Filter).commit_payload(188, Ok(187), || Ok(()));
         assert_eq!(result.phase, FmqDeliveryPhase::Write);
         assert_eq!(
             result.action,
