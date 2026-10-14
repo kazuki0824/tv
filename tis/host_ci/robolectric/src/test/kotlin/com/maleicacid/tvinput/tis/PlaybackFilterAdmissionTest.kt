@@ -4,10 +4,10 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.Context
+import android.graphics.SurfaceTexture
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
-import android.graphics.SurfaceTexture
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.TunerUtils
 import android.media.tv.tuner.filter.Filter
@@ -17,6 +17,7 @@ import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.MediaEvent
 import android.media.tv.tuner.filter.PesEvent
 import android.media.tv.tuner.filter.RestartEvent
+import android.os.Looper
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
@@ -37,7 +38,6 @@ import org.robolectric.shadows.ShadowSystemClock
 import org.robolectric.util.ReflectionHelpers
 import java.nio.ByteBuffer
 import java.time.Duration
-import android.os.Looper
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
@@ -484,10 +484,11 @@ class PlaybackFilterAdmissionTest {
             assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, false))
             assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
             assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, true))
-            val listener = ReflectionHelpers.getField<MediaCodec.OnFrameRenderedListener>(
-                codec,
-                "mOnFrameRenderedListener",
-            )
+            val listener =
+                ReflectionHelpers.getField<MediaCodec.OnFrameRenderedListener>(
+                    codec,
+                    "mOnFrameRenderedListener",
+                )
             listener.onFrameRendered(codec, 90_000L, 1_000_000L)
             fixture.drain()
             assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
@@ -522,14 +523,17 @@ class PlaybackFilterAdmissionTest {
     private fun Fixture.attachVideoCodec(): MediaCodec {
         val caps = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 4096, 4096)
         val codecInfo =
-            MediaCodecInfoBuilder.newBuilder()
+            MediaCodecInfoBuilder
+                .newBuilder()
                 .setName("maleicacid.test.avc.decoder")
                 .setCapabilities(
-                    MediaCodecInfoBuilder.CodecCapabilitiesBuilder.newBuilder()
+                    MediaCodecInfoBuilder.CodecCapabilitiesBuilder
+                        .newBuilder()
                         .setMediaFormat(caps)
                         .setColorFormats(intArrayOf(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible))
                         .build(),
-                ).build()
+                )
+                .build()
         ShadowMediaCodecList.addCodec(codecInfo)
         val decoder = ReflectionHelpers.getField<Any>(pipeline, "videoDecoder")
         val texture = SurfaceTexture(0)
@@ -537,10 +541,13 @@ class PlaybackFilterAdmissionTest {
         ReflectionHelpers.setField(decoder, "outputSurface", surface)
         codecSurface = surface
         codecTexture = texture
-        val method = decoder.javaClass.superclass.getDeclaredMethod(
-            "createBlockModelDecoder",
-            MediaFormat::class.java,
-        ).apply { isAccessible = true }
+        val method =
+            decoder.javaClass.superclass
+                .getDeclaredMethod(
+                    "createBlockModelDecoder",
+                    MediaFormat::class.java,
+                )
+                .apply { isAccessible = true }
         val codec = method.invoke(
             decoder,
             MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 32, 32),
@@ -937,6 +944,8 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    // JNI互換のnative引数数とRobolectric既存override可視性は変更できない。
+    @Suppress("LongParameterList", "ProtectedMemberInFinalClass")
     @Implements(MediaCodec::class)
     class NativeCodec : ShadowMediaCodec() {
         val inputQueued = CountDownLatch(1)
@@ -961,13 +970,19 @@ class PlaybackFilterAdmissionTest {
 
         @Implementation
         @Suppress("UNUSED_PARAMETER")
-        protected override fun releaseOutputBuffer(index: Int, renderTimestampNs: Long) {
+        protected override fun releaseOutputBuffer(
+            index: Int,
+            renderTimestampNs: Long,
+        ) {
             outputReleased.countDown()
         }
 
         @Implementation
         @Suppress("UNUSED_PARAMETER")
-        protected override fun releaseOutputBuffer(index: Int, render: Boolean) {
+        protected override fun releaseOutputBuffer(
+            index: Int,
+            render: Boolean,
+        ) {
             outputReleased.countDown()
         }
     }
