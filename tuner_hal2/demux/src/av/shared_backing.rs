@@ -1103,9 +1103,9 @@ mod tests {
             let mut backing = AvSharedBacking::with_layout(1, 188);
             backing.mark_exported();
             assert!(matches!(
-            backing.allocate_payload(100),
-            AvPayloadDeliveryOutcome::Delivered(_)
-        ));
+                backing.allocate_payload(100),
+                AvPayloadDeliveryOutcome::Delivered(_)
+            ));
             for _ in 0..rejections {
                 assert_eq!(
                     backing.allocate_payload(100),
