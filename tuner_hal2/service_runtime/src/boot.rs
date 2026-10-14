@@ -1399,6 +1399,93 @@ mod raw_filter_event_projection_tests {
     }
 
     #[test]
+    fn filter_fmq_failure_totals_count_and_survive_bounded_eviction() {
+        use maleicacid_tuner_hal2_common::FmqFailureKind;
+        use maleicacid_tuner_hal2_demux::{DemuxRuntimeError, DemuxRuntimeErrorKind};
+
+        let (mut runtime, demux_id, filter_id) = configured_raw_filter(
+            FilterOpenType::TsSection,
+            0x123,
+            FilterConfigKind::TsSection {
+                check_crc: false,
+                repeat: true,
+                raw: true,
+                length_field_bits: 12,
+                condition: SectionCondition {
+                    kind: SectionConditionKind::SectionBits,
+                    filter: Vec::new(),
+                    mask: Vec::new(),
+                    mode: Vec::new(),
+                    table_id: None,
+                    version: None,
+                },
+            },
+        );
+        let packet = packet_with_payload(0x123, true, &[0, 0, 1]);
+        let pid = maleicacid_tuner_hal2_demux::ValidatedTsPacket::validate(&packet)
+            .expect("valid TS packet")
+            .pid();
+        runtime.packet_pipeline_diagnostics = BoundedDiagnosticStore::new(1);
+        for kind in [
+            DemuxRuntimeErrorKind::QueueCapacityExceeded,
+            DemuxRuntimeErrorKind::QueueRuntimeFailure,
+            DemuxRuntimeErrorKind::FmqDeliveryFailed(FmqFailureKind::WriteFailed),
+            DemuxRuntimeErrorKind::FmqDeliveryFailed(FmqFailureKind::ShortWrite),
+            DemuxRuntimeErrorKind::FmqDeliveryFailed(FmqFailureKind::EventFlagWakeFailed),
+            DemuxRuntimeErrorKind::FilterMissing,
+        ] {
+            runtime.record_packet_pipeline_diagnostics(
+                demux_id,
+                1,
+                &PipelineReport {
+                    diagnostics: vec![PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                        pid,
+                        filter_id,
+                        DemuxRuntimeError { kind, id: Some(filter_id) },
+                    )],
+                    ..PipelineReport::default()
+                },
+            );
+        }
+        runtime.record_packet_pipeline_diagnostics(
+            demux_id,
+            1,
+            &PipelineReport {
+                diagnostics: vec![PipelineDiagnostic::FilterQueueWakeDeferred { pid, filter_id }],
+                ..PipelineReport::default()
+            },
+        );
+        let totals = runtime.packet_delivery_failure_totals();
+        assert_eq!(
+            (
+                totals.capacity_exceeded,
+                totals.queue_runtime_failed,
+                totals.write_failed,
+                totals.short_write,
+                totals.wake_failed,
+                totals.other_failed,
+            ),
+            (1, 1, 1, 1, 2, 1)
+        );
+        assert_eq!(runtime.packet_pipeline_diagnostics().dropped_count(), 6);
+        runtime.record_packet_pipeline_diagnostics(
+            demux_id,
+            1,
+            &PipelineReport {
+                diagnostics: vec![PipelineDiagnostic::ResidualBytesDrop],
+                ..PipelineReport::default()
+            },
+        );
+        assert_eq!(runtime.packet_delivery_failure_totals(), totals);
+        runtime.packet_pipeline_diagnostics.clear();
+        runtime.packet_delivery_failure_totals = Default::default();
+        assert_eq!(
+            runtime.packet_delivery_failure_totals(),
+            crate::diagnostics::PacketDeliveryFailureTotals::default()
+        );
+    }
+
+    #[test]
     fn packet_drop_diagnostics_retain_generation_and_bounded_loss_count() {
         let mut runtime = TunerServiceRuntime::new();
         runtime.packet_pipeline_diagnostics = BoundedDiagnosticStore::new(2);
