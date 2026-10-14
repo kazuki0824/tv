@@ -1497,7 +1497,7 @@ mod raw_filter_event_projection_tests {
         );
         assert_eq!(runtime.packet_delivery_failure_totals().wake_failed, u64::MAX);
         // 診断の実クリア入口であるservice boot resetを使用し、fieldへの直接代入で済ませない。
-        let _ = runtime.boot_from_probe_results(std::iter::empty());
+        let _ = runtime.boot_from_probe_results(std::iter::empty::<FrontendProbeOutcome>());
         assert_eq!(
             runtime.packet_delivery_failure_totals(),
             crate::diagnostics::PacketDeliveryFailureTotals::default()
@@ -1514,8 +1514,8 @@ mod raw_filter_event_projection_tests {
             FilterOpenType::TsRecord,
             0x123,
             FilterConfigKind::TsRecord(RecordIndexSettings {
-                ts_index_mask: 0,
-                sc_index_type: 0,
+                ts_index_mask: maleicacid_tuner_hal2_demux::DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+                sc_index_type: maleicacid_tuner_hal2_demux::RECORD_SC_TYPE_NONE,
                 sc_index_mask: 0,
             }),
         );
