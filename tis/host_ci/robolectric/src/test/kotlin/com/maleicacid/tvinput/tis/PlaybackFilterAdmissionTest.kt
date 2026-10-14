@@ -36,9 +36,9 @@ import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.MediaCodecInfoBuilder
+import org.robolectric.shadows.ShadowLog
 import org.robolectric.shadows.ShadowMediaCodec
 import org.robolectric.shadows.ShadowMediaCodecList
-import org.robolectric.shadows.ShadowLog
 import org.robolectric.shadows.ShadowSystemClock
 import org.robolectric.util.ReflectionHelpers
 import java.nio.ByteBuffer
@@ -581,8 +581,10 @@ class PlaybackFilterAdmissionTest {
         Fixture().use { fixture ->
             fixture.decoder()
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
-            val arm = decoder.javaClass.superclass.getDeclaredMethod("armStartupDeadline")
-                .apply { isAccessible = true }
+            val arm =
+                decoder.javaClass.superclass
+                    .getDeclaredMethod("armStartupDeadline")
+                    .apply { isAccessible = true }
             fixture.executor.callControl(5_000L) { arm.invoke(decoder) }
             val codec = fixture.attachCodec()
             val nativeCodec = Shadow.extract<NativeCodec>(codec)
@@ -631,7 +633,9 @@ class PlaybackFilterAdmissionTest {
     }
 
     private fun availabilityLogMessages(): List<String> =
-        ShadowLog.getLogsForTag(LogTags.TIS).map { it.msg }
+        ShadowLog
+            .getLogsForTag(LogTags.TIS)
+            .map { it.msg }
             .filter { it.startsWith("VIDEO_AVAILABILITY_COMMITTED inputId=admission-test ") }
 
     private fun Fixture.attachCodec(audio: Boolean = false): MediaCodec {
@@ -739,11 +743,16 @@ class PlaybackFilterAdmissionTest {
             armedAtNanoTime: Long,
         ) {
             val armType = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "AvailabilityArm" }
-            val arm = armType.declaredConstructors.single().apply { isAccessible = true }
-                .newInstance(generation, 1L, armedAtNanoTime)
-            val mode = PlaybackPipeline::class.java.declaredClasses
-                .single { it.simpleName == "VideoAvailabilityMode" }
-                .enumConstants.single { it.toString() == "MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT" }
+            val arm =
+                armType.declaredConstructors
+                    .single()
+                    .apply { isAccessible = true }
+                    .newInstance(generation, 1L, armedAtNanoTime)
+            val mode =
+                PlaybackPipeline::class.java.declaredClasses
+                    .single { it.simpleName == "VideoAvailabilityMode" }
+                    .enumConstants
+                    .single { it.toString() == "MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT" }
             executor.callControl(5_000L) {
                 ReflectionHelpers.setField(pipeline, "surface", requireNotNull(codecSurface))
                 ReflectionHelpers.setField(pipeline, "playbackGeneration", generation)
