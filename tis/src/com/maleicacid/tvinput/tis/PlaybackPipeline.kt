@@ -1834,7 +1834,7 @@ class PlaybackPipeline(
         }
 
         override fun onCodecConfigTimeout() {
-            errorSink(PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT, "video decoder 構成に必要な ES header が見つかりません")
+            errorSink(PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT, "video decoder 構成に必要な ES header が見つかりません progress=${dataPathProgress.summary()}")
             stopOnPlaybackExecutor()
         }
 
@@ -1927,7 +1927,7 @@ class PlaybackPipeline(
         }
 
         override fun onCodecConfigTimeout() {
-            errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "audio decoder 構成に必要な ES header が見つかりません")
+            errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "audio decoder 構成に必要な ES header が見つかりません progress=${dataPathProgress.summary()}")
         }
 
         override fun onBackpressureDeadline(detail: String) {
