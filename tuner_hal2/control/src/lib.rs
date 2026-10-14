@@ -2696,11 +2696,9 @@ mod tests {
 
     #[test]
     fn fmq_wake_failure_preserves_committed_payload_for_retry() {
-        let result = FmqDeliveryTxn::new(FmqObjectKind::Filter).commit_payload(
-            188,
-            Ok(188),
-            || Err(FmqFailureKind::EventFlagWakeFailed),
-        );
+        let result =
+            FmqDeliveryTxn::new(FmqObjectKind::Filter)
+                .commit_payload(188, Ok(188), || Err(FmqFailureKind::EventFlagWakeFailed));
         assert_eq!(result.action, FmqDeliveryAction::WakePending);
         assert_eq!(result.bytes, 188);
     }
