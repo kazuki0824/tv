@@ -15,7 +15,13 @@ use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 
 impl IDemux for DemuxAidlObject {
     fn setFrontendDataSource(&self, frontend_id: i32) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        #[cfg(target_os = "android")]
+        log::info!(
+            "HAL_DEMUX_FRONTEND_BIND_REQUEST demux_object={:?} frontend={}",
+            self.handle().object_id(),
+            frontend_id,
+        );
+        let result = execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::DemuxSetFrontendDataSource { frontend_id },
@@ -27,7 +33,17 @@ impl IDemux for DemuxAidlObject {
                     dispatch_proof,
                 )
             },
-        )
+        );
+        #[cfg(target_os = "android")]
+        if let Err(error) = &result {
+            log::warn!(
+                "HAL_DEMUX_FRONTEND_BIND_REJECTED demux_object={:?} frontend={} error={:?}",
+                self.handle().object_id(),
+                frontend_id,
+                error,
+            );
+        }
+        result
     }
     fn openFilter(
         &self,
