@@ -657,10 +657,11 @@ class TunerController(
             operation.startFailed(Tuner.RESULT_UNKNOWN_ERROR, "BS探索前のfrontend解放に失敗しました: ${closeFailure.message}")
             return operation
         }
-        val activeTuner = tuner ?: run {
-            operation.startFailed(Tuner.RESULT_UNAVAILABLE, "BS探索前のTuner再作成に失敗しました")
-            return operation
-        }
+        val activeTuner =
+            tuner ?: run {
+                operation.startFailed(Tuner.RESULT_UNAVAILABLE, "BS探索前のTuner再作成に失敗しました")
+                return operation
+            }
         streamIdDiscovery = operation
         val callback =
             object : ScanCallback {
