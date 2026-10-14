@@ -1098,6 +1098,48 @@ mod tests {
     }
 
     #[test]
+    fn sampled_shortage_handles_batched_two_three_four_without_duplicate() {
+        for (rejections, expected_threshold) in [(2, 2), (3, 2), (4, 4)] {
+            let mut backing = AvSharedBacking::with_layout(1, 188);
+            backing.mark_exported();
+            assert!(matches!(backing.allocate_payload(100), AvPayloadDeliveryOutcome::Delivered(_)));
+            for _ in 0..rejections {
+                assert_eq!(backing.allocate_payload(100), AvPayloadDeliveryOutcome::NoFreeSlot);
+            }
+            let (previous, threshold, snapshot) = backing.take_shortage_sample().expect("shortage");
+            assert_eq!(previous, 0);
+            assert_eq!(threshold, expected_threshold);
+            assert_eq!(snapshot.no_free_slot, rejections);
+            assert!(backing.take_shortage_sample().is_none());
+            if rejections == 3 {
+                assert_eq!(backing.allocate_payload(100), AvPayloadDeliveryOutcome::NoFreeSlot);
+                let (previous, threshold, snapshot) = backing.take_shortage_sample().expect("fourth");
+                assert_eq!((previous, threshold, snapshot.no_free_slot), (2, 4, 4));
+            }
+            assert!(backing.take_shortage_sample().is_none());
+        }
+    }
+
+    #[test]
+    fn sampled_shortage_saturates_after_real_allocation_failures() {
+        let mut backing = AvSharedBacking::with_layout(1, 188);
+        backing.mark_exported();
+        assert!(matches!(backing.allocate_payload(100), AvPayloadDeliveryOutcome::Delivered(_)));
+        assert!(backing.take_shortage_sample().is_none());
+        assert_eq!(backing.allocate_payload(100), AvPayloadDeliveryOutcome::NoFreeSlot);
+        let (previous, threshold, _) = backing.take_shortage_sample().expect("first rejection");
+        assert_eq!((previous, threshold), (0, 1));
+        backing.diagnostics.no_free_slot = u64::MAX - 2;
+        assert_eq!(backing.allocate_payload(100), AvPayloadDeliveryOutcome::NoFreeSlot);
+        let (previous, threshold, snapshot) = backing.take_shortage_sample().expect("last threshold");
+        assert_eq!((previous, threshold, snapshot.no_free_slot), (1, 1u64 << 63, u64::MAX - 1));
+        assert_eq!(backing.allocate_payload(100), AvPayloadDeliveryOutcome::NoFreeSlot);
+        assert_eq!(backing.allocate_payload(100), AvPayloadDeliveryOutcome::NoFreeSlot);
+        assert_eq!(backing.diagnostic_snapshot().no_free_slot, u64::MAX);
+        assert!(backing.take_shortage_sample().is_none());
+    }
+
+    #[test]
     fn diagnostic_counter_saturation_does_not_prevent_av_delivery() {
         let mut backing = AvSharedBacking::with_layout(1, 188);
         backing.mark_exported();
