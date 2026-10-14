@@ -1,16 +1,24 @@
+# PR #116 初回映像availability確定時の成功診断と実Codec callback回帰
+
+- 初回映像を利用可能とする既存の一回限りの確定点（`videoAvailableNotified.compareAndSet`成功時）から、`VIDEO_AVAILABILITY_COMMITTED`を1回だけInfoログへ出力する。現在generation、Exact/Compatibilityの区別、映像・音声別のAVデータ経路snapshotを含め、失効世代・重複callbackでは出力しない。未パッチOSのCompatibility frame callbackを最終display present成功とみなさない。
+- 既存RobolectricのAndroid 15 `MediaCodec.Callback`配送とblock model入力を使い、映像Filter受信→Codec入力→非空出力→frame rendered→availability確定時のsnapshot、重複・旧世代callback拒否を試験する。Codec native queue/releaseだけをshadowで置換し、productionにtest用APIは追加しない。
+- 音声Codec出力だけがある場合の`AUDIO.CODEC_OUTPUT=1` / `VIDEO.CODEC_OUTPUT=0`、旧世代音声Codec出力の非計上、`FIRST_FRAME_TIMEOUT`と`DECODER_STARTUP_TIMEOUT stage=FIRST_OUTPUT`の診断snapshot、および実`PlaybackPipeline.start()`による新世代でのcounter resetを追加試験する。
+- Robolectric試験の固定件数を12→16件へ追従。コミット`480b1dba`の[CI](https://github.com/kazuki0824/tv/actions/runs/38492993564)で16件成功、ktlint整形違反は後続コミットで修正した。最新HEADの全CIは確認を要する。
+- 所有者、状態機械、MediaSync/MediaCodecの意味、TIS/HAL公開契約、資源寿命、再生制御を変更しない。実機Codec・MediaSync最終出力・物理display成功とMXワンセグ1／NHK総合1再生は未検証。Rebase・Resolveはしていない。
+
 # PR #116 block model MediaCodec callback の結合回帰試験
 
 - 既存RobolectricのAndroid 15 Filter fixtureにMediaCodec用shadowを接続し、本番VideoDecoderPipelineが登録する実MediaCodec.Callbackを発火する試験を追加する。Video MediaEventの受理からInputBufferAvailable→block model QueueRequest.queue→OutputBufferAvailable→Video onOutput→FrameRenderedListenerへ進む診断値を確認する。
 - 別試験ではInputBufferAvailableとQueueRequest投入が成功しても映像OutputBufferAvailableが来なければ、既存first-frame期限からVIDEO.CODEC_OUTPUT=0・VIDEO.FRAME_RENDERED=0を含む失敗通知が出ることを検査する。
 - MediaCodecのnative queue/releaseだけをRobolectric shadowに置き換える。製品runtimeの公開API、Codec判定契約、再生状態機械、資源寿命、callback generationは変更しない。実機codec挙動とLineageOS 22.1の最終描画結果は引き続き実機で検証する。
-- 追加直後のCI結果は未確認。テスト成功前には検証済みと記載しない。
+- 後続の音声出力・世代失効・Decoder起動期限の試験を加え、Robolectricの`PlaybackFilterAdmissionTest`は16件とも成功した（[run 38492993564](https://github.com/kazuki0824/tv/actions/runs/38492993564)）。同runではktlint整形違反があり、後続コミットで整形を是正した。最終HEADでの全CI確認は別途必要。
 
 # PR #116 再生診断レビュー指摘の是正
 
 - 再生progressを同一owner内の映像・音声別counterへ分離し、音声Decoderだけに非空出力がある状況を映像出力成功と誤認しないようにした。再生制御、MediaCodec callback、resource lifetimeの契約は変更しない。
 - MediaEvent受信と有効sample計数を各input identityの現行性確認後へ移動し、OVERFLOW/flush・再選局で失効した旧入力の現行進捗誤計上を防止した。
 - Filter.flush失敗を音声・映像別のFLUSH_FAILEDとして記録し、失敗通知へ同時点のprogress snapshotを含める。
-- progress値型の音声/映像別・reset試験に加え、既存Robolectricの実Filter callback経路で旧入力失効、正常入力受理、OVERFLOW、flush失敗通知、復帰の診断値を検証する。MediaCodecの実入出力callbackから初回フレーム表示期限までを一貫して実行する統合試験、およびSoong/実機は未実施。CIの確認結果と区別する。
+- progress値型の音声/映像別・reset試験に加え、既存Robolectricの実Filter callback経路で旧入力失効、正常入力受理、OVERFLOW、flush失敗通知、復帰の診断値を検証する。後続のCodec callback・期限・世代reset統合試験は上段に記載する。Soong/実機は未実施。
 - レビューの4件へスレッドで個別返信。Rebase・Resolveは実施しない。
 
 # PR #116 黒画面解析の再生進捗診断
@@ -18,7 +26,7 @@
 - 既存playback executor上の`PlaybackDataPathProgress`にMediaEvent受理、正常sample、Decoder入力・出力、描画callback、OVERFLOW、flush成否、LinearBlock欠落・入力拒否を計数する診断専用counterを追加し、playback世代の開始時に初期化する。first-frameとDecoder起動期限の失敗detailへsnapshotを接続し、再生可否判定やAV資源寿命には用いない。
 - 進捗counterの更新、初期未到達値、世代resetを回帰試験で固定。既存sample解析のComplexMethodを増やさず、診断のための分岐により発生したKotlin整形とDetektの指摘を修正した。
 - 診断用fieldを追加した後、従来のUnsafe.allocateInstanceで本番constructorを省くPlaybackFailureCallbacksTest fixtureが未初期化fieldを参照して3試験を失敗させていたため、fixtureで同fieldを明示初期化する。testを除外せず、本番ロジックへnull fallbackを入れない。
-- テストクラス追加に伴いTISホストCIの固定期待値を49クラス（実行45クラス）・398試験へ更新する。追加時の旧固定値48/44/397に起因する失敗を除去した。実CIでの試験成功は別途確認する。
+- テストクラス追加に伴いTISホストCIの固定期待値を49クラス（実行45クラス）・398試験へ更新する。追加時の旧固定値48/44/397に起因する失敗を除去し、後続CIで398件の成功を確認した。
 - MediaSync最終出力patchを当てないAndroid 15/LineageOS 22.1を前提とし、実機でMXワンセグ1とNHK総合1の映像表示・持続再生・再選局を確認する必要がある。黒画面の根本原因確定、Soong/device atest/VTS、実機での映像回復は未達。
 
 # 非待機playback配送の容量拒否と実行失敗の分離
