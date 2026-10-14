@@ -98,6 +98,11 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(0, native.closes)
                 // 対象Android 15のFilter.onFilterStatusはcallbackを2回配送する。
                 assertEquals(2, native.flushes)
+                val progress = fixture.progress()
+                assertEquals(1L, progress.count(PlaybackDataPathProgress.Stage.OVERFLOW, audio).coerceAtLeast(1L))
+                assertEquals(0L, progress.count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, audio))
+                assertEquals(0L, progress.count(PlaybackDataPathProgress.Stage.FLUSH_FAILED, audio))
+                assertEquals(2L, progress.count(PlaybackDataPathProgress.Stage.VALID_SAMPLE, audio))
                 assertTrue(fixture.failures.isEmpty())
             }
             assertEquals(1, Shadow.extract<NativeMediaEvent>(newInput).releases)
@@ -120,6 +125,10 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(emptyList(), fixture.pendingEvents(audio))
                 assertEquals(0, Shadow.extract<NativeMediaEvent>(rejected).blockReads)
                 assertEquals(1, Shadow.extract<NativeMediaEvent>(rejected).releases)
+                val progress = fixture.progress()
+                assertTrue(progress.count(PlaybackDataPathProgress.Stage.FLUSH_FAILED, audio) > 0L)
+                assertEquals(0L, progress.count(PlaybackDataPathProgress.Stage.FLUSH_FAILED, !audio))
+                assertTrue(fixture.unavailable.any { it.detail.contains("FLUSH_FAILED=") })
                 native.flushResult = Tuner.RESULT_SUCCESS
                 status(filter, Filter.STATUS_OVERFLOW)
                 fixture.drain()
@@ -127,6 +136,7 @@ class PlaybackFilterAdmissionTest {
                 deliver(filter, accepted)
                 fixture.drain()
                 assertEquals(listOf(accepted), fixture.pendingEvents(audio))
+                assertTrue(progress.count(PlaybackDataPathProgress.Stage.FLUSH_SUCCEEDED, audio) > 0L)
             }
         }
     }
@@ -467,6 +477,8 @@ class PlaybackFilterAdmissionTest {
         }
 
         fun released(): Boolean = ReflectionHelpers.getField<AtomicBoolean>(pipeline, "released").get()
+
+        fun progress(): PlaybackDataPathProgress = ReflectionHelpers.getField(pipeline, "dataPathProgress")
 
         fun currentCaptionFilter(): Filter = ReflectionHelpers.getField(pipeline, "subtitleFilter")
 
