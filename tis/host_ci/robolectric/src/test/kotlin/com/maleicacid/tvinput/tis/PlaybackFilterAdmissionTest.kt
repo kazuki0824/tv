@@ -7,6 +7,7 @@ import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.graphics.SurfaceTexture
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.TunerUtils
 import android.media.tv.tuner.filter.Filter
@@ -531,6 +532,11 @@ class PlaybackFilterAdmissionTest {
                 ).build()
         ShadowMediaCodecList.addCodec(codecInfo)
         val decoder = ReflectionHelpers.getField<Any>(pipeline, "videoDecoder")
+        val texture = SurfaceTexture(0)
+        val surface = Surface(texture)
+        ReflectionHelpers.setField(decoder, "outputSurface", surface)
+        codecSurface = surface
+        codecTexture = texture
         val method = decoder.javaClass.superclass.getDeclaredMethod(
             "createBlockModelDecoder",
             MediaFormat::class.java,
@@ -566,6 +572,8 @@ class PlaybackFilterAdmissionTest {
         val failures = mutableListOf<Pair<PlaybackPipeline.PlaybackUnavailableReason, String>>()
         val unavailable = mutableListOf<PlaybackPipeline.PlaybackUnavailable>()
         val captionPayloads = mutableListOf<ByteArray>()
+        var codecSurface: Surface? = null
+        var codecTexture: SurfaceTexture? = null
         var captionDiscontinuities = 0
 
         init {
@@ -704,7 +712,12 @@ class PlaybackFilterAdmissionTest {
                 .invoke(pipeline, *arguments)
 
         override fun close() {
-            pipeline.close()
+            try {
+                pipeline.close()
+            } finally {
+                codecSurface?.release()
+                codecTexture?.release()
+            }
         }
     }
 
