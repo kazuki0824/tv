@@ -1958,9 +1958,11 @@ impl DemuxRuntime {
             queue
                 .write_checked(&payload)
                 .map_err(|_| FmqFailureKind::WriteFailed),
-            queue
-                .wake(TUNER_EVENT_DATA_READY)
-                .map_err(|_| FmqFailureKind::EventFlagWakeFailed),
+            || {
+                queue
+                    .wake(TUNER_EVENT_DATA_READY)
+                    .map_err(|_| FmqFailureKind::EventFlagWakeFailed)
+            },
         );
         match result.action {
             FmqDeliveryAction::Continue | FmqDeliveryAction::WakePending => {
@@ -3412,9 +3414,11 @@ impl DemuxRuntime {
             queue
                 .write_checked(data)
                 .map_err(|_| FmqFailureKind::WriteFailed),
-            queue
-                .wake(TUNER_EVENT_DATA_READY)
-                .map_err(|_| FmqFailureKind::EventFlagWakeFailed),
+            || {
+                queue
+                    .wake(TUNER_EVENT_DATA_READY)
+                    .map_err(|_| FmqFailureKind::EventFlagWakeFailed)
+            },
         );
         match result.action {
             FmqDeliveryAction::Continue | FmqDeliveryAction::WakePending => {
@@ -5158,9 +5162,11 @@ impl DemuxRuntime {
             queue
                 .write_checked(packet)
                 .map_err(|_| FmqFailureKind::WriteFailed),
-            queue
-                .wake(TUNER_EVENT_DATA_READY)
-                .map_err(|_| FmqFailureKind::EventFlagWakeFailed),
+            || {
+                queue
+                    .wake(TUNER_EVENT_DATA_READY)
+                    .map_err(|_| FmqFailureKind::EventFlagWakeFailed)
+            },
         );
         if matches!(
             result.action,
