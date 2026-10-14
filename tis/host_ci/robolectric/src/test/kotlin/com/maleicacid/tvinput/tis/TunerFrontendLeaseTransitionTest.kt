@@ -76,7 +76,10 @@ class TunerFrontendLeaseTransitionTest {
             check(sdk.requested == listOf(FrontendSettings.TYPE_ISDBS))
             check(!controller.tuneForScan(terrestrial()).success)
             check(sdk.fullClosed == 1)
-            check(NativeTuner.instances.flatMap { it.requested } == listOf(FrontendSettings.TYPE_ISDBS, FrontendSettings.TYPE_ISDBT))
+            check(
+                NativeTuner.instances.flatMap { it.requested } ==
+                    listOf(FrontendSettings.TYPE_ISDBS, FrontendSettings.TYPE_ISDBT),
+            )
         } finally {
             controller.release()
         }
