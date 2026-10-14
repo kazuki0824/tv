@@ -509,9 +509,20 @@ class TunerController(
     @Suppress("LongMethod", "ReturnCount")
     private fun prepareBsCandidateSourceOnController(): BsFrontendSelectionResult {
         resetBeforeTune()
-        val tunerInstance =
+        val existingTuner =
             tuner
                 ?: return BsFrontendSelectionResult(null, Tuner.RESULT_UNAVAILABLE, "Tunerを利用できません")
+        val replacementFailure = releaseFrontendBeforeTypeChange(existingTuner, FrontendSettings.TYPE_ISDBS)
+        if (replacementFailure != null) {
+            return BsFrontendSelectionResult(
+                null,
+                Tuner.RESULT_UNKNOWN_ERROR,
+                "BS候補準備前のTuner更新に失敗しました: ${replacementFailure.message}",
+            )
+        }
+        val tunerInstance =
+            tuner
+                ?: return BsFrontendSelectionResult(null, Tuner.RESULT_UNAVAILABLE, "Tuner再作成に失敗しました")
         // applyFrontendは既存Frontendを保持したままではINVALID_STATEになる。
         // 特定id/capabilityで選び直すBS候補source確定時は同typeでも旧leaseを返す。
         val closeFailure = runCatching { tunerInstance.closeFrontend() }.exceptionOrNull()
@@ -646,13 +657,17 @@ class TunerController(
             operation.startFailed(Tuner.RESULT_UNKNOWN_ERROR, "BS探索前のfrontend解放に失敗しました: ${closeFailure.message}")
             return operation
         }
+        val activeTuner = tuner ?: run {
+            operation.startFailed(Tuner.RESULT_UNAVAILABLE, "BS探索前のTuner再作成に失敗しました")
+            return operation
+        }
         streamIdDiscovery = operation
         val callback =
             object : ScanCallback {
                 override fun onLocked() {
                     if (streamIdDiscovery === operation) {
                         operation.continueAfterLock {
-                            tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, controllerControlExecutor, this)
+                            activeTuner.scan(settings, Tuner.SCAN_TYPE_AUTO, controllerControlExecutor, this)
                         }
                     }
                 }
@@ -704,7 +719,7 @@ class TunerController(
             }
         // scan失敗でもFrameworkがFrontendを取得済みの可能性があるため、呼出前に要求typeを記録する。
         frontendLeaseType = settings.type
-        operation.start { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, controllerControlExecutor, callback) }
+        operation.start { activeTuner.scan(settings, Tuner.SCAN_TYPE_AUTO, controllerControlExecutor, callback) }
         return operation
     }
 
@@ -886,16 +901,18 @@ class TunerController(
         return tuneResolvedChannel(synthetic, eitPfActualOnly = eitPfActualOnly)
     }
 
-    // cancelTuningはleaseを返さない。Frontend種類の切替では既存leaseをSDKへ返却し、
-    // 次のscan/tuneに必要な物理Frontendの選択と資源調停はFramework/TRMへ委譲する。
+    // SDKの既存DemuxはFrontend解放後の自動再接続失敗を公開しない。
+    // 異種選局では、解放済みfilterの後にTuner全体を再生成し、次のopenFilterでDemuxを作り直す。
     private fun releaseFrontendBeforeTypeChange(
         tunerInstance: Tuner,
         nextType: Int,
     ): Throwable? =
         runCatching {
             if (frontendLeaseType != null && frontendLeaseType != nextType) {
-                tunerInstance.closeFrontend()
+                tunerInstance.close()
+                tuner = null
                 frontendLeaseType = null
+                tuner = createTuner() ?: error("異種frontend切替後のTuner再生成に失敗しました")
             }
         }.exceptionOrNull()
 
@@ -925,15 +942,16 @@ class TunerController(
                     error.message.orEmpty(),
                 )
             }
-        if (!armTuneEventListener(tunerInstance, nextGeneration)) {
+        val activeTuner = tuner ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner再生成に失敗しました")
+        if (!armTuneEventListener(activeTuner, nextGeneration)) {
             return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "frontend tune event listenerを登録できません")
         }
         // tune失敗でもFrameworkがFrontendを取得済みの可能性があるため、呼出前に要求typeを記録する。
         // これは実リース取得済みの判定ではなく、次回の異種要求前に安全に解放するための保守値。
         frontendLeaseType = settings.type
         val result =
-            runCatching { tunerInstance.tune(settings) }.getOrElse { e ->
-                runCatching { tunerInstance.clearOnTuneEventListener() }.onFailure(e::addSuppressed)
+            runCatching { activeTuner.tune(settings) }.getOrElse { e ->
+                runCatching { activeTuner.clearOnTuneEventListener() }.onFailure(e::addSuppressed)
                 Log.w(LogTags.TIS, "Tuner.tune が例外を返しました inputId=$inputId channel=$channel", e)
                 return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, e.message.orEmpty())
             }
@@ -941,7 +959,7 @@ class TunerController(
             initializeAcceptedTune(channel, nextGeneration, eitPfActualOnly)
             TuneOutcome(true, result, channel, tuneGeneration)
         } else {
-            val cleanupFailure = runCatching { tunerInstance.clearOnTuneEventListener() }.exceptionOrNull()
+            val cleanupFailure = runCatching { activeTuner.clearOnTuneEventListener() }.exceptionOrNull()
             if (cleanupFailure != null) {
                 Log.w(LogTags.TIS, "Tune listener cleanup failed after tune result=$result", cleanupFailure)
             }
