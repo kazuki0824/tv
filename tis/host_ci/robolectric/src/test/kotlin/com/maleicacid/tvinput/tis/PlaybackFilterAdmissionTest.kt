@@ -466,6 +466,13 @@ class PlaybackFilterAdmissionTest {
 
     // MediaCodecのJava callback配送を使用し、ネイティブqueueだけをhost shadowへ置き換える。
     @Test
+    fun stockAndroid15WithoutPlatformPatchSelectsCodecCallbackFallback() {
+        // Robolectric Android 15はMediaSyncの任意private拡張を持たない。
+        // 実装はこのAPIを必須にせず公開MediaCodec callbackを使用する。
+        assertFalse(MediaSyncFirstOutputBridge.isAvailable())
+    }
+
+    @Test
     fun codecBlockModelCallbackReportsVideoInputOutputAndRenderedFrameSeparately() {
         Fixture().use { fixture ->
             fixture.decoder()
