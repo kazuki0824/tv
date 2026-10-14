@@ -99,7 +99,7 @@ class PlaybackFilterAdmissionTest {
                 // 対象Android 15のFilter.onFilterStatusはcallbackを2回配送する。
                 assertEquals(2, native.flushes)
                 val progress = fixture.progress()
-                assertEquals(1L, progress.count(PlaybackDataPathProgress.Stage.OVERFLOW, audio).coerceAtLeast(1L))
+                assertTrue(progress.count(PlaybackDataPathProgress.Stage.OVERFLOW, audio) > 0L)
                 assertEquals(0L, progress.count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, audio))
                 assertEquals(0L, progress.count(PlaybackDataPathProgress.Stage.FLUSH_FAILED, audio))
                 assertEquals(2L, progress.count(PlaybackDataPathProgress.Stage.VALID_SAMPLE, audio))
