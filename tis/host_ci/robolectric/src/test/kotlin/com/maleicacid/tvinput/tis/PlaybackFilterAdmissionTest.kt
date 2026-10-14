@@ -21,7 +21,10 @@ import android.os.Looper
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.LogTags
+import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -570,6 +573,60 @@ class PlaybackFilterAdmissionTest {
             assertTrue(failure.detail.contains("VIDEO.CODEC_OUTPUT=0"))
             assertTrue(failure.detail.contains("AUDIO.CODEC_OUTPUT=0"))
             assertTrue(failure.detail.contains("VIDEO.FRAME_RENDERED=0"))
+        }
+    }
+
+    @Test
+    fun decoderStartupDeadlineRecordsCodecInputAndRestartResetsDiagnosticGeneration() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
+            val arm = decoder.javaClass.superclass.getDeclaredMethod("armStartupDeadline")
+                .apply { isAccessible = true }
+            fixture.executor.callControl(5_000L) { arm.invoke(decoder) }
+            val codec = fixture.attachCodec()
+            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            val video = fixture.avFilter(false)
+            deliver(video, mappedMediaEvent())
+            fixture.drain()
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(5, TimeUnit.SECONDS)
+            fixture.drain()
+            val failure = fixture.unavailable.single()
+            assertEquals(PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT, failure.reason)
+            assertTrue(failure.detail.contains("DECODER_STARTUP_TIMEOUT stage=FIRST_OUTPUT"))
+            assertTrue(failure.detail.contains("VIDEO.CODEC_INPUT=1"))
+            assertTrue(failure.detail.contains("VIDEO.CODEC_OUTPUT=0"))
+            val beforeRestart = fixture.pipeline.currentPlaybackGenerationForTest()
+            val service = ServiceKey(4, 0x4010, 101)
+            val channel =
+                TunerController.ResolvedChannel(
+                    null,
+                    "admission-test",
+                    service,
+                    1,
+                    "test",
+                    "1",
+                    "ISDB_T",
+                    FrequencyHz(473_000_000L),
+                    StreamSelector.NONE,
+                    null,
+                    null,
+                )
+            val selection =
+                TunerController.AvStreamSelection(
+                    service,
+                    TsPid(0x100),
+                    AribElementaryStream(TsPid(0x101), 0x1b, null, null, null),
+                    null,
+                )
+            val result = fixture.pipeline.start(fixture.tuner, channel, selection)
+            assertTrue(result.generation > beforeRestart)
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, false))
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, true))
         }
     }
 
