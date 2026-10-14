@@ -1892,6 +1892,7 @@ impl DemuxRuntime {
             .begin_producer()
             .map_err(|error| DemuxRuntimeError::queue_runtime_error(filter_id, error))?;
         self.enqueue_filter_queue_payload_with_permit(filter_id, payload, &mut permit)
+            .map(|_| ())
             .map_err(FilterQueuePayloadError::runtime_error)?;
         permit
             .commit()
@@ -1913,9 +1914,10 @@ impl DemuxRuntime {
         })?;
         queue
             .retry_pending_wake(TUNER_EVENT_DATA_READY)
-            .map_err(|error| {
-                FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_error(
-                    filter_id, error,
+            .map_err(|_| {
+                FilterQueuePayloadError::Runtime(DemuxRuntimeError::fmq_delivery_failure(
+                    filter_id,
+                    FmqFailureKind::EventFlagWakeFailed,
                 ))
             })?;
         let available = queue.available_to_write().map_err(|error| {
@@ -1937,7 +1939,7 @@ impl DemuxRuntime {
         filter_id: i32,
         payload: Vec<u8>,
         _permit: &mut FilterProducerPermit,
-    ) -> Result<(), FilterQueuePayloadError> {
+    ) -> Result<bool, FilterQueuePayloadError> {
         let Some(queue) = self.filter_queue_runtimes.get(&filter_id) else {
             return Err(FilterQueuePayloadError::Runtime(
                 DemuxRuntimeError::queue_missing(filter_id),
@@ -1964,7 +1966,7 @@ impl DemuxRuntime {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.note_payload_queued(result.bytes);
                 }
-                Ok(())
+                Ok(matches!(result.action, FmqDeliveryAction::WakePending))
             }
             FmqDeliveryAction::Overflow => {
                 Err(FilterQueuePayloadError::Overflow(DemuxRuntimeError {
@@ -5315,22 +5317,31 @@ impl DemuxRuntime {
                 Some(payload) => {
                     self.enqueue_filter_queue_payload_with_permit(filter_id, payload, &mut permit)
                 }
-                None => Ok(()),
+                None => Ok(false),
             };
-            if let Err(error) = payload_result {
-                drop(permit);
-                if error.is_overflow() {
-                    committed_events.push(PipelineGeneratedEvent::FilterStatus {
+            let wake_deferred = match payload_result {
+                Ok(wake_deferred) => wake_deferred,
+                Err(error) => {
+                    drop(permit);
+                    if error.is_overflow() {
+                        committed_events.push(PipelineGeneratedEvent::FilterStatus {
+                            filter_id,
+                            status: FilterStatusEvent::Overflow,
+                        });
+                    }
+                    diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                        pid,
                         filter_id,
-                        status: FilterStatusEvent::Overflow,
-                    });
+                        error.runtime_error(),
+                    ));
+                    continue;
                 }
-                diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+            };
+            if wake_deferred {
+                diagnostics.push(PipelineDiagnostic::FilterQueueWakeDeferred {
                     pid,
                     filter_id,
-                    error.runtime_error(),
-                ));
-                continue;
+                });
             }
             let unqueued_event = if callback_event {
                 if let Err(error) = permit.enqueue_event(event) {
