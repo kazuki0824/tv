@@ -1477,6 +1477,25 @@ mod raw_filter_event_projection_tests {
             },
         );
         assert_eq!(runtime.packet_delivery_failure_totals(), totals);
+        runtime.packet_delivery_failure_totals.wake_failed = u64::MAX - 1;
+        runtime.record_packet_pipeline_diagnostics(
+            demux_id,
+            1,
+            &PipelineReport {
+                diagnostics: vec![PipelineDiagnostic::FilterQueueWakeDeferred { pid, filter_id }],
+                ..PipelineReport::default()
+            },
+        );
+        assert_eq!(runtime.packet_delivery_failure_totals().wake_failed, u64::MAX);
+        runtime.record_packet_pipeline_diagnostics(
+            demux_id,
+            1,
+            &PipelineReport {
+                diagnostics: vec![PipelineDiagnostic::FilterQueueWakeDeferred { pid, filter_id }],
+                ..PipelineReport::default()
+            },
+        );
+        assert_eq!(runtime.packet_delivery_failure_totals().wake_failed, u64::MAX);
         runtime.packet_pipeline_diagnostics.clear();
         runtime.packet_delivery_failure_totals = Default::default();
         assert_eq!(
