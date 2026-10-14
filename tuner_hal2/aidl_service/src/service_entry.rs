@@ -440,7 +440,7 @@ fn probe_dvb_delivery_systems(
         notifier_delay: 0,
         caps: 0,
     };
-    // 安全性: `fd` はopen済みDVB frontend fdであり、`info` は呼び出し中に書込み可能なFE_GET_INFO互換C layout構造体を指す。
+    // SAFETY: `fd` はopen済みDVB frontend fdであり、`info` は呼び出し中に書込み可能なFE_GET_INFO互換C layout構造体を指す。
     let info_rc = unsafe { raw_ioctl_ptr(fd, FE_GET_INFO, &mut info) };
     if info_rc != 0 {
         return Err(HalError::IoctlFailed {
@@ -468,7 +468,7 @@ fn probe_dvb_delivery_systems(
         num: 1,
         props: &mut prop,
     };
-    // 安全性: `props` は初期化済みunion buffer variantを持つ可変DtvPropertyを指す。kernelはdelivery-system bufferをin-placeで書く。
+    // SAFETY: `props` は初期化済みunion buffer variantを持つ可変DtvPropertyを指す。kernelはdelivery-system bufferをin-placeで書く。
     let rc = unsafe { raw_ioctl_ptr(fd, FE_GET_PROPERTY, &mut props) };
     if rc != 0 {
         return Err(HalError::IoctlFailed {

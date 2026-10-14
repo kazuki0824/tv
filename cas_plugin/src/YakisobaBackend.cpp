@@ -118,8 +118,8 @@ Result YakisobaBackend::restorePersistentState(const std::array<uint8_t, 6>& car
 }
 
 Result YakisobaBackend::credentialUnavailable(const char* stage, int errorNumber) {
-    // The surrounding CAS mutex serializes this diagnostic with initialize().
-    // Never log credential bytes, the card ID, or the key material.
+    // 外側のCAS mutexにより、この診断とinitialize()を直列化する。
+    // 認証情報のバイト列、カードID、鍵素材はログへ出力しない。
     if (lastCredentialFailureStage_ != stage || lastCredentialFailureErrno_ != errorNumber) {
 #ifdef __ANDROID__
         __android_log_print(ANDROID_LOG_WARN, "MaleicacidCas",

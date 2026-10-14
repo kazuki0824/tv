@@ -857,6 +857,7 @@ impl<'a> Px4LnbApplyOps for RealPx4LnbApplyOps<'a> {
 
     fn set_legacy_lnb_enabled(&mut self, enabled: bool, voltage: i32) -> Result<(), HalError> {
         if enabled {
+            // SAFETY: self.fdは所有中の機器FDであり、電圧値は当該ioctlの整数引数として値渡しする。
             let result = unsafe { ptx_enable_lnb_power_scalar(self.fd, voltage as _) };
             result.map(|_| ()).map_err(|errno| HalError::IoctlFailed {
                 backend: "px4",
@@ -1068,6 +1069,7 @@ impl FrontendBackendTuneExecutor {
             FrontendBackendSessionKind::Px4 { control_path } => {
                 let mapped = px4::map_tune_request_to_px4(request)?;
                 let fd = self.file_fd()?;
+                // SAFETY: fdは所有中の機器FDであり、方式値は検証済み要求から当該ioctlの整数引数へ変換する。
                 let result = unsafe { ptx_set_system_mode_scalar(fd, mapped.system_code as _) };
                 result.map(|_| ()).map_err(|errno| HalError::IoctlFailed {
                     backend: "px4",
@@ -1318,7 +1320,7 @@ fn ioctl_ptr<T>(
     arg: &mut T,
     op: &'static str,
 ) -> Result<(), HalError> {
-    // 安全性: `fd` はFrontendBackendSession生成が所有し、`arg` は選択backend ABI用のC互換ioctl payloadを指す。
+    // SAFETY: `fd` はFrontendBackendSession生成が所有し、`arg` は選択backend ABI用のC互換ioctl payloadを指す。
     let rc = unsafe { raw_ioctl_ptr(fd, request, arg) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {
@@ -1441,7 +1443,7 @@ fn ioctl_noarg(
     request: u64,
     op: &'static str,
 ) -> Result<(), HalError> {
-    // 安全性: 選択backend ABIに対する引数なしioctlである。
+    // SAFETY: 選択backend ABIに対する引数なしioctlである。
     let rc = unsafe { raw_ioctl_noarg(fd, request) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {
@@ -1462,6 +1464,7 @@ fn ioctl_word(
     arg: u32,
     op: &'static str,
 ) -> Result<(), HalError> {
+    // SAFETY: 呼出元は所有中の機器FDと選択した機器ABIに対応する整数引数のioctlを渡す。
     let rc = unsafe { raw_ioctl_word(fd, request, arg) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {

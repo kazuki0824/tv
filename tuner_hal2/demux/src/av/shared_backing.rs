@@ -475,13 +475,13 @@ impl AvSharedBacking {
             .checked_mul(self.slots.len())
             .ok_or(AvSharedBackingError::InvariantViolation)?;
         if self.file.is_none() {
-            // 安全性: size_bytesは上で検査済みで、allocatorへRust pointerを渡さず、新規FDまたは負のerrorだけを受け取る。
+            // SAFETY: size_bytesは上で検査済みで、allocatorへRust pointerを渡さず、新規FDまたは負のerrorだけを受け取る。
             let raw_fd = unsafe { tuner_dmabuf_heap_alloc_system(size_bytes) };
             // 事後条件: 非負の新規FDだけを一意なFile所有権へ移管する。
             if raw_fd < 0 {
                 return Err(AvSharedBackingError::AllocationFailed);
             }
-            // 安全性: raw_fdは非負かつ新規でRust ownerを持たず、ここで所有権を正確に1回だけ移管する。
+            // SAFETY: raw_fdは非負かつ新規でRust ownerを持たず、ここで所有権を正確に1回だけ移管する。
             self.file = Some(unsafe { File::from_raw_fd(raw_fd) });
             // 事後条件: self.fileがFDのcloseを担当する唯一のRust ownerになる。
         }
@@ -536,7 +536,7 @@ impl AvSharedBacking {
             .slot_size
             .checked_mul(self.slots.len())
             .ok_or(AvSharedBackingError::InvariantViolation)?;
-        // 安全性: fileはliveで、map_lenは検査済みの全backing範囲、offsetは0で、要求mappingとaliasするRust参照はない。
+        // SAFETY: fileはliveで、map_lenは検査済みの全backing範囲、offsetは0で、要求mappingとaliasするRust参照はない。
         let mapped = unsafe {
             mmap(
                 ptr::null_mut(),
@@ -551,7 +551,7 @@ impl AvSharedBacking {
         if mapped == MAP_FAILED {
             return Err(AvSharedBackingError::MappingFailed);
         }
-        // 安全性: slot検証でoffset + payload.len() <= map_lenを保証し、sourceは読取り可能、destinationは書込み可能で領域は重ならない。
+        // SAFETY: slot検証でoffset + payload.len() <= map_lenを保証し、sourceは読取り可能、destinationは書込み可能で領域は重ならない。
         unsafe {
             ptr::copy_nonoverlapping(
                 payload.as_ptr(),
@@ -560,7 +560,7 @@ impl AvSharedBacking {
             );
         }
         // 事後条件: 選択したmapped slotへpayload.len() byteを正確にcopyする。
-        // 安全性: mappedは成功した同一mmap pointerで、map_lenも同一mapping長であり、mapped参照を外へ持ち出さない。
+        // SAFETY: mappedは成功した同一mmap pointerで、map_lenも同一mapping長であり、mapped参照を外へ持ち出さない。
         if unsafe { munmap(mapped, map_len) } != 0 {
             return Err(AvSharedBackingError::UnmappingFailed);
         }
@@ -627,16 +627,16 @@ impl AvSharedBacking {
         else {
             return Ok(AvPayloadDeliveryOutcome::NoFreeSlot);
         };
-        // 安全性: payloadは非emptyでlenは値渡しし、allocatorは新規FDまたは負のerrorを返す。
+        // SAFETY: payloadは非emptyでlenは値渡しし、allocatorは新規FDまたは負のerrorを返す。
         let raw_fd = unsafe { tuner_dmabuf_heap_alloc_system(payload.len()) };
         // 事後条件: 非負の新規FDだけを一意なFile所有権へ移管する。
         if raw_fd < 0 {
             return Err(AvSharedBackingError::AllocationFailed);
         }
-        // 安全性: raw_fdは新規かつ非負でRust ownerを持たず、Fileへ所有権を正確に1回だけ移管する。
+        // SAFETY: raw_fdは新規かつ非負でRust ownerを持たず、Fileへ所有権を正確に1回だけ移管する。
         let file = Arc::new(unsafe { File::from_raw_fd(raw_fd) });
         // 事後条件: Arc<File>がclose責務を所有し、raw_fdを別途wrapまたはcloseしない。
-        // 安全性: fileはliveで、payload.len()は非0のmapping範囲、offsetは0で、要求mappingとaliasするRust参照はない。
+        // SAFETY: fileはliveで、payload.len()は非0のmapping範囲、offsetは0で、要求mappingとaliasするRust参照はない。
         let mapped = unsafe {
             mmap(
                 ptr::null_mut(),
@@ -651,12 +651,12 @@ impl AvSharedBacking {
         if mapped == MAP_FAILED {
             return Err(AvSharedBackingError::MappingFailed);
         }
-        // 安全性: payloadはlen byte読取り可能、mappedは同じlenを書込み可能で、独立dmabuf storageはsliceと重ならない。
+        // SAFETY: payloadはlen byte読取り可能、mappedは同じlenを書込み可能で、独立dmabuf storageはsliceと重ならない。
         unsafe {
             ptr::copy_nonoverlapping(payload.as_ptr(), mapped as *mut u8, payload.len());
         }
         // 事後条件: 完全なevent payloadがmapped dmabuf領域を占有する。
-        // 安全性: mappedは成功した同一mmap pointerで、payload.len()も同一mapping長であり、mapped参照を外へ持ち出さない。
+        // SAFETY: mappedは成功した同一mmap pointerで、payload.len()も同一mapping長であり、mapped参照を外へ持ち出さない。
         if unsafe { munmap(mapped, payload.len()) } != 0 {
             return Err(AvSharedBackingError::UnmappingFailed);
         }

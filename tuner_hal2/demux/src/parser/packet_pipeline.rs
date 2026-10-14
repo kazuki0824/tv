@@ -961,7 +961,7 @@ impl PacketPipeline {
         };
         let view = validated.view();
         let pid = validated.pid();
-        // Null packets carry stuffing, not a service continuity timeline. Retain Raw/Record delivery.
+        // Nullパケットは詰め物であり、サービスの連続性系列には属さない。Raw/Recordへの配送は維持する。
         let null_packet = pid.to_i32_for_aidl_boundary() == 0x1fff;
         if view.transport_error_indicator {
             self.diagnostic_counters.note_tei();

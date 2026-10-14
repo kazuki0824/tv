@@ -1616,8 +1616,8 @@ class TunerController(
         }
     }
 
-    // Only the first occurrence and doubling milestones are logged. Section processing continues.
-    // The diagnostic remains available through CasController.lastDiagnostic().
+    // 初回と件数が倍増する閾値でのみログを出力し、セクション処理は継続する。
+    // 診断は引き続きCasController.lastDiagnostic()から参照できる。
     private fun logCasSectionDiagnostics(
         kind: String,
         pid: TsPid,

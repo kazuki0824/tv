@@ -745,6 +745,7 @@ fn export_queue_descriptor(queue: &FmqQueue) -> Result<QueueDescriptorSnapshot, 
         let fd = queue
             .dup_fd_at_result(index)
             .map_err(|err| map_export_error(err, "FMQ fdの出力に失敗しました"))?;
+        // SAFETY: dup_fd_at_resultが成功時に返す新規FDの所有権を一度だけFileへ移し、別途closeしない。
         let file = unsafe { File::from_raw_fd(fd) };
         let fd_size_u64 = file
             .metadata()
