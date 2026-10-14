@@ -1305,6 +1305,22 @@ impl DemuxRuntime {
             .map(AvSharedBacking::diagnostic_snapshot)
     }
 
+    /// 既存AV backingごとの閾値通過をpacket report単位で一度だけ消費する。
+    pub fn take_av_flow_delivery_samples(
+        &mut self,
+    ) -> Vec<(i32, u64, u64, AvFlowDiagnosticSnapshot)> {
+        self.filter_av_backings
+            .iter_mut()
+            .filter_map(|(filter_id, backing)| {
+                backing
+                    .take_delivery_sample()
+                    .map(|(previous, threshold, snapshot)| {
+                        (*filter_id, previous, threshold, snapshot)
+                    })
+            })
+            .collect()
+    }
+
     pub fn release_filter_av_handle_from_typed_request(
         &mut self,
         request: FilterAvHandleReleaseRequest,
