@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::os::fd::IntoRawFd;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 type QueueBytes = Arc<Mutex<VecDeque<u8>>>;
@@ -52,6 +53,7 @@ pub enum FmqQueueError {
 pub struct FmqQueue {
     capacity: usize,
     bytes: QueueBytes,
+    wake_failures_remaining: AtomicUsize,
 }
 
 impl FmqQueue {
@@ -67,6 +69,7 @@ impl FmqQueue {
         Ok(Self {
             capacity: num_bytes,
             bytes,
+            wake_failures_remaining: AtomicUsize::new(0),
         })
     }
 
@@ -106,8 +109,23 @@ impl FmqQueue {
         self.available_to_read_result()
     }
 
+    // host試験用。対象queueだけのEventFlag wake失敗を注入し、payloadは維持する。
+    pub fn host_ci_fail_next_wakes(&self, count: usize) {
+        self.wake_failures_remaining.store(count, Ordering::Release);
+    }
+
     pub fn wake(&self, _event_mask: u32) -> Result<(), FmqQueueError> {
-        Ok(())
+        if self
+            .wake_failures_remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                (remaining > 0).then_some(remaining - 1)
+            })
+            .is_ok()
+        {
+            Err(FmqQueueError::NativeWakeFailed)
+        } else {
+            Ok(())
+        }
     }
 
     pub fn available_to_read_result(&self) -> Result<usize, FmqQueueError> {

@@ -1875,6 +1875,14 @@ impl DemuxRuntime {
         self.reset_filter_source_boundary(filter_id)
     }
 
+    #[cfg(all(test, not(target_os = "android")))]
+    pub(crate) fn fail_next_filter_wakes_for_test(&self, filter_id: i32, count: usize) {
+        self.filter_queue_runtimes
+            .get(&filter_id)
+            .expect("試験用Filter FMQが存在すること")
+            .fail_next_wakes_for_test(count);
+    }
+
     #[cfg(test)]
     pub(crate) fn enqueue_filter_queue_payload(
         &mut self,

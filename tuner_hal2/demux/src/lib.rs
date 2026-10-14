@@ -3986,6 +3986,98 @@ mod tests {
         );
     }
 
+    // host native FMQ shimのwake失敗を通し、payloadと再通知の実状態を検証する。
+    fn started_raw_filter_with_fmq(filter_id: i32) -> DemuxRuntime {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsRaw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(0x0030),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+        demux
+    }
+
+    #[test]
+    fn failed_event_flag_wake_commits_payload_then_retries_without_duplicate() {
+        let filter_id = 45;
+        let mut demux = started_raw_filter_with_fmq(filter_id);
+        demux.fail_next_filter_wakes_for_test(filter_id, 1);
+        let first = raw_ts_packet(0x0030, 0, &[1, 2, 3, 4]);
+        let report = demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueueWakeDeferred {
+                    filter_id: id,
+                    ..
+                } if *id == filter_id
+            )
+        }));
+        assert_eq!(demux.snapshot_filter_queue_bytes_for_test(filter_id).unwrap(), first);
+        let second = raw_ts_packet(0x0030, 1, &[5, 6, 7, 8]);
+        let retried = demux.push_ts_packet_from_origin(&second, TsInputOrigin::frontend(1));
+        assert!(!retried.diagnostics.iter().any(|diagnostic| {
+            matches!(diagnostic, PipelineDiagnostic::FilterQueueWakeDeferred { .. })
+        }));
+        let mut expected = first.to_vec();
+        expected.extend_from_slice(&second);
+        assert_eq!(demux.snapshot_filter_queue_bytes_for_test(filter_id).unwrap(), expected);
+    }
+
+    #[test]
+    fn failed_event_flag_retry_keeps_committed_payload_and_records_failure() {
+        let filter_id = 46;
+        let mut demux = started_raw_filter_with_fmq(filter_id);
+        demux.fail_next_filter_wakes_for_test(filter_id, 2);
+        let first = raw_ts_packet(0x0030, 0, &[1, 2, 3, 4]);
+        let deferred = demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
+        assert!(deferred.diagnostics.iter().any(|diagnostic| {
+            matches!(diagnostic, PipelineDiagnostic::FilterQueueWakeDeferred { .. })
+        }));
+        let second = raw_ts_packet(0x0030, 1, &[5, 6, 7, 8]);
+        let rejected = demux.push_ts_packet_from_origin(&second, TsInputOrigin::frontend(1));
+        assert!(rejected.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueuePayloadDeliveryFailure {
+                    error: DemuxRuntimeError {
+                        kind: DemuxRuntimeErrorKind::FmqDeliveryFailed(
+                            maleicacid_tuner_hal2_common::FmqFailureKind::EventFlagWakeFailed
+                        ),
+                        ..
+                    },
+                    ..
+                }
+            )
+        }));
+        assert_eq!(demux.snapshot_filter_queue_bytes_for_test(filter_id).unwrap(), first);
+        let third = raw_ts_packet(0x0030, 2, &[9, 10, 11, 12]);
+        let after_recovery = demux.push_ts_packet_from_origin(&third, TsInputOrigin::frontend(1));
+        assert!(!after_recovery.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::FilterQueuePayloadDeliveryFailure { .. }
+            )
+        }));
+        let mut expected = first.to_vec();
+        expected.extend_from_slice(&third);
+        assert_eq!(demux.snapshot_filter_queue_bytes_for_test(filter_id).unwrap(), expected);
+    }
+
     #[test]
     fn filter_flush_clears_partial_pes_state_and_keeps_runtime_started() {
         let mut demux = DemuxRuntime::new(1, 1);
