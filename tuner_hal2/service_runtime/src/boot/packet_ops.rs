@@ -357,6 +357,7 @@ impl TunerServiceRuntime {
                 }
                 _ => {}
             }
+            self.packet_delivery_failure_totals.record(diagnostic);
             self.packet_pipeline_diagnostics.push(
                 crate::diagnostics::PacketPipelineDiagnosticRecord {
                     demux_id,

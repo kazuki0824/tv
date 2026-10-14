@@ -594,6 +594,7 @@ pub struct TunerServiceRuntime {
     demux_transaction_diagnostics: BoundedDiagnosticStore<DemuxTransactionDiagnosticRecord>,
     packet_pipeline_diagnostics:
         BoundedDiagnosticStore<crate::diagnostics::PacketPipelineDiagnosticRecord>,
+    packet_delivery_failure_totals: crate::diagnostics::PacketDeliveryFailureTotals,
     object_cleanup_diagnostics: SharedObjectCleanupDiagnostics,
     frontend_worker_cleanup_diagnostics: SharedFrontendWorkerCleanupDiagnostics,
     next_demux_transaction_diagnostic_id: u64,
@@ -1565,6 +1566,7 @@ impl TunerServiceRuntime {
             frontend_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
             demux_transaction_diagnostics: BoundedDiagnosticStore::default(),
             packet_pipeline_diagnostics: BoundedDiagnosticStore::default(),
+            packet_delivery_failure_totals: Default::default(),
             object_cleanup_diagnostics: SharedObjectCleanupDiagnostics::default(),
             frontend_worker_cleanup_diagnostics: SharedFrontendWorkerCleanupDiagnostics::default(),
             next_demux_transaction_diagnostic_id: 1,
@@ -1876,6 +1878,12 @@ impl TunerServiceRuntime {
             self.demux_transaction_diagnostics.as_slice().to_vec(),
             self.demux_transaction_diagnostics.dropped_count(),
         )
+    }
+
+    pub fn packet_delivery_failure_totals(
+        &self,
+    ) -> crate::diagnostics::PacketDeliveryFailureTotals {
+        self.packet_delivery_failure_totals
     }
 
     pub fn packet_pipeline_diagnostics(
@@ -3158,6 +3166,7 @@ impl TunerServiceRuntime {
         self.frontend_callback_delivery_diagnostics.clear();
         self.demux_transaction_diagnostics.clear();
         self.packet_pipeline_diagnostics.clear();
+        self.packet_delivery_failure_totals = Default::default();
         if let Err(error) = self.object_cleanup_diagnostics.clear() {
             self.diagnostics.push(
                 StartupDiagnosticRecord::object_cleanup_diagnostic_clear_failed(error.clone()),
