@@ -533,10 +533,12 @@ class ScanPlanPolicyTest {
         // LiveSession.releaseOnSessionExecutorと同じResourceCleanup APIを用いる。
         val cleanup = ResourceCleanup()
         var closeAttempts = 0
-        check(!cleanup.releaseOwned("tuner/CAS", null) {
-            closeAttempts++
-            error("Tuner.closeの解放未確定")
-        })
+        check(
+            !cleanup.releaseOwned("tuner/CAS", null) {
+                closeAttempts++
+                error("Tuner.closeの解放未確定")
+            },
+        )
         check(cleanup.hasPending)
         cleanup.retry()
         check(cleanup.hasPending && closeAttempts == 2)
@@ -546,7 +548,11 @@ class ScanPlanPolicyTest {
     @Test
     fun scanReleaseKeepsOneShotFailedControllerOwnedAfterRepeatedAttempts() {
         val task =
-            ChannelScanManager.ActiveScanTask(2, ScanPurpose.SETUP_SCAN, android.content.ContextWrapper(null))
+            ChannelScanManager.ActiveScanTask(
+                2,
+                ScanPurpose.SETUP_SCAN,
+                android.content.ContextWrapper(null),
+            )
         val owner = AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
         var attempts = 0
         var diagnostics = 0
