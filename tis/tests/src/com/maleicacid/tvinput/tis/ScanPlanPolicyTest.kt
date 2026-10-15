@@ -529,6 +529,22 @@ class ScanPlanPolicyTest {
     }
 
     @Test
+    fun scanReleaseKeepsOneShotFailedControllerOwnedAfterRepeatedAttempts() {
+        val task = ChannelScanManager.ActiveScanTask(2, ScanPurpose.SETUP_SCAN, android.content.ContextWrapper(null))
+        val owner = AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
+        var attempts = 0
+        var diagnostics = 0
+        task.controller = AutoCloseable {
+            attempts++
+            error("Tunerの解放未確定")
+        }
+        check(!ChannelScanManager.finishScanRelease(task, owner) { diagnostics++ })
+        check(!ChannelScanManager.finishScanRelease(task, owner) { diagnostics++ })
+        check(owner.get() === task && task.closing)
+        check(attempts == 2 && diagnostics == 2)
+    }
+
+    @Test
     fun unavailableDynamicDiscoveryDoesNotInferUnsupportedCapability() {
         val seed = JapanIsdbScanPlan.isdbsBsBands().first()
         val failed =
