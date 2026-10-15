@@ -38,10 +38,11 @@ kotlin {
 // 全試験がSDK 35固定。Robolectric独自のMaven取得を避け、Gradleで事前解決する。
 val robolectricSdkVersion = "15-robolectric-13954326"
 val androidAll = "org.robolectric:android-all:$robolectricSdkVersion"
-val robolectricSdk = configurations.create("robolectricSdk") {
-    isCanBeConsumed = false
-    isCanBeResolved = true
-}
+val robolectricSdk =
+    configurations.create("robolectricSdk") {
+        isCanBeConsumed = false
+        isCanBeResolved = true
+    }
 
 dependencies {
     add("robolectricSdk", "org.robolectric:android-all-instrumented:$robolectricSdkVersion-i7")
@@ -65,5 +66,12 @@ val prepareRobolectricSdk by tasks.registering(Sync::class) {
 tasks.withType<Test>().configureEach {
     dependsOn(prepareRobolectricSdk)
     systemProperty("robolectric.offline", "true")
-    systemProperty("robolectric.dependency.dir", layout.buildDirectory.dir("robolectric-sdk").get().asFile.absolutePath)
+    systemProperty(
+        "robolectric.dependency.dir",
+        layout.buildDirectory
+            .dir("robolectric-sdk")
+            .get()
+            .asFile
+            .absolutePath,
+    )
 }
