@@ -6,6 +6,7 @@ package com.maleicacid.tvinput.tis
 import android.content.Context
 import android.media.tv.tuner.DemuxCapabilities
 import android.media.tv.tuner.Tuner
+import android.net.Uri
 import android.media.tv.tuner.TunerUtils
 import android.media.tv.tuner.filter.Filter
 import android.media.tv.tuner.filter.FilterCallback
@@ -113,6 +114,25 @@ class TunerFrontendLeaseTransitionTest {
             check(runCatching { controller.release() }.isFailure)
             check(runCatching { controller.release() }.isFailure)
             check(sdk.closeCalls == 1 && sdk.fullClosed == 0)
+        } finally {
+            runCatching { controller.release() }
+        }
+    }
+
+    @Test
+    fun failedCloseRejectsInvalidLiveChannelWithoutUsingOldSdk() {
+        val controller = controller()
+        val sdk = checkNotNull(NativeTuner.current)
+        try {
+            check(!controller.tuneForScan(satellite()).success)
+            sdk.failNextFullClose = true
+            check(!controller.tuneForScan(terrestrial()).success)
+            val before = sdk.closeCalls
+            val result = controller.tuneForLive(Uri.parse("content://android.media.tv/channel/999999"))
+            check(!result.success && result.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
+            check(result.message.contains("資源解放未確定"))
+            check(sdk.closeCalls == before && sdk.requested == listOf(FrontendSettings.TYPE_ISDBS))
+            check(NativeTuner.instances.size == 1)
         } finally {
             runCatching { controller.release() }
         }
