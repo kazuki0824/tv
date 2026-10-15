@@ -293,13 +293,13 @@ class TunerController(
     private var onTuneEventCallback: ((Long, Int) -> Unit)? = null
     private var onBroadcastClockUpdatedCallback: (() -> Unit)? = null
     private val tvInputSessionId: String? = normalizedTvInputSessionId(sessionId)
+
+    // Android 15 Tuner.close()は失敗時もone-shot。再closeのno-opを解放成功と見なさない。
+    private var tunerCloseFailure: Throwable? = null
     private var tuner: Tuner? = createTuner()
 
     // 直近のSDK frontend type要求（scan/tune実行前にも記録）。実リースの取得事実ではない。
     private var frontendLeaseType: Int? = null
-
-    // Android 15 Tuner.close()は失敗時もone-shot。再closeのno-opを解放成功と見なさない。
-    private var tunerCloseFailure: Throwable? = null
     private var currentTune: ResolvedChannel? = null
 
     @Volatile private var tuneAccepted = false
@@ -329,6 +329,7 @@ class TunerController(
             created
         } catch (error: RuntimeException) {
             runCatching { created?.close() }.exceptionOrNull()?.let { cleanup ->
+                tunerCloseFailure = cleanup
                 if (cleanup !== error) error.addSuppressed(cleanup)
             }
             Log.w(LogTags.TIS, "Tuner を利用できません inputId=$inputId tvInputSessionId=$tvInputSessionId useCase=$useCase", error)
@@ -2081,12 +2082,19 @@ class TunerController(
     fun release() {
         if (released) return
         if (sectionExecutor.isOwnerThread()) {
-            releaseOnController()
-            sectionExecutor.shutdownNow()
+            try {
+                releaseOnController()
+            } finally {
+                if (released) sectionExecutor.shutdownNow()
+            }
             return
         }
-        callOnController(cleanup = true) { releaseOnController() }
-        sectionExecutor.shutdownNow()
+        try {
+            callOnController(cleanup = true) { releaseOnController() }
+        } finally {
+            // one-shot close失敗でもController内部のexecutorだけは確実に終了させる。
+            if (released) sectionExecutor.shutdownNow()
+        }
         Log.i(LogTags.TIS, "Tuner を解放します inputId=$inputId sessionId=$tvInputSessionId")
     }
 
@@ -2134,10 +2142,17 @@ class TunerController(
         tuneAccepted = false
         release {
             tunerCloseFailure?.let { throw IllegalStateException("以前のTuner.close失敗で資源解放未確定", it) }
-            tuner?.close()
+            try {
+                tuner?.close()
+            } catch (error: RuntimeException) {
+                tunerCloseFailure = error
+                throw error
+            }
             tuner = null
             frontendLeaseType = null
         }
+        // one-shot closeが失敗したControllerは再試行できないため内部executorを終端する。
+        if (tunerCloseFailure != null) released = true
         failure?.let { throw it }
         released = true
     }
