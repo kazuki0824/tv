@@ -530,7 +530,8 @@ class ScanPlanPolicyTest {
 
     @Test
     fun scanReleaseKeepsOneShotFailedControllerOwnedAfterRepeatedAttempts() {
-        val task = ChannelScanManager.ActiveScanTask(2, ScanPurpose.SETUP_SCAN, android.content.ContextWrapper(null))
+        val task =
+            ChannelScanManager.ActiveScanTask(2, ScanPurpose.SETUP_SCAN, android.content.ContextWrapper(null))
         val owner = AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
         var attempts = 0
         var diagnostics = 0
