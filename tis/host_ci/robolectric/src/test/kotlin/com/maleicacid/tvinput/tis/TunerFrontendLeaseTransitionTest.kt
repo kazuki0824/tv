@@ -150,6 +150,7 @@ class TunerFrontendLeaseTransitionTest {
         try {
             var previous: Filter? = null
             var receivedCount = 0
+
             fun select(candidate: ScanCandidate): NativeTuner {
                 check(controller.tuneForScan(candidate).success)
                 val sdk = checkNotNull(NativeTuner.current)
@@ -490,6 +491,7 @@ class TunerFrontendLeaseTransitionTest {
             return Tuner.RESULT_SUCCESS
         }
     }
+
     // SectionIngestController本体を実行する。Native SI parserだけは既存host回帰と分離。
     @Implements(AribSiEngine::class)
     class SiEngineBoundary {
@@ -532,5 +534,4 @@ class TunerFrontendLeaseTransitionTest {
                 0xb6.toByte(),
             )
     }
-
 }
