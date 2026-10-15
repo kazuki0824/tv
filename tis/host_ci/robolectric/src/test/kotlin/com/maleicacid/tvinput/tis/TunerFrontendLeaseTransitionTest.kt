@@ -132,7 +132,8 @@ class TunerFrontendLeaseTransitionTest {
             fun select(candidate: ScanCandidate): NativeTuner {
                 check(controller.tuneForScan(candidate).success)
                 val sdk = checkNotNull(NativeTuner.current)
-                val filter = sdk.filters.first()
+                // 同type再選局でも既存Filterはclose済み。新世代のPAT Filterから受信する。
+                val filter = sdk.filters.first { Shadow.extract<NativeFilter>(it).closes == 0 }
                 deliverPat(filter)
                 check(received.poll(5, TimeUnit.SECONDS) == WellKnownSectionPid.PAT)
                 return sdk
