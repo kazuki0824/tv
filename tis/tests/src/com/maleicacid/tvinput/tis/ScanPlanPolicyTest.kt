@@ -556,10 +556,11 @@ class ScanPlanPolicyTest {
         val owner = AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
         var attempts = 0
         var diagnostics = 0
-        task.controller = AutoCloseable {
-            attempts++
-            error("Tunerの解放未確定")
-        }
+        task.controller =
+            AutoCloseable {
+                attempts++
+                error("Tunerの解放未確定")
+            }
         check(!ChannelScanManager.finishScanRelease(task, owner) { diagnostics++ })
         check(!ChannelScanManager.finishScanRelease(task, owner) { diagnostics++ })
         check(owner.get() === task && task.closing)
