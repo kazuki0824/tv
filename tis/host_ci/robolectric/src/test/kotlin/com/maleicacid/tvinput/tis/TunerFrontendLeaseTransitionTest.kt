@@ -93,6 +93,26 @@ class TunerFrontendLeaseTransitionTest {
     }
 
     @Test
+    fun clearingTuneListenerPreservesFrameworkSdkCleanup() {
+        val controller = controller()
+        val sdk = checkNotNull(NativeTuner.current)
+        try {
+            val tuner = ReflectionHelpers.getField<Tuner>(controller, "tuner")
+            tuner.setOnTuneEventListener(Executor { task -> task.run() }) { }
+            check(ReflectionHelpers.getField<Any?>(tuner, "mOnTuneEventListener") != null)
+            check(ReflectionHelpers.getField<Any?>(tuner, "mOnTuneEventExecutor") != null)
+
+            val before = sdk.clearTuneListenerCalls
+            check(!controller.tuneForScan(terrestrial()).success)
+            check(sdk.clearTuneListenerCalls > before)
+            check(ReflectionHelpers.getField<Any?>(tuner, "mOnTuneEventListener") == null)
+            check(ReflectionHelpers.getField<Any?>(tuner, "mOnTuneEventExecutor") == null)
+        } finally {
+            controller.release()
+        }
+    }
+
+    @Test
     fun failedOneShotTunerCloseCannotBeMisreadAsSuccessfulRetry() {
         val controller = controller()
         val sdk = checkNotNull(NativeTuner.current)
@@ -352,7 +372,7 @@ class TunerFrontendLeaseTransitionTest {
         fun clearOnTuneEventListener() {
             clearTuneListenerCalls++
             // Java側のリスナ解除は元のSDK実装で行い、監視による振舞いの変更を避ける。
-            Shadow.directlyOn<Void>(actual, Tuner::class.java, "clearOnTuneEventListener")
+            Shadow.directlyOn<Void, Tuner>(actual, Tuner::class.java, "clearOnTuneEventListener")
         }
 
         @Implementation
