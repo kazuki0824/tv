@@ -931,8 +931,9 @@ class TunerController(
         eitPfActualOnly: Boolean,
     ): TuneOutcome {
         resetBeforeTune()
-        val tunerInstance = availableTuner()
-            ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
+        val tunerInstance =
+            availableTuner()
+                ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
         val settings =
             buildFrontendSettings(channel).getOrElse { e ->
                 Log.w(LogTags.TIS, "frontend settings 構築に失敗しました channel=$channel", e)
