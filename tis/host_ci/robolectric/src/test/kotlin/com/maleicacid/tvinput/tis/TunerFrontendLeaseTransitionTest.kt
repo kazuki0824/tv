@@ -7,7 +7,6 @@ import android.content.Context
 import android.media.tv.tuner.DemuxCapabilities
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.TunerUtils
-import android.net.Uri
 import android.media.tv.tuner.filter.Filter
 import android.media.tv.tuner.filter.FilterCallback
 import android.media.tv.tuner.filter.FilterConfiguration
@@ -15,6 +14,7 @@ import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.SectionEvent
 import android.media.tv.tuner.frontend.FrontendInfo
 import android.media.tv.tuner.frontend.FrontendSettings
+import android.net.Uri
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SiIngestResult
