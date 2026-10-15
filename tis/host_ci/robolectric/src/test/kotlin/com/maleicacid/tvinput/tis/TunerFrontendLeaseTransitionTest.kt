@@ -14,8 +14,13 @@ import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.SectionEvent
 import android.media.tv.tuner.frontend.FrontendInfo
 import android.media.tv.tuner.frontend.FrontendSettings
+import com.maleicacid.tvinput.aribsi.AribSiEngine
+import com.maleicacid.tvinput.aribsi.SectionIngestController
+import com.maleicacid.tvinput.aribsi.SiIngestResult
+import com.maleicacid.tvinput.aribsi.SiStatus
 import com.maleicacid.tvinput.aribsi.WellKnownSectionPid
 import com.maleicacid.tvinput.common.FrequencyHz
+import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -34,9 +39,11 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(
     sdk = [35],
+    instrumentedPackages = ["com.maleicacid.tvinput.aribsi"],
     shadows = [
         TunerFrontendLeaseTransitionTest.NativeTuner::class,
         TunerFrontendLeaseTransitionTest.NativeFilter::class,
+        TunerFrontendLeaseTransitionTest.SiEngineBoundary::class,
     ],
 )
 class TunerFrontendLeaseTransitionTest {
@@ -85,23 +92,28 @@ class TunerFrontendLeaseTransitionTest {
     }
 
     @Test
-    fun failedTunerClosePreventsTuneAndAllowsLaterRetry() {
+    fun failedOneShotTunerCloseCannotBeMisreadAsSuccessfulRetry() {
         val controller = controller()
         val sdk = checkNotNull(NativeTuner.current)
         try {
             check(!controller.tuneForScan(satellite()).success)
             sdk.failNextFullClose = true
-            val failure = controller.tuneForScan(terrestrial())
-            check(!failure.success && failure.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
-            check(sdk.requested == listOf(FrontendSettings.TYPE_ISDBS))
-            check(!controller.tuneForScan(terrestrial()).success)
-            check(sdk.fullClosed == 1)
-            check(
-                NativeTuner.instances.flatMap { it.requested } ==
-                    listOf(FrontendSettings.TYPE_ISDBS, FrontendSettings.TYPE_ISDBT),
-            )
+            val first = controller.tuneForScan(terrestrial())
+            check(!first.success && first.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
+            check(sdk.oneShotClosed && sdk.fullClosed == 0 && sdk.closeCalls == 1)
+            val again = controller.tuneForScan(terrestrial())
+            check(!again.success && again.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
+            check(again.message.contains("資源解放未確定"))
+            check(sdk.closeCalls == 1 && sdk.requested == listOf(FrontendSettings.TYPE_ISDBS))
+            check(NativeTuner.instances.size == 1)
+            val bs = controller.prepareBsCandidateSource()
+            check(!bs.success && bs.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
+            check(sdk.closeCalls == 1 && sdk.applied.isEmpty())
+            // terminal releaseもAOSPのclose再呼出しno-opを成功判定せず、実行器のみ閉じる。
+            check(runCatching { controller.release() }.isFailure)
+            check(sdk.closeCalls == 1 && sdk.fullClosed == 0)
         } finally {
-            controller.release()
+            runCatching { controller.release() }
         }
     }
 
@@ -117,25 +129,42 @@ class TunerFrontendLeaseTransitionTest {
             check(outcome.message.contains("frontend解放"))
             check(sdk.scanned.isEmpty())
             check(sdk.requested == listOf(FrontendSettings.TYPE_ISDBT))
+            check(sdk.oneShotClosed && sdk.closeCalls == 1)
+            val retry = controller.discoverIsdbsStreamIds(JapanIsdbScanPlan.isdbsBsBands().first())
+            check(!retry.success && retry.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
+            check(sdk.closeCalls == 1 && sdk.scanned.isEmpty())
         } finally {
-            controller.release()
+            runCatching { controller.release() }
         }
     }
 
     @Test
     fun successfulRetunesOpenFreshFiltersAndDeliverSections() {
         val controller = controller()
-        val received = LinkedBlockingQueue<com.maleicacid.tvinput.common.TsPid>()
+        val received = LinkedBlockingQueue<TsPid>()
+        val engine = AribSiEngine(RuntimeEnvironment.getApplication())
+        val ingest = SectionIngestController(engine)
+        controller.setSectionIngestController(ingest)
         NativeTuner.successfulTunes = true
         controller.setOnSectionIngestedCallback { pid -> if (pid != null) received.offer(pid) }
         try {
+            var previous: Filter? = null
+            var receivedCount = 0
             fun select(candidate: ScanCandidate): NativeTuner {
                 check(controller.tuneForScan(candidate).success)
                 val sdk = checkNotNull(NativeTuner.current)
-                // 同type再選局でも既存Filterはclose済み。新世代のPAT Filterから受信する。
+                // 旧generationのFilter callbackは実Filter identity照合で棄却される。
+                previous?.let { stale ->
+                    check(Shadow.extract<NativeFilter>(stale).closes == 1)
+                    deliverPat(stale)
+                    check(received.poll(100, TimeUnit.MILLISECONDS) == null)
+                }
                 val filter = sdk.filters.first { Shadow.extract<NativeFilter>(it).closes == 0 }
                 deliverPat(filter)
                 check(received.poll(5, TimeUnit.SECONDS) == WellKnownSectionPid.PAT)
+                receivedCount++
+                check(ingest.diagnostics().single { it.pid == WellKnownSectionPid.PAT }.acceptedCount == receivedCount)
+                previous = filter
                 return sdk
             }
 
@@ -209,7 +238,8 @@ class TunerFrontendLeaseTransitionTest {
     }
 
     private fun deliverPat(filter: Filter) {
-        val payload = byteArrayOf(0x00, 0x01, 0x02)
+        // 既存native PAT受理試験と同じ有効section。section_length=13、CRC-32/MPEG=4521f9b6。
+        val payload = VALID_PAT
         Shadow.extract<NativeFilter>(filter).offer(payload)
         val event =
             ReflectionHelpers.callConstructor(
@@ -255,6 +285,8 @@ class TunerFrontendLeaseTransitionTest {
         var closed = 0
         var fullClosed = 0
         var failNextFullClose = false
+        var oneShotClosed = false
+        var closeCalls = 0
         val filters = mutableListOf<Filter>()
         val applied = mutableListOf<Int>()
         private var heldType: Int? = null
@@ -407,9 +439,12 @@ class TunerFrontendLeaseTransitionTest {
 
         @Implementation
         fun close() {
+            closeCalls++
+            if (oneShotClosed) return // Android 15: 2回目以降のcloseはno-op
+            oneShotClosed = true
             if (failNextFullClose) {
                 failNextFullClose = false
-                error("tuner close failed")
+                error("tuner close failed mid-release")
             }
             fullClosed++
             heldType = null
@@ -455,4 +490,47 @@ class TunerFrontendLeaseTransitionTest {
             return Tuner.RESULT_SUCCESS
         }
     }
+    // SectionIngestController本体を実行する。Native SI parserだけは既存host回帰と分離。
+    @Implements(AribSiEngine::class)
+    class SiEngineBoundary {
+        @Implementation(methodName = "__constructor__")
+        @Suppress("UNUSED_PARAMETER")
+        fun construct(context: Context) = Unit
+
+        @Implementation
+        fun ingestSection(
+            pid: TsPid,
+            section: ByteArray,
+        ): SiIngestResult {
+            check(pid == WellKnownSectionPid.PAT && section.contentEquals(VALID_PAT))
+            return SiIngestResult(pid, SiStatus.OK)
+        }
+
+        @Implementation
+        fun close() = Unit
+    }
+
+    companion object {
+        // NativeAribSiParserCasDiscoveryTest.PAT_BODYと同一の16-byte PAT/CRC-32/MPEG検査ベクトル。
+        private val VALID_PAT =
+            byteArrayOf(
+                0x00,
+                0xb0.toByte(),
+                0x0d,
+                0x00,
+                0x11,
+                0xc1.toByte(),
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0xe1.toByte(),
+                0x00,
+                0x45,
+                0x21,
+                0xf9.toByte(),
+                0xb6.toByte(),
+            )
+    }
+
 }
