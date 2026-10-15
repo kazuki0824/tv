@@ -529,8 +529,8 @@ class ScanPlanPolicyTest {
     }
 
     @Test
-    fun liveSessionCleanupRetryKeepsTerminalTunerObligation() {
-        // LiveSession.releaseOnSessionExecutorと同じResourceCleanup APIを用いる。
+    fun resourceCleanupRetainsFailedReleaseActionOnRetry() {
+        // 共通ResourceCleanupの再試行義務を単体検証する。LiveSessionと実Controllerの結合は検証しない。
         val cleanup = ResourceCleanup()
         var closeAttempts = 0
         check(
@@ -546,7 +546,8 @@ class ScanPlanPolicyTest {
     }
 
     @Test
-    fun scanReleaseKeepsOneShotFailedControllerOwnedAfterRepeatedAttempts() {
+    fun scanManagerRetainsOwnerWhenCloseActionKeepsFailing() {
+        // ScanManagerの汎用失敗owner保持のみを検証し、SDK one-shot closeの結合試験とは扱わない。
         val task =
             ChannelScanManager.ActiveScanTask(
                 2,
