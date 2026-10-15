@@ -926,6 +926,7 @@ class TunerController(
 
     // SDKの既存DemuxはFrontend解放後の自動再接続失敗を公開しない。
     // 異種選局では、解放済みfilterの後にTuner全体を再生成し、次のopenFilterでDemuxを作り直す。
+    @Suppress("TooGenericExceptionCaught")
     private fun releaseFrontendBeforeTypeChange(
         tunerInstance: Tuner,
         nextType: Int,
@@ -2098,7 +2099,7 @@ class TunerController(
         Log.i(LogTags.TIS, "Tuner を解放します inputId=$inputId sessionId=$tvInputSessionId")
     }
 
-    @Suppress("TooGenericExceptionCaught")
+    @Suppress("TooGenericExceptionCaught", "ThrowsCount")
     private fun releaseOnController() {
         if (released) return
         invalidateTuneOnController()
