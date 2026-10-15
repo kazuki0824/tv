@@ -529,6 +529,46 @@ class ScanPlanPolicyTest {
     }
 
     @Test
+    fun resourceCleanupRetainsFailedReleaseActionOnRetry() {
+        // 共通ResourceCleanupの再試行義務を単体検証する。LiveSessionと実Controllerの結合は検証しない。
+        val cleanup = ResourceCleanup()
+        var closeAttempts = 0
+        check(
+            !cleanup.releaseOwned("tuner/CAS", null) {
+                closeAttempts++
+                error("Tuner.closeの解放未確定")
+            },
+        )
+        check(cleanup.hasPending)
+        cleanup.retry()
+        check(cleanup.hasPending && closeAttempts == 2)
+        check(runCatching { cleanup.requireComplete() }.isFailure)
+    }
+
+    @Test
+    fun scanManagerRetainsOwnerWhenCloseActionKeepsFailing() {
+        // ScanManagerの汎用失敗owner保持のみを検証し、SDK one-shot closeの結合試験とは扱わない。
+        val task =
+            ChannelScanManager.ActiveScanTask(
+                2,
+                ScanPurpose.SETUP_SCAN,
+                android.content.ContextWrapper(null),
+            )
+        val owner = AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
+        var attempts = 0
+        var diagnostics = 0
+        task.controller =
+            AutoCloseable {
+                attempts++
+                error("Tunerの解放未確定")
+            }
+        check(!ChannelScanManager.finishScanRelease(task, owner) { diagnostics++ })
+        check(!ChannelScanManager.finishScanRelease(task, owner) { diagnostics++ })
+        check(owner.get() === task && task.closing)
+        check(attempts == 2 && diagnostics == 2)
+    }
+
+    @Test
     fun unavailableDynamicDiscoveryDoesNotInferUnsupportedCapability() {
         val seed = JapanIsdbScanPlan.isdbsBsBands().first()
         val failed =

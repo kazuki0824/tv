@@ -1,5 +1,7 @@
 package android.media.tv.tuner;
 
+import android.content.Context;
+import android.media.tv.tuner.frontend.FrontendSettings;
 import android.media.tv.tuner.filter.Filter;
 import android.media.tv.tuner.filter.FilterCallback;
 import java.util.concurrent.Executor;
@@ -11,6 +13,13 @@ public class Tuner {
     public static FilterCallback lastCallback;
     public static int openFilterCalls;
     public static int sectionFilterCount = 16;
+
+    // 実ControllerがTuner不在から正規に再試行する経路だけをhost fixtureで受ける。
+    public Tuner(Context context, String sessionId, int useCase) {}
+    public interface OnResourceLostListener { void onResourceLost(Tuner tuner); }
+    public void setResourceLostListener(Executor executor, OnResourceLostListener listener) {}
+    public int tune(FrontendSettings settings) { return 1; } // RESULT_UNAVAILABLE
+    public void clearOnTuneEventListener() {}
 
     public static int getTunerVersion() { return 0x00030000; }
 
