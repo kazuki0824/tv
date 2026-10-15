@@ -297,6 +297,7 @@ class TunerController(
 
     // 直近のSDK frontend type要求（scan/tune実行前にも記録）。実リースの取得事実ではない。
     private var frontendLeaseType: Int? = null
+
     // Android 15 Tuner.close()は失敗時もone-shot。再closeのno-opを解放成功と見なさない。
     private var tunerCloseFailure: Throwable? = null
     private var currentTune: ResolvedChannel? = null
@@ -312,8 +313,10 @@ class TunerController(
     private val playbackPipeline = PlaybackPipeline(inputId, tvInputSessionId, sessionContext)
 
     // close成功後の再生成失敗は次の公開操作で再試行する。閉鎖済みinstanceは再利用しない。
-    private fun availableTuner(): Tuner? =
-        if (tunerCloseFailure != null) null else tuner ?: createTuner()?.also { tuner = it }
+    private fun availableTuner(): Tuner? {
+        if (tunerCloseFailure != null) return null
+        return tuner ?: createTuner()?.also { tuner = it }
+    }
 
     @Suppress("TooGenericExceptionCaught", "MaxLineLength")
     private fun createTuner(): Tuner? {
@@ -932,7 +935,7 @@ class TunerController(
             if (frontendLeaseType != null && (frontendLeaseType != nextType || reselectSpecificFrontend)) {
                 try {
                     tunerInstance.close()
-                } catch (error: Throwable) {
+                } catch (error: RuntimeException) {
                     // AOSPはfinallyでmClosed=trueにする。旧Tunerも新Tunerも選局に使用しない。
                     tunerCloseFailure = error
                     Log.e(LogTags.TIS, "Tuner.closeに失敗し資源解放が未確定 inputId=$inputId", error)
