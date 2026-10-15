@@ -127,11 +127,13 @@ class TunerFrontendLeaseTransitionTest {
             check(!controller.tuneForScan(satellite()).success)
             sdk.failNextFullClose = true
             check(!controller.tuneForScan(terrestrial()).success)
-            val before = sdk.closeCalls
+            val beforeClose = sdk.closeCalls
+            val beforeClear = sdk.clearTuneListenerCalls
             val result = controller.tuneForLive(Uri.parse("content://android.media.tv/channel/999999"))
             check(!result.success && result.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
             check(result.message.contains("資源解放未確定"))
-            check(sdk.closeCalls == before && sdk.requested == listOf(FrontendSettings.TYPE_ISDBS))
+            check(sdk.closeCalls == beforeClose && sdk.clearTuneListenerCalls == beforeClear)
+            check(sdk.requested == listOf(FrontendSettings.TYPE_ISDBS))
             check(NativeTuner.instances.size == 1)
         } finally {
             runCatching { controller.release() }
@@ -309,6 +311,7 @@ class TunerFrontendLeaseTransitionTest {
         var failNextFullClose = false
         var oneShotClosed = false
         var closeCalls = 0
+        var clearTuneListenerCalls = 0
         val filters = mutableListOf<Filter>()
         val applied = mutableListOf<Int>()
         private var heldType: Int? = null
@@ -344,6 +347,13 @@ class TunerFrontendLeaseTransitionTest {
             executor: Executor,
             listener: Tuner.OnResourceLostListener,
         ) = Unit
+
+        @Implementation
+        fun clearOnTuneEventListener() {
+            clearTuneListenerCalls++
+            // Java側のリスナ解除は元のSDK実装で行い、監視による振舞いの変更を避ける。
+            Shadow.directlyOn<Void>(actual, Tuner::class.java, "clearOnTuneEventListener")
+        }
 
         @Implementation
         fun tune(settings: FrontendSettings): Int {
