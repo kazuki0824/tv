@@ -940,7 +940,7 @@ class TunerController(
                 } catch (error: RuntimeException) {
                     // AOSPはfinallyでmClosed=trueにする。旧Tunerも新Tunerも選局に使用しない。
                     tunerCloseFailure = error
-                    Log.e(LogTags.TIS, "Tuner.closeに失敗し資源解放が未確定 inputId=$inputId", error)
+                    Log.w(LogTags.TIS, "Tuner.closeに失敗し資源解放が未確定 inputId=$inputId", error)
                     throw error
                 }
                 tuner = null
