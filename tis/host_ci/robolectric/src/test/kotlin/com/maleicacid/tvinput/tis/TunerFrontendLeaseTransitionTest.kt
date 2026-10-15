@@ -111,6 +111,7 @@ class TunerFrontendLeaseTransitionTest {
             check(sdk.closeCalls == 1 && sdk.applied.isEmpty())
             // terminal releaseもAOSPのclose再呼出しno-opを成功判定せず、実行器のみ閉じる。
             check(runCatching { controller.release() }.isFailure)
+            check(runCatching { controller.release() }.isFailure)
             check(sdk.closeCalls == 1 && sdk.fullClosed == 0)
         } finally {
             runCatching { controller.release() }
@@ -308,7 +309,7 @@ class TunerFrontendLeaseTransitionTest {
         ) {
             if (failNextConstruction) {
                 failNextConstruction = false
-                error("injected Tuner construction failure")
+                error("Tuner生成失敗を注入")
             }
             // Shadow constructorはJavaのfield initializerを飛ばすため、
             // clearOnTuneEventListener()が使うSDK既存のlockだけをテスト側で復元する。
@@ -326,8 +327,8 @@ class TunerFrontendLeaseTransitionTest {
 
         @Implementation
         fun tune(settings: FrontendSettings): Int {
-            check(fullClosed == 0) { "Closed Tuner instance reused" }
-            check(heldType == null || heldType == settings.type) { "Tuner SDK would reject a cross-type tune" }
+            check(fullClosed == 0) { "閉鎖済みTunerを再利用しました" }
+            check(heldType == null || heldType == settings.type) { "SDKでは異種frontendを同一Tunerで選局できません" }
             requested += settings.type
             heldType = settings.type
             return if (successfulTunes) Tuner.RESULT_SUCCESS else Tuner.RESULT_UNAVAILABLE
@@ -344,7 +345,7 @@ class TunerFrontendLeaseTransitionTest {
             callback: android.media.tv.tuner.frontend.ScanCallback,
         ): Int {
             check(scanType == Tuner.SCAN_TYPE_AUTO)
-            check(heldType == null || heldType == settings.type) { "Tuner SDK would reject a cross-type scan" }
+            check(heldType == null || heldType == settings.type) { "SDKでは異種frontendを同一Tunerで探索できません" }
             scanned += settings.type
             heldType = settings.type
             return Tuner.RESULT_UNAVAILABLE
@@ -445,7 +446,7 @@ class TunerFrontendLeaseTransitionTest {
             oneShotClosed = true
             if (failNextFullClose) {
                 failNextFullClose = false
-                error("tuner close failed mid-release")
+                error("Tunerの解放途中で失敗しました")
             }
             fullClosed++
             heldType = null
