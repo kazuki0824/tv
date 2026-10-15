@@ -6,8 +6,8 @@ package com.maleicacid.tvinput.tis
 import android.content.Context
 import android.media.tv.tuner.DemuxCapabilities
 import android.media.tv.tuner.Tuner
-import android.net.Uri
 import android.media.tv.tuner.TunerUtils
+import android.net.Uri
 import android.media.tv.tuner.filter.Filter
 import android.media.tv.tuner.filter.FilterCallback
 import android.media.tv.tuner.filter.FilterConfiguration
