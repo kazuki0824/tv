@@ -8,6 +8,18 @@
 
 物理ファイル名、module名、type名、関数名はAOSP公開契約またはARIB規範ではない。ただし、`../TUNER_HAL_DESIGN_JA.md`の論理契約を実装へ一意に接続するため、実装owner/anchorと許可entry pointは、本書の`共通transaction / use-caseの規範実装アンカー`で追跡アンカーとして固定する。責務を変えないrename、split、mergeだけでは公開設計変更にならないが、同一変更でアンカーを更新し、移動前後に複数ownerを残してはならない。論理契約の状態、phase、確定点、rollback / cleanup、failure semanticsは本書へ再掲せず`../TUNER_HAL_DESIGN_JA.md`を参照する。
 
+## 実TSホスト試験のHAL接続
+
+TISのRobolectricから起動する試験専用実行器は、既存`host_ci/demux`のCargo packageに配置し、製品`demux/src/lib.rs`を直接linkする。`host_ci/common`の製品`TsPacketCompletionBuffer`へ入力ファイル全体を4093-byte単位で与え、返されたpacketを`ValidatedTsPacket::validate()`、`DemuxRuntime::push_validated_ts_packet_from_typed_request()`へ渡す。入力元は単一の`TsInputOrigin::frontend`世代とする。これは受信機器read後の処理境界への注入であり、driver ioctl、frontend tune、service runtime全体やAIDLサービスを実行した結果ではない。
+
+フィルター生成・設定・開始には既存の`FilterRuntimeRegistrationRequest`、`FilterRuntimeConfigureRequest`、`FilterRuntimeOperationRequest`を使う。入力前にfixtureの参照表にある9組のPID／table IDへTS sectionフィルターを作り、raw=false、CRC検査あり、repeatありにする。これは固定受信条件の試験であり、PAT解析による動的フィルター起動の証明にしない。PID／table ID以外の期待サービス情報をHAL実行器へ渡さず、意味解析はTIS側の既存SI解析器に任せる。
+
+ホストで置換するものは既存`host_ci/fmq`のメモリ内キューとOS接続部分だけとする。PID選択、section組立、CRC判定、repeat、キューへの書込み、`PipelineGeneratedEvent::SectionPayloadReady`生成は製品処理を使う。各フィルターの容量は65536 byteとし、全入力後にフィルターと対応するホストキューのbyte列を、そのフィルターのevent payload連結と照合してから出力を成功扱いする。登録順序とfilter IDの対応は実行器が保持し、別フィルターのキューとの比較を防ぐ。メモリ内キューの一致を実FMQ共有メモリ／EventFlagの検証と呼ばない。
+
+file末尾では`TsPacketCompletionBuffer::drain_for_boundary()`を使用し、未排出の完全packetも同じ入口へ渡す。残ったbyte数を終了報告へ記録し、短いpacketをゼロ埋めしない。元データを切り詰めたり、繰り返し再生によって末尾と先頭を連結したりしない。停止・解放は既存のtyped操作と所有者に従う。新たな製品用owner、公開テストAPI、環境変数による製品の入力切替、TS／SI parserのコピーを作らない。
+
+試験本体、期待値、受信順序、失敗判定は`../tis/DESIGN_JA.md`の「実TSによるホスト結合試験」を参照する。この接続設計は既存の製品共通部品の責務・状態・公開契約を変更しない。
+
 ## VTS device agentの実装責務境界
 
 `maleicacid_tuner_hal2_vts_agent`はhost側VTS profile CLIからだけ使用するtest-onlyのdevice-side bridgeとする。通常productのTuner HAL runtime責務へ組み込まず、公開`android.hardware.tv.tuner.ITuner/default`へ接続して一時的な`IFrontend` / `IDemux` / `IFilter`を所有する。起動時はfrontend callback登録後にdemuxを開いて`setFrontendDataSource()`を完了し、最初のsection要求でTS `SECTION` filterをopen/configure/startしてから1回だけtuneし、`DEMOD_LOCK`確認後にFMQから完成済みsection payloadを取得してhostへ返す。以後のsection要求は同じtune generationを維持する。
