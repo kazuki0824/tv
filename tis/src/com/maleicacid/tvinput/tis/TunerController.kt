@@ -493,9 +493,16 @@ class TunerController(
 
     fun tuneForLive(channelUri: Uri): TuneOutcome = callOnController { tuneForLiveOnController(channelUri) }
 
+    @Suppress("ReturnCount")
     private fun tuneForLiveOnController(channelUri: Uri): TuneOutcome {
         if (tunerCloseFailure != null) {
-            return TuneOutcome(false, Tuner.RESULT_UNKNOWN_ERROR, null, tuneGeneration, "Tuner.close失敗後は資源解放未確定のため再選局不可")
+            return TuneOutcome(
+                false,
+                Tuner.RESULT_UNKNOWN_ERROR,
+                null,
+                tuneGeneration,
+                "Tuner.close失敗後は資源解放未確定のため再選局不可",
+            )
         }
         val resolved =
             resolveChannel(channelUri).getOrElse { e ->
