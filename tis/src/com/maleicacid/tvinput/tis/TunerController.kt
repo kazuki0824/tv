@@ -297,6 +297,8 @@ class TunerController(
 
     // 直近のSDK frontend type要求（scan/tune実行前にも記録）。実リースの取得事実ではない。
     private var frontendLeaseType: Int? = null
+    // Android 15 Tuner.close()は失敗時もone-shot。再closeのno-opを解放成功と見なさない。
+    private var tunerCloseFailure: Throwable? = null
     private var currentTune: ResolvedChannel? = null
 
     @Volatile private var tuneAccepted = false
@@ -310,7 +312,8 @@ class TunerController(
     private val playbackPipeline = PlaybackPipeline(inputId, tvInputSessionId, sessionContext)
 
     // close成功後の再生成失敗は次の公開操作で再試行する。閉鎖済みinstanceは再利用しない。
-    private fun availableTuner(): Tuner? = tuner ?: createTuner()?.also { tuner = it }
+    private fun availableTuner(): Tuner? =
+        if (tunerCloseFailure != null) null else tuner ?: createTuner()?.also { tuner = it }
 
     @Suppress("TooGenericExceptionCaught", "MaxLineLength")
     private fun createTuner(): Tuner? {
@@ -511,6 +514,9 @@ class TunerController(
 
     @Suppress("LongMethod", "ReturnCount")
     private fun prepareBsCandidateSourceOnController(): BsFrontendSelectionResult {
+        if (tunerCloseFailure != null) {
+            return BsFrontendSelectionResult(null, Tuner.RESULT_UNKNOWN_ERROR, "Tuner.close失敗後は資源解放未確定のため再利用不可")
+        }
         resetBeforeTune()
         val existingTuner =
             availableTuner()
@@ -649,6 +655,11 @@ class TunerController(
     @Suppress("ReturnCount")
     private fun startStreamIdDiscoveryOnController(seed: ScanCandidate): StreamIdDiscoveryOperation {
         require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector == StreamSelector.NONE)
+        if (tunerCloseFailure != null) {
+            return StreamIdDiscoveryOperation(tuneGeneration).also {
+                it.startFailed(Tuner.RESULT_UNKNOWN_ERROR, "Tuner.close失敗後は資源解放未確定のため再利用不可")
+            }
+        }
         resetBeforeTune()
         val generation = nextTuneGenerationOrFence()
         tuneGeneration = generation
@@ -917,8 +928,16 @@ class TunerController(
         reselectSpecificFrontend: Boolean = false,
     ): Throwable? =
         runCatching {
+            tunerCloseFailure?.let { throw IllegalStateException("Tuner.close失敗後の再試行は禁止", it) }
             if (frontendLeaseType != null && (frontendLeaseType != nextType || reselectSpecificFrontend)) {
-                tunerInstance.close()
+                try {
+                    tunerInstance.close()
+                } catch (error: Throwable) {
+                    // AOSPはfinallyでmClosed=trueにする。旧Tunerも新Tunerも選局に使用しない。
+                    tunerCloseFailure = error
+                    Log.e(LogTags.TIS, "Tuner.closeに失敗し資源解放が未確定 inputId=$inputId", error)
+                    throw error
+                }
                 tuner = null
                 frontendLeaseType = null
                 tuner = createTuner() ?: error("異種frontend切替後のTuner再生成に失敗しました")
@@ -930,6 +949,9 @@ class TunerController(
         channel: ResolvedChannel,
         eitPfActualOnly: Boolean,
     ): TuneOutcome {
+        if (tunerCloseFailure != null) {
+            return TuneOutcome(false, Tuner.RESULT_UNKNOWN_ERROR, channel, tuneGeneration, "Tuner.close失敗後は資源解放未確定のため再選局不可")
+        }
         resetBeforeTune()
         val tunerInstance =
             availableTuner()
@@ -2104,10 +2126,11 @@ class TunerController(
         onSectionIngestedCallback = null
         onTunerResourceLostCallback = null
         onTuneEventCallback = null
-        release { tuner?.clearOnTuneEventListener() }
+        release { if (tunerCloseFailure == null) tuner?.clearOnTuneEventListener() }
         currentTune = null
         tuneAccepted = false
         release {
+            tunerCloseFailure?.let { throw IllegalStateException("以前のTuner.close失敗で資源解放未確定", it) }
             tuner?.close()
             tuner = null
             frontendLeaseType = null
