@@ -34,7 +34,10 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(
     sdk = [35],
-    shadows = [TunerFrontendLeaseTransitionTest.NativeTuner::class, TunerFrontendLeaseTransitionTest.NativeFilter::class],
+    shadows = [
+        TunerFrontendLeaseTransitionTest.NativeTuner::class,
+        TunerFrontendLeaseTransitionTest.NativeFilter::class,
+    ],
 )
 class TunerFrontendLeaseTransitionTest {
     @Test
@@ -119,7 +122,6 @@ class TunerFrontendLeaseTransitionTest {
         }
     }
 
-
     @Test
     fun successfulRetunesOpenFreshFiltersAndDeliverSections() {
         val controller = controller()
@@ -145,13 +147,15 @@ class TunerFrontendLeaseTransitionTest {
             val third = select(terrestrial())
             check(third !== second && second.fullClosed == 1)
             check(NativeTuner.instances.size == 3)
-            check(NativeTuner.instances.flatMap { it.requested } ==
-                listOf(
-                    FrontendSettings.TYPE_ISDBT,
-                    FrontendSettings.TYPE_ISDBT,
-                    FrontendSettings.TYPE_ISDBS,
-                    FrontendSettings.TYPE_ISDBT,
-                ))
+            check(
+                NativeTuner.instances.flatMap { it.requested } ==
+                    listOf(
+                        FrontendSettings.TYPE_ISDBT,
+                        FrontendSettings.TYPE_ISDBT,
+                        FrontendSettings.TYPE_ISDBS,
+                        FrontendSettings.TYPE_ISDBT,
+                    ),
+            )
         } finally {
             controller.release()
         }
@@ -312,14 +316,25 @@ class TunerFrontendLeaseTransitionTest {
             return Tuner.RESULT_UNAVAILABLE
         }
 
-
         @Implementation
         fun getDemuxCapabilities(): DemuxCapabilities {
             val constructor = DemuxCapabilities::class.java.declaredConstructors.single()
             constructor.isAccessible = true
             return constructor.newInstance(
-                1, 0, 0, 0, 32, 0, 0, 0, 0, 4096L,
-                Filter.TYPE_TS, intArrayOf(Filter.TYPE_TS), intArrayOf(Filter.TYPE_TS), false,
+                1,
+                0,
+                0,
+                0,
+                32,
+                0,
+                0,
+                0,
+                0,
+                4096L,
+                Filter.TYPE_TS,
+                intArrayOf(Filter.TYPE_TS),
+                intArrayOf(Filter.TYPE_TS),
+                false,
             ) as DemuxCapabilities
         }
 
@@ -356,10 +371,19 @@ class TunerFrontendLeaseTransitionTest {
         fun getAvailableFrontendInfos(): List<FrontendInfo> {
             val constructor = FrontendInfo::class.java.declaredConstructors.single()
             constructor.isAccessible = true
-            val info = constructor.newInstance(
-                7, FrontendSettings.TYPE_ISDBS, 1_000_000_000L, 2_000_000_000L,
-                0, 0, 0L, 0, intArrayOf(), null,
-            ) as FrontendInfo
+            val info =
+                constructor.newInstance(
+                    7,
+                    FrontendSettings.TYPE_ISDBS,
+                    1_000_000_000L,
+                    2_000_000_000L,
+                    0,
+                    0,
+                    0L,
+                    0,
+                    intArrayOf(),
+                    null,
+                ) as FrontendInfo
             return listOf(info)
         }
 
