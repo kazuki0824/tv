@@ -494,6 +494,9 @@ class TunerController(
     fun tuneForLive(channelUri: Uri): TuneOutcome = callOnController { tuneForLiveOnController(channelUri) }
 
     private fun tuneForLiveOnController(channelUri: Uri): TuneOutcome {
+        if (tunerCloseFailure != null) {
+            return TuneOutcome(false, Tuner.RESULT_UNKNOWN_ERROR, null, tuneGeneration, "Tuner.close失敗後は資源解放未確定のため再選局不可")
+        }
         val resolved =
             resolveChannel(channelUri).getOrElse { e ->
                 resetBeforeTune()
@@ -2081,7 +2084,10 @@ class TunerController(
         }
 
     fun release() {
-        if (released) return
+        if (released) {
+            tunerCloseFailure?.let { throw IllegalStateException("Tuner.close失敗で資源解放未確定", it) }
+            return
+        }
         if (sectionExecutor.isOwnerThread()) {
             try {
                 releaseOnController()
@@ -2101,7 +2107,10 @@ class TunerController(
 
     @Suppress("TooGenericExceptionCaught", "ThrowsCount")
     private fun releaseOnController() {
-        if (released) return
+        if (released) {
+            tunerCloseFailure?.let { throw IllegalStateException("Tuner.close失敗で資源解放未確定", it) }
+            return
+        }
         invalidateTuneOnController()
         var failure: Throwable? = null
 
