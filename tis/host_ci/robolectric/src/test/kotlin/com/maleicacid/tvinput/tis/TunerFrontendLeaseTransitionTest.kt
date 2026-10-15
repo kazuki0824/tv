@@ -318,7 +318,7 @@ class TunerFrontendLeaseTransitionTest {
 
         @Implementation
         fun getDemuxCapabilities(): DemuxCapabilities {
-            val constructor = DemuxCapabilities::class.java.declaredConstructors.single()
+            val constructor = DemuxCapabilities::class.java.declaredConstructors.single { it.parameterCount == 14 }
             constructor.isAccessible = true
             return constructor.newInstance(
                 1,
@@ -369,7 +369,7 @@ class TunerFrontendLeaseTransitionTest {
 
         @Implementation
         fun getAvailableFrontendInfos(): List<FrontendInfo> {
-            val constructor = FrontendInfo::class.java.declaredConstructors.single()
+            val constructor = FrontendInfo::class.java.declaredConstructors.single { it.parameterCount == 10 }
             constructor.isAccessible = true
             val info =
                 constructor.newInstance(
