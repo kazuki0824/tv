@@ -2922,7 +2922,13 @@ class PlaybackPipeline(
         }
         mediaSyncInputSurface?.let { previous -> resourceCleanup.release("MediaSync入力Surface") { previous.release() } }
         mediaSyncInputSurface = null
-        sync?.let { previous -> resourceCleanup.release("MediaSync") { previous.release() } }
+        sync?.let { previous ->
+            resourceCleanup.release("MediaSync") {
+                // release()だけではnative OutputListenerとの循環参照が解消されないため先に切断する。
+                previous.setSurface(null)
+                previous.release()
+            }
+        }
         releaseAudioTrack()
         mediaSyncStarted = false
         mediaSyncSurfaceFailed = false

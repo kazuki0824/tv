@@ -1,3 +1,10 @@
+# PR #116 未パッチLineageOSでのMediaSync出力Surface切断
+
+- 再生停止時、旧MediaSyncへ接続した出力Surfaceを`MediaSync.setSurface(null)`で明示的に切断してから`MediaSync.release()`する。解放の責務・実行ownerは既存PlaybackPipelineのままとし、native MediaSync OutputListenerによる参照循環が接続解除を妨げる経路に対処する。
+- 既存ResourceCleanupの単一解放義務で切断・解放を実行する。切断に失敗した場合は旧MediaSyncの解放を成功扱いせず同じownerのcleanupを再試行し、新しい再生を開始しない。
+- Robolectric SDK 35の`PlaybackMediaSyncReleaseTest`に、停止後の同一Surface再利用および切断失敗後の未解放義務保持・再試行を追加。独自platform patchを前提としない。
+- 今回の変更では実際の未パッチLineageOSのCodec初回映像出力、TISクラッシュ後の異常終了復旧、Framework JNIのWeakGlobal欠陥は修正・実証していない。テスト/CI結果は対象HEADでの実行後に判定する。
+
 # PR #116 初回映像availability確定時の成功診断と実Codec callback回帰
 
 - 初回映像を利用可能とする既存の一回限りの確定点（`videoAvailableNotified.compareAndSet`成功時）から、`VIDEO_AVAILABILITY_COMMITTED`を1回だけInfoログへ出力する。現在generation、Exact/Compatibilityの区別、映像・音声別のAVデータ経路snapshotを含め、失効世代・重複callbackでは出力しない。未パッチOSのCompatibility frame callbackを最終display present成功とみなさない。
