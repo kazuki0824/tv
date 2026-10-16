@@ -1684,23 +1684,6 @@ impl RuntimeRegistry {
         Ok(count)
     }
 
-    pub fn demux_has_filter_open_type(
-        &self,
-        owner_demux_id: i32,
-        open_type: FilterOpenType,
-    ) -> Result<bool, HalError> {
-        for entry in self
-            .filters
-            .values()
-            .filter(|entry| entry.owner_demux_id == owner_demux_id)
-        {
-            if self.filter_open_type(entry)? == open_type {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     pub fn unregister_filter(&mut self, id: FilterRuntimeId) -> Option<FilterRegistryEntry> {
         self.filters.remove(&id)
     }
