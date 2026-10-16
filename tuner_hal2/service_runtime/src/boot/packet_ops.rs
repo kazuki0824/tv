@@ -167,9 +167,8 @@ impl TunerServiceRuntime {
         Ok(reports)
     }
 
-    /// Polls the canonical FilterRuntime/FilterProducerDrainGate owners for
-    /// time-based delay readiness. This owns no delay state; it only projects
-    /// already-committed ready events into the existing callback delivery path.
+    /// FilterRuntime/FilterProducerDrainGateの正本から、期限到来済みの遅延Filterイベントを取得する。
+    /// 独立した遅延状態を持たず、確定済みイベントを既存のcallback配送経路へ投影する。
     pub fn poll_filter_delay_delivery(
         &mut self,
     ) -> Result<(Vec<FilterEventDeliverySnapshot>, Option<Instant>), HalError> {
@@ -205,8 +204,7 @@ impl TunerServiceRuntime {
         Ok((snapshots, next_deadline))
     }
 
-    /// Projects events already produced by PlaybackConsumeTxn through the same
-    /// Filter callback path used by live frontend ingress.
+    /// PlaybackConsumeTxnで生成済みのイベントを、live frontendと同一のFilter callback経路へ投影する。
     pub fn filter_event_delivery_snapshots_for_playback_report(
         &mut self,
         report: &PlaybackConsumeReport,

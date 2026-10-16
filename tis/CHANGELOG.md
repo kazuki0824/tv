@@ -1,3 +1,8 @@
+# TIS設計文書の観測履歴分離
+
+- 旧fixed20実波観測では配送損失19,530件中PID 0x12が12,942件であり、SDT-actual受信後破棄も観測した。現行のEIT入力限定とPAT受理時だけのPMT再評価は設計正本に残し、過去観測数とPR #197への変更経緯だけを設計書から削除した。
+- 本変更は実装・公開契約・試験数を変えない。実機Soong、VTS、実波は未実施。
+
 # PR #116 MediaSync停止回帰試験のKotlin quality対応
 
 - `PlaybackMediaSyncReleaseTest`の失敗注入をDetekt `UseCheckOrError`に従い`error()`へ整え、Robolectric shadowのsetter引数をktlint 1.8.0の複数引数関数宣言の改行規則へ合わせた。

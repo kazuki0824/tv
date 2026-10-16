@@ -67,7 +67,7 @@ jobs:
       matrix:
         package: ${{ fromJson(needs.workspace-packages.outputs.packages) }}
         exclude:
-          # #121のservice_runtime packageはproduction rustc parity用。Clippy policyは既存packageへ適用する。
+          # service_runtime host packageのproduction parityは専用rustc checkで検査し、Clippy対象は既存のpackage集合に限定する。
           - package: maleicacid-tuner-hal2-service-runtime-host-ci
     defaults:
       run:

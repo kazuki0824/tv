@@ -1,3 +1,9 @@
+# Playback DVR Filterイベント配送と投入統計の訂正
+
+- Playback DVRの消費済みFilterイベントは、遅延配送workerのwake失敗後も既存の直接callback配送を試行する。wake結果は従来どおりworker終端へ返し、callback配送失敗は既存Filter診断に記録する。新owner/worker/queueを追加しない。
+- descrambler方針がDrop/DiagnoseOnlyの場合、未投入packetをPlaybackStats.injected_packets/injected_bytesへ加算しない。完了扱いの消費個数や既存のmalformed統計を変更しない。
+- wake失敗と診断済み配送失敗、未投入packetのstats、正常投入packetのstatsを既存Rust host試験へ追加。Android Soong、VTS、実機送受信は未実施。
+
 # 複数PES Filterの同一Demux受理と公称能力整合
 
 - 公開PES Filter数（既定4）はサービス全体の同時所有上限であり、同一Demux当たり1個という別の上限を設けない。字幕と文字スーパーの別PIDに対応する複数PES Filterを同一Demuxで構成できるようにする。
