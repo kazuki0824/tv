@@ -1,6 +1,7 @@
 # 複数PES Filterの同一Demux受理と公称能力整合
 
 - 公開PES Filter数（既定4）はサービス全体の同時所有上限であり、同一Demux当たり1個という別の上限を設けない。字幕と文字スーパーの別PIDに対応する複数PES Filterを同一Demuxで構成できるようにする。
+- 不要となるowner Demux別PES重複検査用の`demux_has_filter_open_type()`を削除し、productionの未使用関数を残さない。
 - 既存ChildOpenTxnの`filter_open_type_count()`に基づく公開数の検査、FMQ / PES runtime budgetの予約、object / callback owner、rollback、quarantineを変更せず、同一Demux専用の重複したTsPes排他検査だけを撤廃する。
 - `TUNER_HAL_DESIGN_JA.md` の製品資源表の所有者別上限を、上記の公開PES同時利用契約へ訂正する。新たな資源owner、queue、parser、frontend contractを導入しない。
 - 既存Android 15 AIDL公開child-open use-caseを実行する単体試験で、同一Demuxに対する2個の独立PES Filter生成と別PIDのconfigure成功、および公開数2個設定時に3個目の拒否を検査する。
