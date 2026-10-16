@@ -1,3 +1,8 @@
+# PR #116 MediaSync停止回帰試験のKotlin quality対応
+
+- `PlaybackMediaSyncReleaseTest`の失敗注入をDetekt `UseCheckOrError`に従い`error()`へ整え、Robolectric shadowのsetter引数をktlint 1.8.0の複数引数関数宣言の改行規則へ合わせた。
+- 実行契約・TIS本番停止処理を変更しない。直前HEADのRobolectric／TISホスト試験は成功したがKotlin quality CI（detekt/ktlint）が失敗していたため、本コミットで該当箇所を是正する。新HEADの結果は再確認する。
+
 # PR #116 未パッチLineageOSでのMediaSync出力Surface切断
 
 - 再生停止時、旧MediaSyncへ接続した出力Surfaceを`MediaSync.setSurface(null)`で明示的に切断してから`MediaSync.release()`する。解放の責務・実行ownerは既存PlaybackPipelineのままとし、native MediaSync OutputListenerによる参照循環が接続解除を妨げる経路に対処する。

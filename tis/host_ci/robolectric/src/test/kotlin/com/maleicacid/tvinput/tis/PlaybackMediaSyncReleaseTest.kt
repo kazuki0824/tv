@@ -102,7 +102,7 @@ class PlaybackMediaSyncReleaseTest {
             if (surface == null) {
                 if (failNextDisconnect) {
                     failNextDisconnect = false
-                    throw IllegalStateException("MediaSync surface disconnect failed")
+                    error("MediaSync surface disconnect failed")
                 }
                 connectedSurface?.let(owners::remove)
                 connectedSurface = null
@@ -119,10 +119,16 @@ class PlaybackMediaSyncReleaseTest {
         fun setPlaybackParams(params: PlaybackParams) = Unit
 
         @Implementation
-        fun setCallback(callback: MediaSync.Callback?, handler: Handler?) = Unit
+        fun setCallback(
+            callback: MediaSync.Callback?,
+            handler: Handler?,
+        ) = Unit
 
         @Implementation
-        fun setOnErrorListener(listener: MediaSync.OnErrorListener?, handler: Handler?) = Unit
+        fun setOnErrorListener(
+            listener: MediaSync.OnErrorListener?,
+            handler: Handler?,
+        ) = Unit
 
         @Implementation
         fun release() {
