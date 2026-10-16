@@ -1,3 +1,9 @@
+# PR #116 Filter生成失敗時のHAL拒否理由の観測
+
+- 既存`IDemux.openFilter()`の戻り値を変えずに、エラー時のみDemux object、要求Filter種別、要求buffer size、Binder errorを`HAL_FILTER_OPEN_REJECTED`として記録する。
+- Android native Tuner JNIのopenFilter失敗後に不正なWeakGlobal削除でSIGABRTへ至る実機事例を、HAL内の失敗理由に結びつけるための診断。Filter拒否を成功扱いせず、新owner/transaction/retryを追加しない。
+- LineageOS 22.1 Framework JNIの未初期化`jweak`問題の恒久修正と、HAL Filter拒否そのものの根本対処はこの診断追加では実現しない。ホストtest、Android Soong、VTS、実機観測は本コミット時点では未完了。
+
 # PR #116 AV成功ログのreport一括frame閾値判定
 
 - 旧実装は単一packetから同一Filterの複数AV MediaEventが生成される際、report処理終了後の同一累計値を各eventごとに検査していたため、成功ログが重複・閾値通過を見逃していた。

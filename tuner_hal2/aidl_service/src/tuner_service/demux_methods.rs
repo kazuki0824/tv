@@ -51,12 +51,23 @@ impl IDemux for DemuxAidlObject {
         buffer_size: i32,
         cb: &Strong<dyn IFilterCallback>,
     ) -> BinderResult<Strong<dyn IFilter>> {
-        open_filter_child_for_owner_object_with_request_builder(
+        let result = open_filter_child_for_owner_object_with_request_builder(
             &self.context(),
             self.handle(),
             || build_open_filter_request(filter_type, buffer_size, true),
             cb,
-        )
+        );
+        #[cfg(target_os = "android")]
+        if let Err(error) = &result {
+            log::warn!(
+                "HAL_FILTER_OPEN_REJECTED demux_object={:?} filter_type={:?} buffer_size={} error={:?}",
+                self.handle().object_id(),
+                filter_type,
+                buffer_size,
+                error,
+            );
+        }
+        result
     }
     fn openTimeFilter(&self) -> BinderResult<Strong<dyn ITimeFilter>> {
         plan_unavailable_object_method_use_case(
