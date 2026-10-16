@@ -1,3 +1,8 @@
+# Section Filter拒否時の現行性再確認
+
+- 容量不足でcontroller data投入を拒否されたSectionは、既存control executorへ非同期で現行性判定を委譲する。閉鎖済みFilterの同一tune generationを新たな喪失として計上せず、現行Filterの拒否だけを既存のinputDeliveryLossに記録する。新しいqueue、worker、状態所有者は設けない。
+- Android 15 Robolectricに、同一generationでのFilter閉鎖後の遅延拒否と現行Filter拒否の対比を追加。実機検証は未実施。
+
 # TIS Section Filter overflowの現行性検証とscan候補別の配送喪失診断
 
 - FrameworkのSection Filter `STATUS_OVERFLOW`を、既存`SectionIngestController`へController受付拒否とは独立した診断件数として記録する。callbackは同期controller待機を行わずcontrolへ投入し、Filter実体・tune generation・現行状態の照合後だけ計数する。
