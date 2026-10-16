@@ -207,12 +207,7 @@ impl PlaybackConsumeTxn {
                 ),
                 Err(reason) => (demux.note_malformed_playback_packet(reason), 1, 0),
             };
-        demux.note_playback_consume_result(
-            self.dvr_id,
-            injected_packets,
-            malformed_packets,
-            0,
-        )?;
+        demux.note_playback_consume_result(self.dvr_id, injected_packets, malformed_packets, 0)?;
         Ok(PlaybackConsumeReport {
             completed_packets: 1,
             malformed_packets,

@@ -1404,10 +1404,8 @@ mod playback_filter_delivery_tests {
     #[test]
     fn wake_failure_does_not_skip_immediate_filter_delivery() {
         let dispatched = Cell::new(false);
-        let wake_error = HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "Filter起床失敗を注入",
-        );
+        let wake_error =
+            HalError::internal(HalInternalKind::InvariantViolation, "Filter起床失敗を注入");
         let result = wake_and_dispatch_playback_filter_events(
             || Err(wake_error.clone()),
             || {
