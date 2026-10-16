@@ -358,6 +358,17 @@ pub fn is_playback_dvr(
     dvr_status_metadata_snapshot(&context.runtime(), handle).map(|snapshot| snapshot.is_playback)
 }
 
+// 起床の失敗でも確定済みFilter eventの直接配送を試行する。
+// 配送失敗は既存Filter callback診断に記録され、wake失敗と混同しない。
+fn wake_and_dispatch_playback_filter_events(
+    wake: impl FnOnce() -> Result<(), HalError>,
+    dispatch: impl FnOnce() -> Result<(), HalError>,
+) -> Result<(), HalError> {
+    let wake_result = wake();
+    let _recorded_delivery_failure = dispatch();
+    wake_result
+}
+
 fn consume_playback_dvr_once(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
@@ -365,9 +376,10 @@ fn consume_playback_dvr_once(
     let runtime = context.runtime();
     let events = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::consume_playback_dvr_for_object(
         &runtime, handle.object_id(), handle.generation())?;
-    maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&runtime)?;
-    let _recorded_failure = dispatch_filter_event_snapshots(context, events);
-    Ok(())
+    wake_and_dispatch_playback_filter_events(
+        || maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&runtime),
+        || dispatch_filter_event_snapshots(context, events),
+    )
 }
 
 fn record_dvr_artifact_lookup_failure(
@@ -1381,5 +1393,46 @@ mod tests {
             .unwrap();
         assert!(snapshot.callback_unhealthy);
         context.clear_owner_callbacks_for_test(handle).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod playback_filter_delivery_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn wake_failure_does_not_skip_immediate_filter_delivery() {
+        let dispatched = Cell::new(false);
+        let wake_error = HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "Filter起床失敗を注入",
+        );
+        let result = wake_and_dispatch_playback_filter_events(
+            || Err(wake_error.clone()),
+            || {
+                dispatched.set(true);
+                Ok(())
+            },
+        );
+        assert!(dispatched.get());
+        assert_eq!(result, Err(wake_error));
+    }
+
+    #[test]
+    fn recorded_callback_failure_does_not_abort_playback_notification_loop() {
+        let dispatched = Cell::new(false);
+        let result = wake_and_dispatch_playback_filter_events(
+            || Ok(()),
+            || {
+                dispatched.set(true);
+                Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "Filter配送側で診断済みの失敗",
+                ))
+            },
+        );
+        assert!(dispatched.get());
+        assert!(result.is_ok());
     }
 }

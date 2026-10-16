@@ -196,18 +196,20 @@ impl PlaybackConsumeTxn {
         if self.parse_inject_cursor.is_empty() {
             self.cursor_origin = None;
         }
-        let (packet_report, malformed_packets) = match ValidatedTsPacket::validate(&packet.packet) {
-            Ok(_) => (
-                output.map_or_else(PipelineReport::default, |validated| {
-                    demux.inject_playback_packet(validated, packet.origin)
-                }),
-                0,
-            ),
-            Err(reason) => (demux.note_malformed_playback_packet(reason), 1),
-        };
+        let (packet_report, malformed_packets, injected_packets) =
+            match ValidatedTsPacket::validate(&packet.packet) {
+                Ok(_) => (
+                    output.map_or_else(PipelineReport::default, |validated| {
+                        demux.inject_playback_packet(validated, packet.origin)
+                    }),
+                    0,
+                    usize::from(output.is_some()),
+                ),
+                Err(reason) => (demux.note_malformed_playback_packet(reason), 1, 0),
+            };
         demux.note_playback_consume_result(
             self.dvr_id,
-            1 - malformed_packets,
+            injected_packets,
             malformed_packets,
             0,
         )?;
@@ -309,6 +311,27 @@ mod tests {
             1
         );
         assert!(txn.pending_packet(&demux).unwrap().is_none());
+    }
+
+    #[test]
+    fn skipped_playback_packet_is_completed_without_incrementing_injected_counters() {
+        let mut demux = started_demux();
+        let packet = clear_packet();
+        let mut txn = pending_txn(packet);
+        let pending = txn.pending_packet(&demux).unwrap().unwrap();
+        let report = txn.consume(&mut demux, pending, None).unwrap();
+        assert_eq!(report.completed_packets, 1);
+        let counters = demux.note_playback_consume_result(7, 0, 0, 0).unwrap();
+        assert_eq!(counters.injected_packets, 0);
+        assert_eq!(counters.injected_bytes, 0);
+
+        let mut txn = pending_txn(packet);
+        let pending = txn.pending_packet(&demux).unwrap().unwrap();
+        let validated = ValidatedTsPacket::validate(&packet).unwrap();
+        txn.consume(&mut demux, pending, Some(&validated)).unwrap();
+        let counters = demux.note_playback_consume_result(7, 0, 0, 0).unwrap();
+        assert_eq!(counters.injected_packets, 1);
+        assert_eq!(counters.injected_bytes, TS_PACKET_SIZE as u64);
     }
 
     #[test]
