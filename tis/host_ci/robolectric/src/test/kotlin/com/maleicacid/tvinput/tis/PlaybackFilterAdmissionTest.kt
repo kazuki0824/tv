@@ -116,8 +116,8 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(0, native.closes)
                 status(filter, Filter.STATUS_OVERFLOW)
                 fixture.drain()
-                // 新しい入力を受け取った後の別OVERFLOWは、一度だけ回復できる。
-                assertEquals(2, native.flushes)
+                // 未構成decoderへの保留はCodec入力進捗ではないため、再flushしない。
+                assertEquals(1, native.flushes)
                 val progress = fixture.progress()
                 assertTrue(progress.count(PlaybackDataPathProgress.Stage.OVERFLOW, audio) > 0L)
                 assertEquals(0L, progress.count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, audio))
@@ -274,31 +274,29 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
-    fun decoderQueueDeadlineStopsFilterAndRejectsFurtherInput() {
+    fun decoderStartupKeepsAtMostThreeEventsAndFailsAtTheFiniteDeadline() {
         Fixture().use { fixture ->
             fixture.decoder()
             val video = fixture.avFilter(false)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
-            // AVC startup budgetの32件を満たし、次の入力で既存decoderの停滞時計を開始する。
             val samples = List(33) { mappedMediaEvent() }
             samples.forEach { deliver(video, it) }
             fixture.drain()
-            assertEquals(32, fixture.pendingEvents(false).size)
+            // 未構成decoderはHALの8スロットを占有し続けず、後続headerを探せる。
+            assertEquals(3, fixture.pendingEvents(false).size)
+            samples.take(30).forEach {
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(it).releases)
+            }
             assertTrue(fixture.failures.isEmpty())
-            ShadowSystemClock.advanceBy(Duration.ofSeconds(6))
-            val expired = mappedMediaEvent()
-            deliver(video, expired)
+            val arm = decoder.javaClass.superclass.getDeclaredMethod("armStartupDeadline").apply { isAccessible = true }
+            fixture.executor.callControl(5_000L) { arm.invoke(decoder) }
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(6, TimeUnit.SECONDS)
             fixture.drain()
-            assertEquals(1, fixture.failures.size)
-            assertTrue(
-                fixture.failures
-                    .single()
-                    .second
-                    .contains("PENDING_QUEUE_FULL"),
-            )
-            fixture.assertStoppedVideo(decoder, video, samples + expired)
-            for (sample in samples + expired) {
-                val native = Shadow.extract<NativeMediaEvent>(sample)
+            assertTrue(fixture.unavailable.any { it.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT })
+            fixture.assertStoppedVideo(decoder, video, samples)
+            samples.forEach {
+                val native = Shadow.extract<NativeMediaEvent>(it)
+                assertEquals(1, native.releases)
                 assertEquals(1, Shadow.extract<NativeLinearBlock>(requireNotNull(native.block)).recycles)
             }
         }
