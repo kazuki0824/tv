@@ -1333,12 +1333,12 @@ class PlaybackPipeline(
                         ) {
                             return@enqueuePlaybackAction
                         }
-                    videoOutputStallTask = null
-                    emitUnavailableForGeneration(
-                        generation,
-                        PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
-                        "映像描画callbackが継続期限を超過しました progress=${dataPathProgress.summary()}",
-                    )
+                        videoOutputStallTask = null
+                        emitUnavailableForGeneration(
+                            generation,
+                            PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
+                            "映像描画callbackが継続期限を超過しました progress=${dataPathProgress.summary()}",
+                        )
                         stopOnPlaybackExecutor()
                     }
                 }
