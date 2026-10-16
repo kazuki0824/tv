@@ -110,8 +110,11 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
                 assertTrue(decoder === ReflectionHelpers.getField<Any>(fixture.pipeline, decoderField))
                 assertEquals(0, native.closes)
-                // 対象Android 15のFilter.onFilterStatusはcallbackを2回配送する。
-                assertEquals(2, native.flushes)
+                status(filter, Filter.STATUS_OVERFLOW)
+                fixture.drain()
+                assertEquals(1, native.flushes)
+                // 同じOVERFLOWに対するSDKの重複callbackでもflushを繰り返さない。
+                assertEquals(1, native.flushes)
                 val progress = fixture.progress()
                 assertTrue(progress.count(PlaybackDataPathProgress.Stage.OVERFLOW, audio) > 0L)
                 assertEquals(0L, progress.count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, audio))

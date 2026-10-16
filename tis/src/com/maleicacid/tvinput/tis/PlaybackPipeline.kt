@@ -692,6 +692,8 @@ class PlaybackPipeline(
             val pendingCapacityLoss = AtomicLong(-1L)
             // MediaEventは個別に解放できる。flush実行中は閉じ、成功後だけ次の受付へ進む。
             val inputIdentity = AtomicReference(Any())
+            // 同じ入力世代で重複するOVERFLOW通知は、次の有効sampleまで一度のflushへ集約する。
+            val overflowRecoveryActive = AtomicBoolean(false)
 
             fun reportCapacityLoss(source: Filter) {
                 val rejectedAt = SystemClock.elapsedRealtime()
@@ -757,6 +759,7 @@ class PlaybackPipeline(
                                                 // queueは受理・拒否とも入力を所有し、自身の失敗時にも解放を保持する。
                                                 decoderOwnsEvent = true
                                                 target.queue(sample)
+                                                overflowRecoveryActive.set(false)
                                             } finally {
                                                 if (!decoderOwnsEvent) releaseMediaEvent(event)
                                             }
@@ -787,28 +790,33 @@ class PlaybackPipeline(
                             status: Int,
                         ) {
                             if (!sourceIsCurrent(filter) || status and Filter.STATUS_OVERFLOW == 0) return
+                            if (!overflowRecoveryActive.compareAndSet(false, true)) return
                             enqueuePlaybackAction {
+                                if (!sourceIsCurrent(filter)) {
+                                    overflowRecoveryActive.set(false)
+                                    return@enqueuePlaybackAction
+                                }
                                 Log.d(
                                     LogTags.TIS,
                                     "AV filter 状態 inputId=$inputId pid=$pid isAudio=$isAudio status=$status",
                                 )
-                                if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
-                                    dataPathProgress.record(PlaybackDataPathProgress.Stage.OVERFLOW, isAudio)
-                                    inputIdentity.set(null)
-                                    (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
-                                    val result = filter.flush()
-                                    if (result == Tuner.RESULT_SUCCESS) {
-                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_SUCCEEDED, isAudio)
-                                        inputIdentity.set(Any())
-                                    } else {
-                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_FAILED, isAudio)
-                                        emitUnavailableForGeneration(
-                                            filterGeneration,
-                                            PlaybackUnavailableReason.UNKNOWN,
-                                            "AV filterのflushに失敗しました result=$result " +
-                                                "progress=${dataPathProgress.summary()}",
-                                        )
-                                    }
+                                dataPathProgress.record(PlaybackDataPathProgress.Stage.OVERFLOW, isAudio)
+                                inputIdentity.set(null)
+                                (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                                val result = filter.flush()
+                                if (result == Tuner.RESULT_SUCCESS) {
+                                    dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_SUCCEEDED, isAudio)
+                                    inputIdentity.set(Any())
+                                } else {
+                                    // 失敗後は受付を閉じたままにする。次のOVERFLOWでだけ再試行可能にする。
+                                    overflowRecoveryActive.set(false)
+                                    dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_FAILED, isAudio)
+                                    emitUnavailableForGeneration(
+                                        filterGeneration,
+                                        PlaybackUnavailableReason.UNKNOWN,
+                                        "AV filterのflushに失敗しました result=$result " +
+                                            "progress=${dataPathProgress.summary()}",
+                                    )
                                 }
                             }
                         }
