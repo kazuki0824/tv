@@ -1339,7 +1339,11 @@ class PlaybackPipeline(
         videoOutputStallTask = timeout
         if (!mainHandler.postDelayed(timeout, VIDEO_OUTPUT_STALL_TIMEOUT_MS)) {
             videoOutputStallTask = null
-            emitUnavailableForGeneration(generation, PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "映像出力監視を予約できません")
+            emitUnavailableForGeneration(
+                generation,
+                PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
+                "映像出力監視を予約できません",
+            )
             stopOnPlaybackExecutor()
         }
     }
@@ -3358,6 +3362,6 @@ class PlaybackPipeline(
         private const val PTS_MODULUS = 1L shl 33
         private const val PTS_HALF = 1L shl 32
         private const val PTS_MASK = PTS_MODULUS - 1L
-    private const val VIDEO_OUTPUT_STALL_TIMEOUT_MS = 6_000L
+        private const val VIDEO_OUTPUT_STALL_TIMEOUT_MS = 6_000L
     }
 }
