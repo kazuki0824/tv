@@ -2049,6 +2049,86 @@ mod tests {
     }
 
     #[test]
+    fn multiple_pes_filters_on_one_demux_share_published_capacity() {
+        let mut snapshot = CapabilitySnapshot::product_default();
+        snapshot.num_pes_filter = 2;
+        let runtime = Arc::new(Mutex::new(
+            TunerServiceRuntime::from_capability_snapshot_for_test(snapshot),
+        ));
+        let demux_entry = {
+            let mut guard = runtime.lock().unwrap();
+            guard
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .unwrap()
+        };
+        let open_pes = || {
+            ObjectMethodUseCase::execute_after_live(
+                &runtime,
+                demux_entry.object_id(),
+                demux_entry.generation(),
+                AidlObjectKind::Demux,
+                || -> Result<_, HalError> {
+                    let request = configured_pes_filter_request();
+                    Ok((
+                        AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
+                            request.clone(),
+                        )),
+                        request,
+                    ))
+                },
+                |runtime, dispatch, request| {
+                    runtime
+                        .child_open_txn()
+                        .open_filter_child_runtime_for_demux_object(
+                            demux_entry.object_id(),
+                            demux_entry.generation(),
+                            &request,
+                            dispatch,
+                        )
+                },
+            )
+        };
+
+        // 同じDemuxで字幕PESと文字スーパーPESを独立Filterとして所有できる。
+        let subtitle = open_pes().unwrap();
+        let superimpose = open_pes().unwrap();
+        assert_ne!(subtitle.filter_id, superimpose.filter_id);
+        {
+            let mut guard = runtime.lock().unwrap();
+            guard
+                .configure_filter_runtime_request(
+                    subtitle.filter_id,
+                    configured_pes_filter_config(304),
+                )
+                .unwrap();
+            guard
+                .configure_filter_runtime_request(
+                    superimpose.filter_id,
+                    configured_pes_filter_config(312),
+                )
+                .unwrap();
+            assert_eq!(
+                guard
+                    .registry()
+                    .filter_open_type_count(FilterOpenType::TsPes)
+                    .unwrap(),
+                2
+            );
+        }
+
+        // 同時利用上限を越す3個目は通常の資源拒否を維持する。
+        let error = open_pes().unwrap_err();
+        assert!(matches!(
+            error,
+            ObjectMethodUseCaseBuildError::Runtime(HalError::Unsupported(_))
+        ));
+    }
+
+    #[test]
     fn raw_and_record_filters_share_the_published_ts_filter_capacity() {
         let mut capability_snapshot = CapabilitySnapshot::product_default();
         capability_snapshot.num_ts_filter = 1;

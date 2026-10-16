@@ -1771,13 +1771,7 @@ impl ChildOpenTxn<'_> {
                     "filter容量counterが上限を超えました",
                 )
             })?;
-        if capacity_use >= capacity
-            || request.open_type == FilterOpenType::TsPes
-                && self
-                    .runtime
-                    .registry
-                    .demux_has_filter_open_type(owner_demux_id, request.open_type)?
-        {
+        if capacity_use >= capacity {
             return Err(HalError::Unsupported(
                 "要求されたsubtypeのfilter capability leaseを使い切りました",
             ));
