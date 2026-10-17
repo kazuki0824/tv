@@ -462,3 +462,5 @@ ISDB-S symbol-rateの公開capability値と入力受付条件は`../TUNER_HAL_DE
 - file名またはtype名をAOSP公開契約、ARIB根拠、公開状態遷移の値そのものとして扱わない。
 - `共通transaction / use-caseの規範実装アンカー`以外の物理配置表を状態遷移の正本として扱わない。
 - 規範実装アンカーのrename、split、merge時に旧アンカーを残したまま新アンカーを追加し、複数のtransaction正本を作らない。
+
+Frontend停止phaseの観測は既存`FrontendWorkerContext`とslotに従属し、backend停止結果を変更しない。製品tune/scanの`finish_backend_session_after_worker_body`とdevice補助workerを同じ観測入口へ接続する。phaseは診断専用で、回収完了・隔離・置換可否は従来のcleanup ownerの結果だけを正とする。

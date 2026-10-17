@@ -1,3 +1,10 @@
+# Frontend停止phaseの診断
+
+- 既存Frontend worker slot/contextへ診断専用phaseを従属させ、取消観測、backend停止開始・結果・経過時間、終端引渡し、回収完了／隔離をfrontend/kind/generationで相関する。待機期限では最後のphaseと未完義務を記録する。
+- service_runtimeの製品tune/scan停止にも同じ観測入口を接続し、deviceの補助workerだけの診断にしない。停止結果の型付きerrnoは元HalErrorのまま出力し、公開結果・期限・回収権限を変えない。
+- 注入backendで停止処理中と停止結果取得後の終端待ちを区別し、両方で置換拒否・owner保持、失敗時隔離を検査する。
+- Android Soong・device atest・実機VTS・実波による故障原因特定は未実施。
+
 # Playback DVR Filterイベント配送と投入統計の訂正
 
 - Playback DVRの消費済みFilterイベントは、遅延配送workerのwake失敗後も既存の直接callback配送を試行する。wake結果は従来どおりworker終端へ返し、callback配送失敗は既存Filter診断に記録する。新owner/worker/queueを追加しない。

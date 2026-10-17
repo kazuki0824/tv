@@ -1279,9 +1279,9 @@ pub fn run_frontend_backend_tune_worker_with_previous(
             super::frontend_worker::FrontendWorkerCancelReason::StopRequested
         ))
     ) {
-        session.stop()
+        ctx.observe_backend_stop(|| session.stop())
     } else {
-        session.close()
+        ctx.observe_backend_stop(|| session.close())
     };
     match (reason, completion) {
         (Ok(_), result) => result,

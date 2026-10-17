@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
@@ -154,7 +155,7 @@ impl FrontendWorkerDetachedJoin {
         if self.slot.pending_completed.is_some() {
             return Ok(true);
         }
-        self.slot
+        let finished = self.slot
             .thread_result
             .as_ref()
             .ok_or_else(|| {
@@ -163,7 +164,12 @@ impl FrontendWorkerDetachedJoin {
                     "終了待ち中にフロントエンドワーカーの結果所有者がありません",
                 )
             })?
-            .wait_until_finished(deadline)
+            .wait_until_finished(deadline)?;
+        if !finished {
+            let phase = self.slot.stop_phase.load(Ordering::Acquire);
+            eprintln!("frontend stop phase=deadline last_phase={phase} frontend_id={} kind={:?} generation={} obligation=pending", self.frontend_id, self.kind, self.generation);
+        }
+        Ok(finished)
     }
 }
 
@@ -223,6 +229,7 @@ impl FrontendWorkerCleanup {
             }
             _ => false,
         };
+        eprintln!("frontend stop phase=cleanup_final completed={succeeded} outcome={outcome:?}");
         if succeeded {
             WorkerCleanupProgress::Completed(outcome)
         } else {
@@ -616,6 +623,17 @@ impl FrontendWorkerCancelReason {
     }
 }
 
+// 既存worker所有者に従属する診断phase。資源状態とは独立している。
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+enum FrontendStopPhase {
+    Running,
+    CancelObserved,
+    BackendStopStarted,
+    BackendStopReturned,
+    TerminalHandoff,
+}
+
 #[derive(Clone, Debug)]
 pub struct FrontendWorkerContext {
     frontend_id: i32,
@@ -623,6 +641,8 @@ pub struct FrontendWorkerContext {
     generation: u64,
     control: WorkerContext,
     cancel_reason: Arc<PoisonTrackedMutex<Option<FrontendWorkerCancelReason>>>,
+    // 診断専用。停止・再利用・回収完了の判定権限は持たない。
+    stop_phase: Arc<AtomicU8>,
 }
 
 impl FrontendWorkerContext {
@@ -636,7 +656,11 @@ impl FrontendWorkerContext {
         self.generation
     }
     pub fn cancel_requested(&self) -> bool {
-        self.control.stop_requested()
+        let requested = self.control.stop_requested();
+        if requested && self.stop_phase.compare_exchange(FrontendStopPhase::Running as u8, FrontendStopPhase::CancelObserved as u8, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            self.log_stop_phase("cancel_observed");
+        }
+        requested
     }
     pub fn wait_until(&self, deadline: Option<std::time::Instant>) {
         self.control.wait_until(deadline)
@@ -644,6 +668,23 @@ impl FrontendWorkerContext {
 
     pub(crate) fn wake(&self) {
         self.control.wake();
+    }
+
+    fn log_stop_phase(&self, phase: &str) {
+        eprintln!("frontend stop phase={phase} frontend_id={} kind={:?} generation={}",
+            self.frontend_id, self.kind, self.generation);
+    }
+
+    /// 既存backend停止の境界だけを観測し、戻り値や所有権を変更しない。
+    pub fn observe_backend_stop(&self, stop: impl FnOnce() -> Result<(), HalError>) -> Result<(), HalError> {
+        self.stop_phase.store(FrontendStopPhase::BackendStopStarted as u8, Ordering::Release);
+        self.log_stop_phase("backend_stop_started");
+        let started = std::time::Instant::now();
+        let result = stop();
+        self.stop_phase.store(FrontendStopPhase::BackendStopReturned as u8, Ordering::Release);
+        eprintln!("frontend stop phase=backend_stop_returned frontend_id={} kind={:?} generation={} elapsed_us={} result={:?}",
+            self.frontend_id, self.kind, self.generation, started.elapsed().as_micros(), result);
+        result
     }
 
     pub fn cancel_reason(&self) -> Result<Option<FrontendWorkerCancelReason>, HalError> {
@@ -658,6 +699,8 @@ impl FrontendWorkerContext {
 struct FrontendWorkerSlot {
     generation: u64,
     cancel_reason: Arc<PoisonTrackedMutex<Option<FrontendWorkerCancelReason>>>,
+    // 診断専用。停止・再利用・回収完了の判定権限は持たない。
+    stop_phase: Arc<AtomicU8>,
     thread_result: Option<ThreadResultOwner<(Result<(), HalError>, WorkerExit)>>,
     pending_completed: Option<(Result<(), HalError>, WorkerExit)>,
 }
@@ -896,6 +939,8 @@ impl FrontendWorkerRegistry {
             RuntimeLockKind::FrontendCancelReason,
         ));
         let worker_cancel_reason = Arc::clone(&cancel_reason);
+        let stop_phase = Arc::new(AtomicU8::new(FrontendStopPhase::Running as u8));
+        let worker_stop_phase = Arc::clone(&stop_phase);
         let thread_name: &'static str = "maleicacid-frontend-worker";
         let thread_result = ThreadResultOwner::start_controlled(thread_name, move |control| {
             let context = FrontendWorkerContext {
@@ -904,8 +949,12 @@ impl FrontendWorkerRegistry {
                 generation,
                 control,
                 cancel_reason: Arc::clone(&worker_cancel_reason),
+                stop_phase: Arc::clone(&worker_stop_phase),
             };
-            match job(context) {
+            let result = job(context);
+            worker_stop_phase.store(FrontendStopPhase::TerminalHandoff as u8, Ordering::Release);
+            eprintln!("frontend stop phase=terminal_handoff frontend_id={frontend_id} kind={kind:?} generation={generation} result={result:?}");
+            match result {
                 Ok(()) => match worker_cancel_reason.lock() {
                     Ok(guard) => {
                         let exit = (*guard)
@@ -933,6 +982,7 @@ impl FrontendWorkerRegistry {
             FrontendWorkerSlot {
                 generation,
                 cancel_reason,
+                stop_phase,
                 thread_result: Some(thread_result),
                 pending_completed: None,
             },
@@ -1615,6 +1665,43 @@ mod tests {
     }
 
     #[test]
+    fn stop_phase_distinguishes_blocked_backend_from_pending_terminal_without_releasing_owner() {
+        for fail in [false, true] {
+            let mut registry = FrontendWorkerRegistry::default();
+            let (ctx_tx, ctx_rx) = mpsc::channel();
+            let (stop_tx, stop_rx) = mpsc::channel();
+            let (return_tx, return_rx) = mpsc::channel();
+            let (terminal_tx, terminal_rx) = mpsc::channel();
+            registry.start(7, FrontendWorkerKind::Tune, 42, move |ctx| {
+                ctx_tx.send(ctx.clone()).unwrap();
+                while !ctx.cancel_requested() { ctx.wait_until(None); }
+                let result = ctx.observe_backend_stop(|| {
+                    stop_rx.recv().unwrap();
+                    if fail { Err(HalError::cleanup_failed("backend停止", "注入失敗")) } else { Ok(()) }
+                });
+                return_tx.send(()).unwrap();
+                terminal_rx.recv().unwrap();
+                result
+            }).unwrap();
+            let ctx = ctx_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            let ticket = registry.request_stop_for_join(7, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested);
+            assert!(!ticket.wait_until_finished(Some(std::time::Instant::now() + Duration::from_millis(50))).unwrap());
+            assert_eq!(ctx.stop_phase.load(Ordering::Acquire), FrontendStopPhase::BackendStopStarted as u8);
+            assert!(registry.has_cleanup_obligations());
+            assert!(matches!(registry.start(7, FrontendWorkerKind::Tune, 43, |_| Ok(())), Err(FrontendWorkerStartError::AlreadyRunning { .. })));
+            stop_tx.send(()).unwrap();
+            return_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert!(!ticket.wait_until_finished(Some(std::time::Instant::now() + Duration::from_millis(50))).unwrap());
+            assert_eq!(ctx.stop_phase.load(Ordering::Acquire), FrontendStopPhase::BackendStopReturned as u8);
+            assert!(registry.has_cleanup_obligations());
+            terminal_tx.send(()).unwrap();
+            let outcome = ticket.complete();
+            assert!(matches!(outcome, FrontendWorkerStopOutcome::Completed { result, .. } if result.is_err() == fail));
+            assert_eq!(registry.has_cleanup_obligations(), fail);
+        }
+    }
+
+    #[test]
     fn duplicate_running_worker_is_rejected() {
         let mut registry = FrontendWorkerRegistry::default();
         let (tx, rx) = mpsc::channel();
@@ -1832,6 +1919,7 @@ mod tests {
                     None,
                     RuntimeLockKind::FrontendCancelReason,
                 )),
+                stop_phase: Arc::new(AtomicU8::new(FrontendStopPhase::Running as u8)),
                 thread_result: Some(
                     ThreadResultOwner::start(
                         "frontend-worker-owner-failure-test",
@@ -1914,6 +2002,7 @@ mod tests {
                     None,
                     RuntimeLockKind::FrontendCancelReason,
                 )),
+                stop_phase: Arc::new(AtomicU8::new(FrontendStopPhase::Running as u8)),
                 thread_result: None,
                 pending_completed: Some((Err(error.clone()), exit)),
             },
@@ -1957,7 +2046,8 @@ mod tests {
                         None,
                         RuntimeLockKind::FrontendCancelReason,
                     )),
-                    thread_result: None,
+                    stop_phase: Arc::new(AtomicU8::new(FrontendStopPhase::Running as u8)),
+                thread_result: None,
                     pending_completed: Some((Err(error.clone()), WorkerExit::Normal)),
                 },
             );

@@ -1944,6 +1944,7 @@ fn finish_frontend_state_restore_lock_failure_report(
 }
 
 fn finish_backend_session_after_worker_body(
+    ctx: &FrontendWorkerContext,
     session: FrontendBackendSession,
     mut body_result: Result<(), HalError>,
     cancel_reason: Result<Option<FrontendWorkerCancelReason>, HalError>,
@@ -1962,11 +1963,11 @@ fn finish_backend_session_after_worker_body(
             )),
         };
     }
-    let stop_result = if explicit_stop {
+    let stop_result = ctx.observe_backend_stop(|| if explicit_stop {
         session.stop()
     } else {
         session.close()
-    };
+    });
     match (body_result, stop_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Ok(()), Err(stop_error)) => Err(stop_error),
@@ -3524,7 +3525,7 @@ fn run_frontend_backend_tune_submit_worker(
         }
     };
     if ctx.cancel_requested() {
-        return finish_backend_session_after_worker_body(session, Ok(()), ctx.cancel_reason());
+        return finish_backend_session_after_worker_body(ctx, session, Ok(()), ctx.cancel_reason());
     }
     run_frontend_backend_tune_session_worker(
         runtime,
@@ -3855,7 +3856,7 @@ fn run_frontend_backend_tune_session_worker(
         }
     }
     stop_live_pump_after_worker_error(&mut live_pump, &mut body_result);
-    finish_backend_session_after_worker_body(session, body_result, ctx.cancel_reason())
+    finish_backend_session_after_worker_body(ctx, session, body_result, ctx.cancel_reason())
 }
 
 struct CommittedTuneReplacement {
@@ -4796,7 +4797,7 @@ fn run_frontend_backend_scan_session_worker(
             }
             Ok(())
         })();
-        finish_backend_session_after_worker_body(session, body_result, ctx.cancel_reason())?;
+        finish_backend_session_after_worker_body(ctx, session, body_result, ctx.cancel_reason())?;
         if ctx.cancel_requested() {
             return Ok(());
         }
