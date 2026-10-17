@@ -242,10 +242,7 @@ class CurrentProgramRatingResolver internal constructor(
             } catch (e: RuntimeException) {
                 return TvProviderLookupResult.QueryFailed(e.message ?: e.javaClass.name)
             }
-        val selected = candidates.firstOrNull()
-        if (selected == null) {
-            return TvProviderLookupResult.Success(null)
-        }
+        val selected = candidates.firstOrNull() ?: return TvProviderLookupResult.Success(null)
         val ratingSet =
             CurrentProgramRatingSet(
                 ratings = AribRatingMapper.parseFlattenedList(selected.flattenedRatings),
