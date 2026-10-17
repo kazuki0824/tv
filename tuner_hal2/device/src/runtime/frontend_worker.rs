@@ -4,8 +4,8 @@
 //! worker slotは完了・取消・失敗状態だけを保持し、実operationの成功を代用しない。
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 
 use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
@@ -155,7 +155,8 @@ impl FrontendWorkerDetachedJoin {
         if self.slot.pending_completed.is_some() {
             return Ok(true);
         }
-        let finished = self.slot
+        let finished = self
+            .slot
             .thread_result
             .as_ref()
             .ok_or_else(|| {
@@ -657,7 +658,17 @@ impl FrontendWorkerContext {
     }
     pub fn cancel_requested(&self) -> bool {
         let requested = self.control.stop_requested();
-        if requested && self.stop_phase.compare_exchange(FrontendStopPhase::Running as u8, FrontendStopPhase::CancelObserved as u8, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        if requested
+            && self
+                .stop_phase
+                .compare_exchange(
+                    FrontendStopPhase::Running as u8,
+                    FrontendStopPhase::CancelObserved as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        {
             self.log_stop_phase("cancel_observed");
         }
         requested
@@ -671,17 +682,28 @@ impl FrontendWorkerContext {
     }
 
     fn log_stop_phase(&self, phase: &str) {
-        eprintln!("frontend stop phase={phase} frontend_id={} kind={:?} generation={}",
-            self.frontend_id, self.kind, self.generation);
+        eprintln!(
+            "frontend stop phase={phase} frontend_id={} kind={:?} generation={}",
+            self.frontend_id, self.kind, self.generation
+        );
     }
 
     /// 既存backend停止の境界だけを観測し、戻り値や所有権を変更しない。
-    pub fn observe_backend_stop(&self, stop: impl FnOnce() -> Result<(), HalError>) -> Result<(), HalError> {
-        self.stop_phase.store(FrontendStopPhase::BackendStopStarted as u8, Ordering::Release);
+    pub fn observe_backend_stop(
+        &self,
+        stop: impl FnOnce() -> Result<(), HalError>,
+    ) -> Result<(), HalError> {
+        self.stop_phase.store(
+            FrontendStopPhase::BackendStopStarted as u8,
+            Ordering::Release,
+        );
         self.log_stop_phase("backend_stop_started");
         let started = std::time::Instant::now();
         let result = stop();
-        self.stop_phase.store(FrontendStopPhase::BackendStopReturned as u8, Ordering::Release);
+        self.stop_phase.store(
+            FrontendStopPhase::BackendStopReturned as u8,
+            Ordering::Release,
+        );
         eprintln!("frontend stop phase=backend_stop_returned frontend_id={} kind={:?} generation={} elapsed_us={} result={:?}",
             self.frontend_id, self.kind, self.generation, started.elapsed().as_micros(), result);
         result
@@ -1672,31 +1694,58 @@ mod tests {
             let (stop_tx, stop_rx) = mpsc::channel();
             let (return_tx, return_rx) = mpsc::channel();
             let (terminal_tx, terminal_rx) = mpsc::channel();
-            registry.start(7, FrontendWorkerKind::Tune, 42, move |ctx| {
-                ctx_tx.send(ctx.clone()).unwrap();
-                while !ctx.cancel_requested() { ctx.wait_until(None); }
-                let result = ctx.observe_backend_stop(|| {
-                    stop_rx.recv().unwrap();
-                    if fail { Err(HalError::cleanup_failed("backend停止", "注入失敗")) } else { Ok(()) }
-                });
-                return_tx.send(()).unwrap();
-                terminal_rx.recv().unwrap();
-                result
-            }).unwrap();
+            registry
+                .start(7, FrontendWorkerKind::Tune, 42, move |ctx| {
+                    ctx_tx.send(ctx.clone()).unwrap();
+                    while !ctx.cancel_requested() {
+                        ctx.wait_until(None);
+                    }
+                    let result = ctx.observe_backend_stop(|| {
+                        stop_rx.recv().unwrap();
+                        if fail {
+                            Err(HalError::cleanup_failed("backend停止", "注入失敗"))
+                        } else {
+                            Ok(())
+                        }
+                    });
+                    return_tx.send(()).unwrap();
+                    terminal_rx.recv().unwrap();
+                    result
+                })
+                .unwrap();
             let ctx = ctx_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-            let ticket = registry.request_stop_for_join(7, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested);
-            assert!(!ticket.wait_until_finished(Some(std::time::Instant::now() + Duration::from_millis(50))).unwrap());
-            assert_eq!(ctx.stop_phase.load(Ordering::Acquire), FrontendStopPhase::BackendStopStarted as u8);
+            let ticket = registry.request_stop_for_join(
+                7,
+                FrontendWorkerKind::Tune,
+                FrontendWorkerCancelReason::StopRequested,
+            );
+            assert!(!ticket
+                .wait_until_finished(Some(std::time::Instant::now() + Duration::from_millis(50)))
+                .unwrap());
+            assert_eq!(
+                ctx.stop_phase.load(Ordering::Acquire),
+                FrontendStopPhase::BackendStopStarted as u8
+            );
             assert!(registry.has_cleanup_obligations());
-            assert!(matches!(registry.start(7, FrontendWorkerKind::Tune, 43, |_| Ok(())), Err(FrontendWorkerStartError::AlreadyRunning { .. })));
+            assert!(matches!(
+                registry.start(7, FrontendWorkerKind::Tune, 43, |_| Ok(())),
+                Err(FrontendWorkerStartError::AlreadyRunning { .. })
+            ));
             stop_tx.send(()).unwrap();
             return_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-            assert!(!ticket.wait_until_finished(Some(std::time::Instant::now() + Duration::from_millis(50))).unwrap());
-            assert_eq!(ctx.stop_phase.load(Ordering::Acquire), FrontendStopPhase::BackendStopReturned as u8);
+            assert!(!ticket
+                .wait_until_finished(Some(std::time::Instant::now() + Duration::from_millis(50)))
+                .unwrap());
+            assert_eq!(
+                ctx.stop_phase.load(Ordering::Acquire),
+                FrontendStopPhase::BackendStopReturned as u8
+            );
             assert!(registry.has_cleanup_obligations());
             terminal_tx.send(()).unwrap();
             let outcome = ticket.complete();
-            assert!(matches!(outcome, FrontendWorkerStopOutcome::Completed { result, .. } if result.is_err() == fail));
+            assert!(
+                matches!(outcome, FrontendWorkerStopOutcome::Completed { result, .. } if result.is_err() == fail)
+            );
             assert_eq!(registry.has_cleanup_obligations(), fail);
         }
     }
@@ -2047,7 +2096,7 @@ mod tests {
                         RuntimeLockKind::FrontendCancelReason,
                     )),
                     stop_phase: Arc::new(AtomicU8::new(FrontendStopPhase::Running as u8)),
-                thread_result: None,
+                    thread_result: None,
                     pending_completed: Some((Err(error.clone()), WorkerExit::Normal)),
                 },
             );

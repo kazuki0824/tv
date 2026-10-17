@@ -1963,10 +1963,12 @@ fn finish_backend_session_after_worker_body(
             )),
         };
     }
-    let stop_result = ctx.observe_backend_stop(|| if explicit_stop {
-        session.stop()
-    } else {
-        session.close()
+    let stop_result = ctx.observe_backend_stop(|| {
+        if explicit_stop {
+            session.stop()
+        } else {
+            session.close()
+        }
     });
     match (body_result, stop_result) {
         (Ok(()), Ok(())) => Ok(()),
