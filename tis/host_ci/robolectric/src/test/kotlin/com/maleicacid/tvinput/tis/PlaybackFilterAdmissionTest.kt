@@ -1103,12 +1103,13 @@ class PlaybackFilterAdmissionTest {
             generation: Long,
             exact: Boolean = false,
         ): Long {
-            val sync = availabilitySync ?: run {
-                val type = Class.forName("sun.misc.Unsafe")
-                val unsafe = type.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
-                (type.getMethod("allocateInstance", Class::class.java).invoke(unsafe, MediaSync::class.java) as MediaSync)
-                    .also { availabilitySync = it }
-            }
+            val sync =
+                availabilitySync ?: run {
+                    val type = Class.forName("sun.misc.Unsafe")
+                    val unsafe = type.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
+                    (type.getMethod("allocateInstance", Class::class.java).invoke(unsafe, MediaSync::class.java) as MediaSync)
+                        .also { availabilitySync = it }
+                }
             return executor.callControl(5_000L) {
                 ReflectionHelpers.setField(pipeline, "surface", requireNotNull(codecSurface))
                 ReflectionHelpers.setField(pipeline, "mediaSync", sync)
