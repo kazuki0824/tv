@@ -44,9 +44,8 @@ impl TsInputOrigin {
 pub use av::{
     AvDataId, AvDataIdAllocator, AvFileIdentity, AvFlowDiagnosticSnapshot,
     AvHandleReleaseDescriptor, AvHandleReleaseOutcome, AvMediaEventDescriptor,
-    AvMediaEventMetadata, AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking,
-    AvSharedBackingError, AvSharedHandleExport, AvSlotId, DEFAULT_AV_MAX_EVENT_BYTES,
-    DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER, DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    AvMediaEventMetadata, AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedBackingError,
+    AvSharedHandleExport, DEFAULT_AV_MAX_EVENT_BYTES,
 };
 pub use config::{
     AvSettings, AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterConfigKind, FilterDelayHint,
@@ -3551,26 +3550,12 @@ mod tests {
 
     #[test]
     fn av_allocation_failure_emits_overflow_and_retries_the_next_input() {
-        use std::os::unix::fs::MetadataExt;
         let filter_id = 51;
         let pid = 0x101;
         let mut demux = started_audio_filter_runtime(filter_id, pid);
         let shared = demux.export_filter_av_shared_handle(filter_id).unwrap();
-        let metadata = shared.file.metadata().unwrap();
-        assert_eq!(
-            demux
-                .release_filter_av_handle(
-                    filter_id,
-                    AvHandleReleaseDescriptor::File(AvFileIdentity::new(
-                        metadata.dev(),
-                        metadata.ino(),
-                        metadata.size()
-                    )),
-                    0
-                )
-                .unwrap(),
-            AvHandleReleaseOutcome::ClientHandleReleased
-        );
+        assert!(shared.file.is_none());
+        assert_eq!(shared.size_bytes, 0);
         let frame = adts_aac_lc_frame_48khz(4);
         let payload = [frame.as_slice(), frame.as_slice()].concat();
         let failed = crate::av::shared_backing::with_failed_dmabuf_allocations_for_test(|| {
@@ -3719,13 +3704,13 @@ mod tests {
             )
             .unwrap();
         demux
-            .mark_filter_av_shared_handle_exported_for_test(19)
+            .export_filter_av_shared_handle_for_test(19)
             .unwrap();
         let data_id = match demux.allocate_filter_av_payload_for_test(19, 188).unwrap() {
             AvPayloadDeliveryOutcome::Delivered(event) => event.data_id,
             other => panic!("unexpected AV allocation outcome: {other:?}"),
         };
-        assert_eq!(demux.filter_av_active_slot_count_for_test(19), Some(1));
+        assert_eq!(demux.filter_av_active_allocation_count_for_test(19), Some(1));
 
         demux
             .configure_filter_av_stream_type(
@@ -3737,12 +3722,12 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(demux.filter_av_active_slot_count_for_test(19), Some(1));
+        assert_eq!(demux.filter_av_active_allocation_count_for_test(19), Some(1));
         assert_eq!(
             demux
                 .release_filter_av_handle(19, AvHandleReleaseDescriptor::Empty, data_id.0)
                 .unwrap(),
-            AvHandleReleaseOutcome::SlotReleased { data_id }
+            AvHandleReleaseOutcome::AllocationReleased { data_id }
         );
         assert!(matches!(
             demux.allocate_filter_av_payload_for_test(19, 188).unwrap(),
@@ -3772,7 +3757,7 @@ mod tests {
             )
             .unwrap();
         demux
-            .mark_filter_av_shared_handle_exported_for_test(20)
+            .export_filter_av_shared_handle_for_test(20)
             .unwrap();
         let data_id = match demux.allocate_filter_av_payload_for_test(20, 188).unwrap() {
             AvPayloadDeliveryOutcome::Delivered(event) => event.data_id,
@@ -3781,12 +3766,12 @@ mod tests {
 
         demux.flush_filter_runtime(20).unwrap();
 
-        assert_eq!(demux.filter_av_active_slot_count_for_test(20), Some(1));
+        assert_eq!(demux.filter_av_active_allocation_count_for_test(20), Some(1));
         assert_eq!(
             demux
                 .release_filter_av_handle(20, AvHandleReleaseDescriptor::Empty, data_id.0)
                 .unwrap(),
-            AvHandleReleaseOutcome::SlotReleased { data_id }
+            AvHandleReleaseOutcome::AllocationReleased { data_id }
         );
         assert!(matches!(
             demux.allocate_filter_av_payload_for_test(20, 188).unwrap(),
@@ -3816,7 +3801,7 @@ mod tests {
             )
             .unwrap();
         demux
-            .mark_filter_av_shared_handle_exported_for_test(21)
+            .export_filter_av_shared_handle_for_test(21)
             .unwrap();
         let stale_data_id = match demux.allocate_filter_av_payload_for_test(21, 188).unwrap() {
             AvPayloadDeliveryOutcome::Delivered(event) => event.data_id,
@@ -3838,7 +3823,7 @@ mod tests {
             demux
                 .release_filter_av_handle(21, AvHandleReleaseDescriptor::Empty, stale_data_id.0,)
                 .unwrap(),
-            AvHandleReleaseOutcome::SlotReleased {
+            AvHandleReleaseOutcome::AllocationReleased {
                 data_id: stale_data_id
             }
         );
@@ -4568,10 +4553,6 @@ mod tests {
         assert!(!report
             .delivery_actions
             .contains(&packet_pipeline::PipelineDeliveryAction::AvPayload { filter_id: 37 }));
-        assert!(!report.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic,
-            packet_pipeline::PipelineDiagnostic::AvSharedHandleNotExported { filter_id: 37, .. }
-        )));
         assert_eq!(
             demux.filter(37).unwrap().state(),
             FilterRuntimeState::Failed

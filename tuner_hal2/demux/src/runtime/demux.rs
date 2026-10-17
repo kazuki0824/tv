@@ -9,9 +9,8 @@ use maleicacid_tuner_hal2_control_core::{FmqDeliveryAction, FmqDeliveryTxn, FmqO
 use crate::av::{
     AvDataId, AvDataIdAllocator, AvDataIdState, AvFilterReleaseState, AvFlowDiagnosticSnapshot,
     AvHandleReleaseDescriptor, AvHandleReleaseInput, AvHandleReleaseKind, AvHandleReleaseOutcome,
-    AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking,
-    AvSharedHandleExport, ClientHandleState, DEFAULT_AV_MAX_EVENT_BYTES,
-    DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER, DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedHandleExport,
+    DEFAULT_AV_MAX_EVENT_BYTES,
 };
 use crate::config::{
     AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterDelayReadiness, FilterOpenType,
@@ -601,23 +600,12 @@ fn av_payload_delivery_outcome_diagnostic(
 ) -> Option<crate::packet_pipeline::PipelineDiagnostic> {
     match outcome {
         AvPayloadDeliveryOutcome::Delivered(_) => None,
-        AvPayloadDeliveryOutcome::SharedHandleNotExported => Some(
-            crate::packet_pipeline::PipelineDiagnostic::av_shared_handle_not_exported(
-                pid, filter_id,
-            ),
-        ),
-        AvPayloadDeliveryOutcome::ClientHandleReleased => Some(
-            crate::packet_pipeline::PipelineDiagnostic::av_client_handle_released(pid, filter_id),
-        ),
         AvPayloadDeliveryOutcome::PayloadEmpty => {
             Some(crate::packet_pipeline::PipelineDiagnostic::av_payload_empty(pid, filter_id))
         }
         AvPayloadDeliveryOutcome::PayloadOversized => {
             Some(crate::packet_pipeline::PipelineDiagnostic::av_payload_oversized(pid, filter_id))
         }
-        AvPayloadDeliveryOutcome::NoFreeSlot => Some(
-            crate::packet_pipeline::PipelineDiagnostic::av_no_free_slot(pid, filter_id),
-        ),
         AvPayloadDeliveryOutcome::DataIdExhausted => {
             Some(crate::packet_pipeline::PipelineDiagnostic::av_data_id_exhausted(pid, filter_id))
         }
@@ -985,10 +973,7 @@ pub struct DemuxRuntime {
     dvr_queue_runtimes: BTreeMap<i32, QueueRuntime>,
     filter_av_backings: BTreeMap<i32, AvSharedBacking>,
     av_data_id_allocator: Arc<AvDataIdAllocator>,
-    av_runtime_budget: Arc<AvRuntimeBudget>,
     av_max_event_bytes: usize,
-    av_max_outstanding_events_per_filter: usize,
-    av_per_filter_live_bytes: usize,
     pcr_clock_anchor_store: PcrClockAnchorStore,
     av_sync_registry: AvSyncRegistry,
     rollback_snapshots: BTreeMap<u64, DemuxRuntimeSnapshot>,
@@ -1164,10 +1149,7 @@ impl DemuxRuntime {
             demux_id,
             generation,
             av_data_id_allocator,
-            Arc::new(AvRuntimeBudget::unlimited()),
             DEFAULT_AV_MAX_EVENT_BYTES,
-            DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
-            DEFAULT_AV_PER_FILTER_LIVE_BYTES,
         )
     }
 
@@ -1175,10 +1157,7 @@ impl DemuxRuntime {
         demux_id: i32,
         generation: u64,
         av_data_id_allocator: Arc<AvDataIdAllocator>,
-        av_runtime_budget: Arc<AvRuntimeBudget>,
         av_max_event_bytes: usize,
-        av_max_outstanding_events_per_filter: usize,
-        av_per_filter_live_bytes: usize,
     ) -> Self {
         Self {
             demux_id,
@@ -1194,10 +1173,7 @@ impl DemuxRuntime {
             dvr_queue_runtimes: BTreeMap::new(),
             filter_av_backings: BTreeMap::new(),
             av_data_id_allocator,
-            av_runtime_budget,
             av_max_event_bytes,
-            av_max_outstanding_events_per_filter,
-            av_per_filter_live_bytes,
             pcr_clock_anchor_store: PcrClockAnchorStore::default(),
             av_sync_registry: AvSyncRegistry::default(),
             rollback_snapshots: BTreeMap::new(),
@@ -1375,7 +1351,6 @@ impl DemuxRuntime {
                 AvHandleReleaseDescriptor::File(_) => AvHandleReleaseKind::UnknownFile,
             },
             data_id,
-            client_state: ClientHandleState::NotExported,
             filter_state,
             data_id_state: AvDataIdState::Unknown,
         });
@@ -1562,10 +1537,7 @@ impl DemuxRuntime {
                 filter_id,
                 AvSharedBacking::with_runtime_limits(
                     self.av_max_event_bytes,
-                    self.av_max_outstanding_events_per_filter,
-                    self.av_per_filter_live_bytes,
                     Arc::clone(&self.av_data_id_allocator),
-                    Arc::clone(&self.av_runtime_budget),
                 ),
             );
         }
@@ -2125,14 +2097,15 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn mark_filter_av_shared_handle_exported_for_test(
+    pub(crate) fn export_filter_av_shared_handle_for_test(
         &mut self,
         filter_id: i32,
     ) -> Result<(), DemuxRuntimeError> {
         self.filter_av_backings
             .get_mut(&filter_id)
             .ok_or(DemuxRuntimeError::av_backing_failure(filter_id))?
-            .mark_exported();
+            .export_handle()
+            .map_err(|_| DemuxRuntimeError::av_backing_failure(filter_id))?;
         Ok(())
     }
 
@@ -2149,10 +2122,10 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn filter_av_active_slot_count_for_test(&self, filter_id: i32) -> Option<usize> {
+    pub(crate) fn filter_av_active_allocation_count_for_test(&self, filter_id: i32) -> Option<usize> {
         self.filter_av_backings
             .get(&filter_id)
-            .map(AvSharedBacking::active_slot_count)
+            .map(AvSharedBacking::active_allocation_count)
     }
 
     #[cfg(test)]
@@ -2709,7 +2682,7 @@ impl DemuxRuntime {
         plan: &FilterQueueCleanupPlan,
     ) -> bool {
         if let Some(backing) = self.filter_av_backings.get_mut(&plan.filter_id) {
-            backing.flush_slots_keep_exported_handle();
+            backing.preserve_delivered_allocations_on_flush();
             true
         } else {
             false
@@ -4512,11 +4485,7 @@ impl DemuxRuntime {
                             });
                     }
                     Some(Ok(outcome)) => {
-                        if matches!(
-                            &outcome,
-                            AvPayloadDeliveryOutcome::NoFreeSlot
-                                | AvPayloadDeliveryOutcome::PayloadOversized
-                        ) {
+                        if matches!(&outcome, AvPayloadDeliveryOutcome::PayloadOversized) {
                             report
                                 .generated_events
                                 .push(PipelineGeneratedEvent::FilterStatus {

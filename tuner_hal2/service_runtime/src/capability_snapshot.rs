@@ -9,9 +9,7 @@ use crate::capability_selection::{
 use crate::playback_consume_txn::required_playback_processing_bytes;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_demux::{
-    DvrKind, FilterOpenType, DEFAULT_AV_MAX_EVENT_BYTES,
-    DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER, DEFAULT_AV_PER_FILTER_LIVE_BYTES,
-    MAX_PES_BUFFER_BYTES,
+    DvrKind, FilterOpenType, DEFAULT_AV_MAX_EVENT_BYTES, MAX_PES_BUFFER_BYTES,
 };
 
 const MIB: usize = 1024 * 1024;
@@ -49,9 +47,6 @@ pub struct CapabilitySnapshot {
     pub pes_runtime_budget_bytes: usize,
     pub playback_processing_budget_bytes: usize,
     pub av_max_event_bytes: usize,
-    pub av_max_outstanding_events_per_filter: usize,
-    pub av_per_filter_live_bytes: usize,
-    pub av_runtime_budget_bytes: usize,
     pub cleanup_reaper_capacity: usize,
     pub cleanup_retry_schedule_ms: [u64; 4],
     pub cleanup_terminal_deadline_ms: u64,
@@ -91,9 +86,6 @@ impl CapabilitySnapshot {
             pes_runtime_budget_bytes: 6 * MIB,
             playback_processing_budget_bytes: 64 * MIB,
             av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
-            av_max_outstanding_events_per_filter: DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
-            av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
-            av_runtime_budget_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES * 2,
             cleanup_reaper_capacity: 176,
             cleanup_retry_schedule_ms: [0, 10, 100, 1_000],
             cleanup_terminal_deadline_ms: 30_000,
@@ -140,7 +132,6 @@ impl CapabilitySnapshot {
             .with(SectionTracker, requested.num_section_filter as usize)
             .with(FmqBytes, requested.fmq_runtime_budget_bytes)
             .with(PesBytes, requested.pes_runtime_budget_bytes)
-            .with(AvBytes, requested.av_runtime_budget_bytes)
             .with(PlaybackBytes, requested.playback_processing_budget_bytes);
         let object = CapabilityClaims::default()
             .with(Worker, 3)
@@ -197,17 +188,13 @@ impl CapabilitySnapshot {
             (
                 AudioAv,
                 requested.num_audio_filter,
-                object
-                    .with(PesBytes, requested.pes_max_bytes_per_filter)
-                    .with(AvBytes, requested.av_per_filter_live_bytes),
+                object.with(PesBytes, requested.pes_max_bytes_per_filter),
                 None,
             ),
             (
                 VideoAv,
                 requested.num_video_filter,
-                object
-                    .with(PesBytes, requested.pes_max_bytes_per_filter)
-                    .with(AvBytes, requested.av_per_filter_live_bytes),
+                object.with(PesBytes, requested.pes_max_bytes_per_filter),
                 None,
             ),
             (
@@ -354,7 +341,6 @@ impl CapabilitySnapshot {
         let claims = selected.claims();
         snapshot.fmq_runtime_budget_bytes = claims.amount(FmqBytes);
         snapshot.pes_runtime_budget_bytes = claims.amount(PesBytes);
-        snapshot.av_runtime_budget_bytes = claims.amount(AvBytes);
         snapshot.playback_processing_budget_bytes = claims.amount(PlaybackBytes);
         snapshot.cleanup_reaper_capacity = selected
             .frontend_count()
@@ -372,10 +358,8 @@ impl CapabilitySnapshot {
         if snapshot.pes_runtime_budget_bytes == 0 {
             snapshot.pes_max_bytes_per_filter = 0;
         }
-        if snapshot.av_runtime_budget_bytes == 0 {
+        if snapshot.num_audio_filter == 0 && snapshot.num_video_filter == 0 {
             snapshot.av_max_event_bytes = 0;
-            snapshot.av_max_outstanding_events_per_filter = 0;
-            snapshot.av_per_filter_live_bytes = 0;
         }
         Ok(snapshot)
     }
@@ -538,56 +522,17 @@ impl CapabilitySnapshot {
             )
         })?;
         if av_filter_count == 0 {
-            if self.av_max_event_bytes != 0
-                || self.av_max_outstanding_events_per_filter != 0
-                || self.av_per_filter_live_bytes != 0
-                || self.av_runtime_budget_bytes != 0
-            {
+            if self.av_max_event_bytes != 0 {
                 return Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
                     "suppressed AV capability must not reserve or advertise AV byte budgets",
                 ));
             }
         } else {
-            if self.av_max_event_bytes == 0
-                || self.av_max_outstanding_events_per_filter == 0
-                || self.av_per_filter_live_bytes == 0
-                || self.av_runtime_budget_bytes == 0
-                || self.av_max_event_bytes > MAX_PES_BUFFER_BYTES
-            {
+            if self.av_max_event_bytes == 0 || self.av_max_event_bytes > MAX_PES_BUFFER_BYTES {
                 return Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
                     "advertised AV capability exceeds its finite PES assembly closure",
-                ));
-            }
-            let minimum_per_filter = self
-                .av_max_event_bytes
-                .checked_mul(self.av_max_outstanding_events_per_filter)
-                .ok_or_else(|| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "AV per-filter capability closure overflow",
-                    )
-                })?;
-            if self.av_per_filter_live_bytes < minimum_per_filter {
-                return Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "AV per-filter budget does not close the advertised event capability",
-                ));
-            }
-            let minimum_runtime = self
-                .av_per_filter_live_bytes
-                .checked_mul(av_filter_count)
-                .ok_or_else(|| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "AV runtime capability closure overflow",
-                    )
-                })?;
-            if self.av_runtime_budget_bytes < minimum_runtime {
-                return Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "AV runtime budget does not close all advertised AV filter leases",
                 ));
             }
         }
@@ -943,9 +888,6 @@ mod tests {
         snapshot.num_audio_filter = 0;
         snapshot.num_video_filter = 0;
         snapshot.av_max_event_bytes = 0;
-        snapshot.av_max_outstanding_events_per_filter = 0;
-        snapshot.av_per_filter_live_bytes = 0;
-        snapshot.av_runtime_budget_bytes = 0;
         assert!(snapshot.validate_dependency_closures().is_err());
 
         snapshot.pes_max_bytes_per_filter = 0;
@@ -968,9 +910,6 @@ mod tests {
         snapshot.pes_max_bytes_per_filter = 0;
         snapshot.pes_runtime_budget_bytes = 0;
         snapshot.av_max_event_bytes = 0;
-        snapshot.av_max_outstanding_events_per_filter = 0;
-        snapshot.av_per_filter_live_bytes = 0;
-        snapshot.av_runtime_budget_bytes = 0;
         snapshot.num_record = 0;
         snapshot.num_playback = 0;
         snapshot.public_demuxes = [None; 8];
@@ -1085,9 +1024,6 @@ mod tests {
             num_audio_filter: 0,
             num_video_filter: 1,
             av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
-            av_max_outstanding_events_per_filter: DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
-            av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
-            av_runtime_budget_bytes: 1,
             ..CapabilitySnapshot::product_default()
         };
         let mut ledger = CapacityLedger::default();

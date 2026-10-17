@@ -1,3 +1,11 @@
+# AVイベント専用領域への一本化
+
+- 固定共有pool、AV保持件数上限、Filter別・サービス全体のAV byte予算と能力claimを除去し、実payloadサイズのDMA-BUFをイベントごとに配送する。
+- `getAvSharedHandle()`は空handleとsize 0を返し、不要になった共有handle使用権・返却済み共有handle台帳を除去する。
+- 配送済み領域のflush・close後の寿命、token別返却、確保失敗、旧件数上限を超える保持、ID枯渇、診断飽和を検証する。確保失敗の診断を旧slot枯渇から分離する。
+- ホストでdemux 289件、service_runtime 242件の試験が成功。AIDL投影試験は追加済みだがAndroid環境では未実行。
+- 映像AU・PTS、欠落後復旧、色異常の修正は未完了。Android build / atest / VTS / 実機確認は未実施。ホスト検証を実機成功と扱わない。
+
 # Frontend停止phaseの診断
 
 - 既存Frontend worker slot/contextへ診断専用phaseを従属させ、取消観測、backend停止開始・結果・経過時間、終端引渡し、回収完了／隔離をfrontend/kind/generationで相関する。待機期限では最後のphaseと未完義務を記録する。

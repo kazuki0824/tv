@@ -21,9 +21,8 @@ use maleicacid_tuner_hal2_common::{
     HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::{
-    AvDataIdAllocator, AvRuntimeBudget, DemuxRuntime, DvrKind, FilterOpenType, FilterRuntimeState,
-    DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
-    DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    AvDataIdAllocator, DemuxRuntime, DvrKind, FilterOpenType, FilterRuntimeState,
+    DEFAULT_AV_MAX_EVENT_BYTES,
 };
 use maleicacid_tuner_hal2_demux::{
     PacketDescramblePolicyFailure, PacketPid, PipelineDiagnostic, PipelineReport,
@@ -869,10 +868,7 @@ pub struct RuntimeRegistry {
     descrambler_runtimes: BTreeMap<DescramblerRuntimeId, DescramblerRuntime>,
     descrambler_key_table: DescramblerKeyTable,
     av_data_id_allocator: Arc<AvDataIdAllocator>,
-    av_runtime_budget: Arc<AvRuntimeBudget>,
     av_max_event_bytes: usize,
-    av_max_outstanding_events_per_filter: usize,
-    av_per_filter_live_bytes: usize,
     #[cfg(test)]
     next_demux_id: i32,
     next_lnb_id: i32,
@@ -898,10 +894,7 @@ impl Default for RuntimeRegistry {
             descrambler_runtimes: BTreeMap::new(),
             descrambler_key_table: DescramblerKeyTable::default(),
             av_data_id_allocator: Arc::new(AvDataIdAllocator::default()),
-            av_runtime_budget: Arc::new(AvRuntimeBudget::unlimited()),
             av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
-            av_max_outstanding_events_per_filter: DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
-            av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
             #[cfg(test)]
             next_demux_id: 1,
             next_lnb_id: 1,
@@ -913,17 +906,9 @@ impl Default for RuntimeRegistry {
 }
 
 impl RuntimeRegistry {
-    pub(crate) fn with_av_runtime_limits(
-        av_max_event_bytes: usize,
-        av_max_outstanding_events_per_filter: usize,
-        av_per_filter_live_bytes: usize,
-        av_runtime_budget_bytes: usize,
-    ) -> Self {
+    pub(crate) fn with_av_runtime_limits(av_max_event_bytes: usize) -> Self {
         Self {
-            av_runtime_budget: Arc::new(AvRuntimeBudget::new(av_runtime_budget_bytes)),
             av_max_event_bytes,
-            av_max_outstanding_events_per_filter,
-            av_per_filter_live_bytes,
             ..Self::default()
         }
     }
@@ -1005,10 +990,7 @@ impl RuntimeRegistry {
                 entry.id.0,
                 1,
                 Arc::clone(&self.av_data_id_allocator),
-                Arc::clone(&self.av_runtime_budget),
                 self.av_max_event_bytes,
-                self.av_max_outstanding_events_per_filter,
-                self.av_per_filter_live_bytes,
             ),
         );
         self.demuxes.insert(entry.id, entry);

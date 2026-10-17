@@ -406,6 +406,8 @@ TS入力originとgeneration名前空間は`../TUNER_HAL_DESIGN_JA.md`の`TsInput
 
 Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは`QueueEpochProtocol`、配送済みAV領域のallocation/leaseはAV resource ownerへ接続する。write authorityのgeneration、失効条件、配送済みAV資源の寿命は`../TUNER_HAL_DESIGN_JA.md`の同名契約・資源寿命表を正とし、本書では再定義しない。
 
+AV領域の実装ownerは`demux/src/av/shared_backing.rs::AvSharedBacking`とし、イベント専用FDの確保・配送前破棄・返却を同ownerへ集約する。`service_runtime::RuntimeRegistry`はサービス共通のdata ID発行器を渡し、AV専用の容量台帳を所有しない。`aidl_service::tuner_service::filter_methods::project_shared_av_handle`は未初期化共有handleをAIDLへ投影し、イベントFDは既存の`filter_callback_delivery`で配送する。
+
 Filter FMQ ownership / payload data-planeの公開意味は`../TUNER_HAL_DESIGN_JA.md`の同名分離契約だけを正本とする。実装上は`demux/src/config.rs::FilterOpenType::has_filter_fmq()`をFilter FMQ resourceのopen時所有・descriptor export・FMQ byte台帳の判定アンカー、`FilterOpenType::uses_filter_fmq_for_payload()`を通常Filter payload commit / EventFlag / Filter status対象の判定アンカーとして対応付ける。Record payload routeは`RecordDvrFilterRelationTxn`とRecord DVR queue ownerへ接続する。各predicateの種別別真偽と公開semanticsは正本契約から導出し、本書では再定義しない。
 
 TS AUDIOのPTS-sparse event associationは`demux/src/av/audio_timestamp.rs::AudioTimestampAssociation`を`demux/src/runtime/filter.rs::FilterRuntime`の従属状態とし、同型の`extract()` / `reset()` / `reset_if_origin()`を既存AV配送・filter lifecycle・stream boundaryの入口からだけ使用する。結果は`AudioMediaFrame`または`AudioTimestampAssociationFailure`として既存AV allocation ownerへ渡す。独立したstate owner、packet pipeline、clock、queue、workerは追加しない。anchor、数値上限、codec構文、reset、fallback、AIDL `MediaEvent`のpresence/value、成功配送条件は`../TUNER_HAL_DESIGN_JA.md`の「clear non-passthrough MediaEvent presentation timestamp 契約」だけを正本とし、本書では再定義しない。

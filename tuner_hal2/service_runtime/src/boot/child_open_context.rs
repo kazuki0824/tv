@@ -280,9 +280,6 @@ impl TunerServiceRuntime {
                 if !backing.release_is_complete() {
                     self.release_only_filter_av_backings.insert(id, backing);
                     self.release_only_filter_types.insert(id, open_type);
-                } else if let Some(identity) = backing.released_shared_handle_identity() {
-                    self.released_filter_av_shared_handle_leases
-                        .insert(id, identity);
                 }
             }
             self.capacity_ledger.release_filter(id)?;
@@ -544,26 +541,23 @@ impl TunerServiceRuntime {
         #[cfg(target_os = "android")]
         if matches!(
             outcome,
-            maleicacid_tuner_hal2_demux::AvHandleReleaseOutcome::SlotReleased { .. }
+            maleicacid_tuner_hal2_demux::AvHandleReleaseOutcome::AllocationReleased { .. }
         ) {
             if let Some(snapshot) = demux.av_flow_diagnostic_snapshot(filter_id) {
                 // 枯渇を一度観測した後の解放だけを間引いて記録する。
                 // 頻繁なAVデータ処理でlogcatを過剰に出力しない。
-                if snapshot.no_free_slot > 0 && snapshot.released.is_power_of_two() {
+                if snapshot.allocation_failures > 0 && snapshot.released.is_power_of_two() {
                     log::warn!(
-                        "HAL_AV_FLOW kind=slot_released demux={} generation={} filter={} shortage={} delivered={} released={} discarded={} active_slots={} event_local={} active_bytes={} runtime_used={} runtime_limit={}",
+                        "HAL_AV_FLOW kind=allocation_released demux={} generation={} filter={} shortage={} delivered={} released={} discarded={} event_local={} active_bytes={}",
                         owner_demux_id,
                         demux.generation(),
                         filter_id,
-                        snapshot.no_free_slot,
+                        snapshot.allocation_failures,
                         snapshot.delivered,
                         snapshot.released,
                         snapshot.discarded_undelivered,
-                        snapshot.active_shared_slots,
                         snapshot.active_event_local,
                         snapshot.active_bytes,
-                        snapshot.runtime_used_bytes,
-                        snapshot.runtime_limit_bytes,
                     );
                 }
             }
@@ -577,14 +571,11 @@ impl TunerServiceRuntime {
         use maleicacid_tuner_hal2_demux::AvHandleReleaseOutcome;
         match outcome {
             AvHandleReleaseOutcome::EmptyHandleAccepted
-            | AvHandleReleaseOutcome::ClientHandleReleased
-            | AvHandleReleaseOutcome::ClientHandleReleaseAfterClose
-            | AvHandleReleaseOutcome::ClientHandleAlreadyReleased
             | AvHandleReleaseOutcome::EventLocalHandleReleased { .. }
             | AvHandleReleaseOutcome::EventLocalHandleAlreadyReleased { .. }
-            | AvHandleReleaseOutcome::SlotReleased { .. } => Ok(()),
+            | AvHandleReleaseOutcome::AllocationReleased { .. } => Ok(()),
             AvHandleReleaseOutcome::InvalidDataId
-            | AvHandleReleaseOutcome::InvalidHandleForSlotRelease
+            | AvHandleReleaseOutcome::InvalidHandleForAllocationRelease
             | AvHandleReleaseOutcome::UnknownDataId => Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
                 "AV handle解放入力が不正です",
@@ -661,15 +652,6 @@ impl TunerServiceRuntime {
                 && descriptor == maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor::Empty
             {
                 Ok(())
-            } else if av_data_id == 0
-                && matches!(
-                    descriptor,
-                    maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor::File(identity)
-                        if self.released_filter_av_shared_handle_leases.get(&filter_id)
-                            == Some(&identity)
-                )
-            {
-                Ok(())
             } else {
                 Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::NumericRange,
@@ -681,13 +663,8 @@ impl TunerServiceRuntime {
         let complete = backing.release_is_complete();
         Self::map_av_handle_release_outcome(outcome)?;
         if complete {
-            let released_shared_identity = backing.released_shared_handle_identity();
             self.release_only_filter_av_backings.remove(&filter_id);
             self.release_only_filter_types.remove(&filter_id);
-            if let Some(identity) = released_shared_identity {
-                self.released_filter_av_shared_handle_leases
-                    .insert(filter_id, identity);
-            }
         }
         Ok(())
     }
@@ -732,8 +709,6 @@ impl TunerServiceRuntime {
 
         let backing = self.release_only_filter_av_backings.remove(&filter_id);
         let open_type = self.release_only_filter_types.remove(&filter_id);
-        self.released_filter_av_shared_handle_leases
-            .remove(&filter_id);
         if backing.is_some() != open_type.is_some() {
             drop(backing);
             return Err(HalError::internal(

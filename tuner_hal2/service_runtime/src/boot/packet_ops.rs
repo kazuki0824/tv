@@ -295,13 +295,11 @@ impl TunerServiceRuntime {
             for (filter_id, previous, threshold, snapshot) in demux.take_av_flow_delivery_samples()
             {
                 log::info!(
-                    "HAL_AV_FLOW kind=av_event_allocated demux={} generation={} filter={} allocated={} crossed_threshold={} previous_threshold={} client_released={} undelivered_discarded={} shortage={} active_slots={} event_local={} active_bytes={} runtime_used={} runtime_limit={}",
+                    "HAL_AV_FLOW kind=av_event_allocated demux={} generation={} filter={} allocated={} crossed_threshold={} previous_threshold={} client_released={} undelivered_discarded={} shortage={} event_local={} active_bytes={}",
                     demux_id, demux_generation, filter_id,
                     snapshot.delivered, threshold, previous, snapshot.released,
-                    snapshot.discarded_undelivered, snapshot.no_free_slot,
-                    snapshot.active_shared_slots, snapshot.active_event_local,
-                    snapshot.active_bytes, snapshot.runtime_used_bytes,
-                    snapshot.runtime_limit_bytes,
+                    snapshot.discarded_undelivered, snapshot.allocation_failures, snapshot.active_event_local,
+                    snapshot.active_bytes,
                 );
             }
         }
@@ -314,21 +312,19 @@ impl TunerServiceRuntime {
                     .diagnostics
                     .iter()
                     .find_map(|diagnostic| match diagnostic {
-                        PipelineDiagnostic::AvNoFreeSlot {
+                        PipelineDiagnostic::AvSharedBackingFailure {
                             pid,
                             filter_id: reported_id,
+                            ..
                         } if *reported_id == filter_id => Some(*pid),
                         _ => None,
                     });
                 log::warn!(
-                    "HAL_AV_FLOW kind=no_free_slot demux={} generation={} pid={:?} filter={} shortage={} crossed_threshold={} previous_threshold={} delivered={} released={} discarded={} active_slots={} event_local={} active_bytes={} slot_capacity={} max_outstanding={} filter_byte_limit={} runtime_used={} runtime_limit={}",
+                    "HAL_AV_FLOW kind=allocation_failed demux={} generation={} pid={:?} filter={} shortage={} crossed_threshold={} previous_threshold={} delivered={} released={} discarded={} event_local={} active_bytes={}",
                     demux_id, demux_generation, pid, filter_id,
-                    snapshot.no_free_slot, threshold, previous, snapshot.delivered,
-                    snapshot.released, snapshot.discarded_undelivered,
-                    snapshot.active_shared_slots, snapshot.active_event_local,
-                    snapshot.active_bytes, snapshot.slot_capacity,
-                    snapshot.max_outstanding_events, snapshot.per_filter_live_bytes,
-                    snapshot.runtime_used_bytes, snapshot.runtime_limit_bytes,
+                    snapshot.allocation_failures, threshold, previous, snapshot.delivered,
+                    snapshot.released, snapshot.discarded_undelivered, snapshot.active_event_local,
+                    snapshot.active_bytes,
                 );
             }
         }

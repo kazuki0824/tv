@@ -496,9 +496,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId};
-    use maleicacid_tuner_hal2_demux::{
-        AvDataId, AvMediaEventDescriptor, AvMediaEventMetadata, AvSlotId,
-    };
+    use maleicacid_tuner_hal2_demux::{AvDataId, AvMediaEventDescriptor, AvMediaEventMetadata};
 
     #[test]
     fn post_delivery_commit_failure_survives_runtime_poison_in_fallback_diagnostics() {
@@ -554,7 +552,7 @@ mod tests {
         let file = std::fs::File::open("/dev/null").unwrap();
         let event = AvMediaEventDescriptor {
             data_id: AvDataId(7),
-            slot_id: AvSlotId(0),
+
             offset: 0,
             data_length: 188,
             metadata: AvMediaEventMetadata::default(),
@@ -573,7 +571,7 @@ mod tests {
         let media = event_from_snapshot(snapshot(FilterEventDelivery::Media(
             AvMediaEventDescriptor {
                 data_id: AvDataId(7),
-                slot_id: AvSlotId(0),
+
                 offset: 12,
                 data_length: 188,
                 metadata: AvMediaEventMetadata::default(),
@@ -632,7 +630,7 @@ mod tests {
         match event_from_snapshot(snapshot(FilterEventDelivery::Media(
             AvMediaEventDescriptor {
                 data_id: AvDataId(7),
-                slot_id: AvSlotId(0),
+
                 offset: 12,
                 data_length: 188,
                 metadata,

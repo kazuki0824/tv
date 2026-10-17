@@ -83,7 +83,7 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 |---|---|---|
 | `IFilter.setDataSource(filter)`、`filter == NULL` | AOSP意味論として存在する必須契約であり、現行設計の成功対象 | sink filter の入力元を demux input へ戻す |
 | `IDescrambler.addPid(pid, optionalSourceFilter)` / `removePid(pid, optionalSourceFilter)`、`optionalSourceFilter == NULL` | AOSP意味論として存在する必須契約であり、現行設計の成功対象 | 指定PIDについてdemux input全体への登録 / 解除として扱う |
-| AV shared handle release | media filter shared memory profileでは到達する | `releaseAvHandle(fd付き handle, 0)` を成功させる |
+| AV handle release | イベント専用FDの利用終了で到達する | 上記のAV返却契約に従う |
 | monitor event | 本製品のTS-only `ProductProfile`では対応宣言しない | `configureMonitorEvent(0)`だけを監視停止として成功させ、非0 maskは`UNAVAILABLE`とする。monitor event用の状態、worker、queue、能力値を生成しない |
 | AV passthrough | 対応宣言しない | profileでは `isPassthrough=false` に固定する |
 | `linkCaps` | main type 粒度 | 広告した main type pair は VTS が生成する subtype `UNDEFINED` 接続も成功対象に含める。成功させない pair は広告しない |
@@ -283,7 +283,7 @@ VTS/profileの`useFMQ`はこのownership/data-plane境界を変更しない。ca
 
 Filter / DVR の `configure()` / `start()` / `stop()` / `flush()` と Record DVR の `attachFilter()` / `detachFilter()` について、caller-visibleな事前状態、戻り値、次状態、維持する公開資源は本節を正とする。旧状態表の行番号や旧状態コードを現行正本として復活させず、内部のprepare / commit / rollback、producer drain、queue epoch、playback consume、relation mutationは0-S-3Bの既存canonical contractを唯一の正本とする。論理閉鎖開始後の優先判定は0-S-4の公開close gateを正とし、本節のLive状態行より先に適用する。
 
-本節では公開lifecycleを `OpenUnconfigured`（open成功後、対象settings未確定）、`ConfiguredStopped`（有効settings確定済みかつ非開始）、`Started`（開始済み）の3射影で記述する。AV filterのshared handle、補助stream type、active `avDataId`等の直交軸は「AV転送方式とクライアント側の存続期間」およびAV allocation契約を正とし、本節の射影へ吸収しない。
+本節では公開lifecycleを `OpenUnconfigured`（open成功後、対象settings未確定）、`ConfiguredStopped`（有効settings確定済みかつ非開始）、`Started`（開始済み）の3射影で記述する。AV filterの補助stream type、active `avDataId`等の直交軸は「AV転送方式とクライアント側の存続期間」およびAV allocation契約を正とし、本節の射影へ吸収しない。
 
 #### IFilter lifecycle
 
@@ -293,7 +293,7 @@ Filter / DVR の `configure()` / `start()` / `stop()` / `flush()` と Record DVR
 | `start()` | `INVALID_STATE`、状態不変 | 成功 → `Started` | 成功、状態不変 | 対応producer / deliveryを開始または再開する。AVはshared handle未取得でもevent-local fd経路があるためhandle取得をstart成功条件にしない |
 | `stop()` | 成功、状態不変 | 成功、状態不変 | 成功 → `ConfiguredStopped` | 新規producer / deliveryを停止するが、既にFilter outputへcommitした未消費FMQ data、配送済みAV allocation / active token等のcaller-visible資源を破棄しない。`stop()`を`flush()`の代用にしない |
 | `flush()`（non-AV） | `INVALID_STATE`、状態不変 | 成功、lifecycle維持 | 成功、`Started`を維持 | `FilterProducerDrainGate`と`QueueCleanupUseCase`を通し、受付済みproducerを排出してから未消費Filter FMQ data、未配送event、parser / assembler partial stateを当該Filterの契約に従って破棄する。source relation、callback登録、monitor設定、delay hint、queue identity、配送済みclient資源は維持する |
-| `flush()`（AV） | 成功、設定/実行軸を維持 | 成功、設定/実行軸を維持 | 成功、`Started`を維持 | shared handleの取得有無を成功条件にしない。未配送AV payload / transient stateだけを破棄し、shared backing、client handle lease、配送済みactive `avDataId` allocationはAV資源寿命契約に従って維持する |
+| `flush()`（AV） | 成功、設定/実行軸を維持 | 成功、設定/実行軸を維持 | 成功、`Started`を維持 | shared handleの取得有無を成功条件にしない。未配送AV payload / transient stateだけを破棄し、配送済みactive `avDataId` allocationはAV資源寿命契約に従って維持する |
 
 `configure()`の入力値・subtype・passthrough・PES/section等の能力判定は各既存の名前付き入力契約を正とする。本節は有効入力に対するlifecycle結果を固定するだけであり、未対応入力を成功へ昇格させない。`flush()`成功はFilter lifecycleそのものを停止状態へ変更する操作ではなく、開始済みFilterでは開始状態を維持する。
 
@@ -357,7 +357,7 @@ AV stream type hintはopen subtypeが `AUDIO` / `VIDEO` のFilterだけが持つ
 - TsAudio filterでは `AvStreamType.audio` tag、TsVideo filterでは `AvStreamType.video` tagだけを受理する。反対tagは `INVALID_ARGUMENT` とし、旧hintと全状態を維持する。
 - matching tagの値が `UNDEFINED` なら成功し、既存codec hintを未指定へ置き換える。routing subtypeは変更しない。
 - matching tagのAndroid 14 AIDLで定義済みのstream typeは、`UNDEFINED`を含めstream-type hintとして成功させる。stream typeはrouting subtypeそのものでもdemux codec capability advertisementでもないため、非公開のcodec別capability matrixを追加して公開APIの成功可否を狭めない。予約値・未知値は `INVALID_ARGUMENT` とし、旧hintと全状態を維持する。
-- `OpenUnconfigured` / `ConfiguredStopped` では成功時にstream-type hintだけを原子的に置換し、configure状態、source relation、shared handle/backing、active allocation、queue/delivery generationを変更しない。同じ値の再指定は成功no-opとする。
+- `OpenUnconfigured` / `ConfiguredStopped` では成功時にstream-type hintだけを原子的に置換し、configure状態、source relation、active allocation、queue/delivery generationを変更しない。同じ値の再指定は成功no-opとする。
 - `Started` では、tag/value自体が有効な要求に `INVALID_STATE` を返して旧hintと全状態を維持する。close gateと共通入力検証優先順位は既存契約に従う。
 - non-AV filterでは `UNAVAILABLE`、論理閉鎖開始後は `INVALID_STATE` とする。
 
@@ -459,9 +459,9 @@ rollback不能、cleanup不能、正本不一致、backend実状態とregistry�
 | ワーカー | `WorkerRuntime` | 所有オブジェクト | 所有者不明ワーカーを作らない |
 | stream boundary | `StreamBoundaryTxn` | demux/filter/DVR/AV | tune/scan/source切替で境界処理を重複実装しない |
 | packet pipeline | `PacketPipeline` | `soft_demux` | packet validation・origin分類・data-path dispatchを担当し、continuity / generation stateを各canonical ownerを迂回して更新しない |
-| AV shared memory | `AvSharedBacking` | `FilterHal` | fd番号一致をshared handle同一性条件にしない。fd付きhandle + `avDataId == 0` はclient側shared handle使用終了通知として扱う |
+| AV allocation | `AvSharedBacking` | `FilterHal` | イベント専用領域とactive tokenを所有する。FD番号をallocation同一性として使わない |
 
-未解放AV allocationの正本は、正の`avDataId`をkeyとするactive token台帳に記録した`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`とする。ファイル記述子番号や`fstat`の`{st_dev, st_ino, size}`をallocation identityの正本にしてはならない。`fstat`などの記述子メタデータは、採用した記憶領域実装で同一性が保証される場合だけ補助検証と診断に用いる。共有ハンドルの`dataId=0`解放は呼出先IFilterが所有するboundedなクライアント使用権を対象とし、正の`dataId`解放はactive token台帳で当該IFilterの未解放allocationと転送方式を特定して行う。allocation解放成功時はtoken entryを削除し、その後activeでない正のtokenは`INVALID_ARGUMENT`として資源を変更しない。解放済みduplicate、foreign、never-issuedを永久に識別するためのtombstoneは持たない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、安全を確認できない記憶領域を隔離する。
+未解放AV allocationの正本は、正の`avDataId`をkeyとするactive token台帳に記録した`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`とする。ファイル記述子番号や`fstat`の`{st_dev, st_ino, size}`をallocation identityの正本にしてはならない。`fstat`などの記述子メタデータは、採用した記憶領域実装で同一性が保証される場合だけ補助検証と診断に用いる。イベントFDの`dataId=0`解放は呼出先IFilterが保持する当該allocationのhandle使用権を対象とし、正の`dataId`解放はactive token台帳で当該IFilterの未解放allocationと転送方式を特定して行う。allocation解放成功時はtoken entryを削除し、その後activeでない正のtokenは`INVALID_ARGUMENT`として資源を変更しない。解放済みduplicate、foreign、never-issuedを永久に識別するためのtombstoneは持たない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、安全を確認できない記憶領域を隔離する。
 
 
 #### 0-S-3. 公開API transaction（状態遷移）契約
@@ -705,7 +705,7 @@ cleanup commandの途中失敗後の後続command実行、未完step記録、同
 
 ### AV 共有メモリの原子性不変条件
 
-AV shared backingはMediaEvent用allocationのlifetimeを論理的に一括管理し、allocation/release操作で部分更新を公開しない。物理lock、内部struct、helper名はこの公開・論理契約の規範対象ではなく、product default実装に特定の型名・helper名を要求しない。
+AV allocation ownerはMediaEvent用allocationのlifetimeを論理的に一括管理し、allocation/release操作で部分更新を公開しない。物理lock、内部struct、helper名はこの公開・論理契約の規範対象ではなく、product default実装に特定の型名・helper名を要求しない。
 
 ### TS continuity / adaptation-only packet 固定
 
@@ -1037,9 +1037,9 @@ AV passthrough は本製品では恒久的に対応しない。`DemuxFilterAvSet
 
 VTS/profileでは、AV filterを使用する場合でも `isPassthrough=false` に固定する。`isPassthrough=true` を含むprofileは本製品の対応profileとして扱わない。
 
-AV filter の状態別契約、shared backing、公開済みハンドル、使用中領域、`dataId`、`flush()`、`configure()`、`close()` の副作用は、0-S-2のAV active token台帳、本節の「AV転送方式とクライアント側の存続期間」および後段の「AV割り当て」を正とする。本節では、allocator、NativeHandle形式、payload配置、診断方針だけを補足する。
+AV filter の状態別契約、イベントFD、使用中領域、`dataId`、`flush()`、`configure()`、`close()` の副作用は、0-S-2のAV active token台帳、本節の「AV転送方式とクライアント側の存続期間」および後段の「AV割り当て」を正とする。本節では、allocator、NativeHandle形式、payload配置、診断方針だけを補足する。
 
-AndroidフレームワークとJNIが受理する`MediaEvent`の表現は、本書の「AV割り当て」を正とする。共有モードでは、`IFilter.getAvSharedHandle()`がdma-bufまたはION系のファイル記述子1個を持つハンドルを返す。各イベントの`avMemory`は空とし、正の`avDataId`と`offset/dataLength`で共有領域内の半開区間を識別する。イベント固有モードでは、各イベントが正確な長さのファイル記述子1個を持つ`avMemory`と、正の`avDataId`を持つ。共有ハンドルの未取得、使用権の解放済み、収容可能な空き領域なし、またはAUが領域長を超える場合は、イベント固有モードを正式な代替方式とする。過大なAUを破棄して、2方式対応という能力表明と矛盾させてはならない。
+AndroidフレームワークとJNIへの配送表現は「AV shared handle の `NativeHandle` 形式」、割り当てと返却の契約は「AV割り当て」を正とする。
 
 両モードの`avDataId`は、同じ上限付き割り当て台帳から発行する。メモリー、台帳、`MediaEvent`の準備がすべて成功した後に割り当てを確定し、失敗時はコールバックまたは`dataId`を公開しない。`offset + dataLength <= backing size`を正常範囲とし、上限超過を検出できる加算を用いる。長さ0は不正としてイベントを発行しない。`isSecureMemory=false`に固定する。
 
@@ -1065,26 +1065,22 @@ PES parserがDTSまたはprivate-data presenceを有効入力として既に確�
 
 ### AV shared handle の `NativeHandle` 形式
 
-| 項目 | 固定値 | 理由 |
-|---|---|---|
-| fd数 | 1 | shared backing fd を framework/JNI へ渡すため |
-| ints数 | 0 | 本製品はCodec2のglobal INFO indexを発行しないため |
-| `ints[0]` | 存在しない | 0を代入するとAndroid 15の`C2DataIdInfo`に不正なglobal INFO indexとして解釈され`CHECK(isGlobal())`でabortする |
-| `slot_size` / `slot_count` | 出さない | HAL内部の領域管理値であり、`NativeHandle.ints` ではないため |
-| magic / generation / filter id | 出さない | JNIにHAL内部識別子を渡さないため |
+製品のAV配送はイベント専用DMA-BUFだけを使用する。`IFilter.getAvSharedHandle()`は有効なAV Filterに対し`fds=[], ints=[], size=0`を返す。共有領域を確保せず、取得・再取得で配送状態や使用権を作らない。これはAOSP `IFilter.aidl`の共有ハンドル未初期化表現に対応する。
 
-event-local AV FDと`IFilter.getAvSharedHandle()`の両経路で`fds=[AV FD], ints=[]`を使用する。`MediaEvent.getLinearBlock()`にintを渡す場合、AOSPは先頭要素をCodec2のglobal INFO indexとして解釈する。`IFilter.releaseAvHandle()`も単一FD・空intのshapeを一致させ、FD identity検証と既存のactive `avDataId`解放確定点を保持する。AV payload、offset、size、PTS/DTS、data ID、使用権の寿命は変更しない。
+各`DemuxFilterMediaEvent.avMemory`は`fds=[当該イベントのFD], ints=[]`、`offset=0`、`dataLength=実payload長`とする。AOSP `MediaEvent::getLinearBlock()`はイベントにFDがある場合、そのFDを使用する。本製品はCodec2 global INFO indexを発行しないため整数要素を追加しない。内部識別子を`NativeHandle.ints`へ投影しない。
 
 ### AV転送方式とクライアント側の存続期間
 
-| 状態 | AV payload到着時の動作 |
+| 操作・状態 | 動作 |
 |---|---|
-| 共有ハンドル公開済み、クライアント使用権が有効、収容可能な空き領域あり | 共有領域へ配置し、空のハンドルと正の`dataId`を持つ`MediaEvent`を発行する |
-| 共有ハンドル未取得、またはクライアント使用権を解放済み | イベント固有の正確な長さを持つファイル記述子を割り当て、当該ハンドルと正の`dataId`を持つ`MediaEvent`を発行する |
-| shared slotなしまたはAU > slot size | event-local exact-size fdへfallbackする |
-| allocation lease pool exhausted | 当該イベントを破棄し、filter status callbackで`OVERFLOW`を通知する。`av_allocation_drop`と`av_allocation_pool_exhausted`を増やし、filterは開始状態を維持する。既存allocationをevictしない。後続payloadごとに再度割り当てを試す |
-| イベント固有領域の割り当て失敗 | 当該イベントを破棄し、filter status callbackで`OVERFLOW`を通知する。`av_allocation_drop`と`av_event_local_allocation_failure`を増やし、filterは開始状態を維持する。AIDL戻り値は存在しないため`UNAVAILABLE`を返したことにしない。実体のない`MediaEvent`または`dataId`を公開せず、後続payloadごとに再度割り当てを試す |
-| `getAvSharedHandle()`再取得 | 新規または現在の共有クライアント使用権を有効にし、後続イベントで共有モードを再選択できるようにする |
+| AV payload到着 | 必要サイズのDMA-BUFを確保して内容を格納し、正の`avDataId`とFDを持つイベントを配送する。共有ハンドル取得を前提にしない |
+| 割り当て・mapping失敗 | 当該イベントを配送せず、既存の型付き診断と`OVERFLOW`を通知する。既存allocationを変更せず、後続payloadで再試行する |
+| `flush()`・再設定・論理close | 未配送のイベントは既存の配送取消経路で破棄する。配送済みallocationは返却まで保持する |
+| 一致するFDと正の`avDataId`、または空handleと正の`avDataId`の返却 | 当該Filterが保持するactive tokenのallocationを解放し、台帳から削除する。不一致・非active tokenは拒否する |
+| 一致するイベントFDと`avDataId=0`の返却 | handle利用終了を記録し、別途利用中のdata tokenは解放しない。token返却後にallocationを削除する |
+| 空handleと`avDataId=0`の返却 | 無処理で成功する |
+
+根拠はAOSP `hardware/interfaces/tv/tuner/aidl/android/hardware/tv/tuner/IFilter.aidl`の`getAvSharedHandle`・`releaseAvHandle`、`frameworks/base/media/jni/android_media_tv_Tuner.cpp`の`MediaEvent::getLinearBlock`・`finalize`・`DestroyCallback`。独自の固定枠数や累計保持バイト上限はこれらの契約から導出しない。
 
 ## A/V sync 方針
 
@@ -1381,7 +1377,7 @@ scan / tune workerのgeneric join failure、retry、reaper handoff、worker slot
 
 ### AV shared backing
 
-AV shared backing は、検証が成功するまで旧 backing を保持する。設定変更の後段失敗で旧 backing、公開済み handle、stream type を破棄してはならない。release、flush、clear は active/free map を中間不整合のまま公開してはならない。
+AV allocation ownerは、設定変更の後段失敗で配送済み領域、イベントFD、stream typeを破棄してはならない。release、flush、clearはactive token台帳を中間不整合のまま公開してはならない。
 
 ### test と release API の境界
 
@@ -1408,7 +1404,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-14 | `linkCaps`非宣言main type接続 | `UNAVAILABLE` |
 | T-AOSP-15 | TS main type `UNDEFINED` subtype source filter | linkCapsでTS→TSを広告する場合は接続成功 |
 | T-AOSP-16 | `getAvSharedHandle()` 成功 | fd付きNativeHandleとsize取得 |
-| T-AOSP-17 | `releaseAvHandle(fd付きhandle, 0)` 成功 | VTS互換shared handle release |
+| T-AOSP-17 | イベントFD返却と未初期化共有handleの取得 | AOSPのevent-local経路と返却契約 |
 | T-AOSP-18 | `releaseAvHandle(empty, 0)` | fdなし通知経路 |
 | T-AOSP-19 | `releaseAvHandle(empty, activeAvDataId)` | MediaEvent slot release |
 | T-AOSP-20 | `releaseAvHandle(event-local fd handle, matching activeAvDataId)` | 成功。foreign/mismatchは`INVALID_ARGUMENT` |
@@ -1598,7 +1594,7 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 
 - 機器の事実は`DeviceProbeCapability`で確定する。frontendは公開API全体が成立するものだけを公開する。LNBは検出成功、endpoint/lease条件、operation/valueごとの実処理証跡から公開可否を決め、`aidl_baseline_eligible`はAndroid 14 CTS baseline適合分類としてだけ保持する。px4/earth_pt1は電圧制御の証跡があるため該当operation/valueを公開し、tone、position、DiSEqC等の有効だが未対応の要求は副作用なしの`UNAVAILABLE`とする。
 - demux、filter、DVRの個数は本書「サービスオブジェクトの上限」で定め、同じ使用権台帳で強制する。
-- AVの転送、割り当て、解放は、本書「AV割り当て」、0-S-2のAV active token台帳、「AV転送方式とクライアント側の存続期間」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。`dataId=0`のhandle lease終了だけはboundedなclient lease stateにより冪等化し、正の`avDataId`はactive token台帳に存在する場合だけ解放を成功させる。
+- AVの転送、割り当て、解放は、本書「AV割り当て」、0-S-2のAV active token台帳、「AV転送方式とクライアント側の存続期間」で定める。要求サイズどおりのイベント専用ファイル記述子方式に一本化する。`dataId=0`のhandle lease終了だけはboundedなclient lease stateにより冪等化し、正の`avDataId`はactive token台帳に存在する場合だけ解放を成功させる。
 - ワーカーとLNBの停止・後片付けは、本書「ワーカー終了契約」と「LNB機器の資源規則」で定める。選局成否を固定時間で覆す専用timing profileや、公開経路で上限なく `join` を待つ処理を設けない。
 - パケット異常と基盤異常の影響範囲は、本書「失敗影響範囲」で定める。不正TS、TEI、連続性異常を基盤隔離へ昇格させない。
 - frontendで公開・受理する値は、本書「フロントエンド設定の反映表」で定める。ARIB B31の値域根拠は本書「フロントエンドの対応能力と状態」、現行日本語版との差分管理は本書「ARIB規範本文との静的照合」を正とする。
@@ -1609,7 +1605,7 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 
 - Filter / SharedFilter の producer drain は 0-S-3B の `FilterProducerDrainGate`、DVR の queue epoch / transaction token は `QueueEpochProtocol`、Filter / DVR `flush()` の共通 cleanup orchestration は `QueueCleanupUseCase` を唯一の正本とする。本節では対象 domain、公開結果、資源要求だけを定め、内部 state、permit / token、phase、commit / rollback を再定義しない。
 - demux、型別filter、DVRの個数とbyte予算は、frontend/backend/電源、demux base、main type別filter/FMQ、PES、AV、playback/record DVR、worker/callback/reaper/cleanup共有枠の`CapabilityClosure`ごとに原子的に検証・予約する。各閉包の失敗は、その閉包を必要とする能力だけを非公開にし、依存しないfrontend、filter種別、DVR種別へ波及させない。選択済み閉包を合成した後、query/openの同一性、`numDemux`、`filterCaps`、用途別個数、全byte台帳の横断不変条件を一括検証し、変更不能な`CapabilitySnapshot`として確定する。PES assemblerは全ての有効な明示PES `streamId` 0..255とwildcard `0xFFFF`を同じPES閉包で扱い、宣言長ありPESと映像stream IDの長さ0 PESを`MAX_PES_BUFFER_BYTES`および`pesRuntimeBudgetBytes`内で保持する。Tuner VTSは別途起動前環境へ結び付け、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
-- AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。AUDIO/VIDEO Filterは通常Filter FMQを所有せず、`openFilter(type, bufferSize, cb)`の`bufferSize`をFMQ byte台帳へ予約しない。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
+- AV配送の資源管理は「AV割り当て」を正とする。AUDIO/VIDEO Filterは通常Filter FMQを所有せず、`openFilter(type, bufferSize, cb)`の`bufferSize`をFMQ byte台帳へ予約しない。
 - ARIB STD-B10 5.13-E1 Part 2 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文、Fascicle 1 Chapter 5 5.1.1・Attachment 2 Chapter 5 5.1・Attachment 5 Chapter 5 5.1.1を製品対象video PESのPTS明示、Fascicle 2 Chapter 5.2.2をMPEG-2 AAC LC ADTSのsampling frequencyと1 raw-data-block/frameというexact frame duration、Fascicle 2 Attachment Chapter 2 2.1をaudioでは特定境界の先頭frameにPTSを要求するだけで全PESへの明示保証ではないことの証拠本文とする。Fascicle 3がoptional PES headerを委ねるITU-T H.222.0 2.4.3.7は、audio PTSが当該PES内で開始する最初のaudio access unitへ対応することの根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とする。Part 1 §4.9のproduct-level適合判断は `開発規則.md` を参照し、本書はSTD-B25デコード能力の実鍵組数、実PID数、pool共有単位、枯渇時のHAL結果だけを製品profileの事実として定義する。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
 
@@ -1659,7 +1655,7 @@ ARIB依存の規範主張は、**現行日本語版の版番号**と、**今回�
 
 ### サービスオブジェクトの上限
 
-サービスオブジェクトの公開個数、FMQ・PES・AVの各byte上限とSECTION one-shot追跡上限、worker・callback・reaper・cleanup枠は、選択済み`CapabilityClosure`のclaimから導出する。ある閉包候補を予約できない場合は、その閉包と推移的に依存する能力だけを候補から除外し、依存しないfrontend、filter main type、DVR用途を0へ落とさない。`ProductProfile`の優先順は共有資源を競合する閉包候補の選択順にだけ使用し、全能力を含む単一vectorの採否またはquery-only一括縮退へ使用しない。
+サービスオブジェクトの公開個数、FMQ・PESの各byte上限とSECTION one-shot追跡上限、worker・callback・reaper・cleanup枠は、選択済み`CapabilityClosure`のclaimから導出する。ある閉包候補を予約できない場合は、その閉包と推移的に依存する能力だけを候補から除外し、依存しないfrontend、filter main type、DVR用途を0へ落とさない。`ProductProfile`の優先順は共有資源を競合する閉包候補の選択順にだけ使用し、全能力を含む単一vectorの採否またはquery-only一括縮退へ使用しない。
 
 全閉包の合成後にquery/open、`numDemux`、`filterCaps`、用途別個数、全byte台帳の横断不変条件を検証する。整合したsnapshotを構成できない場合は全仮予約を戻してserviceを登録しないが、AV、PES、SECTION、DVR等の局所閉包不足だけを理由に、整合して残せる無関係な能力を全0にしてserviceを登録する状態は設けない。変更不能なsnapshotを個数、依存枠、byte予算、受付可否の正本とし、`CleanupPending`または`Quarantined`は解放完了まで使用中と数える。
 
@@ -1668,8 +1664,8 @@ ARIB依存の規範主張は、**現行日本語版の版番号**と、**今回�
 | LIVE_DEMUX | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
 | FILTER_TS | サービス全体 | 32 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
 | FILTER_SECTION | サービス全体 | 16 | `CapabilitySnapshot`の値 | 0 | なし | FMQ容量に加え、各公開filterについて1個のtarget metadataと256-bit（32 byte）の配送済みbitmapをSECTION閉包から予約する。section payloadは逐次配送し、table全体のpayload領域を別途予約しない。 |
-| FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 通常Filter FMQは所有しない。実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当て、物理領域は起動時に先取りしない。 |
-| FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 通常Filter FMQは所有しない。実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当て、物理領域は起動時に先取りしない。 |
+| FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 通常Filter FMQは所有しない。実payloadのサイズでイベント専用領域を割り当て、起動時には先取りしない。 |
+| FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 通常Filter FMQは所有しない。実payloadのサイズでイベント専用領域を割り当て、起動時には先取りしない。 |
 | FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じPES capabilityで扱う。宣言長ありPESは宣言長+6 byteをPES実行時台帳からclaimし、映像`0xE0..0xEF`の長さ0 PESは`MAX_PES_BUFFER_BYTES`と同台帳の上限内で組み立てる。stream ID別の非公開capabilityを設けない。 |
 | FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | PCRは通常payload FMQを持たず、`openFilter()`の`bufferSize`を`fmqRuntimeBudgetBytes`から予約しない。固定資源にはstatus callbackとA/V sync / PCR clockに必要なgeneration-local state（`PcrClockAnchor`等）を含む。 |
 | DVR_PLAYBACK | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | open時に全FMQ容量をFMQ台帳から予約し、configure時の処理中バッファーは`min(FMQ容量, 188 * 256)`だけをplayback処理台帳から予約する。`VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。 |
@@ -1677,17 +1673,16 @@ ARIB依存の規範主張は、**現行日本語版の版番号**と、**今回�
 
 ### AV割り当て
 
-| 項目 | 値 | 範囲 | 設計根拠 | 動作 |
-|---|---|---|---|---|
-| transport_profile | DUAL_SHARED_PLUS_EVENT_LOCAL | AV filterの世代ごと | AOSPの`MediaEvent`とJNIの二重表現 | 共有領域とイベント専用領域は同じ実行時バイト台帳を使用する。 |
-| fmq_byte_budget | 0 | AV filterの世代ごと | AVは通常Filter FMQを所有しない | `openFilter()`の`bufferSize`は入力として検証するがFMQを生成・予約しない。AV payloadはfilter/serviceのlive byte budgetだけから割り当てる。 |
-| filter_live_byte_budget | `CapabilitySnapshot.avPerFilterLiveBytes` | AV filterの世代ごと | 起動前に検証済みの製品メモリー予算 | 当該filterの未解放payload合計上限とする。FMQ領域とは別に数える。0ならAV能力を公開しない。 |
-| service_live_byte_budget | `CapabilitySnapshot.avRuntimeBudgetBytes` | サービスインスタンス | 起動前に検証済みの製品メモリー予算 | 起動時に物理領域を先取りせず、全AV filterの未解放実サイズ合計を上限以下に保つ。 |
-| allocation_size | イベントの実payloadバイト数 | 割り当てごと | MediaEvent payload | filter別残量とサービス全体残量の両方に収まる場合だけ正確なサイズを確保する。 |
-| implementation_pool | 非規範 | allocator内部 | 性能最適化 | 固定slot数・slot sizeは実装詳細であり、公開能力、AU上限、設計変更判定へ使わない。 |
-| allocation_failure | ASYNC_OVERFLOW_WITHOUT_MEDIA_EVENT | イベントごと | 割り当てトランザクション | 当該イベントを破棄し、`OVERFLOW` statusと型付き診断を通知する。`dataId`を公開せず、filter状態を維持し、次payloadで再試行する。使用中の割り当てを追い出さない。 |
-| data_id | CHECKED_POSITIVE_SIGNED_63_BIT_NEVER_REUSED | サービスの存続期間 | AV台帳 | IDを発行できない場合は割り当てを拒否する。 |
-| delivered_lifetime | ACTIVE_OR_RELEASE_ONLY_UNTIL_RELEASE | 割り当てごと | 解放規則 | 配送済み領域はflush、再設定、論理closeでは回収せず、解放要求まで保持する。 |
+AV配送には固定slot、同時保持件数上限、Filter別・サービス全体の独自live byte予算を設けない。未解放allocationの実サイズ合計と件数は診断に使い、受付拒否には使わない。メモリー・FDの確保失敗は実際のallocator結果で扱う。AOSPがHAL独自の予算を要求しているとは扱わない。将来独自制限を追加する場合は、防ぐ資源競合と正常再生に必要な容量の根拠を示す設計変更とする。
+
+| 項目 | 動作 |
+|---|---|
+| allocation_size | イベントの実payloadバイト数をDMA-BUF allocatorへ渡す。OS内部のページ丸めをpayload長に混入させない |
+| allocation_commit | 確保、mapping、copy、unmapping、FD identity確認が成功してからdata IDを発行し、台帳へ登録する。途中失敗で既存のallocationを変更しない |
+| allocation_failure | 当該イベントを破棄し、`OVERFLOW`と型付き診断を通知する。失敗したイベントの`dataId`を公開せず、後続payloadで再試行する |
+| data_id | 正のsigned 63 bitでサービス存続期間中再利用しない。発行不能なら拒否する |
+| delivered_lifetime | 配送済み領域はflush、再設定、論理closeで回収せず、返却または最終client参照の終了まで保持する |
+| parser_boundary | 既存のPES組立上限と単一eventの入力長検証は別契約である。保持件数・累計バイト予算として使わない |
 
 ### 失敗影響範囲
 

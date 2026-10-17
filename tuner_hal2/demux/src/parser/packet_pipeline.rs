@@ -647,23 +647,11 @@ pub enum PipelineDiagnostic {
         pid: PacketPid,
         filter_id: i32,
     },
-    AvSharedHandleNotExported {
-        pid: PacketPid,
-        filter_id: i32,
-    },
-    AvClientHandleReleased {
-        pid: PacketPid,
-        filter_id: i32,
-    },
     AvPayloadEmpty {
         pid: PacketPid,
         filter_id: i32,
     },
     AvPayloadOversized {
-        pid: PacketPid,
-        filter_id: i32,
-    },
-    AvNoFreeSlot {
         pid: PacketPid,
         filter_id: i32,
     },
@@ -698,11 +686,8 @@ impl PipelineDiagnostic {
             | Self::AvSharedBackingFailure { pid, .. }
             | Self::AvSharedBackingMissing { pid, .. }
             | Self::AvAuthoritativeTimestampUnavailable { pid, .. }
-            | Self::AvSharedHandleNotExported { pid, .. }
-            | Self::AvClientHandleReleased { pid, .. }
             | Self::AvPayloadEmpty { pid, .. }
             | Self::AvPayloadOversized { pid, .. }
-            | Self::AvNoFreeSlot { pid, .. }
             | Self::AvDataIdExhausted { pid, .. }
             | Self::TeiAssemblySuppressed { pid }
             | Self::DuplicatePacketAssemblySuppressed { pid }
@@ -802,24 +787,12 @@ impl PipelineDiagnostic {
         Self::AvAuthoritativeTimestampUnavailable { pid, filter_id }
     }
 
-    pub fn av_shared_handle_not_exported(pid: PacketPid, filter_id: i32) -> Self {
-        Self::AvSharedHandleNotExported { pid, filter_id }
-    }
-
-    pub fn av_client_handle_released(pid: PacketPid, filter_id: i32) -> Self {
-        Self::AvClientHandleReleased { pid, filter_id }
-    }
-
     pub fn av_payload_empty(pid: PacketPid, filter_id: i32) -> Self {
         Self::AvPayloadEmpty { pid, filter_id }
     }
 
     pub fn av_payload_oversized(pid: PacketPid, filter_id: i32) -> Self {
         Self::AvPayloadOversized { pid, filter_id }
-    }
-
-    pub fn av_no_free_slot(pid: PacketPid, filter_id: i32) -> Self {
-        Self::AvNoFreeSlot { pid, filter_id }
     }
 
     pub fn av_data_id_exhausted(pid: PacketPid, filter_id: i32) -> Self {

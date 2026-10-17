@@ -12,11 +12,10 @@ pub enum CapabilityResource {
     SectionTracker,
     FmqBytes,
     PesBytes,
-    AvBytes,
     PlaybackBytes,
 }
 
-const RESOURCE_COUNT: usize = 9;
+const RESOURCE_COUNT: usize = 8;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CapabilityClaims([usize; RESOURCE_COUNT]);

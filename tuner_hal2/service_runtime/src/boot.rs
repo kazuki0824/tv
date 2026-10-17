@@ -576,8 +576,6 @@ pub struct TunerServiceRuntime {
     capacity_ledger: CapacityLedger,
     release_only_filter_av_backings: BTreeMap<i32, AvSharedBacking>,
     release_only_filter_types: BTreeMap<i32, FilterOpenType>,
-    released_filter_av_shared_handle_leases:
-        BTreeMap<i32, maleicacid_tuner_hal2_demux::AvFileIdentity>,
     registry: RuntimeRegistry,
     object_table: RuntimeObjectTable,
     diagnostics: BoundedDiagnosticStore<StartupDiagnosticRecord>,
@@ -1706,12 +1704,8 @@ impl TunerServiceRuntime {
             capacity_ledger: CapacityLedger::default(),
             release_only_filter_av_backings: BTreeMap::new(),
             release_only_filter_types: BTreeMap::new(),
-            released_filter_av_shared_handle_leases: BTreeMap::new(),
             registry: RuntimeRegistry::with_av_runtime_limits(
                 capability_snapshot.av_max_event_bytes,
-                capability_snapshot.av_max_outstanding_events_per_filter,
-                capability_snapshot.av_per_filter_live_bytes,
-                capability_snapshot.av_runtime_budget_bytes,
             ),
             object_table: RuntimeObjectTable::default(),
             diagnostics: BoundedDiagnosticStore::default(),
@@ -3300,7 +3294,6 @@ impl TunerServiceRuntime {
         self.capacity_ledger.clear();
         self.release_only_filter_av_backings.clear();
         self.release_only_filter_types.clear();
-        self.released_filter_av_shared_handle_leases.clear();
         self.diagnostics.clear();
         self.descrambler_diagnostics.clear();
         self.child_open_rollback_diagnostics.clear();
@@ -3551,12 +3544,7 @@ impl TunerServiceRuntime {
                 ),
             }
         };
-        let mut registry = RuntimeRegistry::with_av_runtime_limits(
-            snapshot.av_max_event_bytes,
-            snapshot.av_max_outstanding_events_per_filter,
-            snapshot.av_per_filter_live_bytes,
-            snapshot.av_runtime_budget_bytes,
-        );
+        let mut registry = RuntimeRegistry::with_av_runtime_limits(snapshot.av_max_event_bytes);
         for entry in entries {
             if !retained_ids.contains(&entry.id.0) {
                 self.diagnostics

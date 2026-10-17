@@ -28,7 +28,11 @@ fn project_shared_av_handle(
     })?;
     Ok((
         TunerNativeHandle {
-            fds: vec![ParcelFileDescriptor::new(export.file)],
+            fds: export
+                .file
+                .into_iter()
+                .map(ParcelFileDescriptor::new)
+                .collect(),
             // JNIは整数要素をCodec2 global INFO indexとして解釈する。
             // 本製品は有効なindexを発行しないため空にする。
             ints: vec![],
@@ -384,11 +388,27 @@ mod tests {
     use maleicacid_tuner_hal2_demux::AvSharedHandleExport;
 
     #[test]
+    fn uninitialized_shared_handle_projects_empty_without_codec2_index() {
+        let (handle, size) = project_shared_av_handle(AvSharedHandleExport {
+            file: None,
+            size_bytes: 0,
+        })
+        .unwrap();
+        assert_eq!(size, 0);
+        assert!(handle.fds.is_empty());
+        assert!(handle.ints.is_empty());
+        assert_eq!(
+            classify_av_release_handle(&handle).unwrap(),
+            AvHandleReleaseDescriptor::Empty
+        );
+    }
+
+    #[test]
     fn shared_av_handle_projection_and_release_use_single_fd_without_codec2_index() {
         let file = std::fs::File::open("/dev/null").unwrap();
         let metadata = file.metadata().unwrap();
         let (handle, size) = project_shared_av_handle(AvSharedHandleExport {
-            file,
+            file: Some(file),
             size_bytes: 188,
         })
         .unwrap();
@@ -408,7 +428,7 @@ mod tests {
     #[test]
     fn shared_av_handle_release_rejects_legacy_codec2_index_and_extra_fds() {
         let (mut handle, _) = project_shared_av_handle(AvSharedHandleExport {
-            file: std::fs::File::open("/dev/null").unwrap(),
+            file: Some(std::fs::File::open("/dev/null").unwrap()),
             size_bytes: 188,
         })
         .unwrap();
