@@ -8,6 +8,8 @@ import android.graphics.SurfaceTexture
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.media.tv.TvInputService
+import android.media.tv.TvTrackInfo
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.TunerUtils
 import android.media.tv.tuner.filter.Filter
@@ -760,32 +762,7 @@ class PlaybackFilterAdmissionTest {
             val oldAudio = fixture.avFilter(true)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
             val audioDecoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
-            val key = ServiceKey(4, 0x4010, 101)
-            val channel =
-                TunerController.ResolvedChannel(
-                    null,
-                    "admission-test",
-                    key,
-                    1,
-                    "test",
-                    "1",
-                    "ISDB_T",
-                    FrequencyHz(473_000_000L),
-                    StreamSelector.NONE,
-                    null,
-                    null,
-                )
-            val selection =
-                TunerController.AvStreamSelection(
-                    key,
-                    TsPid(0x100),
-                    AribElementaryStream(TsPid(0x101), 0x1b, null, null, null),
-                    AribElementaryStream(TsPid(0x110), 0x0f, null, null, null),
-                )
-            fixture.executor.callControl(5_000L) {
-                ReflectionHelpers.setField(fixture.pipeline, "activeChannel", channel)
-                ReflectionHelpers.setField(fixture.pipeline, "activeSelection", selection)
-            }
+            val selection = fixture.audioSelection()
             assertTrue(fixture.pipeline.switchAudio(fixture.tuner, selection).switchedAudio)
             assertEquals(0, Shadow.extract<NativeFilter>(oldAudio).closes)
             val next = selection.copy(audio = selection.audio!!.copy(elementaryPid = TsPid(0x111)))
@@ -800,6 +777,59 @@ class PlaybackFilterAdmissionTest {
             fixture.drain()
             assertEquals(0, Shadow.extract<NativeMediaEvent>(stale).blockReads)
             assertEquals(1, Shadow.extract<NativeMediaEvent>(stale).releases)
+        }
+    }
+
+    @Test
+    fun failedAudioPidSwitchCanRecoverSameSelectionWithoutReplacingVideo() {
+        for (stage in listOf("close", "open", "configure", "start")) {
+            Fixture().use { fixture ->
+                fixture.decoder(false)
+                fixture.decoder(true)
+                val video = fixture.avFilter(false)
+                val oldAudio = fixture.avFilter(true)
+                val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+                val selection = fixture.audioSelection()
+                val next = selection.copy(audio = selection.audio!!.copy(elementaryPid = TsPid(0x111)))
+                val nativeTuner = Shadow.extract<NativeTuner>(fixture.tuner)
+                val nativeOld = Shadow.extract<NativeFilter>(oldAudio)
+                if (stage == "close") {
+                    nativeOld.closeResult = Tuner.RESULT_UNKNOWN_ERROR
+                } else {
+                    nativeTuner.failNextOpenAt = stage
+                }
+                val session = fixture.audioSession(selection, next)
+                val oldTrack = TunerSelectionPolicy.trackIdForAudio(selection.audio!!)
+                val newTrack = TunerSelectionPolicy.trackIdForAudio(next.audio!!)
+                assertFalse(fixture.selectAudio(session, newTrack), stage)
+                assertEquals(oldTrack, ReflectionHelpers.getField<String>(session, "preferredAudioTrackId"), stage)
+                assertTrue(ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState") is PlaybackStartState.Started, stage)
+                assertEquals(null, ReflectionHelpers.getField<Filter?>(fixture.pipeline, "audioFilter"), stage)
+                assertEquals(selection, ReflectionHelpers.getField<Any>(fixture.pipeline, "activeSelection"), stage)
+                val cleanup = ReflectionHelpers.getField<ResourceCleanup>(fixture.pipeline, "resourceCleanup")
+                assertEquals(stage == "close", cleanup.hasPending, stage)
+                val stale = mappedMediaEvent()
+                deliver(oldAudio, stale)
+                fixture.drain()
+                assertEquals(0, Shadow.extract<NativeMediaEvent>(stale).blockReads, stage)
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(stale).releases, stage)
+                nativeOld.closeResult = Tuner.RESULT_SUCCESS
+                // Sessionが復元した旧選択も実Filter不在ならnoopにせず再取得する。
+                assertTrue(fixture.selectAudio(session, oldTrack), stage)
+                assertTrue(ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState") is PlaybackStartState.Started, stage)
+                assertFalse(cleanup.hasPending, stage)
+                val recovered = ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter")
+                assertTrue(recovered !== oldAudio, stage)
+                val sample = mappedMediaEvent()
+                deliver(recovered, sample)
+                fixture.drain()
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(sample).blockReads, stage)
+                assertEquals(0, Shadow.extract<NativeFilter>(video).closes, stage)
+                assertTrue(decoder === ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder"), stage)
+                assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest(), stage)
+                assertTrue(fixture.selectAudio(session, newTrack), stage)
+                assertEquals(next, ReflectionHelpers.getField<Any>(fixture.pipeline, "activeSelection"), stage)
+            }
         }
     }
 
@@ -902,6 +932,139 @@ class PlaybackFilterAdmissionTest {
                 "onSubtitlePes",
                 { _: Long, _: String, payload: ByteArray, _: Any -> captionPayloads += payload },
             )
+        }
+
+        private val sessionCaptionExecutors = mutableListOf<LifecycleSerialExecutor>()
+
+        // Android Session通知と本番Session→Controller→Pipelineを通し、字幕native初期化だけを省く。
+        // 同じSessionの選択・通知・字幕寿命を一つのfixtureとして初期化する。
+        @Suppress("LongMethod")
+        fun audioSession(
+            selection: TunerController.AvStreamSelection,
+            next: TunerController.AvStreamSelection,
+        ): MaleicacidLiveSession {
+            val unsafe =
+                sun.misc.Unsafe::class.java
+                    .getDeclaredField(
+                        "theUnsafe",
+                    ).apply { isAccessible = true }
+                    .get(null) as sun.misc.Unsafe
+            val session = unsafe.allocateInstance(MaleicacidLiveSession::class.java) as MaleicacidLiveSession
+            val controller = unsafe.allocateInstance(TunerController::class.java) as TunerController
+            ReflectionHelpers.setField(controller, "currentTune", ReflectionHelpers.getField<Any>(pipeline, "activeChannel"))
+            ReflectionHelpers.setField(controller, "tuner", tuner)
+            ReflectionHelpers.setField(controller, "playbackPipeline", pipeline)
+            ReflectionHelpers.setField(session, "tunerController", controller)
+            ReflectionHelpers.setField(session, "currentService", selection.serviceKey)
+            ReflectionHelpers.setField(session, "dualMonoPresentation", PlaybackPipeline.DualMonoPresentation.MAIN)
+            ReflectionHelpers.setField(session, "preferredAudioTrackId", TunerSelectionPolicy.trackIdForAudio(selection.audio!!))
+            val programs =
+                com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot(
+                    discoveryProfile = 0,
+                    ingestSequence = 0L,
+                    events = emptyList(),
+                    updateWindows = emptyList(),
+                    semanticFactsByServiceKey = emptyMap(),
+                    descriptorDiagnostics = emptyList(),
+                    parserDiagnostics = emptyList(),
+                )
+            val service =
+                com.maleicacid.tvinput.aribsi.AribService(
+                    selection.serviceKey,
+                    "test",
+                    serviceType = 1,
+                    pcrPid = selection.pcrPid,
+                    streams = listOfNotNull(selection.video, selection.audio, next.audio),
+                )
+            ReflectionHelpers.setField(
+                session,
+                "latestLiveSnapshot",
+                com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot(
+                    0L,
+                    programs,
+                    0L,
+                    listOf(service),
+                    emptyList(),
+                    emptyMap(),
+                    emptyList(),
+                    emptyMap(),
+                    emptyList(),
+                    emptyList(),
+                ),
+            )
+            val signature =
+                AvPlaybackSignature(
+                    selection.serviceKey,
+                    selection.pcrPid,
+                    selection.video?.elementaryPid,
+                    selection.video?.streamType,
+                    selection.audio?.elementaryPid,
+                    selection.audio?.streamType,
+                    true,
+                    false,
+                )
+            ReflectionHelpers.setField(session, "playbackState", PlaybackStartState.Started(signature, 7L))
+            for (name in listOf("captionController", "superimposeController")) {
+                val caption = unsafe.allocateInstance(AribCaptionController::class.java) as AribCaptionController
+                ReflectionHelpers.setField(caption, "released", AtomicBoolean(true))
+                ReflectionHelpers.setField(caption, "pesAdmissionLock", Any())
+                val captionExecutor = LifecycleSerialExecutor("closed audio-switch caption fixture")
+                sessionCaptionExecutors += captionExecutor
+                ReflectionHelpers.setField(caption, "executor", captionExecutor)
+                ReflectionHelpers.setField(session, name, caption)
+            }
+            TvInputService.Session::class.java
+                .getDeclaredField("mLock")
+                .apply { isAccessible = true }
+                .set(session, Any())
+            TvInputService.Session::class.java
+                .getDeclaredField(
+                    "mPendingActions",
+                ).apply { isAccessible = true }
+                .set(session, mutableListOf<Runnable>())
+            return session
+        }
+
+        fun selectAudio(
+            session: MaleicacidLiveSession,
+            id: String,
+        ): Boolean =
+            MaleicacidLiveSession::class.java
+                .getDeclaredMethod(
+                    "onSelectTrackOnSessionExecutor",
+                    Int::class.javaPrimitiveType,
+                    String::class.java,
+                ).apply { isAccessible = true }
+                .invoke(session, TvTrackInfo.TYPE_AUDIO, id) as Boolean
+
+        fun audioSelection(): TunerController.AvStreamSelection {
+            val key = ServiceKey(4, 0x4010, 101)
+            val channel =
+                TunerController.ResolvedChannel(
+                    null,
+                    "admission-test",
+                    key,
+                    1,
+                    "test",
+                    "1",
+                    "ISDB_T",
+                    FrequencyHz(473_000_000L),
+                    StreamSelector.NONE,
+                    null,
+                    null,
+                )
+            val selection =
+                TunerController.AvStreamSelection(
+                    key,
+                    TsPid(0x100),
+                    AribElementaryStream(TsPid(0x101), 0x1b, null, null, null),
+                    AribElementaryStream(TsPid(0x110), 0x0f, null, null, null),
+                )
+            executor.callControl(5_000L) {
+                ReflectionHelpers.setField(pipeline, "activeChannel", channel)
+                ReflectionHelpers.setField(pipeline, "activeSelection", selection)
+            }
+            return selection
         }
 
         fun released(): Boolean = ReflectionHelpers.getField<AtomicBoolean>(pipeline, "released").get()
@@ -1051,6 +1214,7 @@ class PlaybackFilterAdmissionTest {
                 .invoke(pipeline, *arguments)
 
         override fun close() {
+            sessionCaptionExecutors.forEach { it.shutdownNow() }
             try {
                 pipeline.close()
             } finally {
@@ -1142,6 +1306,8 @@ class PlaybackFilterAdmissionTest {
 
     @Implements(Tuner::class)
     class NativeTuner {
+        var failNextOpenAt: String? = null
+
         @Implementation(methodName = "__constructor__")
         @Suppress("UNUSED_PARAMETER")
         private fun construct(
@@ -1157,7 +1323,10 @@ class PlaybackFilterAdmissionTest {
             bufferSize: Long,
             executor: Executor,
             callback: FilterCallback,
-        ): Filter {
+        ): Filter? {
+            val failure = failNextOpenAt
+            failNextOpenAt = null
+            if (failure == "open") return null
             assertTrue(bufferSize > 0L)
             val filter =
                 ReflectionHelpers.callConstructor(
@@ -1174,12 +1343,17 @@ class PlaybackFilterAdmissionTest {
                 )
             ReflectionHelpers.setField(filter, "mSubtype", sdkSubtype)
             filter.setCallback(callback, executor)
+            val native = Shadow.extract<NativeFilter>(filter)
+            if (failure == "configure") native.configureResult = Tuner.RESULT_UNKNOWN_ERROR
+            if (failure == "start") native.startResult = Tuner.RESULT_UNKNOWN_ERROR
             return filter
         }
     }
 
     @Implements(Filter::class)
     class NativeFilter {
+        var configureResult = Tuner.RESULT_SUCCESS
+        var startResult = Tuner.RESULT_SUCCESS
         var closes = 0
         var flushes = 0
         var closeThread: String? = null
@@ -1218,10 +1392,10 @@ class PlaybackFilterAdmissionTest {
             type: Int,
             subtype: Int,
             configuration: FilterConfiguration,
-        ): Int = Tuner.RESULT_SUCCESS
+        ): Int = configureResult
 
         @Implementation
-        fun nativeStartFilter(): Int = Tuner.RESULT_SUCCESS
+        fun nativeStartFilter(): Int = startResult
 
         @Implementation
         fun nativeStopFilter(): Int = Tuner.RESULT_SUCCESS
