@@ -1,3 +1,9 @@
+## スキャン中止後のFrontend close
+
+- #116: close全体の独立期限とclose専用の期限超過reaper移譲を除去。停止要求後にworkerの実終了を待ち、既存reaperの回収も待ってからlive data・電源を解放する。実際のcleanup失敗は保持する。
+- 採用px4_drvのPTX_SET_CHANNELはカーネル内でロック待ちを実行し、HALの取消しフラグでは中断できない。有限の下位I/O終了を待つ。driver永久停止時のclose完了は保証しない。
+- hostでcloseが回収前に戻らないことと、個別I/O期限を越えても実終了後に成功することを検証。実機34の再現操作は未検証。
+
 ## AVCのAU分割と放送HRDによるPTS対応
 
 - #116: TS AVCのPES全体配送をAUDで区切る完成AU配送へ変更。PESを跨ぐ開始コード・AU、PPS→SPS対応、picture timing / buffering period SEI、delay counter / PTS wrapと有理数tickをHALで扱い、TISには解析を移さない。

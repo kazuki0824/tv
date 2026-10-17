@@ -554,12 +554,6 @@ impl FrontendWorkerReaperHandle {
         self.runtime.enqueue_with_reservation(job, reservation)
     }
 
-    fn is_pending(&self, frontend_id: i32, kind: FrontendWorkerKind) -> Result<bool, HalError> {
-        self.runtime
-            .pending_value(&(frontend_id, kind))
-            .map(|value| value.is_some())
-    }
-
     fn has_pending_frontend(&self, frontend_id: i32) -> Result<bool, HalError> {
         let tune = (frontend_id, FrontendWorkerKind::Tune);
         let scan = (frontend_id, FrontendWorkerKind::Scan);
@@ -573,7 +567,8 @@ impl FrontendWorkerReaperHandle {
     ) -> Result<(), HalError> {
         let tune = (frontend_id, FrontendWorkerKind::Tune);
         let scan = (frontend_id, FrontendWorkerKind::Scan);
-        self.runtime.wait_until_released([&tune, &scan], budget)
+        self.runtime
+            .wait_until_released([&tune, &scan], Some(budget))
     }
 
     fn pending_state(
@@ -5919,16 +5914,14 @@ fn close_frontend_workers_and_live_data_with_sink(
     target: FrontendWorkerCleanupTarget,
 ) -> Result<(), HalError> {
     let reaper = ensure_frontend_worker_reaper(&runtime)?;
-    if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
-        || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
-    {
-        return Err(HalError::cleanup_failed(
-            "フロントエンドワーカーの後片付け未完了",
-            "フロントエンドワーカーの終了処理は回収処理が引き続き所有しています",
-        ));
-    }
+    // closeは取消し後の実回収を完了して返す。経過時間を再試行不能なclose失敗へ変換しない。
+    let tune_key = (frontend_id, FrontendWorkerKind::Tune);
+    let scan_key = (frontend_id, FrontendWorkerKind::Scan);
+    reaper
+        .runtime
+        .wait_until_released([&tune_key, &scan_key], None)?;
     let sink = cleanup_diagnostic_sink?;
-    let (generation, tickets, fenced_demux_generations) = {
+    let tickets = {
         let mut guard = lock_runtime(
             &runtime,
             "service runtime lock poisoned while preparing frontend close reaping",
@@ -5952,228 +5945,93 @@ fn close_frontend_workers_and_live_data_with_sink(
             FrontendWorkerKind::Scan,
             reason,
         );
-        let tickets = FrontendWorkerReaperTicketGroup::new(vec![
+        vec![
             (FrontendWorkerKind::Tune, tune_ticket),
             (FrontendWorkerKind::Scan, scan_ticket),
-        ]);
-        let fenced_demux_generations =
-            match current_bound_demux_generation_snapshot(&guard, frontend_id) {
-                Ok(snapshot) => snapshot,
-                Err(snapshot_error) => {
-                    guard.mark_service_critical();
-                    drop(tickets);
-                    return Err(snapshot_error);
-                }
-            };
-        (generation, tickets, fenced_demux_generations)
+        ]
     };
 
-    let worker_io_deadline = {
-        let guard = lock_runtime(
-            &runtime,
-            "フロントエンド閉鎖のワーカー期限取得中にサービス状態ロックが汚染されました",
-        )?;
-        Duration::from_millis(guard.capability_snapshot().worker_io_deadline_ms)
-    };
-    let wait_started_at = Instant::now();
-    let wait_outcome = match wait_started_at.checked_add(worker_io_deadline) {
-        Some(deadline) => tickets.wait_until_deadline(deadline),
-        None => FrontendWorkerStopWaitOutcome::Failed {
-            tickets,
-            error: HalError::cleanup_failed(
-                "フロントエンドワーカーの後片付け",
-                "フロントエンド閉鎖のワーカー期限が表現範囲を超えました",
-            ),
-        },
-    };
-
-    let (tickets, public_error) = match wait_outcome {
-        FrontendWorkerStopWaitOutcome::Completed(outcomes) => {
-            let mut report = FrontendWorkerCleanupExecutionReport::new();
-            for (kind, outcome) in &outcomes {
-                report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
-                    target,
-                    *kind,
-                    frontend_worker_stop_outcome_generation(outcome),
-                    frontend_worker_stop_result_from_outcome(outcome),
-                ));
-            }
-            if let Some((_, scan_outcome)) = outcomes
-                .iter()
-                .find(|(kind, _)| *kind == FrontendWorkerKind::Scan)
-            {
-                let scan_cancel_result = record_scan_cancelled_from_stop_outcome(
-                    &runtime,
-                    frontend_id,
-                    scan_outcome,
-                    reason,
-                );
-                report.push(FrontendWorkerCleanupStepOutcome::record_scan_cancelled(
-                    target,
-                    frontend_worker_stop_outcome_generation(scan_outcome),
-                    scan_cancel_result,
-                ));
-            }
-
-            let terminal_acceptance_result =
-                accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
-            let close_result =
-                close_frontend_live_data_and_unbind_after_worker_completion(&runtime, frontend_id);
-            let mut terminal_result = Ok(());
-            for (_, outcome) in outcomes {
-                if let Some(error) = frontend_worker_stop_failure(&outcome) {
-                    terminal_result = Err(error);
-                    break;
-                }
-            }
-            terminal_result = match (terminal_result, terminal_acceptance_result) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                    "frontend worker termination and terminal acceptance both failed",
-                    primary,
-                    cleanup,
-                )),
-            };
-
-            report.push(
-                FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
-                    target,
-                    close_result.clone(),
-                ),
-            );
-            let fixed_power_result =
-                FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
-                    &runtime,
-                    crate::registry::FrontendRuntimeId(frontend_id),
-                );
-
-            let terminal_and_close_result = match (terminal_result, close_result) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                    "frontend worker termination and live-data cleanup both failed",
-                    primary,
-                    cleanup,
-                )),
-            };
-            let cleanup_result = match (terminal_and_close_result, fixed_power_result) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                    "frontend close cleanup and fixed LNB power cleanup both failed",
-                    primary,
-                    cleanup,
-                )),
-            };
-            let public_error = cleanup_result.clone().err();
-            let record_result = sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
-                FrontendWorkerCleanupDiagnosticKind::FrontendClose,
-                target,
-                report,
-                public_error,
-            ));
-            return compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result);
-        }
-        FrontendWorkerStopWaitOutcome::TimedOut(tickets) => (
-            tickets,
-            HalError::cleanup_failed(
-                "フロントエンドワーカーの後片付け未完了",
-                "フロントエンドワーカーがI/O期限内に終了しませんでした",
-            ),
-        ),
-        FrontendWorkerStopWaitOutcome::Failed { tickets, error } => (tickets, error),
-    };
-
-    let completion_sink = sink.clone();
-    let deadline_diagnostic_sink = sink.clone();
-    let job = FrontendWorkerReaperJob {
-        keys: vec![
-            (frontend_id, FrontendWorkerKind::Tune),
-            (frontend_id, FrontendWorkerKind::Scan),
-        ],
-        continuation_kind: None,
-        tickets,
-        transferred_at: Instant::now(),
-        deadline_action: Some(Box::new(move |runtime| {
-            handle_frontend_worker_reaper_deadline(
-                runtime,
-                target,
-                FrontendWorkerKind::Tune,
-                generation,
-                fenced_demux_generations,
-                deadline_diagnostic_sink,
-            );
-        })),
-        completion_action: Box::new(move |runtime, outcomes, _deadline_elapsed| {
-            let terminal_acceptance_result =
-                accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
-            let close_result =
-                close_frontend_live_data_and_unbind_after_worker_completion(runtime, frontend_id);
-            let fixed_power_result =
-                FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
-                    runtime,
-                    crate::registry::FrontendRuntimeId(frontend_id),
-                );
-            let mut report = FrontendWorkerCleanupExecutionReport::new();
-            for (kind, outcome) in outcomes {
-                report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
-                    target,
-                    kind,
-                    frontend_worker_stop_outcome_generation(&outcome),
-                    frontend_worker_stop_result_from_outcome(&outcome),
-                ));
-            }
-            report.push(
-                FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
-                    target,
-                    close_result.clone(),
-                ),
-            );
-            let terminal_and_close_result = match (terminal_acceptance_result, close_result) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                    "フロントエンド終端の受理とライブデータの後片付けが両方失敗しました",
-                    primary,
-                    cleanup,
-                )),
-            };
-            let finalizer_result = match (terminal_and_close_result, fixed_power_result) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                    "フロントエンド終端の後片付けと固定LNB電源の後片付けが両方失敗しました",
-                    primary,
-                    cleanup,
-                )),
-            };
-            if let Err(error) = finalizer_result {
-                report.push(
-                    FrontendWorkerCleanupStepOutcome::close_frontend_workers_and_live_data(
-                        target,
-                        Err(error),
-                    ),
-                );
-            }
-            let public_error = report.first_error();
-            record_frontend_cleanup_diagnostic_after_terminal(
-                &completion_sink,
-                FrontendWorkerCleanupDiagnosticRecord::new(
-                    FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
-                    target,
-                    report,
-                    public_error,
-                ),
-            );
-        }),
-    };
-    if let Err(error) = reaper.enqueue(job) {
-        TunerServiceRuntime::mark_shared_service_critical(&runtime);
-        return Err(error);
+    // 全workerへ停止要求を発行済み。runtime lockを保持せずjoinし、結果を検査する。
+    let outcomes: Vec<_> = tickets
+        .into_iter()
+        .map(|(kind, ticket)| (kind, ticket.complete()))
+        .collect();
+    let mut report = FrontendWorkerCleanupExecutionReport::new();
+    for (kind, outcome) in &outcomes {
+        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+            target,
+            *kind,
+            frontend_worker_stop_outcome_generation(outcome),
+            frontend_worker_stop_result_from_outcome(outcome),
+        ));
+    }
+    if let Some((_, scan_outcome)) = outcomes
+        .iter()
+        .find(|(kind, _)| *kind == FrontendWorkerKind::Scan)
+    {
+        let scan_cancel_result =
+            record_scan_cancelled_from_stop_outcome(&runtime, frontend_id, scan_outcome, reason);
+        report.push(FrontendWorkerCleanupStepOutcome::record_scan_cancelled(
+            target,
+            frontend_worker_stop_outcome_generation(scan_outcome),
+            scan_cancel_result,
+        ));
     }
 
-    Err(public_error)
+    let terminal_acceptance_result = accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
+    let close_result =
+        close_frontend_live_data_and_unbind_after_worker_completion(&runtime, frontend_id);
+    let mut terminal_result = Ok(());
+    for (_, outcome) in outcomes {
+        if let Some(error) = frontend_worker_stop_failure(&outcome) {
+            terminal_result = Err(error);
+            break;
+        }
+    }
+    terminal_result = match (terminal_result, terminal_acceptance_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+            "frontend worker termination and terminal acceptance both failed",
+            primary,
+            cleanup,
+        )),
+    };
+
+    report.push(
+        FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(target, close_result.clone()),
+    );
+    let fixed_power_result = FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
+        &runtime,
+        crate::registry::FrontendRuntimeId(frontend_id),
+    );
+
+    let terminal_and_close_result = match (terminal_result, close_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+            "frontend worker termination and live-data cleanup both failed",
+            primary,
+            cleanup,
+        )),
+    };
+    let cleanup_result = match (terminal_and_close_result, fixed_power_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+            "frontend close cleanup and fixed LNB power cleanup both failed",
+            primary,
+            cleanup,
+        )),
+    };
+    let public_error = cleanup_result.clone().err();
+    let record_result = sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
+        FrontendWorkerCleanupDiagnosticKind::FrontendClose,
+        target,
+        report,
+        public_error,
+    ));
+    compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result)
 }
 
 #[cfg(test)]
@@ -6258,6 +6116,7 @@ mod scan_contract_tests {
         let frontend_id = 1_000_003;
         let mut capability = crate::CapabilitySnapshot::product_default();
         capability.worker_io_deadline_ms = 20;
+        capability.worker_reaper_deadline_ms = 20;
         let runtime = Arc::new(Mutex::new(
             TunerServiceRuntime::from_capability_snapshot_for_test(capability),
         ));
@@ -6342,12 +6201,14 @@ mod scan_contract_tests {
         };
 
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let close_result = close_frontend_workers_and_live_data(
-            Arc::clone(&runtime),
-            frontend_id,
-            FrontendWorkerCancelReason::FrontendClosing,
-        );
-        assert!(close_result.is_err());
+        let close_runtime = Arc::clone(&runtime);
+        let close = std::thread::spawn(move || {
+            close_frontend_workers_and_live_data(
+                close_runtime,
+                frontend_id,
+                FrontendWorkerCancelReason::FrontendClosing,
+            )
+        });
         assert!(cancel_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap());
         assert!(runtime
             .lock()
@@ -6356,7 +6217,9 @@ mod scan_contract_tests {
             .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
             .contains(&crate::registry::DemuxRuntimeId(demux_id)));
 
+        assert!(!close.is_finished(), "回収前にcloseを返してはならない");
         release_tx.send(()).unwrap();
+        close.join().unwrap().expect("実回収後にcloseが成功する");
         for _ in 0..100 {
             if runtime
                 .lock()
@@ -6373,10 +6236,11 @@ mod scan_contract_tests {
     }
 
     #[test]
-    fn frontend_close_waits_for_prompt_worker_exit_before_returning() {
+    fn frontend_close_waits_beyond_individual_io_deadline_for_worker_exit() {
         let frontend_id = 1_000_004;
         let mut capability = crate::CapabilitySnapshot::product_default();
-        capability.worker_io_deadline_ms = 250;
+        capability.worker_io_deadline_ms = 1;
+        capability.worker_reaper_deadline_ms = 250;
         let runtime = Arc::new(Mutex::new(
             TunerServiceRuntime::from_capability_snapshot_for_test(capability),
         ));
