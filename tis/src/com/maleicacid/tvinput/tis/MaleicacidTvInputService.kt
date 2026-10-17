@@ -95,5 +95,4 @@ class MaleicacidTvInputService : TvInputService() {
         userUnlockDrainReceiver = null
         userUnlockDrainRegistered = false
     }
-
 }
