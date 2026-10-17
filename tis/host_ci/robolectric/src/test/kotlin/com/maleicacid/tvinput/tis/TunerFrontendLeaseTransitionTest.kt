@@ -182,6 +182,101 @@ class TunerFrontendLeaseTransitionTest {
     }
 
     @Test
+    fun sectionOverflowCountsOnlyCurrentSdkFilterAndTuneGeneration() {
+        val controller = controller()
+        val engine = AribSiEngine(RuntimeEnvironment.getApplication())
+        val ingest = SectionIngestController(engine)
+        controller.setSectionIngestController(ingest)
+        NativeTuner.successfulTunes = true
+        try {
+            check(controller.tuneForScan(terrestrial()).success)
+            val sdk = checkNotNull(NativeTuner.current)
+            val pat = sdk.filters.first()
+            val other = sdk.filters.first { it !== pat }
+            val callback = sdk.filterCallbacks.getValue(pat)
+            callback.onFilterStatusChanged(pat, Filter.STATUS_DATA_READY)
+            callback.onFilterStatusChanged(pat, Filter.STATUS_HIGH_WATER)
+            controller.currentGeneration()
+            check(ingest.filterOverflowCount == 0)
+
+            // 同世代でも別Filterの実体を渡したstatusは計上しない。
+            callback.onFilterStatusChanged(other, Filter.STATUS_OVERFLOW)
+            controller.currentGeneration()
+            check(ingest.filterOverflowCount == 0)
+
+            callback.onFilterStatusChanged(pat, Filter.STATUS_OVERFLOW)
+            callback.onFilterStatusChanged(pat, Filter.STATUS_OVERFLOW or Filter.STATUS_DATA_READY)
+            controller.currentGeneration()
+            check(ingest.filterOverflowCount == 2)
+            check("filterOverflow=2" in ingest.diagnosticSummary())
+            check(ingest.inputDeliveryLossCount == 0)
+
+            // 同世代のclose後に遅延したcallbackも失効させる。
+            controller.closeSectionFilter(WellKnownSectionPid.PAT)
+            callback.onFilterStatusChanged(pat, Filter.STATUS_OVERFLOW)
+            controller.currentGeneration()
+            check(ingest.filterOverflowCount == 2)
+
+            val priorCount = sdk.filters.size
+            check(controller.tuneForScan(terrestrial()).success)
+            callback.onFilterStatusChanged(pat, Filter.STATUS_OVERFLOW)
+            val nextPat = sdk.filters[priorCount]
+            sdk.filterCallbacks.getValue(nextPat).onFilterStatusChanged(nextPat, Filter.STATUS_OVERFLOW)
+            controller.currentGeneration()
+            check(ingest.filterOverflowCount == 3)
+        } finally {
+            controller.release()
+            engine.close()
+        }
+    }
+
+    @Test
+    fun rejectedSectionReadCountsCurrentFilterButNotClosedFilterOfSameGeneration() {
+        val controller = controller()
+        val engine = AribSiEngine(RuntimeEnvironment.getApplication())
+        val ingest = SectionIngestController(engine)
+        controller.setSectionIngestController(ingest)
+        NativeTuner.successfulTunes = true
+        try {
+            check(controller.tuneForScan(terrestrial()).success)
+            val sdk = checkNotNull(NativeTuner.current)
+            val oldPat = sdk.filters.first()
+            val owner = ReflectionHelpers.getField<ControllerSerialExecutor>(controller, "sectionExecutor")
+            val slotsField = PrioritySerialExecutor::class.java.getDeclaredField("pendingDataSlots")
+            slotsField.isAccessible = true
+            val slots = slotsField.get(owner) as java.util.concurrent.Semaphore
+            val permits = slots.availablePermits()
+            check(permits > 0 && slots.tryAcquire(permits))
+            try {
+                val deliver =
+                    TunerController::class.java.declaredMethods.single { it.name.startsWith("deliverSectionRead") }
+                deliver.isAccessible = true
+                val generation = controller.currentGeneration()
+                val section = byteArrayOf(0x00, 0x00, 0x00)
+                controller.closeSectionFilter(WellKnownSectionPid.PAT)
+                deliver.invoke(controller, oldPat, WellKnownSectionPid.PAT.value, generation, section, section.size)
+                controller.currentGeneration()
+                check(ingest.inputDeliveryLossCount == 0)
+
+                val nextPat = sdk.filters.first { it !== oldPat && sdk.filterCallbacks.containsKey(it) }
+                // 現行PATが必要なので、closeされたPIDを同じgenerationで再登録する。
+                val newPat = controller.openSectionFilter(WellKnownSectionPid.PAT)
+                check(newPat.isOpen)
+                val activePat = sdk.filters.last()
+                check(activePat !== oldPat && activePat !== nextPat)
+                deliver.invoke(controller, activePat, WellKnownSectionPid.PAT.value, generation, section, section.size)
+                controller.currentGeneration()
+                check(ingest.inputDeliveryLossCount == 1)
+            } finally {
+                slots.release(permits)
+            }
+        } finally {
+            controller.release()
+            engine.close()
+        }
+    }
+
+    @Test
     fun successfulRetunesOpenFreshFiltersAndDeliverSections() {
         val controller = controller()
         val received = LinkedBlockingQueue<TsPid>()
@@ -333,6 +428,7 @@ class TunerFrontendLeaseTransitionTest {
         var closeCalls = 0
         var clearTuneListenerCalls = 0
         val filters = mutableListOf<Filter>()
+        val filterCallbacks = mutableMapOf<Filter, FilterCallback>()
         val applied = mutableListOf<Int>()
         private var heldType: Int? = null
 
@@ -449,6 +545,7 @@ class TunerFrontendLeaseTransitionTest {
             ReflectionHelpers.setField(filter, "mSubtype", sdkSubtype)
             filter.setCallback(callback, executor)
             filters += filter
+            filterCallbacks[filter] = callback
             return filter
         }
 

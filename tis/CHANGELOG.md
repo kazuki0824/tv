@@ -1,3 +1,15 @@
+# Section Filter拒否時の現行性再確認
+
+- 容量不足でcontroller data投入を拒否されたSectionは、既存control executorへ非同期で現行性判定を委譲する。閉鎖済みFilterの同一tune generationを新たな喪失として計上せず、現行Filterの拒否だけを既存のinputDeliveryLossに記録する。新しいqueue、worker、状態所有者は設けない。
+- Android 15 Robolectricに、同一generationでのFilter閉鎖後の遅延拒否と現行Filter拒否の対比を追加。実機検証は未実施。
+
+# TIS Section Filter overflowの現行性検証とscan候補別の配送喪失診断
+
+- FrameworkのSection Filter `STATUS_OVERFLOW`を、既存`SectionIngestController`へController受付拒否とは独立した診断件数として記録する。callbackは同期controller待機を行わずcontrolへ投入し、Filter実体・tune generation・現行状態の照合後だけ計数する。
+- scanの選局開始前に両カウンターの同一snapshotを保持し、候補ごとの増分を出す。再送でSI収集がCOMPLETEになっても候補内の喪失を消さず、過去候補の累積値だけで新候補の喪失を報告しない。
+- Android 15 Robolectricの既存Filter fixtureで現行、別Filter、close後、旧generation、DATA_READY、複合statusのcallbackを検査し、ホスト試験でCOMPLETE時の喪失保持と候補境界を検査する。新owner・追加queue・受付容量変更はない。
+- Android Soong、device atest、実機VTS、実波scanでのSection喪失低減の確認は実施していない。結果は対象HEADのCIで判定する。
+
 # TIS設計文書の観測履歴分離
 
 - 旧fixed20実波観測では配送損失19,530件中PID 0x12が12,942件であり、SDT-actual受信後破棄も観測した。現行のEIT入力限定とPAT受理時だけのPMT再評価は設計正本に残し、過去観測数とPR #197への変更経緯だけを設計書から削除した。

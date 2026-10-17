@@ -1172,6 +1172,23 @@ class TunerController(
                     if (status == Filter.STATUS_DATA_READY) return
                     val message = "section filter 状態 inputId=$inputId pid=$pid status=$status generation=$generation"
                     if ((status and Filter.STATUS_OVERFLOW) != 0) {
+                        // Framework callback lockの中ではownerを待たず、現行性判定だけをcontrolへ委譲する。
+                        runCatching {
+                            sectionExecutor.executeControl {
+                                if (!released && isCurrentSectionFilter(pid, generation, filter)) {
+                                    sectionIngestController?.recordFilterOverflow()
+                                }
+                            }
+                        }.onFailure { error ->
+                            if (!released) {
+                                Log.w(
+                                    LogTags.TIS,
+                                    "section filter overflow診断の投入に失敗しました " +
+                                        "inputId=$inputId pid=$pid generation=$generation",
+                                    error,
+                                )
+                            }
+                        }
                         Log.w(LogTags.TIS, message)
                     } else {
                         Log.d(LogTags.TIS, message)
@@ -1330,8 +1347,11 @@ class TunerController(
                     }
                 }
             }) {
-                if (!released && tuneAccepted && generation == tuneGeneration) {
-                    ingest?.recordInputDeliveryLoss(pid, tableId)
+                // callback側ではowner待機せず、close後の同世代旧Filterを誤計数しない。
+                sectionExecutor.executeControl {
+                    if (!released && isCurrentSectionFilter(pid, generation, filter)) {
+                        ingest?.recordInputDeliveryLoss(pid, tableId)
+                    }
                 }
             }
         }.onFailure { error ->
