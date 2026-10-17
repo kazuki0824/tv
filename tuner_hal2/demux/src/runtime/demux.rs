@@ -1822,7 +1822,7 @@ impl DemuxRuntime {
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             filter.clear_queued_payload_state();
             filter.reset_section_delivery_state();
-            filter.reset_audio_timestamp_association();
+            filter.reset_av_timestamp_association();
             filter.clear_pending_start_id();
         }
         if let Err(error) = drain.commit() {
@@ -2122,7 +2122,10 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn filter_av_active_allocation_count_for_test(&self, filter_id: i32) -> Option<usize> {
+    pub(crate) fn filter_av_active_allocation_count_for_test(
+        &self,
+        filter_id: i32,
+    ) -> Option<usize> {
         self.filter_av_backings
             .get(&filter_id)
             .map(AvSharedBacking::active_allocation_count)
@@ -2666,7 +2669,7 @@ impl DemuxRuntime {
         let filter_state_cleared = if let Some(filter) = self.filters.get_mut(&plan.filter_id) {
             filter.clear_queued_payload_state();
             filter.reset_section_delivery_state();
-            filter.reset_audio_timestamp_association();
+            filter.reset_av_timestamp_association();
             filter.clear_pending_start_id();
             true
         } else {
@@ -3292,7 +3295,7 @@ impl DemuxRuntime {
         };
         self.pipeline.reset_origin(origin);
         for filter in self.filters.values_mut() {
-            filter.reset_audio_timestamp_association_for_origin(origin);
+            filter.reset_av_timestamp_association_for_origin(origin);
         }
         true
     }
@@ -3973,7 +3976,7 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::filter_missing(sink_filter_id))?;
         filter.clear_queued_payload_state();
         filter.reset_section_delivery_state();
-        filter.reset_audio_timestamp_association();
+        filter.reset_av_timestamp_association();
         filter.clear_pending_start_id();
         match next_source_generation {
             Some(source_filter_generation) => {
@@ -4134,7 +4137,7 @@ impl DemuxRuntime {
         for filter in self.filters.values_mut() {
             filter.clear_queued_payload_state();
             filter.reset_section_delivery_state();
-            filter.reset_audio_timestamp_association();
+            filter.reset_av_timestamp_association();
             filter.clear_pending_start_id();
         }
         self.pcr_clock_anchor_store
@@ -4294,7 +4297,7 @@ impl DemuxRuntime {
             self.pipeline.reset_origin(origin);
             self.invalidate_all_pcr_clock_anchors();
             for filter in self.filters.values_mut() {
-                filter.reset_audio_timestamp_association_for_origin(origin);
+                filter.reset_av_timestamp_association_for_origin(origin);
             }
         }
     }
@@ -4432,7 +4435,7 @@ impl DemuxRuntime {
         });
         report.diagnostics.extend(downstream.diagnostics);
         self.mark_filters_failed_for_generation_overflow(&report.diagnostics);
-        self.reset_audio_timestamp_associations_after_packet_gap(
+        self.reset_av_timestamp_associations_after_packet_gap(
             validated.pid(),
             origin,
             &report.diagnostics,
@@ -4619,7 +4622,7 @@ impl DemuxRuntime {
         }
     }
 
-    fn reset_audio_timestamp_associations_after_packet_gap(
+    fn reset_av_timestamp_associations_after_packet_gap(
         &mut self,
         pid: crate::packet_pipeline::PacketPid,
         origin: TsInputOrigin,
@@ -4666,7 +4669,7 @@ impl DemuxRuntime {
                 .pipeline_view()
                 .accepts_packet_pid_from_origin(pid, origin)
             {
-                filter.reset_audio_timestamp_association_for_origin(origin);
+                filter.reset_av_timestamp_association_for_origin(origin);
             }
         }
     }

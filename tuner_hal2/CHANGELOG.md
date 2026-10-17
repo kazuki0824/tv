@@ -1,3 +1,10 @@
+## AVCのAU分割と放送HRDによるPTS対応
+
+- #116: TS AVCのPES全体配送をAUDで区切る完成AU配送へ変更。PESを跨ぐ開始コード・AU、PPS→SPS対応、picture timing / buffering period SEI、delay counter / PTS wrapと有理数tickをHALで扱い、TISには解析を移さない。
+- 共通bit readerをrecord indexからparser/bitstreamへ移し、32 bit超のreadを拒否。AV対応付けのsnapshot、flush、source/generation、packet gap、stream type変更を同じFilterRuntimeへ接続した。
+- 検証: Rust 1.81 host demux 294件、service_runtime 242件成功。添付test.m2tsを明示入力した追加試験で119 AUを個別配送し、各PTSとpayload内AUD数を確認。先頭の構成情報不足1件は拒否。可変delay、period切替、33-bit/HRD wrap、有理数丸め、PES跨ぎ、reset後の旧anchor拒否を含む。
+- Android/Soong、atest/VTS、実機zappingは未実施。Codecの圧縮参照状態を含む欠落後復旧と肌色の原因特定は別の残作業であり、本変更で解消確認済みとはしない。
+
 # AVイベント専用領域への一本化
 
 - 固定共有pool、AV保持件数上限、Filter別・サービス全体のAV byte予算と能力claimを除去し、実payloadサイズのDMA-BUFをイベントごとに配送する。
