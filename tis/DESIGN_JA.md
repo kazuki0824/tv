@@ -170,7 +170,7 @@ plain `Filter.flush()`はAOSP契約どおりfilterが生成済みで未消費の
 
 `MediaEvent.getOffset()` / `getDataLength()`は`long`のまま境界検査し、`offsetLong >= 0`、`dataLengthLong > 0`、`offsetLong <= Int.MAX_VALUE`、`dataLengthLong <= Int.MAX_VALUE`を先に満たすことを要求する。次に`offsetLong + dataLengthLong`をchecked additionで算出して`long` overflowを拒否し、`LinearBlock`のqueue可能range / capacity以下であることを確認する。すべて満たした後だけ`Math.toIntExact()`相当でoffset / sizeを`int`へnarrowし、`QueueRequest.setLinearBlock()`へ渡す。implicit cast、truncate、narrow後のoverflow検査は禁止する。`getLinearBlock()`がnull、block model configureまたはQueueRequestが利用不能、range / narrowing検査違反、decoderがAOSP direct-input契約を満たさない場合は成功を偽装せず型付き診断へ落とし、当該playback profileを成功対応として表明しない。
 
-source `MediaEvent` / `LinearBlock`とrangeに対応するbudget claimは、`QueueRequest.queue()`が成功してcodecへ所有権を移すか、当該eventの破棄が確定するまで保持する。queue成功後・例外・破棄のいずれでもeventとLinearBlockを一度だけrelease/recycleし、構成前の古いイベントを破棄した場合は既存のstartup入力損失診断に記録する。TISは通常ES payloadを`LinearBlock.map()`から`ByteArray`、別`LinearBlock`、通常ByteBuffer input modelへ複製しない。header / MediaFormat確定のために必要な最小prefixをread-only参照することは許すが、それをAU parserまたはES搬送経路へ拡張しない。
+source `MediaEvent` / `LinearBlock`は、`QueueRequest.queue()`成功後も同じdecoderの入力indexに結び付けて保持し、そのindexの次の`onInputBufferAvailable`またはdecoder解放成功後に一度だけrelease/recycleする。Android 15のFrameworkによるC2Buffer複製は元MediaEventのdestroy通知の寿命を継承しないため、queue成功だけではHAL共有slotの再利用を許さない。queue失敗・未投入の破棄は即時返却し、構成前の古いイベントを破棄した場合は既存のstartup入力損失診断に記録する。TISは通常ES payloadを`LinearBlock.map()`から`ByteArray`、別`LinearBlock`、通常ByteBuffer input modelへ複製しない。header / MediaFormat確定のために必要な最小prefixをread-only参照することは許すが、それをAU parserまたはES搬送経路へ拡張しない。
 
 secure-memory handle、tunneled playback、platform passthroughは本製品が提供しない恒久的なplayback capabilityであり、時点依存の一時除外ではない。TISはsecure `MediaEvent`をclear-memoryへcopyできると仮定せず、その経路をadvertiseしない。r52のCAS対応もdescramble後のclear ESをこのdirect non-passthrough経路へ接続できるサービスだけをライブ視聴成功対象とする。
 
@@ -179,6 +179,8 @@ secure-memory handle、tunneled playback、platform passthroughは本製品が�
 AV overflowのplain flushでは、既存playback ownerがflushを開始する時点で当該Filterの入力identityを閉じる。既にdecoderで保持する未queue入力に加え、ownerで待機する旧MediaEvent/RestartEventも失効させる。overflow通知後・owner実行前の受理分もflush前の入力として破棄し、flush実行中のMediaEventはdecodeせず個別に解放する。flush成功後だけ新identityで受付を再開し、失敗時は既存診断を通知して受付を閉じたままにする。別Filterの入力、decoder/MediaSync/AudioTrack、playback generationは変更しない。PESのFMQ read通知とは異なり、個別所有するMediaEventの破棄であるため、捨てた通知に対応する未読PES bytesを後続readへ持ち越す経路は作らない。
 
 映像decoderのowner受付過負荷期限、decoder内queueの過負荷期限、header取得上限による構成不能は、既存の映像decoder失敗と同じ停止入口へ接続する。再生不能通知だけでdecoderを閉じてFilterを残さず、既存stopで世代失効・Filter参照解除/close・待機callback回収・decoder解放を行う。音声側は既存のaudio-only停止またはvideo-only新世代fallbackの入口を維持する。
+
+再生世代の終了では、入力Filter停止とcallback失効後、MediaSyncをpause・flush・出力切断・releaseしてから、保持PCM出力を返却しCodecを停止・解放する。MediaSyncの入力バッファ返却待ちをCodec停止より先に解除し、借用PCMを消費中のままCodecへ返さない。flushまたは切断が失敗してもreleaseを試行し、成功時は同じMediaSyncに属する前段の解放義務を完了する。独立した停止workerや待機期限延長は追加しない。
 
 ### MediaSync Framework-private final-output observation
 
