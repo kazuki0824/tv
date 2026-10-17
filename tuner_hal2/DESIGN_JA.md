@@ -468,3 +468,5 @@ ISDB-S symbol-rateの公開capability値と入力受付条件は`../TUNER_HAL_DE
 Frontend停止phaseの観測は既存`FrontendWorkerContext`とslotに従属し、backend停止結果を変更しない。製品tune/scanの`finish_backend_session_after_worker_body`とdevice補助workerを同じ観測入口へ接続する。phaseは診断専用で、回収完了・隔離・置換可否は従来のcleanup ownerの結果だけを正とする。
 
 TS AVCのAU framingとHRD時刻対応は`demux/src/av/video_timestamp.rs::VideoTimestampAssociation`とその従属`avc_timing.rs::AvcTiming`を`FilterRuntime`が所有する。構文のbit readerはrecord indexと同じ`demux/src/parser/bitstream.rs`を使用する。snapshot、stream type変更、queue cleanup、packet gap、origin境界は既存filter ownerのAV reset入口へ接続する。TIS、AIDL façade、別workerへ解析状態を置かない。公開意味は正本のpresentation timestamp契約を参照する。
+
+Frontend closeの待機は`frontend_worker_txn::close_frontend_workers_and_live_data_with_sink`が既存reaperの待機とworker joinを接続する。期限の意味は`../TUNER_HAL_DESIGN_JA.md`の「Frontend closeの回収完了」に従う。
