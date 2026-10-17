@@ -943,14 +943,11 @@ class PlaybackFilterAdmissionTest {
             selection: TunerController.AvStreamSelection,
             next: TunerController.AvStreamSelection,
         ): MaleicacidLiveSession {
-            val unsafe =
-                sun.misc.Unsafe::class.java
-                    .getDeclaredField(
-                        "theUnsafe",
-                    ).apply { isAccessible = true }
-                    .get(null) as sun.misc.Unsafe
-            val session = unsafe.allocateInstance(MaleicacidLiveSession::class.java) as MaleicacidLiveSession
-            val controller = unsafe.allocateInstance(TunerController::class.java) as TunerController
+            val unsafeType = Class.forName("sun.misc.Unsafe")
+            val unsafe = unsafeType.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
+            val allocate = unsafeType.getMethod("allocateInstance", Class::class.java)
+            val session = allocate.invoke(unsafe, MaleicacidLiveSession::class.java) as MaleicacidLiveSession
+            val controller = allocate.invoke(unsafe, TunerController::class.java) as TunerController
             ReflectionHelpers.setField(controller, "currentTune", ReflectionHelpers.getField<Any>(pipeline, "activeChannel"))
             ReflectionHelpers.setField(controller, "tuner", tuner)
             ReflectionHelpers.setField(controller, "playbackPipeline", pipeline)
@@ -1005,7 +1002,7 @@ class PlaybackFilterAdmissionTest {
                 )
             ReflectionHelpers.setField(session, "playbackState", PlaybackStartState.Started(signature, 7L))
             for (name in listOf("captionController", "superimposeController")) {
-                val caption = unsafe.allocateInstance(AribCaptionController::class.java) as AribCaptionController
+                val caption = allocate.invoke(unsafe, AribCaptionController::class.java) as AribCaptionController
                 ReflectionHelpers.setField(caption, "released", AtomicBoolean(true))
                 ReflectionHelpers.setField(caption, "pesAdmissionLock", Any())
                 val captionExecutor = LifecycleSerialExecutor("closed audio-switch caption fixture")
