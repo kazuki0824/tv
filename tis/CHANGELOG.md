@@ -1,3 +1,10 @@
+# 最終出力可用性と音声選択の局所切替
+
+- Codec→MediaSync入力callbackによるavailable確定と継続watchdog更新を除去し、既存の最終出力one-shotを再armして継続を観測する。未パッチOSは観測不能を診断し初回期限で失敗する。
+- 同一音声再選択をnoopとし、同じvideo/PCR/audio構成でのPID変更は音声Filterだけを切り替える。PCM/codec構成変更では既存のMediaSync全世代再生成を維持する。
+- Sessionの再選択判定と成功signatureを追従し、旧Filter入力の拒否、同一構成/PID切替の映像owner保持、Codec入力callbackによる誤available/watchdog更新防止をRobolectricで検査する。
+- 設計と統合文書を追従。Android Soong・実機VTS・実デコーダ・実波の検証は未実施。
+
 # ライブ再生のcodec別最小ヘッダprobeへの移行（PR #207）
 
 - ES履歴を256/512/768 KiB保持して繰返し解析する方式を廃止。MPEG-2 Videoはsequence headerに必要な8 byte、MPEG audioは4 byte、AVC/HEVCはconfig用のSPS/PPS/VPS NAL（1件16 KiB以内）、AAC ADTSは構成に必要な1 frame（13-bit frame長以内）だけを有限保持する。

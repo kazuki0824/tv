@@ -812,6 +812,10 @@ class MaleicacidLiveSession(
         return when (type) {
             TvTrackInfo.TYPE_AUDIO -> {
                 if (trackId == null || tracks.none { it.type == TvTrackInfo.TYPE_AUDIO && it.id == trackId }) return false
+                if (trackId == preferredAudioTrackId && !audioFallbackDisabled && playbackState is PlaybackStartState.Started) {
+                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
+                    return true
+                }
                 val previousAudioTrackId = preferredAudioTrackId
                 val previousAudioFallbackDisabled = audioFallbackDisabled
                 val previousDualMonoPresentation = dualMonoPresentation
@@ -858,6 +862,11 @@ class MaleicacidLiveSession(
                     commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
                 }
                 if (switched?.switchedAudio == true) {
+                    if (switched.generation < 0L) {
+                        (playbackState as? PlaybackStartState.Started)?.let { current ->
+                            updatePlaybackStartState(current.copy(signature = signature))
+                        }
+                    }
                     notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
                     true
                 } else {
