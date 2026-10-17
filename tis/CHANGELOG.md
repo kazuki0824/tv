@@ -1,3 +1,8 @@
+## Frontend close失敗後の再試行前提を是正
+
+- #209: closeFrontendもFrameworkの不可逆な解放境界として元失敗を保持する。HALが回収済みになれば同じJava APIを再試行できるという誤った前提を除去。
+- native模擬実装を実Frameworkの参照破棄に合わせ、失敗後の再試行拒否と正常close後の次scanを検証する。実機での0件→中止→再開→登録→視聴は未検証。
+
 ## 圧縮入力欠落後のCodec参照状態の退役
 
 - #207: 構成済みCodecに対するAV OVERFLOW、RestartEvent、owner受付拒否、sample拒否を既存の全再生generation終了・再生成へ接続。Filter.flushだけで旧Codecを継続せず、Codec errorと共通の一回の自動復旧制限を使う。構成前の局所flushは維持する。

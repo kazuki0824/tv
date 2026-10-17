@@ -644,7 +644,7 @@ object ChannelScanManager {
             Log.w(
                 LogTags.TIS,
                 if (error is TunerOneShotCloseFailure) {
-                    "scan Tuner.closeのone-shot失敗 generation=$generation（HAL側の後片付けは非同期）"
+                    "scan Tuner解放のone-shot失敗 generation=$generation（同じSDKへの再試行は不可）"
                 } else {
                     "scan解放の所有を再試行まで保持します generation=$generation"
                 },
