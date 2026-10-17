@@ -17,6 +17,7 @@ import android.media.tv.tuner.frontend.FrontendSettings
 import android.media.tv.tunerresourcemanager.ITunerResourceManager
 import android.media.tv.tunerresourcemanager.TunerResourceManager
 import android.net.Uri
+import android.widget.TextView
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SiIngestResult
@@ -27,6 +28,7 @@ import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
@@ -38,6 +40,7 @@ import org.robolectric.util.ReflectionHelpers
 import java.util.concurrent.Executor
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 
@@ -259,6 +262,48 @@ class TunerFrontendLeaseTransitionTest {
             NativeTuner.instances.flatMap { it.filters }.forEach { Shadow.extract<NativeFilter>(it).rejectClose = false }
             ReflectionHelpers.setField(controller, "tunerCloseFailure", null)
             runCatching { controller.release() }
+        }
+    }
+
+    @Test
+    fun setupStartRejectionDisplaysGenerationExhaustionInsteadOfWaitingForOldScan() {
+        val owner = ReflectionHelpers.getField<AtomicReference<ChannelScanManager.ActiveScanTask?>>(ChannelScanManager, "activeTask")
+        val generation = ReflectionHelpers.getField<AtomicInteger>(ChannelScanManager, "nextGeneration")
+        val oldGeneration = generation.get()
+        val oldState = ChannelScanManager.currentState()
+        check(owner.get() == null)
+        val activityController = Robolectric.buildActivity(SetupActivity::class.java).create()
+        val activity = activityController.get()
+        val status = ReflectionHelpers.getField<TextView>(activity, "statusView")
+        ReflectionHelpers.setField(activity, "setupGeneration", 7)
+        try {
+            val task = ChannelScanManager.ActiveScanTask(7, ScanPurpose.SETUP_SCAN, activity.applicationContext)
+            owner.set(task)
+            ReflectionHelpers.setField(ChannelScanManager, "state", ScanState.Running(0L, 7, ScanPurpose.SETUP_SCAN))
+            check(
+                ChannelScanManager.startIfIdle(activity, "test") {
+                    ReflectionHelpers.callInstanceMethod<Unit>(activity, "onScanStartRejected")
+                } == null,
+            )
+            check(status.text.toString().contains("前のスキャンを終了中"))
+            owner.set(null)
+            generation.set(Int.MAX_VALUE)
+            check(
+                ChannelScanManager.startIfIdle(activity, "test") {
+                    ReflectionHelpers.callInstanceMethod<Unit>(activity, "onScanStartRejected")
+                } == null,
+            )
+            val failure = ChannelScanManager.currentState() as ScanState.Failed
+            check(failure.message == "SCAN_GENERATION_EXHAUSTED")
+            check(status.text.toString() == "設定スキャン 失敗: SCAN_GENERATION_EXHAUSTED")
+            check(!status.text.toString().contains("少し待って"))
+            check(owner.get() == null && generation.get() == Int.MAX_VALUE)
+            check(ReflectionHelpers.getField<Int?>(activity, "setupGeneration") == 7)
+        } finally {
+            owner.set(null)
+            generation.set(oldGeneration)
+            ReflectionHelpers.setField(ChannelScanManager, "state", oldState)
+            activityController.destroy()
         }
     }
 
