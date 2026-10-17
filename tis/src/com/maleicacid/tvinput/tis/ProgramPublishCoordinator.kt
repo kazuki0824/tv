@@ -71,13 +71,11 @@ class ProgramPublishCoordinator(
     private val lastProgramSignatureByMode = linkedMapOf<ChannelScanController.PublishMode, String>()
     private val lastInputSignatureByMode = linkedMapOf<ChannelScanController.PublishMode, String>()
     private val dirtyWindows = linkedMapOf<DirtyWindowKey, DirtyWindow>()
-    private val droppedDirtyWindowCountByService = linkedMapOf<ServiceKey, Int>()
 
     fun reset() {
         lastProgramSignatureByMode.clear()
         lastInputSignatureByMode.clear()
         dirtyWindows.clear()
-        droppedDirtyWindowCountByService.clear()
     }
 
     fun publish(
@@ -378,8 +376,6 @@ class ProgramPublishCoordinator(
         while (dirtyWindows.size > MAX_DIRTY_WINDOWS) {
             val oldest = dirtyWindows.keys.firstOrNull() ?: return
             dirtyWindows.remove(oldest)
-            droppedDirtyWindowCountByService[oldest.serviceKey] =
-                (droppedDirtyWindowCountByService[oldest.serviceKey] ?: 0) + 1
         }
     }
 
@@ -402,8 +398,6 @@ class ProgramPublishCoordinator(
     fun retryFailureClassesForTest(): Set<String> = dirtyWindows.values.map { it.failureClass }.toSet()
 
     fun retryNotBeforeMillisForTest(): List<Long> = dirtyWindows.values.map { it.notBeforeMs }
-
-    fun droppedRetryWindowCountForTest(serviceKey: ServiceKey): Int = droppedDirtyWindowCountByService[serviceKey] ?: 0
 
     companion object {
         const val RETRY_COOLDOWN_MS_FOR_TEST: Long = 60_000L

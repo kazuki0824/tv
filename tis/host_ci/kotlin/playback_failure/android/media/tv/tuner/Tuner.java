@@ -20,6 +20,8 @@ public class Tuner {
     public void setResourceLostListener(Executor executor, OnResourceLostListener listener) {}
     public int tune(FrontendSettings settings) { return 1; } // RESULT_UNAVAILABLE
     public void clearOnTuneEventListener() {}
+    public void closeFrontend() {}
+    public void close() {}
 
     public static int getTunerVersion() { return 0x00030000; }
 

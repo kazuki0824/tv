@@ -1,3 +1,8 @@
+## Frontend close失敗後の再試行前提を是正
+
+- #209: closeFrontendもFrameworkの不可逆な解放境界として元失敗を保持する。HALが回収済みになれば同じJava APIを再試行できるという誤った前提を除去。
+- native模擬実装を実Frameworkの参照破棄に合わせ、失敗後の再試行拒否と正常close後の次scanを検証する。実機での0件→中止→再開→登録→視聴は未検証。
+
 ## 圧縮入力欠落後のCodec参照状態の退役
 
 - #207: 構成済みCodecに対するAV OVERFLOW、RestartEvent、owner受付拒否、sample拒否を既存の全再生generation終了・再生成へ接続。Filter.flushだけで旧Codecを継続せず、Codec errorと共通の一回の自動復旧制限を使う。構成前の局所flushは維持する。
@@ -10,6 +15,28 @@
 - NHK停止後の再選局でCodec停止が待機超過したログを受け、MediaSyncのflush・解放をPCM返却とCodec停止より先へ移動。既存ownerとcleanupを使用する。
 - 停止順序とflush／解放失敗をRobolectricで検査する。実機の映像破損・AAC入力不足・停止回復は別途確認が必要。
 
+# setup開始拒否と前回scanの失敗理由の分離
+
+- beginScanの呼出しごとの受付結果から今回の失敗だけを拒否callbackへ渡す。実行中・cleanup保留による拒否では、前回のScanState.Failedを今回の拒否理由へ転用しない。boot/backgroundの拒否診断も同じ受付結果を使う。
+- 既存Managerと実ControllerのFailed終端→公開Frontend cleanup失敗→owner保持→setup拒否表示→公開API再試行による解放をAndroid15 Robolectricで検査する。既存の世代枯渇表示の回帰も維持する。
+
+# setup開始拒否時の世代枯渇表示
+
+- 開始拒否時は既存ScanState.Failedの理由を表示し、SCAN_GENERATION_EXHAUSTEDを前scanの終了待ちへ上書きしない。新しい拒否状態・schedulerは追加せず、setup generationを維持する。
+- Robolectricで実startIfIdleとActivityの拒否表示を接続し、active scanの待機表示とInt.MAX_VALUE/activeTask=nullの恒久失敗表示を検査する。
+
+## 2026-10-17 TIS監査で判明した不要状態・試験専用複製の撤去
+
+- dirty-windowの512件queueと別に増加していたServiceKey別破棄カウンタを削除。既存試験は実Provider呼出しを検査し、最古区間が再試行されず残る512区間が成功後に消えることを確認する。
+- 未読のboot/background同期counterとcurrent-program診断snapshotを削除し、既存ログ・Direct Boot永続状態・rating選択と失敗返却を維持する。
+- dual-mono/sessionIdの恒等テスト関数を削除。音声stream_type試験は本番Filter設定と同じ関数を使う。
+
+# 標準APIによるFrontend pre-closeと再試行
+
+- releaseと異種Frontend切替でcloseFrontend()成功後にだけSDK close()へ進む。一時的なFrontend失敗ではowner/SDKの開状態を維持して同じ入口から再試行する。
+- 他資源のcleanup失敗中もSDK closeを保留する。Frontend回収後のDemux/client/native失敗はone-shot未完義務として区別し、再closeのno-opを成功にしない。
+- 必要性を実証していなかった独自Framework cleanup patchとreflection入口を撤回し、標準APIだけの経路へ戻した。
+- Android15実SDK closeFrontendとnative/TRM Shadow境界で一時失敗・継続失敗・再試行成功・後続scanを検査する。実機HAL隔離/回収と実scanは別途検証を要する。
 # ExactからCompatibilityへの降格時の継続監視取消し
 
 - private callbackの再arm不成立時に既存Exact watchdogを取り消し、実行時もcurrent modeを照合する。同じowner/世代上で処理し、Compatibilityの正常なCodec進捗を最終出力timeoutとして停止しない。
@@ -27,6 +54,28 @@
 - 新Filter開始成功後に選択を確定し、失敗時は旧選択と既存cleanup義務を保持する。
 - Sessionの無条件noopを除去し、実Filter不在なら同一track再選択から音声入力を再取得する。映像とMediaSyncの世代は維持する。
 - close/open/configure/start失敗とSession選択・実Filter・再選択復旧をAndroid15 Robolectricで検査する。
+
+# SDK/TRM未完回収とsetup開始拒否の可視化
+
+- one-shot例外だけでActiveScanTaskを除去せず、Framework client/native後始末も完了するまでControllerとexecutorを保持する。公開closeFrontendによるFrontend/TRM lease回収を評価し、残るclient/native義務と区別する。
+- LineageOS 22.1へ解放専用retryCloseForCleanupのpatchを追加。成功したclient unregisterは再投入せず、元Tunerを通常利用へ戻さない。TISは追加hidden入口がない構成を解放未確定として扱う。
+- setup開始拒否を同期callbackでUIへ通知し、終了待ちを表示して以前のsetup generationを維持する。独立schedulerや自動再開始は追加しない。
+- 既存Robolectric/hostの期待をowner保持へ変更し、SDK一回性・Frontend cleanup・拒否通知を検査する。platform patchの適用確認と実機Soong・TRM再取得・VTS・実波は別の検証条件とする。
+
+# Tuner closeと他資源の複合解放失敗の分離
+
+- Controller内の再試行可能な解放失敗が残る間は、Tunerのone-shot close失敗だけに分類せず、既存資源ownerとcontroller executorを保持する。SDK close自体は再実行しない。
+- 既存ResourceCleanupを利用するplaybackを含め、他資源の解放完了後だけone-shot失敗を通知してscan受付を解放する。独立reaper・追加queueは設けない。
+- Android 15 Robolectric試験へ、実ControllerのSection Filter closeとSDK Tuner closeの同時失敗、継続失敗時のowner保持、後続回収と受付解放、SDK close一回性を追加した。
+- 設計書のexecutor停止条件とscan退役条件を同じ契約へ追従した。Android実機Soong・atest・VTS・実放送検証は未実施。
+
+# scan中断のFramework Tuner one-shot close失敗とstop/start復帰診断
+
+- Android 15のTuner.closeは途中で例外を出してもmClosed=trueとなり、再closeしてもnative retryしない。TunerControllerはこの失敗だけをTunerOneShotCloseFailureに型付けする。
+- ChannelScanManagerは他の解放対象が完了した場合に限り、この復帰不能SDK instanceをActiveScanTaskから退役させる。失敗を成功へ変換せずログに記録し、HAL workerの後片付けは既存HAL reaperが所有する。
+- 新scanのtune同期拒否、generation、候補、terminal outcomeを記録。新TISプロセスでstop/start後に即時終了しても根拠結果が残る。
+- ScanPlanPolicyTestにone-shot失敗後のmanager受付開放試験、Robolectricにone-shot typed診断を追加（既存ケースを更新）。
+- 実機HAL workerの物理終了およびstop/start後の新scan成功は本変更だけでは検証できない。原因の異なるPX4 EAGAINやsignal lock不成立は結果コード・実波の追跡が必要。
 
 # 最終出力可用性と音声選択の局所切替
 

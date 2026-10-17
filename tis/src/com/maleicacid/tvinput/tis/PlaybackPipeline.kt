@@ -911,7 +911,7 @@ class PlaybackPipeline(
                 prepare = {
                     val settingsBuilder = AvSettings.builder(Filter.TYPE_TS, isAudio).setPassthrough(false)
                     if (isAudio) {
-                        settingsBuilder.setAudioStreamType(mapAudioStreamType(stream.streamType))
+                        settingsBuilder.setAudioStreamType(audioFilterStreamType(stream.streamType))
                     } else {
                         settingsBuilder.setVideoStreamType(mapVideoStreamType(stream.streamType))
                     }
@@ -3043,16 +3043,6 @@ class PlaybackPipeline(
             else -> AvSettings.VIDEO_STREAM_TYPE_UNDEFINED
         }
 
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-    @Suppress("MagicNumber")
-    private fun mapAudioStreamType(streamType: Int): Int =
-        when (streamType) {
-            0x03 -> AvSettings.AUDIO_STREAM_TYPE_MPEG1
-            0x04 -> AvSettings.AUDIO_STREAM_TYPE_MPEG2
-            0x0f -> AvSettings.AUDIO_STREAM_TYPE_AAC_ADTS
-            else -> AvSettings.AUDIO_STREAM_TYPE_UNDEFINED
-        }
-
     fun stop() {
         runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
     }
@@ -3383,8 +3373,6 @@ class PlaybackPipeline(
                 DualMonoPresentation.MAIN_SUB -> AudioTrack.DUAL_MONO_MODE_LR
             }
 
-        fun isDualMonoSemanticForTest(dualMono: Boolean): Boolean = dualMono
-
         fun dualMonoModeForTest(presentation: DualMonoPresentation): Int = audioTrackDualMonoMode(presentation)
 
         fun h264DimensionsForTest(spsWithStartCode: ByteArray): Pair<Int, Int>? =
@@ -3481,9 +3469,9 @@ class PlaybackPipeline(
             return MediaEventBoundsDecision.ACCEPT
         }
 
-        // 試験入口で規格上の期待値を直接照合する。
+        // 本番Filter設定と試験で同じstream_type対応表を照合する。
         @Suppress("MagicNumber")
-        fun normalizedAudioStreamTypeForTest(streamType: Int): Int =
+        internal fun audioFilterStreamType(streamType: Int): Int =
             when (streamType) {
                 0x03 -> AvSettings.AUDIO_STREAM_TYPE_MPEG1
                 0x04 -> AvSettings.AUDIO_STREAM_TYPE_MPEG2
