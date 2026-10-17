@@ -1692,6 +1692,7 @@ mod tests {
             let mut registry = FrontendWorkerRegistry::default();
             let (ctx_tx, ctx_rx) = mpsc::channel();
             let (stop_tx, stop_rx) = mpsc::channel();
+            let (entered_tx, entered_rx) = mpsc::channel();
             let (return_tx, return_rx) = mpsc::channel();
             let (terminal_tx, terminal_rx) = mpsc::channel();
             registry
@@ -1701,6 +1702,7 @@ mod tests {
                         ctx.wait_until(None);
                     }
                     let result = ctx.observe_backend_stop(|| {
+                        entered_tx.send(()).unwrap();
                         stop_rx.recv().unwrap();
                         if fail {
                             Err(HalError::cleanup_failed("backend停止", "注入失敗"))
@@ -1719,6 +1721,7 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 FrontendWorkerCancelReason::StopRequested,
             );
+            entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
             assert!(!ticket
                 .wait_until_finished(Some(std::time::Instant::now() + Duration::from_millis(50)))
                 .unwrap());

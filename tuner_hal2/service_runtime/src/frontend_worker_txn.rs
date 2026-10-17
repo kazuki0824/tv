@@ -2908,12 +2908,13 @@ fn reconcile_px4_live_pump_consumer(
         ctx.generation(),
     );
     let report =
-        stop_stream_then_join_live_pump(live_pump, || session.stop())?.ok_or_else(|| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "consumer再検証時にlive pump所有が消失しました",
-            )
-        })?;
+        stop_stream_then_join_live_pump(live_pump, || ctx.observe_backend_stop(|| session.stop()))?
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "consumer再検証時にlive pump所有が消失しました",
+                )
+            })?;
     {
         let mut guard = lock_runtime(
             runtime,
@@ -3822,7 +3823,9 @@ fn run_frontend_backend_tune_session_worker(
             ));
         }
         let completed_pump = if backend == FrontendBackendKind::Px4CharDevice {
-            stop_stream_then_join_live_pump(&mut live_pump, || session.stop())?
+            stop_stream_then_join_live_pump(&mut live_pump, || {
+                ctx.observe_backend_stop(|| session.stop())
+            })?
         } else {
             live_pump
                 .take()
@@ -3846,7 +3849,7 @@ fn run_frontend_backend_tune_session_worker(
     // 例外経路でlive_pumpを保持していた場合も、joinより先にread待ちを解除する。
     if body_result.is_err() && live_pump.is_some() && backend == FrontendBackendKind::Px4CharDevice
     {
-        if let Err(stop_error) = session.stop() {
+        if let Err(stop_error) = ctx.observe_backend_stop(|| session.stop()) {
             body_result = Err(match std::mem::replace(&mut body_result, Ok(())) {
                 Err(primary) => compose_frontend_cleanup_error(
                     "frontend live pump停止前のPX4 streaming停止に失敗しました",
