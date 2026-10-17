@@ -666,12 +666,14 @@ class PlaybackPipeline(
             return AudioSwitchResult(false, listOf("audio stream_type 未対応"))
         }
         val previous = activeSelection
-        val sameVideoClock = previous != null && previous.serviceKey == selection.serviceKey &&
-            previous.pcrPid == selection.pcrPid && previous.video == selection.video
-        val sameAudioFormat = previous?.audio?.streamType == audio.streamType &&
-            previous?.audio?.codecFacts == audio.codecFacts &&
-            previous?.audioChannelConfiguration == selection.audioChannelConfiguration &&
-            previous?.audioDualMono == selection.audioDualMono && previous?.dualMonoPresentation == selection.dualMonoPresentation
+        val sameVideoClock =
+            previous != null && previous.serviceKey == selection.serviceKey &&
+                previous.pcrPid == selection.pcrPid && previous.video == selection.video
+        val sameAudioFormat =
+            previous?.audio?.streamType == audio.streamType &&
+                previous?.audio?.codecFacts == audio.codecFacts &&
+                previous?.audioChannelConfiguration == selection.audioChannelConfiguration &&
+                previous?.audioDualMono == selection.audioDualMono && previous?.dualMonoPresentation == selection.dualMonoPresentation
         if (sameVideoClock && sameAudioFormat && audioDecoder != null && audioFilter != null) {
             if (previous?.audio?.elementaryPid == audio.elementaryPid) {
                 return AudioSwitchResult(true, listOf("AUDIO_SELECTION_UNCHANGED"))
