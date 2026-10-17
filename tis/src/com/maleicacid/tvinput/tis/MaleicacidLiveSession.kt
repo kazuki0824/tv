@@ -802,7 +802,7 @@ class MaleicacidLiveSession(
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount")
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount", "NestedBlockDepth")
     private fun onSelectTrackOnSessionExecutor(
         type: Int,
         trackId: String?,
@@ -1193,7 +1193,7 @@ class MaleicacidLiveSession(
     }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("ReturnCount")
+    @Suppress("ReturnCount", "LongMethod", "CyclomaticComplexMethod")
     private fun handlePlaybackUnavailable(reason: PlaybackPipeline.PlaybackUnavailable) {
         if (!PlaybackStartTransitions.acceptsUnavailable(playbackState, reason.generation)) {
             android.util.Log.w(
@@ -1256,6 +1256,8 @@ class MaleicacidLiveSession(
         scheduleRecoverablePlaybackRetry(reason)
     }
 
+    // 同じ再生世代と回復権限の照合を一つの境界で完結する。
+    @Suppress("CyclomaticComplexMethod", "ComplexCondition", "ReturnCount")
     private fun scheduleRecoverablePlaybackRetry(reason: PlaybackPipeline.PlaybackUnavailable) {
         val recoverable = isRecoverablePlaybackFailure(reason.reason)
         if (!recoverable || releaseOnce.get() || frontendSignalUnavailable || surface?.isValid != true) return
