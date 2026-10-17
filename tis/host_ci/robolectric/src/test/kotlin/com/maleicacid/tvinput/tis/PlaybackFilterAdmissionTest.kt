@@ -621,6 +621,31 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun codecReleaseReturnsInputWhoseIndexWasNotReturned() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            val filter = fixture.avFilter(false)
+            val packet = mappedMediaEvent()
+            deliver(filter, packet)
+            fixture.drain()
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(Shadow.extract<NativeCodec>(codec).inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            val event = Shadow.extract<NativeMediaEvent>(packet)
+            val block = Shadow.extract<NativeLinearBlock>(requireNotNull(event.block))
+            assertEquals(0, event.releases)
+            assertEquals(0, block.recycles)
+            fixture.pipeline.stop()
+            assertEquals(1, event.releases)
+            assertEquals(1, block.recycles)
+            fixture.pipeline.stop()
+            assertEquals(1, event.releases)
+            assertEquals(1, block.recycles)
+        }
+    }
+
+    @Test
     fun codecBlockModelCallbackReportsVideoInputOutputAndRenderedFrameSeparately() {
         Fixture().use { fixture ->
             fixture.decoder()
@@ -637,10 +662,8 @@ class PlaybackFilterAdmissionTest {
             fixture.drain()
             assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
             assertEquals(0, Shadow.extract<NativeMediaEvent>(packet).releases)
-            assertEquals(
-                0,
-                Shadow.extract<NativeLinearBlock>(requireNotNull(Shadow.extract<NativeMediaEvent>(packet).block)).recycles,
-            )
+            val block = requireNotNull(Shadow.extract<NativeMediaEvent>(packet).block)
+            assertEquals(0, Shadow.extract<NativeLinearBlock>(block).recycles)
             // Codecが同じ入力indexを返すまではHALの共有slotを再利用させない。
             postCodecCallback(codec, 1, 0, null)
             fixture.drain()
