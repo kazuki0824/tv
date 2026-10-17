@@ -70,6 +70,12 @@ object ChannelScanManager {
         @Volatile var engine: AutoCloseable? = null
     }
 
+    // 呼出しごとの受付結果。taskなし・failureなしは既存scanによる拒否であり、状態として保持しない。
+    private data class ScanAdmission(
+        val task: ActiveScanTask?,
+        val failure: ScanState.Failed? = null,
+    )
+
     private val listeners = CopyOnWriteArrayList<Listener>()
     private val activeLiveSessions = CopyOnWriteArraySet<MaleicacidLiveSession>()
     private val activePlaybackPipelines = AtomicInteger(0)
@@ -162,13 +168,14 @@ object ChannelScanManager {
     fun startIfIdle(
         context: Context,
         inputId: String,
-        onRejected: () -> Unit = {},
+        onRejected: (ScanState.Failed?) -> Unit = {},
     ): Int? {
         retryPendingRelease()
         val appContext = context.applicationContext
+        val admission = beginScan(ScanPurpose.SETUP_SCAN, appContext)
         val task =
-            beginScan(ScanPurpose.SETUP_SCAN, appContext) ?: run {
-                onRejected()
+            admission.task ?: run {
+                onRejected(admission.failure)
                 return null
             }
         val generation = task.generation
@@ -301,11 +308,12 @@ object ChannelScanManager {
             markBootEpgSyncDeferred(appContext, precheck.reason ?: "UNKNOWN")
             return null
         }
-        val task = beginScan(ScanPurpose.BOOT_EPG_SYNC, appContext)
+        val admission = beginScan(ScanPurpose.BOOT_EPG_SYNC, appContext)
+        val task = admission.task
         if (task == null) {
             markBootEpgSyncDeferred(
                 appContext,
-                if (isScanRunning()) "SCAN_RUNNING" else SCAN_GENERATION_EXHAUSTED,
+                admission.failure?.message ?: "SCAN_RUNNING",
             )
             return null
         }
@@ -430,10 +438,11 @@ object ChannelScanManager {
             markBackgroundMaintenanceSkipped("PROGRAM_UPGRADE_CLEANUP_FAILED", source)
             return false
         }
-        val task = beginScan(ScanPurpose.BACKGROUND_MAINTENANCE, appContext)
+        val admission = beginScan(ScanPurpose.BACKGROUND_MAINTENANCE, appContext)
+        val task = admission.task
         if (task == null) {
             markBackgroundMaintenanceSkipped(
-                if (isScanRunning()) "SCAN_RUNNING" else SCAN_GENERATION_EXHAUSTED,
+                admission.failure?.message ?: "SCAN_RUNNING",
                 source,
             )
             return false
@@ -599,23 +608,18 @@ object ChannelScanManager {
     private fun beginScan(
         purpose: ScanPurpose,
         context: Context,
-    ): ActiveScanTask? {
-        if (activeTask.get() != null) return null
+    ): ScanAdmission {
+        if (activeTask.get() != null) return ScanAdmission(null)
         val generation = allocateScanGeneration()
         if (generation == null) {
-            setState(
-                ScanState.Failed(
-                    SCAN_GENERATION_EXHAUSTED,
-                    EXHAUSTED_SCAN_GENERATION,
-                    purpose,
-                ),
-            )
-            return null
+            val failure = ScanState.Failed(SCAN_GENERATION_EXHAUSTED, EXHAUSTED_SCAN_GENERATION, purpose)
+            setState(failure)
+            return ScanAdmission(null, failure)
         }
         val task = ActiveScanTask(generation, purpose, context.applicationContext)
-        if (!activeTask.compareAndSet(null, task)) return null
+        if (!activeTask.compareAndSet(null, task)) return ScanAdmission(null)
         setState(ScanState.Running(System.currentTimeMillis(), generation, purpose))
-        return task
+        return ScanAdmission(task)
     }
 
     private fun isScanRunning(): Boolean = activeTask.get() != null

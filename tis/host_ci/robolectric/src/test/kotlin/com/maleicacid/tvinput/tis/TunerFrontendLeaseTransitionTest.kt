@@ -38,6 +38,7 @@ import org.robolectric.annotation.RealObject
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.util.ReflectionHelpers
 import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -280,19 +281,11 @@ class TunerFrontendLeaseTransitionTest {
             val task = ChannelScanManager.ActiveScanTask(7, ScanPurpose.SETUP_SCAN, activity.applicationContext)
             owner.set(task)
             ReflectionHelpers.setField(ChannelScanManager, "state", ScanState.Running(0L, 7, ScanPurpose.SETUP_SCAN))
-            check(
-                ChannelScanManager.startIfIdle(activity, "test") {
-                    ReflectionHelpers.callInstanceMethod<Unit>(activity, "onScanStartRejected")
-                } == null,
-            )
+            check(startSetupScan(activity) == null)
             check(status.text.toString().contains("前のスキャンを終了中"))
             owner.set(null)
             generation.set(Int.MAX_VALUE)
-            check(
-                ChannelScanManager.startIfIdle(activity, "test") {
-                    ReflectionHelpers.callInstanceMethod<Unit>(activity, "onScanStartRejected")
-                } == null,
-            )
+            check(startSetupScan(activity) == null)
             val failure = ChannelScanManager.currentState() as ScanState.Failed
             check(failure.message == "SCAN_GENERATION_EXHAUSTED")
             check(status.text.toString() == "設定スキャン 失敗: SCAN_GENERATION_EXHAUSTED")
@@ -306,6 +299,70 @@ class TunerFrontendLeaseTransitionTest {
             activityController.destroy()
         }
     }
+
+    @Test
+    fun failedScanWithPendingCleanupReportsBusyInsteadOfOldTerminalFailure() {
+        val owner = ReflectionHelpers.getField<AtomicReference<ChannelScanManager.ActiveScanTask?>>(ChannelScanManager, "activeTask")
+        val managerExecutor = ReflectionHelpers.getField<ExecutorService>(ChannelScanManager, "executor")
+        val oldState = ChannelScanManager.currentState()
+        check(owner.get() == null)
+        val activityController = Robolectric.buildActivity(SetupActivity::class.java).create()
+        val activity = activityController.get()
+        val controller = controller()
+        val task = ChannelScanManager.ActiveScanTask(7, ScanPurpose.SETUP_SCAN, activity.applicationContext)
+        task.controller = controller
+        owner.set(task)
+        val previousFailure = ScanState.Failed("PREVIOUS_SCAN_TUNE_FAILED", 7, ScanPurpose.SETUP_SCAN)
+        val sdk = checkNotNull(NativeTuner.current)
+        try {
+            NativeTuner.successfulTunes = true
+            check(controller.tuneForScan(terrestrial()).success)
+            sdk.frontendCloseResult = Tuner.RESULT_UNKNOWN_ERROR
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                ChannelScanManager,
+                "setTerminalStateIfCurrent",
+                ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 7),
+                ReflectionHelpers.ClassParameter.from(ScanState::class.java, previousFailure),
+            )
+            check(!finishSetupScan(7))
+            check(task.closing && owner.get() === task && task.controller === controller)
+            val status = ReflectionHelpers.getField<TextView>(activity, "statusView")
+            check(status.text.toString().contains(previousFailure.message))
+            check(startSetupScan(activity) == null)
+            managerExecutor.submit {}.get(5, TimeUnit.SECONDS)
+            check(status.text.toString().contains("前のスキャンを終了中"))
+            check(!status.text.toString().contains(previousFailure.message))
+            check(ChannelScanManager.currentState() === previousFailure)
+            check(task.closing && owner.get() === task && task.controller === controller)
+            check(sdk.closeCalls == 0 && !sdk.oneShotClosed)
+            sdk.frontendCloseResult = Tuner.RESULT_SUCCESS
+            check(finishSetupScan(7))
+            check(owner.get() == null)
+        } finally {
+            sdk.frontendCloseResult = Tuner.RESULT_SUCCESS
+            managerExecutor.submit {}.get(5, TimeUnit.SECONDS)
+            runCatching { controller.release() }
+            owner.compareAndSet(task, null)
+            ReflectionHelpers.setField(ChannelScanManager, "state", oldState)
+            activityController.destroy()
+        }
+    }
+
+    private fun startSetupScan(activity: SetupActivity): Int? =
+        ChannelScanManager.startIfIdle(activity, "test") { failure ->
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                activity,
+                "onScanStartRejected",
+                ReflectionHelpers.ClassParameter.from(ScanState.Failed::class.java, failure),
+            )
+        }
+
+    private fun finishSetupScan(generation: Int): Boolean =
+        ReflectionHelpers.callInstanceMethod(
+            ChannelScanManager,
+            "finishScanIfCurrent",
+            ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, generation),
+        )
 
     @Test
     fun failedCloseRejectsInvalidLiveChannelWithoutUsingOldSdk() {
