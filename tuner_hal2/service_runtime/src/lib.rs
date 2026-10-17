@@ -1177,7 +1177,11 @@ mod tests {
 
     #[test]
     fn frontend_close_keeps_demux_relation_until_worker_terminal_completion() {
-        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let mut capability = CapabilitySnapshot::product_default();
+        capability.worker_reaper_deadline_ms = 20;
+        let runtime = Arc::new(Mutex::new(
+            TunerServiceRuntime::from_capability_snapshot_for_test(capability),
+        ));
         let (cancel_seen_tx, cancel_seen_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let demux_id = {
@@ -1229,12 +1233,14 @@ mod tests {
             demux.id
         };
 
-        let close_result = crate::frontend_worker_txn::close_frontend_workers_and_live_data(
-            Arc::clone(&runtime),
-            1_000_000,
-            maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::FrontendClosing,
-        );
-        assert!(close_result.is_err());
+        let close_runtime = Arc::clone(&runtime);
+        let close = std::thread::spawn(move || {
+            crate::frontend_worker_txn::close_frontend_workers_and_live_data(
+                close_runtime,
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::FrontendClosing,
+            )
+        });
         cancel_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(
             runtime
@@ -1245,7 +1251,9 @@ mod tests {
             Some(FrontendRuntimeId(1_000_000)),
         );
 
+        assert!(!close.is_finished(), "回収前にcloseを返してはならない");
         release_tx.send(()).unwrap();
+        close.join().unwrap().expect("実回収後にcloseが成功する");
         for _ in 0..100 {
             if runtime
                 .lock()
