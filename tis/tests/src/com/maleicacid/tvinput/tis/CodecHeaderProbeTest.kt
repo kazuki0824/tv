@@ -40,7 +40,8 @@ class CodecHeaderProbeTest {
         val end = byteArrayOf(0, 0, 1, 0x09)
         val found = capture(probe, sps + byteArrayOf(0, 0), byteArrayOf(1, 0x65) + unrelated, pps, end)
         check(found.size == 1)
-        check(found.single().contentEquals(sps + byteArrayOf(0, 0, 0, 1) + pps.copyOfRange(3, pps.size) + byteArrayOf(0, 0, 0, 1)))
+        val expected = sps + byteArrayOf(0, 0, 0, 1) + pps.copyOfRange(3, pps.size) + byteArrayOf(0, 0, 0, 1)
+        check(found.single().contentEquals(expected))
     }
 
     @Test

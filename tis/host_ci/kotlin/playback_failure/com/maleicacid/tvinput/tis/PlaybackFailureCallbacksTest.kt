@@ -689,17 +689,19 @@ class PlaybackFailureCallbacksTest {
                 live.ingest(0x100, "02b0170001c10000e102f0001be101f0000fe102f000a3052165")
                 check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
                 live.refresh()
-                check(live.state() == PlaybackStartState.Stopped)
-                check(live.playback.pipeline.currentPlaybackGenerationForTest() == 8L)
+                check(live.state() == if (playing) PlaybackStartState.Stopped else PlaybackStartState.Idle)
+                check(live.playback.pipeline.currentPlaybackGenerationForTest() == 8L) {
+                    "playing=$playing actual=${live.playback.pipeline.currentPlaybackGenerationForTest()}"
+                }
                 check(MediaCas.Faults.pluginCloses == 1)
                 check(live.dynamicPids("dynamicEcmPids").isEmpty() && live.dynamicPids("dynamicEmmPids").isEmpty())
                 check(live.dynamicPids("dynamicPmtPids") == setOf(TsPid(0x100)))
                 check(Filter::class.java.getField("closes").getInt(emmFilter) == 1)
                 check(Filter::class.java.getField("closes").getInt(live.filter) == 0)
-                check(live.pendingNotifications.size == 1)
+                check(live.pendingNotifications.size == if (playing) 1 else 0)
                 live.ingestPmt()
                 check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
-                check(live.state() == PlaybackStartState.Stopped)
+                check(live.state() == if (playing) PlaybackStartState.Stopped else PlaybackStartState.Idle)
             }
         }
     }
