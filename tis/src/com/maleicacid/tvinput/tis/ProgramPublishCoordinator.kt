@@ -3,6 +3,7 @@ package com.maleicacid.tvinput.tis
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ProgramRecord
+import java.security.MessageDigest
 
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
 
@@ -68,11 +69,13 @@ class ProgramPublishCoordinator(
     }
 
     private val lastProgramSignatureByMode = linkedMapOf<ChannelScanController.PublishMode, String>()
+    private val lastInputSignatureByMode = linkedMapOf<ChannelScanController.PublishMode, String>()
     private val dirtyWindows = linkedMapOf<DirtyWindowKey, DirtyWindow>()
     private val droppedDirtyWindowCountByService = linkedMapOf<ServiceKey, Int>()
 
     fun reset() {
         lastProgramSignatureByMode.clear()
+        lastInputSignatureByMode.clear()
         dirtyWindows.clear()
         droppedDirtyWindowCountByService.clear()
     }
@@ -117,6 +120,20 @@ class ProgramPublishCoordinator(
             allPrograms.isEmpty() && updateWindows.isEmpty() && dirtyWindows.isEmpty() && verifiedEmptyServiceKeys.isEmpty()
         if (noPublicationWork) {
             return ProgramPublishResult(0, 0, skippedUnchanged = 0)
+        }
+        val inputSignature =
+            publicationInputSignature(
+                allPrograms,
+                updateWindows,
+                verifiedEmptyServiceKeys,
+                allowedServiceKeys,
+            )
+        if (
+            dirtyWindows.isEmpty() &&
+            mode == ChannelScanController.PublishMode.LIVE_TUNE_REFRESH &&
+            lastInputSignatureByMode[mode] == inputSignature
+        ) {
+            return ProgramPublishResult(0, 0, skippedUnchanged = allServiceKeys.size)
         }
         val existingServiceKeys =
             if (mode == ChannelScanController.PublishMode.LIVE_TUNE_REFRESH ||
@@ -209,6 +226,7 @@ class ProgramPublishCoordinator(
         removeRetryWindows(succeededWindows)
         if (result.failures.isEmpty() && signature != null) {
             lastProgramSignatureByMode[mode] = signature
+            lastInputSignatureByMode[mode] = inputSignature
         } else {
             enqueueFailedWindows(failedWindows, result.failures)
         }
@@ -221,6 +239,64 @@ class ProgramPublishCoordinator(
             committedServiceCount = committedEligibleServiceKeys.size,
             committedServiceKeys = committedEligibleServiceKeys,
         )
+    }
+
+    private fun publicationInputSignature(
+        programs: List<ProgramRecord>,
+        windows: List<EpgUpdateWindow>,
+        verifiedEmptyServiceKeys: Set<ServiceKey>,
+        allowedServiceKeys: Set<ServiceKey>?,
+    ): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+
+        fun append(value: Any?) {
+            val bytes = value.toString().toByteArray(Charsets.UTF_8)
+            digest.update(bytes.size.toString().toByteArray(Charsets.US_ASCII))
+            digest.update(0.toByte())
+            digest.update(bytes)
+        }
+
+        val windowsByService = windows.groupBy { it.serviceKey }
+        programs
+            .sortedWith(
+                compareBy<ProgramRecord> { it.serviceKey.originalNetworkId }
+                    .thenBy { it.serviceKey.transportStreamId }
+                    .thenBy { it.serviceKey.serviceId }
+                    .thenBy { it.eventId }
+                    .thenBy { it.startTimeMillis },
+            ).forEach { program ->
+                append(program.serviceKey)
+                val projectionSignature =
+                    tvProviderWriter
+                        .publicationInputSignature(program, windowsByService[program.serviceKey].orEmpty())
+                        .getOrElse { error -> "ERROR:${error.message.orEmpty()}" }
+                append(projectionSignature)
+            }
+        windows
+            .sortedWith(
+                compareBy<EpgUpdateWindow> { it.serviceKey.originalNetworkId }
+                    .thenBy { it.serviceKey.transportStreamId }
+                    .thenBy { it.serviceKey.serviceId }
+                    .thenBy { it.windowStartMs }
+                    .thenBy { it.windowEndMs },
+            ).forEach { window ->
+                append(window.serviceKey)
+                append(window.windowStartMs)
+                append(window.windowEndMs)
+                append(window.deletionAuthoritative)
+                window.validProgramKeys.sorted().forEach(::append)
+            }
+        val serviceKeyOrder =
+            compareBy<ServiceKey> { it.originalNetworkId }
+                .thenBy { it.transportStreamId }
+                .thenBy { it.serviceId }
+        verifiedEmptyServiceKeys
+            .sortedWith(serviceKeyOrder)
+            .forEach(::append)
+        allowedServiceKeys
+            ?.sortedWith(serviceKeyOrder)
+            ?.forEach(::append)
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     /** 旧要求区間の全体を現在のauthoritative区間が覆う場合だけ、現在のキーで再試行する。 */
@@ -374,8 +450,6 @@ class ProgramPublishCoordinator(
                 ).joinToString("|") { program ->
                     projectedProgramSignature(program)
                 }
-
-        fun programIdentityForTest(program: ProgramRecord): String = programIdentityForCoordinator(program)
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")

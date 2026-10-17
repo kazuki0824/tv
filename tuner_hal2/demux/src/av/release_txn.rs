@@ -1,4 +1,4 @@
-use super::{AvDataId, ClientHandleState};
+use super::AvDataId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AvFilterReleaseState {
@@ -9,7 +9,6 @@ pub enum AvFilterReleaseState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AvDataIdState {
-    ActiveShared,
     ActiveEventLocal,
     Unknown,
 }
@@ -23,7 +22,6 @@ pub enum AvEventLocalHandleLeaseState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AvHandleReleaseKind {
     Empty,
-    Shared,
     EventLocal {
         data_id: AvDataId,
         lease_state: AvEventLocalHandleLeaseState,
@@ -35,7 +33,6 @@ pub enum AvHandleReleaseKind {
 pub struct AvHandleReleaseInput {
     pub handle_kind: AvHandleReleaseKind,
     pub data_id: AvDataId,
-    pub client_state: ClientHandleState,
     pub filter_state: AvFilterReleaseState,
     pub data_id_state: AvDataIdState,
 }
@@ -43,14 +40,11 @@ pub struct AvHandleReleaseInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AvHandleReleaseOutcome {
     EmptyHandleAccepted,
-    ClientHandleReleased,
-    ClientHandleReleaseAfterClose,
-    ClientHandleAlreadyReleased,
     EventLocalHandleReleased { data_id: AvDataId },
     EventLocalHandleAlreadyReleased { data_id: AvDataId },
-    SlotReleased { data_id: AvDataId },
+    AllocationReleased { data_id: AvDataId },
     InvalidDataId,
-    InvalidHandleForSlotRelease,
+    InvalidHandleForAllocationRelease,
     UnknownDataId,
     RegistryFailure,
 }
@@ -73,35 +67,10 @@ impl AvHandleReleaseTxn {
                     AvHandleReleaseOutcome::EmptyHandleAccepted
                 } else {
                     match input.data_id_state {
-                        AvDataIdState::ActiveShared | AvDataIdState::ActiveEventLocal => {
-                            AvHandleReleaseOutcome::SlotReleased {
-                                data_id: input.data_id,
-                            }
-                        }
+                        AvDataIdState::ActiveEventLocal => AvHandleReleaseOutcome::AllocationReleased {
+                            data_id: input.data_id,
+                        },
                         AvDataIdState::Unknown => AvHandleReleaseOutcome::UnknownDataId,
-                    }
-                }
-            }
-
-            // AVH-005/006。shared handleの一致は、この純粋transactionを
-            // 評価する前にbacking側で確定する。
-            AvHandleReleaseKind::Shared => {
-                if input.data_id.0 > 0 {
-                    return AvHandleReleaseOutcome::InvalidHandleForSlotRelease;
-                }
-                match input.client_state {
-                    ClientHandleState::ExportedActive => {
-                        if input.filter_state == AvFilterReleaseState::Closed {
-                            AvHandleReleaseOutcome::ClientHandleReleaseAfterClose
-                        } else {
-                            AvHandleReleaseOutcome::ClientHandleReleased
-                        }
-                    }
-                    ClientHandleState::ClientReleased => {
-                        AvHandleReleaseOutcome::ClientHandleAlreadyReleased
-                    }
-                    ClientHandleState::NotExported => {
-                        AvHandleReleaseOutcome::InvalidHandleForSlotRelease
                     }
                 }
             }
@@ -125,16 +94,16 @@ impl AvHandleReleaseTxn {
                 if input.data_id == data_id
                     && input.data_id_state == AvDataIdState::ActiveEventLocal
                 {
-                    AvHandleReleaseOutcome::SlotReleased {
+                    AvHandleReleaseOutcome::AllocationReleased {
                         data_id: input.data_id,
                     }
                 } else {
-                    AvHandleReleaseOutcome::InvalidHandleForSlotRelease
+                    AvHandleReleaseOutcome::InvalidHandleForAllocationRelease
                 }
             }
 
             // AVH-007/015/016。不明または外部のfileでleaseやallocationを変更しない。
-            AvHandleReleaseKind::UnknownFile => AvHandleReleaseOutcome::InvalidHandleForSlotRelease,
+            AvHandleReleaseKind::UnknownFile => AvHandleReleaseOutcome::InvalidHandleForAllocationRelease,
         }
     }
 }
@@ -147,9 +116,8 @@ mod tests {
         AvHandleReleaseInput {
             handle_kind,
             data_id: AvDataId(data_id),
-            client_state: ClientHandleState::ExportedActive,
             filter_state: AvFilterReleaseState::OpenAv,
-            data_id_state: AvDataIdState::ActiveShared,
+            data_id_state: AvDataIdState::ActiveEventLocal,
         }
     }
 
@@ -185,14 +153,14 @@ mod tests {
         matching.data_id_state = AvDataIdState::ActiveEventLocal;
         assert_eq!(
             AvHandleReleaseTxn::classify(matching),
-            AvHandleReleaseOutcome::SlotReleased {
+            AvHandleReleaseOutcome::AllocationReleased {
                 data_id: AvDataId(9)
             }
         );
         matching.data_id = AvDataId(10);
         assert_eq!(
             AvHandleReleaseTxn::classify(matching),
-            AvHandleReleaseOutcome::InvalidHandleForSlotRelease
+            AvHandleReleaseOutcome::InvalidHandleForAllocationRelease
         );
     }
 

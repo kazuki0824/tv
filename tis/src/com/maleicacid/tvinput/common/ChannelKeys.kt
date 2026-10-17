@@ -57,6 +57,8 @@ value class ServiceId16(
     }
 }
 
+// factory経由の生成を維持する。data classのcopyは型付きの検証済みIDを受け取る。
+@Suppress("DataClassPrivateConstructor")
 data class ServiceKey private constructor(
     val originalNetwork: NetworkId16,
     val transportStream: TransportStreamId16,
@@ -115,6 +117,7 @@ value class TsPid(
         val SDT_BAT = TsPid(0x0011)
         val EIT = TsPid(0x0012)
         val TDT = TsPid(0x0014)
+        val NULL = TsPid(0x1fff)
 
         fun fromOrNull(value: Int?): TsPid? = value?.takeIf { it in TS_PID_RANGE }?.let(::TsPid)
     }
@@ -165,12 +168,6 @@ value class RelativeStreamNumber(
 ) {
     init {
         require(value in RELATIVE_STREAM_RANGE) { "相対ストリーム番号は 0..7 でなければなりません: $value" }
-    }
-
-    companion object {
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun fromOrNull(value: Int?): RelativeStreamNumber? = value?.takeIf { it in RELATIVE_STREAM_RANGE }?.let(::RelativeStreamNumber)
     }
 }
 

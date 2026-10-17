@@ -127,9 +127,11 @@ object AribBroadcastClock {
         millisOfDay: Long,
     ): Long = mjd.toLong() * DAY_MILLIS + millisOfDay
 
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    private fun nextGeneration(generation: Long): Long = if (generation == Long.MAX_VALUE) Long.MAX_VALUE else generation + 1L
+    private fun nextGeneration(generation: Long): Long =
+        RuntimeIdentity.nextLong(
+            generation,
+            "放送時計generation",
+        )
 
     private const val CONTINUITY_TOLERANCE_MILLIS = 2_000L
     private const val DAY_MILLIS = 24L * 60L * 60L * 1_000L

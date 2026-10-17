@@ -461,6 +461,43 @@ class PlaybackStartGateTest {
         }
     }
 
+    @Test
+    fun frameworkControlCallbackSurvivesSaturatedDataQueue() {
+        val executor = LifecycleSerialExecutor("framework-tif-control-test", maxPendingDataTasks = 1)
+        val started = java.util.concurrent.CountDownLatch(1)
+        val unblock = java.util.concurrent.CountDownLatch(1)
+        val controlCompleted = java.util.concurrent.CountDownLatch(1)
+        val dataCompleted = java.util.concurrent.CountDownLatch(1)
+        val order = java.util.concurrent.CopyOnWriteArrayList<String>()
+        try {
+            executor.executeControl {
+                started.countDown()
+                check(unblock.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            }
+            check(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            // data受付枠を使い切っても、ユーザー操作のcontrol callbackは受理可能。
+            executor.executeData {
+                order.add("data")
+                dataCompleted.countDown()
+            }
+            executor.executeCallback(
+                control = true,
+                isReleased = { false },
+                onFailure = { throw it },
+            ) {
+                order.add("control")
+                controlCompleted.countDown()
+            }
+            unblock.countDown()
+            check(controlCompleted.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            check(dataCompleted.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            check(order == listOf("control", "data"))
+        } finally {
+            unblock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
     private fun signature(
         videoPid: TsPid?,
         audioPid: TsPid?,

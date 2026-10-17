@@ -27,7 +27,7 @@ class BootEpgSyncJobService : JobService() {
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("MaxLineLength", "ReturnCount")
+    @Suppress("CyclomaticComplexMethod", "MaxLineLength", "ReturnCount")
     override fun onStartJob(params: JobParameters): Boolean {
         val run = RunContext(params)
         activeRun.set(run)
@@ -44,8 +44,15 @@ class BootEpgSyncJobService : JobService() {
             }
 
             DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> {
-                Unit
+                // 続けて番組表の同期を開始する。
             }
+        }
+        if (!ProgramUpgradeCleanup.ensure(applicationContext) { success ->
+                if (success) BootEpgSyncScheduler.scheduleIfEligible(applicationContext, "PROGRAM_CLEANUP_COMPLETED")
+            }
+        ) {
+            DirectBootGuard.deferPending(applicationContext, "PROGRAM_UPGRADE_CLEANUP_FAILED")
+            return finish(run, needsReschedule = true)
         }
         val inputId = TisInputIdResolver.resolveOwnInputId(applicationContext)
         if (inputId == null) {

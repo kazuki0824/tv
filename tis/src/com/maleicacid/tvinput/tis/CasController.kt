@@ -33,7 +33,6 @@ class CasController(
         ECM_FAILED,
         EMM_FAILED,
         KEY_TOKEN_MISSING,
-        INVALID_KEY_TOKEN,
         DESCRAMBLER_FAILED,
         MEDIA_CAS_INVALIDATED,
         CLOSED,
@@ -328,8 +327,6 @@ class CasController(
             emmPidToSystems.clear()
         }
     }
-
-    fun clearForClearService(): Unit = clearForClearServiceLocked()
 
     // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
     @Suppress("SpreadOperator")
@@ -893,8 +890,6 @@ class CasController(
                 Diagnostic(State.CLOSED)
             }
     }
-
-    fun release() = close()
 
     object SupportedCasSystemIds {
         const val ARIB_STD_B25 = 0x0005

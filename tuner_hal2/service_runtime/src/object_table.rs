@@ -86,6 +86,72 @@ impl RuntimeObjectLifecycle {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeObjectLifecycleSnapshot {
+    Prepared,
+    Live,
+    Closing { step: CleanupStep },
+    CleanupPending { step: CleanupStep },
+    Closed,
+    Quarantined,
+}
+
+impl From<RuntimeObjectLifecycle> for RuntimeObjectLifecycleSnapshot {
+    fn from(lifecycle: RuntimeObjectLifecycle) -> Self {
+        match lifecycle {
+            RuntimeObjectLifecycle::Prepared => Self::Prepared,
+            RuntimeObjectLifecycle::Live => Self::Live,
+            RuntimeObjectLifecycle::Closing { step } => Self::Closing { step },
+            RuntimeObjectLifecycle::CleanupPending { step } => Self::CleanupPending { step },
+            RuntimeObjectLifecycle::Closed => Self::Closed,
+            RuntimeObjectLifecycle::Quarantined => Self::Quarantined,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeObjectDiagnosticSnapshot {
+    object_kind: AidlObjectKind,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    public_runtime_id: LedgerId,
+    lifecycle: RuntimeObjectLifecycleSnapshot,
+}
+
+impl RuntimeObjectDiagnosticSnapshot {
+    pub const fn object_kind(&self) -> AidlObjectKind {
+        self.object_kind
+    }
+
+    pub const fn object_id(&self) -> AidlObjectId {
+        self.object_id
+    }
+
+    pub const fn generation(&self) -> AidlObjectGeneration {
+        self.generation
+    }
+
+    pub const fn public_runtime_id(&self) -> LedgerId {
+        self.public_runtime_id
+    }
+
+    pub const fn lifecycle(&self) -> RuntimeObjectLifecycleSnapshot {
+        self.lifecycle
+    }
+}
+
+impl From<&RuntimeObjectEntry> for RuntimeObjectDiagnosticSnapshot {
+    fn from(entry: &RuntimeObjectEntry) -> Self {
+        Self {
+            object_kind: entry.object_kind,
+            object_id: entry.object_id,
+            generation: entry.generation,
+            public_runtime_id: entry.ledger_id,
+            lifecycle: entry.lifecycle.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeObjectEntry {
     pub(crate) object_kind: AidlObjectKind,
@@ -587,6 +653,29 @@ impl RuntimeObjectTable {
             .cloned()
     }
 
+    pub(crate) fn active_entry_for_runtime(
+        &self,
+        kind: AidlObjectKind,
+        ledger_id: LedgerId,
+    ) -> Option<RuntimeObjectEntry> {
+        self.entries
+            .values()
+            .find(|entry| {
+                entry.object_kind == kind
+                    && entry.ledger_id == ledger_id
+                    && !matches!(entry.lifecycle, RuntimeObjectLifecycle::Closed)
+            })
+            .cloned()
+    }
+
+    pub(crate) fn active_diagnostic_snapshots(&self) -> Vec<RuntimeObjectDiagnosticSnapshot> {
+        self.entries
+            .values()
+            .filter(|entry| !matches!(entry.lifecycle, RuntimeObjectLifecycle::Closed))
+            .map(RuntimeObjectDiagnosticSnapshot::from)
+            .collect()
+    }
+
     pub fn active_public_runtime_ids(&self, kind: AidlObjectKind) -> Vec<LedgerId> {
         self.entries
             .values()
@@ -811,6 +900,50 @@ mod qg_object_lifecycle_tests {
             table.entry(AidlObjectId(11)).unwrap().lifecycle,
             RuntimeObjectLifecycle::Quarantined
         );
+    }
+
+    #[test]
+    fn active_diagnostic_snapshot_tracks_typed_lifecycle_and_drops_closed_binding() {
+        let mut table = RuntimeObjectTable::default();
+        let object_id = AidlObjectId(19);
+        table
+            .insert(entry(
+                AidlObjectKind::Frontend,
+                object_id.0,
+                7,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("insertが成功する");
+
+        assert_eq!(
+            table.active_diagnostic_snapshots(),
+            vec![RuntimeObjectDiagnosticSnapshot {
+                object_kind: AidlObjectKind::Frontend,
+                object_id,
+                generation: AidlObjectGeneration(1),
+                public_runtime_id: LedgerId(7),
+                lifecycle: RuntimeObjectLifecycleSnapshot::Live,
+            }]
+        );
+
+        table
+            .begin_close_cascade(
+                object_id,
+                AidlObjectGeneration(1),
+                CleanupStep::ReleaseBackend,
+            )
+            .expect("close開始が成功する");
+        assert_eq!(
+            table.active_diagnostic_snapshots()[0].lifecycle(),
+            RuntimeObjectLifecycleSnapshot::Closing {
+                step: CleanupStep::ReleaseBackend
+            }
+        );
+
+        table
+            .commit_close_cascade(object_id, AidlObjectGeneration(1))
+            .expect("close commitが成功する");
+        assert!(table.active_diagnostic_snapshots().is_empty());
     }
 
     #[test]

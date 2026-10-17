@@ -28,10 +28,6 @@ class CaptionOverlayView(
     private val layers = linkedMapOf<String, Layer>()
     private val sizeListeners = linkedMapOf<String, (Int, Int) -> Unit>()
 
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    fun setOnOverlaySizeChangedListener(listener: (Int, Int) -> Unit) = setOnOverlaySizeChangedListener(DEFAULT_LAYER_ID, listener)
-
     fun setOnOverlaySizeChangedListener(
         layerId: String,
         listener: (Int, Int) -> Unit,
@@ -39,12 +35,6 @@ class CaptionOverlayView(
         sizeListeners[layerId] = listener
         if (width > 0 && height > 0) listener(width, height)
     }
-
-    fun showCaptionFrame(
-        frameImages: List<NativeAribCaptionRenderer.RenderedCaptionImage>,
-        viewportLeftPx: Int,
-        viewportTopPx: Int,
-    ): Boolean = showCaptionFrame(DEFAULT_LAYER_ID, frameImages, viewportLeftPx, viewportTopPx)
 
     fun showCaptionFrame(
         layerId: String,
@@ -66,8 +56,6 @@ class CaptionOverlayView(
         invalidate()
         return true
     }
-
-    fun clearCaption() = clearCaptionLayer(DEFAULT_LAYER_ID)
 
     fun clearCaptionLayer(layerId: String) {
         layers.remove(layerId)?.let { recycleImages(it.images) }
@@ -114,8 +102,6 @@ class CaptionOverlayView(
     }
 
     companion object {
-        private const val DEFAULT_LAYER_ID = "caption"
-
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MagicNumber", "MaxLineLength")

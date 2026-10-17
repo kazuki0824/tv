@@ -4,8 +4,168 @@
 package com.maleicacid.tvinput.tis
 
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
+// callback失敗通知とstop時の所有解放を同じ資源寿命の契約群で検証する。
+@Suppress("TooManyFunctions")
 class PlaybackResourceCleanupTest {
+    @Test
+    fun successfulParentCodecReleaseRetiresFailedOutputBeforeRetry() {
+        for (failParentFirst in listOf(false, true)) {
+            val cleanup = ResourceCleanup()
+            val codecOwner = Any()
+            var codecClosed = false
+            var outputAttempts = 0
+            var rejectParent = failParentFirst
+            var childReferencesRetained = true
+            PlaybackPipeline.releaseDecoderOutput(cleanup, codecOwner) {
+                check(!codecClosed)
+                outputAttempts++
+                error("output解放失敗")
+            }
+            PlaybackPipeline.completeDecoderRelease(cleanup, codecOwner, release = {
+                if (rejectParent) error("codec解放失敗")
+                codecClosed = true
+            }) { childReferencesRetained = false }
+            if (failParentFirst) {
+                check(cleanup.hasPending && !codecClosed && childReferencesRetained)
+                rejectParent = false
+                cleanup.retry()
+            }
+            check(codecClosed && !childReferencesRetained && !cleanup.hasPending)
+            val attemptsAtParentRelease = outputAttempts
+            cleanup.retry()
+            cleanup.requireComplete()
+            check(outputAttempts == attemptsAtParentRelease)
+        }
+    }
+
+    @Test
+    fun currentOutputReleaseFailureNotifiesSessionAndCompletesDataTask() {
+        val cleanup = ResourceCleanup()
+        val notifications = mutableListOf<PlaybackPipeline.PlaybackUnavailable>()
+        val executor = LifecycleSerialExecutor("output失敗試験")
+        val completed = CountDownLatch(1)
+        var reject = true
+        var owned = true
+        try {
+            executor.executeData {
+                PlaybackPipeline.completeCurrentDecoderOutputAction(
+                    onFailure = { error ->
+                        check(error is IllegalStateException)
+                        PlaybackPipeline.completePlaybackFailureAction(7L, notifications::add) {
+                            cleanup.requireComplete()
+                        }
+                    },
+                ) {
+                    check(
+                        PlaybackPipeline.releaseDecoderOutput(cleanup) {
+                            if (reject) error("output解放失敗")
+                            owned = false
+                        },
+                    ) { "解放未完了" }
+                }
+                completed.countDown()
+            }
+            check(completed.await(1, TimeUnit.SECONDS))
+            check(owned && cleanup.hasPending)
+            check(notifications.single().generation == 7L)
+            check(notifications.single().reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
+            reject = false
+            cleanup.retry()
+            cleanup.requireComplete()
+            check(!owned)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun currentDecoderOutputReleaseFailuresRemainOwnedAndRejectCompletion() {
+        val cleanup = ResourceCleanup()
+        var owned = true
+        var reject = true
+        var calls = 0
+        val release = {
+            calls++
+            if (reject) error("current output解放失敗")
+            owned = false
+        }
+        val failure =
+            runCatching {
+                check(PlaybackPipeline.releaseDecoderOutput(cleanup, release = release)) { "解放未完了" }
+            }.exceptionOrNull()
+        check(failure is IllegalStateException && owned && cleanup.hasPending && calls == 1)
+        reject = false
+        cleanup.retry()
+        cleanup.requireComplete()
+        check(!owned && calls == 2)
+        check(PlaybackPipeline.releaseDecoderOutput(cleanup) { calls++ })
+        check(calls == 3 && !cleanup.hasPending)
+    }
+
+    @Test
+    fun staleDecoderOutputReleaseRetainsCallbackOwnershipUntilStopRetry() {
+        val cleanup = ResourceCleanup()
+        var owned = true
+        var reject = true
+        var calls = 0
+        PlaybackPipeline.releaseDecoderOutput(cleanup) {
+            calls++
+            if (reject) error("stale output release失敗")
+            owned = false
+        }
+        check(owned && cleanup.hasPending && calls == 1)
+        check(runCatching { cleanup.requireComplete() }.isFailure)
+        reject = false
+        cleanup.retry()
+        cleanup.requireComplete()
+        check(!owned && !cleanup.hasPending && calls == 2)
+    }
+
+    @Test
+    fun cleanupPendingKeepsPlaybackRegisteredEvenWhenGenerationExhausted() {
+        for (generationFailure in listOf(null, IllegalStateException("generation枯渇"))) {
+            var registered = true
+            val cleanupFailure = IllegalStateException("cleanup未完了")
+            val failure =
+                runCatching {
+                    PlaybackPipeline.completeStopAfterResourceRelease(
+                        unregister = { registered = false },
+                        requireCleanupComplete = { throw cleanupFailure },
+                        generationFailure = generationFailure,
+                    )
+                }.exceptionOrNull()
+            check(failure === cleanupFailure && registered)
+            val retryFailure =
+                runCatching {
+                    PlaybackPipeline.completeStopAfterResourceRelease(
+                        unregister = { registered = false },
+                        requireCleanupComplete = {},
+                        generationFailure = generationFailure,
+                    )
+                }.exceptionOrNull()
+            check(!registered && retryFailure === generationFailure)
+        }
+    }
+
+    @Test
+    fun playbackGenerationExhaustionUnregistersAfterCleanupBeforeFailure() {
+        val order = mutableListOf<String>()
+        val generationFailure = IllegalStateException("再生generationが枯渇しました")
+        val failure =
+            runCatching {
+                PlaybackPipeline.completeStopAfterResourceRelease(
+                    unregister = { order += "登録解除" },
+                    requireCleanupComplete = { order += "cleanup完了確認" },
+                    generationFailure = generationFailure,
+                )
+            }.exceptionOrNull()
+        check(order == listOf("cleanup完了確認", "登録解除"))
+        check(failure === generationFailure)
+    }
+
     @Test fun codecRecoveryIsBoundedAndReclaimedAlwaysTerminates() {
         check(PlaybackPipeline.codecRecoveryDelay(false, true, false, false) == 0L)
         check(PlaybackPipeline.codecRecoveryDelay(false, false, true, false) == 100L)
@@ -67,6 +227,23 @@ class PlaybackResourceCleanupTest {
         cleanup.requireComplete()
         check(!cleanup.hasPending)
         check(calls == listOf("decoder", "filter", "decoder"))
+
+        val owned = linkedMapOf(7 to "codec-output")
+        val ownedCleanup = ResourceCleanup()
+        var rejectOwnedRelease = true
+        val releaseOwned = {
+            val value = requireNotNull(owned[7])
+            ownedCleanup.release(value) {
+                if (rejectOwnedRelease) error("codec出力のreleaseに失敗しました")
+                owned.remove(7)
+            }
+        }
+        releaseOwned()
+        check(owned[7] == "codec-output" && ownedCleanup.hasPending)
+        rejectOwnedRelease = false
+        ownedCleanup.retry()
+        ownedCleanup.requireComplete()
+        check(owned.isEmpty())
     }
 
     @Test fun retuneCleanupInvalidatesBeforeEveryFailureAndBlocksNextTuneUntilRetry() {
