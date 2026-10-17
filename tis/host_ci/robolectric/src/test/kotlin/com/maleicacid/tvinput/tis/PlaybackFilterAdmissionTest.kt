@@ -985,7 +985,7 @@ class PlaybackFilterAdmissionTest {
         Shadow.extract<NativeMediaEvent>(event).onRelease = { released.countDown() }
         postCodecCallback(codec, 1, 0, null)
         // CodecのHandlerからownerへ届く前に、ownerだけのdrainが完了し得る。
-        assertTrue("returned Codec input must release its MediaEvent", released.await(5, TimeUnit.SECONDS))
+        assertTrue(released.await(5, TimeUnit.SECONDS), "returned Codec input must release its MediaEvent")
     }
 
     private fun postCodecCallback(
