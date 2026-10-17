@@ -1,5 +1,5 @@
 // 実SDK callback lock・時計・MediaEvent寿命を使い、HAL/native境界だけを置換する。
-@file:Suppress("MagicNumber")
+@file:Suppress("MagicNumber", "MaxLineLength")
 
 package com.maleicacid.tvinput.tis
 
@@ -8,6 +8,9 @@ import android.graphics.SurfaceTexture
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.media.MediaSync
+import android.media.tv.TvInputService
+import android.media.tv.TvTrackInfo
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.TunerUtils
 import android.media.tv.tuner.filter.Filter
@@ -50,6 +53,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -102,6 +106,10 @@ class PlaybackFilterAdmissionTest {
                     assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
                 }
                 assertEquals(1, Shadow.extract<NativeMediaEvent>(pending).releases)
+                // 回復後に新しいsampleが届くまで、さらにOVERFLOWを受けても同じflushは行わない。
+                status(filter, Filter.STATUS_OVERFLOW)
+                fixture.drain()
+                assertEquals(1, native.flushes)
                 deliver(filter, newInput)
                 fixture.drain()
                 assertEquals(listOf(newInput), fixture.pendingEvents(audio))
@@ -110,8 +118,10 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
                 assertTrue(decoder === ReflectionHelpers.getField<Any>(fixture.pipeline, decoderField))
                 assertEquals(0, native.closes)
-                // 対象Android 15のFilter.onFilterStatusはcallbackを2回配送する。
-                assertEquals(2, native.flushes)
+                status(filter, Filter.STATUS_OVERFLOW)
+                fixture.drain()
+                // 未構成decoderへの保留はCodec入力進捗ではないため、再flushしない。
+                assertEquals(1, native.flushes)
                 val progress = fixture.progress()
                 assertTrue(progress.count(PlaybackDataPathProgress.Stage.OVERFLOW, audio) > 0L)
                 assertEquals(0L, progress.count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, audio))
@@ -120,6 +130,49 @@ class PlaybackFilterAdmissionTest {
                 assertTrue(fixture.failures.isEmpty())
             }
             assertEquals(1, Shadow.extract<NativeMediaEvent>(newInput).releases)
+        }
+    }
+
+    @Test
+    fun overflowWithConfiguredCodecRetiresItsReferencesInsteadOfContinuingAfterFilterFlush() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            fixture.attachCodec()
+            val filter = fixture.avFilter(false)
+            val nativeFilter = Shadow.extract<NativeFilter>(filter)
+            val pending = mappedMediaEvent()
+            deliver(filter, pending)
+            fixture.drain()
+            status(filter, Filter.STATUS_OVERFLOW)
+            fixture.drain()
+            assertEquals(0, nativeFilter.flushes)
+            assertNull(ReflectionHelpers.getField<Any?>(fixture.pipeline, "videoDecoder"))
+            assertNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "videoFilter"))
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(pending).releases)
+            // fixtureには再開対象を設定していないため、元世代へ回復不能を通知する。
+            assertTrue(
+                fixture.unavailable.any {
+                    it.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED && it.generation == 7L
+                },
+            )
+        }
+        Fixture().use { fixture ->
+            fixture.decoder()
+            fixture.attachCodec()
+            fixture.audioSelection()
+            ReflectionHelpers.setField(fixture.pipeline, "activeTuner", fixture.tuner)
+            val filter = fixture.avFilter(false)
+            status(filter, Filter.STATUS_OVERFLOW)
+            fixture.drain()
+            assertTrue(ReflectionHelpers.getField<Boolean>(fixture.pipeline, "codecRecoveryAttempted"))
+            assertNull(ReflectionHelpers.getField<Any?>(fixture.pipeline, "videoDecoder"))
+            assertTrue(fixture.unavailable.isEmpty())
+            // stop後にmain handlerの再生成予約が届いても旧選局を再開しない。
+            fixture.pipeline.stop()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            fixture.drain()
+            assertNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "videoFilter"))
+            assertTrue(fixture.unavailable.isEmpty())
         }
     }
 
@@ -268,29 +321,72 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
-    fun decoderQueueDeadlineStopsFilterAndRejectsFurtherInput() {
+    fun mpeg2HeaderProbeAdvancesBeyondTheFirst256KiB() {
+        Fixture().use { fixture ->
+            fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
+            val type = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "MediaSample" }
+            val constructor = type.declaredConstructors.single { it.parameterCount == 6 }.apply { isAccessible = true }
+            val probe =
+                decoder.javaClass.superclass
+                    .getDeclaredMethod("probeHeader", type)
+                    .apply { isAccessible = true }
+            repeat(7) { chunk ->
+                val bytes = ByteArray(64 * 1024)
+                if (chunk == 6) {
+                    bytes[10] = 0
+                    bytes[11] = 0
+                    bytes[12] = 1
+                    bytes[13] = 0xb3.toByte()
+                    bytes[14] = 0x5a
+                    bytes[15] = 0x04
+                    bytes[16] = 0x38
+                    bytes[17] = 0x30
+                }
+                val event = mediaEvent(bytes.size.toLong())
+                val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+                Shadow.extract<NativeLinearBlock>(block).data = bytes
+                val sample = constructor.newInstance(event, block, 0, bytes.size, 0L, false)
+                val format = probe.invoke(decoder, sample) as MediaFormat?
+                if (chunk < 6) {
+                    assertEquals(null, format)
+                } else {
+                    assertEquals(1440, requireNotNull(format).getInteger(MediaFormat.KEY_WIDTH))
+                    assertEquals(1080, format.getInteger(MediaFormat.KEY_HEIGHT))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun decoderStartupKeepsAtMostThreeEventsAndFailsAtTheFiniteDeadline() {
         Fixture().use { fixture ->
             fixture.decoder()
             val video = fixture.avFilter(false)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
-            // AVC startup budgetの32件を満たし、次の入力で既存decoderの停滞時計を開始する。
             val samples = List(33) { mappedMediaEvent() }
             samples.forEach { deliver(video, it) }
             fixture.drain()
-            assertEquals(32, fixture.pendingEvents(false).size)
+            // 未構成decoderはHALの8スロットを占有し続けず、後続headerを探せる。
+            assertEquals(3, fixture.pendingEvents(false).size)
+            samples.take(30).forEach {
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(it).releases)
+            }
             assertTrue(fixture.failures.isEmpty())
-            ShadowSystemClock.advanceBy(Duration.ofSeconds(6))
-            val expired = mappedMediaEvent()
-            deliver(video, expired)
+            val arm =
+                decoder.javaClass.superclass
+                    .getDeclaredMethod("armStartupDeadline")
+                    .apply { isAccessible = true }
+            fixture.executor.callControl(5_000L) { arm.invoke(decoder) }
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(6, TimeUnit.SECONDS)
             fixture.drain()
-            assertEquals(1, fixture.failures.size)
-            assertTrue(
-                fixture.failures
-                    .single()
-                    .second
-                    .contains("PENDING_QUEUE_FULL"),
-            )
-            fixture.assertStoppedVideo(decoder, video, samples + expired)
+            assertTrue(fixture.unavailable.any { it.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT })
+            fixture.assertStoppedVideo(decoder, video, samples)
+            samples.forEach {
+                val native = Shadow.extract<NativeMediaEvent>(it)
+                assertEquals(1, native.releases)
+                assertEquals(1, Shadow.extract<NativeLinearBlock>(requireNotNull(native.block)).recycles)
+            }
         }
     }
 
@@ -466,10 +562,102 @@ class PlaybackFilterAdmissionTest {
 
     // MediaCodecのJava callback配送を使用し、ネイティブqueueだけをhost shadowへ置き換える。
     @Test
+    fun videoOutputStallAfterFirstFrameIsNotTreatedAsContinuousPlayback() {
+        Fixture().use { fixture ->
+            ReflectionHelpers.setField(fixture.pipeline, "videoPathExpected", true)
+            fixture.selectExactMode()
+            ReflectionHelpers.getField<AtomicBoolean>(fixture.pipeline, "videoAvailableNotified").set(true)
+            fixture.invoke("armVideoOutputStallWatchdog", 7L)
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(6_001L))
+            fixture.drain()
+            assertTrue(
+                fixture.unavailable.any {
+                    it.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED
+                },
+            )
+            assertTrue(fixture.unavailable.any { it.detail.contains("映像描画callback") })
+        }
+    }
+
+    @Test
+    fun staleRenderWatchdogCannotFailAnUpdatedFrameDeadline() {
+        Fixture().use { fixture ->
+            ReflectionHelpers.setField(fixture.pipeline, "videoPathExpected", true)
+            fixture.selectExactMode()
+            ReflectionHelpers.getField<AtomicBoolean>(fixture.pipeline, "videoAvailableNotified").set(true)
+            fixture.invoke("armVideoOutputStallWatchdog", 7L)
+            val stale = ReflectionHelpers.getField<Runnable>(fixture.pipeline, "videoOutputStallTask")
+            fixture.invoke("armVideoOutputStallWatchdog", 7L)
+            val current = ReflectionHelpers.getField<Runnable>(fixture.pipeline, "videoOutputStallTask")
+            assertFalse(stale === current)
+            // 旧Runnableは既にmainで実行を開始していた可能性がある。
+            stale.run()
+            fixture.drain()
+            assertTrue(fixture.unavailable.isEmpty())
+            assertEquals(current, ReflectionHelpers.getField<Runnable>(fixture.pipeline, "videoOutputStallTask"))
+        }
+    }
+
+    @Test
+    fun exactOutputFollowedByCompatibilityDowngradeCancelsFinalOutputDeadline() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            fixture.armCompatibilityAvailability(7L, exact = true)
+            val arm = ReflectionHelpers.getField<Any>(fixture.pipeline, "waitingAvailabilityArm")
+            val sequence = ReflectionHelpers.getField<Long>(arm, "armSequence")
+            // 初回Exact成功を本番入口へ配送し、stock SDKで次のprivate armが成立しない経路を通す。
+            fixture.invoke("commitVideoAvailability", requireNotNull(fixture.availabilitySync), 7L, sequence)
+            fixture.drain()
+            assertEquals(listOf(7L), fixture.available)
+            assertEquals(
+                "MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT",
+                ReflectionHelpers.getField<Any>(fixture.pipeline, "videoAvailabilityMode").toString(),
+            )
+            assertEquals(null, ReflectionHelpers.getField<Runnable?>(fixture.pipeline, "videoOutputStallTask"))
+            val listener = ReflectionHelpers.getField<MediaCodec.OnFrameRenderedListener>(codec, "mOnFrameRenderedListener")
+            repeat(7) {
+                listener.onFrameRendered(codec, 90_000L + it, System.nanoTime())
+                fixture.drain()
+                Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+                fixture.drain()
+            }
+            assertTrue(fixture.unavailable.isEmpty())
+            assertEquals(7L, ReflectionHelpers.getField<Long>(fixture.pipeline, "playbackGeneration"))
+            assertEquals(listOf(7L), fixture.available)
+        }
+    }
+
+    @Test
     fun stockAndroid15WithoutPlatformPatchSelectsCodecCallbackFallback() {
         // Robolectric Android 15はMediaSyncの任意private拡張を持たない。
         // 実装はこのAPIを必須にせず公開MediaCodec callbackを使用する。
         assertFalse(MediaSyncFirstOutputBridge.isAvailable())
+    }
+
+    @Test
+    fun codecReleaseReturnsInputWhoseIndexWasNotReturned() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            val filter = fixture.avFilter(false)
+            val packet = mappedMediaEvent()
+            deliver(filter, packet)
+            fixture.drain()
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(Shadow.extract<NativeCodec>(codec).inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            val event = Shadow.extract<NativeMediaEvent>(packet)
+            val block = Shadow.extract<NativeLinearBlock>(requireNotNull(event.block))
+            assertEquals(0, event.releases)
+            assertEquals(0, block.recycles)
+            fixture.pipeline.stop()
+            assertEquals(1, event.releases)
+            assertEquals(1, block.recycles)
+            fixture.pipeline.stop()
+            assertEquals(1, event.releases)
+            assertEquals(1, block.recycles)
+        }
     }
 
     @Test
@@ -488,6 +676,17 @@ class PlaybackFilterAdmissionTest {
             assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
             fixture.drain()
             assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
+            assertEquals(0, Shadow.extract<NativeMediaEvent>(packet).releases)
+            val block = requireNotNull(Shadow.extract<NativeMediaEvent>(packet).block)
+            assertEquals(0, Shadow.extract<NativeLinearBlock>(block).recycles)
+            // Codecが同じ入力indexを返すまではHALの共有slotを再利用させない。
+            returnCodecInputAndAwaitEventRelease(codec, packet)
+            fixture.drain()
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(packet).releases)
+            assertEquals(
+                1,
+                Shadow.extract<NativeLinearBlock>(requireNotNull(Shadow.extract<NativeMediaEvent>(packet).block)).recycles,
+            )
             assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, false))
             val output = MediaCodec.BufferInfo().apply { set(0, 1, 90_000L, 0) }
             postCodecCallback(codec, 2, 0, output)
@@ -502,30 +701,51 @@ class PlaybackFilterAdmissionTest {
                     "mOnFrameRenderedListener",
                 )
             val logCountBefore = availabilityLogMessages().size
-            val armedAt = System.nanoTime()
-            fixture.armCompatibilityAvailability(7L, armedAt)
+            val armedAt = fixture.armCompatibilityAvailability(7L)
+            listener.onFrameRendered(codec, 90_000L, armedAt - 1L)
+            fixture.drain()
+            assertTrue(fixture.available.isEmpty())
             listener.onFrameRendered(codec, 90_000L, armedAt + 1L)
             fixture.drain()
-            assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
             assertEquals(listOf(7L), fixture.available)
-            val committed = availabilityLogMessages()
-            assertEquals(logCountBefore + 1, committed.size)
-            assertTrue(committed.last().contains("generation=7 mode=MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT"))
-            assertTrue(committed.last().contains("VIDEO.CODEC_OUTPUT=1"))
-            assertTrue(committed.last().contains("AUDIO.CODEC_OUTPUT=0"))
-            assertTrue(committed.last().contains("VIDEO.FRAME_RENDERED=1"))
-            // 同じframeの再通知では、既存の一回限りのavailability確定を再実行しない。
+            assertEquals(logCountBefore + 1, availabilityLogMessages().size)
+            assertTrue(availabilityLogMessages().last().contains("COMPAT"))
+            assertEquals(null, ReflectionHelpers.getField<Runnable?>(fixture.pipeline, "videoOutputStallTask"))
             listener.onFrameRendered(codec, 90_000L, armedAt + 2L)
             fixture.drain()
             assertEquals(listOf(7L), fixture.available)
-            assertEquals(logCountBefore + 1, availabilityLogMessages().size)
-            // 次の世代が始まった後は旧Decoder callbackが成功通知も計数も行わない。
-            fixture.armCompatibilityAvailability(8L, System.nanoTime())
+            fixture.armCompatibilityAvailability(8L)
             listener.onFrameRendered(codec, 90_000L, System.nanoTime())
             fixture.drain()
             assertEquals(listOf(7L), fixture.available)
-            assertEquals(logCountBefore + 1, availabilityLogMessages().size)
-            assertEquals(2L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
+            assertEquals(3L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
+        }
+    }
+
+    @Test
+    fun compatibilityRejectsKnownSurfaceFailureAndExactModeRejectsCodecOnlyEvidence() {
+        for (mode in listOf("surface-failed", "surface-invalid", "exact")) {
+            Fixture().use { fixture ->
+                fixture.decoder()
+                val codec = fixture.attachCodec()
+                val armedAt = fixture.armCompatibilityAvailability(7L, exact = mode == "exact")
+                if (mode == "surface-failed") {
+                    fixture.invoke(
+                        "handleMediaSyncError",
+                        requireNotNull(fixture.availabilitySync),
+                        7L,
+                        MediaSync.MEDIASYNC_ERROR_SURFACE_FAIL,
+                        0,
+                    )
+                } else if (mode == "surface-invalid") {
+                    requireNotNull(fixture.codecSurface).release()
+                }
+                val listener = ReflectionHelpers.getField<MediaCodec.OnFrameRenderedListener>(codec, "mOnFrameRenderedListener")
+                listener.onFrameRendered(codec, 90_000L, armedAt + 1L)
+                fixture.drain()
+                assertTrue(fixture.available.isEmpty(), mode)
+                assertEquals(null, ReflectionHelpers.getField<Runnable?>(fixture.pipeline, "videoOutputStallTask"), mode)
+            }
         }
     }
 
@@ -639,6 +859,86 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    @Test
+    fun sameAudioSelectionAndPidOnlySwitchKeepVideoAndMediaSync() {
+        Fixture().use { fixture ->
+            fixture.decoder(false)
+            fixture.decoder(true)
+            val video = fixture.avFilter(false)
+            val oldAudio = fixture.avFilter(true)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
+            val audioDecoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+            val selection = fixture.audioSelection()
+            assertTrue(fixture.pipeline.switchAudio(fixture.tuner, selection).switchedAudio)
+            assertEquals(0, Shadow.extract<NativeFilter>(oldAudio).closes)
+            val next = selection.copy(audio = selection.audio!!.copy(elementaryPid = TsPid(0x111)))
+            assertTrue(fixture.pipeline.switchAudio(fixture.tuner, next).switchedAudio)
+            assertEquals(1, Shadow.extract<NativeFilter>(oldAudio).closes)
+            assertEquals(0, Shadow.extract<NativeFilter>(video).closes)
+            assertTrue(decoder === ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder"))
+            assertTrue(audioDecoder === ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder"))
+            assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+            val stale = mappedMediaEvent()
+            deliver(oldAudio, stale)
+            fixture.drain()
+            assertEquals(0, Shadow.extract<NativeMediaEvent>(stale).blockReads)
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(stale).releases)
+        }
+    }
+
+    @Test
+    fun failedAudioPidSwitchCanRecoverSameSelectionWithoutReplacingVideo() {
+        for (stage in listOf("close", "open", "configure", "start")) {
+            Fixture().use { fixture ->
+                fixture.decoder(false)
+                fixture.decoder(true)
+                val video = fixture.avFilter(false)
+                val oldAudio = fixture.avFilter(true)
+                val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+                val selection = fixture.audioSelection()
+                val next = selection.copy(audio = selection.audio!!.copy(elementaryPid = TsPid(0x111)))
+                val nativeTuner = Shadow.extract<NativeTuner>(fixture.tuner)
+                val nativeOld = Shadow.extract<NativeFilter>(oldAudio)
+                if (stage == "close") {
+                    nativeOld.closeResult = Tuner.RESULT_UNKNOWN_ERROR
+                } else {
+                    nativeTuner.failNextOpenAt = stage
+                }
+                val session = fixture.audioSession(selection, next)
+                val oldTrack = TunerSelectionPolicy.trackIdForAudio(selection.audio!!)
+                val newTrack = TunerSelectionPolicy.trackIdForAudio(next.audio!!)
+                assertFalse(fixture.selectAudio(session, newTrack), stage)
+                assertEquals(oldTrack, ReflectionHelpers.getField<String>(session, "preferredAudioTrackId"), stage)
+                assertTrue(ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState") is PlaybackStartState.Started, stage)
+                assertEquals(null, ReflectionHelpers.getField<Filter?>(fixture.pipeline, "audioFilter"), stage)
+                assertEquals(selection, ReflectionHelpers.getField<Any>(fixture.pipeline, "activeSelection"), stage)
+                val cleanup = ReflectionHelpers.getField<ResourceCleanup>(fixture.pipeline, "resourceCleanup")
+                assertEquals(stage == "close", cleanup.hasPending, stage)
+                val stale = mappedMediaEvent()
+                deliver(oldAudio, stale)
+                fixture.drain()
+                assertEquals(0, Shadow.extract<NativeMediaEvent>(stale).blockReads, stage)
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(stale).releases, stage)
+                nativeOld.closeResult = Tuner.RESULT_SUCCESS
+                // Sessionが復元した旧選択も実Filter不在ならnoopにせず再取得する。
+                assertTrue(fixture.selectAudio(session, oldTrack), stage)
+                assertTrue(ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState") is PlaybackStartState.Started, stage)
+                assertFalse(cleanup.hasPending, stage)
+                val recovered = ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter")
+                assertTrue(recovered !== oldAudio, stage)
+                val sample = mappedMediaEvent()
+                deliver(recovered, sample)
+                fixture.drain()
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(sample).blockReads, stage)
+                assertEquals(0, Shadow.extract<NativeFilter>(video).closes, stage)
+                assertTrue(decoder === ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder"), stage)
+                assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest(), stage)
+                assertTrue(fixture.selectAudio(session, newTrack), stage)
+                assertEquals(next, ReflectionHelpers.getField<Any>(fixture.pipeline, "activeSelection"), stage)
+            }
+        }
+    }
+
     private fun availabilityLogMessages(): List<String> =
         ShadowLog
             .getLogsForTag(LogTags.TIS)
@@ -692,6 +992,17 @@ class PlaybackFilterAdmissionTest {
         return codec
     }
 
+    private fun returnCodecInputAndAwaitEventRelease(
+        codec: MediaCodec,
+        event: MediaEvent,
+    ) {
+        val released = CountDownLatch(1)
+        Shadow.extract<NativeMediaEvent>(event).onRelease = { released.countDown() }
+        postCodecCallback(codec, 1, 0, null)
+        // CodecのHandlerからownerへ届く前に、ownerだけのdrainが完了し得る。
+        assertTrue(released.await(5, TimeUnit.SECONDS), "returned Codec input must release its MediaEvent")
+    }
+
     private fun postCodecCallback(
         codec: MediaCodec,
         kind: Int,
@@ -740,33 +1051,174 @@ class PlaybackFilterAdmissionTest {
             )
         }
 
+        private val sessionCaptionExecutors = mutableListOf<LifecycleSerialExecutor>()
+
+        // Android Session通知と本番Session→Controller→Pipelineを通し、字幕native初期化だけを省く。
+        // 同じSessionの選択・通知・字幕寿命を一つのfixtureとして初期化する。
+        @Suppress("LongMethod")
+        fun audioSession(
+            selection: TunerController.AvStreamSelection,
+            next: TunerController.AvStreamSelection,
+        ): MaleicacidLiveSession {
+            val unsafeType = Class.forName("sun.misc.Unsafe")
+            val unsafe = unsafeType.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
+            val allocate = unsafeType.getMethod("allocateInstance", Class::class.java)
+            val session = allocate.invoke(unsafe, MaleicacidLiveSession::class.java) as MaleicacidLiveSession
+            val controller = allocate.invoke(unsafe, TunerController::class.java) as TunerController
+            ReflectionHelpers.setField(controller, "currentTune", ReflectionHelpers.getField<Any>(pipeline, "activeChannel"))
+            ReflectionHelpers.setField(controller, "tuner", tuner)
+            ReflectionHelpers.setField(controller, "playbackPipeline", pipeline)
+            ReflectionHelpers.setField(session, "tunerController", controller)
+            ReflectionHelpers.setField(session, "currentService", selection.serviceKey)
+            ReflectionHelpers.setField(session, "dualMonoPresentation", PlaybackPipeline.DualMonoPresentation.MAIN)
+            ReflectionHelpers.setField(session, "preferredAudioTrackId", TunerSelectionPolicy.trackIdForAudio(selection.audio!!))
+            val programs =
+                com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot(
+                    discoveryProfile = 0,
+                    ingestSequence = 0L,
+                    events = emptyList(),
+                    updateWindows = emptyList(),
+                    semanticFactsByServiceKey = emptyMap(),
+                    descriptorDiagnostics = emptyList(),
+                    parserDiagnostics = emptyList(),
+                )
+            val service =
+                com.maleicacid.tvinput.aribsi.AribService(
+                    selection.serviceKey,
+                    "test",
+                    serviceType = 1,
+                    pcrPid = selection.pcrPid,
+                    streams = listOfNotNull(selection.video, selection.audio, next.audio),
+                )
+            ReflectionHelpers.setField(
+                session,
+                "latestLiveSnapshot",
+                com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot(
+                    0L,
+                    programs,
+                    0L,
+                    listOf(service),
+                    emptyList(),
+                    emptyMap(),
+                    emptyList(),
+                    emptyMap(),
+                    emptyList(),
+                    emptyList(),
+                ),
+            )
+            val signature =
+                AvPlaybackSignature(
+                    selection.serviceKey,
+                    selection.pcrPid,
+                    selection.video?.elementaryPid,
+                    selection.video?.streamType,
+                    selection.audio?.elementaryPid,
+                    selection.audio?.streamType,
+                    true,
+                    false,
+                )
+            ReflectionHelpers.setField(session, "playbackState", PlaybackStartState.Started(signature, 7L))
+            for (name in listOf("captionController", "superimposeController")) {
+                val caption = allocate.invoke(unsafe, AribCaptionController::class.java) as AribCaptionController
+                ReflectionHelpers.setField(caption, "released", AtomicBoolean(true))
+                ReflectionHelpers.setField(caption, "pesAdmissionLock", Any())
+                val captionExecutor = LifecycleSerialExecutor("closed audio-switch caption fixture")
+                sessionCaptionExecutors += captionExecutor
+                ReflectionHelpers.setField(caption, "executor", captionExecutor)
+                ReflectionHelpers.setField(session, name, caption)
+            }
+            TvInputService.Session::class.java
+                .getDeclaredField("mLock")
+                .apply { isAccessible = true }
+                .set(session, Any())
+            TvInputService.Session::class.java
+                .getDeclaredField(
+                    "mPendingActions",
+                ).apply { isAccessible = true }
+                .set(session, mutableListOf<Runnable>())
+            return session
+        }
+
+        fun selectAudio(
+            session: MaleicacidLiveSession,
+            id: String,
+        ): Boolean =
+            MaleicacidLiveSession::class.java
+                .getDeclaredMethod(
+                    "onSelectTrackOnSessionExecutor",
+                    Int::class.javaPrimitiveType,
+                    String::class.java,
+                ).apply { isAccessible = true }
+                .invoke(session, TvTrackInfo.TYPE_AUDIO, id) as Boolean
+
+        fun audioSelection(): TunerController.AvStreamSelection {
+            val key = ServiceKey(4, 0x4010, 101)
+            val channel =
+                TunerController.ResolvedChannel(
+                    null,
+                    "admission-test",
+                    key,
+                    1,
+                    "test",
+                    "1",
+                    "ISDB_T",
+                    FrequencyHz(473_000_000L),
+                    StreamSelector.NONE,
+                    null,
+                    null,
+                )
+            val selection =
+                TunerController.AvStreamSelection(
+                    key,
+                    TsPid(0x100),
+                    AribElementaryStream(TsPid(0x101), 0x1b, null, null, null),
+                    AribElementaryStream(TsPid(0x110), 0x0f, null, null, null),
+                )
+            executor.callControl(5_000L) {
+                ReflectionHelpers.setField(pipeline, "activeChannel", channel)
+                ReflectionHelpers.setField(pipeline, "activeSelection", selection)
+            }
+            return selection
+        }
+
         fun released(): Boolean = ReflectionHelpers.getField<AtomicBoolean>(pipeline, "released").get()
 
         fun progress(): PlaybackDataPathProgress = ReflectionHelpers.getField(pipeline, "dataPathProgress")
 
-        // 未パッチOSのcompatibility modeを既存のavailability arm契約のまま再現する。
+        var availabilitySync: MediaSync? = null
+
+        // native初期化だけを省略し、stockでのmode選択とarmは本番処理を通す。
         fun armCompatibilityAvailability(
             generation: Long,
-            armedAtNanoTime: Long,
-        ) {
-            val armType = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "AvailabilityArm" }
-            val arm =
-                armType.declaredConstructors
-                    .single()
-                    .apply { isAccessible = true }
-                    .newInstance(generation, 1L, armedAtNanoTime)
-            val mode =
-                PlaybackPipeline::class.java.declaredClasses
-                    .single { it.simpleName == "VideoAvailabilityMode" }
-                    .enumConstants
-                    .single { it.toString() == "MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT" }
-            executor.callControl(5_000L) {
+            exact: Boolean = false,
+        ): Long {
+            val sync =
+                availabilitySync ?: run {
+                    val type = Class.forName("sun.misc.Unsafe")
+                    val unsafe = type.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
+                    (type.getMethod("allocateInstance", Class::class.java).invoke(unsafe, MediaSync::class.java) as MediaSync)
+                        .also { availabilitySync = it }
+                }
+            return executor.callControl(5_000L) {
                 ReflectionHelpers.setField(pipeline, "surface", requireNotNull(codecSurface))
+                ReflectionHelpers.setField(pipeline, "videoPathExpected", true)
+                ReflectionHelpers.setField(pipeline, "mediaSync", sync)
                 ReflectionHelpers.setField(pipeline, "playbackGeneration", generation)
-                ReflectionHelpers.setField(pipeline, "waitingAvailabilityArm", arm)
-                ReflectionHelpers.setField(pipeline, "videoAvailabilityMode", mode)
-                ReflectionHelpers.getField<AtomicBoolean>(pipeline, "videoAvailableNotified").set(false)
+                invoke("armVideoAvailability", sync, generation, true)
+                val selected = ReflectionHelpers.getField<Any>(pipeline, "videoAvailabilityMode")
+                assertEquals("MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT", selected.toString())
+                if (exact) {
+                    selectExactMode()
+                }
+                val arm = ReflectionHelpers.getField<Any>(pipeline, "waitingAvailabilityArm")
+                ReflectionHelpers.getField<Long>(arm, "armedAtNanoTime")
             }
+        }
+
+        fun selectExactMode() {
+            val type = PlaybackPipeline::class.java.getDeclaredField("videoAvailabilityMode").type
+            val mode = requireNotNull(type.enumConstants).single { it.toString() == "MEDIA_SYNC_FINAL_OUTPUT_EXACT" }
+            ReflectionHelpers.setField(pipeline, "videoAvailabilityMode", mode)
         }
 
         fun currentCaptionFilter(): Filter = ReflectionHelpers.getField(pipeline, "subtitleFilter")
@@ -792,7 +1244,10 @@ class PlaybackFilterAdmissionTest {
             return filter
         }
 
-        fun decoder(audio: Boolean = false) {
+        fun decoder(
+            audio: Boolean = false,
+            videoKind: PlaybackPipeline.VideoCodecKind = PlaybackPipeline.VideoCodecKind.AVC,
+        ) {
             val name = if (audio) "AudioDecoderPipeline" else "VideoDecoderPipeline"
             val type = Class.forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$$name")
             val constructor = type.declaredConstructors.single().apply { isAccessible = true }
@@ -820,7 +1275,7 @@ class PlaybackFilterAdmissionTest {
                 } else {
                     constructor.newInstance(
                         pipeline,
-                        PlaybackPipeline.VideoCodecKind.AVC,
+                        videoKind,
                         AribCodecFacts(),
                         Surface(),
                         7L,
@@ -884,6 +1339,9 @@ class PlaybackFilterAdmissionTest {
                 .invoke(pipeline, *arguments)
 
         override fun close() {
+            sessionCaptionExecutors.forEach { it.shutdownNow() }
+            // このfixtureのMediaSyncはnative資源を確保していない。
+            if (availabilitySync != null) ReflectionHelpers.setField(pipeline, "mediaSync", null)
             try {
                 pipeline.close()
             } finally {
@@ -975,6 +1433,8 @@ class PlaybackFilterAdmissionTest {
 
     @Implements(Tuner::class)
     class NativeTuner {
+        var failNextOpenAt: String? = null
+
         @Implementation(methodName = "__constructor__")
         @Suppress("UNUSED_PARAMETER")
         private fun construct(
@@ -990,7 +1450,10 @@ class PlaybackFilterAdmissionTest {
             bufferSize: Long,
             executor: Executor,
             callback: FilterCallback,
-        ): Filter {
+        ): Filter? {
+            val failure = failNextOpenAt
+            failNextOpenAt = null
+            if (failure == "open") return null
             assertTrue(bufferSize > 0L)
             val filter =
                 ReflectionHelpers.callConstructor(
@@ -1007,12 +1470,17 @@ class PlaybackFilterAdmissionTest {
                 )
             ReflectionHelpers.setField(filter, "mSubtype", sdkSubtype)
             filter.setCallback(callback, executor)
+            val native = Shadow.extract<NativeFilter>(filter)
+            if (failure == "configure") native.configureResult = Tuner.RESULT_UNKNOWN_ERROR
+            if (failure == "start") native.startResult = Tuner.RESULT_UNKNOWN_ERROR
             return filter
         }
     }
 
     @Implements(Filter::class)
     class NativeFilter {
+        var configureResult = Tuner.RESULT_SUCCESS
+        var startResult = Tuner.RESULT_SUCCESS
         var closes = 0
         var flushes = 0
         var closeThread: String? = null
@@ -1051,10 +1519,10 @@ class PlaybackFilterAdmissionTest {
             type: Int,
             subtype: Int,
             configuration: FilterConfiguration,
-        ): Int = Tuner.RESULT_SUCCESS
+        ): Int = configureResult
 
         @Implementation
-        fun nativeStartFilter(): Int = Tuner.RESULT_SUCCESS
+        fun nativeStartFilter(): Int = startResult
 
         @Implementation
         fun nativeStopFilter(): Int = Tuner.RESULT_SUCCESS
@@ -1154,7 +1622,15 @@ class PlaybackFilterAdmissionTest {
 
     @Implements(MediaCodec.LinearBlock::class)
     class NativeLinearBlock {
+        var recycles = 0
+        var data: ByteArray = byteArrayOf(0)
+
         @Implementation
-        fun map(): ByteBuffer = ByteBuffer.wrap(byteArrayOf(0))
+        fun map(): ByteBuffer = ByteBuffer.wrap(data)
+
+        @Implementation
+        fun recycle() {
+            recycles++
+        }
     }
 }

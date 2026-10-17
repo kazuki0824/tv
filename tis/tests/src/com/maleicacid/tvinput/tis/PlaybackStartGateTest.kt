@@ -12,6 +12,27 @@ import org.junit.Test
 class PlaybackStartGateTest {
     private val key = ServiceKey(originalNetworkId = 4, transportStreamId = 0x4010, serviceId = 101)
 
+    @Test
+    fun temporaryCasLinkageLossIsBufferingNotCasFailure() {
+        val pending =
+            com.maleicacid.tvinput.aribsi.ServicePolicyDecision(
+                serviceKey = key,
+                registrationReady = true,
+                requiresCas = true,
+                caDescriptorsResolved = false,
+                reasons = listOf("PMT"),
+            )
+        val resolved = pending.copy(caDescriptorsResolved = true, reasons = emptyList())
+        val buffering = android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING
+        val terminal = android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN
+        check(MaleicacidLiveSession.casGateUnavailableReason(pending, false, false) == buffering)
+        check(MaleicacidLiveSession.casGateUnavailableReason(resolved, false, false) == buffering)
+        check(MaleicacidLiveSession.casGateUnavailableReason(resolved, true, false) == null)
+        check(MaleicacidLiveSession.casGateUnavailableReason(resolved, true, true) == terminal)
+        val clear = resolved.copy(requiresCas = false)
+        check(MaleicacidLiveSession.casGateUnavailableReason(clear, false, false) == null)
+    }
+
     @Test fun requestedStartAndSwitchResultsCommitBeforeFailureNotification() {
         val signature = signature(TsPid(0x101), TsPid(0x102))
         for (next in listOf(
@@ -335,6 +356,19 @@ class PlaybackStartGateTest {
                     ),
             )
         check(!PlaybackStartTransitions.shouldAttempt(state, diagnosticOnly))
+    }
+
+    @Test
+    fun retriesOnlyRecoverableStartupAndRenderFailures() {
+        val allowed =
+            setOf(
+                PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT,
+                PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
+                PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
+            )
+        PlaybackPipeline.PlaybackUnavailableReason.entries.forEach { reason ->
+            check(MaleicacidLiveSession.isRecoverablePlaybackFailure(reason) == (reason in allowed))
+        }
     }
 
     @Test fun repeatedSectionUpdatesAfterFailedStartDoNotRetrySameSignature() {

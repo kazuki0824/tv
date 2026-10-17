@@ -32,7 +32,7 @@ CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 ## Treble partition / platform API 統合
 
-`MaleicacidTvInput` はTuner、TvProvider、privileged permissionを利用するplatform-coupled componentであるため、`/product`へ配置せず、`system_ext_specific: true`かつ`platform_apis: true`の`/system_ext` priv-appとして組み込む。MediaSync private listener patchは任意のplatform統合差分として扱い、TIS runtimeがExact / Compatibilityを選択する条件とavailabilityの意味は`DESIGN_JA.md`を正とする。本書ではpatchの有無によるruntime状態遷移を再定義しない。その他のplatform APIをreflectionやHAL binder直呼びへ一般化してはならない。
+`MaleicacidTvInput` はTuner、TvProvider、privileged permissionを利用するplatform-coupled componentであるため、`/product`へ配置せず、`system_ext_specific: true`かつ`platform_apis: true`の`/system_ext` priv-appとして組み込む。MediaSync private listener patchは任意のplatform統合差分として扱い、TIS runtimeが最終出力観測の可否を選択する条件とavailabilityの意味は`DESIGN_JA.md`を正とする。本書ではpatchの有無によるruntime状態遷移を再定義しない。その他のplatform APIをreflectionやHAL binder直呼びへ一般化してはならない。
 
 `privapp-permissions-maleicacid-tvinput` は `MaleicacidTvInput` と同じ `/system_ext` に配置する。TIS専用の `libmaleicacid_arib_si_engine_jni` と `libmaleicacid_arib_caption_jni` も `system_ext_specific: true` とし、TISから `/product` 専用native moduleへ逆向き依存を作らない。TIS専用 `libaribcaption` variantを正式統合する場合も、TISのnative依存closureから利用可能なsystem/system_ext側variantとして閉じ、product-only private dependencyにしない。
 
@@ -149,7 +149,7 @@ product tree / 実機ではprovider discoveryと、`DESIGN_JA.md`が要求する
 
 この節をLineageOS 22.1向けMediaSync platform patchを任意に適用する場合の手順と確認項目の正本とし、patch配下へ別のREADMEや重複手順書を置かない。
 
-TISのExact / Compatibility選択条件と各modeのruntime意味は`DESIGN_JA.md`を正とする。本節はExact mode用private listenerを提供する任意patchの適用・build・実機確認だけを所有する。TIS APKは追加private APIを静的参照せず、patch本文はTIS側runtime契約とは独立した再現可能なplatform統合差分として維持する。
+TISの最終出力観測の可否選択条件と各modeのruntime意味は`DESIGN_JA.md`を正とする。本節はExact mode用private listenerを提供する任意patchの適用・build・実機確認だけを所有する。TIS APKは追加private APIを静的参照せず、patch本文はTIS側runtime契約とは独立した再現可能なplatform統合差分として維持する。
 
 ```text
 tis/platform_patches/lineage-22.1/frameworks_av_mediasync_first_output.patch
@@ -193,7 +193,7 @@ m libstagefright
 m MaleicacidTvInput
 ```
 
-patchを適用した構成の実機ではprivate listenerのJava/JNI/native型接続と、`DESIGN_JA.md`がExact modeに要求する観測を確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのnative実行時確認を代替しない。未パッチ構成のruntime結果をExact modeの確認結果として扱わない。これらは任意patchを採用する製品の統合・検証gateなので`future_work/r53`へ重複配置しない。
+patchを適用した構成の実機ではprivate listenerのJava/JNI/native型接続と、`DESIGN_JA.md`がExact modeに要求する観測を確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのnative実行時確認を代替しない。未パッチ構成では公開Codec callbackを近似Compatibilityとして使用する。利用不能なprivate callbackだけを理由に正常視聴を停止させず、最終出力の厳密な継続監視は表明しない。未パッチ構成のruntime結果をExact modeの確認結果として扱わない。これらは任意patchを採用する製品の統合・検証gateなので`future_work/r53`へ重複配置しない。
 
 ## flash 後の確認
 

@@ -1,3 +1,48 @@
+## 圧縮入力欠落後のCodec参照状態の退役
+
+- #207: 構成済みCodecに対するAV OVERFLOW、RestartEvent、owner受付拒否、sample拒否を既存の全再生generation終了・再生成へ接続。Filter.flushだけで旧Codecを継続せず、Codec errorと共通の一回の自動復旧制限を使う。構成前の局所flushは維持する。
+- HAL同時8eventという廃止済み前提をstartup保持の説明から除去した。TISにAU parser、PTS補間、別の復旧owner/queueは追加しない。
+- 構成済みCodecのoverflowが旧decoder/filterを退役し、再開対象がない場合に元世代へ失敗通知するRobolectric回帰試験へ更新。Android実機・zapping・色の解消は未確認。
+
+## 2026-10-17 MediaSync停止順序とCodec入力寿命
+
+- Android 15のCodec投入用C2Bufferが元MediaEventの解放通知を共有しないため、元event/blockを入力index返却またはdecoder解放成功まで保持し、HAL共有slotの早期再利用を防ぐ。
+- NHK停止後の再選局でCodec停止が待機超過したログを受け、MediaSyncのflush・解放をPCM返却とCodec停止より先へ移動。既存ownerとcleanupを使用する。
+- 停止順序とflush／解放失敗をRobolectricで検査する。実機の映像破損・AAC入力不足・停止回復は別途確認が必要。
+
+# ExactからCompatibilityへの降格時の継続監視取消し
+
+- private callbackの再arm不成立時に既存Exact watchdogを取り消し、実行時もcurrent modeを照合する。同じowner/世代上で処理し、Compatibilityの正常なCodec進捗を最終出力timeoutとして停止しない。
+- Android15 Robolectricで初回Exact成功から再arm不成立・Compatibility降格・7秒間のCodec callback継続を検査する。初回Exact eventはfixtureで配送し、再armのprivate API不在はstock SDKの実経路を通す。実機検証の代替にはしない。
+
+# 任意MediaSync patch未適用時の近似Compatibility復元
+
+- private callback不在/登録失敗時はcurrent Codecの公開描画callbackを近似available根拠として使用し、最終output成功と区別して診断する。
+- generation、Codec identity、arm時刻、Surface有効性とMediaSync Surface errorを検査し、ExactではCodec callbackだけで通知しない。
+- Compatibilityは厳密な最終出力watchdogを開始しない。初回callback欠落と最終出力の観測不能を区別する。
+- Robolectricへstock本番arm・一度のavailable・旧callback・確認済みSurface異常・Exactの分離を追加した。
+
+# 音声PID切替失敗後の同一選択による復旧
+
+- 新Filter開始成功後に選択を確定し、失敗時は旧選択と既存cleanup義務を保持する。
+- Sessionの無条件noopを除去し、実Filter不在なら同一track再選択から音声入力を再取得する。映像とMediaSyncの世代は維持する。
+- close/open/configure/start失敗とSession選択・実Filter・再選択復旧をAndroid15 Robolectricで検査する。
+
+# 最終出力可用性と音声選択の局所切替
+
+- Codec→MediaSync入力callbackによるavailable確定と継続watchdog更新を除去し、既存の最終出力one-shotを再armして継続を観測する。未パッチOSは観測不能を診断し初回期限で失敗する。
+- 同一音声再選択をnoopとし、同じvideo/PCR/audio構成でのPID変更は音声Filterだけを切り替える。PCM/codec構成変更では既存のMediaSync全世代再生成を維持する。
+- Sessionの再選択判定と成功signatureを追従し、旧Filter入力の拒否、同一構成/PID切替の映像owner保持、Codec入力callbackによる誤available/watchdog更新防止をRobolectricで検査する。
+- 設計と統合文書を追従。Android Soong・実機VTS・実デコーダ・実波の検証は未実施。
+
+# ライブ再生のcodec別最小ヘッダprobeへの移行（PR #207）
+
+- ES履歴を256/512/768 KiB保持して繰返し解析する方式を廃止。MPEG-2 Videoはsequence headerに必要な8 byte、MPEG audioは4 byte、AVC/HEVCはconfig用のSPS/PPS/VPS NAL（1件16 KiB以内）、AAC ADTSは構成に必要な1 frame（13-bit frame長以内）だけを有限保持する。
+- MediaEventの境界をまたぐstart code/NALを逐次検出し、構成に不要な映像音声ES本文を保持しない。GOP/AU再構成、独自PTS補完、追加ESキューは設けず、元LinearBlockの直接queue契約を維持する。
+- 構成前の未queue MediaEventは同時3件以下に抑え、HAL 8-slot受付の進行性を確保。ヘッダ未検出時の失敗期限は既存のdecoder startup deadlineを正本とする。
+- MPEG-2先頭1 MiB超のヘッダ探索、AVC/HEVCのパラメータセット跨ぎ、MPEG audio、ADTSのフレーム境界と超過異常のhost回帰6件を追加。RobolectricのMPEG-2 decoder fixtureも修正した。
+- Android Soong、現HEADのhost/Robolectric/Quality CI、実波連続再生は未実施・未確認。HEVC/AVC/AACの実codec適合は実機検証まで未確定。
+
 # Section Filter拒否時の現行性再確認
 
 - 容量不足でcontroller data投入を拒否されたSectionは、既存control executorへ非同期で現行性判定を委譲する。閉鎖済みFilterの同一tune generationを新たな喪失として計上せず、現行Filterの拒否だけを既存のinputDeliveryLossに記録する。新しいqueue、worker、状態所有者は設けない。
