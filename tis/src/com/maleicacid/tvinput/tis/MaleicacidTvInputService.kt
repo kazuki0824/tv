@@ -96,13 +96,4 @@ class MaleicacidTvInputService : TvInputService() {
         userUnlockDrainRegistered = false
     }
 
-    companion object {
-        fun api30SessionIdForTest(
-            inputId: String,
-            sessionId: String,
-        ): String =
-            sessionId.also {
-                require(inputId.isNotBlank()) { "inputId must not be blank" }
-            }
-    }
 }

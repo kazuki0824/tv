@@ -158,14 +158,19 @@ object ChannelScanManager {
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // setup terminalのtyped分岐は同一scan ownerで完結させ、状態写像だけを別ownerへ分散しない。
-    @Suppress("LongMethod", "MaxLineLength", "ReturnCount")
+    @Suppress("LongMethod", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod")
     fun startIfIdle(
         context: Context,
         inputId: String,
+        onRejected: () -> Unit = {},
     ): Int? {
         retryPendingRelease()
         val appContext = context.applicationContext
-        val task = beginScan(ScanPurpose.SETUP_SCAN, appContext) ?: return null
+        val task =
+            beginScan(ScanPurpose.SETUP_SCAN, appContext) ?: run {
+                onRejected()
+                return null
+            }
         val generation = task.generation
         val scanAction =
             Runnable {
@@ -208,6 +213,12 @@ object ChannelScanManager {
 
                                 scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED ||
                                     scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.INTERNAL_FAILURE -> {
+                                    Log.w(
+                                        LogTags.TIS,
+                                        "setup scan failed generation=$generation outcome=${scanResult.terminal.outcome} " +
+                                            "detail=${scanResult.terminal.detail} scanned=${scanResult.scanned} " +
+                                            "diagnostics=${scanResult.diagnostics}",
+                                    )
                                     setTerminalStateIfCurrent(
                                         generation,
                                         ScanState.Failed(scanResult.terminal.detail, generation, ScanPurpose.SETUP_SCAN),
@@ -386,7 +397,6 @@ object ChannelScanManager {
             }
             onFinished?.invoke(generation, needsReschedule)
             if (shouldScheduleBackgroundMaintenance) {
-                BackgroundChannelMaintenanceDiagnostics.scheduledAfterBootSyncCount.incrementAndGet()
                 startBackgroundChannelMaintenanceIfIdle(appContext, inputId, source = "BOOT_EPG_SYNC_COMPLETED")
             }
         }
@@ -442,7 +452,6 @@ object ChannelScanManager {
                 markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
                 return@execute
             }
-            BackgroundChannelMaintenanceDiagnostics.startedCount.incrementAndGet()
             val result =
                 runCatching {
                     val createdEngine = AribSiEngine(appContext)
@@ -532,11 +541,6 @@ object ChannelScanManager {
                 task.context,
                 decision.diagnosticReason ?: "LIVE_SESSION_PREEMPTED_RUNNING_BOOT_EPG_SYNC",
             )
-        }
-        if (task.purpose == ScanPurpose.BACKGROUND_MAINTENANCE) {
-            BackgroundChannelMaintenanceDiagnostics.cancelledByLiveSessionCount.incrementAndGet()
-            BackgroundChannelMaintenanceDiagnostics.lastSkippedReason =
-                decision.diagnosticReason ?: "LIVE_SESSION_PREEMPTED_RUNNING_BACKGROUND_MAINTENANCE"
         }
         if (!task.requestCancel()) return
         setTerminalStateIfCurrent(
@@ -633,7 +637,15 @@ object ChannelScanManager {
     private fun finishScanIfCurrent(generation: Int): Boolean {
         val task = activeTask.get()?.takeIf { it.generation == generation } ?: return true
         return finishScanRelease(task, activeTask) { error ->
-            Log.w(LogTags.TIS, "scan解放の所有を再試行まで保持します generation=$generation", error)
+            Log.w(
+                LogTags.TIS,
+                if (error is TunerOneShotCloseFailure) {
+                    "scan Tuner.closeのone-shot失敗 generation=$generation（HAL側の後片付けは非同期）"
+                } else {
+                    "scan解放の所有を再試行まで保持します generation=$generation"
+                },
+                error,
+            )
         }
     }
 
@@ -704,21 +716,6 @@ object ChannelScanManager {
         reason: String,
         source: String,
     ) {
-        BackgroundChannelMaintenanceDiagnostics.lastSkippedReason = reason
-        when (reason) {
-            "ACTIVE_LIVE_SESSION", "LIVE_SESSION_STARTING_OR_ACTIVE" -> {
-                BackgroundChannelMaintenanceDiagnostics.skippedActiveLiveSessionCount
-                    .incrementAndGet()
-            }
-
-            "SCAN_RUNNING" -> {
-                BackgroundChannelMaintenanceDiagnostics.skippedScanRunningCount.incrementAndGet()
-            }
-
-            else -> {
-                BackgroundChannelMaintenanceDiagnostics.skippedOtherCount.incrementAndGet()
-            }
-        }
         Log.i(
             LogTags.TIS,
             "background channel maintenance を開始しません source=$source reason=$reason " +

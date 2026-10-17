@@ -285,3 +285,7 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 - `AribContentRatings`がstock TV Appから発見され、既存preset/custom policyを通じてARIB exceptional ratingのblock/unblockとPIN一時解除、第三者rating非干渉が成立する。
 - android:canRecord="false" が product manifest metadata に反映される。
 ```
+
+### Tuner閉鎖失敗後のSDK/TRM後始末
+
+Tunerの閉鎖は標準APIのcloseFrontend()を先に呼び、成功後にclose()へ進む。追加Framework cleanup API/patchは不要であり、本PRで一度追加したpatchは撤回した。実機では(a)一時的Frontend close失敗→同じownerで公開API再試行→TRM解放→SDK close成功→新Tunerでscan、(b)Frontend close継続失敗とHAL停止phase/隔離、(c)Frontend解放後にDemux等の後段closeが失敗しownerを保持、を別々に確認する。hostのSDK/Shadow境界試験を実機でのHAL回収・TRM調停の証明と扱わない。
