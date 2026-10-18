@@ -1,5 +1,5 @@
 // 実SDK callback lock・時計・MediaEvent寿命を使い、HAL/native境界だけを置換する。
-@file:Suppress("MagicNumber")
+@file:Suppress("MagicNumber", "MaxLineLength")
 
 package com.maleicacid.tvinput.tis
 

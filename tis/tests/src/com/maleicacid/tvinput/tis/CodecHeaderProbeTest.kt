@@ -3,8 +3,8 @@
 
 package com.maleicacid.tvinput.tis
 
-import java.nio.ByteBuffer
 import org.junit.Test
+import java.nio.ByteBuffer
 
 class CodecHeaderProbeTest {
     private fun capture(

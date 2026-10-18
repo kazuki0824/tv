@@ -660,7 +660,7 @@ class PlaybackPipeline(
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("MagicNumber", "MaxLineLength", "ReturnCount")
+    @Suppress("MagicNumber", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod", "ComplexCondition")
     private fun switchAudioOnPlaybackExecutor(
         tuner: Tuner,
         selection: TunerController.AvStreamSelection,
@@ -1354,6 +1354,7 @@ class PlaybackPipeline(
     }
 
     // 初回映像の成功だけでは継続再生を保証できない。最後の描画callbackを既存の再生世代で監視する。
+    @Suppress("ComplexCondition")
     private fun armVideoOutputStallWatchdog(generation: Long) {
         videoOutputStallTask?.let(mainHandler::removeCallbacks)
         val timeout =
@@ -1440,7 +1441,7 @@ class PlaybackPipeline(
     }
 
     // 入力・資源寿命を保ちながら、既存の入力拒否を発生点で返す。
-    @Suppress("LongMethod", "MaxLineLength", "ReturnCount")
+    @Suppress("LongMethod", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod")
     private fun sampleFromEvent(
         event: MediaEvent,
         isAudio: Boolean,
