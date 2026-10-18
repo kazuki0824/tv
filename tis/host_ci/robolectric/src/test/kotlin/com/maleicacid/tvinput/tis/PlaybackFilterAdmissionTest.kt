@@ -130,6 +130,35 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun overflowRecoveryRearmsOnlyAfterCodecAcceptedInput() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            val filter = fixture.avFilter(false)
+            val nativeFilter = Shadow.extract<NativeFilter>(filter)
+            status(filter, Filter.STATUS_OVERFLOW)
+            fixture.drain()
+            status(filter, Filter.STATUS_OVERFLOW)
+            fixture.drain()
+            assertEquals(1, nativeFilter.flushes)
+            deliver(filter, mappedMediaEvent())
+            fixture.drain()
+            // pending受付だけでは再armしない。Codecへのqueue完了でのみ次の損失を回復する。
+            status(filter, Filter.STATUS_OVERFLOW)
+            fixture.drain()
+            assertEquals(1, nativeFilter.flushes)
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            status(filter, Filter.STATUS_OVERFLOW)
+            fixture.drain()
+            assertEquals(2, nativeFilter.flushes)
+            assertTrue(fixture.failures.isEmpty())
+        }
+    }
+
+    @Test
     fun failedAvFlushKeepsInputClosedUntilSuccessfulFlush() {
         for (audio in listOf(false, true)) {
             Fixture().use { fixture ->
