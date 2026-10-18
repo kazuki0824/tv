@@ -291,6 +291,10 @@ class PlaybackFilterAdmissionTest {
                     .contains("PENDING_QUEUE_FULL"),
             )
             fixture.assertStoppedVideo(decoder, video, samples + expired)
+            for (sample in samples + expired) {
+                val native = Shadow.extract<NativeMediaEvent>(sample)
+                assertEquals(1, Shadow.extract<NativeLinearBlock>(requireNotNull(native.block)).recycles)
+            }
         }
     }
 
@@ -523,6 +527,11 @@ class PlaybackFilterAdmissionTest {
             assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
             fixture.drain()
             assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(packet).releases)
+            assertEquals(
+                1,
+                Shadow.extract<NativeLinearBlock>(requireNotNull(Shadow.extract<NativeMediaEvent>(packet).block)).recycles,
+            )
             assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, false))
             val output = MediaCodec.BufferInfo().apply { set(0, 1, 90_000L, 0) }
             postCodecCallback(codec, 2, 0, output)
@@ -1189,7 +1198,14 @@ class PlaybackFilterAdmissionTest {
 
     @Implements(MediaCodec.LinearBlock::class)
     class NativeLinearBlock {
+        var recycles = 0
+
         @Implementation
         fun map(): ByteBuffer = ByteBuffer.wrap(byteArrayOf(0))
+
+        @Implementation
+        fun recycle() {
+            recycles++
+        }
     }
 }

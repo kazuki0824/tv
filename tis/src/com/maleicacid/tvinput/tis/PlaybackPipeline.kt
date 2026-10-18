@@ -1382,6 +1382,18 @@ class PlaybackPipeline(
         }
     }
 
+    private fun recycleLinearBlock(block: MediaCodec.LinearBlock) {
+        if (!resourceCleanup.release("MediaEvent LinearBlock") { block.recycle() }) {
+            handleSubmissionFailure(IllegalStateException("MediaEvent LinearBlockの返却が未完了です"))
+        }
+    }
+
+    private fun releaseMediaSample(sample: MediaSample) {
+        // eventとLinearBlockのFramework/native参照は別々に存在するため、両方を明示返却する。
+        releaseMediaEvent(sample.event)
+        recycleLinearBlock(sample.block)
+    }
+
     private fun rejectSecureMediaEvent(isAudio: Boolean) {
         if (isAudio) {
             logAudioUnavailable(
@@ -1432,37 +1444,45 @@ class PlaybackPipeline(
                 dataPathProgress.record(PlaybackDataPathProgress.Stage.MISSING_LINEAR_BLOCK, isAudio)
                 return null
             }
-        val capacity =
-            runCatching {
-                block
-                    .map()
-                    .duplicate()
-                    .capacity()
-                    .toLong()
-            }.onFailure { Log.w(LogTags.TIS, "MediaEvent LinearBlock の map に失敗しました", it) }
-                .getOrNull() ?: return null
-        if (end > capacity) {
-            malformedSamplesDropped++
-            Log.w(LogTags.TIS, "MediaEvent が LinearBlock 範囲外です offset=$offset length=$length capacity=$capacity")
-            return null
-        }
-        val rawPts = event.pts
-        if (!isAuthoritativePtsValid(rawPts)) {
-            malformedSamplesDropped++
-            val detail = "生成元が確定したMediaEventのPTSが不正です pts90k=$rawPts isAudio=$isAudio"
-            if (isAudio) {
-                Log.w(
-                    LogTags.TIS,
-                    "$detail; playback profile contract violated",
-                )
-            } else {
-                emitUnavailable(PlaybackUnavailableReason.INVALID_MEDIA_TIMESTAMP, detail)
+        var transferred = false
+        try {
+            val capacity =
+                runCatching {
+                    block
+                        .map()
+                        .duplicate()
+                        .capacity()
+                        .toLong()
+                }.onFailure { Log.w(LogTags.TIS, "MediaEvent LinearBlock の map に失敗しました", it) }
+                    .getOrNull() ?: return null
+            if (end > capacity) {
+                malformedSamplesDropped++
+                Log.w(LogTags.TIS, "MediaEvent が LinearBlock 範囲外です offset=$offset length=$length capacity=$capacity")
+                return null
             }
-            return null
+            val rawPts = event.pts
+            if (!isAuthoritativePtsValid(rawPts)) {
+                malformedSamplesDropped++
+                val detail = "生成元が確定したMediaEventのPTSが不正です pts90k=$rawPts isAudio=$isAudio"
+                if (isAudio) {
+                    Log.w(
+                        LogTags.TIS,
+                        "$detail; playback profile contract violated",
+                    )
+                } else {
+                    emitUnavailable(PlaybackUnavailableReason.INVALID_MEDIA_TIMESTAMP, detail)
+                }
+                return null
+            }
+            val track = if (isAudio) PtsTrack.AUDIO else PtsTrack.VIDEO
+            val presentationTimeUs = ptsEpochCoordinator.normalize(track, rawPts)
+            return MediaSample(event, block, offset.toInt(), length.toInt(), presentationTimeUs, isAudio).also {
+                transferred = true
+            }
+        } finally {
+            // sample構築に失敗した場合も、materializeしたLinearBlockのnative参照を残さない。
+            if (!transferred) recycleLinearBlock(block)
         }
-        val track = if (isAudio) PtsTrack.AUDIO else PtsTrack.VIDEO
-        val presentationTimeUs = ptsEpochCoordinator.normalize(track, rawPts)
-        return MediaSample(event, block, offset.toInt(), length.toInt(), presentationTimeUs, isAudio)
     }
 
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
@@ -1527,7 +1547,7 @@ class PlaybackPipeline(
             try {
                 if (sample.size > budget.singleEventLimitBytes) {
                     oversizedSamplesDropped++
-                    releaseMediaEvent(sample.event)
+                    releaseMediaSample(sample)
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
                     onSampleRejected("SAMPLE_TOO_LARGE size=${sample.size} limit=${budget.singleEventLimitBytes}")
                     return
@@ -1536,7 +1556,7 @@ class PlaybackPipeline(
                 if (!withinQueueBudget(sample, queueBudget)) {
                     decoderBackpressureDrops++
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
-                    releaseMediaEvent(sample.event)
+                    releaseMediaSample(sample)
                     val nowMs = SystemClock.elapsedRealtime()
                     val startedAtMs = backpressureStartedAtMs ?: nowMs.also { backpressureStartedAtMs = it }
                     val deadlineMs =
@@ -1722,11 +1742,11 @@ class PlaybackPipeline(
                         .setPresentationTimeUs(sample.presentationTimeUs)
                         .queue()
                     backpressureStartedAtMs = null
-                    releaseMediaEvent(sample.event)
+                    releaseMediaSample(sample)
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
                     onCompressedInputQueued(sample)
                 } catch (error: RuntimeException) {
-                    releaseMediaEvent(sample.event)
+                    releaseMediaSample(sample)
                     throw error
                 }
             }
@@ -1786,7 +1806,7 @@ class PlaybackPipeline(
         }
 
         private fun clearPending() {
-            while (pendingSamples.isNotEmpty()) releaseMediaEvent(pendingSamples.removeFirst().event)
+            while (pendingSamples.isNotEmpty()) releaseMediaSample(pendingSamples.removeFirst())
         }
 
         override fun close() {
