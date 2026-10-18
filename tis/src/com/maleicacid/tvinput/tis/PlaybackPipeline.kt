@@ -1161,7 +1161,7 @@ class PlaybackPipeline(
     }
 
     // CodecからMediaSync入力への進捗だけを示す近似互換経路。最終出力watchdogは開始しない。
-    @Suppress("ComplexCondition")
+    @Suppress("ComplexCondition", "ReturnCount")
     private fun commitCompatibilityVideoAvailability(
         generation: Long,
         renderedNanoTime: Long,
