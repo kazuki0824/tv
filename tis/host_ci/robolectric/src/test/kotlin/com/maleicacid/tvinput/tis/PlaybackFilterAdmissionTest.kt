@@ -71,6 +71,28 @@ import kotlin.test.assertTrue
 @Suppress("TooManyFunctions", "LargeClass")
 class PlaybackFilterAdmissionTest {
     @Test
+    fun mpegAudioProbeRejectsReservedHeadersAndContinuesToValidFormat() {
+        val probe = CodecHeaderProbe(CodecHeaderProbe.Kind.MPEG_AUDIO)
+        val formats = mutableListOf<MediaFormat?>()
+
+        fun accept(candidate: ByteArray): Boolean {
+            val format = PlaybackPipeline.EsHeaderParser.mpegAudioFormat(candidate)
+            formats.add(format)
+            return format != null
+        }
+        assertFalse(probe.find(ByteBuffer.wrap(byteArrayOf(0xff.toByte(), 0xeb.toByte(), 0x90.toByte(), 0x64)), ::accept))
+        assertFalse(probe.find(ByteBuffer.wrap(byteArrayOf(0xff.toByte(), 0xf9.toByte(), 0x90.toByte(), 0x64)), ::accept))
+        assertEquals(listOf<MediaFormat?>(null, null), formats)
+        assertFalse(probe.find(ByteBuffer.wrap(byteArrayOf(0xff.toByte(), 0xfb.toByte())), ::accept))
+        assertTrue(probe.find(ByteBuffer.wrap(byteArrayOf(0x90.toByte(), 0x64)), ::accept))
+        val format = requireNotNull(formats.last())
+        assertEquals(MediaFormat.MIMETYPE_AUDIO_MPEG, format.getString(MediaFormat.KEY_MIME))
+        assertEquals(44100, format.getInteger(MediaFormat.KEY_SAMPLE_RATE))
+        assertEquals(2, format.getInteger(MediaFormat.KEY_CHANNEL_COUNT))
+        assertEquals(3, formats.size)
+    }
+
+    @Test
     fun avOverflowDiscardsPreFlushAndInFlightInputAndAcceptsPostFlushInput() {
         for ((audio, afterClear) in listOf(false to false, false to true, true to false, true to true)) {
             val newInput = mappedMediaEvent()

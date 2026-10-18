@@ -1122,7 +1122,17 @@ class PlaybackPipeline(
         generation: Long,
     ): MediaSync? =
         runCatching {
+            if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                Log.d(LogTags.TIS, "PLAYBACK_SYNC_CREATE_BEGIN sessionId=$sessionId generation=$generation")
+            }
             val sync = MediaSync()
+            if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                Log.d(
+                    LogTags.TIS,
+                    "PLAYBACK_SYNC_CREATE_END sessionId=$sessionId generation=$generation " +
+                        "sync=${System.identityHashCode(sync)}",
+                )
+            }
             mediaSync = sync
             nextAudioBufferId = 0
             nextAvailabilityArmSequence = 1L
@@ -2044,9 +2054,17 @@ class PlaybackPipeline(
 
         override fun onDecoderPrepared(codec: MediaCodec) {
             codec.setOnFrameRenderedListener(
-                { callbackCodec, _, _ ->
+                { callbackCodec, presentationTimeUs, renderedNanoTime ->
                     // 中間SurfaceのCCodec通知時刻はPTSの場合がある。armと同じ単調時計で受信を記録する。
                     val receivedAtNanoTime = System.nanoTime()
+                    if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                        Log.d(
+                            LogTags.TIS,
+                            "PLAYBACK_CODEC_FRAME sessionId=$sessionId generation=$generation " +
+                                "ptsUs=$presentationTimeUs callbackTimeNs=$renderedNanoTime " +
+                                "receivedNs=$receivedAtNanoTime",
+                        )
+                    }
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration ||
                             this@VideoDecoderPipeline.codec !== callbackCodec
@@ -2141,7 +2159,21 @@ class PlaybackPipeline(
             index: Int,
             presentationTimeUs: Long,
         ) {
+            if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                Log.d(
+                    LogTags.TIS,
+                    "PLAYBACK_VIDEO_SUBMIT sessionId=$sessionId generation=$generation " +
+                        "index=$index ptsUs=$presentationTimeUs",
+                )
+            }
             releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, presentationTimeUs * 1_000L) }
+            if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                Log.d(
+                    LogTags.TIS,
+                    "PLAYBACK_VIDEO_RETURN sessionId=$sessionId generation=$generation " +
+                        "index=$index ptsUs=$presentationTimeUs",
+                )
+            }
         }
     }
 
@@ -2946,6 +2978,8 @@ class PlaybackPipeline(
                 bytes[offset + 3].toInt() and 0xff
             val version =
                 (bytes[offset + 1].toInt() ushr 3) and 0x03
+            val layer = (bytes[offset + 1].toInt() ushr 1) and 0x03
+            if (version == 1 || layer == 0) return null
             val sampleRateIndex =
                 (b2 ushr 2) and 0x03
             val channelMode =

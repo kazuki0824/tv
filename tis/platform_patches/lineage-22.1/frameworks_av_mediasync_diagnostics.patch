@@ -1,0 +1,60 @@
+--- a/media/libstagefright/MediaSync.cpp
++++ b/media/libstagefright/MediaSync.cpp
+@@ -17,6 +17,7 @@
+ //#define LOG_NDEBUG 0
+ #define LOG_TAG "MediaSync"
+ #include <inttypes.h>
++#include <log/log.h>
+ 
+ #include <gui/BufferQueue.h>
+ #include <gui/IGraphicBufferConsumer.h>
+@@ -70,9 +71,13 @@
+     mLooper = new ALooper;
+     mLooper->setName("MediaSync");
+     mLooper->start(false, false, ANDROID_PRIORITY_AUDIO);
++    ALOGD_IF(__android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO),
++            "PLAYBACK_SYNC_CREATE native=%p", this);
+ }
+ 
+ MediaSync::~MediaSync() {
++    ALOGD_IF(__android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO),
++            "PLAYBACK_SYNC_DESTROY native=%p", this);
+     if (mInput != NULL) {
+         mInput->consumerDisconnect();
+     }
+@@ -553,6 +558,11 @@
+                     (long long)bufferItem->mTimestamp / 1000, (long long)itemRealUs);
+             bufferItem->mTimestamp = itemRealUs * 1000;
+             bufferItem->mIsAutoTimestamp = false;
++            ALOGD_IF(__android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO),
++                    "PLAYBACK_SYNC_SCHEDULE native=%p buffer=%" PRIu64 " inputFrame=%" PRIu64
++                    " mediaUs=%" PRId64 " targetUs=%" PRId64 " nowUs=%" PRId64 " hasAudio=%d",
++                    this, bufferItem->mGraphicBuffer->getId(), bufferItem->mFrameNumber,
++                    itemMediaUs, itemRealUs, nowUs, mHasAudio);
+ 
+             if (mHasAudio) {
+                 if (nowUs - itemRealUs <= kMaxAllowedVideoLateTimeUs) {
+@@ -621,6 +631,11 @@
+     ++mNumOutstandingBuffers;
+ 
+     ALOGV("acquired buffer %#llx from input", (long long)bufferItem.mGraphicBuffer->getId());
++    ALOGD_IF(__android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO),
++            "PLAYBACK_SYNC_INPUT native=%p buffer=%" PRIu64 " inputFrame=%" PRIu64
++            " ptsNs=%" PRId64,
++            this, bufferItem.mGraphicBuffer->getId(), bufferItem.mFrameNumber,
++            bufferItem.mTimestamp);
+ 
+     status = mInput->detachBuffer(bufferItem.mSlot);
+     if (status != NO_ERROR) {
+@@ -675,6 +690,11 @@
+         IGraphicBufferProducer::QueueBufferOutput queueOutput;
+         status = mOutput->queueBuffer(slot, queueInput, &queueOutput);
+         ALOGE_IF(status != NO_ERROR, "queueing buffer to output failed (%d)", status);
++        ALOGD_IF(__android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO),
++                "PLAYBACK_SYNC_OUTPUT native=%p buffer=%" PRIu64 " inputFrame=%" PRIu64
++                " nextOutputFrame=%" PRIu64 " targetNs=%" PRId64 " status=%d",
++                this, bufferItem.mGraphicBuffer->getId(), bufferItem.mFrameNumber,
++                queueOutput.nextFrameNumber, bufferItem.mTimestamp, status);
+     }
+ 
+     if (status != NO_ERROR) {
