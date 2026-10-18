@@ -2759,8 +2759,8 @@ class PlaybackPipeline(
                     AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> {
                         PlaybackBudget(
                             1 * MIB,
-                            QueueBudget(8L * MIB, 96, 2_000_000L),
-                            QueueBudget(12L * MIB, 192, 3_000_000L),
+                            QueueBudget(8L * MIB, 96),
+                            QueueBudget(12L * MIB, 192),
                             3_000L,
                             1_500L,
                         )
