@@ -1777,8 +1777,9 @@ class PlaybackPipeline(
         ): Boolean {
             if (pendingSamples.size + 1 > queueBudget.maxSamples) return false
             if (pendingSamples.sumOf { it.size.toLong() } + sample.size > queueBudget.maxBytes) return false
-            val times = pendingSamples.map { it.presentationTimeUs } + sample.presentationTimeUs
-            return timestampSpanUs(times) <= queueBudget.maxDurationUs
+            // PTSはメディア時刻であり、保持メモリや入力滞留の実時間を示さない。
+            // PTSの離隔だけで拒否すると少数の有効サンプルでも圧縮入力欠落を人工的に作る。
+            return true
         }
 
         // MPEG-2は8byte、AVC/HEVCはconfig NAL、音声は構成headerだけを保持する。
@@ -2557,7 +2558,6 @@ class PlaybackPipeline(
     private data class QueueBudget(
         val maxBytes: Long,
         val maxSamples: Int,
-        val maxDurationUs: Long,
     )
 
     private data class AudioOutputClaimDecision(
@@ -2582,7 +2582,7 @@ class PlaybackPipeline(
         val sampleCount = outstandingAudioOutputs.size + 1
         val timestamps = outstandingAudioOutputs.values.map { it.presentationTimeUs } + presentationTimeUs
         val durationUs = timestampSpanUs(timestamps)
-        if (byteCount <= queueBudget.maxBytes && sampleCount <= queueBudget.maxSamples && durationUs <= queueBudget.maxDurationUs) {
+        if (byteCount <= queueBudget.maxBytes && sampleCount <= queueBudget.maxSamples) {
             audioOutputBackpressureStartedAtMs = null
             return AudioOutputClaimDecision(accepted = true)
         }
@@ -2593,7 +2593,7 @@ class PlaybackPipeline(
         return AudioOutputClaimDecision(
             false,
             deadlineReached,
-            "AUDIO_OUTPUT_BACKPRESSURE_TIMEOUT bytes=$byteCount samples=$sampleCount durationUs=$durationUs deadlineMs=$deadlineMs",
+            "AUDIO_OUTPUT_BACKPRESSURE_TIMEOUT bytes=$byteCount samples=$sampleCount ptsSpanUs=$durationUs deadlineMs=$deadlineMs",
         )
     }
 
@@ -2626,8 +2626,8 @@ class PlaybackPipeline(
                     VideoCodecKind.MPEG2 -> {
                         PlaybackBudget(
                             6 * MIB,
-                            QueueBudget(24L * MIB, 24, 2_000_000L),
-                            QueueBudget(36L * MIB, 48, 3_000_000L),
+                            QueueBudget(24L * MIB, 24),
+                            QueueBudget(36L * MIB, 48),
                             4_000L,
                             2_000L,
                         )
@@ -2636,8 +2636,8 @@ class PlaybackPipeline(
                     VideoCodecKind.AVC -> {
                         PlaybackBudget(
                             12 * MIB,
-                            QueueBudget(48L * MIB, 32, 2_500_000L),
-                            QueueBudget(72L * MIB, 64, 3_500_000L),
+                            QueueBudget(48L * MIB, 32),
+                            QueueBudget(72L * MIB, 64),
                             5_000L,
                             2_000L,
                         )
@@ -2646,8 +2646,8 @@ class PlaybackPipeline(
                     VideoCodecKind.HEVC -> {
                         PlaybackBudget(
                             16 * MIB,
-                            QueueBudget(64L * MIB, 32, 2_500_000L),
-                            QueueBudget(96L * MIB, 64, 3_500_000L),
+                            QueueBudget(64L * MIB, 32),
+                            QueueBudget(96L * MIB, 64),
                             5_000L,
                             2_000L,
                         )
@@ -2661,8 +2661,8 @@ class PlaybackPipeline(
                     AudioCodecKind.AAC_ADTS -> {
                         PlaybackBudget(
                             1 * MIB,
-                            QueueBudget(8L * MIB, 96, 2_000_000L),
-                            QueueBudget(12L * MIB, 192, 3_000_000L),
+                            QueueBudget(8L * MIB, 96),
+                            QueueBudget(12L * MIB, 192),
                             3_000L,
                             1_500L,
                         )
