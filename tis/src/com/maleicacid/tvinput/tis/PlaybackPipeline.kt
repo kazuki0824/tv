@@ -1122,6 +1122,8 @@ class PlaybackPipeline(
                 VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT
             }
         if (!exactArmed) {
+            videoOutputStallTask?.let(mainHandler::removeCallbacks)
+            videoOutputStallTask = null
             Log.w(LogTags.TIS, "MEDIASYNC_COMPAT_APPROXIMATE inputId=$inputId generation=$generation")
         }
         Log.i(
@@ -1377,6 +1379,7 @@ class PlaybackPipeline(
                     enqueuePlaybackAction {
                         // 古いRunnableの実行開始と新しい描画通知の間にできる競合窓を閉じる。
                         if (videoOutputStallTask !== this ||
+                            videoAvailabilityMode != VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT ||
                             generation != playbackGeneration ||
                             !videoAvailableNotified.get() ||
                             !videoPathExpected

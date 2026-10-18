@@ -19,6 +19,11 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+# ExactからCompatibilityへの降格時の継続監視取消し
+
+- private callbackの再arm不成立時に既存Exact watchdogを取り消し、実行時もcurrent modeを照合する。同じowner/世代上で処理し、Compatibilityの正常なCodec進捗を最終出力timeoutとして停止しない。
+- Android15 Robolectricで初回Exact成功から再arm不成立・Compatibility降格・7秒間のCodec callback継続を検査する。初回Exact eventはfixtureで配送し、再armのprivate API不在はstock SDKの実経路を通す。実機検証の代替にはしない。
+
 # 任意MediaSync patch未適用時の近似Compatibility復元
 
 - private callback不在/登録失敗時はcurrent Codecの公開描画callbackを近似available根拠として使用し、最終output成功と区別して診断する。

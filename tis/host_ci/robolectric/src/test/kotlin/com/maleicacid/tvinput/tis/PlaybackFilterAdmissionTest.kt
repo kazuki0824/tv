@@ -549,7 +549,9 @@ class PlaybackFilterAdmissionTest {
     @Test
     fun videoOutputStallAfterFirstFrameIsNotTreatedAsContinuousPlayback() {
         Fixture().use { fixture ->
-            ReflectionHelpers.setField(fixture.pipeline, "videoPathExpected", true)
+            fixture.decoder()
+            fixture.attachCodec()
+            fixture.armCompatibilityAvailability(7L, exact = true)
             ReflectionHelpers.getField<AtomicBoolean>(fixture.pipeline, "videoAvailableNotified").set(true)
             fixture.invoke("armVideoOutputStallWatchdog", 7L)
             Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(6_001L))
@@ -566,7 +568,9 @@ class PlaybackFilterAdmissionTest {
     @Test
     fun staleRenderWatchdogCannotFailAnUpdatedFrameDeadline() {
         Fixture().use { fixture ->
-            ReflectionHelpers.setField(fixture.pipeline, "videoPathExpected", true)
+            fixture.decoder()
+            fixture.attachCodec()
+            fixture.armCompatibilityAvailability(7L, exact = true)
             ReflectionHelpers.getField<AtomicBoolean>(fixture.pipeline, "videoAvailableNotified").set(true)
             fixture.invoke("armVideoOutputStallWatchdog", 7L)
             val stale = ReflectionHelpers.getField<Runnable>(fixture.pipeline, "videoOutputStallTask")
@@ -578,6 +582,36 @@ class PlaybackFilterAdmissionTest {
             fixture.drain()
             assertTrue(fixture.unavailable.isEmpty())
             assertEquals(current, ReflectionHelpers.getField<Runnable>(fixture.pipeline, "videoOutputStallTask"))
+        }
+    }
+
+    @Test
+    fun exactOutputFollowedByCompatibilityDowngradeCancelsFinalOutputDeadline() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            fixture.armCompatibilityAvailability(7L, exact = true)
+            val arm = ReflectionHelpers.getField<Any>(fixture.pipeline, "waitingAvailabilityArm")
+            val sequence = ReflectionHelpers.getField<Long>(arm, "armSequence")
+            // 初回Exact成功を本番入口へ配送し、stock SDKで次のprivate armが成立しない経路を通す。
+            fixture.invoke("commitVideoAvailability", requireNotNull(fixture.availabilitySync), 7L, sequence)
+            fixture.drain()
+            assertEquals(listOf(7L), fixture.available)
+            assertEquals(
+                "MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT",
+                ReflectionHelpers.getField<Any>(fixture.pipeline, "videoAvailabilityMode").toString(),
+            )
+            assertEquals(null, ReflectionHelpers.getField<Runnable?>(fixture.pipeline, "videoOutputStallTask"))
+            val listener = ReflectionHelpers.getField<MediaCodec.OnFrameRenderedListener>(codec, "mOnFrameRenderedListener")
+            repeat(7) {
+                listener.onFrameRendered(codec, 90_000L + it, System.nanoTime())
+                fixture.drain()
+                Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+                fixture.drain()
+            }
+            assertTrue(fixture.unavailable.isEmpty())
+            assertEquals(7L, ReflectionHelpers.getField<Long>(fixture.pipeline, "playbackGeneration"))
+            assertEquals(listOf(7L), fixture.available)
         }
     }
 
