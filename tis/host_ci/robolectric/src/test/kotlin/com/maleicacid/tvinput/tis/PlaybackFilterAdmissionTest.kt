@@ -466,6 +466,19 @@ class PlaybackFilterAdmissionTest {
 
     // MediaCodecのJava callback配送を使用し、ネイティブqueueだけをhost shadowへ置き換える。
     @Test
+    fun videoOutputStallAfterFirstFrameIsNotTreatedAsContinuousPlayback() {
+        Fixture().use { fixture ->
+            ReflectionHelpers.setField(fixture.pipeline, "videoPathExpected", true)
+            ReflectionHelpers.getField<AtomicBoolean>(fixture.pipeline, "videoAvailableNotified").set(true)
+            fixture.invoke("armVideoOutputStallWatchdog", 7L)
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(6_001L))
+            fixture.drain()
+            assertTrue(fixture.unavailable.any { it.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED })
+            assertTrue(fixture.unavailable.any { it.detail.contains("映像描画callback") })
+        }
+    }
+
+    @Test
     fun stockAndroid15WithoutPlatformPatchSelectsCodecCallbackFallback() {
         // Robolectric Android 15はMediaSyncの任意private拡張を持たない。
         // 実装はこのAPIを必須にせず公開MediaCodec callbackを使用する。
