@@ -73,6 +73,8 @@ class MaleicacidLiveSession(
     private var captionEnabled: Boolean = false
     private var streamVolume: Float = 1.0f
     private var playbackState: PlaybackStartState = PlaybackStartState.Idle
+    // 受理されたtune内の同一署名に対して、回復可能な起動失敗の再試行は最大1回。
+    private var retriedPlaybackSignature: AvPlaybackSignature? = null
 
     // セクション更新ごとの重複ログを抑える診断用の最終出力値.判定の正本ではない。
     private var lastPlaybackGateDiagnostic: String? = null
@@ -416,6 +418,7 @@ class MaleicacidLiveSession(
         aribSiEngine.reset()
         sectionIngestController.resetForTune()
         playbackState = PlaybackStartState.Idle
+        retriedPlaybackSignature = null
         currentService = null
         currentRatingProfile = AribRatingMapper.BroadcastProfile.UNRESOLVED
         currentGeneration = 0L
@@ -1227,6 +1230,7 @@ class MaleicacidLiveSession(
             reason.reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
                 reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_CODEC_ERROR ||
                 reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT ||
+                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED ||
                 reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_FILTER_NOT_STARTED
         if (videoStartupFailed) {
             val signature = PlaybackStartTransitions.signature(playbackState)
@@ -1239,6 +1243,38 @@ class MaleicacidLiveSession(
             }
         }
         notifyVideoUnavailable(mapUnavailableReason(reason))
+        scheduleRecoverablePlaybackRetry(reason)
+    }
+
+    private fun scheduleRecoverablePlaybackRetry(reason: PlaybackPipeline.PlaybackUnavailable) {
+        val recoverable =
+            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT ||
+                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
+                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED
+        if (!recoverable || releaseOnce.get() || frontendSignalUnavailable || surface?.isValid != true) return
+        val failed = playbackState as? PlaybackStartState.Failed ?: return
+        if (failed.pipelineGeneration != reason.generation || retriedPlaybackSignature == failed.signature) return
+        val tuneGeneration = currentGeneration
+        retriedPlaybackSignature = failed.signature
+        val failedGeneration = failed.pipelineGeneration
+        // 既存のSession ownerへ戻す。新しい回復workerや再生state machineは設けない。
+        val scheduled =
+            unblockTimerHandler.postDelayed({
+                enqueueSessionAction {
+                    val current = playbackState as? PlaybackStartState.Failed ?: return@enqueueSessionAction
+                    if (releaseOnce.get() || tuneGeneration != currentGeneration ||
+                        current.signature != failed.signature || current.pipelineGeneration != failedGeneration ||
+                        surface?.isValid != true || frontendSignalUnavailable
+                    ) {
+                        return@enqueueSessionAction
+                    }
+                    playbackState = PlaybackStartState.Idle
+                    latestService?.let(::maybeStartPlayback)
+                }
+            }, 300L)
+        if (!scheduled) {
+            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "再生再試行timerの投入に失敗しました")
+        }
     }
 
     private fun stopPlaybackForBlockedContent(blocked: BlockedContent) {
