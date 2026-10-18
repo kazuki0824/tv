@@ -421,6 +421,36 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun sparseAudioPtsBeyondThreeSecondsDoesNotRejectBoundedCodecInput() {
+        Fixture().use { fixture ->
+            fixture.decoder(audio = true)
+            fixture.attachCodec(audio = true)
+            val filter = fixture.avFilter(true)
+            // MediaEventは8件・8byteだけ。PTSの離隔は処理遅延や確保メモリ量ではない。
+            val samples =
+                List(8) { index ->
+                    mediaEvent(1L, 90_000L + index * 45_000L).also { event ->
+                        Shadow.extract<NativeMediaEvent>(event).block =
+                            ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+                    }
+                }
+            samples.forEach { event ->
+                deliver(filter, event)
+                fixture.drain()
+            }
+            assertEquals(8, fixture.pendingEvents(true).size)
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.INPUT_REJECTED, true))
+            assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertTrue(fixture.unavailable.isEmpty())
+            assertTrue(fixture.failures.isEmpty())
+            assertEquals(0, Shadow.extract<NativeFilter>(filter).closes)
+            // 停止処理では受付済みeventを重複解放せずすべて返す。
+            fixture.pipeline.stop()
+            samples.forEach { assertEquals(1, Shadow.extract<NativeMediaEvent>(it).releases) }
+        }
+    }
+
+    @Test
     fun mpeg2HeaderProbeAdvancesBeyondTheFirst256KiB() {
         Fixture().use { fixture ->
             fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
