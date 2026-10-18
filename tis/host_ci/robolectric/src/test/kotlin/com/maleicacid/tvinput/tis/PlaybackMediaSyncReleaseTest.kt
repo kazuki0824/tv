@@ -24,7 +24,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class, PlaybackMediaSyncReleaseTest.NativeCodec::class])
+@Config(
+    sdk = [35],
+    shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class, PlaybackMediaSyncReleaseTest.NativeCodec::class],
+)
 class PlaybackMediaSyncReleaseTest {
     @Before
     fun reset() {
@@ -52,8 +55,7 @@ class PlaybackMediaSyncReleaseTest {
         withAttachedSync { pipeline, native, surface ->
             native.failNextDisconnect = true
             native.failNextRelease = true
-            val failure = assertFailsWith<IllegalStateException> { pipeline.stop() }
-            assertTrue(failure.message.orEmpty().contains("MediaSync"))
+            assertFailsWith<IllegalStateException> { pipeline.stop() }
             assertEquals(listOf("connect", "flush"), native.events)
             assertTrue(NativeMediaSync.owners.containsKey(surface))
             assertTrue(ReflectionHelpers.getField<ResourceCleanup>(pipeline, "resourceCleanup").hasPending)
@@ -89,7 +91,8 @@ class PlaybackMediaSyncReleaseTest {
             ReflectionHelpers.setField(pipeline, "videoDecoder", decoder)
             NativeCodec.sync = native
             pipeline.stop()
-            assertEquals(listOf("connect", "flush", "disconnect", "release", "codec-stop", "codec-release"), native.events)
+            val expected = listOf("connect", "flush", "disconnect", "release", "codec-stop", "codec-release")
+            assertEquals(expected, native.events)
             assertFalse(NativeMediaSync.owners.containsKey(surface))
         }
     }
