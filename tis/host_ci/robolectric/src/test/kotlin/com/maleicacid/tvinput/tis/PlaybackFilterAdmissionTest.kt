@@ -701,24 +701,51 @@ class PlaybackFilterAdmissionTest {
                     "mOnFrameRenderedListener",
                 )
             val logCountBefore = availabilityLogMessages().size
-            val armedAt = fixture.armCompatibilityAvailability(7L)
-            listener.onFrameRendered(codec, 90_000L, armedAt - 1L)
-            fixture.drain()
-            assertTrue(fixture.available.isEmpty())
-            listener.onFrameRendered(codec, 90_000L, armedAt + 1L)
+            fixture.armCompatibilityAvailability(7L)
+            // 中間SurfaceのCCodec通知はrelease時のPTS(ns)を返す。monotonic時刻ではない。
+            listener.onFrameRendered(codec, 90_000L, 90_000_000L)
             fixture.drain()
             assertEquals(listOf(7L), fixture.available)
             assertEquals(logCountBefore + 1, availabilityLogMessages().size)
             assertTrue(availabilityLogMessages().last().contains("COMPAT"))
             assertEquals(null, ReflectionHelpers.getField<Runnable?>(fixture.pipeline, "videoOutputStallTask"))
-            listener.onFrameRendered(codec, 90_000L, armedAt + 2L)
+            listener.onFrameRendered(codec, 90_000L, Long.MAX_VALUE)
             fixture.drain()
             assertEquals(listOf(7L), fixture.available)
             fixture.armCompatibilityAvailability(8L)
             listener.onFrameRendered(codec, 90_000L, System.nanoTime())
             fixture.drain()
             assertEquals(listOf(7L), fixture.available)
-            assertEquals(3L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
+            assertEquals(2L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
+        }
+    }
+
+    @Test
+    fun compatibilityRejectsCallbackReceivedBeforeRearm() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            fixture.armCompatibilityAvailability(7L)
+            val listener = ReflectionHelpers.getField<MediaCodec.OnFrameRenderedListener>(codec, "mOnFrameRenderedListener")
+            val entered = CountDownLatch(1)
+            val resume = CountDownLatch(1)
+            fixture.executor.executeControl {
+                entered.countDown()
+                check(resume.await(5, TimeUnit.SECONDS))
+                fixture.armCompatibilityAvailability(7L)
+            }
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                // PTSが大きくても、re-armより前に受け取った通知を後から採用しない。
+                listener.onFrameRendered(codec, 90_000L, Long.MAX_VALUE)
+            } finally {
+                resume.countDown()
+            }
+            fixture.drain()
+            assertTrue(fixture.available.isEmpty())
+            listener.onFrameRendered(codec, 90_000L, 90_000_000L)
+            fixture.drain()
+            assertEquals(listOf(7L), fixture.available)
         }
     }
 
@@ -976,6 +1003,8 @@ class PlaybackFilterAdmissionTest {
             ReflectionHelpers.setField(decoder, "outputSurface", surface)
             codecSurface = surface
             codecTexture = texture
+            // このfixtureの出力callback試験は起動済み再生を扱う。pause中の試験は別fixtureで行う。
+            ReflectionHelpers.setField(pipeline, "mediaSyncStarted", true)
         }
         val method =
             decoder.javaClass.superclass

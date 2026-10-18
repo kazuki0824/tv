@@ -64,6 +64,19 @@ internal abstract class PrioritySerialExecutor(
 
     fun isOwnerThread(): Boolean = Thread.currentThread() === ownerThread.get()
 
+    // caller側の待機stackと区別し、取得時点のowner位置を原因例外へ添付する。
+    protected fun recordOwnerStack(error: Throwable) {
+        val owner = ownerThread.get() ?: return
+        try {
+            val snapshot = IllegalStateException("$ownerName owner stack at control timeout")
+            snapshot.stackTrace = owner.stackTrace
+            error.addSuppressed(snapshot)
+        } catch (denied: SecurityException) {
+            // 診断の取得拒否で、元のtimeoutや未開始取消しの結果を置き換えない。
+            error.addSuppressed(denied)
+        }
+    }
+
     override fun shutdownNow(): MutableList<Runnable> {
         val dropped = super.shutdownNow()
         dropped.filterIsInstance<QueuedTask>().forEach(QueuedTask::discardBeforeRun)

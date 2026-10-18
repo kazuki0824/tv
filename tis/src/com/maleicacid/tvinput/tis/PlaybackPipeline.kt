@@ -224,6 +224,11 @@ class PlaybackPipeline(
         val armedAtNanoTime: Long,
     )
 
+    private data class PendingVideoOutput(
+        val index: Int,
+        val presentationTimeUs: Long,
+    )
+
     private data class AudioOutput(
         val codec: MediaCodec,
         val index: Int,
@@ -1230,12 +1235,12 @@ class PlaybackPipeline(
     @Suppress("ComplexCondition", "ReturnCount")
     private fun commitCompatibilityVideoAvailability(
         generation: Long,
-        renderedNanoTime: Long,
+        callbackReceivedNanoTime: Long,
     ) {
         if (videoAvailabilityMode != VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT) return
         val arm = waitingAvailabilityArm ?: return
         if (generation != playbackGeneration || arm.generation != generation ||
-            renderedNanoTime < arm.armedAtNanoTime || mediaSyncSurfaceFailed || surface?.isValid != true
+            callbackReceivedNanoTime < arm.armedAtNanoTime || mediaSyncSurfaceFailed || surface?.isValid != true
         ) {
             return
         }
@@ -1404,8 +1409,10 @@ class PlaybackPipeline(
         if (audioPathExpected && !audioInputQueued) return
         if (audioPathExpected && audioTrack == null) return
         runCatching { sync.setPlaybackParams(PlaybackParams().setSpeed(1.0f)) }
-            .onSuccess { mediaSyncStarted = true }
-            .onFailure { error ->
+            .onSuccess {
+                mediaSyncStarted = true
+                videoDecoder?.renderPendingOutputs()
+            }.onFailure { error ->
                 val reason =
                     if (videoPathExpected) {
                         PlaybackUnavailableReason.VIDEO_CODEC_ERROR
@@ -2003,6 +2010,26 @@ class PlaybackPipeline(
         override val generation: Long,
         private val errorSink: (PlaybackUnavailableReason, String) -> Unit,
     ) : DecoderPipeline() {
+        // Codecが貸し出した出力indexだけを保持する。payload複製や独自の枠数制限は設けない。
+        private val pendingOutputs = java.util.ArrayDeque<PendingVideoOutput>()
+
+        fun renderPendingOutputs() {
+            if (!mediaSyncStarted || generation != playbackGeneration) return
+            while (pendingOutputs.isNotEmpty()) {
+                val decoder = codec ?: return
+                val output = pendingOutputs.removeFirst()
+                completeCurrentDecoderOutputAction(::onDecoderFailure) {
+                    renderOutput(decoder, output.index, output.presentationTimeUs)
+                }
+            }
+        }
+
+        override fun close() {
+            // 未描画の出力bufferも既存Codecのstop/releaseで回収する。
+            pendingOutputs.clear()
+            super.close()
+        }
+
         override val budget = PlaybackBudget.forVideo(kind)
         override val configurationProbeKind =
             when (kind) {
@@ -2017,7 +2044,9 @@ class PlaybackPipeline(
 
         override fun onDecoderPrepared(codec: MediaCodec) {
             codec.setOnFrameRenderedListener(
-                { callbackCodec, _, renderedNanoTime ->
+                { callbackCodec, _, _ ->
+                    // 中間SurfaceのCCodec通知時刻はPTSの場合がある。armと同じ単調時計で受信を記録する。
+                    val receivedAtNanoTime = System.nanoTime()
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration ||
                             this@VideoDecoderPipeline.codec !== callbackCodec
@@ -2026,7 +2055,7 @@ class PlaybackPipeline(
                         }
                         dataPathProgress.record(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false)
                         // stockでは入力進捗を近似根拠にする。最終出力の成功や継続とは扱わない。
-                        commitCompatibilityVideoAvailability(generation, renderedNanoTime)
+                        commitCompatibilityVideoAvailability(generation, receivedAtNanoTime)
                     }
                 },
                 codecCallbackHandler,
@@ -2098,7 +2127,21 @@ class PlaybackPipeline(
                 errorSink(PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "video output Surface が無効です")
                 return
             }
-            releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, info.presentationTimeUs * 1_000L) }
+            if (mediaSyncStarted) {
+                renderOutput(codec, index, info.presentationTimeUs)
+            } else {
+                // rate 0のMediaSyncへ同期renderすると、同じowner上の音声準備・再生開始・停止を妨げる。
+                pendingOutputs.addLast(PendingVideoOutput(index, info.presentationTimeUs))
+            }
+        }
+
+        @Suppress("MagicNumber")
+        private fun renderOutput(
+            codec: MediaCodec,
+            index: Int,
+            presentationTimeUs: Long,
+        ) {
+            releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, presentationTimeUs * 1_000L) }
         }
     }
 

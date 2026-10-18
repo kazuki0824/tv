@@ -578,6 +578,7 @@ class LifecycleControlDeadlineTest {
                         }
                         false
                     } catch (error: ControlResultUnknownException) {
+                        assertOwnerWaitStack(error)
                         executor.executeControl {
                             order += "後片付け"
                             cleaned.countDown()
@@ -633,6 +634,7 @@ class LifecycleControlDeadlineTest {
             check(started.await(1, TimeUnit.SECONDS))
             val failure = runCatching { executor.callControl(50L) { executed.set(true) } }.exceptionOrNull()
             check(failure is IllegalStateException && failure !is ControlResultUnknownException)
+            assertOwnerWaitStack(failure)
             release.countDown()
             executor.callControl(1_000L) {}
             check(!executed.get())
@@ -671,4 +673,11 @@ class LifecycleControlDeadlineTest {
             executor.shutdownNow()
         }
     }
+}
+
+// 待機callerのFutureTask.getではなく、停止中ownerのlatch待機が採取されることを確認する。
+private fun assertOwnerWaitStack(failure: Throwable) {
+    val snapshot = requireNotNull(failure.cause).suppressed.single()
+    check(snapshot.message.orEmpty().endsWith("owner stack at control timeout"))
+    check(snapshot.stackTrace.any { it.className == CountDownLatch::class.java.name && it.methodName == "await" })
 }

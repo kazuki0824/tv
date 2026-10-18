@@ -19,6 +19,15 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+## 2026-10-18 起動前の映像待機とCompatibility時刻比較
+
+- #207: rate 0のMediaSyncへ同期renderして同じowner上の音声準備・開始・停止を塞がないよう、開始前の映像出力はCodecの貸与bufferのまま保持し、既存startup gateで再生開始後に渡す。独自の枠数・期限延長・workerは追加しない。
+- Compatibility判定はcallback入口の単調時計の受信時刻とarm時刻を比較する。中間SurfaceのCCodec通知に渡るPTS(ns)と`System.nanoTime()`を比較する誤りを除去した。旧世代・無効Surface・Surface error・Exact modeの拒否条件は維持する。
+- 修正前に、PTS/armの比較2件と、pause中の映像出力が開始・停止を塞ぐ2件のRobolectric試験が失敗することを確認。native Codec/MediaSync境界は模擬であり実機再現の証明ではない。
+- 修正後検証: `gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest --tests '*PlaybackFilterAdmissionTest' --tests '*PlaybackMediaSyncReleaseTest'`で27+6件成功。`LifecycleControlDeadlineTest`はKotlin 1.9.22で本体executor/ResourceCleanupと既存Log stubをコンパイルし、JUnitCoreで20件成功。変更Kotlinのktlint 1.8.0・detekt 1.23.8も成功。Soong/atest/実機は未実施。
+- 既存control待機超過の原因例外へownerスレッドのJava stackを添付する。未開始taskの取消しを先に確定し、開始済み操作の結果未確定・元ownerでのcleanupという契約は変更しない。
+- 34.1の各黒画面、旧映像の再表示、最後の停止不能をすべて同じ原因と確定したものではない。特に最後の世代は映像Codec生成ログがなく、今回の起動前映像待機だけでは説明できない。実機の症状解消は未確認。
+
 ## 2026-10-18 再生失敗と停止位置の診断
 
 - #207: Sessionが受理した再生不能理由・詳細・世代、圧縮入力欠落の発生箇所、停止前の既存AV進捗と停止段階をログへ残す。pending queue拒否では既存の件数・bytes・PTS幅・Codec入力所有数を記録する。
