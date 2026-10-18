@@ -19,6 +19,12 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+## 圧縮入力欠落後のCodec参照状態の退役
+
+- #207: 構成済みCodecに対するAV OVERFLOW、RestartEvent、owner受付拒否、sample拒否を既存の全再生generation終了・再生成へ接続。Filter.flushだけで旧Codecを継続せず、Codec errorと共通の一回の自動復旧制限を使う。構成前の局所flushは維持する。
+- HAL同時8eventという廃止済み前提をstartup保持の説明から除去した。TISにAU parser、PTS補間、別の復旧owner/queueは追加しない。
+- 構成済みCodecのoverflowが旧decoder/filterを退役し、再開対象がない場合に元世代へ失敗通知するRobolectric回帰試験へ更新。Android実機・zapping・色の解消は未確認。
+
 ## 2026-10-17 MediaSync停止順序とCodec入力寿命
 
 - Android 15のCodec投入用C2Bufferが元MediaEventの解放通知を共有しないため、元event/blockを入力index返却またはdecoder解放成功まで保持し、HAL共有slotの早期再利用を防ぐ。
