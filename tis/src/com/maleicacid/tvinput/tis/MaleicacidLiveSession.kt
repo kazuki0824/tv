@@ -548,7 +548,7 @@ class MaleicacidLiveSession(
                 playbackState is PlaybackStartState.Starting
             ) {
                 playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
+                // ControllerのCAS更新が既にpipelineを停止しているため、世代を二重に進めない。
                 beginCaptionPresentationGeneration(-1L, false)
                 notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING)
             }
