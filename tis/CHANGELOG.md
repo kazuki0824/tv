@@ -19,6 +19,12 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+# 音声PID切替失敗後の同一選択による復旧
+
+- 新Filter開始成功後に選択を確定し、失敗時は旧選択と既存cleanup義務を保持する。
+- Sessionの無条件noopを除去し、実Filter不在なら同一track再選択から音声入力を再取得する。映像とMediaSyncの世代は維持する。
+- close/open/configure/start失敗とSession選択・実Filter・再選択復旧をAndroid15 Robolectricで検査する。
+
 # 最終出力可用性と音声選択の局所切替
 
 - Codec→MediaSync入力callbackによるavailable確定と継続watchdog更新を除去し、既存の最終出力one-shotを再armして継続を観測する。未パッチOSは観測不能を診断し初回期限で失敗する。

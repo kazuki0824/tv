@@ -103,15 +103,15 @@ internal class CodecHeaderProbe(
             nextNalHeader = false
             val type = if (kind == Kind.AVC) byte and 0x1f else (byte ushr 1) and 0x3f
             val required = if (kind == Kind.AVC) type == 7 || type == 8 else type in 32..34
-            if (required) {
-                nal =
+            nal =
+                if (required) {
                     ByteArrayOutputStream().apply {
                         write(byteArrayOf(0, 0, 0, 1))
                         write(byte)
                     }
-            } else {
-                nal = null
-            }
+                } else {
+                    null
+                }
         } else {
             appendNal(byte)
         }
