@@ -8,6 +8,7 @@ import android.graphics.SurfaceTexture
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.media.MediaSync
 import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
 import android.media.tv.tuner.Tuner
@@ -622,24 +623,51 @@ class PlaybackFilterAdmissionTest {
                     "mOnFrameRenderedListener",
                 )
             val logCountBefore = availabilityLogMessages().size
-            val armedAt = System.nanoTime()
-            fixture.armCompatibilityAvailability(7L, armedAt)
+            val armedAt = fixture.armCompatibilityAvailability(7L)
+            listener.onFrameRendered(codec, 90_000L, armedAt - 1L)
+            fixture.drain()
+            assertTrue(fixture.available.isEmpty())
             listener.onFrameRendered(codec, 90_000L, armedAt + 1L)
             fixture.drain()
-            assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
-            // CodecはMediaSync入力まで進んでも、最終出力のattach/queue失敗を否定できない。
-            assertTrue(fixture.available.isEmpty())
-            assertEquals(logCountBefore, availabilityLogMessages().size)
+            assertEquals(listOf(7L), fixture.available)
+            assertEquals(logCountBefore + 1, availabilityLogMessages().size)
+            assertTrue(availabilityLogMessages().last().contains("COMPAT"))
             assertEquals(null, ReflectionHelpers.getField<Runnable?>(fixture.pipeline, "videoOutputStallTask"))
             listener.onFrameRendered(codec, 90_000L, armedAt + 2L)
             fixture.drain()
-            assertTrue(fixture.available.isEmpty())
-            assertEquals(null, ReflectionHelpers.getField<Runnable?>(fixture.pipeline, "videoOutputStallTask"))
-            fixture.armCompatibilityAvailability(8L, System.nanoTime())
+            assertEquals(listOf(7L), fixture.available)
+            fixture.armCompatibilityAvailability(8L)
             listener.onFrameRendered(codec, 90_000L, System.nanoTime())
             fixture.drain()
-            assertTrue(fixture.available.isEmpty())
-            assertEquals(2L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
+            assertEquals(listOf(7L), fixture.available)
+            assertEquals(3L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
+        }
+    }
+
+    @Test
+    fun compatibilityRejectsKnownSurfaceFailureAndExactModeRejectsCodecOnlyEvidence() {
+        for (mode in listOf("surface-failed", "surface-invalid", "exact")) {
+            Fixture().use { fixture ->
+                fixture.decoder()
+                val codec = fixture.attachCodec()
+                val armedAt = fixture.armCompatibilityAvailability(7L, exact = mode == "exact")
+                if (mode == "surface-failed") {
+                    fixture.invoke(
+                        "handleMediaSyncError",
+                        requireNotNull(fixture.availabilitySync),
+                        7L,
+                        MediaSync.MEDIASYNC_ERROR_SURFACE_FAIL,
+                        0,
+                    )
+                } else if (mode == "surface-invalid") {
+                    requireNotNull(fixture.codecSurface).release()
+                }
+                val listener = ReflectionHelpers.getField<MediaCodec.OnFrameRenderedListener>(codec, "mOnFrameRenderedListener")
+                listener.onFrameRendered(codec, 90_000L, armedAt + 1L)
+                fixture.drain()
+                assertTrue(fixture.available.isEmpty(), mode)
+                assertEquals(null, ReflectionHelpers.getField<Runnable?>(fixture.pipeline, "videoOutputStallTask"), mode)
+            }
         }
     }
 
@@ -1068,28 +1096,32 @@ class PlaybackFilterAdmissionTest {
 
         fun progress(): PlaybackDataPathProgress = ReflectionHelpers.getField(pipeline, "dataPathProgress")
 
-        // 最終出力を観測できない未パッチOSの状態を再現する。
+        var availabilitySync: MediaSync? = null
+
+        // native初期化だけを省略し、stockでのmode選択とarmは本番処理を通す。
         fun armCompatibilityAvailability(
             generation: Long,
-            armedAtNanoTime: Long,
-        ) {
-            val armType = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "AvailabilityArm" }
-            val arm =
-                armType.declaredConstructors
-                    .single()
-                    .apply { isAccessible = true }
-                    .newInstance(generation, 1L, armedAtNanoTime)
-            val mode =
-                PlaybackPipeline::class.java.declaredClasses
-                    .single { it.simpleName == "VideoAvailabilityMode" }
-                    .enumConstants
-                    .single { it.toString() == "MEDIA_SYNC_FINAL_OUTPUT_UNOBSERVABLE" }
-            executor.callControl(5_000L) {
+            exact: Boolean = false,
+        ): Long {
+            val sync = availabilitySync ?: run {
+                val type = Class.forName("sun.misc.Unsafe")
+                val unsafe = type.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
+                (type.getMethod("allocateInstance", Class::class.java).invoke(unsafe, MediaSync::class.java) as MediaSync)
+                    .also { availabilitySync = it }
+            }
+            return executor.callControl(5_000L) {
                 ReflectionHelpers.setField(pipeline, "surface", requireNotNull(codecSurface))
+                ReflectionHelpers.setField(pipeline, "mediaSync", sync)
                 ReflectionHelpers.setField(pipeline, "playbackGeneration", generation)
-                ReflectionHelpers.setField(pipeline, "waitingAvailabilityArm", arm)
-                ReflectionHelpers.setField(pipeline, "videoAvailabilityMode", mode)
-                ReflectionHelpers.getField<AtomicBoolean>(pipeline, "videoAvailableNotified").set(false)
+                invoke("armVideoAvailability", sync, generation, true)
+                val selected = ReflectionHelpers.getField<Any>(pipeline, "videoAvailabilityMode")
+                assertEquals("MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT", selected.toString())
+                if (exact) {
+                    val mode = selected.javaClass.enumConstants.single { it.toString() == "MEDIA_SYNC_FINAL_OUTPUT_EXACT" }
+                    ReflectionHelpers.setField(pipeline, "videoAvailabilityMode", mode)
+                }
+                val arm = ReflectionHelpers.getField<Any>(pipeline, "waitingAvailabilityArm")
+                ReflectionHelpers.getField<Long>(arm, "armedAtNanoTime")
             }
         }
 
@@ -1212,6 +1244,8 @@ class PlaybackFilterAdmissionTest {
 
         override fun close() {
             sessionCaptionExecutors.forEach { it.shutdownNow() }
+            // このfixtureのMediaSyncはnative資源を確保していない。
+            if (availabilitySync != null) ReflectionHelpers.setField(pipeline, "mediaSync", null)
             try {
                 pipeline.close()
             } finally {

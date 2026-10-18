@@ -193,7 +193,7 @@ m libstagefright
 m MaleicacidTvInput
 ```
 
-patchを適用した構成の実機ではprivate listenerのJava/JNI/native型接続と、`DESIGN_JA.md`がExact modeに要求する観測を確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのnative実行時確認を代替しない。未パッチ構成のruntime結果をExact modeの確認結果として扱わない。これらは任意patchを採用する製品の統合・検証gateなので`future_work/r53`へ重複配置しない。
+patchを適用した構成の実機ではprivate listenerのJava/JNI/native型接続と、`DESIGN_JA.md`がExact modeに要求する観測を確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのnative実行時確認を代替しない。未パッチ構成では公開Codec callbackを近似Compatibilityとして使用する。利用不能なprivate callbackだけを理由に正常視聴を停止させず、最終出力の厳密な継続監視は表明しない。未パッチ構成のruntime結果をExact modeの確認結果として扱わない。これらは任意patchを採用する製品の統合・検証gateなので`future_work/r53`へ重複配置しない。
 
 ## flash 後の確認
 

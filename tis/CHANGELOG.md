@@ -19,6 +19,13 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+# 任意MediaSync patch未適用時の近似Compatibility復元
+
+- private callback不在/登録失敗時はcurrent Codecの公開描画callbackを近似available根拠として使用し、最終output成功と区別して診断する。
+- generation、Codec identity、arm時刻、Surface有効性とMediaSync Surface errorを検査し、ExactではCodec callbackだけで通知しない。
+- Compatibilityは厳密な最終出力watchdogを開始しない。初回callback欠落と最終出力の観測不能を区別する。
+- Robolectricへstock本番arm・一度のavailable・旧callback・確認済みSurface異常・Exactの分離を追加した。
+
 # 音声PID切替失敗後の同一選択による復旧
 
 - 新Filter開始成功後に選択を確定し、失敗時は旧選択と既存cleanup義務を保持する。
