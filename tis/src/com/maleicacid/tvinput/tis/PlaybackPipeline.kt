@@ -700,6 +700,9 @@ class PlaybackPipeline(
             val inputIdentity = AtomicReference(Any())
             // 同じ入力世代で重複するOVERFLOW通知は、次の有効sampleまで一度のflushへ集約する。
             val overflowRecoveryActive = AtomicBoolean(false)
+            (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.onInputQueued = {
+                overflowRecoveryActive.set(false)
+            }
 
             fun reportCapacityLoss(source: Filter) {
                 val rejectedAt = SystemClock.elapsedRealtime()
@@ -767,7 +770,6 @@ class PlaybackPipeline(
                                                 // queueは受理・拒否とも入力を所有し、自身の失敗時にも解放を保持する。
                                                 decoderOwnsEvent = true
                                                 target.queue(sample)
-                                                overflowRecoveryActive.set(false)
                                             } finally {
                                                 if (!decoderOwnsEvent) {
                                                     val pending = materializedSample
@@ -1515,6 +1517,7 @@ class PlaybackPipeline(
         private var startupDeadline: DecoderStartupDeadline? = null
         private var startupTimeout: Runnable? = null
         private var backpressureStartedAtMs: Long? = null
+        var onInputQueued: () -> Unit = {}
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
@@ -1766,6 +1769,7 @@ class PlaybackPipeline(
                         .queue()
                     backpressureStartedAtMs = null
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
+                    onInputQueued()
                     onCompressedInputQueued(sample)
                 } finally {
                     // queue失敗、通知失敗、正常投入のどれでも元sampleを一度だけ返却する。
