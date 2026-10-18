@@ -305,10 +305,10 @@ class PlaybackFilterAdmissionTest {
     @Test
     fun mpeg2HeaderProbeAdvancesBeyondTheFirst256KiB() {
         Fixture().use { fixture ->
-            fixture.decoder()
+            fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
             val type = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "MediaSample" }
-            val constructor = type.declaredConstructors.single().apply { isAccessible = true }
+            val constructor = type.declaredConstructors.single { it.parameterCount == 6 }.apply { isAccessible = true }
             val probe =
                 decoder.javaClass.superclass.getDeclaredMethod("probeHeader", type).apply { isAccessible = true }
             repeat(7) { chunk ->
@@ -905,7 +905,10 @@ class PlaybackFilterAdmissionTest {
             return filter
         }
 
-        fun decoder(audio: Boolean = false) {
+        fun decoder(
+            audio: Boolean = false,
+            videoKind: PlaybackPipeline.VideoCodecKind = PlaybackPipeline.VideoCodecKind.AVC,
+        ) {
             val name = if (audio) "AudioDecoderPipeline" else "VideoDecoderPipeline"
             val type = Class.forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$$name")
             val constructor = type.declaredConstructors.single().apply { isAccessible = true }
@@ -933,7 +936,7 @@ class PlaybackFilterAdmissionTest {
                 } else {
                     constructor.newInstance(
                         pipeline,
-                        PlaybackPipeline.VideoCodecKind.AVC,
+                        videoKind,
                         AribCodecFacts(),
                         Surface(),
                         7L,
