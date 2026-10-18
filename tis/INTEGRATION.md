@@ -218,7 +218,7 @@ bash tis/diagnostics/snapshot_playback.sh "$PWD/playback-capture" black
 bash tis/diagnostics/snapshot_playback.sh "$PWD/playback-capture" stuck
 ```
 
-snapshotは症状marker、uptime、thread一覧、TIS・Live TV・system_server・software codec・audioserver・SurfaceFlinger・Tuner HALのnative backtraceを採る。`debuggerd -b`は対象を終了させないが、一時停止による観測影響がある。native採取を先に並行開始し、その後にdumpsysを保存する。各外部採取commandの20秒上限はホスト収集を打ち切るためだけのもので、製品の停止期限ではない。対象不在、権限拒否、非0終了、timeoutは個別ファイルに残し、採取済みと読み替えない。必要なら再現を分けて旧映像の撮影と停止時stack採取を行う。
+snapshotは症状marker、uptime、thread一覧、TIS・Live TV・mediatuner・system_server・software codec・audioserver・SurfaceFlinger・Tuner HALのnative backtraceを採る。`debuggerd -b`は対象を終了させないが、一時停止による観測影響がある。native採取を先に並行開始し、その後にdumpsysを保存する。各外部採取commandの20秒上限はホスト収集を打ち切るためだけのもので、製品の停止期限ではない。対象不在、権限拒否、非0終了、timeoutは個別ファイルに残し、採取済みと読み替えない。必要なら再現を分けて旧映像の撮影と停止時stack採取を行う。
 
 旧映像が一瞬出る現象は外部カメラでも撮影し、切替前後のチャンネル名と症状markerの操作を同じ撮影に含める。TvViewのsecure Surfaceはscreenrecordに映らない場合があるため、screenrecord成功を映像採取成功としない。採取時間はホスト引数で最大600秒まで指定できる。診断propertyはscript終了時に元へ戻す。ホスト異常終了時は`log.tag.MaleicacidTIS`と`log.tag.MediaSync`を採取前の値へ戻す。端末traceは`device-trace-path.txt`の場所にも残る。
 
@@ -227,7 +227,10 @@ snapshotは症状marker、uptime、thread一覧、TIS・Live TV・system_server�
 | 境界 | 対応付ける記録 | 判定できる範囲 |
 |---|---|---|
 | TIS世代→native MediaSync | 同一pid/tidの`PLAYBACK_SYNC_CREATE_BEGIN`→`PLAYBACK_SYNC_CREATE native`→`PLAYBACK_SYNC_CREATE_END` | session/generationとnative instanceの対応。pointerは破棄後に再利用され得るため生成区間も用いる。 |
-| Codec→MediaSync入力 | `PLAYBACK_VIDEO_SUBMIT/RETURN`のgeneration・PTS、`PLAYBACK_SYNC_INPUT`のnative・PTS・buffer ID・input frame | 入力bufferの所属。`PLAYBACK_CODEC_FRAME`のcallback時刻は最終表示時刻ではない。 |
+| Filter→TIS owner | `PLAYBACK_CALLBACK_OWNER_LATENCY`のownerWaitUs、events、payloadBytes、reservedKiB、拒否時の`PLAYBACK_CALLBACK_BUDGET_REJECT` | callback待ちと16MiB製品受付予算の区別。予約量は実メモリ使用量ではない。 |
+| TIS→Codec入力と返却 | `PLAYBACK_CODEC_INPUT_QUEUE`のqueueUs・pending・queued、`PLAYBACK_CODEC_INPUT_RETURN`のcallbackWaitUs・ownerUs・available、および世代別`CODEC_INPUT_AVAILABLE/RETURNED` | Codec.queue所要時間、空き入力index再通知、TIS owner滞留を区別。入力index返却はnative HALのMediaEvent解放成功そのものではない。 |
+| Codec→MediaSync入力 | `PLAYBACK_VIDEO_SUBMIT/RETURN`のgeneration・PTS、`PLAYBACK_CODEC_OUTPUT_RETURN`のcallbackWaitUs・ownerUs、`PLAYBACK_SYNC_INPUT`のnative・PTS・buffer ID・input frame | Codec output取得と入力bufferの所属。`PLAYBACK_CODEC_FRAME`のcallback時刻は最終表示時刻ではない。 |
+| MediaSync音声consume | `PLAYBACK_MEDIASYNC_AUDIO_CONSUMED`のbufferId・ownerWaitUs・outstanding、および世代別`MEDIASYNC_AUDIO_CONSUMED` | PCMバッファ消費callbackとTISでの返却進捗。音声PTSの離隔は資源超過ではない。 |
 | MediaSync→出力queue | `PLAYBACK_SYNC_SCHEDULE`のmediaUs/targetUsと`PLAYBACK_SYNC_OUTPUT`のbuffer ID・input frame・nextOutputFrame・status | 成功時のoutput frame numberはnextOutputFrame−1。queue成功は画面へのpresent成功ではない。 |
 | 最終合成・表示 | PerfettoのSurfaceFlinger layers/FrameTimelineとbuffer ID・output frame、外部撮影 | layerの可視性、保持buffer、新frameのlatch/presentとの対応。TISの世代番号を時刻だけで別Surfaceへ転用しない。 |
 | 停止待機 | 同じ症状区間のJava owner stack、native backtrace、Binder/scheduler trace、HAL dump | API境界と待機相手の候補。native stackが欠けた場合は内部原因確定としない。 |
