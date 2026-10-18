@@ -274,6 +274,42 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun mpeg2HeaderProbeAdvancesBeyondTheFirst256KiB() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
+            val type = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "MediaSample" }
+            val constructor = type.declaredConstructors.single().apply { isAccessible = true }
+            val probe =
+                decoder.javaClass.superclass.getDeclaredMethod("probeHeader", type).apply { isAccessible = true }
+            repeat(7) { chunk ->
+                val bytes = ByteArray(64 * 1024)
+                if (chunk == 6) {
+                    bytes[10] = 0
+                    bytes[11] = 0
+                    bytes[12] = 1
+                    bytes[13] = 0xb3.toByte()
+                    bytes[14] = 0x5a
+                    bytes[15] = 0x04
+                    bytes[16] = 0x38
+                    bytes[17] = 0x30
+                }
+                val event = mediaEvent(bytes.size.toLong())
+                val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+                Shadow.extract<NativeLinearBlock>(block).data = bytes
+                val sample = constructor.newInstance(event, block, 0, bytes.size, 0L, false)
+                val format = probe.invoke(decoder, sample) as MediaFormat?
+                if (chunk < 6) {
+                    assertEquals(null, format)
+                } else {
+                    assertEquals(1440, requireNotNull(format).getInteger(MediaFormat.KEY_WIDTH))
+                    assertEquals(1080, format.getInteger(MediaFormat.KEY_HEIGHT))
+                }
+            }
+        }
+    }
+
+    @Test
     fun decoderStartupKeepsAtMostThreeEventsAndFailsAtTheFiniteDeadline() {
         Fixture().use { fixture ->
             fixture.decoder()
@@ -1203,9 +1239,10 @@ class PlaybackFilterAdmissionTest {
     @Implements(MediaCodec.LinearBlock::class)
     class NativeLinearBlock {
         var recycles = 0
+        var data: ByteArray = byteArrayOf(0)
 
         @Implementation
-        fun map(): ByteBuffer = ByteBuffer.wrap(byteArrayOf(0))
+        fun map(): ByteBuffer = ByteBuffer.wrap(data)
 
         @Implementation
         fun recycle() {
