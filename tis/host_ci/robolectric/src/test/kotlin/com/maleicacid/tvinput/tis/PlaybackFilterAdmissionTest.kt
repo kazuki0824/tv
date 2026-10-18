@@ -665,7 +665,7 @@ class PlaybackFilterAdmissionTest {
             val block = requireNotNull(Shadow.extract<NativeMediaEvent>(packet).block)
             assertEquals(0, Shadow.extract<NativeLinearBlock>(block).recycles)
             // Codecが同じ入力indexを返すまではHALの共有slotを再利用させない。
-            postCodecCallback(codec, 1, 0, null)
+            returnCodecInputAndAwaitEventRelease(codec, packet)
             fixture.drain()
             assertEquals(1, Shadow.extract<NativeMediaEvent>(packet).releases)
             assertEquals(
@@ -975,6 +975,17 @@ class PlaybackFilterAdmissionTest {
         val codec = method.invoke(decoder, format) as MediaCodec
         ReflectionHelpers.setField(decoder, "codec", codec)
         return codec
+    }
+
+    private fun returnCodecInputAndAwaitEventRelease(
+        codec: MediaCodec,
+        event: MediaEvent,
+    ) {
+        val released = CountDownLatch(1)
+        Shadow.extract<NativeMediaEvent>(event).onRelease = { released.countDown() }
+        postCodecCallback(codec, 1, 0, null)
+        // CodecのHandlerからownerへ届く前に、ownerだけのdrainが完了し得る。
+        assertTrue("returned Codec input must release its MediaEvent", released.await(5, TimeUnit.SECONDS))
     }
 
     private fun postCodecCallback(
