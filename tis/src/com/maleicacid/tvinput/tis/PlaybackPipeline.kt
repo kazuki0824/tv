@@ -3186,8 +3186,6 @@ class PlaybackPipeline(
                 DualMonoPresentation.MAIN_SUB -> AudioTrack.DUAL_MONO_MODE_LR
             }
 
-        fun isDualMonoSemanticForTest(dualMono: Boolean): Boolean = dualMono
-
         fun dualMonoModeForTest(presentation: DualMonoPresentation): Int = audioTrackDualMonoMode(presentation)
 
         fun h264DimensionsForTest(spsWithStartCode: ByteArray): Pair<Int, Int>? =
