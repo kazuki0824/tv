@@ -1595,13 +1595,11 @@ class PlaybackPipeline(
 
         private fun queueInternal(sample: MediaSample) {
             if (codec == null) {
-                appendHeaderProbe(sample)
-                val format = formatFromBufferedHeader(configBytes.toByteArray())
+                val format = probeHeader(sample)
                 if (format == null) {
-                    if (configBytes.size() >= budget.headerProbeLimitBytes) {
-                        onCodecConfigTimeout()
-                        clearPending()
-                    }
+                    // HALには同時8イベントの上限がある。未構成入力を全件保持すると
+                    // 後続のsequence headerを含むイベントが永久に到達できない。
+                    while (pendingSamples.size > 3) releaseMediaSample(pendingSamples.removeFirst())
                     return
                 }
                 codec = createBlockModelDecoder(format)
@@ -1621,16 +1619,28 @@ class PlaybackPipeline(
             return timestampSpanUs(times) <= queueBudget.maxDurationUs
         }
 
-        private fun appendHeaderProbe(sample: MediaSample) {
-            val remaining = budget.headerProbeLimitBytes - configBytes.size()
-            if (remaining <= 0) return
-            val copyLength = minOf(sample.size, remaining)
+        // windowの容量ではなく起動時deadlineが探索の終端を決める。
+        // sample内にも複数のヘッダ候補が存在し得るため小さいchunk単位で前進する。
+        private fun probeHeader(sample: MediaSample): MediaFormat? {
             val mapped = sample.block.map().duplicate()
-            mapped.position(sample.offset)
-            mapped.limit(sample.offset + copyLength)
-            val headerBytes = ByteArray(copyLength)
-            mapped.get(headerBytes)
-            configBytes.write(headerBytes)
+            var cursor = sample.offset
+            val end = sample.offset + sample.size
+            while (cursor < end) {
+                val count = minOf(64 * KIB, end - cursor)
+                val next = ByteArray(count)
+                mapped.position(cursor)
+                mapped.get(next)
+                val previous = configBytes.toByteArray()
+                configBytes.reset()
+                // 古いprefix全体を保持せず、start codeがevent境界を跨ぐ場合に備える。
+                val retain = minOf(previous.size, budget.headerProbeLimitBytes - count)
+                configBytes.write(previous, previous.size - retain, retain)
+                configBytes.write(next)
+                val format = formatFromBufferedHeader(configBytes.toByteArray())
+                if (format != null) return format
+                cursor += count
+            }
+            return null
         }
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
