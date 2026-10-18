@@ -107,7 +107,7 @@ class PlaybackPipeline(
 
     private enum class VideoAvailabilityMode {
         MEDIA_SYNC_FINAL_OUTPUT_EXACT,
-        MEDIA_SYNC_FINAL_OUTPUT_UNOBSERVABLE,
+        MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT,
     }
 
     enum class PlaybackUnavailableReason {
@@ -1125,10 +1125,10 @@ class PlaybackPipeline(
             if (exactArmed) {
                 VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT
             } else {
-                VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_UNOBSERVABLE
+                VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT
             }
         if (!exactArmed) {
-            Log.w(LogTags.TIS, "MEDIASYNC_FINAL_OUTPUT_UNOBSERVABLE inputId=$inputId generation=$generation")
+            Log.w(LogTags.TIS, "MEDIASYNC_COMPAT_APPROXIMATE inputId=$inputId generation=$generation")
         }
         Log.i(
             LogTags.TIS,
@@ -1160,7 +1160,24 @@ class PlaybackPipeline(
         armVideoAvailability(sync, generation, resetAvailability = false)
     }
 
-    // 最終出力callbackだけを成功通知の根拠とする。
+    // CodecからMediaSync入力への進捗だけを示す近似互換経路。最終出力watchdogは開始しない。
+    @Suppress("ComplexCondition")
+    private fun commitCompatibilityVideoAvailability(
+        generation: Long,
+        renderedNanoTime: Long,
+    ) {
+        if (videoAvailabilityMode != VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT) return
+        val arm = waitingAvailabilityArm ?: return
+        if (generation != playbackGeneration || arm.generation != generation ||
+            renderedNanoTime < arm.armedAtNanoTime || mediaSyncSurfaceFailed || surface?.isValid != true
+        ) {
+            return
+        }
+        waitingAvailabilityArm = null
+        notifyVideoAvailable(generation)
+    }
+
+    // modeごとの根拠を診断し、同じavailability ownerから一度だけ通知する。
     private fun notifyVideoAvailable(generation: Long) {
         if (!videoAvailableNotified.compareAndSet(false, true)) return
         Log.i(
@@ -1347,7 +1364,7 @@ class PlaybackPipeline(
                 if (shouldTriggerFirstFrameTimeoutForTest(generation, playbackGeneration, videoAvailableNotified.get())) {
                     emitUnavailable(
                         PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
-                        "最終出力の確認が期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms mode=$videoAvailabilityMode " +
+                        "初回映像callbackが期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms mode=$videoAvailabilityMode " +
                             "progress=${dataPathProgress.summary()}",
                     )
                     stopOnPlaybackExecutor()
@@ -1892,7 +1909,7 @@ class PlaybackPipeline(
 
         override fun onDecoderPrepared(codec: MediaCodec) {
             codec.setOnFrameRenderedListener(
-                { callbackCodec, _, _ ->
+                { callbackCodec, _, renderedNanoTime ->
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration ||
                             this@VideoDecoderPipeline.codec !== callbackCodec
@@ -1900,7 +1917,8 @@ class PlaybackPipeline(
                             return@enqueuePlaybackAction
                         }
                         dataPathProgress.record(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false)
-                        // Codecの出力先はMediaSync入力。可用性や最終出力watchdogは更新しない。
+                        // stockでは入力進捗を近似根拠にする。最終出力の成功や継続とは扱わない。
+                        commitCompatibilityVideoAvailability(generation, renderedNanoTime)
                     }
                 },
                 codecCallbackHandler,
