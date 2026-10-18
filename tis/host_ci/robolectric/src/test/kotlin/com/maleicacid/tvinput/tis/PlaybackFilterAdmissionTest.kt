@@ -636,6 +636,14 @@ class PlaybackFilterAdmissionTest {
             assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
             fixture.drain()
             assertEquals(1L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
+            assertEquals(0, Shadow.extract<NativeMediaEvent>(packet).releases)
+            assertEquals(
+                0,
+                Shadow.extract<NativeLinearBlock>(requireNotNull(Shadow.extract<NativeMediaEvent>(packet).block)).recycles,
+            )
+            // Codecが同じ入力indexを返すまではHALの共有slotを再利用させない。
+            postCodecCallback(codec, 1, 0, null)
+            fixture.drain()
             assertEquals(1, Shadow.extract<NativeMediaEvent>(packet).releases)
             assertEquals(
                 1,
