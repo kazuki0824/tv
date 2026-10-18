@@ -1749,12 +1749,11 @@ class PlaybackPipeline(
                         .setPresentationTimeUs(sample.presentationTimeUs)
                         .queue()
                     backpressureStartedAtMs = null
-                    releaseMediaSample(sample)
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
                     onCompressedInputQueued(sample)
-                } catch (error: RuntimeException) {
+                } finally {
+                    // queue失敗、通知失敗、正常投入のどれでも元sampleを一度だけ返却する。
                     releaseMediaSample(sample)
-                    throw error
                 }
             }
         }
@@ -2995,11 +2994,12 @@ class PlaybackPipeline(
             runCatching { sync.setOnErrorListener(null, null) }
         }
         sync?.let { previous ->
+            // Surface切断が失敗してもMediaSync.releaseは必ず試行する。
+            // release成功なら旧Surface接続も終端するので切断のみのretryを破棄する。
+            resourceCleanup.releaseOwned("MediaSync出力切断", previous) { previous.setSurface(null) }
             resourceCleanup.release("MediaSync") {
-                // 出力を切断してMediaSync自身を終端してから、入力Surfaceを破棄する。
-                // 先に入力SurfaceをreleaseするとBufferQueue世代の不一致を起こし得る。
-                previous.setSurface(null)
                 previous.release()
+                resourceCleanup.completeOwnedBy(previous)
             }
         }
         mediaSyncInputSurface?.let { previous -> resourceCleanup.release("MediaSync入力Surface") { previous.release() } }
