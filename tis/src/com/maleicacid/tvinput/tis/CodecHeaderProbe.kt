@@ -19,6 +19,7 @@ internal class CodecHeaderProbe(private val kind: Kind) {
     private var sps: ByteArray? = null
     private var pps: ByteArray? = null
     private val adts = ByteArrayOutputStream()
+    private var adtsFrameLength = 0
 
     fun reset() {
         recentCount = 0
@@ -29,6 +30,7 @@ internal class CodecHeaderProbe(private val kind: Kind) {
         sps = null
         pps = null
         adts.reset()
+        adtsFrameLength = 0
     }
 
     /** acceptがtrueを返した時点で探索を終了する。入力本体のコピーは行わない。 */
@@ -143,19 +145,24 @@ internal class CodecHeaderProbe(private val kind: Kind) {
         }
         adts.write(byte)
         if (adts.size() < 7) return null
-        val header = adts.toByteArray()
-        val length =
-            ((header[3].toInt() and 0x03) shl 11) or
-                ((header[4].toInt() and 0xff) shl 3) or
-                ((header[5].toInt() and 0xe0) ushr 5)
-        val headerSize = if (header[1].toInt() and 1 != 0) 7 else 9
-        if (length !in headerSize..MAX_ADTS_FRAME_BYTES) {
-            adts.reset()
-            return null
+        if (adtsFrameLength == 0) {
+            val header = adts.toByteArray()
+            val length =
+                ((header[3].toInt() and 0x03) shl 11) or
+                    ((header[4].toInt() and 0xff) shl 3) or
+                    ((header[5].toInt() and 0xe0) ushr 5)
+            val headerSize = if (header[1].toInt() and 1 != 0) 7 else 9
+            if (length !in headerSize..MAX_ADTS_FRAME_BYTES) {
+                adts.reset()
+                return null
+            }
+            adtsFrameLength = length
         }
-        if (adts.size() < length) return null
+        if (adts.size() < adtsFrameLength) return null
+        val frame = adts.toByteArray()
         adts.reset()
-        return header
+        adtsFrameLength = 0
+        return frame
     }
 
     private companion object {
