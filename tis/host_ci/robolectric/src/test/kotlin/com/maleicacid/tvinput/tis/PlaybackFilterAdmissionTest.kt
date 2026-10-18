@@ -102,6 +102,10 @@ class PlaybackFilterAdmissionTest {
                     assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
                 }
                 assertEquals(1, Shadow.extract<NativeMediaEvent>(pending).releases)
+                // 回復後に新しいsampleが届くまで、さらにOVERFLOWを受けても同じflushは行わない。
+                status(filter, Filter.STATUS_OVERFLOW)
+                fixture.drain()
+                assertEquals(1, native.flushes)
                 deliver(filter, newInput)
                 fixture.drain()
                 assertEquals(listOf(newInput), fixture.pendingEvents(audio))
@@ -112,9 +116,8 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(0, native.closes)
                 status(filter, Filter.STATUS_OVERFLOW)
                 fixture.drain()
-                assertEquals(1, native.flushes)
-                // 同じOVERFLOWに対するSDKの重複callbackでもflushを繰り返さない。
-                assertEquals(1, native.flushes)
+                // 新しい入力を受け取った後の別OVERFLOWは、一度だけ回復できる。
+                assertEquals(2, native.flushes)
                 val progress = fixture.progress()
                 assertTrue(progress.count(PlaybackDataPathProgress.Stage.OVERFLOW, audio) > 0L)
                 assertEquals(0L, progress.count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, audio))
