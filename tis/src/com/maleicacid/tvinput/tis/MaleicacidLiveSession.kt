@@ -1198,6 +1198,11 @@ class MaleicacidLiveSession(
             )
             return
         }
+        android.util.Log.w(
+            com.maleicacid.tvinput.common.LogTags.TIS,
+            "PLAYBACK_UNAVAILABLE_ACCEPTED sessionId=$sessionId generation=${reason.generation} " +
+                "reason=${reason.reason} detail=${reason.detail}",
+        )
         if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED) {
             playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
             beginCaptionPresentationGeneration(-1L, false)

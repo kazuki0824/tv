@@ -49,6 +49,11 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+## 2026-10-18 再生失敗と停止位置の診断
+
+- #207: Sessionが受理した再生不能理由・詳細・世代、圧縮入力欠落の発生箇所、停止前の既存AV進捗と停止段階をログへ残す。pending queue拒否では既存の件数・bytes・PTS幅・Codec入力所有数を記録する。
+- 34.1（fe7ad3c）の黒画面・旧映像再表示の原因確定用。期限・容量・復旧回数・資源寿命は変更せず、症状の修正完了とは扱わない。実機検証は未実施。
+
 ## 圧縮入力欠落後のCodec参照状態の退役
 
 - #207: 構成済みCodecに対するAV OVERFLOW、RestartEvent、owner受付拒否、sample拒否を既存の全再生generation終了・再生成へ接続。Filter.flushだけで旧Codecを継続せず、Codec errorと共通の一回の自動復旧制限を使う。構成前の局所flushは維持する。
