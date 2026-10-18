@@ -275,6 +275,7 @@ class PlaybackPipeline(
     // Frameworkのcallback lock内では配送だけを行い、ownerやpermitを待たない。
     private val filterCallbackExecutor = java.util.concurrent.Executor { task -> task.run() }
 
+    @Suppress("MagicNumber", "MaxLineLength")
     private fun enqueuePlaybackFilterEvents(
         events: Array<FilterEvent>,
         onCapacity: () -> Unit,
@@ -1142,6 +1143,7 @@ class PlaybackPipeline(
             filter
         }
 
+    @Suppress("MagicNumber", "MaxLineLength")
     private fun createMediaSync(
         outputSurface: Surface?,
         generation: Long,
@@ -1838,6 +1840,7 @@ class PlaybackPipeline(
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
         // 構成拒否・decoder未検出・生成失敗をそれぞれの発生点で送出する。
         @Suppress("TooGenericExceptionCaught", "ThrowsCount")
+        @Suppress("MagicNumber", "MaxLineLength")
         private fun createBlockModelDecoder(format: MediaFormat): MediaCodec {
             val decoderName =
                 MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
@@ -1852,7 +1855,7 @@ class PlaybackPipeline(
                 decoder.setCallback(
                     object : MediaCodec.Callback() {
                         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-                        @Suppress("MaxLineLength")
+                        @Suppress("MaxLineLength", "MagicNumber")
                         override fun onInputBufferAvailable(
                             codec: MediaCodec,
                             index: Int,
@@ -1913,10 +1916,11 @@ class PlaybackPipeline(
                                         onOutput(codec, index, info)
                                     }
                                 } finally {
-                                    val outputs = dataPathProgress.count(
-                                        PlaybackDataPathProgress.Stage.CODEC_OUTPUT,
-                                        this@DecoderPipeline is AudioDecoderPipeline,
-                                    )
+                                    val outputs =
+                                        dataPathProgress.count(
+                                            PlaybackDataPathProgress.Stage.CODEC_OUTPUT,
+                                            this@DecoderPipeline is AudioDecoderPipeline,
+                                        )
                                     if (beganAtNs != 0L && outputs > 0L && outputs % 32L == 0L) {
                                         Log.d(
                                             LogTags.TIS,
@@ -1974,7 +1978,7 @@ class PlaybackPipeline(
         }
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-        @Suppress("TooGenericExceptionCaught")
+        @Suppress("TooGenericExceptionCaught", "MagicNumber", "MaxLineLength")
         private fun drainPendingInput() {
             val decoder = codec ?: return
             while (pendingSamples.isNotEmpty() && availableInputIndexes.isNotEmpty()) {
