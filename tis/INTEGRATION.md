@@ -195,6 +195,63 @@ m MaleicacidTvInput
 
 patchを適用した構成の実機ではprivate listenerのJava/JNI/native型接続と、`DESIGN_JA.md`がExact modeに要求する観測を確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのnative実行時確認を代替しない。未パッチ構成では公開Codec callbackを近似Compatibilityとして使用する。利用不能なprivate callbackだけを理由に正常視聴を停止させず、最終出力の厳密な継続監視は表明しない。未パッチ構成のruntime結果をExact modeの確認結果として扱わない。これらは任意patchを採用する製品の統合・検証gateなので`future_work/r53`へ重複配置しない。
 
+## 黒画面・停止不能・旧映像の診断採取
+
+通常の理由ログは、再生不能理由・圧縮入力欠落・Codec error・停止段階を識別する。control待機超過時のowner Java stackはnative内部の待機相手を示さない。旧映像の所属世代を調べる場合も、Compatibility通知を最終表示の証拠にしてはならない。この節の採取は診断専用であり、再生期限・容量・回復方針を変更しない。
+
+### ビルド前の準備
+
+`tis/platform_patches/lineage-22.1/frameworks_av_mediasync_diagnostics.patch` はMediaSyncの生成、入力buffer、PTSから表示予定時刻への変換、出力queue結果をDEBUGログへ追加する診断用差分である。Exact-mode listenerは追加せず、Compatibilityのまま調査できる。`tv`のcheckoutだけではFrameworkへ適用されない。対象製品treeで次を実行し、変更を含む製品imageをビルド・導入する。適用済みの場合は重ねて適用しない。
+
+```bash
+source build/envsetup.sh
+breakfast virtio_x86_64_tv_grub
+git -C frameworks/av apply --check \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_av_mediasync_diagnostics.patch"
+git -C frameworks/av apply \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_av_mediasync_diagnostics.patch"
+m libstagefright MaleicacidTvInput
+```
+
+module buildだけを端末導入の完了としない。製品の通常image生成・導入手順で対象ABIのlibstagefrightとTISを両方更新する。使用したtv/frameworks/avのrevision、Frameworkの未commit差分、build fingerprintを保存する。採取scriptの`host-tv-revision.txt`はホストcheckoutの値であり、端末APKのrevision証明ではない。既存Exact patchを使う製品はその適用状態も記録する。診断patchの適用確認はnative build・実機動作確認を代替しない。
+
+### 採取操作
+
+LinuxホストのBash、adb、GNU timeoutと、`adb root`が使えるuserdebug端末を用いる。`ANDROID_SERIAL`で対象を選択する。開始前に視聴アプリを開き、スキャン終了後だけでなく、問題の選局より前から採取する。ログをclearせず全bufferを保存する。
+
+```bash
+adb root
+adb wait-for-device
+# vendor/maleicacid/tvをカレントディレクトリにする。
+bash tis/diagnostics/capture_playback.sh "$PWD/playback-capture" 120
+```
+
+`perfetto.txt`の記録開始を確認してからMXワンセグ1とNHK総合1を交互に選局し、黒画面になるまで待つ。別ターミナルから、症状発生直後・次の選局操作より前に次を実行する。
+
+```bash
+bash tis/diagnostics/snapshot_playback.sh "$PWD/playback-capture" black
+# 停止不能も発生した場合は別名で追加採取する。
+bash tis/diagnostics/snapshot_playback.sh "$PWD/playback-capture" stuck
+```
+
+snapshotは症状marker、uptime、thread一覧、TIS・Live TV・system_server・software codec・audioserver・SurfaceFlinger・Tuner HALのnative backtraceを採る。`debuggerd -b`は対象を終了させないが、一時停止による観測影響がある。native採取を先に並行開始し、その後にdumpsysを保存する。各外部採取commandの20秒上限はホスト収集を打ち切るためだけのもので、製品の停止期限ではない。対象不在、権限拒否、非0終了、timeoutは個別ファイルに残し、採取済みと読み替えない。必要なら再現を分けて旧映像の撮影と停止時stack採取を行う。
+
+旧映像が一瞬出る現象は外部カメラでも撮影し、切替前後のチャンネル名と症状markerの操作を同じ撮影に含める。TvViewのsecure Surfaceはscreenrecordに映らない場合があるため、screenrecord成功を映像採取成功としない。採取時間はホスト引数で最大600秒まで指定できる。診断propertyはscript終了時に元へ戻す。ホスト異常終了時は`log.tag.MaleicacidTIS`と`log.tag.MediaSync`を採取前の値へ戻す。端末traceは`device-trace-path.txt`の場所にも残る。
+
+### 証拠の対応と採取成立条件
+
+| 境界 | 対応付ける記録 | 判定できる範囲 |
+|---|---|---|
+| TIS世代→native MediaSync | 同一pid/tidの`PLAYBACK_SYNC_CREATE_BEGIN`→`PLAYBACK_SYNC_CREATE native`→`PLAYBACK_SYNC_CREATE_END` | session/generationとnative instanceの対応。pointerは破棄後に再利用され得るため生成区間も用いる。 |
+| Codec→MediaSync入力 | `PLAYBACK_VIDEO_SUBMIT/RETURN`のgeneration・PTS、`PLAYBACK_SYNC_INPUT`のnative・PTS・buffer ID・input frame | 入力bufferの所属。`PLAYBACK_CODEC_FRAME`のcallback時刻は最終表示時刻ではない。 |
+| MediaSync→出力queue | `PLAYBACK_SYNC_SCHEDULE`のmediaUs/targetUsと`PLAYBACK_SYNC_OUTPUT`のbuffer ID・input frame・nextOutputFrame・status | 成功時のoutput frame numberはnextOutputFrame−1。queue成功は画面へのpresent成功ではない。 |
+| 最終合成・表示 | PerfettoのSurfaceFlinger layers/FrameTimelineとbuffer ID・output frame、外部撮影 | layerの可視性、保持buffer、新frameのlatch/presentとの対応。TISの世代番号を時刻だけで別Surfaceへ転用しない。 |
+| 停止待機 | 同じ症状区間のJava owner stack、native backtrace、Binder/scheduler trace、HAL dump | API境界と待機相手の候補。native stackが欠けた場合は内部原因確定としない。 |
+
+端末で`PLAYBACK_SYNC_CREATE`・`PLAYBACK_SYNC_INPUT`・`PLAYBACK_SYNC_OUTPUT`が出ること、対象SurfaceFlinger layerのbuffer記録がtraceに存在することを確認する。data source一覧に登録があるだけでは採取成立としない。PerfettoのTrace statsでbuffer overwrite・packet loss・ftrace overrunを確認し、生成から症状までの必要区間が欠けていれば時間短縮等で再採取する。圧縮時刻は世代ごとに同じ値から開始し得るので、PTS単独で世代を識別しない。
+
+採取資料は出力ディレクトリ全体、外部撮影、ビルドrevision/差分を一組にする。native symbol解決が不足する場合は、同じ製品buildのsymbols（libstagefright、libmediandk等の該当ライブラリとHAL）も保持する。この採取で、旧bufferが残って見えた場合と新generationのbufferまで進んだ場合を切り分ける。後者の画素内容が既に誤っている場合、下流の表示traceだけで上流ES/復号の原因まで確定することはできない。ログ欠落・採取によるタイミング変化・表示装置内部の遅延も含め、全原因を一回で必ず特定できるとは保証しない。
+
 ## flash 後の確認
 
 ```bash
