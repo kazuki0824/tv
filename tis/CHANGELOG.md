@@ -49,6 +49,12 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+## 2026-10-18 Framework診断差分の配置をrevert
+
+- `0c0116d`で追加したFramework診断patchと、その手動適用・build手順を取り消す。製品ビルド側PR #17がpatch本体と適用を所有し、TIS統合手順は参照だけにする。
+- 同commitのMPEG Audio予約値修正・音声PID設計是正・TIS診断・採取scriptは取り消さない。既存Exact-mode patchも今回のrevert対象ではない。
+- 製品コード・試験の差分なし。Framework patchの内容一致、tools側の適用・再実行・欠落時の失敗をhostで確認。Android build・atest・VTS・実機確認は未実施。
+
 ## 2026-10-18 診断追加に伴うhost compile回帰の是正
 
 - 既存host Log stubへAndroid APIと同じDEBUG値・isLoggableシグネチャを追加。hostでは診断を無効にし、製品のpropertyによるDEBUG制御には変更を加えない。新owner・worker・property模擬機構は追加しない。

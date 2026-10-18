@@ -201,19 +201,7 @@ patchを適用した構成の実機ではprivate listenerのJava/JNI/native型�
 
 ### ビルド前の準備
 
-`tis/platform_patches/lineage-22.1/frameworks_av_mediasync_diagnostics.patch` はMediaSyncの生成、入力buffer、PTSから表示予定時刻への変換、出力queue結果をDEBUGログへ追加する診断用差分である。Exact-mode listenerは追加せず、Compatibilityのまま調査できる。`tv`のcheckoutだけではFrameworkへ適用されない。対象製品treeで次を実行し、変更を含む製品imageをビルド・導入する。適用済みの場合は重ねて適用しない。
-
-```bash
-source build/envsetup.sh
-breakfast virtio_x86_64_tv_grub
-git -C frameworks/av apply --check \
-  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_av_mediasync_diagnostics.patch"
-git -C frameworks/av apply \
-  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_av_mediasync_diagnostics.patch"
-m libstagefright MaleicacidTvInput
-```
-
-module buildだけを端末導入の完了としない。製品の通常image生成・導入手順で対象ABIのlibstagefrightとTISを両方更新する。使用したtv/frameworks/avのrevision、Frameworkの未commit差分、build fingerprintを保存する。採取scriptの`host-tv-revision.txt`はホストcheckoutの値であり、端末APKのrevision証明ではない。既存Exact patchを使う製品はその適用状態も記録する。診断patchの適用確認はnative build・実機動作確認を代替しない。
+Framework診断パッチの取得・適用・libstagefrightのビルドと導入は、[製品ビルド側の手順](https://github.com/kazuki0824/android_device_maleicacid_androidtv_tools/blob/fix/mediasync-diagnostics-integration/docs/mediasync_diagnostics.md)を参照する。本リポジトリは診断用Frameworkパッチを保持・適用しない。
 
 ### 採取操作
 
