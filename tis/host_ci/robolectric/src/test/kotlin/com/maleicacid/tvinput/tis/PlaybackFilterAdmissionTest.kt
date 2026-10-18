@@ -483,6 +483,24 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun staleRenderWatchdogCannotFailAnUpdatedFrameDeadline() {
+        Fixture().use { fixture ->
+            ReflectionHelpers.setField(fixture.pipeline, "videoPathExpected", true)
+            ReflectionHelpers.getField<AtomicBoolean>(fixture.pipeline, "videoAvailableNotified").set(true)
+            fixture.invoke("armVideoOutputStallWatchdog", 7L)
+            val stale = ReflectionHelpers.getField<Runnable>(fixture.pipeline, "videoOutputStallTask")
+            fixture.invoke("armVideoOutputStallWatchdog", 7L)
+            val current = ReflectionHelpers.getField<Runnable>(fixture.pipeline, "videoOutputStallTask")
+            assertFalse(stale === current)
+            // 旧Runnableは既にmainで実行を開始していた可能性がある。
+            stale.run()
+            fixture.drain()
+            assertTrue(fixture.unavailable.isEmpty())
+            assertEquals(current, ReflectionHelpers.getField<Runnable>(fixture.pipeline, "videoOutputStallTask"))
+        }
+    }
+
+    @Test
     fun stockAndroid15WithoutPlatformPatchSelectsCodecCallbackFallback() {
         // Robolectric Android 15はMediaSyncの任意private拡張を持たない。
         // 実装はこのAPIを必須にせず公開MediaCodec callbackを使用する。

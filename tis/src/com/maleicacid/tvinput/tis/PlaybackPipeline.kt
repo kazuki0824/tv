@@ -1322,18 +1322,25 @@ class PlaybackPipeline(
     private fun armVideoOutputStallWatchdog(generation: Long) {
         videoOutputStallTask?.let(mainHandler::removeCallbacks)
         val timeout =
-            Runnable {
-                enqueuePlaybackAction {
-                    if (generation != playbackGeneration || !videoAvailableNotified.get() || !videoPathExpected) {
-                        return@enqueuePlaybackAction
-                    }
+            object : Runnable {
+                override fun run() {
+                    enqueuePlaybackAction {
+                        // 古いRunnableの実行開始と新しい描画通知の間にできる競合窓を閉じる。
+                        if (videoOutputStallTask !== this ||
+                            generation != playbackGeneration ||
+                            !videoAvailableNotified.get() ||
+                            !videoPathExpected
+                        ) {
+                            return@enqueuePlaybackAction
+                        }
                     videoOutputStallTask = null
                     emitUnavailableForGeneration(
                         generation,
                         PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
                         "映像描画callbackが継続期限を超過しました progress=${dataPathProgress.summary()}",
                     )
-                    stopOnPlaybackExecutor()
+                        stopOnPlaybackExecutor()
+                    }
                 }
             }
         videoOutputStallTask = timeout
@@ -2954,15 +2961,16 @@ class PlaybackPipeline(
             runCatching { sync.setCallback(null, null) }
             runCatching { sync.setOnErrorListener(null, null) }
         }
-        mediaSyncInputSurface?.let { previous -> resourceCleanup.release("MediaSync入力Surface") { previous.release() } }
-        mediaSyncInputSurface = null
         sync?.let { previous ->
             resourceCleanup.release("MediaSync") {
-                // release()だけではnative OutputListenerとの循環参照が解消されないため先に切断する。
+                // 出力を切断してMediaSync自身を終端してから、入力Surfaceを破棄する。
+                // 先に入力SurfaceをreleaseするとBufferQueue世代の不一致を起こし得る。
                 previous.setSurface(null)
                 previous.release()
             }
         }
+        mediaSyncInputSurface?.let { previous -> resourceCleanup.release("MediaSync入力Surface") { previous.release() } }
+        mediaSyncInputSurface = null
         releaseAudioTrack()
         mediaSyncStarted = false
         mediaSyncSurfaceFailed = false
