@@ -416,6 +416,13 @@ class PlaybackPipeline(
         isAudio: Boolean,
     ) {
         if (generation != playbackGeneration) return
+        Log.w(
+            LogTags.TIS,
+            "PLAYBACK_CODEC_ERROR sessionId=$sessionId generation=$generation isAudio=$isAudio " +
+                "code=${error.errorCode} diagnostic=${error.diagnosticInfo} recoverable=${error.isRecoverable} " +
+                "transient=${error.isTransient} recoveryAttempted=$codecRecoveryAttempted " +
+                "progress=${dataPathProgress.summary()}",
+        )
         val retryDelay =
             codecRecoveryDelay(
                 error.errorCode == MediaCodec.CodecException.ERROR_RECLAIMED,
@@ -472,11 +479,19 @@ class PlaybackPipeline(
     // Codec errorと同じ再生世代owner・再生成回数を使い、別の復旧loopを設けない。
     // 再生成に必要な参照と既存の回数制限を一つの失敗境界で検査する。
     @Suppress("ComplexCondition")
-    private fun recoverAfterCompressedInputLoss(generation: Long) {
+    private fun recoverAfterCompressedInputLoss(
+        generation: Long,
+        detail: String,
+    ) {
         if (generation != playbackGeneration || released.get()) return
         val tuner = activeTuner
         val channel = activeChannel
         val selection = activeSelection
+        Log.w(
+            LogTags.TIS,
+            "PLAYBACK_INPUT_LOSS inputId=$inputId sessionId=$sessionId generation=$generation " +
+                "recoveryAttempted=$codecRecoveryAttempted detail=$detail progress=${dataPathProgress.summary()}",
+        )
         if (codecRecoveryAttempted || tuner == null || channel == null || selection == null) {
             completePlaybackFailureAction(generation, onVideoUnavailable) {
                 stopOnPlaybackExecutor()
@@ -816,7 +831,10 @@ class PlaybackPipeline(
                                                 if (inputIsCurrent()) {
                                                     val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
                                                     if (target?.hasConfiguredCodec() == true) {
-                                                        recoverAfterCompressedInputLoss(filterGeneration)
+                                                        recoverAfterCompressedInputLoss(
+                                                            filterGeneration,
+                                                            "RESTART_EVENT isAudio=$isAudio pid=$pidValue",
+                                                        )
                                                     } else {
                                                         target?.discardPendingInput()
                                                     }
@@ -884,7 +902,10 @@ class PlaybackPipeline(
                                 inputIdentity.set(null)
                                 val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
                                 if (target?.hasConfiguredCodec() == true) {
-                                    recoverAfterCompressedInputLoss(filterGeneration)
+                                    recoverAfterCompressedInputLoss(
+                                        filterGeneration,
+                                        "FILTER_OVERFLOW isAudio=$isAudio pid=$pidValue status=$status",
+                                    )
                                     return@enqueuePlaybackAction
                                 }
                                 target?.discardPendingInput()
@@ -1653,7 +1674,12 @@ class PlaybackPipeline(
                     releaseMediaSample(sample)
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
                     onSampleRejected("SAMPLE_TOO_LARGE size=${sample.size} limit=${budget.singleEventLimitBytes}")
-                    if (codec != null) recoverAfterCompressedInputLoss(generation)
+                    if (codec != null) {
+                        recoverAfterCompressedInputLoss(
+                            generation,
+                            "SAMPLE_TOO_LARGE isAudio=${sample.isAudio} size=${sample.size}",
+                        )
+                    }
                     return
                 }
                 val queueBudget = if (codec == null) budget.startup else budget.pending
@@ -1662,7 +1688,7 @@ class PlaybackPipeline(
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
                     releaseMediaSample(sample)
                     if (codec != null) {
-                        recoverAfterCompressedInputLoss(generation)
+                        recoverAfterCompressedInputLoss(generation, pendingInputDiagnostic(sample, queueBudget))
                         return
                     }
                     val nowMs = SystemClock.elapsedRealtime()
@@ -1692,6 +1718,18 @@ class PlaybackPipeline(
                 onDecoderFailure(e)
                 close()
             }
+        }
+
+        private fun pendingInputDiagnostic(
+            sample: MediaSample,
+            queueBudget: QueueBudget,
+        ): String {
+            val pendingSpanUs =
+                timestampSpanUs(pendingSamples.map { it.presentationTimeUs } + sample.presentationTimeUs)
+            return "PENDING_QUEUE_FULL isAudio=${sample.isAudio} pendingSamples=${pendingSamples.size} " +
+                "pendingBytes=${pendingSamples.sumOf { it.size.toLong() }} pendingSpanUs=$pendingSpanUs " +
+                "incomingBytes=${sample.size} incomingPtsUs=${sample.presentationTimeUs} " +
+                "availableInputs=${availableInputIndexes.size} queuedInputs=${queuedSamples.size} budget=$queueBudget"
         }
 
         private fun queueInternal(sample: MediaSample) {
@@ -1898,7 +1936,10 @@ class PlaybackPipeline(
         // 構成後の拒否は圧縮参照の欠落として扱う。構成前は既存起動期限で制限する。
         fun inputAdmissionRejected(rejectedAtMs: Long) {
             if (codec != null) {
-                recoverAfterCompressedInputLoss(generation)
+                recoverAfterCompressedInputLoss(
+                    generation,
+                    "CALLBACK_CAPACITY isAudio=${this is AudioDecoderPipeline} rejectedAtMs=$rejectedAtMs",
+                )
                 return
             }
             val nowMs = SystemClock.elapsedRealtime()
@@ -3076,6 +3117,11 @@ class PlaybackPipeline(
     // 世代fenceから資源回収・解除までの順序を同じowner内で保持する。
     @Suppress("MaxLineLength", "UsePropertyAccessSyntax", "LongMethod")
     private fun stopOnPlaybackExecutor() {
+        Log.i(
+            LogTags.TIS,
+            "PLAYBACK_STOP_BEGIN inputId=$inputId sessionId=$sessionId generation=$playbackGeneration " +
+                "audioOutputs=${outstandingAudioOutputs.size} progress=${dataPathProgress.summary()}",
+        )
         resourceCleanup.retry()
         val generationFailure =
             runCatching { nextPlaybackGenerationOrFence() }
@@ -3092,11 +3138,13 @@ class PlaybackPipeline(
         audioFilter = null
         subtitleFilter = null
         superimposeFilter = null
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=FILTERS")
         closeFilter(previousVideoFilter)
         closeFilter(previousAudioFilter)
         closeFilter(previousSubtitleFilter)
         closeFilter(previousSuperimposeFilter)
         executor.discardDataCallbacks()
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=MEDIASYNC")
         val sync = mediaSync
         mediaSync = null
         if (sync !=
@@ -3117,8 +3165,11 @@ class PlaybackPipeline(
                 resourceCleanup.completeOwnedBy(previous)
             }
         }
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=AUDIO_OUTPUTS")
         releaseOutstandingAudioOutputs()
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=VIDEO_DECODER")
         videoDecoder?.close()
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=AUDIO_DECODER")
         audioDecoder?.close()
         videoDecoder = null
         audioDecoder = null
@@ -3126,6 +3177,7 @@ class PlaybackPipeline(
             null
         mediaSyncInputSurface?.let { previous -> resourceCleanup.release("MediaSync入力Surface") { previous.release() } }
         mediaSyncInputSurface = null
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=AUDIO_TRACK")
         releaseAudioTrack()
         mediaSyncStarted = false
         mediaSyncSurfaceFailed = false
@@ -3149,6 +3201,7 @@ class PlaybackPipeline(
             requireCleanupComplete = resourceCleanup::requireComplete,
             generationFailure = generationFailure,
         )
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_COMPLETE sessionId=$sessionId generation=$playbackGeneration")
     }
 
     private fun nextPlaybackGenerationOrFence(): Long {
