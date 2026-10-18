@@ -538,19 +538,16 @@ class MaleicacidLiveSession(
                 "CAS_FACTS_PENDING state=${decision.state} registrationReady=${decision.registrationReady} " +
                     "reasons=${decision.reasons}",
             )
-            playbackState = PlaybackStartState.Stopped
-            SectionFilterPolicy.completeCleanup(
-                { beginCaptionPresentationGeneration(-1L, false) },
-                {
-                    notifyVideoUnavailable(
-                        if (decision.registrationReady) {
-                            TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN
-                        } else {
-                            TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN
-                        },
-                    )
-                },
-            )
+            // 情報収集中はCAS故障ではない。再生中だけ停止してbufferingへ遷移する。
+            if (playbackState is PlaybackStartState.Started ||
+                playbackState is PlaybackStartState.WaitingFirstOutput ||
+                playbackState is PlaybackStartState.Starting
+            ) {
+                playbackState = PlaybackStartState.Stopped
+                tunerController.stopPlayback()
+                beginCaptionPresentationGeneration(-1L, false)
+                notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING)
+            }
         }
         if (decision.registrationReady) {
             publishLiveProgramsForCurrentService()
@@ -558,22 +555,28 @@ class MaleicacidLiveSession(
         }
         if (!decision.casDecisionReady) return
         val casLinkageReady = currentCasLinkageReady()
-        if (casResult.diagnostics.any { it.state == CasController.State.ERROR } ||
-            !decision.livePlaybackEligible(casLinkageReady)
-        ) {
-            // ECM本文・鍵・資格情報を記録せず、失敗境界だけを特定する。
-            val casErrors =
-                casResult.diagnostics
-                    .filter { it.state == CasController.State.ERROR }
-                    .map { "${it.errorCode}:system=${it.caSystemId}:pid=${it.pid?.value}" }
+        // 接続待ちと実際のCAS失敗を区別する。未準備をCAS_UNKNOWNへ昇格させない。
+        val casErrors =
+            casResult.diagnostics
+                .filter { it.state == CasController.State.ERROR }
+                .map { "${it.errorCode}:system=${it.caSystemId}:pid=${it.pid?.value}" }
+        val casUnavailableReason = casGateUnavailableReason(decision, casLinkageReady, casErrors.isNotEmpty())
+        if (casUnavailableReason != null) {
             tracePlaybackGate(
-                "CAS_NOT_ELIGIBLE requiresCas=${decision.requiresCas} linkageReady=$casLinkageReady " +
+                "CAS_GATE_${if (casErrors.isEmpty()) "PENDING" else "ERROR"} " +
+                    "requiresCas=${decision.requiresCas} linkageReady=$casLinkageReady " +
                     "reasons=${decision.reasons} casErrors=$casErrors",
             )
-            playbackState = PlaybackStartState.Stopped
-            tunerController.stopPlayback()
-            beginCaptionPresentationGeneration(-1L, false)
-            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
+            val wasActive =
+                playbackState is PlaybackStartState.Started ||
+                    playbackState is PlaybackStartState.WaitingFirstOutput ||
+                    playbackState is PlaybackStartState.Starting
+            if (wasActive) {
+                playbackState = PlaybackStartState.Stopped
+                tunerController.stopPlayback()
+                beginCaptionPresentationGeneration(-1L, false)
+            }
+            if (wasActive || casErrors.isNotEmpty()) notifyVideoUnavailable(casUnavailableReason)
             return
         }
         if (service != null) {
@@ -1649,6 +1652,17 @@ class MaleicacidLiveSession(
     }
 
     companion object {
+        internal fun casGateUnavailableReason(
+            decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision,
+            linkageReady: Boolean,
+            hasCasError: Boolean,
+        ): Int? =
+            when {
+                hasCasError -> TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN
+                !decision.livePlaybackEligible(linkageReady) -> TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING
+                else -> null
+            }
+
         internal fun initialLiveSiPending(decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision): Boolean =
             decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING
 
