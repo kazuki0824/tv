@@ -87,10 +87,30 @@ class PlaybackMediaSyncReleaseTest {
     @Test
     fun flushFailureStillReleasesSyncBeforeReturningDecoderResources() {
         withAttachedSync { pipeline, native, surface ->
+            attachVideoDecoder(pipeline, native, surface)
             native.failNextFlush = true
             pipeline.stop()
-            assertEquals(listOf("connect", "disconnect", "release"), native.events)
+            assertEquals(listOf("connect", "disconnect", "release", "codec-stop", "codec-release"), native.events)
             assertFalse(NativeMediaSync.owners.containsKey(surface))
+            assertFalse(ReflectionHelpers.getField<ResourceCleanup>(pipeline, "resourceCleanup").hasPending)
+        }
+    }
+
+    @Test
+    fun failedFlushAndReleaseKeepDecoderUntilRetrySucceeds() {
+        withAttachedSync { pipeline, native, surface ->
+            val decoder = attachVideoDecoder(pipeline, native, surface)
+            repeat(2) {
+                native.failNextFlush = true
+                native.failNextRelease = true
+                assertFailsWith<IllegalStateException> { pipeline.stop() }
+                assertFalse("codec-stop" in native.events)
+                assertFalse("codec-release" in native.events)
+                assertTrue(decoder === ReflectionHelpers.getField<Any>(pipeline, "videoDecoder"))
+            }
+            pipeline.stop()
+            assertEquals(1, native.events.count { it == "codec-release" })
+            assertTrue(native.events.indexOf("release") < native.events.indexOf("codec-stop"))
             assertFalse(ReflectionHelpers.getField<ResourceCleanup>(pipeline, "resourceCleanup").hasPending)
         }
     }
@@ -192,7 +212,7 @@ class PlaybackMediaSyncReleaseTest {
         @Implementation(methodName = "stop")
         fun stopDecoder() {
             val owner = requireNotNull(sync)
-            check("flush" in owner.events && "release" in owner.events) { "MediaSync still holds decoder output" }
+            check("release" in owner.events) { "MediaSync still holds decoder output" }
             owner.events += "codec-stop"
         }
 
