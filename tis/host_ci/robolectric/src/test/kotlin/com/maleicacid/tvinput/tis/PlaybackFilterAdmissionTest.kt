@@ -382,8 +382,11 @@ class PlaybackFilterAdmissionTest {
     fun sustainedMpegVideoInputBeyondThreeSecondsDoesNotTriggerAdmissionRecovery() {
         Fixture().use { fixture ->
             fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
-            val codec = fixture.attachCodec()
+            val codec = fixture.attachCodec(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
             val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            val outputsReturned = CountDownLatch(120)
+            nativeCodec.onOutputRelease = { outputsReturned.countDown() }
+            val rendered = ReflectionHelpers.getField<MediaCodec.OnFrameRenderedListener>(codec, "mOnFrameRenderedListener")
             val video = fixture.avFilter(false)
             val samples = mutableListOf<MediaEvent>()
             // 約4秒間、29.97 fps相当のPTSで入力する。Codecからinput indexが戻る限り
@@ -407,10 +410,19 @@ class PlaybackFilterAdmissionTest {
                     assertTrue(released.await(5, TimeUnit.SECONDS), "old input must be returned")
                 }
                 fixture.drain()
+                // Android側callbackによる出力・描画進捗も同じdecoder generationで120件継続させる。
+                val ptsUs = frame * 33_367L
+                postCodecCallback(codec, 2, frame % 4, MediaCodec.BufferInfo().apply { set(0, 1, ptsUs, 0) })
+                rendered.onFrameRendered(codec, ptsUs, System.nanoTime())
             }
+            assertTrue(outputsReturned.await(5, TimeUnit.SECONDS), "mock Codec must return 120 video outputs")
             returnCodecInputAndAwaitEventRelease(codec, samples.last())
             fixture.drain()
             assertEquals(120L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
+            assertEquals(120L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, false))
+            assertEquals(120L, fixture.progress().count(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false))
+            assertEquals(121L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT_AVAILABLE, false))
+            assertEquals(120L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT_RETURNED, false))
             assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.INPUT_REJECTED, false))
             assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
             assertTrue(fixture.failures.isEmpty())
@@ -1102,13 +1114,16 @@ class PlaybackFilterAdmissionTest {
             .map { it.msg }
             .filter { it.startsWith("VIDEO_AVAILABILITY_COMMITTED inputId=admission-test ") }
 
-    private fun Fixture.attachCodec(audio: Boolean = false): MediaCodec {
-        val codecName = if (audio) "maleicacid.test.mpeg.decoder" else "maleicacid.test.avc.decoder"
+    private fun Fixture.attachCodec(
+        audio: Boolean = false,
+        videoKind: PlaybackPipeline.VideoCodecKind = PlaybackPipeline.VideoCodecKind.AVC,
+    ): MediaCodec {
+        val codecName = if (audio) "maleicacid.test.mpeg.decoder" else "maleicacid.test.${videoKind.name.lowercase()}.decoder"
         val caps =
             if (audio) {
                 MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, 44_100, 2)
             } else {
-                MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 4096, 4096)
+                MediaFormat.createVideoFormat(videoKind.mime, 4096, 4096)
             }
         val capabilityBuilder =
             MediaCodecInfoBuilder.CodecCapabilitiesBuilder
@@ -1144,7 +1159,7 @@ class PlaybackFilterAdmissionTest {
             if (audio) {
                 MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, 44_100, 2)
             } else {
-                MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 32, 32)
+                MediaFormat.createVideoFormat(videoKind.mime, 32, 32)
             }
         val codec = method.invoke(decoder, format) as MediaCodec
         ReflectionHelpers.setField(decoder, "codec", codec)
@@ -1745,6 +1760,7 @@ class PlaybackFilterAdmissionTest {
     class NativeCodec : ShadowMediaCodec() {
         val inputQueued = CountDownLatch(1)
         val outputReleased = CountDownLatch(1)
+        var onOutputRelease: () -> Unit = {}
 
         @Implementation
         protected override fun native_start() = Unit
@@ -1770,6 +1786,7 @@ class PlaybackFilterAdmissionTest {
             renderTimestampNs: Long,
         ) {
             outputReleased.countDown()
+            onOutputRelease()
         }
 
         @Implementation
