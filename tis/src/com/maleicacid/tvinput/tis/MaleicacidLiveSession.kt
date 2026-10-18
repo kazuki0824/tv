@@ -813,10 +813,6 @@ class MaleicacidLiveSession(
         return when (type) {
             TvTrackInfo.TYPE_AUDIO -> {
                 if (trackId == null || tracks.none { it.type == TvTrackInfo.TYPE_AUDIO && it.id == trackId }) return false
-                if (trackId == preferredAudioTrackId && !audioFallbackDisabled && playbackState is PlaybackStartState.Started) {
-                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
-                    return true
-                }
                 val previousAudioTrackId = preferredAudioTrackId
                 val previousAudioFallbackDisabled = audioFallbackDisabled
                 val previousDualMonoPresentation = dualMonoPresentation

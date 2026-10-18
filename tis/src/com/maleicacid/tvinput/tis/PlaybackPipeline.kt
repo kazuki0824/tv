@@ -677,21 +677,24 @@ class PlaybackPipeline(
                 previous.pcrPid == selection.pcrPid && previous.video == selection.video
         val sameAudioFormat =
             previous?.audio?.streamType == audio.streamType &&
-                previous?.audio?.codecFacts == audio.codecFacts &&
-                previous?.audioChannelConfiguration == selection.audioChannelConfiguration &&
-                previous?.audioDualMono == selection.audioDualMono && previous?.dualMonoPresentation == selection.dualMonoPresentation
-        if (sameVideoClock && sameAudioFormat && audioDecoder != null && audioFilter != null) {
-            if (previous?.audio?.elementaryPid == audio.elementaryPid) {
+                previous.audio?.codecFacts == audio.codecFacts &&
+                previous.audioChannelConfiguration == selection.audioChannelConfiguration &&
+                previous.audioDualMono == selection.audioDualMono && previous.dualMonoPresentation == selection.dualMonoPresentation
+        if (sameVideoClock && sameAudioFormat && audioDecoder != null) {
+            if (previous?.audio?.elementaryPid == audio.elementaryPid && audioFilter != null) {
                 return AudioSwitchResult(true, listOf("AUDIO_SELECTION_UNCHANGED"))
             }
             // 同一クロック・同一構成ならDecoder/AudioTrack/MediaSyncは継続してPID入力だけ替える。
             val oldFilter = audioFilter
             audioFilter = null
             return runCatching {
+                audioDecoder?.discardPendingInput()
+                resourceCleanup.retry()
                 closeFilter(oldFilter)
                 resourceCleanup.requireComplete()
-                activeSelection = selection
                 createAndStartAvFilter(tuner, audio, isAudio = true).getOrThrow()
+                // 開始成功した実入力と同時に選択を確定する。失敗時は同じ選択から再取得できる。
+                activeSelection = selection
                 AudioSwitchResult(true, listOf("AUDIO_PID_SWITCHED_VIDEO_PRESERVED"))
             }.getOrElse { error ->
                 logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "音声PID切替失敗: ${error.message}")
