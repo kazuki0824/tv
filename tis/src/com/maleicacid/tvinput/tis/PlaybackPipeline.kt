@@ -755,10 +755,12 @@ class PlaybackPipeline(
                                             }
                                             if (event !is MediaEvent) continue
                                             var decoderOwnsEvent = false
+                                            var materializedSample: MediaSample? = null
                                             try {
                                                 if (!inputIsCurrent()) continue
                                                 dataPathProgress.record(PlaybackDataPathProgress.Stage.MEDIA_EVENT, isAudio)
                                                 val sample = sampleFromEvent(event, isAudio) ?: continue
+                                                materializedSample = sample
                                                 if (!inputIsCurrent()) continue
                                                 dataPathProgress.record(PlaybackDataPathProgress.Stage.VALID_SAMPLE, isAudio)
                                                 val target = (if (isAudio) targetAudioDecoder else targetVideoDecoder) ?: continue
@@ -767,7 +769,10 @@ class PlaybackPipeline(
                                                 target.queue(sample)
                                                 overflowRecoveryActive.set(false)
                                             } finally {
-                                                if (!decoderOwnsEvent) releaseMediaEvent(event)
+                                                if (!decoderOwnsEvent) {
+                                                    val pending = materializedSample
+                                                    if (pending != null) releaseMediaSample(pending) else releaseMediaEvent(event)
+                                                }
                                             }
                                         }
                                     } finally {
