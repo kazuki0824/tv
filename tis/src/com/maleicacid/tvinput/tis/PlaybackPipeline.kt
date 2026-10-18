@@ -1839,8 +1839,7 @@ class PlaybackPipeline(
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
         // 構成拒否・decoder未検出・生成失敗をそれぞれの発生点で送出する。
-        @Suppress("TooGenericExceptionCaught", "ThrowsCount")
-        @Suppress("MagicNumber", "MaxLineLength")
+        @Suppress("TooGenericExceptionCaught", "ThrowsCount", "MagicNumber", "MaxLineLength")
         private fun createBlockModelDecoder(format: MediaFormat): MediaCodec {
             val decoderName =
                 MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
