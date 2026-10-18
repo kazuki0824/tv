@@ -549,9 +549,8 @@ class PlaybackFilterAdmissionTest {
     @Test
     fun videoOutputStallAfterFirstFrameIsNotTreatedAsContinuousPlayback() {
         Fixture().use { fixture ->
-            fixture.decoder()
-            fixture.attachCodec()
-            fixture.armCompatibilityAvailability(7L, exact = true)
+            ReflectionHelpers.setField(fixture.pipeline, "videoPathExpected", true)
+            fixture.selectExactMode()
             ReflectionHelpers.getField<AtomicBoolean>(fixture.pipeline, "videoAvailableNotified").set(true)
             fixture.invoke("armVideoOutputStallWatchdog", 7L)
             Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(6_001L))
@@ -568,9 +567,8 @@ class PlaybackFilterAdmissionTest {
     @Test
     fun staleRenderWatchdogCannotFailAnUpdatedFrameDeadline() {
         Fixture().use { fixture ->
-            fixture.decoder()
-            fixture.attachCodec()
-            fixture.armCompatibilityAvailability(7L, exact = true)
+            ReflectionHelpers.setField(fixture.pipeline, "videoPathExpected", true)
+            fixture.selectExactMode()
             ReflectionHelpers.getField<AtomicBoolean>(fixture.pipeline, "videoAvailableNotified").set(true)
             fixture.invoke("armVideoOutputStallWatchdog", 7L)
             val stale = ReflectionHelpers.getField<Runnable>(fixture.pipeline, "videoOutputStallTask")
@@ -1153,12 +1151,17 @@ class PlaybackFilterAdmissionTest {
                 val selected = ReflectionHelpers.getField<Any>(pipeline, "videoAvailabilityMode")
                 assertEquals("MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT", selected.toString())
                 if (exact) {
-                    val mode = requireNotNull(selected.javaClass.enumConstants).single { it.toString() == "MEDIA_SYNC_FINAL_OUTPUT_EXACT" }
-                    ReflectionHelpers.setField(pipeline, "videoAvailabilityMode", mode)
+                    selectExactMode()
                 }
                 val arm = ReflectionHelpers.getField<Any>(pipeline, "waitingAvailabilityArm")
                 ReflectionHelpers.getField<Long>(arm, "armedAtNanoTime")
             }
+        }
+
+        fun selectExactMode() {
+            val type = PlaybackPipeline::class.java.getDeclaredField("videoAvailabilityMode").type
+            val mode = requireNotNull(type.enumConstants).single { it.toString() == "MEDIA_SYNC_FINAL_OUTPUT_EXACT" }
+            ReflectionHelpers.setField(pipeline, "videoAvailabilityMode", mode)
         }
 
         fun currentCaptionFilter(): Filter = ReflectionHelpers.getField(pipeline, "subtitleFilter")
