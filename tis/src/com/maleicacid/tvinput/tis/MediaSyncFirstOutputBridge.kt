@@ -23,7 +23,7 @@ internal object MediaSyncFirstOutputBridge {
         val setter: java.lang.reflect.Method,
     )
 
-    // optionalなplatform-private callbackだけを探索し、不在時はpublic callbackへfallbackする。
+    // optionalなplatform-private callbackだけを探索し、不在時は最終出力を観測不能として返す。
     @Suppress("AndroidLintPrivateApi")
     private val binding: Binding? by lazy(LazyThreadSafetyMode.PUBLICATION) {
         runCatching {
@@ -39,8 +39,8 @@ internal object MediaSyncFirstOutputBridge {
         }.onFailure { error ->
             Log.i(
                 LogTags.TIS,
-                "MediaSync final-output private callback is unavailable; compatibility " +
-                    "fallback will be used: ${error.javaClass.simpleName}",
+                "MediaSync final-output private callback is unavailable; final output " +
+                    "cannot be confirmed: ${error.javaClass.simpleName}",
             )
         }.getOrNull()
     }
