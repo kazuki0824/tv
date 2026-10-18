@@ -19,6 +19,12 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+## 2026-10-17 MediaSync停止順序とCodec入力寿命
+
+- Android 15のCodec投入用C2Bufferが元MediaEventの解放通知を共有しないため、元event/blockを入力index返却またはdecoder解放成功まで保持し、HAL共有slotの早期再利用を防ぐ。
+- NHK停止後の再選局でCodec停止が待機超過したログを受け、MediaSyncのflush・解放をPCM返却とCodec停止より先へ移動。既存ownerとcleanupを使用する。
+- 停止順序とflush／解放失敗をRobolectricで検査する。実機の映像破損・AAC入力不足・停止回復は別途確認が必要。
+
 # ExactからCompatibilityへの降格時の継続監視取消し
 
 - private callbackの再arm不成立時に既存Exact watchdogを取り消し、実行時もcurrent modeを照合する。同じowner/世代上で処理し、Compatibilityの正常なCodec進捗を最終出力timeoutとして停止しない。

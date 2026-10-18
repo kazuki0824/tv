@@ -1546,6 +1546,9 @@ class PlaybackPipeline(
         private val configurationProbe by lazy { CodecHeaderProbe(configurationProbeKind) }
         private val pendingSamples = java.util.ArrayDeque<MediaSample>()
         private val availableInputIndexes = java.util.ArrayDeque<Int>()
+
+        // FrameworkのC2Buffer複製は元MediaEventの寿命を継承しない。入力返却まで同じdecoderが保持する。
+        private val queuedSamples = mutableMapOf<Int, MediaSample>()
         protected abstract val budget: PlaybackBudget
         protected abstract val configurationProbeKind: CodecHeaderProbe.Kind
         protected abstract val generation: Long
@@ -1704,6 +1707,7 @@ class PlaybackPipeline(
                         ) {
                             enqueuePlaybackAction {
                                 if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) return@enqueuePlaybackAction
+                                queuedSamples.remove(index)?.let(::releaseMediaSample)
                                 availableInputIndexes.addLast(index)
                                 drainPendingInput()
                             }
@@ -1789,19 +1793,22 @@ class PlaybackPipeline(
             while (pendingSamples.isNotEmpty() && availableInputIndexes.isNotEmpty()) {
                 val inputIndex = availableInputIndexes.removeFirst()
                 val sample = pendingSamples.removeFirst()
+                var queued = false
                 try {
                     decoder
                         .getQueueRequest(inputIndex)
                         .setLinearBlock(sample.block, sample.offset, sample.size)
                         .setPresentationTimeUs(sample.presentationTimeUs)
                         .queue()
+                    queuedSamples[inputIndex] = sample
+                    queued = true
                     backpressureStartedAtMs = null
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
                     onInputQueued()
                     onCompressedInputQueued(sample)
                 } finally {
-                    // queue失敗、通知失敗、正常投入のどれでも元sampleを一度だけ返却する。
-                    releaseMediaSample(sample)
+                    // 成功時は入力index返却またはdecoder解放まで保持し、失敗時だけ即時返却する。
+                    if (!queued) releaseMediaSample(sample)
                 }
             }
         }
@@ -1875,6 +1882,9 @@ class PlaybackPipeline(
                 runCatching { decoder.stop() }.onFailure { Log.w(LogTags.TIS, "decoder stop に失敗しました", it) }
                 completeDecoderRelease(resourceCleanup, decoder, decoder::release) {
                     decoderReleased = true
+                    val completedInputs = queuedSamples.values.toList()
+                    queuedSamples.clear()
+                    completedInputs.forEach(::releaseMediaSample)
                     val retired = outstandingAudioOutputs.filterValues { it.codec === decoder }.keys.toList()
                     retired.forEach { bufferId ->
                         outstandingAudioOutputs.remove(bufferId)
@@ -3027,19 +3037,14 @@ class PlaybackPipeline(
         closeFilter(previousSubtitleFilter)
         closeFilter(previousSuperimposeFilter)
         executor.discardDataCallbacks()
-        releaseOutstandingAudioOutputs()
-        videoDecoder?.close()
-        audioDecoder?.close()
-        videoDecoder = null
-        audioDecoder = null
-        waitingAvailabilityArm =
-            null
         val sync = mediaSync
         mediaSync = null
         if (sync !=
             null
         ) {
+            // Codec停止より先に入力待機を解除し、借用中のPCM bufferを返却可能にする。
             runCatching { sync.setPlaybackParams(PlaybackParams().setSpeed(0.0f)) }
+            resourceCleanup.releaseOwned("MediaSync flush", sync) { sync.flush() }
             runCatching { sync.setCallback(null, null) }
             runCatching { sync.setOnErrorListener(null, null) }
         }
@@ -3052,6 +3057,13 @@ class PlaybackPipeline(
                 resourceCleanup.completeOwnedBy(previous)
             }
         }
+        releaseOutstandingAudioOutputs()
+        videoDecoder?.close()
+        audioDecoder?.close()
+        videoDecoder = null
+        audioDecoder = null
+        waitingAvailabilityArm =
+            null
         mediaSyncInputSurface?.let { previous -> resourceCleanup.release("MediaSync入力Surface") { previous.release() } }
         mediaSyncInputSurface = null
         releaseAudioTrack()
