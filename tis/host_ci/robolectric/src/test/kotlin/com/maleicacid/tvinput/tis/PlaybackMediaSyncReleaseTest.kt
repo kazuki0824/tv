@@ -18,6 +18,8 @@ import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowMediaCodec
 import org.robolectric.util.ReflectionHelpers
 import java.util.IdentityHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -72,24 +74,9 @@ class PlaybackMediaSyncReleaseTest {
     }
 
     @Test
-    fun blockedVideoConsumerIsUnblockedBeforeDecoderStop() {
+    fun mediaSyncIsReleasedBeforeDecoderStop() {
         withAttachedSync { pipeline, native, surface ->
-            val type = Class.forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$VideoDecoderPipeline")
-            val constructor = type.declaredConstructors.single().apply { isAccessible = true }
-            val sink: (PlaybackPipeline.PlaybackUnavailableReason, String) -> Unit = { _, _ -> }
-            val decoder =
-                constructor.newInstance(
-                    pipeline,
-                    PlaybackPipeline.VideoCodecKind.MPEG2,
-                    AribCodecFacts(),
-                    surface,
-                    1L,
-                    sink,
-                )
-            val codec = MediaCodec.createByCodecName("c2.android.mpeg2.decoder")
-            ReflectionHelpers.setField(decoder, "codec", codec)
-            ReflectionHelpers.setField(pipeline, "videoDecoder", decoder)
-            NativeCodec.sync = native
+            attachVideoDecoder(pipeline, native, surface)
             pipeline.stop()
             val expected = listOf("connect", "flush", "disconnect", "release", "codec-stop", "codec-release")
             assertEquals(expected, native.events)
@@ -108,10 +95,98 @@ class PlaybackMediaSyncReleaseTest {
         }
     }
 
+    @Test
+    fun pausedVideoOutputDoesNotBlockStop() {
+        withAttachedSync { pipeline, native, surface ->
+            val decoder = attachVideoDecoder(pipeline, native, surface)
+            val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            executor.executeControl { videoOutput(decoder) }
+            try {
+                // 停止自身がflushへ到達できることを検査する。模擬native境界はpause中なら待機する。
+                executor.callControl(1_000L) { pipeline.stop() }
+                assertEquals(1L, native.renderEntered.count)
+                assertTrue("codec-release" in native.events)
+            } finally {
+                native.resumeRender.countDown()
+            }
+        }
+    }
+
+    @Test
+    fun pausedVideoOutputIsRenderedOnlyAfterStartupGateOpens() {
+        withAttachedSync { pipeline, native, surface ->
+            val decoder = attachVideoDecoder(pipeline, native, surface)
+            val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            executor.executeControl { videoOutput(decoder) }
+            try {
+                executor.callControl(1_000L) {
+                    assertEquals(1L, native.renderEntered.count)
+                    ReflectionHelpers.setField(pipeline, "videoPathExpected", true)
+                    ReflectionHelpers.setField(pipeline, "videoInputQueued", true)
+                    ReflectionHelpers.callInstanceMethod<Unit>(pipeline, "maybeStartMediaSync")
+                }
+                assertEquals(0L, native.renderEntered.count)
+                assertTrue(native.events.indexOf("play") < native.events.indexOf("render"))
+            } finally {
+                native.resumeRender.countDown()
+            }
+        }
+    }
+
+    private fun attachVideoDecoder(
+        pipeline: PlaybackPipeline,
+        native: NativeMediaSync,
+        surface: Surface,
+    ): Any {
+        val type = Class.forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$VideoDecoderPipeline")
+        val constructor = type.declaredConstructors.single().apply { isAccessible = true }
+        val sink: (PlaybackPipeline.PlaybackUnavailableReason, String) -> Unit = { _, _ -> }
+        val decoder =
+            constructor.newInstance(
+                pipeline,
+                PlaybackPipeline.VideoCodecKind.MPEG2,
+                AribCodecFacts(),
+                surface,
+                1L,
+                sink,
+            )
+        val codec = MediaCodec.createByCodecName("c2.android.mpeg2.decoder")
+        ReflectionHelpers.setField(decoder, "codec", codec)
+        ReflectionHelpers.setField(pipeline, "videoDecoder", decoder)
+        NativeCodec.sync = native
+        ReflectionHelpers.setField(pipeline, "playbackGeneration", 1L)
+        return decoder
+    }
+
+    private fun videoOutput(decoder: Any) {
+        val codec = ReflectionHelpers.getField<MediaCodec>(decoder, "codec")
+        ReflectionHelpers.callInstanceMethod<Unit>(
+            decoder,
+            "onOutput",
+            ReflectionHelpers.ClassParameter.from(MediaCodec::class.java, codec),
+            ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 0),
+            ReflectionHelpers.ClassParameter.from(
+                MediaCodec.BufferInfo::class.java,
+                MediaCodec.BufferInfo().apply { set(0, 1, 90_000L, 0) },
+            ),
+        )
+    }
+
     @Implements(MediaCodec::class)
     class NativeCodec : ShadowMediaCodec() {
         companion object {
             var sync: NativeMediaSync? = null
+        }
+
+        @Implementation
+        protected override fun releaseOutputBuffer(
+            index: Int,
+            renderTimestampNs: Long,
+        ) {
+            val owner = requireNotNull(sync)
+            owner.renderEntered.countDown()
+            if (!owner.playing) check(owner.resumeRender.await(5, TimeUnit.SECONDS))
+            owner.events += "render"
         }
 
         @Implementation(methodName = "stop")
@@ -154,6 +229,9 @@ class PlaybackMediaSyncReleaseTest {
         }
 
         val events = mutableListOf<String>()
+        val renderEntered = CountDownLatch(1)
+        val resumeRender = CountDownLatch(1)
+        var playing = false
         var failNextDisconnect = false
         var failNextRelease = false
         var failNextFlush = false
@@ -181,7 +259,10 @@ class PlaybackMediaSyncReleaseTest {
         }
 
         @Implementation
-        fun setPlaybackParams(params: PlaybackParams) = Unit
+        fun setPlaybackParams(params: PlaybackParams) {
+            playing = params.speed != 0.0f
+            if (playing) events += "play"
+        }
 
         @Implementation
         fun setCallback(
@@ -197,6 +278,7 @@ class PlaybackMediaSyncReleaseTest {
 
         @Implementation
         fun flush() {
+            resumeRender.countDown()
             if (failNextFlush) {
                 failNextFlush = false
                 error("MediaSync flush failed")

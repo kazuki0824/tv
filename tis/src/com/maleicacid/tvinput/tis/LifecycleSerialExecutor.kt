@@ -237,7 +237,10 @@ internal class LifecycleSerialExecutor(
         return try {
             task.get(timeoutMs, TimeUnit.MILLISECONDS)
         } catch (error: TimeoutException) {
-            if (task.cancelBeforeStart()) {
+            // stack採取中に未開始taskが開始しないよう、取消し判定を先に確定する。
+            val cancelledBeforeStart = task.cancelBeforeStart()
+            recordOwnerStack(error)
+            if (cancelledBeforeStart) {
                 throw IllegalStateException("$threadName control待機が${timeoutMs}msを超過しました", error)
             }
             throw ControlResultUnknownException(threadName, error)
