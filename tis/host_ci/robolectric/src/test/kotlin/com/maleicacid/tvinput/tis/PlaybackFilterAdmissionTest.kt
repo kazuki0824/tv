@@ -473,7 +473,11 @@ class PlaybackFilterAdmissionTest {
             fixture.invoke("armVideoOutputStallWatchdog", 7L)
             Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(6_001L))
             fixture.drain()
-            assertTrue(fixture.unavailable.any { it.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED })
+            assertTrue(
+                fixture.unavailable.any {
+                    it.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED
+                },
+            )
             assertTrue(fixture.unavailable.any { it.detail.contains("映像描画callback") })
         }
     }
