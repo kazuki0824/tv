@@ -1610,7 +1610,7 @@ class PlaybackPipeline(
                 if (format == null) {
                     // HALには同時8イベントの上限がある。未構成入力を全件保持すると
                     // 後続のsequence headerを含むイベントが永久に到達できない。
-                    while (pendingSamples.size > 3) {
+                    while (pendingSamples.size > MAX_STARTUP_RETAINED_EVENTS) {
                         val expired = pendingSamples.removeFirst()
                         dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, expired.isAudio)
                         releaseMediaSample(expired)
@@ -1641,7 +1641,7 @@ class PlaybackPipeline(
             var cursor = sample.offset
             val end = sample.offset + sample.size
             while (cursor < end) {
-                val count = minOf(64 * KIB, end - cursor)
+                val count = minOf(HEADER_PROBE_CHUNK_BYTES, end - cursor)
                 val next = ByteArray(count)
                 mapped.position(cursor)
                 mapped.get(next)
@@ -3423,6 +3423,8 @@ class PlaybackPipeline(
         private const val FIRST_FRAME_TIMEOUT_MS = 10_000L
         private const val SERVICE_TYPE_DIGITAL_AUDIO = 0x02
         private const val KIB = 1024
+        private const val HEADER_PROBE_CHUNK_BYTES = 64 * KIB
+        private const val MAX_STARTUP_RETAINED_EVENTS = 3
         private const val MIB = 1024 * KIB
         private const val PTS_MODULUS = 1L shl 33
         private const val PTS_HALF = 1L shl 32

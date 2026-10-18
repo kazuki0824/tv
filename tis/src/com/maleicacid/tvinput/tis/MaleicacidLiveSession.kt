@@ -1268,7 +1268,7 @@ class MaleicacidLiveSession(
                     playbackState = PlaybackStartState.Idle
                     latestService?.let(::maybeStartPlayback)
                 }
-            }, 300L)
+            }, RECOVERABLE_PLAYBACK_RETRY_DELAY_MS)
         if (!scheduled) {
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "再生再試行timerの投入に失敗しました")
         }
@@ -1745,6 +1745,7 @@ class MaleicacidLiveSession(
 
         private const val ENABLE_CAS_ORCHESTRATION = true
         private const val SESSION_CONTROL_WAIT_MS = 1_500L
+        private const val RECOVERABLE_PLAYBACK_RETRY_DELAY_MS = 300L
         private const val SESSION_MAX_PENDING_DATA_TASKS = 64
         const val ACTION_SET_DUAL_MONO_PRESENTATION = "com.maleicacid.tvinput.tis.action.SET_DUAL_MONO_PRESENTATION"
         const val EXTRA_DUAL_MONO_PRESENTATION = "presentation"
