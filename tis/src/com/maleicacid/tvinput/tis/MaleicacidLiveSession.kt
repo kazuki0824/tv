@@ -1247,10 +1247,7 @@ class MaleicacidLiveSession(
     }
 
     private fun scheduleRecoverablePlaybackRetry(reason: PlaybackPipeline.PlaybackUnavailable) {
-        val recoverable =
-            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT ||
-                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
-                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED
+        val recoverable = isRecoverablePlaybackFailure(reason.reason)
         if (!recoverable || releaseOnce.get() || frontendSignalUnavailable || surface?.isValid != true) return
         val failed = playbackState as? PlaybackStartState.Failed ?: return
         if (failed.pipelineGeneration != reason.generation || retriedPlaybackSignature == failed.signature) return
@@ -1688,6 +1685,11 @@ class MaleicacidLiveSession(
     }
 
     companion object {
+        internal fun isRecoverablePlaybackFailure(reason: PlaybackPipeline.PlaybackUnavailableReason): Boolean =
+            reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT ||
+                reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
+                reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED
+
         internal fun casGateUnavailableReason(
             decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision,
             linkageReady: Boolean,
