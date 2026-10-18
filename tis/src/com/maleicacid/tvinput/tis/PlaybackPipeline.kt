@@ -96,6 +96,7 @@ class PlaybackPipeline(
     private var nextAudioBufferId = 0
     private var audioOutputBackpressureStartedAtMs: Long? = null
     private val videoAvailableNotified = AtomicBoolean(false)
+    private var videoOutputStallTask: Runnable? = null
     private var oversizedSamplesDropped: Int = 0
     private var malformedSamplesDropped: Int = 0
     private var decoderBackpressureDrops: Int = 0
@@ -1323,6 +1324,32 @@ class PlaybackPipeline(
         }, FIRST_FRAME_TIMEOUT_MS)
     }
 
+    // 初回映像の成功だけでは継続再生を保証できない。最後の描画callbackを既存の再生世代で監視する。
+    private fun armVideoOutputStallWatchdog(generation: Long) {
+        videoOutputStallTask?.let(mainHandler::removeCallbacks)
+        val timeout =
+            Runnable {
+                enqueuePlaybackAction {
+                    if (generation != playbackGeneration || !videoAvailableNotified.get() || !videoPathExpected) {
+                        return@enqueuePlaybackAction
+                    }
+                    videoOutputStallTask = null
+                    emitUnavailableForGeneration(
+                        generation,
+                        PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
+                        "映像描画callbackが継続期限を超過しました progress=${dataPathProgress.summary()}",
+                    )
+                    stopOnPlaybackExecutor()
+                }
+            }
+        videoOutputStallTask = timeout
+        if (!mainHandler.postDelayed(timeout, VIDEO_OUTPUT_STALL_TIMEOUT_MS)) {
+            videoOutputStallTask = null
+            emitUnavailableForGeneration(generation, PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "映像出力監視を予約できません")
+            stopOnPlaybackExecutor()
+        }
+    }
+
     private fun logAudioUnavailable(
         reason: PlaybackUnavailableReason,
         detail: String,
@@ -1797,6 +1824,7 @@ class PlaybackPipeline(
                         }
                         dataPathProgress.record(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false)
                         commitCompatibilityVideoAvailability(generation, nanoTime)
+                        armVideoOutputStallWatchdog(generation)
                     }
                 },
                 codecCallbackHandler,
@@ -2897,6 +2925,8 @@ class PlaybackPipeline(
                 .onSuccess { playbackGeneration = it }
                 .exceptionOrNull()
         videoAvailableNotified.set(false)
+        videoOutputStallTask?.let(mainHandler::removeCallbacks)
+        videoOutputStallTask = null
         val previousVideoFilter = videoFilter
         val previousAudioFilter = audioFilter
         val previousSubtitleFilter = subtitleFilter
@@ -3332,5 +3362,6 @@ class PlaybackPipeline(
         private const val PTS_MODULUS = 1L shl 33
         private const val PTS_HALF = 1L shl 32
         private const val PTS_MASK = PTS_MODULUS - 1L
+    private const val VIDEO_OUTPUT_STALL_TIMEOUT_MS = 6_000L
     }
 }
