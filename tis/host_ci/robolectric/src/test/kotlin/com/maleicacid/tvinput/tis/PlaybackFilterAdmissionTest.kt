@@ -53,6 +53,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -133,31 +134,45 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
-    fun overflowRecoveryRearmsOnlyAfterCodecAcceptedInput() {
+    fun overflowWithConfiguredCodecRetiresItsReferencesInsteadOfContinuingAfterFilterFlush() {
         Fixture().use { fixture ->
             fixture.decoder()
-            val codec = fixture.attachCodec()
-            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            fixture.attachCodec()
             val filter = fixture.avFilter(false)
             val nativeFilter = Shadow.extract<NativeFilter>(filter)
-            status(filter, Filter.STATUS_OVERFLOW)
+            val pending = mappedMediaEvent()
+            deliver(filter, pending)
             fixture.drain()
             status(filter, Filter.STATUS_OVERFLOW)
             fixture.drain()
-            assertEquals(1, nativeFilter.flushes)
-            deliver(filter, mappedMediaEvent())
-            fixture.drain()
-            // pending受付だけでは再armしない。Codecへのqueue完了でのみ次の損失を回復する。
+            assertEquals(0, nativeFilter.flushes)
+            assertNull(ReflectionHelpers.getField<Any?>(fixture.pipeline, "videoDecoder"))
+            assertNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "videoFilter"))
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(pending).releases)
+            // fixtureには再開対象を設定していないため、元世代へ回復不能を通知する。
+            assertTrue(
+                fixture.unavailable.any {
+                    it.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED && it.generation == 7L
+                },
+            )
+        }
+        Fixture().use { fixture ->
+            fixture.decoder()
+            fixture.attachCodec()
+            fixture.audioSelection()
+            ReflectionHelpers.setField(fixture.pipeline, "activeTuner", fixture.tuner)
+            val filter = fixture.avFilter(false)
             status(filter, Filter.STATUS_OVERFLOW)
             fixture.drain()
-            assertEquals(1, nativeFilter.flushes)
-            postCodecCallback(codec, 1, 0, null)
-            assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
+            assertTrue(ReflectionHelpers.getField<Boolean>(fixture.pipeline, "codecRecoveryAttempted"))
+            assertNull(ReflectionHelpers.getField<Any?>(fixture.pipeline, "videoDecoder"))
+            assertTrue(fixture.unavailable.isEmpty())
+            // stop後にmain handlerの再生成予約が届いても旧選局を再開しない。
+            fixture.pipeline.stop()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
             fixture.drain()
-            status(filter, Filter.STATUS_OVERFLOW)
-            fixture.drain()
-            assertEquals(2, nativeFilter.flushes)
-            assertTrue(fixture.failures.isEmpty())
+            assertNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "videoFilter"))
+            assertTrue(fixture.unavailable.isEmpty())
         }
     }
 

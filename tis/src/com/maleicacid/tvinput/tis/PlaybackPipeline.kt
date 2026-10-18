@@ -474,6 +474,45 @@ class PlaybackPipeline(
         )
     }
 
+    // 圧縮入力欠落後は旧Codecの参照pictureやMediaSyncの時刻状態を継続しない。
+    // Codec errorと同じ再生世代owner・再生成回数を使い、別の復旧loopを設けない。
+    // 再生成に必要な参照と既存の回数制限を一つの失敗境界で検査する。
+    @Suppress("ComplexCondition")
+    private fun recoverAfterCompressedInputLoss(generation: Long) {
+        if (generation != playbackGeneration || released.get()) return
+        val tuner = activeTuner
+        val channel = activeChannel
+        val selection = activeSelection
+        if (codecRecoveryAttempted || tuner == null || channel == null || selection == null) {
+            completePlaybackFailureAction(generation, onVideoUnavailable) {
+                stopOnPlaybackExecutor()
+                onVideoUnavailable(
+                    PlaybackUnavailable(
+                        PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED,
+                        "圧縮AV入力欠落後の再生成を開始できません",
+                        generation,
+                    ),
+                )
+            }
+            return
+        }
+        codecRecoveryAttempted = true
+        recoverCodecGeneration(
+            originGeneration = generation,
+            stop = {
+                stopOnPlaybackExecutor()
+                playbackGeneration
+            },
+            schedule = { retry -> mainHandler.post { enqueuePlaybackAction(retry) } },
+            isCurrent = { it == playbackGeneration },
+            restart = {
+                val restarted = startOnPlaybackExecutor(tuner, channel, selection)
+                onPlaybackGenerationRestarted(PlaybackGenerationRestart(generation, restarted))
+            },
+            onUnavailable = onVideoUnavailable,
+        )
+    }
+
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -760,7 +799,7 @@ class PlaybackPipeline(
                     object : FilterCallback {
                         // 対象外入力の継続と処理終了を各発生点で明示し、追加の終了状態を持たない。
                         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-                        @Suppress("LoopWithTooManyJumpStatements", "MaxLineLength")
+                        @Suppress("LoopWithTooManyJumpStatements", "MaxLineLength", "LongMethod")
                         override fun onFilterEvent(
                             filter: Filter,
                             events: Array<FilterEvent>,
@@ -781,7 +820,12 @@ class PlaybackPipeline(
                                             val event = events[nextEvent++]
                                             if (event is RestartEvent) {
                                                 if (inputIsCurrent()) {
-                                                    (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                                                    val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
+                                                    if (target?.hasConfiguredCodec() == true) {
+                                                        recoverAfterCompressedInputLoss(filterGeneration)
+                                                    } else {
+                                                        target?.discardPendingInput()
+                                                    }
                                                 }
                                                 continue
                                             }
@@ -844,7 +888,12 @@ class PlaybackPipeline(
                                 )
                                 dataPathProgress.record(PlaybackDataPathProgress.Stage.OVERFLOW, isAudio)
                                 inputIdentity.set(null)
-                                (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                                val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
+                                if (target?.hasConfiguredCodec() == true) {
+                                    recoverAfterCompressedInputLoss(filterGeneration)
+                                    return@enqueuePlaybackAction
+                                }
+                                target?.discardPendingInput()
                                 val result = filter.flush()
                                 if (result == Tuner.RESULT_SUCCESS) {
                                     dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_SUCCEEDED, isAudio)
@@ -952,7 +1001,7 @@ class PlaybackPipeline(
                     object : FilterCallback {
                         // 対象外入力の継続と処理終了を各発生点で明示し、追加の終了状態を持たない。
                         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-                        @Suppress("LoopWithTooManyJumpStatements", "MaxLineLength")
+                        @Suppress("LoopWithTooManyJumpStatements", "MaxLineLength", "LongMethod")
                         override fun onFilterEvent(
                             filter: Filter,
                             events: Array<FilterEvent>,
@@ -1602,7 +1651,7 @@ class PlaybackPipeline(
         }
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-        @Suppress("TooGenericExceptionCaught")
+        @Suppress("TooGenericExceptionCaught", "ReturnCount")
         fun queue(sample: MediaSample) {
             try {
                 if (sample.size > budget.singleEventLimitBytes) {
@@ -1610,6 +1659,7 @@ class PlaybackPipeline(
                     releaseMediaSample(sample)
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
                     onSampleRejected("SAMPLE_TOO_LARGE size=${sample.size} limit=${budget.singleEventLimitBytes}")
+                    if (codec != null) recoverAfterCompressedInputLoss(generation)
                     return
                 }
                 val queueBudget = if (codec == null) budget.startup else budget.pending
@@ -1617,6 +1667,10 @@ class PlaybackPipeline(
                     decoderBackpressureDrops++
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
                     releaseMediaSample(sample)
+                    if (codec != null) {
+                        recoverAfterCompressedInputLoss(generation)
+                        return
+                    }
                     val nowMs = SystemClock.elapsedRealtime()
                     val startedAtMs = backpressureStartedAtMs ?: nowMs.also { backpressureStartedAtMs = it }
                     val deadlineMs =
@@ -1650,8 +1704,8 @@ class PlaybackPipeline(
             if (codec == null) {
                 val format = probeHeader(sample)
                 if (format == null) {
-                    // HALには同時8イベントの上限がある。未構成入力を全件保持すると
-                    // 後続のsequence headerを含むイベントが永久に到達できない。
+                    // 構成前の古い圧縮入力は有限に保持し、構成headerの探索を継続する。
+                    // この保持方針をHALの同時event数の契約へ結び付けない。
                     while (pendingSamples.size > MAX_STARTUP_RETAINED_EVENTS) {
                         val expired = pendingSamples.removeFirst()
                         dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, expired.isAudio)
@@ -1847,8 +1901,12 @@ class PlaybackPipeline(
             Log.w(LogTags.TIS, "decoder sampleを拒否しました reason=$reason")
         }
 
-        // owner受付の過負荷も既存decoderの継続停滞時計へ接続する。単発拒否で全再生をreleaseしない。
+        // 構成後の拒否は圧縮参照の欠落として扱う。構成前は既存起動期限で制限する。
         fun inputAdmissionRejected(rejectedAtMs: Long) {
+            if (codec != null) {
+                recoverAfterCompressedInputLoss(generation)
+                return
+            }
             val nowMs = SystemClock.elapsedRealtime()
             val startedAtMs = backpressureStartedAtMs ?: rejectedAtMs.also { backpressureStartedAtMs = it }
             val deadlineMs =
@@ -1864,6 +1922,8 @@ class PlaybackPipeline(
                 close()
             }
         }
+
+        fun hasConfiguredCodec(): Boolean = codec != null
 
         fun discardPendingInput() {
             clearPending()
