@@ -107,7 +107,7 @@ class PlaybackPipeline(
 
     private enum class VideoAvailabilityMode {
         MEDIA_SYNC_FINAL_OUTPUT_EXACT,
-        MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT,
+        MEDIA_SYNC_FINAL_OUTPUT_UNOBSERVABLE,
     }
 
     enum class PlaybackUnavailableReason {
@@ -671,6 +671,31 @@ class PlaybackPipeline(
             emitUnavailable(PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM, "未対応 audio stream_type=0x${audio.streamType.toString(16)}")
             return AudioSwitchResult(false, listOf("audio stream_type 未対応"))
         }
+        val previous = activeSelection
+        val sameVideoClock = previous != null && previous.serviceKey == selection.serviceKey &&
+            previous.pcrPid == selection.pcrPid && previous.video == selection.video
+        val sameAudioFormat = previous?.audio?.streamType == audio.streamType &&
+            previous?.audio?.codecFacts == audio.codecFacts &&
+            previous?.audioChannelConfiguration == selection.audioChannelConfiguration &&
+            previous?.audioDualMono == selection.audioDualMono && previous?.dualMonoPresentation == selection.dualMonoPresentation
+        if (sameVideoClock && sameAudioFormat && audioDecoder != null && audioFilter != null) {
+            if (previous?.audio?.elementaryPid == audio.elementaryPid) {
+                return AudioSwitchResult(true, listOf("AUDIO_SELECTION_UNCHANGED"))
+            }
+            // 同一クロック・同一構成ならDecoder/AudioTrack/MediaSyncは継続してPID入力だけ替える。
+            val oldFilter = audioFilter
+            audioFilter = null
+            return runCatching {
+                closeFilter(oldFilter)
+                resourceCleanup.requireComplete()
+                activeSelection = selection
+                createAndStartAvFilter(tuner, audio, isAudio = true).getOrThrow()
+                AudioSwitchResult(true, listOf("AUDIO_PID_SWITCHED_VIDEO_PRESERVED"))
+            }.getOrElse { error ->
+                logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "音声PID切替失敗: ${error.message}")
+                AudioSwitchResult(false, listOf("AUDIO_PID_SWITCH_FAILED: ${error.message}"))
+            }
+        }
         val restarted = startRequestedPlayback(tuner, channel, selection)
         return AudioSwitchResult(
             switchedAudio = restarted.startedAudio,
@@ -1071,6 +1096,7 @@ class PlaybackPipeline(
     private fun armVideoAvailability(
         sync: MediaSync,
         generation: Long,
+        resetAvailability: Boolean = true,
     ) {
         if (sync !== mediaSync || generation != playbackGeneration) return
         val arm =
@@ -1080,7 +1106,7 @@ class PlaybackPipeline(
                 armedAtNanoTime = System.nanoTime(),
             )
         waitingAvailabilityArm = arm
-        videoAvailableNotified.set(false)
+        if (resetAvailability) videoAvailableNotified.set(false)
         val exactArmed =
             MediaSyncFirstOutputBridge.isAvailable() &&
                 MediaSyncFirstOutputBridge.arm(
@@ -1094,8 +1120,11 @@ class PlaybackPipeline(
             if (exactArmed) {
                 VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT
             } else {
-                VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT
+                VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_UNOBSERVABLE
             }
+        if (!exactArmed) {
+            Log.w(LogTags.TIS, "MEDIASYNC_FINAL_OUTPUT_UNOBSERVABLE inputId=$inputId generation=$generation")
+        }
         Log.i(
             LogTags.TIS,
             "video availability mode=$videoAvailabilityMode inputId=$inputId generation=$generation armSequence=${arm.armSequence}",
@@ -1121,29 +1150,12 @@ class PlaybackPipeline(
         }
         waitingAvailabilityArm = null
         notifyVideoAvailable(generation)
+        armVideoOutputStallWatchdog(generation)
+        // one-shot callbackを同じowner/世代で再armし、次の最終queue成功を観測する。
+        armVideoAvailability(sync, generation, resetAvailability = false)
     }
 
-    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("ReturnCount")
-    private fun commitCompatibilityVideoAvailability(
-        generation: Long,
-        frameNanoTime: Long,
-    ) {
-        if (videoAvailabilityMode != VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT) return
-        val arm = waitingAvailabilityArm ?: return
-        val invalidCompatibilityOutputEvent =
-            generation != playbackGeneration || arm.generation != generation || frameNanoTime < arm.armedAtNanoTime ||
-                mediaSyncSurfaceFailed ||
-                surface?.isValid != true
-        if (invalidCompatibilityOutputEvent) {
-            return
-        }
-        waitingAvailabilityArm = null
-        notifyVideoAvailable(generation)
-    }
-
-    // 既存の通知一回性確定点だけから成功時の進捗を記録する。
-    // compatibility modeでは入力Surfaceへのframe callbackであり最終表示の確証ではない。
+    // 最終出力callbackだけを成功通知の根拠とする。
     private fun notifyVideoAvailable(generation: Long) {
         if (!videoAvailableNotified.compareAndSet(false, true)) return
         Log.i(
@@ -1330,7 +1342,8 @@ class PlaybackPipeline(
                 if (shouldTriggerFirstFrameTimeoutForTest(generation, playbackGeneration, videoAvailableNotified.get())) {
                     emitUnavailable(
                         PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
-                        "最初のフレーム待機が期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms progress=${dataPathProgress.summary()}",
+                        "最終出力の確認が期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms mode=$videoAvailabilityMode " +
+                            "progress=${dataPathProgress.summary()}",
                     )
                     stopOnPlaybackExecutor()
                 }
@@ -1873,7 +1886,7 @@ class PlaybackPipeline(
 
         override fun onDecoderPrepared(codec: MediaCodec) {
             codec.setOnFrameRenderedListener(
-                { callbackCodec, _, nanoTime ->
+                { callbackCodec, _, _ ->
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration ||
                             this@VideoDecoderPipeline.codec !== callbackCodec
@@ -1881,8 +1894,7 @@ class PlaybackPipeline(
                             return@enqueuePlaybackAction
                         }
                         dataPathProgress.record(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false)
-                        commitCompatibilityVideoAvailability(generation, nanoTime)
-                        armVideoOutputStallWatchdog(generation)
+                        // Codecの出力先はMediaSync入力。可用性や最終出力watchdogは更新しない。
                     }
                 },
                 codecCallbackHandler,
