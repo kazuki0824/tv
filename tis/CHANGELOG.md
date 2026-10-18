@@ -19,6 +19,14 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+# ライブ再生のcodec別最小ヘッダprobeへの移行（PR #207）
+
+- ES履歴を256/512/768 KiB保持して繰返し解析する方式を廃止。MPEG-2 Videoはsequence headerに必要な8 byte、MPEG audioは4 byte、AVC/HEVCはconfig用のSPS/PPS/VPS NAL（1件16 KiB以内）、AAC ADTSは構成に必要な1 frame（13-bit frame長以内）だけを有限保持する。
+- MediaEventの境界をまたぐstart code/NALを逐次検出し、構成に不要な映像音声ES本文を保持しない。GOP/AU再構成、独自PTS補完、追加ESキューは設けず、元LinearBlockの直接queue契約を維持する。
+- 構成前の未queue MediaEventは同時3件以下に抑え、HAL 8-slot受付の進行性を確保。ヘッダ未検出時の失敗期限は既存のdecoder startup deadlineを正本とする。
+- MPEG-2先頭1 MiB超のヘッダ探索、AVC/HEVCのパラメータセット跨ぎ、MPEG audio、ADTSのフレーム境界と超過異常のhost回帰6件を追加。RobolectricのMPEG-2 decoder fixtureも修正した。
+- Android Soong、現HEADのhost/Robolectric/Quality CI、実波連続再生は未実施・未確認。HEVC/AVC/AACの実codec適合は実機検証まで未確定。
+
 # Section Filter拒否時の現行性再確認
 
 - 容量不足でcontroller data投入を拒否されたSectionは、既存control executorへ非同期で現行性判定を委譲する。閉鎖済みFilterの同一tune generationを新たな喪失として計上せず、現行Filterの拒否だけを既存のinputDeliveryLossに記録する。新しいqueue、worker、状態所有者は設けない。
