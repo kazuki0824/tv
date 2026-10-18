@@ -19,6 +19,11 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+## 2026-10-18 診断追加に伴うhost compile回帰の是正
+
+- 既存host Log stubへAndroid APIと同じDEBUG値・isLoggableシグネチャを追加。hostでは診断を無効にし、製品のpropertyによるDEBUG制御には変更を加えない。新owner・worker・property模擬機構は追加しない。
+- 直前の「Kotlin compile成功」はRobolectricのcompileであり、独立したhost stub構成のcompile成功を意味しなかった。同構成での未定義参照によるCI失敗を認め、検証範囲を訂正する。
+
 ## 2026-10-18 MPEG Audio予約値検証と実機診断採取
 
 - #207レビュー2件: 音声PIDのみの切替条件を一箇所へ集約し、PTS/MediaSync全世代再生成の一般則から例外を参照する。実装の局所Filter交換と設計を一致させた。
@@ -26,7 +31,7 @@
 - TISのDEBUG診断へMediaSync生成区間と世代、Codec映像出力の要求/返却、callbackのPTS/受信時刻を追加。availability・資源寿命・回復動作は変更しない。
 - Framework用MediaSync診断patchを追加。DEBUG有効時だけnative instance、buffer ID、入力frame、media時刻/表示予定時刻、出力queue結果/次frame番号を記録し、Exact listenerや新しいAPI・保持状態は追加しない。tv checkoutだけではFrameworkへ適用されない。
 - Perfetto設定、ホスト採取/snapshot script、INTEGRATIONのビルド/採取/照合手順を追加。native stack、SurfaceFlinger layers/FrameTimeline、外部撮影を組み合わせる。Java stackやqueue成功を最終present成功と扱わず、採取失敗・trace loss・上流画素内容の未確定を明記する。
-- 新回帰は修正前に予約versionの誤受理で失敗し、修正後はRobolectric playback 28件＋MediaSync 6件が省略なしで成功。Kotlin compile、変更範囲ktlint 1.8.0/detekt 1.23.8、Bash構文確認は成功。模擬adbによる採取成功/失敗・property復元・native採取成功/失敗の4ケースを確認した。
+- 新回帰は修正前に予約versionの誤受理で失敗し、修正後はRobolectric playback 28件＋MediaSync 6件が省略なしで成功。Robolectric構成のKotlin compile、変更範囲ktlint 1.8.0/detekt 1.23.8、Bash構文確認は成功。模擬adbによる採取成功/失敗・property復元・native採取成功/失敗の4ケースを確認した。
 - MediaSync原本blob `a3f55da7116afd0b976aec1b23c6917e0578db50`へのpatch適用、既存Exact patchとの両順序適用と結果一致を確認。native Soong build、端末でのPerfetto data source/ログ対応、実native stack採取、実波症状解消は未検証。模擬adbやpatch適用確認をこれらの代替証明としない。
 
 ## 2026-10-18 起動前の映像待機とCompatibility時刻比較
