@@ -1405,8 +1405,10 @@ class PlaybackPipeline(
 
     private fun releaseMediaSample(sample: MediaSample) {
         // eventとLinearBlockのFramework/native参照は別々に存在するため、両方を明示返却する。
-        releaseMediaEvent(sample.event)
-        recycleLinearBlock(sample.block)
+        SectionFilterPolicy.completeCleanup(
+            { releaseMediaEvent(sample.event) },
+            { recycleLinearBlock(sample.block) },
+        )
     }
 
     private fun rejectSecureMediaEvent(isAudio: Boolean) {
@@ -1608,7 +1610,11 @@ class PlaybackPipeline(
                 if (format == null) {
                     // HALには同時8イベントの上限がある。未構成入力を全件保持すると
                     // 後続のsequence headerを含むイベントが永久に到達できない。
-                    while (pendingSamples.size > 3) releaseMediaSample(pendingSamples.removeFirst())
+                    while (pendingSamples.size > 3) {
+                        val expired = pendingSamples.removeFirst()
+                        dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, expired.isAudio)
+                        releaseMediaSample(expired)
+                    }
                     return
                 }
                 codec = createBlockModelDecoder(format)
