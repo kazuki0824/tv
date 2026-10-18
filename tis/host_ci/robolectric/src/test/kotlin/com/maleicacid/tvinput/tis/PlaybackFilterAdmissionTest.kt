@@ -1112,13 +1112,14 @@ class PlaybackFilterAdmissionTest {
                 }
             return executor.callControl(5_000L) {
                 ReflectionHelpers.setField(pipeline, "surface", requireNotNull(codecSurface))
+                ReflectionHelpers.setField(pipeline, "videoPathExpected", true)
                 ReflectionHelpers.setField(pipeline, "mediaSync", sync)
                 ReflectionHelpers.setField(pipeline, "playbackGeneration", generation)
                 invoke("armVideoAvailability", sync, generation, true)
                 val selected = ReflectionHelpers.getField<Any>(pipeline, "videoAvailabilityMode")
                 assertEquals("MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT", selected.toString())
                 if (exact) {
-                    val mode = selected.javaClass.enumConstants.single { it.toString() == "MEDIA_SYNC_FINAL_OUTPUT_EXACT" }
+                    val mode = requireNotNull(selected.javaClass.enumConstants).single { it.toString() == "MEDIA_SYNC_FINAL_OUTPUT_EXACT" }
                     ReflectionHelpers.setField(pipeline, "videoAvailabilityMode", mode)
                 }
                 val arm = ReflectionHelpers.getField<Any>(pipeline, "waitingAvailabilityArm")
