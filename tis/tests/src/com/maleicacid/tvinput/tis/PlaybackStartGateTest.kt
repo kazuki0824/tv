@@ -358,6 +358,19 @@ class PlaybackStartGateTest {
         check(!PlaybackStartTransitions.shouldAttempt(state, diagnosticOnly))
     }
 
+    @Test
+    fun retriesOnlyRecoverableStartupAndRenderFailures() {
+        val allowed =
+            setOf(
+                PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT,
+                PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
+                PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
+            )
+        PlaybackPipeline.PlaybackUnavailableReason.entries.forEach { reason ->
+            check(MaleicacidLiveSession.isRecoverablePlaybackFailure(reason) == (reason in allowed))
+        }
+    }
+
     @Test fun repeatedSectionUpdatesAfterFailedStartDoNotRetrySameSignature() {
         val signature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
         val state: PlaybackStartState = PlaybackStartState.Failed(signature, pipelineGeneration = null)
