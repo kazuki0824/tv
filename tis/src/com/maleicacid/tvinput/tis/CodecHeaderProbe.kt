@@ -6,8 +6,12 @@ import java.nio.ByteBuffer
 /**
  * MediaFormatの構成に必要なヘッダだけを保存する。ESやaccess unitの組立て・queue境界は扱わない。
  * AVC/HEVCはconfig NAL、MPEG-2 videoとMPEG audioは固定長header、AACはADTS frameだけを対象とする。
+ * 規格ヘッダの固定長・ビットマスクを対応する構文と直接照合する。
  */
-internal class CodecHeaderProbe(private val kind: Kind) {
+@Suppress("MagicNumber")
+internal class CodecHeaderProbe(
+    private val kind: Kind,
+) {
     enum class Kind { MPEG2_VIDEO, AVC, HEVC, AAC_ADTS, MPEG_AUDIO }
 
     private val recent = ByteArray(if (kind == Kind.MPEG2_VIDEO) 8 else 4)
@@ -60,21 +64,27 @@ internal class CodecHeaderProbe(private val kind: Kind) {
         recent[recentCount - 1] = byte.toByte()
         if (recentCount != recent.size) return null
         return when (kind) {
-            Kind.MPEG2_VIDEO ->
+            Kind.MPEG2_VIDEO -> {
                 recent.copyOf().takeIf {
                     it[0] == 0.toByte() && it[1] == 0.toByte() &&
                         it[2] == 1.toByte() && it[3] == 0xb3.toByte()
                 }
+            }
 
-            Kind.MPEG_AUDIO ->
+            Kind.MPEG_AUDIO -> {
                 recent.copyOf().takeIf {
                     it[0] == 0xff.toByte() && it[1].toInt() and 0xe0 == 0xe0
                 }
+            }
 
-            else -> null
+            else -> {
+                null
+            }
         }
     }
 
+    // 不完全ヘッダの各境界から、その場で未取得を返す。
+    @Suppress("ReturnCount")
     private fun scanNal(byte: Int): ByteArray? {
         if (byte == 0) {
             // start codeを跨いだ時だけ必要なzero-run。NAL末尾のtrailing zeroは構成に不要。
@@ -94,10 +104,11 @@ internal class CodecHeaderProbe(private val kind: Kind) {
             val type = if (kind == Kind.AVC) byte and 0x1f else (byte ushr 1) and 0x3f
             val required = if (kind == Kind.AVC) type == 7 || type == 8 else type in 32..34
             if (required) {
-                nal = ByteArrayOutputStream().apply {
-                    write(byteArrayOf(0, 0, 0, 1))
-                    write(byte)
-                }
+                nal =
+                    ByteArrayOutputStream().apply {
+                        write(byteArrayOf(0, 0, 0, 1))
+                        write(byte)
+                    }
             } else {
                 nal = null
             }
@@ -113,6 +124,8 @@ internal class CodecHeaderProbe(private val kind: Kind) {
         active.write(byte)
     }
 
+    // 不完全ヘッダの各境界から、その場で未取得を返す。
+    @Suppress("ReturnCount", "CyclomaticComplexMethod")
     private fun completeNal(): ByteArray? {
         val completed = nal?.toByteArray()
         nal = null
@@ -132,6 +145,8 @@ internal class CodecHeaderProbe(private val kind: Kind) {
         return vpsBytes + spsBytes + ppsBytes + byteArrayOf(0, 0, 0, 1)
     }
 
+    // 不完全ヘッダの各境界から、その場で未取得を返す。
+    @Suppress("ReturnCount")
     private fun scanAdts(byte: Int): ByteArray? {
         val size = adts.size()
         if (size == 0) {
@@ -168,6 +183,7 @@ internal class CodecHeaderProbe(private val kind: Kind) {
     private companion object {
         // Access-unit再構成用予算ではない。構成NAL一つだけの安全上限。
         const val MAX_CONFIGURATION_NAL_BYTES = 16 * 1024
+
         // ADTSフレーム長は13bit。
         const val MAX_ADTS_FRAME_BYTES = (1 shl 13) - 1
     }
