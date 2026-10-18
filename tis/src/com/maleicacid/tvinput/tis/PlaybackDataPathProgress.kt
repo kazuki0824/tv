@@ -10,7 +10,7 @@ internal class PlaybackDataPathProgress {
         VALID_SAMPLE,
         CODEC_INPUT,
         CODEC_INPUT_AVAILABLE,
-        CODEC_INPUT_RECLAIMED,
+        CODEC_INPUT_RETURNED,
         CODEC_OUTPUT,
         MEDIASYNC_AUDIO_CONSUMED,
         FRAME_RENDERED,
