@@ -671,7 +671,7 @@ class PlaybackPipeline(
                 previous.pcrPid == selection.pcrPid && previous.video == selection.video
         val sameAudioFormat =
             previous?.audio?.streamType == audio.streamType &&
-                previous.audio?.codecFacts == audio.codecFacts &&
+                previous.audio.codecFacts == audio.codecFacts &&
                 previous.audioChannelConfiguration == selection.audioChannelConfiguration &&
                 previous.audioDualMono == selection.audioDualMono && previous.dualMonoPresentation == selection.dualMonoPresentation
         if (sameVideoClock && sameAudioFormat && audioDecoder != null) {
