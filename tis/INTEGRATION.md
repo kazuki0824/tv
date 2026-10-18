@@ -199,10 +199,6 @@ patchを適用した構成の実機ではprivate listenerのJava/JNI/native型�
 
 通常の理由ログは、再生不能理由・圧縮入力欠落・Codec error・停止段階を識別する。control待機超過時のowner Java stackはnative内部の待機相手を示さない。旧映像の所属世代を調べる場合も、Compatibility通知を最終表示の証拠にしてはならない。この節の採取は診断専用であり、再生期限・容量・回復方針を変更しない。
 
-### ビルド前の準備
-
-Framework診断パッチの取得・適用・libstagefrightのビルドと導入は、[製品ビルド側の手順](https://github.com/kazuki0824/android_device_maleicacid_androidtv_tools/blob/fix/mediasync-diagnostics-integration/docs/mediasync_diagnostics.md)を参照する。本リポジトリは診断用Frameworkパッチを保持・適用しない。
-
 ### 採取操作
 
 LinuxホストのBash、adb、GNU timeoutと、`adb root`が使えるuserdebug端末を用いる。`ANDROID_SERIAL`で対象を選択する。開始前に視聴アプリを開き、スキャン終了後だけでなく、問題の選局より前から採取する。ログをclearせず全bufferを保存する。

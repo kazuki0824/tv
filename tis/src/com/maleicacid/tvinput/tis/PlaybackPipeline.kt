@@ -74,6 +74,7 @@ class PlaybackPipeline(
     private var videoDecoder: VideoDecoderPipeline? = null
     private var audioDecoder: AudioDecoderPipeline? = null
     private var mediaSync: MediaSync? = null
+    private var mediaSyncReleasePending = false
     private var mediaSyncInputSurface: Surface? = null
     private var audioTrack: AudioTrack? = null
     private var audioRoutingListener: android.media.AudioRouting.OnRoutingChangedListener? = null
@@ -788,7 +789,7 @@ class PlaybackPipeline(
             val inputIdentity = AtomicReference(Any())
             // 同じ入力世代で重複するOVERFLOW通知は、次の有効sampleまで一度のflushへ集約する。
             val overflowRecoveryActive = AtomicBoolean(false)
-            (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.onInputQueued = {
+            (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.onInputAccepted = {
                 overflowRecoveryActive.set(false)
             }
 
@@ -1648,7 +1649,7 @@ class PlaybackPipeline(
         private var startupDeadline: DecoderStartupDeadline? = null
         private var startupTimeout: Runnable? = null
         private var backpressureStartedAtMs: Long? = null
-        var onInputQueued: () -> Unit = {}
+        var onInputAccepted: () -> Unit = {}
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
@@ -1735,6 +1736,7 @@ class PlaybackPipeline(
                     return
                 }
                 pendingSamples.addLast(sample)
+                onInputAccepted()
                 queueInternal(sample)
             } catch (e: RuntimeException) {
                 Log.w(LogTags.TIS, "decoder queue/drain に失敗しました", e)
@@ -1919,7 +1921,6 @@ class PlaybackPipeline(
                     queued = true
                     backpressureStartedAtMs = null
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
-                    onInputQueued()
                     onCompressedInputQueued(sample)
                 } finally {
                     // 成功時は入力index返却またはdecoder解放まで保持し、失敗時だけ即時返却する。
@@ -3206,6 +3207,8 @@ class PlaybackPipeline(
                 "audioOutputs=${outstandingAudioOutputs.size} progress=${dataPathProgress.summary()}",
         )
         resourceCleanup.retry()
+        // 前回のMediaSync解放が未完了なら、同じownerにCodec/PCMを保持する。
+        if (mediaSyncReleasePending) resourceCleanup.requireComplete()
         val generationFailure =
             runCatching { nextPlaybackGenerationOrFence() }
                 .onSuccess { playbackGeneration = it }
@@ -3243,11 +3246,14 @@ class PlaybackPipeline(
             // Surface切断が失敗してもMediaSync.releaseは必ず試行する。
             // release成功なら旧Surface接続も終端するので切断のみのretryを破棄する。
             resourceCleanup.releaseOwned("MediaSync出力切断", previous) { previous.setSurface(null) }
+            mediaSyncReleasePending = true
             resourceCleanup.release("MediaSync") {
                 previous.release()
                 resourceCleanup.completeOwnedBy(previous)
+                mediaSyncReleasePending = false
             }
         }
+        if (mediaSyncReleasePending) resourceCleanup.requireComplete()
         Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=AUDIO_OUTPUTS")
         releaseOutstandingAudioOutputs()
         Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=VIDEO_DECODER")

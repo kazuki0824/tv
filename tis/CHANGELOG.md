@@ -49,6 +49,18 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+## 2026-10-18 Framework診断差分revertの是正
+
+- 部分revertに混入したtoolsの作業branchへの参照文と「ビルド前の準備」の見出しを取り消す。Framework診断patchとビルド手順の追加差分を消し、新しい統合規定をtvへ加えない。採取手順とTIS自身の診断は維持する。
+
+## 2026-10-18 再生入力欠落とMediaSync停止失敗のレビュー是正
+
+- 構成前でもdecoderの保留入力受理時にOVERFLOW集約を解除し、次の欠落でprobe・保留入力を再回収する。Codec投入進捗による解除を置換する。
+- MediaSync release未完了の間は既存ownerにPCM・Codec・入力Surface・AudioTrackを保持する。既存ResourceCleanupの再試行成功後だけ停止の後段へ進み、重複した解放登録を避ける。
+- RestartEventの一般則を構成前の局所回収／構成後の全世代再生成と統一する。既存回復機構は変更しない。
+- 連続OVERFLOWの既存期待値を修正し、欠落を跨ぐMPEG-2 header誤結合、flush/release継続失敗→成功後のCodec解放の回帰を追加。flush失敗/release成功でもCodec回収まで検査し、CI件数を29+7へ更新する。
+- 修正前は新規・更新試験3件が失敗し、修正後はKotlin 1.9.22の製品compileとAndroid 15 Robolectric再生36件が成功。ローカルはキャッシュ済み依存による直接compile/JUnit実行でありGradle実行ではない。Android製品build・atest・VTS・実機症状解消は未実施。
+
 ## 2026-10-18 Framework診断差分の配置をrevert
 
 - `0c0116d`で追加したFramework診断patchと、その手動適用・build手順を取り消す。製品ビルド側PR #17がpatch本体と適用を所有し、TIS統合手順は参照だけにする。

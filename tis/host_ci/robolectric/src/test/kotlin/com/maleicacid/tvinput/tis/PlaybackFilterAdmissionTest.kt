@@ -71,6 +71,38 @@ import kotlin.test.assertTrue
 @Suppress("TooManyFunctions", "LargeClass")
 class PlaybackFilterAdmissionTest {
     @Test
+    fun secondOverflowMustInvalidatePartialHeader() {
+        Fixture().use { fixture ->
+            fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
+            val filter = fixture.avFilter(false)
+            status(filter, Filter.STATUS_OVERFLOW)
+            fixture.drain()
+            val event = mediaEvent(4L)
+            val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+            Shadow.extract<NativeLinearBlock>(block).data = byteArrayOf(0, 0, 1, 0xb3.toByte())
+            Shadow.extract<NativeMediaEvent>(event).block = block
+            deliver(filter, event)
+            fixture.drain()
+            status(filter, Filter.STATUS_OVERFLOW)
+            fixture.drain()
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
+            val getProbe =
+                decoder.javaClass.superclass
+                    .getDeclaredMethod("getConfigurationProbe")
+                    .apply { isAccessible = true }
+            val probe = getProbe.invoke(decoder) as CodecHeaderProbe
+            var fabricated = false
+            fixture.executor.callControl(5000L) {
+                probe.find(ByteBuffer.wrap(byteArrayOf(0x5a, 4, 0x38, 0x30))) {
+                    fabricated = true
+                    true
+                }
+            }
+            assertFalse(fabricated, "overflowを跨いだ非連続バイトからsequence headerを構成してはならない")
+        }
+    }
+
+    @Test
     fun mpegAudioProbeRejectsReservedHeadersAndContinuesToValidFormat() {
         val probe = CodecHeaderProbe(CodecHeaderProbe.Kind.MPEG_AUDIO)
         val formats = mutableListOf<MediaFormat?>()
@@ -92,6 +124,8 @@ class PlaybackFilterAdmissionTest {
         assertEquals(3, formats.size)
     }
 
+    // flush前後と次の入力欠落を同じFilterの一連の操作として検査する。
+    @Suppress("LongMethod")
     @Test
     fun avOverflowDiscardsPreFlushAndInFlightInputAndAcceptsPostFlushInput() {
         for ((audio, afterClear) in listOf(false to false, false to true, true to false, true to true)) {
@@ -142,8 +176,10 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(0, native.closes)
                 status(filter, Filter.STATUS_OVERFLOW)
                 fixture.drain()
-                // 未構成decoderへの保留はCodec入力進捗ではないため、再flushしない。
-                assertEquals(1, native.flushes)
+                // 構成前でも新しい入力を受理した後の欠落は再び回収する。
+                assertEquals(2, native.flushes)
+                assertEquals(emptyList(), fixture.pendingEvents(audio))
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(newInput).releases)
                 val progress = fixture.progress()
                 assertTrue(progress.count(PlaybackDataPathProgress.Stage.OVERFLOW, audio) > 0L)
                 assertEquals(0L, progress.count(PlaybackDataPathProgress.Stage.CODEC_OUTPUT, audio))
