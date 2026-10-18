@@ -379,6 +379,48 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun sustainedMpegVideoInputBeyondThreeSecondsDoesNotTriggerAdmissionRecovery() {
+        Fixture().use { fixture ->
+            fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
+            val codec = fixture.attachCodec()
+            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            val video = fixture.avFilter(false)
+            val samples = mutableListOf<MediaEvent>()
+            // 約4秒間、29.97 fps相当のPTSで入力する。Codecからinput indexが戻る限り
+            // 累積PTSの幅そのものを過負荷扱いしないことをproduction経路で固定する。
+            repeat(120) { frame ->
+                val event =
+                    mediaEvent(1L, 90_000L + frame * 3_003L).also {
+                        Shadow.extract<NativeMediaEvent>(it).block =
+                            ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+                    }
+                val previous = samples.lastOrNull()
+                val released = CountDownLatch(1)
+                previous?.let { Shadow.extract<NativeMediaEvent>(it).onRelease = { released.countDown() } }
+                samples += event
+                deliver(video, event)
+                fixture.drain()
+                postCodecCallback(codec, 1, 0, null)
+                if (previous == null) {
+                    assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
+                } else {
+                    assertTrue(released.await(5, TimeUnit.SECONDS), "old input must be returned")
+                }
+                fixture.drain()
+            }
+            returnCodecInputAndAwaitEventRelease(codec, samples.last())
+            fixture.drain()
+            assertEquals(120L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.INPUT_REJECTED, false))
+            assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertTrue(fixture.failures.isEmpty())
+            assertTrue(fixture.unavailable.isEmpty())
+            assertEquals(0, Shadow.extract<NativeFilter>(video).closes)
+            samples.forEach { assertEquals(1, Shadow.extract<NativeMediaEvent>(it).releases) }
+        }
+    }
+
+    @Test
     fun mpeg2HeaderProbeAdvancesBeyondTheFirst256KiB() {
         Fixture().use { fixture ->
             fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
@@ -1444,14 +1486,17 @@ class PlaybackFilterAdmissionTest {
                 ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
         }
 
-    private fun mediaEvent(length: Long): MediaEvent =
+    private fun mediaEvent(
+        length: Long,
+        pts90k: Long = 0L,
+    ): MediaEvent =
         MediaEvent::class.java.declaredConstructors
             .single { it.parameterCount == 15 }
             .apply { isAccessible = true }
             .newInstance(
                 0,
-                false,
-                0L,
+                pts90k != 0L,
+                pts90k,
                 false,
                 0L,
                 length,
