@@ -14,6 +14,14 @@
 - ECM/EMMのMediaCasStateExceptionについて、公開APIの数値errorCodeとdiagnosticInfoを既存の診断messageへ保持し、messageが空でもplatform側の失敗種別を識別できるようにした。元のcause、CAS状態分類、配送・再試行契約は維持する。
 - Program cleanupの非同期開始・実行中はPENDINGと記録し、workerの完了結果だけからCOMPLETED/FAILEDを記録する。Boot EPGとbackground maintenanceの未準備分岐を揃え、非同期開始を実失敗と誤表示しない。
 - Framework CAS adapterを通すECM/EMM status保持のホスト試験を追加し、ホストCIの期待件数を401へ更新した。実機のCAS失敗原因・初回スキャンは未検証。
+## 2026-10-19 35.1入力飽和の再評価と原因計測（#207）
+
+- T1: 16MiBのcallback payload共有permitは未処理入口の有限受付枠として維持。HALの保持bytesやCodec内部メモリを実測・代替するものではない。容量拒否では予約KiB・イベント数・payload bytesを診断に残し、拒否が生じる事象そのものを区別できるようにした。
+- T2: `QueueBudget`でPTS span（2〜3.5秒）を資源保持量の制限として使うのを除去。35.1の音声は約12KiB／71イベントで、bytes・件数は上限内なのに3秒のPTS離隔だけで圧縮入力が欠落した。PTSは実経過時間ではないため、件数とbytesのみを入力・音声output受付の有限上限とし、PTS spanは拒否時の診断値へ残す。
+- T3: callback受付超過・Codec入力受付上限等により**実際に圧縮sampleを解放した場合**はCodec参照pictureをそのまま継続利用せず、従来の1回の世代再生成へ接続する方針を維持。PTSだけで発生した人工的な欠落を無くし、再試行workerや新しい復旧状態は追加しない。設計書の「一度sampleを破棄しても継続」との矛盾を解消。
+- T4: 既存playback ownerでcallback→owner到達、Codec queue、入力index返却、出力callback、MediaSync音声consumeの進捗と所要時間をDEBUG採取できるようにした。世代別の入力index再通知・返却・音声consumeは既存`PlaybackDataPathProgress`に追記し、DEBUGの所要時間ログは32/64件ごとの採取とする。新worker、producer queue、時間判定へのfeedbackは導入しない。
+- T5: Android 15 Robolectric fixtureで有界キューに対するPTS幅3秒超の少量音声入力、および4秒相当のMPEG-2入力120回・Codec出力／描画callback・入力index返却を検証する回帰を追加。診断counter reset試験も追従した。
+- **検証範囲:** 実装・設計・テストの変更をPRへ反映したが、Android製品build、Robolectricの実行、実端末のCodec処理能力・黒画面解消はこの変更だけでは確認できていない。実Codecで入力を消費できない場合はbytes/件数上限に達して失敗し得るため、診断traceと速度比較による原因切分けが残る。toolsの診断PR #17と恒久修正PR #18/19の統合は行わない。
 
 ## 2026-10-18 導入元に戻したdual-mono試験の是正
 
