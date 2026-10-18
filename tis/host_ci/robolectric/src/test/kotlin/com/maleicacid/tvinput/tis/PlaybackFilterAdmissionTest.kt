@@ -310,7 +310,9 @@ class PlaybackFilterAdmissionTest {
             val type = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "MediaSample" }
             val constructor = type.declaredConstructors.single { it.parameterCount == 6 }.apply { isAccessible = true }
             val probe =
-                decoder.javaClass.superclass.getDeclaredMethod("probeHeader", type).apply { isAccessible = true }
+                decoder.javaClass.superclass
+                    .getDeclaredMethod("probeHeader", type)
+                    .apply { isAccessible = true }
             repeat(7) { chunk ->
                 val bytes = ByteArray(64 * 1024)
                 if (chunk == 6) {
@@ -353,7 +355,10 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(1, Shadow.extract<NativeMediaEvent>(it).releases)
             }
             assertTrue(fixture.failures.isEmpty())
-            val arm = decoder.javaClass.superclass.getDeclaredMethod("armStartupDeadline").apply { isAccessible = true }
+            val arm =
+                decoder.javaClass.superclass
+                    .getDeclaredMethod("armStartupDeadline")
+                    .apply { isAccessible = true }
             fixture.executor.callControl(5_000L) { arm.invoke(decoder) }
             Shadows.shadowOf(Looper.getMainLooper()).idleFor(6, TimeUnit.SECONDS)
             fixture.drain()
@@ -756,14 +761,27 @@ class PlaybackFilterAdmissionTest {
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
             val audioDecoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
             val key = ServiceKey(4, 0x4010, 101)
-            val channel = TunerController.ResolvedChannel(
-                null, "admission-test", key, 1, "test", "1", "ISDB_T",
-                FrequencyHz(473_000_000L), StreamSelector.NONE, null, null,
-            )
-            val selection = TunerController.AvStreamSelection(
-                key, TsPid(0x100), AribElementaryStream(TsPid(0x101), 0x1b, null, null, null),
-                AribElementaryStream(TsPid(0x110), 0x0f, null, null, null),
-            )
+            val channel =
+                TunerController.ResolvedChannel(
+                    null,
+                    "admission-test",
+                    key,
+                    1,
+                    "test",
+                    "1",
+                    "ISDB_T",
+                    FrequencyHz(473_000_000L),
+                    StreamSelector.NONE,
+                    null,
+                    null,
+                )
+            val selection =
+                TunerController.AvStreamSelection(
+                    key,
+                    TsPid(0x100),
+                    AribElementaryStream(TsPid(0x101), 0x1b, null, null, null),
+                    AribElementaryStream(TsPid(0x110), 0x0f, null, null, null),
+                )
             fixture.executor.callControl(5_000L) {
                 ReflectionHelpers.setField(fixture.pipeline, "activeChannel", channel)
                 ReflectionHelpers.setField(fixture.pipeline, "activeSelection", selection)

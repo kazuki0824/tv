@@ -73,6 +73,7 @@ class MaleicacidLiveSession(
     private var captionEnabled: Boolean = false
     private var streamVolume: Float = 1.0f
     private var playbackState: PlaybackStartState = PlaybackStartState.Idle
+
     // 受理されたtune内の同一署名に対して、回復可能な起動失敗の再試行は最大1回。
     private var retriedPlaybackSignature: AvPlaybackSignature? = null
 
