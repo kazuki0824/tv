@@ -2461,8 +2461,8 @@ mod component_group_structure_tests {
 
     #[test]
     fn mvtv_main_group_preserves_component_tags() {
-        // type=0 (MVTV), total_bit_rate_flag=0, one group; group id=0, one CA unit;
-        // CA_unit_id=1 with video/audio/caption component tags; empty text.
+        // type=0 (MVTV)、total_bit_rate_flag=0、groupは1個、group id=0、CA unitは1個。
+        // CA_unit_id=1で映像・音声・字幕のcomponent tagを持ち、textは空。
         let body = [0x01, 0x01, 0x13, 0x00, 0x10, 0x30, 0x00];
         let mut bytes = vec![0xd9, body.len() as u8];
         bytes.extend_from_slice(&body);

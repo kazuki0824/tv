@@ -94,8 +94,7 @@ pub struct FrontendRegistryEntry {
     /// frontend exportと同じprobe sourceから導出した固定LNB profile。
     /// Noneの場合、frontendはLNB voltage statusやLNB bindingをadvertiseしてはならない。
     pub lnb_profile: Option<LnbRegistryProfile>,
-    /// Product-wiring evidence for satellite power. This is independent of
-    /// whether a caller-controllable ILnb endpoint is exported.
+    /// 衛星給電の製品配線上の根拠。呼出し元が制御できるILnb endpointの公開有無とは独立する。
     pub satellite_power_topology: SatellitePowerTopology,
 }
 
