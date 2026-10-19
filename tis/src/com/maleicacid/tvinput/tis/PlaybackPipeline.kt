@@ -53,6 +53,8 @@ class PlaybackPipeline(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val codecCallbackThread = HandlerThread("maleicacid-codec-$inputId").apply { start() }
     private val codecCallbackHandler = Handler(codecCallbackThread.looper)
+    // render出力待機中だけ、停止要求から起床対象のMediaSyncを参照する。
+    private val blockedVideoOutputSync = AtomicReference<MediaSync?>(null)
     private var surface: Surface? = null
     private var streamVolume: Float = 1.0f
 
@@ -2265,7 +2267,13 @@ class PlaybackPipeline(
                         "index=$index ptsUs=$presentationTimeUs",
                 )
             }
-            releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, presentationTimeUs * 1_000L) }
+            val sync = mediaSync
+            if (sync != null) blockedVideoOutputSync.set(sync)
+            try {
+                releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, presentationTimeUs * 1_000L) }
+            } finally {
+                if (sync != null) blockedVideoOutputSync.compareAndSet(sync, null)
+            }
             if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
                 Log.d(
                     LogTags.TIS,
@@ -3269,7 +3277,22 @@ class PlaybackPipeline(
             else -> AvSettings.AUDIO_STREAM_TYPE_UNDEFINED
         }
 
+    private fun wakeBlockedVideoOutputBeforeStop() {
+        if (executor.isOwnerThread()) return
+        val sync = blockedVideoOutputSync.getAndSet(null) ?: return
+        // ネイティブ待機の起床のみ。世代更新と資源解放は従来のownerに残す。
+        if (!codecCallbackHandler.post {
+                runCatching { sync.flush() }.onFailure { error ->
+                    Log.w(LogTags.TIS, "MediaSyncの映像出力待機解除に失敗しました sessionId=$sessionId", error)
+                }
+            }
+        ) {
+            Log.w(LogTags.TIS, "MediaSyncの映像出力待機解除を配送できません sessionId=$sessionId")
+        }
+    }
+
     fun stop() {
+        wakeBlockedVideoOutputBeforeStop()
         runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
     }
 
@@ -3278,6 +3301,7 @@ class PlaybackPipeline(
         reason: PlaybackUnavailableReason,
         detail: String,
     ) {
+        wakeBlockedVideoOutputBeforeStop()
         runOnPlaybackExecutorBlocking {
             val originGeneration = playbackGeneration
             SectionFilterPolicy.completeCleanup(
@@ -3443,6 +3467,7 @@ class PlaybackPipeline(
     fun release() {
         if (executor.isShutdown) return
         released.set(true)
+        wakeBlockedVideoOutputBeforeStop()
         runOnPlaybackExecutorBlocking(cleanup = true) {
             try {
                 stopOnPlaybackExecutor()
