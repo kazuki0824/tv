@@ -24,6 +24,7 @@ import org.junit.Test
 import sun.misc.Unsafe
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 // 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
 @Suppress("TooManyFunctions", "LargeClass")
@@ -1403,7 +1404,7 @@ class PlaybackFailureCallbacksTest {
             set("playbackGeneration", 7L)
             set("released", AtomicBoolean(false))
             // Unsafeによるconstructor省略時も停止前のnative wake参照を初期化する。
-            set("blockedVideoOutputSync", java.util.concurrent.atomic.AtomicReference<android.media.MediaSync?>())
+            set("blockedVideoOutputSync", AtomicReference<MediaSync?>())
             set("videoAvailableNotified", AtomicBoolean(!waiting))
             set("resourceCleanup", cleanup)
             // Unsafe fixtureはconstructor初期化を省くため、本番の診断専用fieldを明示初期化する。
