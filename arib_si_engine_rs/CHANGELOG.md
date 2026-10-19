@@ -28,6 +28,11 @@
 - CAS必須でECM候補がない場合、およびCAS不要でESに実ECMがある場合の拒否を維持する。全ESを持たない保存形式で実効CAを再計算しない責務を設計正本へ明記した。保存schema、JNI、Kotlin DTOの追加・変更はない。
 - 実際のservice discovery算出からProgram/Channel builder、保存値の再検証まで通す回帰試験を追加した。記述子なし、PROGRAM/ESの0x1FFF、全ES/一部ESの上書き、ES実ECM、ESなし、および矛盾したCAS要否を確認する。
 - Rust 1.81.0で旧実装に対する回帰試験の失敗を確認し、修正後のhost workspace全184試験、workspace全targetのClippy（警告をエラー扱い）、変更Rustファイルのrustfmt検査を通過。Android/Soong build、device atest/VTS、実機の初回スキャンは未実施。
+# 2026-10-19 SIスナップショットのJNI Listメソッド探索削減
+
+- `jvm_snapshot_generated.rs`の`object_list`と`int_list`で`java/util/ArrayList.add(Object):boolean`のmethod IDを同一リスト構築中に一度だけ解決し、子要素ごとのメソッド探索を避ける。
+- `JMethodID`は取得元classローカル参照の有効期間内のみ使用し、`call_method_unchecked`は固定シグネチャと`JValue::Object`だけを渡す。JNI例外は既存の`JNI_OUTPUT`写像のままにする。共有グローバルcache、追加worker、snapshot複製は導入しない。
+- Rust JNIのホストCIと型検査は実施対象。Android/Soong実ビルドとJNI性能の定量比較、長時間再生の改善検証は未実施であり、ログ抑制だけで`FindClass`・`GetMethodID`が不要になるとは表明しない。
 
 # 2026-10-09 PR #186 nativeCreate例外生成前のregistryロック解放
 
