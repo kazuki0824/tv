@@ -133,6 +133,47 @@ class PlaybackMediaSyncReleaseTest {
     }
 
     @Test
+    fun activeVideoRenderWaitCanBeWokenBeforeStopReachesOwner() {
+        withAttachedSync { pipeline, native, surface ->
+            val decoder = attachVideoDecoder(pipeline, native, surface)
+            val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            ReflectionHelpers.setField(pipeline, "mediaSyncStarted", true)
+            native.playing = true
+            native.blockActiveRender = true
+            executor.executeControl { videoOutput(decoder) }
+            assertTrue(native.renderEntered.await(2, TimeUnit.SECONDS))
+            try {
+                pipeline.stop()
+                assertEquals(0L, native.resumeRender.count)
+                assertTrue(native.events.indexOf("render") < native.events.indexOf("codec-stop"))
+                assertTrue(native.events.indexOf("release") < native.events.indexOf("codec-stop"))
+            } finally {
+                native.resumeRender.countDown()
+            }
+        }
+    }
+
+    @Test
+    fun activeVideoRenderWaitCanBeWokenBeforeReleaseReachesOwner() {
+        withAttachedSync { pipeline, native, surface ->
+            val decoder = attachVideoDecoder(pipeline, native, surface)
+            val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            ReflectionHelpers.setField(pipeline, "mediaSyncStarted", true)
+            native.playing = true
+            native.blockActiveRender = true
+            executor.executeControl { videoOutput(decoder) }
+            assertTrue(native.renderEntered.await(2, TimeUnit.SECONDS))
+            try {
+                pipeline.release()
+                assertEquals(0L, native.resumeRender.count)
+                assertTrue(native.events.indexOf("release") < native.events.indexOf("codec-stop"))
+            } finally {
+                native.resumeRender.countDown()
+            }
+        }
+    }
+
+    @Test
     fun pausedVideoOutputIsRenderedOnlyAfterStartupGateOpens() {
         withAttachedSync { pipeline, native, surface ->
             val decoder = attachVideoDecoder(pipeline, native, surface)
@@ -205,7 +246,7 @@ class PlaybackMediaSyncReleaseTest {
         ) {
             val owner = requireNotNull(sync)
             owner.renderEntered.countDown()
-            if (!owner.playing) check(owner.resumeRender.await(5, TimeUnit.SECONDS))
+            if (!owner.playing || owner.blockActiveRender) check(owner.resumeRender.await(5, TimeUnit.SECONDS))
             owner.events += "render"
         }
 
@@ -252,6 +293,7 @@ class PlaybackMediaSyncReleaseTest {
         val renderEntered = CountDownLatch(1)
         val resumeRender = CountDownLatch(1)
         var playing = false
+        var blockActiveRender = false
         var failNextDisconnect = false
         var failNextRelease = false
         var failNextFlush = false
