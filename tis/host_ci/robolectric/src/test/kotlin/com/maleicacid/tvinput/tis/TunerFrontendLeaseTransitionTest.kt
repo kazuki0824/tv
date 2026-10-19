@@ -123,7 +123,7 @@ class TunerFrontendLeaseTransitionTest {
     }
 
     @Test
-    fun frontendPreCloseRetainsScanOwnerUntilPublicRetryThenAllowsNextScan() {
+    fun successfulScanCloseReleasesOwnerAndAllowsNextScan() {
         val controller = controller()
         NativeTuner.successfulTunes = true
         val task = ChannelScanManager.ActiveScanTask(17, ScanPurpose.SETUP_SCAN, RuntimeEnvironment.getApplication())
@@ -132,57 +132,39 @@ class TunerFrontendLeaseTransitionTest {
         try {
             check(controller.tuneForScan(terrestrial()).success)
             val sdk = checkNotNull(NativeTuner.current)
-            sdk.frontendCloseResult = Tuner.RESULT_UNKNOWN_ERROR
-            repeat(2) {
-                var failure: Exception? = null
-                check(!ChannelScanManager.finishScanRelease(task, owner) { failure = it })
-                check(failure != null && failure !is TunerOneShotCloseFailure)
-                check(owner.get() === task && task.controller === controller)
-                check(sdk.frontendHandle() == 17 && sdk.trm.frontendReleases == 0)
-                check(!sdk.oneShotClosed && sdk.closeCalls == 0)
-                check(!ReflectionHelpers.getField<Boolean>(controller, "released"))
-            }
-            // HALが回収可能になった境界だけをnative結果で表す。独立retry機構はない。
-            sdk.frontendCloseResult = Tuner.RESULT_SUCCESS
             check(ChannelScanManager.finishScanRelease(task, owner) { throw it })
             check(owner.get() == null && sdk.frontendHandle() == null)
-            check(sdk.trm.frontendReleases == 1 && sdk.fullClosed == 1 && sdk.closeCalls == 1)
+            check(sdk.trm.frontendReleases == 1 && sdk.fullClosed == 1)
             val next = TunerController(RuntimeEnvironment.getApplication(), "next-scan")
             try {
                 check(next.tuneForScan(terrestrial()).success)
-                val nextSdk = checkNotNull(NativeTuner.current)
-                check(nextSdk !== sdk && nextSdk.frontendHandle() == 17)
-                check(nextSdk.requested == listOf(FrontendSettings.TYPE_ISDBT))
+                check(NativeTuner.current !== sdk)
             } finally {
                 next.release()
             }
         } finally {
-            NativeTuner.instances.forEach { it.frontendCloseResult = Tuner.RESULT_SUCCESS }
-            runCatching { controller.release() }
+            controller.release()
         }
     }
 
     @Test
-    fun frontendPreCloseFailureCanRetryTypeChangeWithoutClosingSdk() {
+    fun frontendCloseFailureIsIrreversibleEvenAfterHalCleanupCompletes() {
         val controller = controller()
         try {
             check(!controller.tuneForScan(satellite()).success)
             val sdk = checkNotNull(NativeTuner.current)
             sdk.frontendCloseResult = Tuner.RESULT_UNKNOWN_ERROR
-            repeat(2) {
-                check(!controller.tuneForScan(terrestrial()).success)
-                check(!sdk.oneShotClosed && sdk.closeCalls == 0)
-                check(sdk.frontendHandle() == 17 && sdk.trm.frontendReleases == 0)
-                check(NativeTuner.instances.size == 1)
-            }
+            check(!controller.tuneForScan(terrestrial()).success)
+            val calls = sdk.closed
+            // HALの後片付けが済んでもFrameworkが破棄した参照は戻らない。
             sdk.frontendCloseResult = Tuner.RESULT_SUCCESS
             check(!controller.tuneForScan(terrestrial()).success)
-            val next = checkNotNull(NativeTuner.current)
-            check(next !== sdk && sdk.fullClosed == 1 && sdk.trm.frontendReleases == 1)
-            check(next.requested == listOf(FrontendSettings.TYPE_ISDBT))
+            check(sdk.closed == calls && sdk.closeCalls == 0)
+            check(sdk.frontendHandle() == 17 && sdk.trm.frontendReleases == 0)
+            check(NativeTuner.instances.size == 1)
+            check(runCatching { controller.release() }.exceptionOrNull() is TunerOneShotCloseFailure)
         } finally {
-            NativeTuner.instances.forEach { it.frontendCloseResult = Tuner.RESULT_SUCCESS }
-            controller.release()
+            runCatching { controller.release() }
         }
     }
 
@@ -337,8 +319,8 @@ class TunerFrontendLeaseTransitionTest {
             check(task.closing && owner.get() === task && task.controller === controller)
             check(sdk.closeCalls == 0 && !sdk.oneShotClosed)
             sdk.frontendCloseResult = Tuner.RESULT_SUCCESS
-            check(finishSetupScan(7))
-            check(owner.get() == null)
+            check(!finishSetupScan(7))
+            check(owner.get() === task)
         } finally {
             sdk.frontendCloseResult = Tuner.RESULT_SUCCESS
             managerExecutor.submit {}.get(5, TimeUnit.SECONDS)
@@ -685,6 +667,7 @@ class TunerFrontendLeaseTransitionTest {
         val scanned = mutableListOf<Int>()
         var closed = 0
         var frontendCloseResult = Tuner.RESULT_SUCCESS
+        private var frontendClientClosed = false
         lateinit var trm: NativeTrm
 
         fun frontendHandle(): Int? = ReflectionHelpers.getField(actual, "mFrontendHandle")
@@ -869,7 +852,12 @@ class TunerFrontendLeaseTransitionTest {
 
         @Implementation
         @Suppress("UNUSED_PARAMETER")
-        fun nativeCloseFrontend(handle: Int): Int = frontendCloseResult
+        fun nativeCloseFrontend(handle: Int): Int {
+            if (frontendClientClosed) return Tuner.RESULT_INVALID_STATE
+            // AOSP FrontendClient/TunerFrontendはclose結果によらず参照を破棄する。
+            frontendClientClosed = true
+            return frontendCloseResult
+        }
 
         @Implementation
         fun close() {
