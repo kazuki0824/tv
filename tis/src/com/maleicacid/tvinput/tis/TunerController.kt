@@ -41,10 +41,10 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 
-/** Framework Tuner.close()が一回限りで失敗した後は、同じSDK instanceへの再投入は不可能。 */
+/** Framework TunerのcloseFrontend()/close()が一回限りで失敗した後は、同じSDK instanceへの再投入は不可能。 */
 internal class TunerOneShotCloseFailure(
     cause: Throwable,
-) : IllegalStateException("Tuner.close失敗で資源解放未確定（Framework one-shot）", cause)
+) : IllegalStateException("Tuner解放失敗で資源解放未確定（Framework one-shot）", cause)
 
 /** 連続する同一CAS失敗の初回と二倍間隔の集約点だけを記録する。 */
 internal fun shouldLogCasDiagnosticOccurrence(count: Long): Boolean = count > 0L && (count and (count - 1L)) == 0L
@@ -569,6 +569,7 @@ class TunerController(
         if (tunerInstance === existingTuner) {
             val closeFailure = runCatching { tunerInstance.closeFrontend() }.exceptionOrNull()
             if (closeFailure != null) {
+                tunerCloseFailure = closeFailure
                 return BsFrontendSelectionResult(
                     null,
                     Tuner.RESULT_UNKNOWN_ERROR,
@@ -2209,17 +2210,17 @@ class TunerController(
         released = true
     }
 
-    // Frontendの一時的な失敗ではSDKを閉鎖せず、既存ownerから同じ公開APIを再試行する。
-    // 後段closeだけが失敗した場合はone-shotの未完義務として保持し、成功を偽装しない。
+    // FrontendClientは失敗時にもnative参照を破棄するため、closeFrontendも再試行不能。
+    // 元の失敗を保持し、後続closeのno-opやINVALID_STATEを回収成功と解釈しない。
     // FrameworkのRuntimeExceptionを元原因のままone-shot未完義務へ分類する境界。
     @Suppress("TooGenericExceptionCaught")
     private fun closeTunerAfterFrontendRelease(instance: Tuner) {
-        instance.closeFrontend()
         try {
+            instance.closeFrontend()
             instance.close()
         } catch (error: RuntimeException) {
             tunerCloseFailure = error
-            Log.w(LogTags.TIS, "Frontend回収後のTuner.closeに失敗 inputId=$inputId", error)
+            Log.w(LogTags.TIS, "Tunerのone-shot解放に失敗 inputId=$inputId", error)
             throw TunerOneShotCloseFailure(error)
         }
     }

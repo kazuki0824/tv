@@ -220,6 +220,11 @@
 - #207: Sessionが受理した再生不能理由・詳細・世代、圧縮入力欠落の発生箇所、停止前の既存AV進捗と停止段階をログへ残す。pending queue拒否では既存の件数・bytes・PTS幅・Codec入力所有数を記録する。
 - 34.1（fe7ad3c）の黒画面・旧映像再表示の原因確定用。期限・容量・復旧回数・資源寿命は変更せず、症状の修正完了とは扱わない。実機検証は未実施。
 
+## Frontend close失敗後の再試行前提を是正
+
+- #209: closeFrontendもFrameworkの不可逆な解放境界として元失敗を保持する。HALが回収済みになれば同じJava APIを再試行できるという誤った前提を除去。
+- native模擬実装を実Frameworkの参照破棄に合わせ、失敗後の再試行拒否と正常close後の次scanを検証する。実機での0件→中止→再開→登録→視聴は未検証。
+
 ## 圧縮入力欠落後のCodec参照状態の退役
 
 - #207: 構成済みCodecに対するAV OVERFLOW、RestartEvent、owner受付拒否、sample拒否を既存の全再生generation終了・再生成へ接続。Filter.flushだけで旧Codecを継続せず、Codec errorと共通の一回の自動復旧制限を使う。構成前の局所flushは維持する。
