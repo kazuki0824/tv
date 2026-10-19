@@ -53,6 +53,7 @@ class PlaybackPipeline(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val codecCallbackThread = HandlerThread("maleicacid-codec-$inputId").apply { start() }
     private val codecCallbackHandler = Handler(codecCallbackThread.looper)
+
     // render出力待機中だけ、停止要求から起床対象のMediaSyncを参照する。
     private val blockedVideoOutputSync = AtomicReference<MediaSync?>(null)
     private var surface: Surface? = null
