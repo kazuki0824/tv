@@ -195,6 +195,7 @@ class ChannelScanController(
             if (!tune.success) {
                 val message = "選局に失敗しました result=${tune.resultCode} ${tune.message}"
                 diagnostics += ScanDiagnostic(candidate, message)
+                Log.w(LogTags.TIS, "scan tune rejected candidate=$candidate $message")
                 terminalFailure = ScanTerminal(ScanTerminalOutcome.TUNE_REJECTED, message)
                 return false
             }

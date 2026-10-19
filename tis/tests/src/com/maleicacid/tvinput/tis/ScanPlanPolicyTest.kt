@@ -565,6 +565,49 @@ class ScanPlanPolicyTest {
     }
 
     @Test
+    fun unretryableFrameworkOneShotCloseRetainsFrameworkCleanupOwner() {
+        val task = ChannelScanManager.ActiveScanTask(4, ScanPurpose.SETUP_SCAN, android.content.ContextWrapper(null))
+        val owner = AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
+        var nativeCloseAttempts = 0
+        var engineCloses = 0
+        var notified: Throwable? = null
+        task.controller =
+            AutoCloseable {
+                nativeCloseAttempts++
+                throw TunerOneShotCloseFailure(IllegalStateException("HAL worker pending"))
+            }
+        task.engine = AutoCloseable { engineCloses++ }
+        check(!ChannelScanManager.finishScanRelease(task, owner) { notified = it })
+        check(notified is TunerOneShotCloseFailure)
+        check(owner.get() === task && task.controller != null && task.engine == null)
+        check(nativeCloseAttempts == 1 && engineCloses == 1)
+    }
+
+    @Test
+    fun oneShotTunerCloseStillRetainsOtherPendingScanCleanup() {
+        val task = ChannelScanManager.ActiveScanTask(5, ScanPurpose.SETUP_SCAN, android.content.ContextWrapper(null))
+        val owner = AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
+        var engineRejects = true
+        var engineCloses = 0
+        task.controller =
+            AutoCloseable {
+                throw TunerOneShotCloseFailure(IllegalStateException("HAL worker pending"))
+            }
+        task.engine =
+            AutoCloseable {
+                if (engineRejects) error("SI engine still owns data")
+                engineCloses++
+            }
+        var notifications = 0
+        check(!ChannelScanManager.finishScanRelease(task, owner) { notifications++ })
+        check(owner.get() === task && task.closing && task.controller != null && task.engine != null)
+        engineRejects = false
+        check(!ChannelScanManager.finishScanRelease(task, owner) { notifications++ })
+        check(owner.get() === task && task.controller != null && task.engine == null)
+        check(engineCloses == 1 && notifications == 2)
+    }
+
+    @Test
     fun resourceCleanupRetainsFailedReleaseActionOnRetry() {
         // 共通ResourceCleanupの再試行義務を単体検証する。LiveSessionと実Controllerの結合は検証しない。
         val cleanup = ResourceCleanup()

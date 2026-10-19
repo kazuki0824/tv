@@ -51,7 +51,11 @@ class SetupActivity :
                         statusView.setText(R.string.invalid_setup_request)
                         setResult(RESULT_CANCELED)
                     } else {
-                        setupGeneration = ChannelScanManager.startIfIdle(this@SetupActivity, resolved)
+                        val accepted =
+                            ChannelScanManager.startIfIdle(this@SetupActivity, resolved) {
+                                statusView.text = "前のスキャンを終了中です。少し待ってから再度開始してください。"
+                            }
+                        if (accepted != null) setupGeneration = accepted
                     }
                 }
             }
