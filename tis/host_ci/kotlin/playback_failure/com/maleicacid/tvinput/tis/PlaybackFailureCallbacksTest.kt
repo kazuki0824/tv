@@ -1402,6 +1402,8 @@ class PlaybackFailureCallbacksTest {
             set("executor", LifecycleSerialExecutor("playback-fixture"))
             set("playbackGeneration", 7L)
             set("released", AtomicBoolean(false))
+            // Unsafeによるconstructor省略時も停止前のnative wake参照を初期化する。
+            set("blockedVideoOutputSync", java.util.concurrent.atomic.AtomicReference<android.media.MediaSync?>())
             set("videoAvailableNotified", AtomicBoolean(!waiting))
             set("resourceCleanup", cleanup)
             // Unsafe fixtureはconstructor初期化を省くため、本番の診断専用fieldを明示初期化する。

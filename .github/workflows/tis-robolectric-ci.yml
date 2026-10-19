@@ -73,7 +73,7 @@ jobs:
           for case in playback.findall("testcase"):
               print(f"Android 15実SDK playback受付試験: {case.get('name')} success")
           sync = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest.xml")).getroot()
-          assert sync.get("tests") == "7", sync.attrib
+          assert sync.get("tests") == "9", sync.attrib
           assert sync.get("failures") == "0" and sync.get("errors") == "0", sync.attrib
           assert sync.get("skipped", "0") == "0", sync.attrib
           caption = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CaptionInputContinuityTest.xml")).getroot()
