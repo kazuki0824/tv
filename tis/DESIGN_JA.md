@@ -502,7 +502,7 @@ Programs publish/delete が provider failure になった場合は、`ProgramPub
 
 再試行の回復時間には上限を保証しない。長時間同一番組を視聴しSIの内容が変化しなくても、受理したSI sectionの通知から `TunerController.onSectionIngestedCallback → MaleicacidLiveSession.refreshDynamicSiAndCasFilters → publishLiveProgramsForCurrentService` を経て再試行入口へ到達する。ただし登録可能な現在snapshotと旧要求区間を覆うauthoritative windowが必要であり、受信停止や根拠不足では実行しない。60秒はcooldownであって受信・JobScheduler・TvProviderの成功期限ではない。プロセスだけの再起動はboot broadcastと同一ではなく、旧process-local要求は復元しない。再作成されたlive sessionの受信、利用者のscan、既に登録されたboot/background job等による再収集を待つ。DirectBoot pendingがない状態ではBootEpgSyncSchedulerは新jobを登録しない。再起動だけで再収集が必ず始まるとは保証しない。
 
-dirty-window queueは全体上限512 windowsの単一LRUとする。超過時は最古entryを破棄し、ServiceKey別`droppedRetryWindowCount`を加算する。ServiceKeyごとの第二上限は設けない。process restart後はcounterを0に戻す。
+dirty-window queueは全体上限512 windowsの単一LRUとする。超過時は最古entryを破棄する。破棄済みServiceKeyの第二台帳は保持せず、再試行対象はこの有界queueだけで管理する。
 
 SDT-other / NIT-other / BAT 由来で現在 candidate の actual transport に解決できないサービスは、現在 candidate の物理情報で channel insertしない。未登録で Program row が存在しない unresolved transport は scan/maintenance 診断情報に `skippedUnresolvedTransportCount` として記録し、Program provider-dataには書かない。unresolved transport はTISのpublish policy上の結果であって放送由来のProgram意味情報ではないため、解決済み・publish済みProgramについてもその否定値をprovider-dataへ保存しない。unresolved情報だけを根拠に現在candidateのONID / TSID / 物理情報を補完してChannel / Programを生成・更新せず、既存rowの失効・削除は通常のauthoritative snapshot契約だけに従う。
 
@@ -935,6 +935,12 @@ Program cleanupの完了通知は準備済み同期経路とworker完了経路�
 ### 再生診断と最終表示の観測境界
 
 再生のDEBUG診断は既存session/generationとPTS、MediaSync生成区間、Codecへの映像出力返却要求・完了・callback受信、Filter callbackからownerへの待ち時間、Codec入力の投入/再利用、Codec出力callbackのowner待ち、MediaSync音声消費を記録する。診断はavailabilityの根拠、資源寿命、再試行、ownerの選択を変えず、追加workerや台帳を持たない。最終表示の識別はTISだけで実装せず、Framework MediaSyncのbuffer ID/queue結果とSurfaceFlingerの合成・表示traceを使用する。出力queue成功と実present、Codec→MediaSync入力callbackと最終出力を区別する。診断の有効化・platform差分・採取成立条件は`INTEGRATION.md`の「黒画面・停止不能・旧映像の診断採取」を参照する。
+
+音声stream_typeは本番Filter設定と試験で一つの対応表を使い、真偽値をそのまま返す試験専用関数は設けない。
+
+### 未使用の診断状態と試験専用関数
+
+boot/background同期の未読AtomicLongと最終skip理由の複製、current-program ratingの未読診断snapshotは保持しない。既存ログ、Direct Bootの永続pending/skip理由、実際のEIT優先・Provider選択・失敗返却を利用する。sessionIdをそのまま返す試験専用関数は設けない。
 
 ### スキャン開始拒否
 
