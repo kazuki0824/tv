@@ -232,6 +232,11 @@
 - NHK停止後の再選局でCodec停止が待機超過したログを受け、MediaSyncのflush・解放をPCM返却とCodec停止より先へ移動。既存ownerとcleanupを使用する。
 - 停止順序とflush／解放失敗をRobolectricで検査する。実機の映像破損・AAC入力不足・停止回復は別途確認が必要。
 
+# setup開始拒否と前回scanの失敗理由の分離
+
+- beginScanの呼出しごとの受付結果から今回の失敗だけを拒否callbackへ渡す。実行中・cleanup保留による拒否では、前回のScanState.Failedを今回の拒否理由へ転用しない。boot/backgroundの拒否診断も同じ受付結果を使う。
+- 既存Managerと実ControllerのFailed終端→公開Frontend cleanup失敗→owner保持→setup拒否表示→公開API再試行による解放をAndroid15 Robolectricで検査する。既存の世代枯渇表示の回帰も維持する。
+
 # setup開始拒否時の世代枯渇表示
 
 - 開始拒否時は既存ScanState.Failedの理由を表示し、SCAN_GENERATION_EXHAUSTEDを前scanの終了待ちへ上書きしない。新しい拒否状態・schedulerは追加せず、setup generationを維持する。

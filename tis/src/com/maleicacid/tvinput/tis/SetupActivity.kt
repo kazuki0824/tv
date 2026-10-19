@@ -52,9 +52,7 @@ class SetupActivity :
                         setResult(RESULT_CANCELED)
                     } else {
                         val accepted =
-                            ChannelScanManager.startIfIdle(this@SetupActivity, resolved) {
-                                onScanStartRejected()
-                            }
+                            ChannelScanManager.startIfIdle(this@SetupActivity, resolved, this@SetupActivity::onScanStartRejected)
                         if (accepted != null) setupGeneration = accepted
                     }
                 }
@@ -76,11 +74,10 @@ class SetupActivity :
         }
     }
 
-    private fun onScanStartRejected() {
-        val state = ChannelScanManager.currentState()
+    private fun onScanStartRejected(failure: ScanState.Failed?) {
         statusView.text =
-            if (state is ScanState.Failed) {
-                scanStatusText(state)
+            if (failure != null) {
+                scanStatusText(failure)
             } else {
                 "前のスキャンを終了中です。少し待ってから再度開始してください。"
             }
