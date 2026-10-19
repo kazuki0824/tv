@@ -131,6 +131,10 @@
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
 
+## 2026-10-18 統合手順からPR編集履歴を除去
+
+- Tuner閉鎖失敗後のSDK/TRM後始末の手順から、patchを追加・撤回した編集履歴だけを削除。標準APIの順序、追加Framework API不要、実機受入条件と未立証範囲は維持する。
+
 ## 2026-10-18 Framework診断差分revertの是正
 
 - 部分revertに混入したtoolsの作業branchへの参照文と「ビルド前の準備」の見出しを取り消す。Framework診断patchとビルド手順の追加差分を消し、新しい統合規定をtvへ加えない。採取手順とTIS自身の診断は維持する。
