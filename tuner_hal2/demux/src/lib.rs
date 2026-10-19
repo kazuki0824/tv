@@ -3703,14 +3703,15 @@ mod tests {
                 },
             )
             .unwrap();
-        demux
-            .export_filter_av_shared_handle_for_test(19)
-            .unwrap();
+        demux.export_filter_av_shared_handle_for_test(19).unwrap();
         let data_id = match demux.allocate_filter_av_payload_for_test(19, 188).unwrap() {
             AvPayloadDeliveryOutcome::Delivered(event) => event.data_id,
             other => panic!("unexpected AV allocation outcome: {other:?}"),
         };
-        assert_eq!(demux.filter_av_active_allocation_count_for_test(19), Some(1));
+        assert_eq!(
+            demux.filter_av_active_allocation_count_for_test(19),
+            Some(1)
+        );
 
         demux
             .configure_filter_av_stream_type(
@@ -3722,7 +3723,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(demux.filter_av_active_allocation_count_for_test(19), Some(1));
+        assert_eq!(
+            demux.filter_av_active_allocation_count_for_test(19),
+            Some(1)
+        );
         assert_eq!(
             demux
                 .release_filter_av_handle(19, AvHandleReleaseDescriptor::Empty, data_id.0)
@@ -3756,9 +3760,7 @@ mod tests {
                 },
             )
             .unwrap();
-        demux
-            .export_filter_av_shared_handle_for_test(20)
-            .unwrap();
+        demux.export_filter_av_shared_handle_for_test(20).unwrap();
         let data_id = match demux.allocate_filter_av_payload_for_test(20, 188).unwrap() {
             AvPayloadDeliveryOutcome::Delivered(event) => event.data_id,
             other => panic!("unexpected AV allocation outcome: {other:?}"),
@@ -3766,7 +3768,10 @@ mod tests {
 
         demux.flush_filter_runtime(20).unwrap();
 
-        assert_eq!(demux.filter_av_active_allocation_count_for_test(20), Some(1));
+        assert_eq!(
+            demux.filter_av_active_allocation_count_for_test(20),
+            Some(1)
+        );
         assert_eq!(
             demux
                 .release_filter_av_handle(20, AvHandleReleaseDescriptor::Empty, data_id.0)
@@ -3800,9 +3805,7 @@ mod tests {
                 },
             )
             .unwrap();
-        demux
-            .export_filter_av_shared_handle_for_test(21)
-            .unwrap();
+        demux.export_filter_av_shared_handle_for_test(21).unwrap();
         let stale_data_id = match demux.allocate_filter_av_payload_for_test(21, 188).unwrap() {
             AvPayloadDeliveryOutcome::Delivered(event) => event.data_id,
             other => panic!("unexpected AV allocation outcome: {other:?}"),

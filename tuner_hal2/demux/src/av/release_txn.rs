@@ -67,9 +67,11 @@ impl AvHandleReleaseTxn {
                     AvHandleReleaseOutcome::EmptyHandleAccepted
                 } else {
                     match input.data_id_state {
-                        AvDataIdState::ActiveEventLocal => AvHandleReleaseOutcome::AllocationReleased {
-                            data_id: input.data_id,
-                        },
+                        AvDataIdState::ActiveEventLocal => {
+                            AvHandleReleaseOutcome::AllocationReleased {
+                                data_id: input.data_id,
+                            }
+                        }
                         AvDataIdState::Unknown => AvHandleReleaseOutcome::UnknownDataId,
                     }
                 }
@@ -103,7 +105,9 @@ impl AvHandleReleaseTxn {
             }
 
             // AVH-007/015/016。不明または外部のfileでleaseやallocationを変更しない。
-            AvHandleReleaseKind::UnknownFile => AvHandleReleaseOutcome::InvalidHandleForAllocationRelease,
+            AvHandleReleaseKind::UnknownFile => {
+                AvHandleReleaseOutcome::InvalidHandleForAllocationRelease
+            }
         }
     }
 }
