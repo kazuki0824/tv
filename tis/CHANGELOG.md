@@ -14,6 +14,12 @@
 - ECM/EMMのMediaCasStateExceptionについて、公開APIの数値errorCodeとdiagnosticInfoを既存の診断messageへ保持し、messageが空でもplatform側の失敗種別を識別できるようにした。元のcause、CAS状態分類、配送・再試行契約は維持する。
 - Program cleanupの非同期開始・実行中はPENDINGと記録し、workerの完了結果だけからCOMPLETED/FAILEDを記録する。Boot EPGとbackground maintenanceの未準備分岐を揃え、非同期開始を実失敗と誤表示しない。
 - Framework CAS adapterを通すECM/EMM status保持のホスト試験を追加し、ホストCIの期待件数を401へ更新した。実機のCAS失敗原因・初回スキャンは未検証。
+## 2026-10-19 36系JNI TRACEの限定抑制（#207）
+
+- 36系のPerfetto・native stackで、SI DTOのJNI object構築中に`jni::wrapper::jnienv`のVERBOSEログが大量発生し、2 vCPUでTISとlogdの負荷が顕著だったことを確認。
+- Android既定`liblog_rust.dylib.so`のloggerを置き換えたり、`JNI_OnLoad`から全Rust moduleの最大log levelを変更したりせず、product system_ext property `log.tag.jni::wrapper::jnienv=D`で該当タグのVERBOSEだけを通常時に抑止する。必要時は`adb shell setprop log.tag.jni::wrapper::jnienv V`で再有効化し、終了後Dへ復元できる。Java TIS DEBUGと他タグのログは維持する。
+- 構成値と診断切替を`tis/INTEGRATION.md`へ記載。製品build・実機でのproperty反映・同条件でのfps/CPU比較は未実施。ログ生成抑制がCodecバッファ停滞の解消を示すものではない。
+
 ## 2026-10-19 35.1入力飽和の再評価と原因計測（#207）
 
 - T1: 16MiBのcallback payload共有permitは未処理入口の有限受付枠として維持。HALの保持bytesやCodec内部メモリを実測・代替するものではない。容量拒否では予約KiB・イベント数・payload bytesを診断に残し、拒否が生じる事象そのものを区別できるようにした。
