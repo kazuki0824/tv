@@ -357,3 +357,7 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 再開仕様は`DESIGN_JA.md`の「再生障害後の再開判断と予約」を正とする。対象stackを含む製品buildで、同じ選局の二回目以降の入力欠落からも再開できること、待機中の停止・再選局・release・Surface無効化・信号喪失・CAS未準備・視聴禁止が旧世代を再開させないことを確認する。音声障害後は映像のみで再開し、自動で音声を再有効化しないことも確認する。
 
 停止完了、Sessionの障害受理、次の開始、世代番号、映像利用可能の根拠を既存ログで照合する。継続的な入力欠落時は300ms待機の実機負荷・再生不能時間を測り、再開したという事実だけで妥当と判定しない。ホスト試験の予約資格・解放順序の成功を、実Codec・最終描画・製品buildの成功へ読み替えない。VMのCPU数と視聴チャンネルは記録し、入力保持上限の変更と同時評価にしない。
+
+### Tuner閉鎖失敗後のSDK/TRM後始末
+
+Tunerの閉鎖は標準APIのcloseFrontend()を先に呼び、成功後にclose()へ進む。追加Framework cleanup API/patchは不要であり、本PRで一度追加したpatchは撤回した。実機では(a)一時的Frontend close失敗→同じownerで公開API再試行→TRM解放→SDK close成功→新Tunerでscan、(b)Frontend close継続失敗とHAL停止phase/隔離、(c)Frontend解放後にDemux等の後段closeが失敗しownerを保持、を別々に確認する。hostのSDK/Shadow境界試験を実機でのHAL回収・TRM調停の証明と扱わない。

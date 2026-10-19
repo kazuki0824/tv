@@ -158,14 +158,19 @@ object ChannelScanManager {
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // setup terminalのtyped分岐は同一scan ownerで完結させ、状態写像だけを別ownerへ分散しない。
-    @Suppress("LongMethod", "MaxLineLength", "ReturnCount")
+    @Suppress("LongMethod", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod")
     fun startIfIdle(
         context: Context,
         inputId: String,
+        onRejected: () -> Unit = {},
     ): Int? {
         retryPendingRelease()
         val appContext = context.applicationContext
-        val task = beginScan(ScanPurpose.SETUP_SCAN, appContext) ?: return null
+        val task =
+            beginScan(ScanPurpose.SETUP_SCAN, appContext) ?: run {
+                onRejected()
+                return null
+            }
         val generation = task.generation
         val scanAction =
             Runnable {
@@ -208,6 +213,12 @@ object ChannelScanManager {
 
                                 scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.TUNE_REJECTED ||
                                     scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.INTERNAL_FAILURE -> {
+                                    Log.w(
+                                        LogTags.TIS,
+                                        "setup scan failed generation=$generation outcome=${scanResult.terminal.outcome} " +
+                                            "detail=${scanResult.terminal.detail} scanned=${scanResult.scanned} " +
+                                            "diagnostics=${scanResult.diagnostics}",
+                                    )
                                     setTerminalStateIfCurrent(
                                         generation,
                                         ScanState.Failed(scanResult.terminal.detail, generation, ScanPurpose.SETUP_SCAN),
@@ -633,7 +644,15 @@ object ChannelScanManager {
     private fun finishScanIfCurrent(generation: Int): Boolean {
         val task = activeTask.get()?.takeIf { it.generation == generation } ?: return true
         return finishScanRelease(task, activeTask) { error ->
-            Log.w(LogTags.TIS, "scan解放の所有を再試行まで保持します generation=$generation", error)
+            Log.w(
+                LogTags.TIS,
+                if (error is TunerOneShotCloseFailure) {
+                    "scan Tuner.closeのone-shot失敗 generation=$generation（HAL側の後片付けは非同期）"
+                } else {
+                    "scan解放の所有を再試行まで保持します generation=$generation"
+                },
+                error,
+            )
         }
     }
 
