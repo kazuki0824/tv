@@ -45,8 +45,6 @@ object DirectBootGuard {
             .putString(KEY_BOOT_REASON, bootReason)
             .putString(KEY_LAST_SKIPPED_REASON, "LOCKED_BOOT_DEFERRED")
             .apply()
-        BootEpgSyncDiagnostics.lockedBootDeferredCount.incrementAndGet()
-        BootEpgSyncDiagnostics.lastSkippedReason = "LOCKED_BOOT_DEFERRED"
         Log.i(LogTags.TIS, "Direct Boot 中の boot EPG 同期を延期しました reason=$bootReason")
     }
 
@@ -62,15 +60,12 @@ object DirectBootGuard {
         val userManager = context.getSystemService(UserManager::class.java)
         if (userManager == null || !userManager.isUserUnlocked) {
             markSkipped(context, "USER_LOCKED")
-            BootEpgSyncDiagnostics.pendingDrainSkippedLockedCount.incrementAndGet()
             return DrainDecision.SKIP_LOCKED
         }
         if (!isTvProviderReady(context)) {
             markSkipped(context, "TV_PROVIDER_UNAVAILABLE")
-            BootEpgSyncDiagnostics.pendingDrainSkippedTvProviderUnavailableCount.incrementAndGet()
             return DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE
         }
-        BootEpgSyncDiagnostics.pendingDrainStartedCount.incrementAndGet()
         Log.i(LogTags.TIS, "Direct Boot pending boot EPG 同期を開始します source=$source now=$nowMillis")
         return DrainDecision.START_BOOT_EPG_SYNC
     }
@@ -94,7 +89,6 @@ object DirectBootGuard {
             .putBoolean(KEY_PENDING, true)
             .putString(KEY_LAST_SKIPPED_REASON, reason)
             .apply()
-        BootEpgSyncDiagnostics.lastSkippedReason = reason
         Log.i(LogTags.TIS, "boot EPG 同期を延期しました reason=$reason")
     }
 
@@ -113,7 +107,6 @@ object DirectBootGuard {
 
     fun markTunerUnavailable(context: Context) {
         markSkipped(context, "TUNER_UNAVAILABLE")
-        BootEpgSyncDiagnostics.pendingDrainSkippedNoTunerCount.incrementAndGet()
     }
 
     fun pendingStateForTest(context: Context): DirectBootPendingState {
@@ -133,7 +126,6 @@ object DirectBootGuard {
         reason: String,
     ) {
         prefs(context).edit().putString(KEY_LAST_SKIPPED_REASON, reason).apply()
-        BootEpgSyncDiagnostics.lastSkippedReason = reason
         Log.w(LogTags.TIS, "boot EPG 同期 drain を延期します reason=$reason")
     }
 

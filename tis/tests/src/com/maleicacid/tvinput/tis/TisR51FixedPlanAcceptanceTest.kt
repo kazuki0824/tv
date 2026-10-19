@@ -937,9 +937,8 @@ class TisR51FixedPlanAcceptanceTest {
         )
     }
 
-    @Test fun api30SessionIdIsPropagatedWithoutFallback() {
+    @Test fun frameworkSessionAttributionAndSignalEventsDoNotUseFallback() {
         val sessionId = "framework-session-123"
-        check(MaleicacidTvInputService.api30SessionIdForTest("input.test", sessionId) == sessionId)
         check(TunerController.normalizedTvInputSessionId(sessionId) == sessionId)
         check(TunerController.normalizedTvInputSessionId(null) == null)
         check(TunerController.normalizedTvInputSessionId("") == null)

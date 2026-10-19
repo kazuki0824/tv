@@ -405,7 +405,6 @@ object ChannelScanManager {
             }
             onFinished?.invoke(generation, needsReschedule)
             if (shouldScheduleBackgroundMaintenance) {
-                BackgroundChannelMaintenanceDiagnostics.scheduledAfterBootSyncCount.incrementAndGet()
                 startBackgroundChannelMaintenanceIfIdle(appContext, inputId, source = "BOOT_EPG_SYNC_COMPLETED")
             }
         }
@@ -462,7 +461,6 @@ object ChannelScanManager {
                 markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
                 return@execute
             }
-            BackgroundChannelMaintenanceDiagnostics.startedCount.incrementAndGet()
             val result =
                 runCatching {
                     val createdEngine = AribSiEngine(appContext)
@@ -552,11 +550,6 @@ object ChannelScanManager {
                 task.context,
                 decision.diagnosticReason ?: "LIVE_SESSION_PREEMPTED_RUNNING_BOOT_EPG_SYNC",
             )
-        }
-        if (task.purpose == ScanPurpose.BACKGROUND_MAINTENANCE) {
-            BackgroundChannelMaintenanceDiagnostics.cancelledByLiveSessionCount.incrementAndGet()
-            BackgroundChannelMaintenanceDiagnostics.lastSkippedReason =
-                decision.diagnosticReason ?: "LIVE_SESSION_PREEMPTED_RUNNING_BACKGROUND_MAINTENANCE"
         }
         if (!task.requestCancel()) return
         setTerminalStateIfCurrent(
@@ -727,21 +720,6 @@ object ChannelScanManager {
         reason: String,
         source: String,
     ) {
-        BackgroundChannelMaintenanceDiagnostics.lastSkippedReason = reason
-        when (reason) {
-            "ACTIVE_LIVE_SESSION", "LIVE_SESSION_STARTING_OR_ACTIVE" -> {
-                BackgroundChannelMaintenanceDiagnostics.skippedActiveLiveSessionCount
-                    .incrementAndGet()
-            }
-
-            "SCAN_RUNNING" -> {
-                BackgroundChannelMaintenanceDiagnostics.skippedScanRunningCount.incrementAndGet()
-            }
-
-            else -> {
-                BackgroundChannelMaintenanceDiagnostics.skippedOtherCount.incrementAndGet()
-            }
-        }
         Log.i(
             LogTags.TIS,
             "background channel maintenance を開始しません source=$source reason=$reason " +
