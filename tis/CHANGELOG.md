@@ -190,10 +190,11 @@
 - NHK停止後の再選局でCodec停止が待機超過したログを受け、MediaSyncのflush・解放をPCM返却とCodec停止より先へ移動。既存ownerとcleanupを使用する。
 - 停止順序とflush／解放失敗をRobolectricで検査する。実機の映像破損・AAC入力不足・停止回復は別途確認が必要。
 
-# ExactからCompatibilityへの降格時の継続監視取消し
+# setup開始拒否時の世代枯渇表示
 
-- private callbackの再arm不成立時に既存Exact watchdogを取り消し、実行時もcurrent modeを照合する。同じowner/世代上で処理し、Compatibilityの正常なCodec進捗を最終出力timeoutとして停止しない。
-- Android15 Robolectricで初回Exact成功から再arm不成立・Compatibility降格・7秒間のCodec callback継続を検査する。初回Exact eventはfixtureで配送し、再armのprivate API不在はstock SDKの実経路を通す。実機検証の代替にはしない。
+- 開始拒否時は既存ScanState.Failedの理由を表示し、SCAN_GENERATION_EXHAUSTEDを前scanの終了待ちへ上書きしない。新しい拒否状態・schedulerは追加せず、setup generationを維持する。
+- Robolectricで実startIfIdleとActivityの拒否表示を接続し、active scanの待機表示とInt.MAX_VALUE/activeTask=nullの恒久失敗表示を検査する。
+
 
 # 標準APIによるFrontend pre-closeと再試行
 
@@ -201,6 +202,10 @@
 - 他資源のcleanup失敗中もSDK closeを保留する。Frontend回収後のDemux/client/native失敗はone-shot未完義務として区別し、再closeのno-opを成功にしない。
 - 必要性を実証していなかった独自Framework cleanup patchとreflection入口を撤回し、標準APIだけの経路へ戻した。
 - Android15実SDK closeFrontendとnative/TRM Shadow境界で一時失敗・継続失敗・再試行成功・後続scanを検査する。実機HAL隔離/回収と実scanは別途検証を要する。
+# ExactからCompatibilityへの降格時の継続監視取消し
+
+- private callbackの再arm不成立時に既存Exact watchdogを取り消し、実行時もcurrent modeを照合する。同じowner/世代上で処理し、Compatibilityの正常なCodec進捗を最終出力timeoutとして停止しない。
+- Android15 Robolectricで初回Exact成功から再arm不成立・Compatibility降格・7秒間のCodec callback継続を検査する。初回Exact eventはfixtureで配送し、再armのprivate API不在はstock SDKの実経路を通す。実機検証の代替にはしない。
 
 # 任意MediaSync patch未適用時の近似Compatibility復元
 

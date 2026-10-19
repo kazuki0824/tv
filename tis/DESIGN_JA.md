@@ -938,4 +938,4 @@ Program cleanupの完了通知は準備済み同期経路とworker完了経路�
 
 ### スキャン開始拒否
 
-setupの開始要求がactiveTaskにより拒否された場合は、呼出元へ同期的に拒否を通知する。UIは終了待ちを表示し、既存setup generationを消去しない。cleanup後の未受付要求を自動再生せず、次の明示操作で開始する。
+setupの開始要求がactiveTaskにより拒否された場合は、呼出元へ同期的に拒否を通知する。UIは終了待ちを表示し、既存setup generationを消去しない。世代枯渇で拒否された場合は既存の`ScanState.Failed`を表示し、待機後の再試行で解消するとは案内しない。cleanup後の未受付要求を自動再生せず、次の明示操作で開始する。
