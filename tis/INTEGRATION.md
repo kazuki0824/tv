@@ -2,6 +2,20 @@
 
 この文書は `tis/` の product 統合条件を固定する。Tuner HAL 側の統合手順は `tuner_hal2/INTEGRATION.md` を正とし、この文書には重複して記載しない。TIS の runtime 状態遷移、TvProvider 利用、Direct Boot の保留・再試行、ライブセッション優先順位、録画 API、視聴年齢制限、CAS 状態写像は `DESIGN_JA.md` を正とし、本書では再定義しない。
 
+### JNI実装内部ログの通常レベルと詳細診断
+
+`jni::wrapper::jnienv`の大量VERBOSEはAndroid標準`liblog_rust`が`liblog`へ渡すタグ付きTRACEであり、TIS独自のエラーログではない。製品統合`tis/config/product_integration.mk`は`log.tag.jni::wrapper::jnienv=D`をsystem_ext build propertyに設定し、このタグのVERBOSEだけを既定抑止する。`MaleicacidTIS`のDEBUG、SIの警告・エラー、他Rustモジュールのタグには影響させない。Java `logcat`クライアントの表示フィルタのみでは書込み負荷が残るので代替としない。
+
+```sh
+adb shell getprop log.tag.jni::wrapper::jnienv
+# JNI API呼出しを詳細調査する区間だけ再開（ログ出力負荷が非常に大きい）
+adb shell setprop log.tag.jni::wrapper::jnienv V
+# 調査後は既定レベルへ戻す
+adb shell setprop log.tag.jni::wrapper::jnienv D
+```
+
+設定が`D`でも実機でVERBOSEが大量に出る場合、システムのlogger実装とproperty反映結果を確認し、抑制完了と判定しない。性能比較は受信局、vCPU、ログ収集・Perfettoの有無を一致させ、TISの`PLAYBACK_CODEC_INPUT_QUEUE`・`PLAYBACK_CODEC_INPUT_RETURN`・`PLAYBACK_CODEC_OUTPUT_RETURN`、画面最終フレーム、CPU時間を比較する。JNI検索頻度は短時間の`V`採取で別途確認する。ログ抑制のみでCodec停滞の解消を確約しない。
+
 ## product package
 
 product makefile で次を継承する。

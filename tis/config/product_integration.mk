@@ -14,3 +14,8 @@ PRODUCT_COPY_FILES += \
 # Decoder本体はMainline swcodecが所有するため、別moduleを同梱しない。
 PRODUCT_COPY_FILES += \
     vendor/maleicacid/tv/tis/config/media_codecs_c2.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/media_codecs_c2.xml
+
+# Androidの既定Rust loggerが使用するJNI実装内部タグだけ、通常時のVERBOSEを抑止する。
+# Rust全体やTISの診断ログは抑制しない。診断時は同じtagをadb setpropでVに変更できる。
+PRODUCT_SYSTEM_EXT_PROPERTIES += log.tag.jni::wrapper::jnienv=D
+
