@@ -957,9 +957,8 @@ fn unregister_public_runtime_entries_for_drop_leak(
         .map_err(|error| ObjectCloseCleanupFailure::new(CleanupStep::UnregisterRuntime, error))
 }
 
-/// Canonical persistent owner for close-cleanup obligations and attempt
-/// fences. `RuntimeObjectTable` owns this value as a private sub-owner and
-/// delegates every obligation mutation through these entries.
+/// close時のcleanup責務と試行境界を永続的に保持する正本owner。
+/// `RuntimeObjectTable`がprivate sub-ownerとして保持し、責務の変更はすべてこの入口へ委譲する。
 #[derive(Debug)]
 pub struct ObjectCloseTxn {
     obligations: BTreeMap<AidlObjectId, CloseCleanupObligation>,

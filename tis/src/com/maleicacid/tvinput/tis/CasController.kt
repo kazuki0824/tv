@@ -1066,7 +1066,6 @@ class DirectTunerDescramblerBridge(
     }
 
     companion object {
-        // AOSP Descrambler.PID_TYPE_T
         private const val DESCRAMBLER_PID_TYPE_T = 1
     }
 }

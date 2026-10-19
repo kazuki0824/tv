@@ -76,10 +76,10 @@ fn preflight_root_method_dispatch(
     )
 }
 
-/// Call-local owner for every public root-object open transaction.
+/// 公開root objectのopen transactionごとに生成する、呼出し単位のowner。
 ///
-/// Persistent resource, runtime, and object-table state remains in their
-/// canonical owners; this value only sequences one open or rollback call.
+/// 永続する資源・runtime・object tableの状態は各正本ownerが保持し、
+/// この値は1回のopenまたはrollbackの呼出し順序だけを管理する。
 pub struct RootOpenTxn<'a> {
     runtime: &'a mut TunerServiceRuntime,
 }
