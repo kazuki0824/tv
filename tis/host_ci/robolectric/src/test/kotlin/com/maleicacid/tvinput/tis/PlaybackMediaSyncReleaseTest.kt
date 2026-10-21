@@ -219,7 +219,7 @@ class PlaybackMediaSyncReleaseTest {
                     ReflectionHelpers.setField(pipeline, "videoInputQueued", true)
                     ReflectionHelpers.callInstanceMethod<Unit>(pipeline, "maybeStartMediaSync")
                 }
-                assertTrue(native.renderEntered.await(2, TimeUnit.SECONDS))
+                assertTrue(native.renderCompleted.await(2, TimeUnit.SECONDS))
                 assertTrue(native.events.indexOf("play") < native.events.indexOf("render"))
             } finally {
                 native.resumeRender.countDown()
@@ -281,6 +281,7 @@ class PlaybackMediaSyncReleaseTest {
             owner.renderEntered.countDown()
             if (!owner.playing || owner.blockActiveRender) check(owner.resumeRender.await(5, TimeUnit.SECONDS))
             owner.events += "render"
+            owner.renderCompleted.countDown()
         }
 
         @Implementation(methodName = "stop")
@@ -324,6 +325,7 @@ class PlaybackMediaSyncReleaseTest {
 
         val events = mutableListOf<String>()
         val renderEntered = CountDownLatch(1)
+        val renderCompleted = CountDownLatch(1)
         val resumeRender = CountDownLatch(1)
         var playing = false
         var blockActiveRender = false
