@@ -976,8 +976,7 @@ class TunerController(
             }
         }.exceptionOrNull()
 
-    @Suppress("ReturnCount", "MaxLineLength")
-    @Suppress("LongMethod")
+    @Suppress("ReturnCount", "MaxLineLength", "LongMethod")
     private fun tuneResolvedChannel(
         channel: ResolvedChannel,
         eitPfActualOnly: Boolean,
@@ -992,7 +991,8 @@ class TunerController(
         val tunerInstance =
             availableTuner()
                 ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
-        val settings = buildFrontendSettings(channel).getOrElse { e ->
+        val settings =
+            buildFrontendSettings(channel).getOrElse { e ->
                 Log.w(LogTags.TIS, "frontend settings 構築に失敗しました channel=$channel", e)
                 return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, channel, tuneGeneration, e.message.orEmpty())
             }
