@@ -299,6 +299,52 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun singleMaxSizedHevcEventIsAcceptedIntoAnOtherwiseEmptyCallbackQueue() {
+        Fixture().use { fixture ->
+            fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.HEVC)
+            val filter = fixture.avFilter(false)
+            val event = mediaEvent(16L * 1024 * 1024)
+            fixture.whileOwnerBlocked { deliver(filter, event) }
+            fixture.drain()
+            // 実LinearBlockがないfixtureでも、受付した場合だけgetLinearBlockまで進む。
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(event).blockReads)
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
+            assertFalse(fixture.released())
+        }
+    }
+
+    @Test
+    fun callbackBatchBeyondTheSharedLimitIsNotAcceptedByClampingItsCharge() {
+        Fixture().use { fixture ->
+            val filter = fixture.avFilter(false)
+            val oversized = arrayOf(mediaEvent(12L * 1024 * 1024), mediaEvent(12L * 1024 * 1024))
+            fixture.whileOwnerBlocked { deliver(filter, oversized) }
+            fixture.drain()
+            oversized.forEach { event ->
+                assertEquals(0, Shadow.extract<NativeMediaEvent>(event).blockReads)
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
+            }
+        }
+    }
+
+    @Test
+    fun compressedInputRecoveryStopsPriorGenerationExactlyOnceBeforeRestart() {
+        Fixture().use { fixture ->
+            fixture.audioSelection()
+            val initialGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
+            fixture.executor.callControl(5_000L) {
+                ReflectionHelpers.setField(fixture.pipeline, "activeTuner", fixture.tuner)
+                fixture.invoke("recoverAfterCompressedInputLoss", initialGeneration, "injected input loss")
+            }
+            assertEquals(initialGeneration + 1L, fixture.pipeline.currentPlaybackGenerationForTest())
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            fixture.drain()
+            // stop済み世代から新世代を一度だけ開始する。Surface不足での開始失敗は本試験の対象外。
+            assertEquals(initialGeneration + 2L, fixture.pipeline.currentPlaybackGenerationForTest())
+        }
+    }
+
+    @Test
     fun progressCallbackRunsWhileFilterDataBudgetIsFull() {
         Fixture().use { fixture ->
             val video = fixture.avFilter(false)

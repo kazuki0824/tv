@@ -48,7 +48,7 @@ class PlaybackPipeline(
     private val executor =
         LifecycleSerialExecutor(
             "maleicacid-playback-$inputId",
-            maxPendingDataTasks = (AV_FILTER_BUFFER_BYTES / KIB).toInt(),
+            maxPendingDataTasks = (AV_FILTER_BUFFER_BYTES / KIB).toInt() + 2,
         )
     private val mainHandler = Handler(Looper.getMainLooper())
     private val codecCallbackThread = HandlerThread("maleicacid-codec-$inputId").apply { start() }
@@ -295,7 +295,7 @@ class PlaybackPipeline(
             }
         val slots =
             (1L + events.size + (payloadBytes + KIB - 1) / KIB)
-                .coerceAtMost(AV_FILTER_BUFFER_BYTES / KIB + 1)
+                .coerceAtMost(Int.MAX_VALUE.toLong())
                 .toInt()
         // 入口ではcallback/ownerを待たず、DEBUG採取時だけ実際のowner待ち時間を測る。
         val submittedAtNs = if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) System.nanoTime() else 0L
@@ -508,7 +508,7 @@ class PlaybackPipeline(
             schedule = { retry -> mainHandler.postDelayed({ enqueuePlaybackAction(retry) }, retryDelay) },
             isCurrent = { it == playbackGeneration },
             restart = {
-                val restarted = startOnPlaybackExecutor(tuner, channel, selection)
+                val restarted = startOnPlaybackExecutor(tuner, channel, selection, afterRecoveryStop = true)
                 onPlaybackGenerationRestarted(PlaybackGenerationRestart(generation, restarted))
             },
             onUnavailable = onVideoUnavailable,
@@ -555,7 +555,7 @@ class PlaybackPipeline(
             schedule = { retry -> mainHandler.post { enqueuePlaybackAction(retry) } },
             isCurrent = { it == playbackGeneration },
             restart = {
-                val restarted = startOnPlaybackExecutor(tuner, channel, selection)
+                val restarted = startOnPlaybackExecutor(tuner, channel, selection, afterRecoveryStop = true)
                 onPlaybackGenerationRestarted(PlaybackGenerationRestart(generation, restarted))
             },
             onUnavailable = onVideoUnavailable,
@@ -572,8 +572,16 @@ class PlaybackPipeline(
         tuner: Tuner,
         channel: TunerController.ResolvedChannel,
         selection: TunerController.AvStreamSelection,
+        afterRecoveryStop: Boolean = false,
     ): StartResult {
-        stopOnPlaybackExecutor()
+        if (afterRecoveryStop) {
+            // 同一ownerのrecoverCodecGenerationが旧generationを停止済み。二度目のstopで世代を消費しない。
+            check(activeTuner == null && activeChannel == null && mediaSync == null &&
+                videoDecoder == null && audioDecoder == null && !resourceCleanup.hasPending
+            ) { "Codec復旧前の停止が完了していません" }
+        } else {
+            stopOnPlaybackExecutor()
+        }
         val startGeneration = nextPlaybackGenerationOrFence()
         playbackGeneration = startGeneration
         dataPathProgress.reset()
@@ -3295,6 +3303,20 @@ class PlaybackPipeline(
     fun stop() {
         wakeBlockedVideoOutputBeforeStop()
         runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
+    }
+
+    /** CASが準備中であっても、まだ開始していない再生世代を停止扱いにしない。 */
+    fun stopIfActive(): Boolean {
+        wakeBlockedVideoOutputBeforeStop()
+        return runOnPlaybackExecutorBlocking {
+            val active =
+                activeTuner != null || activeChannel != null || mediaSync != null ||
+                    videoDecoder != null || audioDecoder != null || videoFilter != null ||
+                    audioFilter != null || subtitleFilter != null || superimposeFilter != null ||
+                    resourceActivityReported || resourceCleanup.hasPending
+            if (active) stopOnPlaybackExecutor()
+            active
+        }
     }
 
     /** 停止で世代を更新しても、失敗した再生を所有するSessionへ通知する。 */
