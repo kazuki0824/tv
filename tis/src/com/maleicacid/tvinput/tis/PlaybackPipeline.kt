@@ -1709,6 +1709,7 @@ class PlaybackPipeline(
         private val configurationProbe by lazy { CodecHeaderProbe(configurationProbeKind) }
         private val pendingSamples = java.util.ArrayDeque<MediaSample>()
         private val availableInputIndexes = java.util.ArrayDeque<Int>()
+
         // Codec callbackがowner実行中に到着しても既存の入力index返却を先に消費する。
         private val inboundCodecInputIndexes = java.util.concurrent.ConcurrentLinkedQueue<Pair<MediaCodec, Int>>()
 
