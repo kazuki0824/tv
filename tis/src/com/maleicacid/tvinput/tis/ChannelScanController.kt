@@ -184,17 +184,21 @@ class ChannelScanController(
         @Suppress("ReturnCount")
         fun scanExecutionCandidate(candidate: ScanCandidate): Boolean {
             if (cancelled.get() || terminalResourceLostObserved) return false
-            engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
-            val lossBaseline = ingestController.transportLossSnapshot()
+            var lossBaseline: SectionTransportLossSnapshot? = null
             // setup登録にEIT scheduleは不要。EIT入力burstでSDT/PAT/PMTを落とさない。
-            val tune = tunerController.tuneForScan(candidate, eitPfActualOnly = true)
+            val tune =
+                tunerController.tuneForScan(candidate, eitPfActualOnly = true) {
+                    engine.reset(discoveryProfile(candidate.kind))
+                    lossBaseline = ingestController.transportLossSnapshot()
+                }
             if (!tune.success) {
                 val message = "選局に失敗しました result=${tune.resultCode} ${tune.message}"
                 diagnostics += ScanDiagnostic(candidate, message)
                 terminalFailure = ScanTerminal(ScanTerminalOutcome.TUNE_REJECTED, message)
                 return false
             }
+            val candidateLossBaseline = checkNotNull(lossBaseline) { "成功選局でSection解析境界を通過していません" }
             activateScanGeneration(tune.generation)
             try {
                 val collection =
@@ -202,7 +206,7 @@ class ChannelScanController(
                         candidate,
                         SiCollectionRequirements(PublishMode.SETUP_SCAN, discoveryProfile(candidate.kind)),
                         tune.generation,
-                        lossBaseline,
+                        candidateLossBaseline,
                     )
                 collection.diagnostic?.let { diagnostics += it }
                 if (!collection.mayPublishChannels) {
@@ -402,14 +406,18 @@ class ChannelScanController(
         var successfulCandidates = 0
         for (candidate in candidates) {
             if (cancelled.get() || terminalResourceLostObserved) break
-            engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
-            val lossBaseline = ingestController.transportLossSnapshot()
-            val tune = tunerController.tuneForScan(candidate)
+            var lossBaseline: SectionTransportLossSnapshot? = null
+            val tune =
+                tunerController.tuneForScan(candidate) {
+                    engine.reset(discoveryProfile(candidate.kind))
+                    lossBaseline = ingestController.transportLossSnapshot()
+                }
             if (!tune.success) {
                 diagnostics += ScanDiagnostic(candidate, "${failurePrefix}の選局に失敗しました result=${tune.resultCode} ${tune.message}")
                 continue
             }
+            val candidateLossBaseline = checkNotNull(lossBaseline) { "成功選局でSection解析境界を通過していません" }
             activateScanGeneration(tune.generation)
             try {
                 val requiredServiceKeys = targetsByTune.getValue(candidate.tuneKey).mapTo(linkedSetOf()) { it.second }
@@ -418,7 +426,7 @@ class ChannelScanController(
                         candidate,
                         SiCollectionRequirements(mode, discoveryProfile(candidate.kind), requiredServiceKeys),
                         tune.generation,
-                        lossBaseline,
+                        candidateLossBaseline,
                     )
                 collection.diagnostic?.let { diagnostics += it }
                 if (!collection.mayPublishChannels) {
