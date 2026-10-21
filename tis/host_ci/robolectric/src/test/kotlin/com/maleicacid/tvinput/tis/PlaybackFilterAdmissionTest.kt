@@ -304,8 +304,12 @@ class PlaybackFilterAdmissionTest {
             fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.HEVC)
             val filter = fixture.avFilter(false)
             val event = mediaEvent(16L * 1024 * 1024)
+            val processed = CountDownLatch(1)
+            Shadow.extract<NativeMediaEvent>(event).onRelease = { processed.countDown() }
             fixture.whileOwnerBlocked { deliver(filter, event) }
-            fixture.drain()
+            // 全permitを予約済みなので、待機用のdata taskを追加せず完了通知を待つ。
+            assertTrue(processed.await(5, TimeUnit.SECONDS))
+            fixture.executor.callControl(5_000L) { Unit }
             // 実LinearBlockがないfixtureでも、受付した場合だけgetLinearBlockまで進む。
             assertEquals(1, Shadow.extract<NativeMediaEvent>(event).blockReads)
             assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
