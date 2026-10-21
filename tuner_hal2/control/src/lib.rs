@@ -2536,11 +2536,12 @@ mod tests {
     ) {
         let (sender, receiver) =
             std::sync::mpsc::sync_channel::<WorkerRuntimeReaperQueuedJob<()>>(capacity.max(1));
+        let (_unused_tx, unused_rx) = std::sync::mpsc::channel();
         (
             WorkerRuntimeReaperQueue {
                 lanes: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                 receiver: std::sync::Arc::new(PoisonTrackedMutex::new(
-                    receiver,
+                    unused_rx,
                     RuntimeLockKind::WorkerReaperReceiver,
                 )),
                 runner: std::sync::Arc::new(|_: (), _, _| {}),
