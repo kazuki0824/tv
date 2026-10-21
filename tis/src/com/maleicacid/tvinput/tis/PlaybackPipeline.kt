@@ -1843,12 +1843,9 @@ class PlaybackPipeline(
 
         private fun queueInternal(sample: MediaSample) {
             if (codec == null) {
-                val format = probeHeader(sample)
-                if (format == null) {
-                    // 構成headerを探す間も、先に確定したstartup件数・byte予算だけで入力を保護する。
-                    // 過去のHAL固定event枠を代替する3件制限は設けない。
-                    return
-                }
+                // 構成headerを探す間も、先に確定したstartup件数・byte予算だけで入力を保護する。
+                // 過去のHAL固定event枠を代替する3件制限は設けない。
+                val format = probeHeader(sample) ?: return
                 codec = createBlockModelDecoder(format)
             }
             drainPendingInput()
