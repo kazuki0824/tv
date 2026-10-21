@@ -17,6 +17,7 @@ import android.media.tv.tuner.frontend.FrontendSettings
 import android.net.Uri
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.SectionIngestController
+import com.maleicacid.tvinput.aribsi.SectionTransportLossSnapshot
 import com.maleicacid.tvinput.aribsi.SiIngestResult
 import com.maleicacid.tvinput.aribsi.SiStatus
 import com.maleicacid.tvinput.aribsi.WellKnownSectionPid
