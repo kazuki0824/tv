@@ -1321,8 +1321,9 @@ class PlaybackFailureCallbacksTest {
             controller.setOnSectionIngestedCallback { saturated.countDown() }
             val stalled = holdOwner()
             deliver(filters.getValue(0), Array(17) { pat0 })
-            check(ingest.inputDeliveryLossCount == 1 && ingest.diagnosticSummary().contains("inputDeliveryLoss=1"))
             stalled.countDown()
+            controller.currentGeneration()
+            check(ingest.inputDeliveryLossCount == 1 && ingest.diagnosticSummary().contains("inputDeliveryLoss=1"))
             check(saturated.await(5, TimeUnit.SECONDS))
             val beforeStale = ingest.diagnostics().sumOf { it.acceptedCount }
             val staleOwner = holdOwner()
