@@ -429,6 +429,32 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun codecInputAvailabilityInsideAFilterBatchPreventsArtificialFortyEightSampleOverflow() {
+        Fixture().use { fixture ->
+            fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
+            val codec = fixture.attachCodec(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
+            val filter = fixture.avFilter(false)
+            val callback = ReflectionHelpers.getField<MediaCodec.Callback>(codec, "mCallback")
+            val samples = List(49) { mappedMediaEvent() }
+            Shadow.extract<NativeMediaEvent>(samples.first()).onBlockRead = {
+                // Codec callbackは別threadから届くが、owner処理中にも到着し得る。
+                // その入力indexは現在のFilter一括処理が終わるまで放置してはならない。
+                callback.onInputBufferAvailable(codec, 0)
+            }
+            deliver(filter, samples.toTypedArray())
+            fixture.drain()
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.INPUT_REJECTED, false))
+            assertEquals(48, fixture.pendingEvents(false).size)
+            assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertTrue(fixture.unavailable.isEmpty())
+            assertTrue(fixture.failures.isEmpty())
+            assertEquals(0, Shadow.extract<NativeFilter>(filter).closes)
+            fixture.pipeline.stop()
+            samples.forEach { assertEquals(1, Shadow.extract<NativeMediaEvent>(it).releases) }
+        }
+    }
+
+    @Test
     fun sustainedMpegVideoInputBeyondThreeSecondsDoesNotTriggerAdmissionRecovery() {
         Fixture().use { fixture ->
             fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
@@ -1790,10 +1816,12 @@ class PlaybackFilterAdmissionTest {
         var blockReads = 0
         var releaseThread: String? = null
         var onRelease: () -> Unit = {}
+        var onBlockRead: () -> Unit = {}
 
         @Implementation
         fun nativeGetLinearBlock(): MediaCodec.LinearBlock? {
             blockReads++
+            onBlockRead()
             return block
         }
 
