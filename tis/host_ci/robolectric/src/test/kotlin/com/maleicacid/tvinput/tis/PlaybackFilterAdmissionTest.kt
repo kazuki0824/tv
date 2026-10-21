@@ -551,19 +551,20 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
-    fun decoderStartupKeepsAtMostThreeEventsAndFailsAtTheFiniteDeadline() {
+    fun decoderStartupRetainsAcceptedEventsWithinItsBudgetUntilTheFiniteDeadline() {
         Fixture().use { fixture ->
             fixture.decoder()
             val video = fixture.avFilter(false)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
-            val samples = List(33) { mappedMediaEvent() }
+            // startupの24件・24MiB予算内なら、廃止済みHAL 8枠由来の3件閾値で入力を破棄しない。
+            val samples = List(12) { mappedMediaEvent() }
             samples.forEach { deliver(video, it) }
             fixture.drain()
-            // 未構成decoderはHALの8スロットを占有し続けず、後続headerを探せる。
-            assertEquals(3, fixture.pendingEvents(false).size)
-            samples.take(30).forEach {
-                assertEquals(1, Shadow.extract<NativeMediaEvent>(it).releases)
+            assertEquals(12, fixture.pendingEvents(false).size)
+            samples.forEach {
+                assertEquals(0, Shadow.extract<NativeMediaEvent>(it).releases)
             }
+            assertEquals(0L, fixture.progress().count(PlaybackDataPathProgress.Stage.INPUT_REJECTED, false))
             assertTrue(fixture.failures.isEmpty())
             val arm =
                 decoder.javaClass.superclass
