@@ -434,12 +434,20 @@ class PlaybackFilterAdmissionTest {
             fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
             val codec = fixture.attachCodec(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
             val filter = fixture.avFilter(false)
-            val callback = ReflectionHelpers.getField<MediaCodec.Callback>(codec, "mCallback")
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
             val samples = List(49) { mappedMediaEvent() }
             Shadow.extract<NativeMediaEvent>(samples.first()).onBlockRead = {
-                // Codec callbackは別threadから届くが、owner処理中にも到着し得る。
-                // その入力indexは現在のFilter一括処理が終わるまで放置してはならない。
-                callback.onInputBufferAvailable(codec, 0)
+                // Codecの公開callbackをAndroid標準の非同期配送で発火する。
+                // ownerが次eventの予算判定に入る前に、index到着を確認する。
+                postCodecCallback(codec, 1, 0, null)
+                val inbox =
+                    ReflectionHelpers.getField<java.util.concurrent.ConcurrentLinkedQueue<*>>(
+                        decoder,
+                        "inboundCodecInputIndexes",
+                    )
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+                while (inbox.isEmpty() && System.nanoTime() < deadline) Thread.yield()
+                assertTrue(inbox.isNotEmpty(), "Codec input callback must have arrived")
             }
             deliver(filter, samples.toTypedArray())
             fixture.drain()
