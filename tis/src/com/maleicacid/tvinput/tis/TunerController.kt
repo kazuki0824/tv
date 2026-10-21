@@ -977,6 +977,7 @@ class TunerController(
         }.exceptionOrNull()
 
     @Suppress("ReturnCount", "MaxLineLength")
+    @Suppress("LongMethod")
     private fun tuneResolvedChannel(
         channel: ResolvedChannel,
         eitPfActualOnly: Boolean,
