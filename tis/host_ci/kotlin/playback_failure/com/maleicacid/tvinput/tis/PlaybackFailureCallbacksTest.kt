@@ -882,6 +882,7 @@ class PlaybackFailureCallbacksTest {
         set(controller, "sectionFilters", linkedMapOf<TsPid, List<Filter>>())
         // 未初期化のTunerは利用不可を同期返却する。実tuneForScan経路を差し替えない。
         set(scan, "engine", engine)
+        set(scan, "ingestController", com.maleicacid.tvinput.aribsi.SectionIngestController(engine))
         set(scan, "tunerController", controller)
         set(scan, "cancelled", AtomicBoolean(false))
         set(scan, "scanGenerationFence", ChannelScanController.ScanGenerationFence())
