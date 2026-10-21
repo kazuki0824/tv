@@ -2305,8 +2305,7 @@ class PlaybackPipeline(
             }
         }
 
-        @Suppress("MagicNumber")
-        @Suppress("TooGenericExceptionCaught")
+        @Suppress("MagicNumber", "TooGenericExceptionCaught")
         private fun renderOutput(
             codec: MediaCodec,
             index: Int,
