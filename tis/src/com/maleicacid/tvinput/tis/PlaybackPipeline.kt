@@ -53,6 +53,7 @@ class PlaybackPipeline(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val codecCallbackThread = HandlerThread("maleicacid-codec-$inputId").apply { start() }
     private val codecCallbackHandler = Handler(codecCallbackThread.looper)
+
     // native render待機をplayback ownerとCodec callback配送の双方から切り離す。
     private val videoRenderThread = HandlerThread("maleicacid-video-render-$inputId").apply { start() }
     private val videoRenderHandler = Handler(videoRenderThread.looper)
@@ -2130,15 +2131,20 @@ class PlaybackPipeline(
     ) : DecoderPipeline() {
         // Codecが貸し出した出力indexだけを保持する。payload複製や独自の枠数制限は設けない。
         private val pendingOutputs = java.util.ArrayDeque<PendingVideoOutput>()
+
         private data class RenderSubmission(
             val codec: MediaCodec,
             val index: Int,
             val completed: java.util.concurrent.CompletableFuture<RuntimeException?>,
         )
+
         private val renderSubmissions = mutableListOf<RenderSubmission>()
 
         // Completion and failure handling remain on the playback owner, not the native render thread.
-        private fun consumeRenderSubmission(submission: RenderSubmission, stopping: Boolean) {
+        private fun consumeRenderSubmission(
+            submission: RenderSubmission,
+            stopping: Boolean,
+        ) {
             if (!renderSubmissions.remove(submission)) return
             val failure = submission.completed.getNow(null) ?: return
             Log.w(LogTags.TIS, "native映像bufferの返却に失敗しました index=${submission.index}", failure)
@@ -2150,6 +2156,7 @@ class PlaybackPipeline(
             }
         }
 
+        @Suppress("ThrowsCount")
         fun awaitRenderSubmissionsBeforeMediaSyncRelease() {
             for (submission in renderSubmissions.toList()) {
                 try {
@@ -2298,6 +2305,7 @@ class PlaybackPipeline(
         }
 
         @Suppress("MagicNumber")
+        @Suppress("TooGenericExceptionCaught")
         private fun renderOutput(
             codec: MediaCodec,
             index: Int,
