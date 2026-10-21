@@ -48,7 +48,7 @@ class PlaybackPipeline(
     private val executor =
         LifecycleSerialExecutor(
             "maleicacid-playback-$inputId",
-            maxPendingDataTasks = (AV_FILTER_BUFFER_BYTES / KIB).toInt() + 2,
+            maxPendingDataTasks = (AV_FILTER_BUFFER_BYTES / KIB).toInt(),
         )
     private val mainHandler = Handler(Looper.getMainLooper())
     private val codecCallbackThread = HandlerThread("maleicacid-codec-$inputId").apply { start() }
@@ -293,10 +293,15 @@ class PlaybackPipeline(
                     else -> 0L
                 }
             }
+        val requestedSlots = 1L + events.size + (payloadBytes + KIB - 1) / KIB
+        // 単一合法最大eventの会計ヘッダーは本来のpayload予約と同時占有しない。
+        // 複数eventをまとめた過大callbackは丸めずに容量拒否する。
         val slots =
-            (1L + events.size + (payloadBytes + KIB - 1) / KIB)
-                .coerceAtMost(Int.MAX_VALUE.toLong())
-                .toInt()
+            if (events.size == 1 && payloadBytes == AV_FILTER_BUFFER_BYTES) {
+                (AV_FILTER_BUFFER_BYTES / KIB).toInt()
+            } else {
+                requestedSlots.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            }
         // 入口ではcallback/ownerを待たず、DEBUG採取時だけ実際のowner待ち時間を測る。
         val submittedAtNs = if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) System.nanoTime() else 0L
         executor.executeCallback(
