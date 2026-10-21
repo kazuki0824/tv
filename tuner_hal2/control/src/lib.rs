@@ -931,8 +931,12 @@ impl WorkerRuntime<()> {
 
 /// `WorkerRuntime`が発行するopaqueなbounded reaper handle。
 pub struct WorkerRuntimeReaperQueue<K, V, J> {
-    lanes: std::sync::Arc<std::sync::Mutex<Vec<WorkerHandle<(), maleicacid_tuner_hal2_common::HalError>>>>,
-    receiver: std::sync::Arc<PoisonTrackedMutex<std::sync::mpsc::Receiver<WorkerRuntimeReaperQueuedJob<J>>>>,
+    lanes: std::sync::Arc<
+        std::sync::Mutex<Vec<WorkerHandle<(), maleicacid_tuner_hal2_common::HalError>>>,
+    >,
+    receiver: std::sync::Arc<
+        PoisonTrackedMutex<std::sync::mpsc::Receiver<WorkerRuntimeReaperQueuedJob<J>>>,
+    >,
     runner: std::sync::Arc<WorkerReaperRunner<K, V, J>>,
     thread_prefix: &'static str,
     max_lanes: usize,
@@ -1011,9 +1015,10 @@ where
     }
 
     fn ensure_lanes(&self, desired: usize) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        let mut lanes = self.lanes.lock().map_err(|_| {
-            maleicacid_tuner_hal2_common::HalError::WorkerReaperUnavailable
-        })?;
+        let mut lanes = self
+            .lanes
+            .lock()
+            .map_err(|_| maleicacid_tuner_hal2_common::HalError::WorkerReaperUnavailable)?;
         while lanes.len() < desired.min(self.max_lanes) {
             let lane_index = lanes.len();
             let receiver = std::sync::Arc::clone(&self.receiver);
