@@ -230,7 +230,6 @@ class TunerFrontendLeaseTransitionTest {
         }
     }
 
-
     @Test
     fun rejectedSectionReadCountsCurrentFilterButNotClosedFilterOfSameGeneration() {
         val controller = controller()
@@ -250,19 +249,12 @@ class TunerFrontendLeaseTransitionTest {
             check(permits > 0 && slots.tryAcquire(permits))
             try {
                 val deliver =
-                    TunerController::class.java.getDeclaredMethod(
-                        "deliverSectionRead",
-                        Filter::class.java,
-                        TsPid::class.java,
-                        Long::class.javaPrimitiveType,
-                        ByteArray::class.java,
-                        Int::class.javaPrimitiveType,
-                    )
+                    TunerController::class.java.declaredMethods.single { it.name.startsWith("deliverSectionRead") }
                 deliver.isAccessible = true
                 val generation = controller.currentGeneration()
                 val section = byteArrayOf(0x00, 0x00, 0x00)
                 controller.closeSectionFilter(WellKnownSectionPid.PAT)
-                deliver.invoke(controller, oldPat, WellKnownSectionPid.PAT, generation, section, section.size)
+                deliver.invoke(controller, oldPat, WellKnownSectionPid.PAT.value, generation, section, section.size)
                 controller.currentGeneration()
                 check(ingest.inputDeliveryLossCount == 0)
 
@@ -272,7 +264,7 @@ class TunerFrontendLeaseTransitionTest {
                 check(newPat.isOpen)
                 val activePat = sdk.filters.last()
                 check(activePat !== oldPat && activePat !== nextPat)
-                deliver.invoke(controller, activePat, WellKnownSectionPid.PAT, generation, section, section.size)
+                deliver.invoke(controller, activePat, WellKnownSectionPid.PAT.value, generation, section, section.size)
                 controller.currentGeneration()
                 check(ingest.inputDeliveryLossCount == 1)
             } finally {
