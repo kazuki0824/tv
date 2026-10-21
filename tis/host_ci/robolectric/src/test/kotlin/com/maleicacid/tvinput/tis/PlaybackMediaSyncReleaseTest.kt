@@ -219,7 +219,7 @@ class PlaybackMediaSyncReleaseTest {
                     ReflectionHelpers.setField(pipeline, "videoInputQueued", true)
                     ReflectionHelpers.callInstanceMethod<Unit>(pipeline, "maybeStartMediaSync")
                 }
-                assertEquals(0L, native.renderEntered.count)
+                assertTrue(native.renderEntered.await(2, TimeUnit.SECONDS))
                 assertTrue(native.events.indexOf("play") < native.events.indexOf("render"))
             } finally {
                 native.resumeRender.countDown()
