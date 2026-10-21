@@ -26,6 +26,7 @@ data class SectionTransportLossSnapshot(
     val filterOverflow: Int,
 )
 
+@Suppress("TooManyFunctions")
 class SectionIngestController(
     private val engine: AribSiEngine,
 ) {
@@ -99,8 +100,7 @@ class SectionIngestController(
     }
 
     @Synchronized
-    fun transportLossSnapshot(): SectionTransportLossSnapshot =
-        SectionTransportLossSnapshot(inputDeliveryLossCount, filterOverflowCount)
+    fun transportLossSnapshot(): SectionTransportLossSnapshot = SectionTransportLossSnapshot(inputDeliveryLossCount, filterOverflowCount)
 
     @Suppress("MagicNumber")
     @Synchronized
@@ -154,7 +154,8 @@ class SectionIngestController(
     fun broadcastClockSnapshot(): AribBroadcastClockFact? = engine.broadcastClockSnapshot()
 
     fun diagnosticSummary(): String =
-        "inputDeliveryLoss=$inputDeliveryLossCount filterOverflow=$filterOverflowCount lostByPid=${lossByPidSummary()}; " +
+        "inputDeliveryLoss=$inputDeliveryLossCount filterOverflow=$filterOverflowCount " +
+            "lostByPid=${lossByPidSummary()}; " +
             diagnostics().joinToString("; ") { c ->
                 "pid=${c.pid.value} table=${c.tableId} status=${c.status} ok=" +
                     "${c.acceptedCount} invalidSection=${c.invalidSectionCount} malformed=${c.malformedCount} " +
