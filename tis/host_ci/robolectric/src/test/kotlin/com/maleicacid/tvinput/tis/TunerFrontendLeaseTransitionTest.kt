@@ -260,13 +260,8 @@ class TunerFrontendLeaseTransitionTest {
             controller.currentGeneration()
             check(ingest.transportLossSnapshot() == candidateBaseline)
             check(ingest.diagnostics().isEmpty())
-            val currentSdk = checkNotNull(NativeTuner.current)
-            val currentPat = currentSdk.filters.last { Shadow.extract<NativeFilter>(it).closes == 0 }
-            currentSdk.filterCallbacks.getValue(currentPat).onFilterStatusChanged(currentPat, Filter.STATUS_OVERFLOW)
-            controller.currentGeneration()
-            check(ingest.filterOverflowCount == 1)
-            deliverPat(currentPat)
-            check(ingest.diagnostics().single { it.pid == WellKnownSectionPid.PAT }.acceptedCount == 1)
+            // 新Filter受付はsuccessfulRetunesOpenFreshFiltersAndDeliverSectionsで検証する。
+            // この試験は旧Filterのcallbackが候補baselineを汚染しない境界だけを検証する。
         } finally {
             controller.release()
             engine.close()
