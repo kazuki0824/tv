@@ -231,6 +231,46 @@ class TunerFrontendLeaseTransitionTest {
     }
 
     @Test
+    fun oldSectionCallbacksCannotPolluteNewCandidateBetweenParserResetAndRetune() {
+        val controller = controller()
+        val engine = AribSiEngine(RuntimeEnvironment.getApplication())
+        val ingest = SectionIngestController(engine)
+        controller.setSectionIngestController(ingest)
+        NativeTuner.successfulTunes = true
+        try {
+            check(controller.tuneForScan(terrestrial()).success)
+            val sdk = checkNotNull(NativeTuner.current)
+            val stalePat = sdk.filters.first()
+            val staleCallback = sdk.filterCallbacks.getValue(stalePat)
+            var candidateBaseline: SectionTransportLossSnapshot? = null
+            val retune =
+                controller.tuneForScan(terrestrial()) {
+                    // resetは旧Filterの解放後、新Filterの生成前に実行する。
+                    check(Shadow.extract<NativeFilter>(stalePat).closes == 1)
+                    check(sdk.filters.all { Shadow.extract<NativeFilter>(it).closes == 1 })
+                    ingest.resetForTune()
+                    candidateBaseline = ingest.transportLossSnapshot()
+                    // parser resetと次tuneの間に入った旧世代callbackを再現する。
+                    staleCallback.onFilterStatusChanged(stalePat, Filter.STATUS_OVERFLOW)
+                    deliverPat(stalePat)
+                }
+            check(retune.success)
+            controller.currentGeneration()
+            check(ingest.transportLossSnapshot() == candidateBaseline)
+            check(ingest.diagnostics().isEmpty())
+            val currentPat = sdk.filters.last { Shadow.extract<NativeFilter>(it).closes == 0 }
+            sdk.filterCallbacks.getValue(currentPat).onFilterStatusChanged(currentPat, Filter.STATUS_OVERFLOW)
+            controller.currentGeneration()
+            check(ingest.filterOverflowCount == 1)
+            deliverPat(currentPat)
+            check(ingest.diagnostics().single { it.pid == WellKnownSectionPid.PAT }.acceptedCount == 1)
+        } finally {
+            controller.release()
+            engine.close()
+        }
+    }
+
+    @Test
     fun rejectedSectionReadCountsCurrentFilterButNotClosedFilterOfSameGeneration() {
         val controller = controller()
         val engine = AribSiEngine(RuntimeEnvironment.getApplication())
