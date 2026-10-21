@@ -570,8 +570,9 @@ class PlaybackPipeline(
     ): StartResult {
         if (afterRecoveryStop) {
             // 同一ownerのrecoverCodecGenerationが旧generationを停止済み。二度目のstopで世代を消費しない。
-            check(activeTuner == null && activeChannel == null && mediaSync == null &&
-                videoDecoder == null && audioDecoder == null && !resourceCleanup.hasPending
+            check(
+                activeTuner == null && activeChannel == null && mediaSync == null &&
+                    videoDecoder == null && audioDecoder == null && !resourceCleanup.hasPending,
             ) { "Codec復旧前の停止が完了していません" }
         } else {
             stopOnPlaybackExecutor()
