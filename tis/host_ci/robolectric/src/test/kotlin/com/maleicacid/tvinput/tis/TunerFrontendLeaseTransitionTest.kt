@@ -230,6 +230,60 @@ class TunerFrontendLeaseTransitionTest {
         }
     }
 
+
+    @Test
+    fun rejectedSectionReadCountsCurrentFilterButNotClosedFilterOfSameGeneration() {
+        val controller = controller()
+        val engine = AribSiEngine(RuntimeEnvironment.getApplication())
+        val ingest = SectionIngestController(engine)
+        controller.setSectionIngestController(ingest)
+        NativeTuner.successfulTunes = true
+        try {
+            check(controller.tuneForScan(terrestrial()).success)
+            val sdk = checkNotNull(NativeTuner.current)
+            val oldPat = sdk.filters.first()
+            val owner = ReflectionHelpers.getField<ControllerSerialExecutor>(controller, "sectionExecutor")
+            val slotsField = PrioritySerialExecutor::class.java.getDeclaredField("pendingDataSlots")
+            slotsField.isAccessible = true
+            val slots = slotsField.get(owner) as java.util.concurrent.Semaphore
+            val permits = slots.availablePermits()
+            check(permits > 0 && slots.tryAcquire(permits))
+            try {
+                val deliver =
+                    TunerController::class.java.getDeclaredMethod(
+                        "deliverSectionRead",
+                        Filter::class.java,
+                        TsPid::class.java,
+                        Long::class.javaPrimitiveType,
+                        ByteArray::class.java,
+                        Int::class.javaPrimitiveType,
+                    )
+                deliver.isAccessible = true
+                val generation = controller.currentGeneration()
+                val section = byteArrayOf(0x00, 0x00, 0x00)
+                controller.closeSectionFilter(WellKnownSectionPid.PAT)
+                deliver.invoke(controller, oldPat, WellKnownSectionPid.PAT, generation, section, section.size)
+                controller.currentGeneration()
+                check(ingest.inputDeliveryLossCount == 0)
+
+                val nextPat = sdk.filters.first { it !== oldPat && sdk.filterCallbacks.containsKey(it) }
+                // 現行PATが必要なので、closeされたPIDを同じgenerationで再登録する。
+                val newPat = controller.openSectionFilter(WellKnownSectionPid.PAT)
+                check(newPat.isOpen)
+                val activePat = sdk.filters.last()
+                check(activePat !== oldPat && activePat !== nextPat)
+                deliver.invoke(controller, activePat, WellKnownSectionPid.PAT, generation, section, section.size)
+                controller.currentGeneration()
+                check(ingest.inputDeliveryLossCount == 1)
+            } finally {
+                slots.release(permits)
+            }
+        } finally {
+            controller.release()
+            engine.close()
+        }
+    }
+
     @Test
     fun successfulRetunesOpenFreshFiltersAndDeliverSections() {
         val controller = controller()

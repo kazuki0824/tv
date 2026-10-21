@@ -1347,8 +1347,11 @@ class TunerController(
                     }
                 }
             }) {
-                if (!released && tuneAccepted && generation == tuneGeneration) {
-                    ingest?.recordInputDeliveryLoss(pid, tableId)
+                // callback側ではowner待機せず、close後の同世代旧Filterを誤計数しない。
+                sectionExecutor.executeControl {
+                    if (!released && isCurrentSectionFilter(pid, generation, filter)) {
+                        ingest?.recordInputDeliveryLoss(pid, tableId)
+                    }
                 }
             }
         }.onFailure { error ->
