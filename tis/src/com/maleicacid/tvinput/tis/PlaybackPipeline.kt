@@ -113,6 +113,12 @@ class PlaybackPipeline(
     private val dataPathProgress = PlaybackDataPathProgress()
     private var resourceActivityReported = false
 
+    private data class RenderSubmission(
+        val codec: MediaCodec,
+        val index: Int,
+        val completed: java.util.concurrent.CompletableFuture<RuntimeException?>,
+    )
+
     private enum class VideoAvailabilityMode {
         MEDIA_SYNC_FINAL_OUTPUT_EXACT,
         MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT,
@@ -2131,12 +2137,6 @@ class PlaybackPipeline(
     ) : DecoderPipeline() {
         // Codecが貸し出した出力indexだけを保持する。payload複製や独自の枠数制限は設けない。
         private val pendingOutputs = java.util.ArrayDeque<PendingVideoOutput>()
-
-        private data class RenderSubmission(
-            val codec: MediaCodec,
-            val index: Int,
-            val completed: java.util.concurrent.CompletableFuture<RuntimeException?>,
-        )
 
         private val renderSubmissions = mutableListOf<RenderSubmission>()
 
