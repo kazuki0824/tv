@@ -1814,13 +1814,8 @@ class PlaybackPipeline(
             if (codec == null) {
                 val format = probeHeader(sample)
                 if (format == null) {
-                    // 構成前の古い圧縮入力は有限に保持し、構成headerの探索を継続する。
-                    // この保持方針をHALの同時event数の契約へ結び付けない。
-                    while (pendingSamples.size > MAX_STARTUP_RETAINED_EVENTS) {
-                        val expired = pendingSamples.removeFirst()
-                        dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, expired.isAudio)
-                        releaseMediaSample(expired)
-                    }
+                    // 構成headerを探す間も、先に確定したstartup件数・byte予算だけで入力を保護する。
+                    // 過去のHAL固定event枠を代替する3件制限は設けない。
                     return
                 }
                 codec = createBlockModelDecoder(format)
@@ -3800,7 +3795,6 @@ class PlaybackPipeline(
         private const val FIRST_FRAME_TIMEOUT_MS = 10_000L
         private const val SERVICE_TYPE_DIGITAL_AUDIO = 0x02
         private const val KIB = 1024
-        private const val MAX_STARTUP_RETAINED_EVENTS = 3
         private const val MIB = 1024 * KIB
         private const val PTS_MODULUS = 1L shl 33
         private const val PTS_HALF = 1L shl 32

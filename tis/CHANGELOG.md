@@ -14,6 +14,12 @@
 - ECM/EMMのMediaCasStateExceptionについて、公開APIの数値errorCodeとdiagnosticInfoを既存の診断messageへ保持し、messageが空でもplatform側の失敗種別を識別できるようにした。元のcause、CAS状態分類、配送・再試行契約は維持する。
 - Program cleanupの非同期開始・実行中はPENDINGと記録し、workerの完了結果だけからCOMPLETED/FAILEDを記録する。Boot EPGとbackground maintenanceの未準備分岐を揃え、非同期開始を実失敗と誤表示しない。
 - Framework CAS adapterを通すECM/EMM status保持のホスト試験を追加し、ホストCIの期待件数を401へ更新した。実機のCAS失敗原因・初回スキャンは未検証。
+## 2026-10-21 startup前3件制限の撤廃とR3〜R5の回帰 (#207)
+
+- decoder構成前の保持イベントは、Codec別に既存設計で確定するstartup件数・byte予算だけで有界化する。HALの廃止済み8-slot前提から残った3件制限を撤廃し、合法入力を構成ヘッダー未発見だけで人工的に欠落させない。
+- 最大16MiB単一AVイベントのcallback受付と複数イベント超過時の拒否を区別し、既存16MiB共有permitを維持する。R4のCodec復旧では既停止generationを二重停止せず、R5のCAS未確定時は再生資源がない状態で世代を進めない。
+- Robolectricでstartup予算内の12件保持と起動期限での解放、16MiB/過大callback、復旧の一回停止、CAS反復stopを検証する。実機の処理速度と長時間再生成功は別途検証する。
+
 ## 2026-10-19 36系JNI TRACEの限定抑制（#207）
 
 - 36系のPerfetto・native stackで、SI DTOのJNI object構築中に`jni::wrapper::jnienv`のVERBOSEログが大量発生し、2 vCPUでTISとlogdの負荷が顕著だったことを確認。
