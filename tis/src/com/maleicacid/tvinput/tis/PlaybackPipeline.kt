@@ -2128,6 +2128,7 @@ class PlaybackPipeline(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     private inner class VideoDecoderPipeline(
         private val kind: VideoCodecKind,
         private val codecFacts: AribCodecFacts,
