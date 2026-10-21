@@ -11,6 +11,7 @@ import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
+import com.maleicacid.tvinput.aribsi.SectionTransportLossSnapshot
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
@@ -185,6 +186,7 @@ class ChannelScanController(
             if (cancelled.get() || terminalResourceLostObserved) return false
             engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
+            val lossBaseline = ingestController.transportLossSnapshot()
             // setup登録にEIT scheduleは不要。EIT入力burstでSDT/PAT/PMTを落とさない。
             val tune = tunerController.tuneForScan(candidate, eitPfActualOnly = true)
             if (!tune.success) {
@@ -200,6 +202,7 @@ class ChannelScanController(
                         candidate,
                         SiCollectionRequirements(PublishMode.SETUP_SCAN, discoveryProfile(candidate.kind)),
                         tune.generation,
+                        lossBaseline,
                     )
                 collection.diagnostic?.let { diagnostics += it }
                 if (!collection.mayPublishChannels) {
@@ -401,6 +404,7 @@ class ChannelScanController(
             if (cancelled.get() || terminalResourceLostObserved) break
             engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
+            val lossBaseline = ingestController.transportLossSnapshot()
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
                 diagnostics += ScanDiagnostic(candidate, "${failurePrefix}の選局に失敗しました result=${tune.resultCode} ${tune.message}")
@@ -414,6 +418,7 @@ class ChannelScanController(
                         candidate,
                         SiCollectionRequirements(mode, discoveryProfile(candidate.kind), requiredServiceKeys),
                         tune.generation,
+                        lossBaseline,
                     )
                 collection.diagnostic?.let { diagnostics += it }
                 if (!collection.mayPublishChannels) {
@@ -732,6 +737,7 @@ class ChannelScanController(
         candidate: ScanCandidate,
         requirements: SiCollectionRequirements,
         tuneGeneration: Long,
+        lossBaseline: SectionTransportLossSnapshot,
     ): SiCollectionResult {
         val policy = DEFAULT_SI_POLICY
         val startedAt = android.os.SystemClock.elapsedRealtime()
@@ -852,14 +858,16 @@ class ChannelScanController(
                 finalRegistrationReadyServices = finalCounts.registrationReady,
             )
         val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+        val candidateLoss = candidateTransportLossDetail(lossBaseline, ingestController.transportLossSnapshot())
         val message =
             when (outcome) {
                 SiCollectionOutcome.COMPLETE -> {
-                    if (ingestController.inputDeliveryLossCount == 0) null else ingestController.diagnosticSummary()
+                    candidateLoss?.let { "$it; scanTotalSections=${ingestController.diagnosticSummary()}" }
                 }
 
                 SiCollectionOutcome.SIGNAL_UNAVAILABLE -> {
-                    signalUnavailableDiagnostic(signalUnavailableEvent, tuneGeneration, elapsed)
+                    val signal = signalUnavailableDiagnostic(signalUnavailableEvent, tuneGeneration, elapsed)
+                    if (candidateLoss == null) signal else "$signal; $candidateLoss"
                 }
 
                 else -> {
@@ -868,7 +876,8 @@ class ChannelScanController(
                         "clearLivePlaybackStaticallyEligibleServices=${finalCounts.clearLivePlaybackStaticallyEligible} " +
                         "registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} " +
                         "missingInstances=${finalCounts.collectionStatus.missing} " +
-                        "sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
+                        "candidateTransportLoss=${candidateLoss ?: "なし"} " +
+                        "scanTotalSections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
                 }
             }
         Log.i(LogTags.TIS, "scan 候補の SI 収集結果 candidate=$candidate outcome=$outcome complete=$complete counts=$finalCounts message=$message")
@@ -1044,6 +1053,20 @@ class ChannelScanController(
     companion object {
         // PMT PID集合の根拠はPAT。非PAT SIやCAS接続変更では再計算しない。
         internal fun shouldRefreshPmtFiltersForSection(pid: TsPid?): Boolean = pid == WellKnownSectionPid.PAT
+
+        // 候補開始時のsnapshotからの増分のみを候補の喪失として扱い、前候補分を混入させない。
+        internal fun candidateTransportLossDetail(
+            baseline: SectionTransportLossSnapshot,
+            current: SectionTransportLossSnapshot,
+        ): String? {
+            val inputLoss = (current.inputDeliveryLoss - baseline.inputDeliveryLoss).coerceAtLeast(0)
+            val overflow = (current.filterOverflow - baseline.filterOverflow).coerceAtLeast(0)
+            return if (inputLoss == 0 && overflow == 0) {
+                null
+            } else {
+                "candidateInputDeliveryLoss=$inputLoss candidateFilterOverflow=$overflow"
+            }
+        }
 
         internal fun <T> acquireFinalSnapshotUnlessCancelled(
             cancelled: AtomicBoolean,
