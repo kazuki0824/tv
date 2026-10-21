@@ -1709,6 +1709,8 @@ class PlaybackPipeline(
         private val configurationProbe by lazy { CodecHeaderProbe(configurationProbeKind) }
         private val pendingSamples = java.util.ArrayDeque<MediaSample>()
         private val availableInputIndexes = java.util.ArrayDeque<Int>()
+        // Codec callbackがowner実行中に到着しても既存の入力index返却を先に消費する。
+        private val inboundCodecInputIndexes = java.util.concurrent.ConcurrentLinkedQueue<Pair<MediaCodec, Int>>()
 
         // FrameworkのC2Buffer複製は元MediaEventの寿命を継承しない。入力返却まで同じdecoderが保持する。
         private val queuedSamples = mutableMapOf<Int, MediaSample>()
@@ -1762,6 +1764,8 @@ class PlaybackPipeline(
         @Suppress("TooGenericExceptionCaught", "ReturnCount")
         fun queue(sample: MediaSample) {
             try {
+                // 進行中のFilter callbackの途中で届いたCodec入力indexも回収する。
+                drainIncomingCodecInputIndexes()
                 if (sample.size > budget.singleEventLimitBytes) {
                     oversizedSamplesDropped++
                     releaseMediaSample(sample)
@@ -1826,6 +1830,22 @@ class PlaybackPipeline(
                 "availableInputs=${availableInputIndexes.size} queuedInputs=${queuedSamples.size} budget=$queueBudget"
         }
 
+        // 単一ownerのみがCodecの入力所有を変更する。callback threadはindexを引き渡すだけ。
+        private fun drainIncomingCodecInputIndexes() {
+            while (true) {
+                val (callbackCodec, index) = inboundCodecInputIndexes.poll() ?: return
+                if (generation != playbackGeneration || codec !== callbackCodec) continue
+                val isAudio = this is AudioDecoderPipeline
+                dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT_AVAILABLE, isAudio)
+                queuedSamples.remove(index)?.let { sample ->
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT_RETURNED, isAudio)
+                    releaseMediaSample(sample)
+                }
+                availableInputIndexes.addLast(index)
+                drainPendingInput()
+            }
+        }
+
         private fun queueInternal(sample: MediaSample) {
             if (codec == null) {
                 val format = probeHeader(sample)
@@ -1887,29 +1907,8 @@ class PlaybackPipeline(
                             codec: MediaCodec,
                             index: Int,
                         ) {
-                            val callbackAtNs = if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) System.nanoTime() else 0L
-                            enqueuePlaybackAction {
-                                if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) return@enqueuePlaybackAction
-                                val beganAtNs = if (callbackAtNs != 0L) System.nanoTime() else 0L
-                                val isAudio = this@DecoderPipeline is AudioDecoderPipeline
-                                dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT_AVAILABLE, isAudio)
-                                queuedSamples.remove(index)?.let { sample ->
-                                    dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT_RETURNED, isAudio)
-                                    releaseMediaSample(sample)
-                                }
-                                availableInputIndexes.addLast(index)
-                                drainPendingInput()
-                                val callbacks = dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT_AVAILABLE, isAudio)
-                                if (beganAtNs != 0L && callbacks % 32L == 0L) {
-                                    Log.d(
-                                        LogTags.TIS,
-                                        "PLAYBACK_CODEC_INPUT_RETURN sessionId=$sessionId generation=$generation isAudio=$isAudio " +
-                                            "index=$index callbackWaitUs=${(beganAtNs - callbackAtNs) / 1_000L} " +
-                                            "ownerUs=${(System.nanoTime() - beganAtNs) / 1_000L} " +
-                                            "pending=${pendingSamples.size} queued=${queuedSamples.size} available=${availableInputIndexes.size}",
-                                    )
-                                }
-                            }
+                            inboundCodecInputIndexes.offer(codec to index)
+                            enqueuePlaybackAction { drainIncomingCodecInputIndexes() }
                         }
 
                         override fun onOutputBufferAvailable(
@@ -2115,6 +2114,7 @@ class PlaybackPipeline(
             startupTimeout = null
             clearPending()
             availableInputIndexes.clear()
+            inboundCodecInputIndexes.clear()
             val decoder = codec
             codec = null
             if (decoder != null) {
