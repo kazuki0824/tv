@@ -15,6 +15,12 @@
 - Program cleanupの非同期開始・実行中はPENDINGと記録し、workerの完了結果だけからCOMPLETED/FAILEDを記録する。Boot EPGとbackground maintenanceの未準備分岐を揃え、非同期開始を実失敗と誤表示しない。
 - Framework CAS adapterを通すECM/EMM status保持のホスト試験を追加し、ホストCIの期待件数を401へ更新した。実機のCAS失敗原因・初回スキャンは未検証。
 
+## 2026-10-21 Codec入力通知のFilterバッチ中先行消費（#207）
+
+- Filter一括callback中にCodecのinput-index callbackが到着した場合も、次のイベントの保持予算判定前に同じownerで入力返却とpending drainを実行する。callback threadはindex引渡しのみを行い、Decoder状態とgeneration判定は既存ownerに維持する。
+- 現行MPEG-2の48件pending上限や16MiB callback permitを無条件増加させず、不要な人工的破棄を減らす。
+- 変更前に49イベントの途中入力通知で48件目以降の人工破棄を確認するRobolectric回帰を追加。実機の低速Codec、永続的な出力停止、メモリ使用量は別途検証する。
+
 ## 2026-10-21 R1 native映像出力中も再生ownerを進行させる（#207）
 
 - Native MediaCodec.releaseOutputBuffer(renderTimestampNs)の待機を既存playback ownerとCodec callback HandlerThreadから独立させ、セッション単位の直列HandlerThreadへ配送する。MediaCodecの貸与済み出力indexの寿命が自然な並列上限であり、固定数の追加render pool/出力payloadコピーは設けない。
