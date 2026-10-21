@@ -90,7 +90,7 @@ impl AvcTiming {
                     active = Some(sps_id);
                 }
                 6 => sei.push(rbsp),
-                9 | 10 | 11 | 12 => {}
+                9..=12 => {}
                 _ => return None,
             }
         }
