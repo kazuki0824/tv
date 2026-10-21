@@ -1023,6 +1023,11 @@ where
         })
     }
 
+    #[cfg(test)]
+    fn lane_count(&self) -> usize {
+        self.lanes.len()
+    }
+
     pub fn reserve_pending(
         &self,
         reservations: impl IntoIterator<Item = (K, V)>,
@@ -2188,6 +2193,48 @@ mod tests {
         assert!(pending
             .wait_until_released([&1, &2], Some(Duration::ZERO))
             .is_ok());
+    }
+
+    #[test]
+    fn cleanup_reaper_lanes_start_on_demand_without_reducing_peak_capacity() {
+        use std::sync::{mpsc, Arc, Mutex};
+        use std::time::Duration;
+        let (started_tx, started_rx) = mpsc::channel::<u32>();
+        let (resume_tx, resume_rx) = mpsc::channel::<()>();
+        let resume_rx = Arc::new(Mutex::new(resume_rx));
+        let runner = Arc::new(
+            move |job: u32,
+                  _pending: super::WorkerRuntimeReaperPending<u32, u32>,
+                  _worker: super::WorkerContext| {
+                started_tx.send(job).unwrap();
+                resume_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+            },
+        );
+        let queue =
+            super::WorkerRuntime::start_reaper_queue(4, "test-reaper-lazy", runner).unwrap();
+        // Capacity 4 is an admission bound, not a reason to create four idle OS threads.
+        assert_eq!(queue.lane_count(), 1);
+        for key in 0..4 {
+            queue.enqueue_reserved(key, [(key, key)]).unwrap();
+        }
+        let mut started = std::collections::BTreeSet::new();
+        for _ in 0..4 {
+            started.insert(started_rx.recv_timeout(Duration::from_secs(3)).unwrap());
+        }
+        assert_eq!(started, (0..4).collect());
+        assert_eq!(queue.lane_count(), 4);
+        for _ in 0..4 {
+            resume_tx.send(()).unwrap();
+        }
+        for key in 0..4 {
+            queue
+                .wait_until_released([&key], Some(Duration::from_secs(3)))
+                .unwrap();
+        }
     }
 
     #[test]
