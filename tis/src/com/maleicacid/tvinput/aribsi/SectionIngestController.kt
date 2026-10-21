@@ -100,10 +100,9 @@ class SectionIngestController(
     }
 
     @Synchronized
-    fun transportLossSnapshot(): SectionTransportLossSnapshot = SectionTransportLossSnapshot(
-        inputDeliveryLossCount,
-        filterOverflowCount,
-    )
+    fun transportLossSnapshot(): SectionTransportLossSnapshot {
+        return SectionTransportLossSnapshot(inputDeliveryLossCount, filterOverflowCount)
+    }
 
     @Suppress("MagicNumber")
     @Synchronized
