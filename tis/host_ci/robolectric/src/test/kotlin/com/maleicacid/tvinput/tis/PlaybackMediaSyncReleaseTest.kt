@@ -116,6 +116,19 @@ class PlaybackMediaSyncReleaseTest {
     }
 
     @Test
+    fun casPendingStopDoesNotAdvanceGenerationWhenPlaybackAlreadyStopped() {
+        withAttachedSync { pipeline, native, _ ->
+            val before = pipeline.currentPlaybackGenerationForTest()
+            assertTrue(pipeline.stopIfActive())
+            val after = pipeline.currentPlaybackGenerationForTest()
+            assertTrue(after > before)
+            assertFalse(pipeline.stopIfActive())
+            assertEquals(after, pipeline.currentPlaybackGenerationForTest())
+            assertEquals(1, native.events.count { it == "flush" })
+        }
+    }
+
+    @Test
     fun pausedVideoOutputDoesNotBlockStop() {
         withAttachedSync { pipeline, native, surface ->
             val decoder = attachVideoDecoder(pipeline, native, surface)

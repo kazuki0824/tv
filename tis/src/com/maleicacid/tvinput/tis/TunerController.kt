@@ -1533,7 +1533,7 @@ class TunerController(
                             check((pmtPids + result.ecmPids + result.emmPids).all { sectionFilterHandles[it]?.isOpen == true }) {
                                 "CAS/SI filter集合を開始できません"
                             }
-                            if (!casDecisionReady) playbackPipeline.stop()
+                            if (!casDecisionReady) playbackPipeline.stopIfActive()
                         } catch (failure: RuntimeException) {
                             failedEcmRequestsToRetain += failedDynamicEcmPids.intersect(result.ecmPids)
                             failedEmmRequestsToRetain += failedDynamicEmmPids.intersect(result.emmPids)
