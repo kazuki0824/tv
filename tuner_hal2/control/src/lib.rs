@@ -1111,8 +1111,9 @@ where
         }
         let group_id = reservation.group_id;
         // Pending capacity is an admission limit, not an eager OS thread count.
-        let demanded = self.pending.pending_group_count()?;
-        if let Err(spawn_error) = self.ensure_lanes(demanded) {
+        let demanded = self.pending.pending_group_count();
+        let provision = demanded.and_then(|count| self.ensure_lanes(count));
+        if let Err(spawn_error) = provision {
             drop(job);
             return match reservation.release() {
                 Ok(()) => Err(spawn_error),
