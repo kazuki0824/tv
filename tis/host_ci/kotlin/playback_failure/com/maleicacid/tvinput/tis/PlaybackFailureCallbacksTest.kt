@@ -13,6 +13,7 @@ import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.MediaEvent
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
+import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServicePolicyDecision
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
@@ -882,7 +883,7 @@ class PlaybackFailureCallbacksTest {
         set(controller, "sectionFilters", linkedMapOf<TsPid, List<Filter>>())
         // 未初期化のTunerは利用不可を同期返却する。実tuneForScan経路を差し替えない。
         set(scan, "engine", engine)
-        set(scan, "ingestController", com.maleicacid.tvinput.aribsi.SectionIngestController(engine))
+        set(scan, "ingestController", SectionIngestController(engine))
         set(scan, "tunerController", controller)
         set(scan, "cancelled", AtomicBoolean(false))
         set(scan, "scanGenerationFence", ChannelScanController.ScanGenerationFence())
