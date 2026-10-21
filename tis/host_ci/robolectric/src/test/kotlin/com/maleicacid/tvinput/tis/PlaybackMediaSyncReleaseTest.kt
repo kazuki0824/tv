@@ -146,6 +146,26 @@ class PlaybackMediaSyncReleaseTest {
     }
 
     @Test
+    fun activeVideoRenderWaitDoesNotOccupyPlaybackControlOwner() {
+        withAttachedSync { pipeline, native, surface ->
+            val decoder = attachVideoDecoder(pipeline, native, surface)
+            val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            ReflectionHelpers.setField(pipeline, "mediaSyncStarted", true)
+            native.playing = true
+            native.blockActiveRender = true
+            executor.executeControl { videoOutput(decoder) }
+            assertTrue(native.renderEntered.await(2, TimeUnit.SECONDS))
+            try {
+                // releaseOutputBufferのnative待機と同時でも、単一playback ownerはcontrolを進める。
+                assertEquals(1L, executor.callControl(1_000L) { pipeline.currentPlaybackGenerationForTest() })
+                assertEquals(1L, native.resumeRender.count)
+            } finally {
+                native.resumeRender.countDown()
+            }
+        }
+    }
+
+    @Test
     fun activeVideoRenderWaitCanBeWokenBeforeStopReachesOwner() {
         withAttachedSync { pipeline, native, surface ->
             val decoder = attachVideoDecoder(pipeline, native, surface)
