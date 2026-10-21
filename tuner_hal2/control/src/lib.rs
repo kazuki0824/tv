@@ -800,7 +800,6 @@ where
         Ok(())
     }
 
-    #[cfg(test)]
     fn pending_group_count(&self) -> Result<usize, maleicacid_tuner_hal2_common::HalError> {
         self.lock_state().map(|state| state.groups.len())
     }
@@ -932,7 +931,11 @@ impl WorkerRuntime<()> {
 
 /// `WorkerRuntime`が発行するopaqueなbounded reaper handle。
 pub struct WorkerRuntimeReaperQueue<K, V, J> {
-    lanes: std::sync::Arc<Vec<WorkerHandle<(), maleicacid_tuner_hal2_common::HalError>>>,
+    lanes: std::sync::Arc<std::sync::Mutex<Vec<WorkerHandle<(), maleicacid_tuner_hal2_common::HalError>>>>,
+    receiver: std::sync::Arc<PoisonTrackedMutex<std::sync::mpsc::Receiver<WorkerRuntimeReaperQueuedJob<J>>>>,
+    runner: std::sync::Arc<WorkerReaperRunner<K, V, J>>,
+    thread_prefix: &'static str,
+    max_lanes: usize,
     sender: std::sync::mpsc::SyncSender<WorkerRuntimeReaperQueuedJob<J>>,
     pending: WorkerRuntimeReaperPending<K, V>,
 }
@@ -966,6 +969,10 @@ impl<K, V, J> Clone for WorkerRuntimeReaperQueue<K, V, J> {
     fn clone(&self) -> Self {
         Self {
             lanes: std::sync::Arc::clone(&self.lanes),
+            receiver: std::sync::Arc::clone(&self.receiver),
+            runner: std::sync::Arc::clone(&self.runner),
+            thread_prefix: self.thread_prefix,
+            max_lanes: self.max_lanes,
             sender: self.sender.clone(),
             pending: self.pending.clone(),
         }
@@ -990,25 +997,42 @@ where
             receiver,
             RuntimeLockKind::WorkerReaperReceiver,
         ));
-        let mut lanes = Vec::with_capacity(capacity);
-        for lane in 0..capacity {
-            let receiver = std::sync::Arc::clone(&receiver);
-            let runner = std::sync::Arc::clone(&runner);
-            let pending_for_lane = pending.clone();
+        let queue = Self {
+            lanes: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            receiver,
+            runner,
+            thread_prefix,
+            max_lanes: capacity,
+            sender,
+            pending,
+        };
+        queue.ensure_lanes(1)?;
+        Ok(queue)
+    }
+
+    fn ensure_lanes(&self, desired: usize) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        let mut lanes = self.lanes.lock().map_err(|_| {
+            maleicacid_tuner_hal2_common::HalError::WorkerReaperUnavailable
+        })?;
+        while lanes.len() < desired.min(self.max_lanes) {
+            let lane_index = lanes.len();
+            let receiver = std::sync::Arc::clone(&self.receiver);
+            let runner = std::sync::Arc::clone(&self.runner);
+            let pending = self.pending.clone();
             let lane = WorkerRuntime::spawn_controlled_handle(
-                format!("{thread_prefix}-{lane}"),
+                format!("{}-{}", self.thread_prefix, lane_index),
                 move |context| loop {
-                    let queued = lock_reaper_receiver(&receiver, &pending_for_lane.failure)?.recv();
+                    let queued = lock_reaper_receiver(&receiver, &pending.failure)?.recv();
                     let WorkerRuntimeReaperQueuedJob { job, group_id } = match queued {
                         Ok(queued) => queued,
                         Err(_) => return Ok(()),
                     };
-                    runner(job, pending_for_lane.clone(), context.clone());
-                    pending_for_lane.release_group(group_id)?;
+                    runner(job, pending.clone(), context.clone());
+                    pending.release_group(group_id)?;
                 },
             )
             .map_err(|error| maleicacid_tuner_hal2_common::HalError::Io {
-                backend: thread_prefix,
+                backend: self.thread_prefix,
                 operation: "スレッド生成",
                 path: None,
                 errno: error.raw_os_error(),
@@ -1016,16 +1040,12 @@ where
             })?;
             lanes.push(lane);
         }
-        Ok(Self {
-            lanes: std::sync::Arc::new(lanes),
-            sender,
-            pending,
-        })
+        Ok(())
     }
 
     #[cfg(test)]
     fn lane_count(&self) -> usize {
-        self.lanes.len()
+        self.lanes.lock().unwrap().len()
     }
 
     pub fn reserve_pending(
@@ -1085,6 +1105,21 @@ where
             };
         }
         let group_id = reservation.group_id;
+        // Pending capacity is an admission limit, not an eager OS thread count.
+        let demanded = self.pending.pending_group_count()?;
+        if let Err(spawn_error) = self.ensure_lanes(demanded) {
+            drop(job);
+            return match reservation.release() {
+                Ok(()) => Err(spawn_error),
+                Err(release_error) => Err(
+                    maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                        "ワーカー生成と予約解放がともに失敗しました",
+                        spawn_error,
+                        release_error,
+                    ),
+                ),
+            };
+        }
         match self
             .sender
             .try_send(WorkerRuntimeReaperQueuedJob { job, group_id })
@@ -2503,7 +2538,14 @@ mod tests {
             std::sync::mpsc::sync_channel::<WorkerRuntimeReaperQueuedJob<()>>(capacity.max(1));
         (
             WorkerRuntimeReaperQueue {
-                lanes: std::sync::Arc::new(Vec::new()),
+                lanes: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                receiver: std::sync::Arc::new(PoisonTrackedMutex::new(
+                    receiver,
+                    RuntimeLockKind::WorkerReaperReceiver,
+                )),
+                runner: std::sync::Arc::new(|_: (), _, _| {}),
+                thread_prefix: "test-reaper-queue",
+                max_lanes: 0,
                 sender,
                 pending: WorkerRuntimeReaperPending::new(capacity.max(1)),
             },
