@@ -260,8 +260,9 @@ class TunerFrontendLeaseTransitionTest {
             controller.currentGeneration()
             check(ingest.transportLossSnapshot() == candidateBaseline)
             check(ingest.diagnostics().isEmpty())
-            val currentPat = sdk.filters.last { Shadow.extract<NativeFilter>(it).closes == 0 }
-            sdk.filterCallbacks.getValue(currentPat).onFilterStatusChanged(currentPat, Filter.STATUS_OVERFLOW)
+            val currentSdk = checkNotNull(NativeTuner.current)
+            val currentPat = currentSdk.filters.last { Shadow.extract<NativeFilter>(it).closes == 0 }
+            currentSdk.filterCallbacks.getValue(currentPat).onFilterStatusChanged(currentPat, Filter.STATUS_OVERFLOW)
             controller.currentGeneration()
             check(ingest.filterOverflowCount == 1)
             deliverPat(currentPat)
