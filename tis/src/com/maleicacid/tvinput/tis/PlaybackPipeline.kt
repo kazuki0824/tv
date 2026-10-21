@@ -53,6 +53,9 @@ class PlaybackPipeline(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val codecCallbackThread = HandlerThread("maleicacid-codec-$inputId").apply { start() }
     private val codecCallbackHandler = Handler(codecCallbackThread.looper)
+    // native render待機をplayback ownerとCodec callback配送の双方から切り離す。
+    private val videoRenderThread = HandlerThread("maleicacid-video-render-$inputId").apply { start() }
+    private val videoRenderHandler = Handler(videoRenderThread.looper)
 
     // render出力待機中だけ、停止要求から起床対象のMediaSyncを参照する。
     private val blockedVideoOutputSync = AtomicReference<MediaSync?>(null)
@@ -2127,6 +2130,42 @@ class PlaybackPipeline(
     ) : DecoderPipeline() {
         // Codecが貸し出した出力indexだけを保持する。payload複製や独自の枠数制限は設けない。
         private val pendingOutputs = java.util.ArrayDeque<PendingVideoOutput>()
+        private data class RenderSubmission(
+            val codec: MediaCodec,
+            val index: Int,
+            val completed: java.util.concurrent.CompletableFuture<RuntimeException?>,
+        )
+        private val renderSubmissions = mutableListOf<RenderSubmission>()
+
+        // Completion and failure handling remain on the playback owner, not the native render thread.
+        private fun consumeRenderSubmission(submission: RenderSubmission, stopping: Boolean) {
+            if (!renderSubmissions.remove(submission)) return
+            val failure = submission.completed.getNow(null) ?: return
+            Log.w(LogTags.TIS, "native映像bufferの返却に失敗しました index=${submission.index}", failure)
+            releaseDecoderOutput(resourceCleanup, submission.codec) {
+                submission.codec.releaseOutputBuffer(submission.index, false)
+            }
+            if (!stopping && generation == playbackGeneration && codec === submission.codec) {
+                onDecoderFailure(failure)
+            }
+        }
+
+        fun awaitRenderSubmissionsBeforeMediaSyncRelease() {
+            for (submission in renderSubmissions.toList()) {
+                try {
+                    // Playback control timeout is the existing owner liveness limit.
+                    submission.completed.get(PLAYBACK_CONTROL_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+                } catch (error: java.util.concurrent.TimeoutException) {
+                    throw IllegalStateException("native映像出力が停止期限までに返却されません index=${submission.index}", error)
+                } catch (error: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw IllegalStateException("native映像出力の回収待機が中断されました index=${submission.index}", error)
+                } catch (error: java.util.concurrent.ExecutionException) {
+                    throw IllegalStateException("native映像出力の回収に失敗しました index=${submission.index}", error)
+                }
+                consumeRenderSubmission(submission, stopping = true)
+            }
+        }
 
         fun renderPendingOutputs() {
             if (!mediaSyncStarted || generation != playbackGeneration) return
@@ -2272,18 +2311,36 @@ class PlaybackPipeline(
                 )
             }
             val sync = mediaSync
-            if (sync != null) blockedVideoOutputSync.set(sync)
-            try {
-                releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, presentationTimeUs * 1_000L) }
-            } finally {
-                if (sync != null) blockedVideoOutputSync.compareAndSet(sync, null)
-            }
-            if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
-                Log.d(
-                    LogTags.TIS,
-                    "PLAYBACK_VIDEO_RETURN sessionId=$sessionId generation=$generation " +
-                        "index=$index ptsUs=$presentationTimeUs",
-                )
+            val submission =
+                RenderSubmission(codec, index, java.util.concurrent.CompletableFuture())
+            renderSubmissions += submission
+            val posted =
+                videoRenderHandler.post {
+                    if (sync != null) blockedVideoOutputSync.set(sync)
+                    val failure =
+                        try {
+                            codec.releaseOutputBuffer(index, presentationTimeUs * 1_000L)
+                            null
+                        } catch (error: RuntimeException) {
+                            error
+                        } finally {
+                            if (sync != null) blockedVideoOutputSync.compareAndSet(sync, null)
+                        }
+                    submission.completed.complete(failure)
+                    enqueuePlaybackControl {
+                        consumeRenderSubmission(submission, stopping = false)
+                        if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                            Log.d(
+                                LogTags.TIS,
+                                "PLAYBACK_VIDEO_RETURN sessionId=$sessionId generation=$generation " +
+                                    "index=$index ptsUs=$presentationTimeUs",
+                            )
+                        }
+                    }
+                }
+            if (!posted) {
+                renderSubmissions.remove(submission)
+                onDecoderFailure(IllegalStateException("native映像出力workerへ配送できません"))
             }
         }
     }
@@ -3365,7 +3422,6 @@ class PlaybackPipeline(
         executor.discardDataCallbacks()
         Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=MEDIASYNC")
         val sync = mediaSync
-        mediaSync = null
         if (sync !=
             null
         ) {
@@ -3375,6 +3431,9 @@ class PlaybackPipeline(
             runCatching { sync.setCallback(null, null) }
             runCatching { sync.setOnErrorListener(null, null) }
         }
+        // A native render submission must finish before disconnecting its MediaSync/Codec resources.
+        videoDecoder?.awaitRenderSubmissionsBeforeMediaSyncRelease()
+        mediaSync = null
         sync?.let { previous ->
             // Surface切断が失敗してもMediaSync.releaseは必ず試行する。
             // release成功なら旧Surface接続も終端するので切断のみのretryを破棄する。
@@ -3487,13 +3546,12 @@ class PlaybackPipeline(
         released.set(true)
         wakeBlockedVideoOutputBeforeStop()
         runOnPlaybackExecutorBlocking(cleanup = true) {
-            try {
-                stopOnPlaybackExecutor()
-            } finally {
-                resourceCleanup.requireComplete()
-                executor.shutdownNow()
-                codecCallbackThread.quitSafely()
-            }
+            // Failure keeps the owner and render worker alive so the release can be retried.
+            stopOnPlaybackExecutor()
+            resourceCleanup.requireComplete()
+            executor.shutdownNow()
+            codecCallbackThread.quitSafely()
+            videoRenderThread.quitSafely()
         }
     }
 

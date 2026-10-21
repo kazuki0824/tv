@@ -14,6 +14,13 @@
 - ECM/EMMのMediaCasStateExceptionについて、公開APIの数値errorCodeとdiagnosticInfoを既存の診断messageへ保持し、messageが空でもplatform側の失敗種別を識別できるようにした。元のcause、CAS状態分類、配送・再試行契約は維持する。
 - Program cleanupの非同期開始・実行中はPENDINGと記録し、workerの完了結果だけからCOMPLETED/FAILEDを記録する。Boot EPGとbackground maintenanceの未準備分岐を揃え、非同期開始を実失敗と誤表示しない。
 - Framework CAS adapterを通すECM/EMM status保持のホスト試験を追加し、ホストCIの期待件数を401へ更新した。実機のCAS失敗原因・初回スキャンは未検証。
+
+## 2026-10-21 R1 native映像出力中も再生ownerを進行させる（#207）
+
+- Native MediaCodec.releaseOutputBuffer(renderTimestampNs)の待機を既存playback ownerとCodec callback HandlerThreadから独立させ、セッション単位の直列HandlerThreadへ配送する。MediaCodecの貸与済み出力indexの寿命が自然な並列上限であり、固定数の追加render pool/出力payloadコピーは設けない。
+- render結果は既存ownerで回収し、停止時はMediaSyncをflushしてからnative実行の完了を確認する。期限超過時は停止失敗として所有権を保持し、解放成功を捏造しない。releaseが失敗した場合もshutdownせず回収を再試行できるようにする。
+- Android 15 Robolectricで、native描画待機中もcontrol ownerが進行し、停止時のMediaSync/Codecの解放順序を維持することを検査。実Codecと実Surfaceの持続描画は端末検証待ち。
+
 ## 2026-10-21 startup前3件制限の撤廃とR3〜R5の回帰 (#207)
 
 - decoder構成前の保持イベントは、Codec別に既存設計で確定するstartup件数・byte予算だけで有界化する。HALの廃止済み8-slot前提から残った3件制限を撤廃し、合法入力を構成ヘッダー未発見だけで人工的に欠落させない。
