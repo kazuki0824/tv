@@ -1,3 +1,9 @@
+## 2026-10-21 cleanup reaperの予約容量とthread生成数を分離（#116）
+
+- `WorkerRuntimeReaperQueue`は公開能力由来の保留予約容量（product-default 176）を維持し、起動時1 workerから保留中の同時cleanup数に従って実行workerを増やす。
+- queueの予約同一性と既存ownerを維持し、worker起動失敗時は未投入予約の解放とエラー返却を行う。
+- 回帰試験は予約容量4の起動直後1 worker、4件同時cleanup時4 worker、完了後の全予約返却を検証する。
+
 ## スキャン中止後のFrontend close
 
 - #116: close全体の独立期限とclose専用の期限超過reaper移譲を除去。停止要求後にworkerの実終了を待ち、既存reaperの回収も待ってからlive data・電源を解放する。実際のcleanup失敗は保持する。

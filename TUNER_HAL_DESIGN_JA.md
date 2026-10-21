@@ -457,6 +457,8 @@ rollback不能、cleanup不能、正本不一致、backend実状態とregistry�
 | key token | `DescramblerKeyTable` | `DescramblerSession` | refcount不整合のまま成功扱いしない |
 | LNB永続制御・物理レール状態 | `LnbRegistry` | backend adapter | 電圧・トーン・衛星位置、LNB状態世代、失敗・隔離状態、共有レールのリース・参照数、物理LNB・レール単位のI/O直列化権限の正本を一箇所に保持し、backend状態とregistry状態の乖離を通常状態にしない |
 | ワーカー | `WorkerRuntime` | 所有オブジェクト | 所有者不明ワーカーを作らない |
+
+WorkerRuntimeのcleanup reaperは、公開能力から導出する保留groupの予約容量と実行中worker数を別資源として扱う。保留予約容量および同時cleanup最大受付数を変えず、起動時はworkerを1本生成し、保留groupの同時数に応じて必要数まで遅延起動する。実行thread数は予約容量を超えない。既存queue、保留予約とgenerationの所有権、登録時点から数えるterminal期限、失敗時のquarantineと予約返却の責務はWorkerRuntimeが維持する。遅延起動失敗時は未投入予約を解放して失敗を通知する。公開能力の縮退や別reaperの追加はしない。
 | stream boundary | `StreamBoundaryTxn` | demux/filter/DVR/AV | tune/scan/source切替で境界処理を重複実装しない |
 | packet pipeline | `PacketPipeline` | `soft_demux` | packet validation・origin分類・data-path dispatchを担当し、continuity / generation stateを各canonical ownerを迂回して更新しない |
 | AV allocation | `AvSharedBacking` | `FilterHal` | イベント専用領域とactive tokenを所有する。FD番号をallocation同一性として使わない |
