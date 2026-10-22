@@ -2978,6 +2978,157 @@ mod semantic_facts_coverage_tests {
         assert!(!facts.requires_cas);
     }
 
+    fn assert_provider_data_accepts_cas_facts(facts: &ServiceSemanticFacts, accepted: bool) {
+        use crate::provider_data::{
+            build_channel_provider_data, build_program_provider_data, decode_channel_provider_data,
+            extract_program_key_result, CasFactsV1,
+        };
+
+        let canonical = serde_json::to_string(&CasFactsV1::from(facts)).unwrap();
+        let mut program: serde_json::Value = serde_json::from_str(include_str!(
+            "../../testdata/program_provider_data_v1/minimal_clear_program.json"
+        ))
+        .unwrap();
+        program["schema"] = serde_json::json!("maleicacid.tv.programRequest");
+        program.as_object_mut().unwrap().remove("casFacts");
+        program["casFactsCanonicalJson"] = serde_json::json!(canonical);
+        program["cas"]["requiresCas"] = serde_json::json!(facts.requires_cas);
+        program["diagnostics"] = serde_json::json!({
+            "descriptorDiagnosticsCanonicalJson": "[]",
+            "publishDiagnostics": [],
+            "parserDiagnostics": [],
+        });
+        program["malformedCaDescriptorCount"] = serde_json::json!(0);
+        let channel = serde_json::json!({
+            "schema": "maleicacid.tv.channelRequest",
+            "schemaVersion": 1,
+            "serviceKey": {
+                "originalNetworkId": facts.original_network_id,
+                "transportStreamId": facts.transport_stream_id,
+                "serviceId": facts.service_id,
+            },
+            "tune": {
+                "deliverySystem": "ISDB_S", "frequencyHz": 1049480000,
+                "streamId": facts.transport_stream_id, "streamIdType": "TSID",
+                "physicalChannel": null, "satelliteBand": "BS", "remoteControlKeyId": null,
+            },
+            "cas": {"requiresCas": facts.requires_cas},
+            "casFactsCanonicalJson": canonical,
+            "diagnostics": {},
+        });
+        for (result, is_program) in [
+            (build_program_provider_data(&program.to_string()), true),
+            (build_channel_provider_data(&channel.to_string()), false),
+        ] {
+            assert_eq!(result.success, accepted, "{}", result.error_message);
+            if !accepted {
+                assert_eq!(
+                    result.error_code,
+                    if is_program {
+                        "PROGRAM_REQUEST_INVALID"
+                    } else {
+                        "CHANNEL_REQUEST_INVALID"
+                    }
+                );
+                continue;
+            }
+            let saved: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+            assert_eq!(saved["cas"]["requiresCas"], facts.requires_cas);
+            assert_eq!(
+                saved["casFacts"],
+                serde_json::from_str::<serde_json::Value>(&canonical).unwrap()
+            );
+            if is_program {
+                assert!(extract_program_key_result(result.json.as_bytes()).is_some());
+            } else {
+                assert!(!decode_channel_provider_data(result.json.as_bytes()).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn effective_cas_facts_survive_program_and_channel_provider_data() {
+        let cases = [
+            ("記述子なし", None, vec![None, None], false),
+            (
+                "PROGRAM非スクランブル",
+                Some(0x1fff),
+                vec![None, None],
+                false,
+            ),
+            (
+                "ES非スクランブル",
+                None,
+                vec![Some(0x1fff), Some(0x1fff)],
+                false,
+            ),
+            (
+                "全ES上書き",
+                Some(0x0031),
+                vec![Some(0x1fff), Some(0x1fff)],
+                false,
+            ),
+            ("一部ES上書き", Some(0x0031), vec![Some(0x1fff), None], true),
+            ("ESの実ECM", None, vec![Some(0x0032), None], true),
+            ("ESなし", Some(0x0031), vec![], false),
+        ];
+        for (name, program_pid, es_pids, expected) in cases {
+            let ca = |pid: u16| CaDescriptor {
+                ca_system_id: 5,
+                ca_pid: pid,
+                private_data: Vec::new(),
+                raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe0 | ((pid >> 8) as u8), pid as u8],
+            };
+            let mut service = base_service(
+                es_pids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| stream(0x0101 + index as u16, 0x02))
+                    .collect(),
+            );
+            service.pmt_parsed = true;
+            if let Some(pid) = program_pid {
+                service.program_ca_descriptors.push(ca(pid));
+            }
+            for (index, pid) in es_pids.into_iter().enumerate() {
+                if let Some(pid) = pid {
+                    service.es_ca_descriptors.push(EsCaMetadata {
+                        elementary_pid: 0x0101 + index as u16,
+                        descriptors: vec![ca(pid)],
+                    });
+                }
+            }
+            let facts = semantic_facts_for(service);
+            assert_eq!(facts.requires_cas, expected, "{name}");
+            assert_provider_data_accepts_cas_facts(&facts, true);
+        }
+    }
+
+    #[test]
+    fn provider_data_rejects_cas_requirement_without_ecm_and_clear_with_es_ecm() {
+        let mut facts = semantic_facts_for(base_service(vec![stream(0x0101, 0x02)]));
+        facts.requires_cas = true;
+        assert_provider_data_accepts_cas_facts(&facts, false);
+        facts.program_ca_descriptors.push(CaDescriptor {
+            ca_system_id: 5,
+            ca_pid: 0x1fff,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xff, 0xff],
+        });
+        assert_provider_data_accepts_cas_facts(&facts, false);
+        facts.requires_cas = false;
+        facts.es_ca_descriptors.push(EsCaMetadata {
+            elementary_pid: 0x0101,
+            descriptors: vec![CaDescriptor {
+                ca_system_id: 5,
+                ca_pid: 0x0032,
+                private_data: Vec::new(),
+                raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe0, 0x32],
+            }],
+        });
+        assert_provider_data_accepts_cas_facts(&facts, false);
+    }
+
     #[test]
     fn semantic_facts_preserve_avc_video_without_product_policy() {
         let facts = semantic_facts_for(base_service(vec![stream(0x0101, 0x1b)]));

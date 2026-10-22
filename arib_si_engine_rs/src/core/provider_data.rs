@@ -162,7 +162,14 @@ fn valid_cas_facts(facts: &Option<CasFactsV1>, requires_cas: bool) -> bool {
             "OK" | "PMT_UNRESOLVED" | "CA_UNRESOLVED"
         )
         && (facts.parse_status != "OK" || facts.pmt_pid.is_some())
-        && requires_cas != facts.descriptors.is_empty()
+        // 全ESの一覧を持たない保存形式では、PROGRAM指定の実効性を再計算しない。
+        // 全ESの明示clearによってPROGRAM ECMが無効でも、raw記述子は保持する。
+        && (!requires_cas
+            || facts.descriptors.iter().any(|descriptor| descriptor.ca_pid != 0x1fff))
+        && (requires_cas
+            || facts.descriptors.iter().all(|descriptor| {
+                descriptor.scope != "ES" || descriptor.ca_pid == 0x1fff
+            }))
         && facts.descriptors.iter().all(|descriptor| {
             let scope_valid = match descriptor.scope.as_str() {
                 "PROGRAM" => descriptor.es_pid.is_none(),

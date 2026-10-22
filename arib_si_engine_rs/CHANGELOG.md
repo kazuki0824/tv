@@ -1,3 +1,10 @@
+# 2026-10-22 CAS実効要否とprovider-data検証の整合
+
+- Program/Channel共通のCAS根拠検証からraw CA記述子の有無との同値条件を除き、全ESの非スクランブル指定でPROGRAM ECMが無効になる場合も意味factとraw根拠を保存する。
+- CAS必須でECM候補がない場合、およびCAS不要でESに実ECMがある場合の拒否を維持する。全ESを持たない保存形式で実効CAを再計算しない責務を設計正本へ明記した。保存schema、JNI、Kotlin DTOの追加・変更はない。
+- 実際のservice discovery算出からProgram/Channel builder、保存値の再検証まで通す回帰試験を追加した。記述子なし、PROGRAM/ESの0x1FFF、全ES/一部ESの上書き、ES実ECM、ESなし、および矛盾したCAS要否を確認する。
+- Rust 1.81.0で旧実装に対する回帰試験の失敗を確認し、修正後のhost workspace全184試験、workspace全targetのClippy（警告をエラー扱い）、変更Rustファイルのrustfmt検査を通過。Android/Soong build、device atest/VTS、実機の初回スキャンは未実施。
+
 # 2026-10-09 PR #186 nativeCreate例外生成前のregistryロック解放
 
 - nativeCreateはregistryロック内でhandleまたは既存typed failureだけを確定し、guardを解放した後に共通throw_si_failureからJava例外を生成する。handle枯渇とregistry poisonの両分岐でJVM処理をロック外へ移した。
