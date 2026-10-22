@@ -1,3 +1,10 @@
+# 2026-10-23 SI JNIロード時の標準logger初期化とJNI TRACE選別（#207）
+
+- `jni_logging`をJNI crateへ接続し、公開`JNI_OnLoad`で`android_logger::init_once`を実行してJNI 1.6を返す。標準`FilterBuilder`の`trace,jni::=debug`で、短縮タグに依存せずJNI内部TRACEだけを整形・書込み前に除外する。最大レベルはTRACE、JNI DEBUG以上・他targetのTRACEは維持する。独自logger、別worker、runtime切替APIは追加しない。
+- 製品JNIと既存atest用rust_testに`libandroid_logger`・`liblog_rust`依存を追加し、host CIにもAndroid 15と同じandroid_logger 0.13.3を追加してlockを更新した。
+- 同じ設定から標準AndroidLoggerを構築し、jnienv/jvalueの全5レベルと非JNI targetのTRACEを実際にlogへ渡し、formatter到達の有無を検査する試験を追加した。抑止と警告保持をsource文字列検査で代替しない。
+- Rust 1.81のhost workspace全196試験とJNI/VTS host adapterのClippy（all-targets、warnings禁止）が成功。host cdylibをJVMのSystem.loadでロードし、JNI_OnLoadのABIと戻り値が受理されることも確認した。Android版liblogへの実書込み・Soong/atest・製品起動時の抑止は未検証。通常設定と調査buildでの解除方法は`../tis/INTEGRATION.md`、初期化の責務は`DESIGN_JA.md`へ記載した。
+
 # 2026-10-23 容量上限近傍の矛盾検出と反復入力の保持量判定（#116）
 
 - 同版同番号の長い矛盾入力を実保持量の増加と誤判定していた処理を修正した。追加payloadを保持しない入力を容量拒否で遮断せず、PMTの旧ES/CA事実・EITの旧完成根拠を既存の不整合処理で失効させる。版置換と新規保持の容量拒否は維持する。

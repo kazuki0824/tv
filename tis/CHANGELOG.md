@@ -28,6 +28,14 @@
 - CurrentProgramRatingResolverのquery、候補読取り、サービス照合、先頭候補選択を読み合わせ、実装との整合を確認した。実装・SQLの選択順・試験は変更しない。
 - 文書のみの修正のため、build・ホスト試験・atest/VTS・実機試験は実施していない。
 
+# 2026-10-23 停止時の後着映像投入とJNI内部TRACE抑止（#207）
+
+- `VideoDecoderPipeline.stopRenderSubmissions`でatomic停止フラグを立て、予約済みの未実行出力は既存workerで非描画返却する。実行中出力をflushで起こして全完了を待ってからMediaSyncをpause/flush・切断・releaseする。フラグ検査を通過済みの呼出しとの競合でも、完了前にpauseしない。既存の停止期限・失敗時の参照保持・再試行・PCM/Codec解放順は維持し、新workerやqueue、容量上限は追加しない。
+- 工程2の停止回帰2件に非描画返却件数を追加し、停止判定通過後のnative投入がflushより遅れる競合を追加した。Robolectric CIの試験数gateも11件から14件へ更新した。Android 15実SDKへの本番コンパイルとRobolectric 4.16.1 / SDK 35で停止関連14件が成功。修正前の追加2件は停止期限超過で失敗していた。
+- 工程2で追加した`log.tag.jni::wrapper::objects..=D`の存在検査を撤回した。Android標準Rust loggerは書込み前に23バイトへタグを短縮し、LineageOSのproperty名検査は連続・末尾ドットを拒否するため、この設定要求は実現不能だった。短縮前の完全module名やprefixのpropertyでも一致しない。
+- SI JNIの標準logger初期化・targetフィルタへ抑止を移し、既存のjnienv propertyと無効な設定要求のCIブロックを除去した。JNI TRACEだけを抑止する実動作試験・Soong/host依存・Rust側設計/履歴は`arib_si_engine_rs`に収録する。`tis/DESIGN_JA.md`の停止順序と`INTEGRATION.md`のログ採取・詳細診断方法を更新した。
+- 再生入力・世代・起動・音声切替の`PlaybackFilterAdmissionTest` 35件、Kotlin変更のktlint・detekt、XML/製品統合CI検査は成功。Android製品build、atest/VTS、実機のログ抑止・停止完了・再選局は未検証で、次の製品buildで確認する。音声キュー飽和の初発原因を解消したとは扱わず、同条件のlogcat/Perfettoで再評価する。
+
 # 2026-10-23 40系の停止競合・JNI設定漏れの修正前回帰試験（#207）
 
 - `PlaybackMediaSyncReleaseTest`へ、実行中のnative描画と未実行の2件を残したowner内停止、およびnative worker開始前にflushが先行する停止の2試験を追加した。実際の`PlaybackPipeline.stop()`を呼び、停止完了と停止後の描画再投入なしを要求する。
