@@ -1,3 +1,9 @@
+# 2026-10-22 PX4 worker異常終了時のSTOP失敗（#116）
+
+- 異常終了cleanupでもSTOP成功後だけlive pumpをjoinする。STOP失敗時は元エラーと停止エラーを返し、未終了pumpとsessionを既存worker slot / cleanup ownerへ保持して隔離する。終端回収や失敗結果への変換で物理資源を落とさず、同じfrontendの置換を拒否する。
+- 新しいworker・queue・独立した資源台帳は追加しない。隔離後の自動復旧は保証しない。
+- Rust 1.81 hostのdevice 154件・service_runtime 243件、device全targetのClippy（警告をエラー扱い）、製品同等のservice_runtime lib型検査（警告をエラー扱い）が成功。STOP失敗中のblocked reader、失敗通知、cleanup失敗後のfd所有、置換拒否、owner teardownまでの寿命を検証した。Android/Soong・atest/VTS・実機でのSTOP故障注入は未実施。
+
 ## 2026-10-21 cleanup reaperの予約容量とthread生成数を分離（#116）
 
 - `WorkerRuntimeReaperQueue`は公開能力由来の保留予約容量（product-default 176）を維持し、起動時1 workerから保留中の同時cleanup数に従って実行workerを増やす。

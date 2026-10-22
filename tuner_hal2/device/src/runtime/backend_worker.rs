@@ -1506,6 +1506,118 @@ mod tests {
     }
 
     #[test]
+    fn failed_live_pump_keeps_session_and_owner_after_terminal_collection_and_quarantine() {
+        use crate::runtime::{
+            FrontendLivePacketSink, FrontendLivePumpOwner, FrontendWorkerCancelReason,
+            FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStopOutcome,
+        };
+        use std::io::{self, Read};
+        use std::os::fd::OwnedFd;
+        use std::os::unix::net::UnixStream;
+
+        struct BlockedReader(mpsc::Receiver<()>, Option<mpsc::Sender<()>>);
+        impl Read for BlockedReader {
+            fn read(&mut self, _bytes: &mut [u8]) -> io::Result<usize> {
+                if let Some(entered) = self.1.take() {
+                    entered.send(()).unwrap();
+                }
+                self.0
+                    .recv()
+                    .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
+                Ok(0)
+            }
+        }
+        struct DiscardPackets;
+        impl FrontendLivePacketSink for DiscardPackets {
+            fn deliver_ts_packet(
+                &mut self,
+                _packet: &[u8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE],
+            ) -> Result<(), HalError> {
+                Ok(())
+            }
+        }
+        let (held, mut peer) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Px4 {
+                control_path: FrontendDevicePath::new("/dev/test-px4"),
+            },
+            file: File::from(OwnedFd::from(held)),
+            initial_signal_state: FrontendSignalState::Locked,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
+            streaming_started: AtomicBool::new(true),
+        };
+        let (release, blocked) = mpsc::channel();
+        let (entered, reading) = mpsc::channel();
+        let pump = FrontendLivePumpOwner::start(
+            FrontendLiveReaderDescriptor::px4_from_control_fd(
+                1,
+                FrontendDevicePath::new("/dev/test-px4"),
+            ),
+            Box::new(BlockedReader(blocked, Some(entered))),
+            Box::new(DiscardPackets),
+        )
+        .unwrap();
+        let progress = pump.progress();
+        reading.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut registry = FrontendWorkerRegistry::default();
+        registry
+            .start(1, FrontendWorkerKind::Tune, 7, move |context| {
+                context.quarantine_failed_live_pump(session, pump);
+                Err(HalError::Unsupported("STOP失敗を注入"))
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let outcome = loop {
+            if let Some(result) = registry.take_completed(1, FrontendWorkerKind::Tune) {
+                break result;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "受信が停止しなくても元workerの失敗を公開します"
+            );
+            thread::yield_now();
+        };
+        assert!(matches!(
+            outcome,
+            FrontendWorkerStopOutcome::Completed { result: Err(_), .. }
+        ));
+        assert!(registry.has_cleanup_obligations());
+        assert!(registry
+            .start(1, FrontendWorkerKind::Tune, 8, |_| Ok(()))
+            .is_err());
+        assert_eq!(
+            peer.read(&mut [0]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        let outcome = registry
+            .request_stop_for_join(
+                1,
+                FrontendWorkerKind::Tune,
+                FrontendWorkerCancelReason::StopRequested,
+            )
+            .complete();
+        assert!(matches!(
+            outcome,
+            FrontendWorkerStopOutcome::Completed { result: Err(_), .. }
+        ));
+        assert!(registry.has_cleanup_obligations());
+        assert_eq!(
+            peer.read(&mut [0]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !progress.snapshot().finished {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        drop(registry);
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+    }
+
+    #[test]
     fn fresh_tune_failure_does_not_stop_an_unstarted_stream() {
         for (backend, expected_step) in [
             (

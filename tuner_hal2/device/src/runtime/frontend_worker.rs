@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
@@ -19,6 +19,7 @@ use super::backend_worker::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
     FrontendBackendSubmitWait, FrontendBackendTunePlan,
 };
+use super::live_pump::FrontendLivePumpOwner;
 use crate::runtime::thread_result_owner::ThreadResultOwner;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -234,7 +235,10 @@ impl FrontendWorkerCleanup {
         if succeeded {
             WorkerCleanupProgress::Completed(outcome)
         } else {
-            *self = Self::Failed(outcome.clone());
+            if !matches!(self, Self::Join(join) if join.slot.quarantined_live_pump.get().is_some())
+            {
+                *self = Self::Failed(outcome.clone());
+            }
             WorkerCleanupProgress::Quarantined(outcome)
         }
     }
@@ -644,9 +648,21 @@ pub struct FrontendWorkerContext {
     cancel_reason: Arc<PoisonTrackedMutex<Option<FrontendWorkerCancelReason>>>,
     // 診断専用。停止・再利用・回収完了の判定権限は持たない。
     stop_phase: Arc<AtomicU8>,
+    quarantined_live_pump: Arc<OnceLock<(FrontendBackendSession, FrontendLivePumpOwner)>>,
 }
 
 impl FrontendWorkerContext {
+    /// workerの唯一の異常終了分岐から一度だけ呼び、直後に失敗結果を返す。
+    /// cellはslotに従属し、終了結果の回収やcleanup ticketの隔離でも失われない。
+    pub fn quarantine_failed_live_pump(
+        &self,
+        session: FrontendBackendSession,
+        pump: FrontendLivePumpOwner,
+    ) {
+        pump.request_stop();
+        self.quarantined_live_pump.get_or_init(|| (session, pump));
+    }
+
     pub fn frontend_id(&self) -> i32 {
         self.frontend_id
     }
@@ -723,6 +739,7 @@ struct FrontendWorkerSlot {
     cancel_reason: Arc<PoisonTrackedMutex<Option<FrontendWorkerCancelReason>>>,
     // 診断専用。停止・再利用・回収完了の判定権限は持たない。
     stop_phase: Arc<AtomicU8>,
+    quarantined_live_pump: Arc<OnceLock<(FrontendBackendSession, FrontendLivePumpOwner)>>,
     thread_result: Option<ThreadResultOwner<(Result<(), HalError>, WorkerExit)>>,
     pending_completed: Option<(Result<(), HalError>, WorkerExit)>,
 }
@@ -960,6 +977,8 @@ impl FrontendWorkerRegistry {
             None,
             RuntimeLockKind::FrontendCancelReason,
         ));
+        let quarantined_live_pump = Arc::new(OnceLock::new());
+        let worker_live_pump = Arc::clone(&quarantined_live_pump);
         let worker_cancel_reason = Arc::clone(&cancel_reason);
         let stop_phase = Arc::new(AtomicU8::new(FrontendStopPhase::Running as u8));
         let worker_stop_phase = Arc::clone(&stop_phase);
@@ -972,6 +991,7 @@ impl FrontendWorkerRegistry {
                 control,
                 cancel_reason: Arc::clone(&worker_cancel_reason),
                 stop_phase: Arc::clone(&worker_stop_phase),
+                quarantined_live_pump: worker_live_pump,
             };
             let result = job(context);
             worker_stop_phase.store(FrontendStopPhase::TerminalHandoff as u8, Ordering::Release);
@@ -1005,6 +1025,7 @@ impl FrontendWorkerRegistry {
                 generation,
                 cancel_reason,
                 stop_phase,
+                quarantined_live_pump,
                 thread_result: Some(thread_result),
                 pending_completed: None,
             },
@@ -1267,7 +1288,20 @@ impl FrontendWorkerRegistry {
         let slot = self.slots.get_mut(&key)?;
         let (result, exit) = slot.completed_result()?;
         let generation = slot.generation;
-        self.slots.remove(&key);
+        let retained = slot.quarantined_live_pump.get().is_some();
+        let mut slot = self.slots.remove(&key)?;
+        if retained {
+            slot.pending_completed = Some((result.clone(), exit));
+            let owner = WorkerRuntime::retain_cleanup(FrontendWorkerCleanup::Join(
+                FrontendWorkerDetachedJoin {
+                    frontend_id,
+                    kind,
+                    generation,
+                    slot,
+                },
+            ));
+            self.cleanup.push((key, generation, owner));
+        }
         Some(FrontendWorkerStopOutcome::Completed {
             frontend_id,
             kind,
@@ -1972,6 +2006,7 @@ mod tests {
                     RuntimeLockKind::FrontendCancelReason,
                 )),
                 stop_phase: Arc::new(AtomicU8::new(FrontendStopPhase::Running as u8)),
+                quarantined_live_pump: Arc::default(),
                 thread_result: Some(
                     ThreadResultOwner::start(
                         "frontend-worker-owner-failure-test",
@@ -2055,6 +2090,7 @@ mod tests {
                     RuntimeLockKind::FrontendCancelReason,
                 )),
                 stop_phase: Arc::new(AtomicU8::new(FrontendStopPhase::Running as u8)),
+                quarantined_live_pump: Arc::default(),
                 thread_result: None,
                 pending_completed: Some((Err(error.clone()), exit)),
             },
@@ -2099,6 +2135,7 @@ mod tests {
                         RuntimeLockKind::FrontendCancelReason,
                     )),
                     stop_phase: Arc::new(AtomicU8::new(FrontendStopPhase::Running as u8)),
+                    quarantined_live_pump: Arc::default(),
                     thread_result: None,
                     pending_completed: Some((Err(error.clone()), WorkerExit::Normal)),
                 },

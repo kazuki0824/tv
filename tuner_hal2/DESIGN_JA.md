@@ -465,6 +465,8 @@ ISDB-S symbol-rateの公開capability値と入力受付条件は`../TUNER_HAL_DE
 - `共通transaction / use-caseの規範実装アンカー`以外の物理配置表を状態遷移の正本として扱わない。
 - 規範実装アンカーのrename、split、merge時に旧アンカーを残したまま新アンカーを追加し、複数のtransaction正本を作らない。
 
+PX4 tune workerの異常終了時は`service_runtime/src/frontend_worker_txn.rs::stop_live_pump_after_worker_error`も通常停止と同じ`stop_stream_then_join_live_pump`へ接続する。STOP失敗後の未回収session/pumpは`FrontendWorkerContext::quarantine_failed_live_pump`から既存`FrontendWorkerSlot`従属のone-shot cellへ移し、終端結果回収後も既存`FrontendWorkerRegistry`の`WorkerRuntimeCleanup`へ保持する。`FrontendWorkerCleanup::finish`はこの保管値を失敗結果だけの値へ置換しない。新しいworker、registry、retry queueは設けない。隔離の公開契約は`../TUNER_HAL_DESIGN_JA.md`のWorkerRuntime契約を正とする。
+
 Frontend停止phaseの観測は既存`FrontendWorkerContext`とslotに従属し、backend停止結果を変更しない。製品tune/scanの`finish_backend_session_after_worker_body`とdevice補助workerを同じ観測入口へ接続する。phaseは診断専用で、回収完了・隔離・置換可否は従来のcleanup ownerの結果だけを正とする。
 
 TS AVCのAU framingとHRD時刻対応は`demux/src/av/video_timestamp.rs::VideoTimestampAssociation`とその従属`avc_timing.rs::AvcTiming`を`FilterRuntime`が所有する。構文のbit readerはrecord indexと同じ`demux/src/parser/bitstream.rs`を使用する。snapshot、stream type変更、queue cleanup、packet gap、origin境界は既存filter ownerのAV reset入口へ接続する。TIS、AIDL façade、別workerへ解析状態を置かない。公開意味は正本のpresentation timestamp契約を参照する。

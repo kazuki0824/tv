@@ -1980,14 +1980,12 @@ fn finish_backend_session_after_worker_body(
 fn stop_live_pump_after_worker_error(
     live_pump: &mut Option<FrontendLivePumpOwner>,
     body_result: &mut Result<(), HalError>,
+    stop_streaming: impl FnOnce() -> Result<(), HalError>,
 ) {
     if body_result.is_ok() {
         return;
     }
-    let Some(owner) = live_pump.take() else {
-        return;
-    };
-    if let Err(stop_error) = owner.join_after_stop() {
+    if let Err(stop_error) = stop_stream_then_join_live_pump(live_pump, stop_streaming) {
         let primary = match std::mem::replace(body_result, Ok(())) {
             Err(error) => error,
             Ok(()) => return,
@@ -3053,6 +3051,46 @@ mod px4_stop_before_join_tests {
     }
 
     #[test]
+    fn worker_error_cleanup_retains_blocked_pump_when_stream_stop_fails() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut pump = Some(
+            FrontendLivePumpOwner::start(
+                FrontendLiveReaderDescriptor::px4_from_control_fd(
+                    1,
+                    FrontendDevicePath::new("/dev/test-px4"),
+                ),
+                Box::new(ReadUntilStreamingStopped {
+                    stopped: Arc::clone(&stopped),
+                    started: Some(started_tx),
+                }),
+                Box::new(DiscardPackets),
+            )
+            .unwrap(),
+        );
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut result = Err(HalError::Unsupported("worker body error"));
+        stop_live_pump_after_worker_error(&mut pump, &mut result, || {
+            Err(HalError::Unsupported("STOP error"))
+        });
+        assert!(result.is_err());
+        assert!(
+            pump.is_some(),
+            "STOP失敗後に受信ownerを取り出してjoinしてはなりません"
+        );
+        assert!(!pump.as_ref().unwrap().progress().snapshot().finished);
+        stop_live_pump_after_worker_error(&mut pump, &mut result, || {
+            stopped.store(true, Ordering::Release);
+            Ok(())
+        });
+        assert!(pump.is_none());
+        assert!(
+            result.is_err(),
+            "後片付け成功で元のworker失敗を成功へ変えません"
+        );
+    }
+
+    #[test]
     fn stream_stop_precedes_blocked_reader_join_and_stop_failure_retains_owner() {
         let stopped = Arc::new(AtomicBool::new(false));
         let (started_tx, started_rx) = mpsc::channel();
@@ -3841,21 +3879,19 @@ fn run_frontend_backend_tune_session_worker(
         }
         Ok(())
     })();
-    // 例外経路でlive_pumpを保持していた場合も、joinより先にread待ちを解除する。
-    if body_result.is_err() && live_pump.is_some() && backend == FrontendBackendKind::Px4CharDevice
-    {
-        if let Err(stop_error) = ctx.observe_backend_stop(|| session.stop()) {
-            body_result = Err(match std::mem::replace(&mut body_result, Ok(())) {
-                Err(primary) => compose_frontend_cleanup_error(
-                    "frontend live pump停止前のPX4 streaming停止に失敗しました",
-                    primary,
-                    stop_error,
-                ),
-                Ok(()) => stop_error,
-            });
+    stop_live_pump_after_worker_error(&mut live_pump, &mut body_result, || {
+        if backend == FrontendBackendKind::Px4CharDevice {
+            ctx.observe_backend_stop(|| session.stop())
+        } else {
+            Ok(())
         }
+    });
+    // STOP失敗で未終了のpumpが残る場合は、sessionと共に既存worker slotへ退避する。
+    // 終了待ちやfdの破棄で失敗公開を塞がず、後片付け義務と資源の隔離を維持する。
+    if let Some(owner) = live_pump {
+        ctx.quarantine_failed_live_pump(session, owner);
+        return body_result;
     }
-    stop_live_pump_after_worker_error(&mut live_pump, &mut body_result);
     finish_backend_session_after_worker_body(ctx, session, body_result, ctx.cancel_reason())
 }
 
