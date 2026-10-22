@@ -463,6 +463,11 @@ class PlaybackPipeline(
 
     private var codecRecoveryAttempted = false
 
+    // 既存owner上の資源状態だけを読む。native問い合わせや別workerの完了待ちは行わない。
+    private fun decoderFlowSummary(): String =
+        "mediaSyncStarted=$mediaSyncStarted video={${videoDecoder?.flowSummary()}} " +
+            "audio={${audioDecoder?.flowSummary()}} outstandingAudioOutputs=${outstandingAudioOutputs.size}"
+
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
     private fun handleCodecError(
@@ -545,7 +550,8 @@ class PlaybackPipeline(
         Log.w(
             LogTags.TIS,
             "PLAYBACK_INPUT_LOSS inputId=$inputId sessionId=$sessionId generation=$generation " +
-                "recoveryAttempted=$codecRecoveryAttempted detail=$detail progress=${dataPathProgress.summary()}",
+                "recoveryAttempted=$codecRecoveryAttempted detail=$detail progress=${dataPathProgress.summary()} " +
+                decoderFlowSummary(),
         )
         if (codecRecoveryAttempted || tuner == null || channel == null || selection == null) {
             completePlaybackFailureAction(generation, onVideoUnavailable) {
@@ -1723,6 +1729,10 @@ class PlaybackPipeline(
         private var backpressureStartedAtMs: Long? = null
         var onInputAccepted: () -> Unit = {}
 
+        open fun flowSummary(): String =
+            "pendingSamples=${pendingSamples.size} availableInputs=${availableInputIndexes.size} " +
+                "inboundInputCallbacks=${inboundCodecInputIndexes.size} queuedInputs=${queuedSamples.size}"
+
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
         fun armStartupDeadline() {
@@ -2144,6 +2154,11 @@ class PlaybackPipeline(
         private val pendingOutputs = java.util.ArrayDeque<PendingVideoOutput>()
 
         private val renderSubmissions = mutableListOf<RenderSubmission>()
+
+        override fun flowSummary(): String =
+            "${super.flowSummary()} pendingVideoOutputs=${pendingOutputs.size} " +
+                "renderSubmissions=${renderSubmissions.size} " +
+                "nativeRenderPending=${renderSubmissions.count { !it.completed.isDone }}"
 
         // Completion and failure handling remain on the playback owner, not the native render thread.
         private fun consumeRenderSubmission(
@@ -3544,7 +3559,11 @@ class PlaybackPipeline(
         ) {
             return
         }
-        Log.w(LogTags.TIS, "映像を利用できません inputId=$inputId sessionId=$sessionId reason=$reason detail=$detail generation=$generation")
+        Log.w(
+            LogTags.TIS,
+            "映像を利用できません inputId=$inputId sessionId=$sessionId reason=$reason " +
+                "detail=$detail generation=$generation ${decoderFlowSummary()}",
+        )
         onVideoUnavailable(PlaybackUnavailable(reason, detail, generation))
     }
 
