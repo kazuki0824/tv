@@ -73,7 +73,7 @@ jobs:
           for case in playback.findall("testcase"):
               print(f"Android 15実SDK playback受付試験: {case.get('name')} success")
           lease = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.TunerFrontendLeaseTransitionTest.xml")).getroot()
-          assert lease.get("tests") == "16", lease.attrib
+          assert lease.get("tests") == "17", lease.attrib
           assert lease.get("failures") == "0" and lease.get("errors") == "0", lease.attrib
           assert lease.get("skipped", "0") == "0", lease.attrib
           for case in lease.findall("testcase"):
