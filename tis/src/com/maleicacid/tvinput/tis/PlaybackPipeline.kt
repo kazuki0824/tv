@@ -2160,7 +2160,7 @@ class PlaybackPipeline(
                 "renderSubmissions=${renderSubmissions.size} " +
                 "nativeRenderPending=${renderSubmissions.count { !it.completed.isDone }}"
 
-        // Completion and failure handling remain on the playback owner, not the native render thread.
+        // 完了と失敗の処理はplayback owner上で行い、native render threadでは状態を変更しない。
         private fun consumeRenderSubmission(
             submission: RenderSubmission,
             stopping: Boolean,
@@ -2180,7 +2180,7 @@ class PlaybackPipeline(
         fun awaitRenderSubmissionsBeforeMediaSyncRelease() {
             for (submission in renderSubmissions.toList()) {
                 try {
-                    // Playback control timeout is the existing owner liveness limit.
+                    // playback制御の待機期限には、既存ownerの生存性期限を使用する。
                     submission.completed.get(PLAYBACK_CONTROL_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
                 } catch (error: java.util.concurrent.TimeoutException) {
                     throw IllegalStateException("native映像出力が停止期限までに返却されません index=${submission.index}", error)
@@ -3458,7 +3458,7 @@ class PlaybackPipeline(
             runCatching { sync.setCallback(null, null) }
             runCatching { sync.setOnErrorListener(null, null) }
         }
-        // A native render submission must finish before disconnecting its MediaSync/Codec resources.
+        // MediaSync/Codec資源を切断する前に、native render投入の終了を確認する。
         videoDecoder?.awaitRenderSubmissionsBeforeMediaSyncRelease()
         mediaSync = null
         sync?.let { previous ->
@@ -3577,7 +3577,7 @@ class PlaybackPipeline(
         released.set(true)
         wakeBlockedVideoOutputBeforeStop()
         runOnPlaybackExecutorBlocking(cleanup = true) {
-            // Failure keeps the owner and render worker alive so the release can be retried.
+            // 解放失敗時は既存ownerとrender workerを維持し、未解放義務を再試行できるようにする。
             stopOnPlaybackExecutor()
             resourceCleanup.requireComplete()
             executor.shutdownNow()
