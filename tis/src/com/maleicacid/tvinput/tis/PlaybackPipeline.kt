@@ -2148,6 +2148,16 @@ class PlaybackPipeline(
         private val pendingOutputs = java.util.ArrayDeque<PendingVideoOutput>()
 
         private val renderSubmissions = mutableListOf<RenderSubmission>()
+        private val renderStopping = AtomicBoolean(false)
+
+        fun stopRenderSubmissions(sync: MediaSync?) {
+            renderStopping.set(true)
+            // 実行中の呼出しだけを起こす。完了まで再生を維持し、検査直後のnative進入もpauseへ競合させない。
+            if (sync != null && renderSubmissions.any { !it.completed.isDone }) {
+                resourceCleanup.releaseOwned("MediaSync flush", sync) { sync.flush() }
+            }
+            awaitRenderSubmissionsBeforeMediaSyncRelease()
+        }
 
         override fun flowSummary(): String =
             "${super.flowSummary()} pendingVideoOutputs=${pendingOutputs.size} " +
@@ -2340,7 +2350,11 @@ class PlaybackPipeline(
                     if (sync != null) blockedVideoOutputSync.set(sync)
                     val failure =
                         try {
-                            codec.releaseOutputBuffer(index, presentationTimeUs * 1_000L)
+                            if (renderStopping.get()) {
+                                codec.releaseOutputBuffer(index, false)
+                            } else {
+                                codec.releaseOutputBuffer(index, presentationTimeUs * 1_000L)
+                            }
                             null
                         } catch (error: RuntimeException) {
                             error
@@ -3443,6 +3457,7 @@ class PlaybackPipeline(
         executor.discardDataCallbacks()
         Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=MEDIASYNC")
         val sync = mediaSync
+        videoDecoder?.stopRenderSubmissions(sync)
         if (sync !=
             null
         ) {
@@ -3452,8 +3467,6 @@ class PlaybackPipeline(
             runCatching { sync.setCallback(null, null) }
             runCatching { sync.setOnErrorListener(null, null) }
         }
-        // MediaSync/Codec資源を切断する前に、native render投入の終了を確認する。
-        videoDecoder?.awaitRenderSubmissionsBeforeMediaSyncRelease()
         mediaSync = null
         sync?.let { previous ->
             // Surface切断が失敗してもMediaSync.releaseは必ず試行する。

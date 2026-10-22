@@ -257,6 +257,8 @@ class PlaybackMediaSyncReleaseTest {
                 }
                 assertTrue("codec-release" in native.events)
                 assertEquals(0, native.events.count { it == "render-after-pause" })
+                assertEquals(1, native.events.count { it == "render" })
+                assertEquals(2, native.events.count { it == "discard" })
             } finally {
                 native.finishRenderFixture()
             }
@@ -288,6 +290,29 @@ class PlaybackMediaSyncReleaseTest {
                 }
                 assertTrue("codec-release" in native.events)
                 assertEquals(0, native.events.count { it == "render-after-pause" })
+                assertEquals(0, native.events.count { it == "render" })
+                assertEquals(1, native.events.count { it == "discard" })
+            } finally {
+                native.finishRenderFixture()
+            }
+        }
+    }
+
+    @Test
+    fun stopKeepsSyncPlayingUntilAlreadyStartedNativeCallReturns() {
+        withAttachedSync { pipeline, native, surface ->
+            val decoder = attachVideoDecoder(pipeline, native, surface)
+            val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            native.playing = true
+            native.deferRenderUntilFlush = true
+            ReflectionHelpers.setField(pipeline, "mediaSyncStarted", true)
+            try {
+                executor.callControl(1_000L) { videoOutput(decoder) }
+                assertTrue(native.renderCallEntered.await(2, TimeUnit.SECONDS))
+                executor.callControl(10_000L) { pipeline.stop() }
+                assertEquals(0, native.events.count { it == "render-after-pause" })
+                assertEquals(1, native.events.count { it == "render" })
+                assertTrue(native.events.indexOf("render") < native.events.indexOf("release"))
             } finally {
                 native.finishRenderFixture()
             }
@@ -348,6 +373,12 @@ class PlaybackMediaSyncReleaseTest {
             renderTimestampNs: Long,
         ) {
             val owner = requireNotNull(sync)
+            if (owner.deferRenderUntilFlush) {
+                // 停止判定を通過済みだが、実際のSurface投入がflushより後になる競合を固定する。
+                owner.renderCallEntered.countDown()
+                check(owner.workerGate.await(15, TimeUnit.SECONDS))
+                if (!owner.playing) owner.events += "render-after-pause"
+            }
             if (owner.singleWaiterFlush) {
                 owner.awaitSingleFlush()
             }
@@ -357,6 +388,15 @@ class PlaybackMediaSyncReleaseTest {
             }
             owner.events += "render"
             owner.renderCompleted.countDown()
+        }
+
+        @Implementation
+        protected override fun releaseOutputBuffer(
+            index: Int,
+            render: Boolean,
+        ) {
+            check(!render)
+            requireNotNull(sync).events += "discard"
         }
 
         @Implementation(methodName = "stop")
@@ -407,6 +447,8 @@ class PlaybackMediaSyncReleaseTest {
         @Volatile
         var playing = false
         var singleWaiterFlush = false
+        var deferRenderUntilFlush = false
+        val renderCallEntered = CountDownLatch(1)
         val workerGate = CountDownLatch(1)
         private val finishFixture = AtomicBoolean(false)
         private val currentWaiter = AtomicReference<CountDownLatch?>()

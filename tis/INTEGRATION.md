@@ -4,17 +4,13 @@
 
 ### JNI実装内部ログの通常レベルと詳細診断
 
-`jni::wrapper::jnienv`の大量VERBOSEはAndroid標準`liblog_rust`が`liblog`へ渡すタグ付きTRACEであり、TIS独自のエラーログではない。製品統合`tis/config/product_integration.mk`は`log.tag.jni::wrapper::jnienv=D`をsystem_ext build propertyに設定し、このタグのVERBOSEだけを既定抑止する。`MaleicacidTIS`のDEBUG、SIの警告・エラー、他Rustモジュールのタグには影響させない。Java `logcat`クライアントの表示フィルタのみでは書込み負荷が残るので代替としない。
+SI JNIライブラリの`JNI_OnLoad`でAndroid標準`android_logger`を一度初期化し、Rust targetの`jni::`配下だけTRACE（logcatのVERBOSE）を整形・書込み前に抑止する。JNIのDEBUG以上と他Rust targetのTRACEは維持し、Javaの`MaleicacidTIS`診断には影響させない。初期化・選別の契約は`../arib_si_engine_rs/DESIGN_JA.md`を正とする。
 
-```sh
-adb shell getprop log.tag.jni::wrapper::jnienv
-# JNI API呼出しを詳細調査する区間だけ再開（ログ出力負荷が非常に大きい）
-adb shell setprop log.tag.jni::wrapper::jnienv V
-# 調査後は既定レベルへ戻す
-adb shell setprop log.tag.jni::wrapper::jnienv D
-```
+Android 15の[標準Rust logger](https://github.com/aosp-mirror-neo/platform_external_rust_crates_android_logger/blob/android15-release/src/lib.rs)は長いmodule名を先頭21バイトと`..`の23バイトへ短縮してからliblogへ渡す。`jni::wrapper::objects..`はこの実タグであり、logcatの表示省略ではない。[LineageOSのIsLegalPropertyName](https://github.com/LineageOS/android_system_core/blob/lineage-22.1/init/util.cpp)は末尾ドットと連続ドットを拒否するため、同名の`log.tag.*`プロパティを製品へ追加してはならない。完全なmodule名のプロパティや親prefixのプロパティも短縮後タグとの完全一致にならず、代替にならない。
 
-設定が`D`でも実機でVERBOSEが大量に出る場合、システムのlogger実装とproperty反映結果を確認し、抑制完了と判定しない。性能比較は受信局、vCPU、ログ収集・Perfettoの有無を一致させ、TISの`PLAYBACK_CODEC_INPUT_QUEUE`・`PLAYBACK_CODEC_INPUT_RETURN`・`PLAYBACK_CODEC_OUTPUT_RETURN`、画面最終フレーム、CPU時間を比較する。JNI検索頻度は短時間の`V`採取で別途確認する。ログ抑制のみでCodec停滞の解消を確約しない。
+JNI内部TRACEを詳細調査する場合は`arib_si_engine_rs/src/jni_logging.rs`の標準フィルタ設定を調査用buildで`trace`へ変更してJNIライブラリを再buildする。`adb setprop`だけではこのRust側フィルタを解除できない。調査後は通常設定へ戻して再buildする。診断専用のruntime切替APIや全体`log.tag`設定は追加しない。
+
+製品build・起動後に、選局から通常視聴・停止・再選局までフィルタなしlogcatを採取し、`jni::wrapper::objects..`等のJNI VERBOSEが消え、`MaleicacidTIS`のDEBUG・停止phase診断が残ることを確認する。性能比較は受信局、vCPU、ログ収集・Perfettoの有無を一致させ、Codec入力返却・出力、画面最終フレーム、CPU時間を比較する。ログ抑制のみで音声入力飽和やCodec停滞の解消を確約しない。
 
 ## product package
 

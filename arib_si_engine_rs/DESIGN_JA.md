@@ -8,6 +8,10 @@ collection snapshotにはblocking版とnon-blocking版を用意する。non-bloc
 
 両時刻未定義でもraw event_idを捨てない。JNIのidentity表現とprovider-dataのcanonical key生成は放送識別子の符号化に限定し、保存用identityへ採用するかを判断しない。
 
+### JNI内部ログの初期化
+
+SI JNIライブラリの公開ロード入口`JNI_OnLoad`で標準`android_logger::init_once`を呼び、JNI 1.6を返す。初期化は通常のJNI API呼出しより前に行い、独自logger・再初期化・呼出しごとのlogger交換を設けない。Rustの最大レベルはTRACEを維持し、標準FilterBuilderのtargetフィルタ`trace,jni::=debug`でJNI実装内部のTRACEだけを整形・書込み前に除外する。JNIのDEBUG/INFO/WARN/ERRORと他targetのTRACEは維持する。JavaのTISログやHAL別プロセスのloggerは変更しない。同じloggerへの別の初期化を追加せず、既存loggerの上書きを行わない。タグ短縮と製品採取の制約は`../tis/INTEGRATION.md`を参照する。
+
 ## 責務
 
 `arib_si_engine_rs` は、Tuner HAL → framework/JNI/Tuner SDK API → TIS → arib_si_engine_rs という経路で渡された PSI/SI section payload と TIS 側 メタデータを入力として、PSI/SI/EIT descriptor の構文・意味解析を Rust で実装する。PMT/CAT の CA_descriptor から得られる CA_system_id、ECM PID、EMM PID と、SDT 等から得られる free_CA_mode / scrambling flag、サービス識別子補助情報を含むCA情報 / サービスメタデータ意味モデルも本crateの責務とする。raw TS packet demux、PID filter、section assembly、section payload delivery は Tuner HAL の責務であり、本crateに重複実装しない。Tuner HAL を CA情報 / サービスメタデータ意味モデルの生成者またはSSOTにしない。

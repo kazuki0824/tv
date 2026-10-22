@@ -282,18 +282,4 @@ jobs:
           assert domain.get("enabled") == "true" and domain.get("update") == "true"
           integration = Path("tis/config/product_integration.mk").read_text()
           assert "tis/config/media_codecs_c2.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/media_codecs_c2.xml" in integration
-          # 40系で観測したJNI内部タグも書込み元でVERBOSEを止める。表示フィルタでは代替しない。
-          properties = {}
-          logical_lines = integration.replace("\\\n", " ").splitlines()
-          for line in logical_lines:
-              line = line.split("#", 1)[0].strip()
-              if not line.startswith("PRODUCT_SYSTEM_EXT_PROPERTIES +="):
-                  continue
-              for item in line.split("+=", 1)[1].split():
-                  if "=" in item:
-                      key, value = item.split("=", 1)
-                      properties[key] = value
-          required_tags = ("jni::wrapper::jnienv", "jni::wrapper::objects..")
-          missing = [tag for tag in required_tags if properties.get("log.tag." + tag) != "D"]
-          assert not missing, f"JNI VERBOSE抑止の製品設定が不足: {missing}"
           PY
