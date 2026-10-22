@@ -15,7 +15,7 @@ adb shell cat /proc/uptime > "$out/uptime.txt"
 adb shell ps -A -T > "$out/threads.txt"
 status=0
 pids=()
-# The framework-owned mediatuner process owns TunerFilter close and callback Binder locks.
+# framework側のmediatunerプロセスが、TunerFilterのcloseとcallback Binderのロックを所有する。
 for name in com.maleicacid.tvinput com.android.tv mediatuner system_server media.swcodec audioserver surfaceflinger android.hardware.tv.tuner-service.maleicacid2; do
     found=$(adb shell pidof "$name" | tr -d '\r') || found=
     if [[ -z $found ]]; then
