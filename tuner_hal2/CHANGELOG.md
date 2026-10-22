@@ -1,3 +1,135 @@
+# 2026-10-22 PX4 worker異常終了時のSTOP失敗（#116）
+
+- 異常終了cleanupでもSTOP成功後だけlive pumpをjoinする。STOP失敗時は元エラーと停止エラーを返し、未終了pumpとsessionを既存worker slot / cleanup ownerへ保持して隔離する。終端回収や失敗結果への変換で物理資源を落とさず、同じfrontendの置換を拒否する。
+- 新しいworker・queue・独立した資源台帳は追加しない。隔離後の自動復旧は保証しない。
+- Rust 1.81 hostのdevice 154件・service_runtime 243件、device全targetのClippy（警告をエラー扱い）、製品同等のservice_runtime lib型検査（警告をエラー扱い）が成功。STOP失敗中のblocked reader、失敗通知、cleanup失敗後のfd所有、置換拒否、owner teardownまでの寿命を検証した。Android/Soong・atest/VTS・実機でのSTOP故障注入は未実施。
+
+## 2026-10-21 cleanup reaperの予約容量とthread生成数を分離（#116）
+
+- `WorkerRuntimeReaperQueue`は公開能力由来の保留予約容量（product-default 176）を維持し、起動時1 workerから保留中の同時cleanup数に従って実行workerを増やす。
+- queueの予約同一性と既存ownerを維持し、worker起動失敗時は未投入予約の解放とエラー返却を行う。
+- 回帰試験は予約容量4の起動直後1 worker、4件同時cleanup時4 worker、完了後の全予約返却を検証する。
+
+## スキャン中止後のFrontend close
+
+- #116: close全体の独立期限とclose専用の期限超過reaper移譲を除去。停止要求後にworkerの実終了を待ち、既存reaperの回収も待ってからlive data・電源を解放する。実際のcleanup失敗は保持する。
+- 採用px4_drvのPTX_SET_CHANNELはカーネル内でロック待ちを実行し、HALの取消しフラグでは中断できない。有限の下位I/O終了を待つ。driver永久停止時のclose完了は保証しない。
+- hostでcloseが回収前に戻らないことと、個別I/O期限を越えても実終了後に成功することを検証。実機34の再現操作は未検証。
+
+## AVCのAU分割と放送HRDによるPTS対応
+
+- #116: TS AVCのPES全体配送をAUDで区切る完成AU配送へ変更。PESを跨ぐ開始コード・AU、PPS→SPS対応、picture timing / buffering period SEI、delay counter / PTS wrapと有理数tickをHALで扱い、TISには解析を移さない。
+- 共通bit readerをrecord indexからparser/bitstreamへ移し、32 bit超のreadを拒否。AV対応付けのsnapshot、flush、source/generation、packet gap、stream type変更を同じFilterRuntimeへ接続した。
+- 検証: Rust 1.81 host demux 294件、service_runtime 242件成功。添付test.m2tsを明示入力した追加試験で119 AUを個別配送し、各PTSとpayload内AUD数を確認。先頭の構成情報不足1件は拒否。可変delay、period切替、33-bit/HRD wrap、有理数丸め、PES跨ぎ、reset後の旧anchor拒否を含む。
+- Android/Soong、atest/VTS、実機zappingは未実施。Codecの圧縮参照状態を含む欠落後復旧と肌色の原因特定は別の残作業であり、本変更で解消確認済みとはしない。
+
+# AVイベント専用領域への一本化
+
+- 固定共有pool、AV保持件数上限、Filter別・サービス全体のAV byte予算と能力claimを除去し、実payloadサイズのDMA-BUFをイベントごとに配送する。
+- `getAvSharedHandle()`は空handleとsize 0を返し、不要になった共有handle使用権・返却済み共有handle台帳を除去する。
+- 配送済み領域のflush・close後の寿命、token別返却、確保失敗、旧件数上限を超える保持、ID枯渇、診断飽和を検証する。確保失敗の診断を旧slot枯渇から分離する。
+- ホストでdemux 289件、service_runtime 242件の試験が成功。AIDL投影試験は追加済みだがAndroid環境では未実行。
+- 映像AU・PTS、欠落後復旧、色異常の修正は未完了。Android build / atest / VTS / 実機確認は未実施。ホスト検証を実機成功と扱わない。
+
+# Frontend停止phaseの診断
+
+- 既存Frontend worker slot/contextへ診断専用phaseを従属させ、取消観測、backend停止開始・結果・経過時間、終端引渡し、回収完了／隔離をfrontend/kind/generationで相関する。待機期限では最後のphaseと未完義務を記録する。
+- service_runtimeの製品tune/scan停止にも同じ観測入口を接続し、deviceの補助workerだけの診断にしない。停止結果の型付きerrnoは元HalErrorのまま出力し、公開結果・期限・回収権限を変えない。
+- 注入backendで停止処理中と停止結果取得後の終端待ちを区別し、両方で置換拒否・owner保持、失敗時隔離を検査する。
+- Android Soong・device atest・実機VTS・実波による故障原因特定は未実施。
+
+# Playback DVR Filterイベント配送と投入統計の訂正
+
+- Playback DVRの消費済みFilterイベントは、遅延配送workerのwake失敗後も既存の直接callback配送を試行する。wake結果は従来どおりworker終端へ返し、callback配送失敗は既存Filter診断に記録する。新owner/worker/queueを追加しない。
+- descrambler方針がDrop/DiagnoseOnlyの場合、未投入packetをPlaybackStats.injected_packets/injected_bytesへ加算しない。完了扱いの消費個数や既存のmalformed統計を変更しない。
+- wake失敗と診断済み配送失敗、未投入packetのstats、正常投入packetのstatsを既存Rust host試験へ追加。Android Soong、VTS、実機送受信は未実施。
+
+# 複数PES Filterの同一Demux受理と公称能力整合
+
+- 公開PES Filter数（既定4）はサービス全体の同時所有上限であり、同一Demux当たり1個という別の上限を設けない。字幕と文字スーパーの別PIDに対応する複数PES Filterを同一Demuxで構成できるようにする。
+- 不要となるowner Demux別PES重複検査用の`demux_has_filter_open_type()`を削除し、productionの未使用関数を残さない。
+- 既存ChildOpenTxnの`filter_open_type_count()`に基づく公開数の検査、FMQ / PES runtime budgetの予約、object / callback owner、rollback、quarantineを変更せず、同一Demux専用の重複したTsPes排他検査だけを撤廃する。
+- `TUNER_HAL_DESIGN_JA.md` の製品資源表の所有者別上限を、上記の公開PES同時利用契約へ訂正する。新たな資源owner、queue、parser、frontend contractを導入しない。
+- 既存Android 15 AIDL公開child-open use-caseを実行する単体試験で、同一Demuxに対する2個の独立PES Filter生成と別PIDのconfigure成功、および公開数2個設定時に3個目の拒否を検査する。
+- Android Soong／VTS／実受信／Framework JNI SIGABRT回避は対象HEADの検証結果により判定する。TIS側は未パッチAndroid 15 JNIのopenFilter失敗一般について回復保証しない。
+
+# PR #116 Filter生成失敗時のHAL拒否理由の観測
+
+- 既存`IDemux.openFilter()`の戻り値を変えずに、エラー時のみDemux object、要求Filter種別、要求buffer size、Binder errorを`HAL_FILTER_OPEN_REJECTED`として記録する。
+- Android native Tuner JNIのopenFilter失敗後に不正なWeakGlobal削除でSIGABRTへ至る実機事例を、HAL内の失敗理由に結びつけるための診断。Filter拒否を成功扱いせず、新owner/transaction/retryを追加しない。
+- LineageOS 22.1 Framework JNIの未初期化`jweak`問題の恒久修正と、HAL Filter拒否そのものの根本対処はこの診断追加では実現しない。ホストtest、Android Soong、VTS、実機観測は本コミット時点では未完了。
+
+# PR #116 AV成功ログのreport一括frame閾値判定
+
+- 旧実装は単一packetから同一Filterの複数AV MediaEventが生成される際、report処理終了後の同一累計値を各eventごとに検査していたため、成功ログが重複・閾値通過を見逃していた。
+- 既存`AvSharedBacking`の診断専用`last_sampled_delivery_threshold`で、2の累乗境界を通過した最初のreportだけ観測する。demuxは既存backingの報告時snapshotを各Filter一回取り、Android HALの成功ログに累積割当件数、通過閾値、前回閾値、使用中slot/budgetを併記する。配送待ちで`generated_events`が空でも割当累積は保持する。
+- `AvSharedBacking`の実allocate操作に対する回帰で1件、同一report相当の2/3件、次の4件目、重複観測の抑制、u64飽和近傍の閾値を検査する。AIDL公開contract、dataId所有、TS/AUDIO timestampのframe分割、flush/close/解放は変更しない。
+- 最新HEADのCIは別途確認する。実機再生・黒画面解消は未検証。Rebase/Resolveは行わない。
+
+# PR #116 黒画面診断向けAV共有領域の進捗可視化
+
+- AV共有領域の正本ownerである`AvSharedBacking`へ、配送成功・client解放・未配送破棄・枯渇の診断専用飽和counterを追加。使用中shared slot数、event-local数、payload byte数、filter許容量、runtime全体のbudget使用量を読み取り専用snapshotとして提供する。counter飽和は既存設計の必須`diagnostic_counter_saturated`へ記録する。
+- demuxからservice_runtimeへの読み取り専用参照のみを追加。AV所有権、dataId発行、AIDL公開interface、既存flush/close/releaseの確定点と失敗結果を変更しない。
+- AV共有slot枯渇の累計が2の累乗に到達した時、既存packet diagnosticのdemux ID・generation・PID・filter IDと正本snapshotをAndroidのlogcatに間引いて記録する。枯渇後のclient解放も同様にサンプリングする。枯渇していない場合もHALで最初のAVイベントを確保できたか判断できるよう、AV MediaEvent生成成功件数が2の累乗に達した際の累積値と使用状態をInfoログへ記録する。共有領域の異常を検出した場合は既存のtyped diagnosticと併せてlogcatへ記録する。ホストCIではAndroid専用ログだけを除外する。
+- 同じownerの実allocation/releaseを呼ぶテストで枯渇、budget、client解放、未配送破棄、既存slot復旧、counter飽和と進捗値を検証する。Rust 1.81用rustfmtのCI差分に合わせて整形済み。
+- Android全体のSoongビルド・実機選局・LineageOS 22.1未パッチ環境での映像再生・CodecからSurfaceへの描画確認は未実施。HAL診断導入を黒画面解消とは判定しない。該当commitのCI結果は別途確認する。
+
+# PR #202 mediatunerとTRMのFramework再起動時の登録寿命
+
+- LineageOS 22.1の`TunerService`は生成時にHALからFrontend一覧を取得し、TRMへ登録する。Frameworkの`system_server`が再生成されたときも旧`mediatuner`が存続するとTRMのFrontend登録が失われる問題に対し、製品initが稼働中`media.tuner`だけを再生成するactionを追加した。
+- 当初のvendor HALの`init_rc`へFramework用actionを同梱する構成を訂正し、`prebuilt_etc`(`maleicacid_mediatuner_trm_lifecycle_rc`)を既存製品makefileからsystem partitionの`/system/etc/init`へ配置する構成へ変更した。vendor HAL本体の`init_rc`はHAL自身の定義だけを保持する。system所有`init.svc.zygote`へのvendor init subcontextのproperty可視性に依存しない。
+- 明示的なzygote停止時は標準`onrestart`が実行されず`stopped`へ遷移するため、製品rcには`init.svc.zygote=stopped`の補完actionのみを残した。自動再起動時は標準`init.zygote*.rc`の`onrestart restart --only-if-running media.tuner`へ委ね、重複していた`restarting` actionを削除した。未起動・意図的停止中・lazy待機中のサービスを強制起動せず、Tuner HALのRegistry/Capability/BackendやTuner SDKも変更しない。
+- 既存VTS profile CIの補助的静的検査はSoong module、製品makefile、rcの整合性を確認する。追補修正で`stopped`のみを必須とし、`restarting`を含む余計なactionを拒否するexact検査へ変更した。静的検査はTRM復元の実動作証拠ではない。
+- 製品makefileへsystem init moduleを追加したことに合わせ、既存CAS plugin CIの`CAS・Tuner製品設定`工程が比較するTuner `PRODUCT_PACKAGES`の期待値も更新した。更新前に旧期待値との不一致で同工程が失敗した一方、CAS C++本体と通常のVTS profile CIは成功していた。
+- 統合手順を更新し、system imageとvendor imageの新旧混在を避けて配置を確認すること、Soongによる対象モジュールのビルド確認、Framework再起動前後の`mediatuner` PID・TRM登録資源・実際の`Tuner.tune()`結果を実機で確認する条件を明記した。
+- Soong system imageへの実配置、Android initのruntime action、TRM再登録、実機VTSとMXワンセグ再生は未実施。ホストの静的検査・VTS profile CIの成功をこれらの実証へ読み替えない。
+
+# PR #166 service_runtime単体試験の実行経路修復
+
+- 既存host Rust CIのunit-tests matrixからservice_runtimeの除外を削除し、追加した旧世代submit失敗の回帰試験を含む通常単体試験を継続実行する。
+- 既存試験のAidlApi・FrontendDevicePath import漏れ、未使用AidlMethodAdapter import、旧ExplicitClose名、private registry field参照、privateなFilter開始wrapper参照を現行の型・入口へ修正した。
+- 旧start_workerを使っていた5箇所を、既存prepare_backend_submitとstart_worker_with_prepared_submitへ接続するtest module内fixtureへ統一した。機器I/Oを発行せず準備済み権限を回収し、実ワーカーの寿命を検査する。
+- close完了情報を直接検査するfrontend再open試験群をObjectCloseTxn所有者のtest moduleへ移動した。本番APIの可視性拡大、新しい本番owner・状態・互換入口はない。
+- ホストにDMAヒープがないことは既存packet_path試験と同じ未対応スタブで表現し、リンク不足を修正した。Android試験のネイティブ実装は置換しない。cleanup権限を使う既存試験では、開始したattemptを変数へ保持した。
+- 初回実行で表面化した13件の失敗に対し、backend種別に一致するexclusive groupとISDB-T能力をfixtureへ設定した。世代不一致試験は同一configureのNoopを避け、PIDを保ってPES条件を変更し、実際の世代増加を確認してから反例を検査する。
+- START中のDemux close許可、setLnbのrelationのみのcommit、DVR post-commit通知失敗の診断記録、queue失敗の型付き投影という現行契約へ既存試験を更新した。scan END artifact lookup試験は実際のscan sessionを準備し、存在しないsessionのaccounting失敗が混入しないようにした。本番処理は変更しない。
+- コミット`d682b47`の[host Rust CI](https://github.com/kazuki0824/tv/actions/runs/37943174871)でservice_runtime単体試験235件が成功（失敗・無視0件）。旧世代submit失敗のDVB/PX4回帰試験を含み、本番の警告エラー扱い型検査とhost Rust CI全30ジョブも成功した。Rust quality、TISホスト、TIS Robolectric、Kotlin quality CIも成功。Soong/device atest/VTS/実機は未実施。
+
+# PR #166 旧tune submit失敗とworker回収結果の分離
+
+- 再選局・stop・closeでfenceされた旧世代の非同期tune失敗を、既存FrontendRuntimeの遅延診断入口へ接続する。現世代の状態を変更せず、rollback成功済みoperation失敗をworker cleanup失敗へ昇格させない。
+- 実非同期記録入口でDVB/PX4の旧世代、rollback未完、未来世代の反例を検査する回帰試験を追加。新しいowner/reaper/retry機構はない。
+- 追加時にBackendTuneStep import漏れを修正した。当時のCIはservice_runtimeをunit-tests matrixから除外しており、既存test graphの23エラーの修復・回帰試験実行は未実施だった。この制約の修復と検証結果は上記「service_runtime単体試験の実行経路修復」に記録する。
+
+# Android 15実装におけるueventd wildcard一致
+
+- READMEとdevices.cppの末尾wildcard最適化差を確認した。末尾以外のwildcardと末尾数字の文字クラスを組み合わせ、実装でもfnmatchを使用するpatternへ固定した。driver node、suffixなし、非数字末尾の一致/不一致を実fnmatchで試験する。
+
+- レビュー対応: host fnmatch試験のunsafe境界をSAFETY固定ラベルと日本語説明へ整形。logic変更なし。
+
+# px4 ueventd patternの文字クラス契約訂正
+
+- AOSP fnmatch契約に従い数値で始まるsuffixのpatternへ戻し、誤ったprefix最適化の説明を削除した。ueventd/file_contexts/probe prefix整合試験を復元した。DMA-BUF heap権限のplatform所有は維持する。
+
+# PR #166 未使用のreaper公開委譲の除去
+
+- 呼出元のないWorkerRuntimeReaperQueue::pending_valuesを削除した。共通pending owner内の複数key読取り、any_pending、wait_until_releasedは維持する。新しいhelper・状態・試験は追加しない。検証は既存CIへ委ね、Soong/VTS/実機は未実施。
+
+# frontend reaper受付の有限待機
+
+- Bound frontend tune/scan reaper-admission waits by the existing workerReaperDeadlineMs capability; retain pending ownership and return typed cleanup failure on timeout.
+- 既存workerとcleanup所有を維持する。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
+# フロントエンドclose失敗詳細の日本語統一
+
+- ワーカー終了待ちの未完了を示すruntime error detailを日本語へ統一した。typed error、回収所有権、状態遷移、終了待ち期限は変更していない。
+- Rust 1.81系rustfmtで整形確認した。文言確認から単体試験、Soong、VTS、実機の成功は宣言しない。
+
+# フロントエンドclose待機試験の説明文修正
+
+- 速やかなワーカー終了を検証する既存試験のexpect説明文を日本語へ統一した。入力・期待値・後片付けの観測・本番処理は変更していない。
+- Rust 1.81系rustfmtで整形確認した。単体試験とAndroid/Soong、atest、VTS、実機確認はこの文言修正から成功を宣言しない。
+
 # 旧 tuner_hal 削除
 
 - Tuner HAL の公開契約正本をリポジトリ直下の `TUNER_HAL_DESIGN_JA.md` へ移し、`tuner_hal2` を唯一の製品実装として文書参照を整理した。

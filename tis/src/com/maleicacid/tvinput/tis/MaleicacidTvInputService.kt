@@ -16,6 +16,9 @@ class MaleicacidTvInputService : TvInputService() {
     override fun onCreate() {
         super.onCreate()
         registerUserUnlockDrainReceiver()
+        if (!ProgramUpgradeCleanup.ensure(applicationContext)) {
+            Log.w(LogTags.TIS, "Program upgrade cleanupは未完了です。利用直前に再試行します")
+        }
         // サービス onCreate() からboot EPG同期は開始しない。
         // サービス作成直後にライブ session作成が続く場合があるため、boot排出は
         // boot/unlock receiverとライブ session解放後に処理し、tuner競合を避ける。
@@ -29,7 +32,7 @@ class MaleicacidTvInputService : TvInputService() {
     override fun onCreateSession(
         inputId: String,
         sessionId: String,
-    ): Session {
+    ): Session? {
         Log.i(LogTags.TIS, "ライブセッションを作成します inputId=$inputId sessionId=$sessionId")
         return createLiveSession(inputId, sessionId, this)
     }
@@ -38,7 +41,7 @@ class MaleicacidTvInputService : TvInputService() {
         inputId: String,
         sessionId: String,
         tvAppAttributionSource: AttributionSource,
-    ): Session {
+    ): Session? {
         Log.i(LogTags.TIS, "ライブセッションを作成します inputId=$inputId sessionId=$sessionId")
         val sessionContext =
             createContext(
@@ -54,7 +57,8 @@ class MaleicacidTvInputService : TvInputService() {
         inputId: String,
         tvInputSessionId: String,
         sessionContext: Context,
-    ): Session {
+    ): Session? {
+        // Session objectは同期受付し、Program/tune利用だけをcleanup完了まで保留する。
         // TvInputService.onCreateSession()入口から MaleicacidLiveSession constructor が
         // active ライブセッション を登録するまでの短い区間で、boot / background maintenance を
         // 開始してはならない。この境界を明示し、session creation が完了または失敗するまで

@@ -1,0 +1,5 @@
+# system_serverの再生成でTRMのFrontend登録が失われるため、
+# TRMに一度だけ登録する既存mediatunerをzygote停止時に再生成する。
+# 未起動のlazy media.tunerを起動せず、vendor HALは停止しない。
+on property:init.svc.zygote=stopped
+    restart --only-if-running media.tuner

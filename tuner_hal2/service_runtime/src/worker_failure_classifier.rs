@@ -1,20 +1,8 @@
 use maleicacid_tuner_hal2_common::HalError;
 
 use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
+use crate::diagnostics::WorkerFailureCategory;
 use crate::worker_runtime::WorkerTerminalResult;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WorkerFailureCategory {
-    CallbackCommit,
-    CallbackArtifact,
-    CallbackPolicy,
-    CallbackConversion,
-    CallbackBinder,
-    CallbackNotifierTerminal,
-    CallbackCleanup,
-    Join,
-    Unknown,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ClassifiedCallbackFailure {
@@ -28,29 +16,12 @@ impl ClassifiedCallbackFailure {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ClassifiedWorkerTerminalResult<T> {
-    Normal(T),
-    StopRequested,
-    Failure {
-        category: WorkerFailureCategory,
-        error: HalError,
-    },
-}
-
-impl<T> ClassifiedWorkerTerminalResult<T> {
-    pub fn into_failure(self) -> Option<(WorkerFailureCategory, HalError)> {
-        match self {
-            Self::Failure { category, error } => Some((category, error)),
-            Self::Normal(_) | Self::StopRequested => None,
-        }
-    }
-}
+use crate::diagnostics::ClassifiedWorkerTerminalResult;
 
 pub struct WorkerFailureClassifier;
 
 impl WorkerFailureClassifier {
-    pub(crate) fn classify_terminal<T>(
+    pub fn classify_terminal<T>(
         result: WorkerTerminalResult<T>,
         panic_context: &'static str,
     ) -> ClassifiedWorkerTerminalResult<T> {
@@ -59,7 +30,7 @@ impl WorkerFailureClassifier {
             WorkerTerminalResult::StopRequested => ClassifiedWorkerTerminalResult::StopRequested,
             WorkerTerminalResult::RuntimeFailure(error) => {
                 ClassifiedWorkerTerminalResult::Failure {
-                    category: Self::classify_unknown(&error),
+                    category: Self::classify_runtime_failure(&error),
                     error,
                 }
             }
@@ -106,7 +77,125 @@ impl WorkerFailureClassifier {
         WorkerFailureCategory::Join
     }
 
-    pub(crate) const fn classify_unknown(_error: &HalError) -> WorkerFailureCategory {
-        WorkerFailureCategory::Unknown
+    fn classify_runtime_failure(error: &HalError) -> WorkerFailureCategory {
+        match error.primary_error() {
+            HalError::IoctlFailed { .. } | HalError::Io { .. } => {
+                WorkerFailureCategory::BackendControl
+            }
+            HalError::CallbackFailed { .. } => WorkerFailureCategory::CallbackBinder,
+            HalError::FmqDeliveryFailed {
+                kind: maleicacid_tuner_hal2_common::FmqFailureKind::EventFlagWakeFailed,
+                ..
+            } => WorkerFailureCategory::EventFlag,
+            HalError::FmqFailed { .. } | HalError::FmqDeliveryFailed { .. } => {
+                WorkerFailureCategory::Fmq
+            }
+            HalError::EventFlagFailed { .. } => WorkerFailureCategory::EventFlag,
+            HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => {
+                WorkerFailureCategory::Cleanup
+            }
+            HalError::QueueEpochLockPoisoned { .. }
+            | HalError::LockPoisoned(_)
+            | HalError::WorkerLockPoisoned { .. }
+            | HalError::WorkerReaperUnavailable
+            | HalError::ServiceRuntimeLockPoisoned { .. }
+            | HalError::FilterGateLockPoisoned { .. } => WorkerFailureCategory::LockPoison,
+            _ => WorkerFailureCategory::Unknown,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maleicacid_tuner_hal2_common::{HalInternalKind, WorkerLockKind};
+
+    #[test]
+    fn terminal_failure_preserves_known_domains_and_unknown_fallback() {
+        let backend = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some("/dev/px4video0".into()),
+            op: "PTX_SET_CHANNEL",
+            errno: 5,
+        };
+        let cases = [
+            (backend, WorkerFailureCategory::BackendControl),
+            (
+                HalError::callback_failed("onEvent", "failure"),
+                WorkerFailureCategory::CallbackBinder,
+            ),
+            (
+                HalError::fmq_failed("write", "failure"),
+                WorkerFailureCategory::Fmq,
+            ),
+            (
+                HalError::event_flag_failed("wake", "failure"),
+                WorkerFailureCategory::EventFlag,
+            ),
+            (
+                HalError::cleanup_failed("worker", "failure"),
+                WorkerFailureCategory::Cleanup,
+            ),
+            (
+                HalError::WorkerLockPoisoned {
+                    owner: "frontend",
+                    lock: WorkerLockKind::Result,
+                },
+                WorkerFailureCategory::LockPoison,
+            ),
+            (
+                HalError::internal(HalInternalKind::InvariantViolation, "unknown"),
+                WorkerFailureCategory::Unknown,
+            ),
+            (
+                HalError::WorkerReaperUnavailable,
+                WorkerFailureCategory::LockPoison,
+            ),
+        ];
+        for (error, category) in cases {
+            assert_eq!(
+                WorkerFailureClassifier::classify_terminal::<()>(
+                    WorkerTerminalResult::RuntimeFailure(error.clone()),
+                    "panic",
+                ),
+                ClassifiedWorkerTerminalResult::Failure { category, error },
+            );
+        }
+    }
+
+    #[test]
+    fn composed_failure_keeps_primary_domain_and_cleanup_error() {
+        let error = HalError::composed_failure(
+            "書込みと後片付け",
+            HalError::fmq_failed("write", "failure"),
+            HalError::cleanup_failed("queue", "failure"),
+        );
+        assert_eq!(
+            WorkerFailureClassifier::classify_terminal::<()>(
+                WorkerTerminalResult::RuntimeFailure(error.clone()),
+                "panic"
+            ),
+            ClassifiedWorkerTerminalResult::Failure {
+                category: WorkerFailureCategory::Fmq,
+                error
+            },
+        );
+        assert!(matches!(
+            WorkerFailureClassifier::classify_terminal::<()>(
+                WorkerTerminalResult::PanicOrJoinFailure,
+                "panic"
+            ),
+            ClassifiedWorkerTerminalResult::Failure {
+                category: WorkerFailureCategory::Join,
+                ..
+            },
+        ));
+        assert_eq!(
+            WorkerFailureClassifier::classify_terminal::<()>(
+                WorkerTerminalResult::StopRequested,
+                "panic"
+            ),
+            ClassifiedWorkerTerminalResult::StopRequested,
+        );
     }
 }

@@ -10,5 +10,5 @@ android_app {
     srcs: ["src/**/*.kt"],
     resource_dirs: ["res"],
     sdk_version: "current",
-    min_sdk_version: "31",
+    min_sdk_version: "35",
 }

@@ -93,7 +93,7 @@ B25の各profileとB1は、採用構成の同時session容量を次のように�
 
 容量の正本は、採用product設定と実資源に基づいて受付を確定するsession/backend resource ownerが持つ。有限値は同じCA systemの全plugin instanceを通じて使用可能な同時session総数であり、個別pluginの空き数・現在使用数ではない。同じ物理資源を二重計上せず、各instanceが異なる上限でTRMを上書きしない。`prefer_smartcard_then_yakisoba`でもbackendごとの局所上限を独立に通知せず、選択可能な構成全体で成立するCA systemの有効上限を確定する。容量値と有限/無制限の判定をTISへ複製しない。
 
-B25/B1 pluginは、`setStatusCallback()`登録後に確定済みの現在値を初期通知し、その後は実資源の構成変更等で有効上限が変わった確定点の後に通知する。初期通知を最初のopenSessionやECM処理まで遅延しない。session open/closeで変わる残数を上限として再通知しない。通知は§3〜§4のcallback寿命・orderingに従い、未登録callbackを呼ばず、破棄済みinstanceから送らない。B25/B1とも通知経路は既存の`CasPluginStatusCallback` → AOSP listener → `MediaCas` → `updateCasInfo(caSystemId, maxSessionNum)`とする。TISは容量の有限/無制限を別途判定せず、同じ初期通知の処理完了を待ってからsessionを要求する。登録順序・非同期待機・期限・失効は`../tis/DESIGN_JA.md`を正とする。
+B25/B1 pluginは、`setStatusCallback()`登録後に確定済みの現在値を初期通知し、その後は実資源の構成変更等で有効上限が変わった確定点の後に通知する。初期通知を最初のopenSessionやECM処理まで遅延しない。session open/closeで変わる残数を上限として再通知しない。通知は§3〜§4のcallback寿命・orderingに従い、未登録callbackを呼ばず、破棄済みinstanceから送らない。B25/B1とも通知経路は既存の`CasPluginStatusCallback` → AOSP listener → `MediaCas` → `updateCasInfo(caSystemId, maxSessionNum)`とする。TIS側のsession要求開始順序、初期通知との同期、期限・失効は`../tis/DESIGN_JA.md`を正とし、本書では再定義しない。
 
 AOSP `StatusEvent`の既定はsession数を制限しない扱いであり、Android 15のTRMは未登録のCA systemを`Integer.MAX_VALUE`で管理する。`0`の通知はTRMの資源登録削除であって、恒久的な「受付上限0」の登録ではない。card喪失等の受付拒否・鍵失効をこの通知だけに任せず、§4・§7・§13のowner側処理を行う。有限上限の通知後はTRMのsession割当て・優先度回収を利用するが、上限減少の通知だけで既存sessionが直ちに回収されるとは仮定しない。
 
@@ -113,7 +113,7 @@ session: Opening -> Active -> Closing -> Closed
 
 pluginの `Releasing` はvendor CasPluginの破棄開始、`Released` は破棄完了を表す。AOSP AIDL `CasImpl::release()` の応答時点とは区別する。標準実装は `mPluginHolder` を空にして新規呼出しを拒否するが、実行中のmethodは局所的な `shared_ptr` を保持するため、そのmethodが参照を解放するまでplugin破棄は遅延し得る。AIDL release呼出しをvendor pluginへ通知する独自method、service改変、監視threadを追加しない。
 
-同期backend処理はplugin methodの参照寿命内で完了させる。AIDL releaseと競合して既に実行中のmethodは、その応答後に結果をcommitし得る。これをpluginが検知・拒否できるとは規定しない。session closeが先に確定した場合は、そのsessionへの後着commitを拒否する。通常のTIS終了ではECM/EMM配送停止、descrambler参照解除、各session close、MediaCas closeを直列に行い、この競合を発生させない。
+同期backend処理はplugin methodの参照寿命内で完了させる。AIDL releaseと競合して既に実行中のmethodは、その応答後に結果をcommitし得る。これをpluginが検知・拒否できるとは規定しない。session closeが先に確定した場合は、そのsessionへの後着commitを拒否する。TIS側の通常終了・再選局・資源回収における配送停止、descrambler参照解除、session/plugin closeの順序は `../tis/DESIGN_JA.md` を正とし、本書では再定義しない。
 
 内部workerを採用する場合は、plugin破棄開始で新規処理とcallbackを停止し、既存処理を取消しまたは完了待ちして、sessionと鍵参照を失効させてから破棄を完了する。workerが自身の停止に必要なplugin寿命を循環参照で保持してはならない。`appData` はservice wrapper所有の借用値であり、plugin破棄後に使用しない。AIDL release応答時点で全worker、callback、鍵資源が既に破棄済みという強い保証は追加しない。
 
@@ -229,7 +229,20 @@ EMM処理は適用対象messageごとに、復号後command、更新番号、全
 | 解釈・適用できないcommand | `ERROR_CAS_CANNOT_HANDLE`。復号成功を更新成功へ置き換えない |
 | 適用対象の検証・更新が完了 | 成功。後続ECMが更新済み台帳を参照できる |
 
-Yakisoba構成の完了確認は、[タスク完了判定の実施方法](../タスク完了判定の実施方法.md#casのyakisoba構成の完了確認)を参照する。
+### 6.4 `yakisoba_only` 最低試験
+
+§6.1〜§6.3の入力受理・拒否、鍵更新、共有backend orderingを固定する最低試験には次を含める。
+
+- 不正sectionを拒否し、鍵状態を変更しない。
+- 1 section内の複数EMM messageをmessage境界ごとに処理する。
+- 対象外宛先を除外し、鍵更新成功として扱わない。
+- MAC不正を復号失敗へ写像し、鍵を更新しない。
+- 重複更新を新規更新として再適用しない。
+- 拒否される更新を成功へ変換しない。
+- EMMで確定したwork keyを後続ECMが参照できる。
+- 複数plugin instanceからの同時初期化・ECM・EMM処理を、同じ共有backend resource ownerのorderingで処理する。
+
+完了判定で必要な実行証跡の形式は `../タスク完了判定の実施方法.md` を正とする。
 
 ## 7. SmartCard backend
 
@@ -269,7 +282,7 @@ B1 `processEmm()` はunsupportedとし、stateを変更せずcannot-handle相当
 
 B1では、EMMに依存するactivation/control informationの取得、契約更新、権利更新もunsupportedとする。factoryでの公開は§2、容量通知は§3.1、鍵状態の更新・失効・closeは§9〜§13の共通契約に従う。
 
-TISはB1 sessionでEMM filterを起動せず、`MediaCas.processEmm()`を呼ばない。CATにEMM PIDがあってもB1復号開始条件・成功条件にしない。
+TIS側のB1 EMM filter / `MediaCas.processEmm()` routingと復号開始条件は`../tis/DESIGN_JA.md`を正とし、本書では再定義しない。CAS plugin側はB1 `processEmm()` がunsupportedでstateを変更しないという本節のcapability契約だけを所有する。
 
 B1の公開・移植可能な参照実装としては `libaribb1` 系の挙動を一次候補にする。コードを移植・リンクする場合はライセンス条件を実装前に確認する。
 
@@ -375,63 +388,19 @@ revoke後に競合して既に取得済みの内部material参照は、そのpac
 
 tokenはrevoke、必要なdescramblerからの参照解除、既取得内部参照drainが完了するまで別sessionへ再割当てしない。参照解除は、利用中のdescramblerへのVOID成功、または当該descramblerの閉鎖完了によって成立する。
 
-MediaCas由来tokenを利用中のTuner descramblerで使用した場合、通常終了・再選局ではMediaCas session close前に `setKeyToken(VOID)` を成功させる。VOID失敗時は当該session/pluginと資源の所有を保持して再試行する。VOID成功後にsession closeと対応PID/descrambler解放へ進み、全sessionの解放後にplugin releaseへ進む。
+MediaCas由来tokenがTuner descramblerへ結合されている場合、token再割当てに必要な参照解除は、利用中descramblerへのVOID成功または当該descramblerの閉鎖完了で成立する。通常終了・再選局時にどの順序でVOID、session close、PID/descrambler解放、plugin closeを実行・再試行するかは `../tis/DESIGN_JA.md` を正とする。
 
-AOSP Tunerの資源回収は `releaseAll()` 内でdescramblerを閉じ、その後に `onResourceLost()` を通知する。この通知を受けた経路では、既に閉鎖されたdescramblerへのVOID成功を要求しない。閉鎖完了により新規packet処理からの参照がなくなったことをTIS側の所有管理へ反映し、MediaCas sessionのcloseへ進む。通常のVOID失敗、単なるtimeout、受信信号喪失を資源回収通知と同一視しない。TIS側の具体処理は `../tis/DESIGN_JA.md` を正とする。
+AOSP Tuner資源回収でdescramblerの閉鎖完了が確認された場合、そのtokenについて追加のVOID成功をCAS側revoke成立条件にしない。資源回収通知の識別、TIS所有状態の更新、MediaCas session/pluginの後処理は `../tis/DESIGN_JA.md` を正とする。本書はdescrambler閉鎖を新規key resolve遮断に十分な参照解除事実として扱う。
 
 MediaCas側のTRM資源回収では、Frameworkが管理対象sessionへ `closeSession()` を呼んでから `MediaCas.EventListener.onResourceLost()` を通知する。この強制closeでは、TISによる先行VOIDを待たず、pluginはsession closeの確定点で当該slotをrevokeする。Tuner Descramblerがまだ旧tokenを保持していても、新規packet処理がそのslotから鍵を再取得できてはならない。TISの通知処理は残った参照の解消と受信停止を担い、revokeの開始条件にはしない。TIS側のTRM登録条件、通知後の所有処理、通常closeとの区別は `../tis/DESIGN_JA.md` の「r52のMediaCas資源回収」を正とする。
 
 backend物理cleanupのretry/reset/taint方式はbackend resource ownerの実装詳細とし、service-global `CleanupPending` worker/tableを必須化しない。
 
-## 14. CAS plugin / Tuner HAL / TIS責務
+## 14. 隣接moduleとの責務境界
 
-### CAS plugin
+CAS plugin / Tuner HAL / TISのproduct-levelなmodule間責務は `../開発規則.md` を唯一の正本とし、本書では責務一覧を再定義しない。
 
-```text
-- B25/B1 CA system supportをfactory経由で提供
-- plugin/session lifecycle
-- CA private data受領
-- ECM
-- B25 EMM
-- backend binding
-- sessionのKs更新と内部鍵状態の失効
-- MediaCas session IDとstable key slotの対応維持
-- CAS event/status
-```
-
-CAS pluginはTS demux、188-byte TS packet descramble、AV、DVRを担当しない。製品固定値の使用は`../開発規則.md`に従い、CAS側のsession更新は動的なKs状態を対象とする。
-
-### Tuner HAL
-
-```text
-- ITuner.openDescrambler()
-- IDescrambler.setKeyToken()
-- addPid() / removePid()
-- token -> stable key slot linkage
-- PID -> token mapping
-- payload-only MULTI2 descramble
-- scrambling-controlに基づくodd/even key選択
-- descramble diagnostics
-```
-
-Tuner HALはB25/B1、SmartCard/Yakisoba、credential sourceを解釈して分岐しない。ECM/EMMやcard I/Oを担当しない。
-
-### TIS
-
-```text
-- CA descriptorからcaSystemIdを決定
-- §5が参照する同一CasController内でcaSystemIdごとにMediaCas/CAS pluginを共有
-- B25 PMT/CAT/ECM/EMM filter
-- B1 PMT/ECM filter
-- MediaCas / MediaCas.Session lifecycle
-- B25 processEcm() / processEmm()
-- B1 processEcm()
-- MediaCas session ID bytesをTuner key tokenとしてsetKeyToken()へ渡す
-- addPid()で対象PIDを接続
-- MediaCas close前のVOID unlink
-```
-
-TISはraw key、card protocol、MULTI2 algorithmを解釈・保持しない。
+本書はCAS plugin内部のfactory / plugin / session / backend、ECM / EMM、session-tokenと動的鍵状態、revoke / teardownの契約を所有する。Tuner HALのdescrambler公開契約とpacket処理は `../TUNER_HAL_DESIGN_JA.md`、TISのMediaCas / descrambler orchestrationは `../tis/DESIGN_JA.md` を参照する。
 
 ## 15. error mapping
 

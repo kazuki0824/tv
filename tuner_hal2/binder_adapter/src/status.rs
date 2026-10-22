@@ -131,10 +131,19 @@ impl AidlStatusMapper {
             | HalError::Busy { .. } => TunerStatusCode::Unavailable,
             HalError::OutOfMemory { .. } => TunerStatusCode::OutOfMemory,
             HalError::Internal { .. }
+            | HalError::QueueEpochLockPoisoned { .. }
+            | HalError::LockPoisoned(_)
+            | HalError::WorkerLockPoisoned { .. }
+            | HalError::WorkerReaperUnavailable
+            | HalError::FilterGateLockPoisoned { .. }
+            | HalError::ServiceRuntimeLockPoisoned { .. }
+            | HalError::WorkerCleanupFailed { .. }
             | HalError::Io { .. }
             | HalError::IoctlFailed { .. }
             | HalError::CallbackFailed { .. }
             | HalError::FmqFailed { .. }
+            | HalError::FmqDeliveryFailed { .. }
+            | HalError::CapabilitySelectionFailed(_)
             | HalError::EventFlagFailed { .. }
             | HalError::CleanupFailed { .. } => TunerStatusCode::UnknownError,
         }

@@ -1,3 +1,61 @@
+# 2026-10-23 容量上限近傍の矛盾検出と反復入力の保持量判定（#116）
+
+- 同版同番号の長い矛盾入力を実保持量の増加と誤判定していた処理を修正した。追加payloadを保持しない入力を容量拒否で遮断せず、PMTの旧ES/CA事実・EITの旧完成根拠を既存の不整合処理で失効させる。版置換と新規保持の容量拒否は維持する。
+- JNI内の期限処理、保持量予測、版受理・派生fact失効・証拠置換へ同じ入力時刻を渡す。
+- 上限近傍のPMT/EIT矛盾回帰2件を追加し、修正前の両試験の失敗と修正後の成功を確認した。CRCと構造が正常な異なる長さのsectionを用い、旧ES/CA失効・旧EIT完成取消・保持量不増・新版回復を確認する。
+- 少数保持とSI/EIT各8192表保持で、PAT/PMT/EIT計6000入力・38版更新の回帰兼計測試験を追加した。非増加入力の容量判定と期限前のEIT失効確認で全走査を省き、保持量の第二台帳・worker・queueは追加しない。新規保持・増加時と実際の期限到達時には既存trackerを走査する。
+- Rust 1.81 x86_64 hostでworkspace 195試験が成功。release計測コマンドは `cargo test --manifest-path arib_si_engine_rs/host_ci/Cargo.toml --release --lib retention_capacity_repeat_and_version_update_workload --locked -- --nocapture`。各8192表の6000入力は全走査時1,730,260μs、修正後4,847μs、修正後の再測定5,426μs。少数保持の修正後は4,427〜4,560μs。表の初期投入も含む修正後の試験プロセス全体はuser CPU 1.275400秒、system CPU 0.041832秒、実経過1.319581秒であり、6000入力区間だけのCPU時間とは扱わない。
+- 数値は同じホストの単発比較で、CIの速度閾値や実機処理時間の保証にしない。Android/Soong・atest/VTS・実機CPU負荷・対象放送全体の上限収容性は未検証。
+
+# 長周期SIの正常反復とEIT受信断の適用範囲（#116）
+
+- 60秒の受信断失効を現在p/f actualだけに限定し、schedule・other・nextの表を時間だけで消さない。公開ARIB TR-B14 3.8-E1のschedule基本繰返し群360秒の例も照合した。60秒を規格共通の寿命とは扱わない。
+- 長周期表の同版同内容の反復と未受信sectionの追加で、完成・未完成の旧証拠を消さない。同版でも受信断後に既存section内容が変わった場合は当該表を再同期し、EITの派生event・safe sectionも同時に置換する。入力ごとの版受理・派生fact失効・証拠置換は同じ受信時刻で判定し、処理途中での期限到達による判定不一致を防ぐ。
+- 360秒間隔の複数section、完成後の反復、schedule/other/nextの保持、現在p/fだけの失効をhost回帰試験で検証した。追加3試験が修正前に失敗することを確認し、Rust 1.81の修正後workspace全192試験と全targetのClippy（警告をエラー扱い）が成功。4MiB/8192の保持防御値の全対象放送に対する収容性と実機長時間視聴は未検証。
+
+# ライブSIの継続保持と表単位の受信断処理
+
+- JNI parserの60秒周期・累積4MiB/8192 sectionによるSI/EIT/放送時計の全消去と、上限超過後の入力拒否固定を廃止した。
+- 一般SI・EIT各ownerの既存trackerから実保持section証拠量を判定する入口を追加した。同版反復・不正入力を累積課金せず、版置換時は旧版を差し引き、保持上限超過時は新規入力だけを拒否する。防御値の数値自体は放送収容性の実測保証ではない。
+- EITのtracker重複を一般SI collectorから除き、EitInstancesだけで完成判定・保持・受信断時の退役を行う。一般SIとEITの保持枠を分けた。
+- 一般SIは受信断後に対象表の5bit版番号だけを再同期し、他表・時計を保持する。受信断中に同じ版番号へ戻る場合も対象表だけ再取得する。EITの現在p/f actualは表単位の最終採用受信から60秒の不在で退役する。collectionGenerationはEIT受信断時だけ更新し、Kotlinが再取得前の旧削除区間を流用しないようにした。世代枯渇時の異常隔離を維持した。
+- full/bounded snapshot、10分相当の期限境界、旧累積上限を超える反復入力、保持byte/section上限、上限後の置換・再受理、不正入力、EIT表単位の退役・再同期、SI表の半周差再取得を実ロジックで検証する回帰試験を追加した。旧全消去を正解とする試験・設計記述を置換した。
+- Android/Soong build・atest・実機での長時間視聴は未実施。Codec/MediaSync停滞とBS ECM/EMM失敗の原因解消を意味しない。
+
+# 2026-10-22 CAS実効要否とprovider-data検証の整合
+
+- Program/Channel共通のCAS根拠検証からraw CA記述子の有無との同値条件を除き、全ESの非スクランブル指定でPROGRAM ECMが無効になる場合も意味factとraw根拠を保存する。
+- CAS必須でECM候補がない場合、およびCAS不要でESに実ECMがある場合の拒否を維持する。全ESを持たない保存形式で実効CAを再計算しない責務を設計正本へ明記した。保存schema、JNI、Kotlin DTOの追加・変更はない。
+- 実際のservice discovery算出からProgram/Channel builder、保存値の再検証まで通す回帰試験を追加した。記述子なし、PROGRAM/ESの0x1FFF、全ES/一部ESの上書き、ES実ECM、ESなし、および矛盾したCAS要否を確認する。
+- Rust 1.81.0で旧実装に対する回帰試験の失敗を確認し、修正後のhost workspace全184試験、workspace全targetのClippy（警告をエラー扱い）、変更Rustファイルのrustfmt検査を通過。Android/Soong build、device atest/VTS、実機の初回スキャンは未実施。
+
+# 2026-10-09 PR #186 nativeCreate例外生成前のregistryロック解放
+
+- nativeCreateはregistryロック内でhandleまたは既存typed failureだけを確定し、guardを解放した後に共通throw_si_failureからJava例外を生成する。handle枯渇とregistry poisonの両分岐でJVM処理をロック外へ移した。
+- 公開戻り値、例外reason、handle割当、poison記録は維持し、新しいowner・wrapper・状態は追加しない。64bit handle空間の実機枯渇やdeadlock再現を根拠にした修正ではない。
+- ローカルは差分とRust 1.81整形を確認し、build・試験は既存ARIB SI host CIへ委ねる。Soong/device atest/VTS/実機確認は未実施。
+
+# 2026-10-09 Program normalize未使用APIの削除
+
+- 本番呼出元のないProgram normalizeのKotlin facade・native宣言・JNI export・Rust公開関数を削除し、設計のAPI一覧も揃えた。
+- 既存の境界試験は本番Program builder・key抽出・共通validationへ接続し、Program更新時のcleanup・再収集とkey抽出に必要な内部helperを維持した。互換migrationや代替ownerは追加しない。
+- ローカルは差分・参照・整形を確認し、buildと試験は既存CIで検証する。Soong/device atest/VTS/実波は未実施。
+
+# Kotlin生成物のEOF整形
+
+- generatorの最終出力を末尾LF一つへ正規化し、全Kotlin生成物へ反映した。DTO schemaとSI契約は不変。再生成整合性は既存CIへ委ねる。
+
+# Partial Reception Descriptorをtyped snapshotへ接続
+
+- 地上デジタルNITのPartial Reception Descriptor (0xFB)を解析し、列挙SIDだけを`ServiceSemanticFacts.partialReception=true`とする。service_type=0xC0単独では推定しない。
+- Rust runtime snapshot DTO、JNI object生成、生成Kotlin DTO、Kotlin mapperまで同じtyped factを接続した。
+- TISがこのfactをone-seg登録可否と`TYPE_1SEG`投影に利用できるようにした。
+
+# collection registry取得の待機拒否
+
+- Make collection try-snapshot registry acquisition non-blocking while preserving typed poison and invalid-handle failures.
+- 既存typed failureと共有snapshot契約を維持する。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
 # r51_pr91_review_truncated_loop_and_identity
 
 - event loopがsection残量を超えても、受信境界内の共通descriptor解析と全bytesの診断保持を行う。未受信部分を補完せず、構造不正状態を維持する。
