@@ -642,6 +642,29 @@ class PlaybackFailureCallbacksTest {
         fixture.cleanup.requireComplete()
     }
 
+    @Test
+    fun repeatedSiBeyondFormerCollectionLimitKeepsPlaybackControllerGeneration() {
+        LiveSiFixture().use { live ->
+            live.ingestInitialTables()
+            live.ingestPmt()
+            val generation = live.playback.pipeline.currentPlaybackGenerationForTest()
+            repeat(9_000) { live.ingest(0, "00b00d0011c100000001e1004521f9b6") }
+            val snapshot = live.engine.livePlaybackSnapshot()
+            val decision = live.decision()
+            check(decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY)
+            val result =
+                live.controller.updateCasMetadataAndFilters(
+                    snapshot.caMetadata,
+                    snapshot.pmtPidsFor(live.key),
+                    7L,
+                    decision.casDecisionReady,
+                )
+            check(result != null)
+            check(live.playback.pipeline.currentPlaybackGenerationForTest() == generation)
+            check(live.dynamicPids("dynamicPmtPids") == setOf(TsPid(0x100)))
+        }
+    }
+
     // 実JNIのPAT/SDTから本番session refreshとcontrollerのFilter開始までを通す。
     @Test
     fun pendingLiveSiBootstrapsPmtFilterAndBecomesReadyAfterPmtReception() {
