@@ -77,6 +77,11 @@ object ProgramUpgradeCleanup {
     }
 
     private fun complete(success: Boolean) {
+        if (success) {
+            Log.i(LogTags.TIS, "PROGRAM_UPGRADE_CLEANUP_COMPLETED")
+        } else {
+            Log.w(LogTags.TIS, "PROGRAM_UPGRADE_CLEANUP_FAILED")
+        }
         val callbacks =
             synchronized(completionLock) {
                 ready.set(success)

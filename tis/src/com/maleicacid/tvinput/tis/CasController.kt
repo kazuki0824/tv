@@ -742,7 +742,14 @@ class CasController(
         failure: Throwable,
     ): Diagnostic {
         val code = if (recordInvalidationLocked(caSystemId, failure)) ErrorCode.MEDIA_CAS_INVALIDATED else errorCode
-        return Diagnostic(State.ERROR, code, caSystemId, pid, failure.message.orEmpty(), failure)
+        val message =
+            if (failure is android.media.MediaCasStateException) {
+                "${failure.message.orEmpty()} mediaCasErrorCode=${failure.errorCode} " +
+                    "mediaCasDiagnosticInfo=${failure.diagnosticInfo}"
+            } else {
+                failure.message.orEmpty()
+            }
+        return Diagnostic(State.ERROR, code, caSystemId, pid, message, failure)
             .also { lastDiagnostic = it }
     }
 

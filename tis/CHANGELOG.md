@@ -1,3 +1,9 @@
+# 2026-10-22 39.1のCAS失敗診断とProgram cleanup待機診断
+
+- ECM/EMMのMediaCasStateExceptionについて、公開APIの数値errorCodeとdiagnosticInfoを既存の診断messageへ保持し、messageが空でもplatform側の失敗種別を識別できるようにした。元のcause、CAS状態分類、配送・再試行契約は維持する。
+- Program cleanupの非同期開始・実行中はPENDINGと記録し、workerの完了結果だけからCOMPLETED/FAILEDを記録する。Boot EPGとbackground maintenanceの未準備分岐を揃え、非同期開始を実失敗と誤表示しない。
+- Framework CAS adapterを通すECM/EMM status保持のホスト試験を追加し、ホストCIの期待件数を401へ更新した。実機のCAS失敗原因・初回スキャンは未検証。
+
 ## 2026-10-18 導入元に戻したdual-mono試験の是正
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。

@@ -276,7 +276,7 @@ object ChannelScanManager {
         val requiredServiceKeys = targetSnapshot.map { it.serviceKey }.toSet()
         val appContext = context.applicationContext
         if (!ProgramUpgradeCleanup.ensure(appContext)) {
-            markBootEpgSyncDeferred(appContext, "PROGRAM_UPGRADE_CLEANUP_FAILED")
+            markBootEpgSyncDeferred(appContext, "PROGRAM_UPGRADE_CLEANUP_PENDING")
             return null
         }
         val precheck =
@@ -417,7 +417,7 @@ object ChannelScanManager {
         }
         val appContext = context.applicationContext
         if (!ProgramUpgradeCleanup.ensure(appContext)) {
-            markBackgroundMaintenanceSkipped("PROGRAM_UPGRADE_CLEANUP_FAILED", source)
+            markBackgroundMaintenanceSkipped("PROGRAM_UPGRADE_CLEANUP_PENDING", source)
             return false
         }
         val task = beginScan(ScanPurpose.BACKGROUND_MAINTENANCE, appContext)

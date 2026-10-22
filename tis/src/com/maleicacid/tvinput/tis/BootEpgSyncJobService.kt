@@ -51,7 +51,7 @@ class BootEpgSyncJobService : JobService() {
                 if (success) BootEpgSyncScheduler.scheduleIfEligible(applicationContext, "PROGRAM_CLEANUP_COMPLETED")
             }
         ) {
-            DirectBootGuard.deferPending(applicationContext, "PROGRAM_UPGRADE_CLEANUP_FAILED")
+            DirectBootGuard.deferPending(applicationContext, "PROGRAM_UPGRADE_CLEANUP_PENDING")
             return finish(run, needsReschedule = true)
         }
         val inputId = TisInputIdResolver.resolveOwnInputId(applicationContext)
