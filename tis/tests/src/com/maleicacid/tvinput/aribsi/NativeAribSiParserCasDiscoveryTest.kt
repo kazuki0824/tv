@@ -386,7 +386,7 @@ class NativeAribSiParserCasDiscoveryTest {
                 check(after.collectionGeneration == before.collectionGeneration)
                 check(after.ingestSequence == before.ingestSequence)
                 check(after.services == before.services && after.programs == before.programs)
-                // 不正SIは今もnative admissionを通り、反復でcollectionを失効させる。
+                // 不正SIはnativeで拒否し、反復しても確立済みSIと番組を消去しない。
                 repeat(9000) {
                     com.maleicacid.tvinput.tis.SectionFilterPolicy.dispatchSection(
                         TsPid(PID_EIT),
@@ -402,12 +402,11 @@ class NativeAribSiParserCasDiscoveryTest {
                     )
                 }
                 check(refreshCount == 9000)
-                check(
-                    parser
-                        .livePlaybackSnapshot()
-                        .programs.events
-                        .isEmpty(),
-                )
+                val afterMalformed = parser.livePlaybackSnapshot()
+                check(afterMalformed.collectionGeneration == before.collectionGeneration)
+                check(afterMalformed.services == before.services)
+                check(afterMalformed.programs.copy(parserDiagnostics = before.programs.parserDiagnostics) == before.programs)
+                check(afterMalformed.parserDiagnostics.any { it.code == "SECTION_LENGTH_MISMATCH" })
             }
         }
     }

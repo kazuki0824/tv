@@ -1,7 +1,10 @@
 use crate::eit::{parse_eit_section_facts, EitEvent};
-use crate::sections::{parse_section_header, section_crc_valid_with_header, SectionTracker};
+use crate::sections::{
+    parse_section_header, section_crc_valid_with_header, SectionTracker, TABLE_REACQUISITION_AGE,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct TableKey(u8, u16, u16, u16, bool);
@@ -38,6 +41,58 @@ pub struct EitInstances {
 }
 
 impl EitInstances {
+    /// 受信が途切れたEIT表だけを退役し、一般SIと時計の寿命に影響させない。
+    pub fn expire_at(&mut self, now: Instant) -> bool {
+        let previous = self.instances.len();
+        self.instances.retain(|_, instance| {
+            instance
+                .tracker
+                .last_observed_at
+                .is_some_and(|last| now.saturating_duration_since(last) < TABLE_REACQUISITION_AGE)
+        });
+        self.instances.len() != previous
+    }
+
+    pub fn projected_section_storage(&self, section: &[u8]) -> (usize, usize) {
+        let total = self
+            .instances
+            .values()
+            .map(|instance| instance.tracker.storage())
+            .fold((0, 0), |sum, value| (sum.0 + value.0, sum.1 + value.1));
+        let Some(header) = parse_section_header(section) else {
+            return total;
+        };
+        if !(0x4e..=0x6f).contains(&header.table_id)
+            || section.len() < 18
+            || header.total_length != section.len()
+            || !section_crc_valid_with_header(section, &header)
+        {
+            return total;
+        }
+        let (Some(version), Some(number), Some(last), Some(current)) = (
+            header.version,
+            header.section_number,
+            header.last_section_number,
+            header.current_next_indicator,
+        ) else {
+            return total;
+        };
+        let key = TableKey(
+            header.table_id,
+            u16::from_be_bytes([section[10], section[11]]),
+            u16::from_be_bytes([section[8], section[9]]),
+            u16::from_be_bytes([section[3], section[4]]),
+            current,
+        );
+        let tracker = self.instances.get(&key).map(|instance| &instance.tracker);
+        let old = tracker.map_or((0, 0), SectionTracker::storage);
+        let new = tracker.map_or_else(
+            || SectionTracker::default().projected_storage(version, number, last, section),
+            |tracker| tracker.projected_storage(version, number, last, section),
+        );
+        (total.0 - old.0 + new.0, total.1 - old.1 + new.1)
+    }
+
     pub fn ingest(&mut self, section: &[u8]) {
         let Some(header) = parse_section_header(section) else {
             return;
@@ -174,6 +229,25 @@ mod tests {
         bytes.extend_from_slice(&crc32_mpeg(&bytes).to_be_bytes());
         bytes
     }
+    #[test]
+    fn expiry_is_per_table_and_active_repeats_refresh_only_their_table() {
+        let mut store = EitInstances::default();
+        let now = Instant::now();
+        store.ingest(&section(31, true, 0, 0));
+        store.ingest(&section(2, false, 0, 0));
+        store.instances.values_mut().for_each(|instance| {
+            instance.tracker.last_observed_at = Some(now - TABLE_REACQUISITION_AGE);
+        });
+        store.ingest(&section(31, true, 0, 0));
+        store.expire_at(now);
+        assert_eq!(store.states().len(), 1);
+        assert!(store.states()[0].current_next_indicator);
+        store.expire_at(now + TABLE_REACQUISITION_AGE + std::time::Duration::from_secs(1));
+        assert!(store.states().is_empty());
+        store.ingest(&section(16, true, 0, 0));
+        assert_eq!(store.states()[0].version, 16);
+    }
+
     #[test]
     fn repeated_conflicting_payload_and_version_rollover_are_not_mixed() {
         let mut store = EitInstances::default();

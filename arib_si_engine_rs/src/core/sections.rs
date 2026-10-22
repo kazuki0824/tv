@@ -1,4 +1,7 @@
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
+
+pub const TABLE_REACQUISITION_AGE: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SectionTracker {
@@ -7,20 +10,79 @@ pub(crate) struct SectionTracker {
     pub(crate) seen_sections: BTreeSet<u8>,
     pub(crate) inconsistent: bool,
     payloads: std::collections::BTreeMap<u8, Vec<u8>>,
+    pub(crate) last_observed_at: Option<Instant>,
 }
 
 impl SectionTracker {
-    /// 5bit版番号の半周未満の前進だけを採用し、逆行・半周差は収集resetまで保留する。
+    /// 継続受信中は半周未満の前進だけを採用し、受信断後は当該表だけ再同期する。
     pub(crate) fn accepts_version(&self, version: u8) -> bool {
-        self.version.map_or(true, |old| {
-            (u16::from(version) + 32 - u16::from(old)) % 32 < 16
-        })
+        self.accepts_version_at(version, Instant::now())
+    }
+
+    fn accepts_version_at(&self, version: u8, now: Instant) -> bool {
+        self.reacquisition_due_at(now)
+            || self.version.map_or(true, |old| {
+                (u16::from(version) + 32 - u16::from(old)) % 32 < 16
+            })
+    }
+
+    pub(crate) fn needs_reacquisition(&self) -> bool {
+        self.reacquisition_due_at(Instant::now())
+    }
+
+    fn reacquisition_due_at(&self, now: Instant) -> bool {
+        self.last_observed_at
+            .is_some_and(|last| now.saturating_duration_since(last) >= TABLE_REACQUISITION_AGE)
+    }
+
+    pub(crate) fn storage(&self) -> (usize, usize) {
+        (
+            self.payloads.values().map(Vec::len).sum(),
+            self.payloads.len().max(1),
+        )
+    }
+
+    pub(crate) fn projected_storage(
+        &self,
+        version: u8,
+        number: u8,
+        last: u8,
+        bytes: &[u8],
+    ) -> (usize, usize) {
+        let stored = self.storage();
+        if !self.accepts_version(version) {
+            // 事前判定と採用の間に受信断期限を跨いでも、置換後の量を過小評価しない。
+            return (stored.0.max(bytes.len()), stored.1.max(1));
+        }
+        if self.version != Some(version) || self.needs_reacquisition() {
+            return if number <= last {
+                (bytes.len(), 1)
+            } else {
+                (0, 1)
+            };
+        }
+        if self.inconsistent
+            || self.payloads.contains_key(&number)
+            || number > last
+            || self
+                .last_section_number
+                .is_some_and(|expected| expected != last)
+        {
+            (stored.0.max(bytes.len()), stored.1)
+        } else {
+            (stored.0 + bytes.len(), stored.1 + 1)
+        }
     }
 
     pub(crate) fn observe(&mut self, version: u8, section: u8, last: u8, bytes: &[u8]) -> bool {
         if !self.accepts_version(version) {
             return false;
         }
+        let now = Instant::now();
+        if self.reacquisition_due_at(now) {
+            *self = Self::default();
+        }
+        self.last_observed_at = Some(now);
         self.mark_seen(version, section, last);
         if let Some(previous) = self.payloads.get(&section) {
             if previous != bytes {
@@ -263,12 +325,22 @@ impl SectionAssembler {
 
 #[cfg(test)]
 mod tests {
-    use super::{crc32_mpeg, parse_section_header, section_crc_valid, SectionAssembler};
+    use super::{
+        crc32_mpeg, parse_section_header, section_crc_valid, SectionAssembler, SectionTracker,
+    };
 
     fn section_with_crc(mut bytes: Vec<u8>) -> Vec<u8> {
         let crc = crc32_mpeg(&bytes);
         bytes.extend_from_slice(&crc.to_be_bytes());
         bytes
+    }
+
+    #[test]
+    fn inconsistent_empty_tracker_still_reserves_a_retention_slot() {
+        let mut tracker = SectionTracker::default();
+        assert_eq!(tracker.projected_storage(0, 1, 0, &[1, 2, 3]), (0, 1));
+        assert!(!tracker.observe(0, 1, 0, &[1, 2, 3]));
+        assert_eq!(tracker.storage(), (0, 1));
     }
 
     #[test]

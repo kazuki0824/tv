@@ -1061,6 +1061,36 @@ impl ServiceDiscoveryEngine {
 }
 
 impl ServiceDiscoveryCollector {
+    /// 既存の表trackerから保持量を算出し、同版反復や版の置換で累積課金しない。
+    pub fn projected_section_storage(&self, pid: u16, section: &[u8]) -> (usize, usize) {
+        let total = self
+            .section_trackers
+            .values()
+            .map(SectionTracker::storage)
+            .fold((0, 0), |sum, value| (sum.0 + value.0, sum.1 + value.1));
+        let Some(header) = parse_section_header(section) else {
+            return total;
+        };
+        let (Some(extension), Some(version), Some(number), Some(last)) = (
+            header.table_id_extension,
+            header.version,
+            header.section_number,
+            header.last_section_number,
+        ) else {
+            return total;
+        };
+        let scope = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
+        let tracker = self
+            .section_trackers
+            .get(&(pid, header.table_id, extension, scope));
+        let old = tracker.map_or((0, 0), SectionTracker::storage);
+        let new = tracker.map_or_else(
+            || SectionTracker::default().projected_storage(version, number, last, section),
+            |tracker| tracker.projected_storage(version, number, last, section),
+        );
+        (total.0 - old.0 + new.0, total.1 - old.1 + new.1)
+    }
+
     pub fn reset_collection(&mut self) {
         *self = Self {
             discovery_profile: self.discovery_profile,
@@ -1472,8 +1502,9 @@ impl ServiceDiscoveryCollector {
         let scope_extension = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
         self.section_trackers
             .get(&(pid, header.table_id, table_extension, scope_extension))
-            .and_then(|tracker| tracker.version)
-            .is_some_and(|old_version| old_version != version)
+            .is_some_and(|tracker| {
+                tracker.version != Some(version) || tracker.needs_reacquisition()
+            })
     }
 
     fn accepts_section_version(&self, pid: u16, section: &[u8]) -> bool {
@@ -3362,6 +3393,40 @@ mod current_version_tests {
         let crc = crc32_mpeg(&body);
         body.extend_from_slice(&crc.to_be_bytes());
         body
+    }
+
+    #[test]
+    fn silent_table_reacquires_ambiguous_version_without_resetting_other_tables() {
+        let mut collector = ServiceDiscoveryCollector::default();
+        let pat = section_with_crc(vec![0, 0xb0, 0x0d, 0, 0x11, 0xc1, 0, 0, 0, 1, 0xe1, 0]);
+        let cat = section_with_crc(vec![1, 0xb0, 9, 0, 1, 0xc1, 0, 0]);
+        collector.push_section(0, &pat);
+        collector.push_section(1, &cat);
+        let mut next = pat[..pat.len() - 4].to_vec();
+        next[5] = 0xe1;
+        next[11] = 1;
+        let next = section_with_crc(next);
+        collector.push_section(0, &next);
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x100]);
+        collector
+            .section_trackers
+            .get_mut(&(0, 0, 0x11, super::TRACKER_GLOBAL_SCOPE))
+            .unwrap()
+            .last_observed_at =
+            Some(std::time::Instant::now() - crate::sections::TABLE_REACQUISITION_AGE);
+        collector.push_section(0, &next);
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x101]);
+        let mut same_version = next[..next.len() - 4].to_vec();
+        same_version[11] = 2;
+        collector
+            .section_trackers
+            .get_mut(&(0, 0, 0x11, super::TRACKER_GLOBAL_SCOPE))
+            .unwrap()
+            .last_observed_at =
+            Some(std::time::Instant::now() - crate::sections::TABLE_REACQUISITION_AGE);
+        collector.push_section(0, &section_with_crc(same_version));
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x102]);
+        assert!(collector.table_complete(1, 1));
     }
 
     #[test]

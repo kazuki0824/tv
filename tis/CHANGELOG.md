@@ -1,3 +1,9 @@
+# ライブSI継続保持のJNI試験追従
+
+- 不正SIの反復でcollection全体が失効するという旧期待を置換し、実JNI経由で9,000回の不正入力後もサービス・番組・公開世代が保持されることを検証する。
+- live監視の内部寿命の参照先をRust SI設計正本へ変更した。Rustの全消去廃止・EIT表単位の受信断と保持量制御は同モジュールのCHANGELOGを正とする。
+- Codec/MediaSync停滞とBS ECM/EMM失敗の原因修正・実機検証は未完了。
+
 # 2026-10-22 39.1のCAS失敗診断とProgram cleanup待機診断
 
 - ECM/EMMのMediaCasStateExceptionについて、公開APIの数値errorCodeとdiagnosticInfoを既存の診断messageへ保持し、messageが空でもplatform側の失敗種別を識別できるようにした。元のcause、CAS状態分類、配送・再試行契約は維持する。

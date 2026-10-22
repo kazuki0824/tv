@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const STATUS_OK: jint = 0;
 const STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE: jint = 1;
@@ -46,9 +46,8 @@ const STATUS_JNI_ERROR: jint = -6;
 const STATUS_INTERNAL_ERROR: jint = -7;
 const STATUS_INVALID_DISCOVERY_PROFILE: jint = -8;
 const STATUS_COLLECTION_LIMIT_EXCEEDED: jint = -9;
-const MAX_COLLECTION_BYTES: usize = 4 * 1024 * 1024;
-const MAX_COLLECTION_SECTIONS: usize = 8192;
-const MAX_COLLECTION_AGE: Duration = Duration::from_secs(60);
+const MAX_RETAINED_SECTION_BYTES: usize = 4 * 1024 * 1024;
+const MAX_RETAINED_SECTIONS: usize = 8192;
 
 const DISCOVERY_STAGE_INCOMPLETE: jint = 0;
 const DISCOVERY_STAGE_PARTIAL: jint = 1;
@@ -72,10 +71,6 @@ fn si_module_is_healthy() -> bool {
 }
 
 struct ParserState {
-    collection_started_at: Instant,
-    collection_bytes: usize,
-    collection_sections: usize,
-    collection_limit_exceeded: bool,
     collection_generation: i64,
     identity_exhausted: bool,
     collector: ServiceDiscoveryCollector,
@@ -116,10 +111,6 @@ impl InvalidSectionReason {
 impl Default for ParserState {
     fn default() -> Self {
         Self {
-            collection_started_at: Instant::now(),
-            collection_bytes: 0,
-            collection_sections: 0,
-            collection_limit_exceeded: false,
             collection_generation: 0,
             identity_exhausted: false,
             eit_instances: EitInstances::default(),
@@ -139,63 +130,21 @@ impl ParserState {
         self.eit_instances = EitInstances::default();
         self.latest_broadcast_clock = None;
         self.invalid_section_reason = None;
-        self.collection_bytes = 0;
-        self.collection_sections = 0;
-        self.collection_limit_exceeded = false;
         self.last_status = STATUS_INTERNAL_ERROR;
     }
 
-    fn clear_collection_facts(&mut self) -> bool {
-        self.collector.reset_collection();
-        self.eit_instances = EitInstances::default();
-        self.latest_broadcast_clock = None;
-        self.invalid_section_reason = None;
-        let Some(next_generation) = self.collection_generation.checked_add(1) else {
-            self.mark_identity_exhausted();
-            return false;
-        };
-        self.collection_generation = next_generation;
-        true
-    }
-
-    fn expire_collection_at(&mut self, now: Instant) {
-        if self.identity_exhausted {
-            self.last_status = STATUS_INTERNAL_ERROR;
-            return;
-        }
-        if now.saturating_duration_since(self.collection_started_at) >= MAX_COLLECTION_AGE {
-            let advanced = self.clear_collection_facts();
-            self.collection_started_at = now;
-            self.collection_bytes = 0;
-            self.collection_sections = 0;
-            self.collection_limit_exceeded = false;
-            self.last_status = if advanced {
-                STATUS_OK
+    fn maintain_at(&mut self, now: Instant) {
+        if self.eit_instances.expire_at(now) {
+            if let Some(next) = self.collection_generation.checked_add(1) {
+                self.collection_generation = next;
             } else {
-                STATUS_INTERNAL_ERROR
-            };
+                self.mark_identity_exhausted();
+            }
         }
     }
 
-    fn admit_section(&mut self, length: usize) -> bool {
-        if self.identity_exhausted || self.collection_limit_exceeded {
-            return false;
-        }
-        let Some(total_bytes) = self
-            .collection_bytes
-            .checked_add(length)
-            .filter(|total| *total <= MAX_COLLECTION_BYTES)
-            .filter(|_| self.collection_sections < MAX_COLLECTION_SECTIONS)
-        else {
-            self.collection_limit_exceeded = true;
-            if !self.clear_collection_facts() {
-                return false;
-            }
-            return false;
-        };
-        self.collection_bytes = total_bytes;
-        self.collection_sections += 1;
-        true
+    fn admits_storage(storage: (usize, usize)) -> bool {
+        storage.0 <= MAX_RETAINED_SECTION_BYTES && storage.1 <= MAX_RETAINED_SECTIONS
     }
 
     fn is_section_for_discovery(&self, pid: u16, table_id: u8) -> bool {
@@ -204,18 +153,11 @@ impl ParserState {
     }
 
     fn ingest_section(&mut self, pid: u16, section: &[u8]) -> jint {
-        self.expire_collection_at(Instant::now());
+        self.maintain_at(Instant::now());
         if self.identity_exhausted {
             return STATUS_INTERNAL_ERROR;
         }
         self.invalid_section_reason = None;
-        if !self.admit_section(section.len()) {
-            if self.identity_exhausted {
-                return STATUS_INTERNAL_ERROR;
-            }
-            self.last_status = STATUS_COLLECTION_LIMIT_EXCEEDED;
-            return self.last_status;
-        }
         let Some(header) = parse_section_header(section) else {
             self.last_status = STATUS_INVALID_SECTION;
             self.invalid_section_reason = Some(InvalidSectionReason::Header);
@@ -227,7 +169,16 @@ impl ParserState {
             return STATUS_INVALID_SECTION;
         }
 
-        if pid == 0x0012 {
+        if pid == 0x0012 && (0x4e..=0x6f).contains(&header.table_id) {
+            if !section_crc_valid_with_header(section, &header) {
+                self.last_status = STATUS_INVALID_SECTION;
+                self.invalid_section_reason = Some(InvalidSectionReason::Crc);
+                return self.last_status;
+            }
+            if !Self::admits_storage(self.eit_instances.projected_section_storage(section)) {
+                self.last_status = STATUS_COLLECTION_LIMIT_EXCEEDED;
+                return self.last_status;
+            }
             self.eit_instances.ingest(section);
         }
         let Some(next_sections_seen) = self.sections_seen.checked_add(1) else {
@@ -245,6 +196,14 @@ impl ParserState {
             self.latest_broadcast_clock = Some(clock);
             self.last_status = STATUS_OK;
             return STATUS_OK;
+        }
+        if pid == 0x0012 && (0x4e..=0x6f).contains(&table_id) {
+            self.last_status = if header.current_next_indicator == Some(true) {
+                STATUS_OK
+            } else {
+                STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE
+            };
+            return self.last_status;
         }
         if self.is_section_for_discovery(pid, table_id) {
             if header.current_next_indicator == Some(false) {
@@ -264,6 +223,10 @@ impl ParserState {
             );
             // 不正descriptor loopは診断付き入力として扱い、意味解析前に
             // section全体を破棄する理由にはしない。復旧不能なsection length / CRC errorは上で拒否する。
+            if !Self::admits_storage(self.collector.projected_section_storage(pid, section)) {
+                self.last_status = STATUS_COLLECTION_LIMIT_EXCEEDED;
+                return self.last_status;
+            }
             self.collector.push_section(pid, section);
             self.last_status = if malformed_descriptor_loop {
                 STATUS_MALFORMED_DESCRIPTOR
@@ -331,7 +294,7 @@ struct CollectionProjectionFacts {
 }
 
 fn build_collection_projection_facts(state: &mut ParserState) -> CollectionProjectionFacts {
-    state.expire_collection_at(Instant::now());
+    state.maintain_at(Instant::now());
     let ingest_sequence = state.sections_seen;
     let last_status = state.last_status;
     let collection_state = state.collector.state();
@@ -459,9 +422,7 @@ fn parser_diagnostics(
         diagnostics.push(ParserDiagnosticDto {
             code: "COLLECTION_LIMIT_EXCEEDED".to_string(),
             severity: Some("error".to_string()),
-            message:
-                "SI収集の入力上限に達したため事実と更新区間を破棄しました。次の収集開始を待ちます"
-                    .to_string(),
+            message: "SI表の保持上限を超える入力を拒否しました。既存の事実は保持します".to_string(),
         });
     }
     let mut text_diagnostics = snapshot
@@ -508,7 +469,6 @@ fn is_fixed_pid_si_table_for_discovery(pid: u16, table_id: u8) -> bool {
             | (0x0001, 0x01)
             | (0x0010, 0x40 | 0x41)
             | (0x0011, 0x42 | 0x46 | 0x4a)
-            | (0x0012, 0x4e..=0x6f)
             | (0x0014, 0x70 | 0x73)
     )
 }
@@ -1452,69 +1412,6 @@ mod tests {
     }
 
     #[test]
-    fn collection_section_limit_clears_facts_and_refuses_following_input() {
-        let mut state = ParserState::default();
-        let tot = section_with_crc(vec![
-            0x73, 0x70, 0x0b, 0xea, 0x60, 0x12, 0x34, 0x56, 0xf0, 0x00,
-        ]);
-        for _ in 0..MAX_COLLECTION_SECTIONS {
-            assert_eq!(state.ingest_section(0x0014, &tot), STATUS_OK);
-        }
-        assert!(state.latest_broadcast_clock.is_some());
-        assert_eq!(
-            state.ingest_section(0x0014, &tot),
-            STATUS_COLLECTION_LIMIT_EXCEEDED
-        );
-        assert_eq!(
-            state.ingest_section(0x0014, &tot),
-            STATUS_COLLECTION_LIMIT_EXCEEDED
-        );
-        let snapshot = build_bulk_snapshot(&mut state);
-        assert!(snapshot.broadcast_clock.is_none());
-        assert_eq!(snapshot.discovery_stage, DISCOVERY_STAGE_INCOMPLETE);
-        assert!(snapshot
-            .parser_diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "COLLECTION_LIMIT_EXCEEDED"));
-    }
-
-    #[test]
-    fn collection_byte_limit_also_counts_rejected_input() {
-        let mut state = ParserState::default();
-        let bytes = vec![0; 4096];
-        for _ in 0..MAX_COLLECTION_BYTES / bytes.len() {
-            assert_eq!(state.ingest_section(0x0012, &bytes), STATUS_INVALID_SECTION);
-        }
-        assert_eq!(
-            state.ingest_section(0x0012, &bytes),
-            STATUS_COLLECTION_LIMIT_EXCEEDED
-        );
-        assert!(state.collection_limit_exceeded);
-        assert_eq!(state.collection_bytes, MAX_COLLECTION_BYTES);
-    }
-
-    #[test]
-    fn collection_expiry_removes_stale_epg_and_resynchronizes_versions_without_losing_profile() {
-        let mut state = ParserState::default();
-        state.collector.set_discovery_profile(DiscoveryProfile::Bs);
-        let section = section_with_crc(vec![
-            0x4e, 0xf0, 0x0f, 0, 1, 0xff, 0, 0, 0, 0x11, 0, 0x22, 0, 0x4e,
-        ]);
-        assert_eq!(state.ingest_section(0x0012, &section), STATUS_OK);
-        assert_eq!(state.eit_instances.states()[0].version, 31);
-        state.expire_collection_at(state.collection_started_at + MAX_COLLECTION_AGE);
-        assert!(state.eit_instances.states().is_empty());
-        assert_eq!(state.collection_generation, 1);
-        let next = section_with_crc(vec![
-            0x4e, 0xf0, 0x0f, 0, 1, 0xe1, 0, 7, 0, 0x11, 0, 0x22, 7, 0x4e,
-        ]);
-        assert_eq!(state.ingest_section(0x0012, &next), STATUS_OK);
-        let states = state.eit_instances.states();
-        assert_eq!(states[0].version, 16);
-        assert_eq!(states[0].last_section_number, 7);
-    }
-
-    #[test]
     fn ingest_tot_updates_typed_broadcast_clock_snapshot() {
         let mut state = ParserState::default();
         let tot = section_with_crc(vec![
@@ -1533,6 +1430,246 @@ mod tests {
         let clock = snapshot.broadcast_clock.expect("broadcast clock");
         assert_eq!(clock.table_id, 0x73);
         assert_eq!(clock.mjd, 0xea60);
+    }
+
+    fn populated_live_parser() -> ParserState {
+        let mut state = ParserState::default();
+        for (pid, bytes) in [
+            (
+                0,
+                vec![0x00, 0xb0, 0x0d, 0, 0x11, 0xc1, 0, 0, 0, 1, 0xe1, 0],
+            ),
+            (
+                0x100,
+                vec![
+                    0x02, 0xb0, 0x17, 0, 1, 0xc1, 0, 0, 0xe1, 1, 0xf0, 0, 0x1b, 0xe1, 1, 0xf0, 0,
+                    0x0f, 0xe1, 2, 0xf0, 0,
+                ],
+            ),
+            (
+                0x11,
+                vec![
+                    0x42, 0xf0, 0x18, 0, 0x11, 0xc1, 0, 0, 0, 0x22, 0, 0, 1, 0xfc, 0xf0, 7, 0x48,
+                    5, 1, 0, 2, b'T', b'1',
+                ],
+            ),
+            (
+                1,
+                vec![0x01, 0xb0, 0x0f, 0, 1, 0xc1, 0, 0, 9, 4, 0, 5, 0xe1, 0x20],
+            ),
+            (
+                0x14,
+                vec![0x73, 0x70, 0x0b, 0xea, 0x60, 0x12, 0x34, 0x56, 0xf0, 0],
+            ),
+        ] {
+            assert_eq!(
+                state.ingest_section(pid, &section_with_crc(bytes)),
+                STATUS_OK
+            );
+        }
+        state
+    }
+
+    fn eit_section(service: u16, version: u8, number: u8, last: u8) -> Vec<u8> {
+        let [high, low] = service.to_be_bytes();
+        section_with_crc(vec![
+            0x4e,
+            0xf0,
+            15,
+            high,
+            low,
+            0xc1 | (version << 1),
+            number,
+            last,
+            0,
+            0x11,
+            0,
+            0x22,
+            last,
+            0x4e,
+        ])
+    }
+
+    #[test]
+    fn live_si_and_clock_survive_many_minute_boundaries_and_repeated_input() {
+        let mut state = populated_live_parser();
+        let before = build_bulk_snapshot(&mut state);
+        assert_eq!(before.service_semantic_facts.len(), 1);
+        assert!(before.service_semantic_facts[0].pmt_parsed);
+        assert!(!before.cat_ca_metadata.is_empty());
+        for minute in 1..=10 {
+            state.maintain_at(Instant::now() + std::time::Duration::from_secs(minute * 60));
+            let after = build_bulk_snapshot(&mut state);
+            assert_eq!(after.service_semantic_facts, before.service_semantic_facts);
+            assert_eq!(after.broadcast_clock, before.broadcast_clock);
+            assert_eq!(after.cat_ca_metadata, before.cat_ca_metadata);
+            assert_eq!(after.collection_generation, before.collection_generation);
+            let bounded = build_si_collection_snapshot(&mut state);
+            assert_eq!(
+                bounded.service_semantic_facts,
+                before.service_semantic_facts
+            );
+        }
+        let pat = section_with_crc(vec![0x00, 0xb0, 0x0d, 0, 0x11, 0xc1, 0, 0, 0, 1, 0xe1, 0]);
+        // 旧累積byte・件数上限の両方を超えても、反復受信の保持量は増えない。
+        for _ in 0..(4 * 1024 * 1024 / pat.len() + 1) {
+            assert_eq!(state.ingest_section(0, &pat), STATUS_OK);
+        }
+        assert_eq!(
+            build_bulk_snapshot(&mut state).service_semantic_facts,
+            before.service_semantic_facts
+        );
+    }
+
+    #[test]
+    fn eit_retention_limit_rejects_only_growth_and_does_not_starve_si_or_updates() {
+        let mut state = populated_live_parser();
+        let before = build_bulk_snapshot(&mut state);
+        for service in 0..8192 {
+            assert_eq!(
+                state.ingest_section(0x12, &eit_section(service, 0, 0, 0)),
+                STATUS_OK
+            );
+        }
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(8192, 0, 0, 0)),
+            STATUS_COLLECTION_LIMIT_EXCEEDED
+        );
+        let after = build_bulk_snapshot(&mut state);
+        assert_eq!(after.eit_instances.len(), 8192);
+        assert_eq!(after.service_semantic_facts, before.service_semantic_facts);
+        assert_eq!(after.broadcast_clock, before.broadcast_clock);
+        assert!(after
+            .parser_diagnostics
+            .iter()
+            .any(|d| d.code == "COLLECTION_LIMIT_EXCEEDED"));
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(0, 1, 0, 0)),
+            STATUS_OK
+        );
+        let pat = section_with_crc(vec![0, 0xb0, 0x0d, 0, 0x11, 0xc1, 0, 0, 0, 1, 0xe1, 0]);
+        assert_eq!(state.ingest_section(0, &pat), STATUS_OK);
+        state.maintain_at(Instant::now() + std::time::Duration::from_secs(61));
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(8192, 0, 0, 0)),
+            STATUS_OK
+        );
+        assert_eq!(
+            build_bulk_snapshot(&mut state).service_semantic_facts,
+            before.service_semantic_facts
+        );
+    }
+
+    #[test]
+    fn si_retention_limit_preserves_current_service_and_allows_repetition() {
+        let mut state = populated_live_parser();
+        let before = build_bulk_snapshot(&mut state);
+        let mut rejected = false;
+        for extension in 2u16..=8193 {
+            let [high, low] = extension.to_be_bytes();
+            let cat = section_with_crc(vec![1, 0xb0, 9, high, low, 0xc1, 0, 0]);
+            let status = state.ingest_section(1, &cat);
+            if status == STATUS_COLLECTION_LIMIT_EXCEEDED {
+                rejected = true;
+                break;
+            }
+            assert_eq!(status, STATUS_OK);
+        }
+        assert!(rejected);
+        assert_eq!(
+            build_bulk_snapshot(&mut state).service_semantic_facts,
+            before.service_semantic_facts
+        );
+        let pat = section_with_crc(vec![0, 0xb0, 0x0d, 0, 0x11, 0xc1, 0, 0, 0, 1, 0xe1, 0]);
+        assert_eq!(state.ingest_section(0, &pat), STATUS_OK);
+        assert_eq!(
+            build_bulk_snapshot(&mut state).service_semantic_facts,
+            before.service_semantic_facts
+        );
+    }
+
+    #[test]
+    fn retained_byte_limit_preserves_old_eit_and_accepts_smaller_replacement() {
+        let mut state = populated_live_parser();
+        let before = build_bulk_snapshot(&mut state);
+        let large = |service: u16| {
+            let mut bytes = eit_section(service, 0, 0, 0)[..14].to_vec();
+            bytes.resize(4092, 0xff);
+            bytes[24] = 0x0f;
+            bytes[25] = 0xff;
+            bytes[1] = 0xff;
+            bytes[2] = 0xfd;
+            section_with_crc(bytes)
+        };
+        for service in 0..1024 {
+            assert_eq!(state.ingest_section(0x12, &large(service)), STATUS_OK);
+        }
+        assert_eq!(
+            state.ingest_section(0x12, &large(1024)),
+            STATUS_COLLECTION_LIMIT_EXCEEDED
+        );
+        assert_eq!(
+            build_bulk_snapshot(&mut state).service_semantic_facts,
+            before.service_semantic_facts
+        );
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(0, 1, 0, 0)),
+            STATUS_OK
+        );
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(1024, 0, 0, 0)),
+            STATUS_OK
+        );
+    }
+
+    #[test]
+    fn eit_expiry_advances_publication_epoch_without_clearing_live_facts() {
+        let mut state = populated_live_parser();
+        let before = build_bulk_snapshot(&mut state);
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(1, 31, 0, 0)),
+            STATUS_OK
+        );
+        state.maintain_at(Instant::now() + std::time::Duration::from_secs(61));
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(1, 16, 0, 0)),
+            STATUS_OK
+        );
+        let after = build_bulk_snapshot(&mut state);
+        assert_eq!(
+            after.collection_generation,
+            before.collection_generation + 1
+        );
+        assert_eq!(after.eit_instances[0].version, 16);
+        assert_eq!(after.service_semantic_facts, before.service_semantic_facts);
+        assert_eq!(after.broadcast_clock, before.broadcast_clock);
+        state.collection_generation = i64::MAX;
+        state.maintain_at(Instant::now() + std::time::Duration::from_secs(61));
+        assert!(state.identity_exhausted);
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(1, 0, 0, 0)),
+            STATUS_INTERNAL_ERROR
+        );
+    }
+
+    #[test]
+    fn rejected_input_does_not_consume_retention_capacity() {
+        let mut state = populated_live_parser();
+        let before = build_bulk_snapshot(&mut state);
+        for _ in 0..8193 {
+            assert_eq!(
+                state.ingest_section(0x12, &[0; 4096]),
+                STATUS_INVALID_SECTION
+            );
+        }
+        assert_eq!(
+            build_bulk_snapshot(&mut state).service_semantic_facts,
+            before.service_semantic_facts
+        );
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(1, 0, 0, 0)),
+            STATUS_OK
+        );
     }
 
     #[test]
@@ -1613,21 +1750,6 @@ mod tests {
         assert_eq!(handle, 2);
         assert!(registry.parsers.contains_key(&1));
         assert!(registry.parsers.contains_key(&2));
-    }
-
-    #[test]
-    fn collection_generation_exhaustion_fences_parser_state() {
-        let mut state = ParserState {
-            collection_generation: i64::MAX,
-            ..ParserState::default()
-        };
-        assert!(!state.clear_collection_facts());
-        assert!(state.identity_exhausted);
-        assert_eq!(state.last_status, STATUS_INTERNAL_ERROR);
-        assert_eq!(
-            state.ingest_section(0x0010, &[0x7f, 0x30, 0]),
-            STATUS_INTERNAL_ERROR
-        );
     }
 
     #[test]
