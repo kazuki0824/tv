@@ -343,3 +343,9 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 - `AribContentRatings`がstock TV Appから発見され、既存preset/custom policyを通じてARIB exceptional ratingのblock/unblockとPIN一時解除、第三者rating非干渉が成立する。
 - android:canRecord="false" が product manifest metadata に反映される。
 ```
+
+### 通常ログで入力待ちが満杯になった場合
+
+`PLAYBACK_INPUT_LOSS`および再生不能理由ログの`video`/`audio`状態を確認する。`inboundInputCallbacks`は到着済みでownerが未処理のCodec入力callback、`queuedInputs`はCodecへ投入してまだ返却されていない入力、`nativeRenderPending`はnativeへの出力buffer返却呼出しが未完了の数を表す。これらは同じplayback ownerで読んだ資源状態であり、native内部の待機相手や最終表示を証明しない。
+
+`pendingSamples=64`だけで件数上限が不適切とは判断しない。上記採取操作を選局前から実行し、詰まった直後・再選局より前にsnapshotを保存する。`PLAYBACK_VIDEO_SUBMIT/RETURN`、Codec入力返却、MediaSyncの入力・出力、native stackを対応付ける。Compatibility modeでは最終表示callbackがないこと自体を再生失敗にしない。private callbackの不在を理由に必要な通常ログ・native stackまで採取済みと扱わない。

@@ -159,6 +159,14 @@ class PlaybackMediaSyncReleaseTest {
                 // releaseOutputBufferのnative待機と同時でも、単一playback ownerはcontrolを進める。
                 assertEquals(1L, executor.callControl(1_000L) { pipeline.currentPlaybackGenerationForTest() })
                 assertEquals(1L, native.resumeRender.count)
+                val summary =
+                    executor.callControl(1_000L) {
+                        ReflectionHelpers.callInstanceMethod<String>(pipeline, "decoderFlowSummary")
+                    }
+                assertTrue(summary.contains("mediaSyncStarted=true"))
+                assertTrue(summary.contains("renderSubmissions=1"))
+                assertTrue(summary.contains("nativeRenderPending=1"))
+                assertTrue(summary.contains("pendingVideoOutputs=0"))
             } finally {
                 native.resumeRender.countDown()
             }

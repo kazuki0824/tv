@@ -15,6 +15,12 @@
 - Program cleanupの非同期開始・実行中はPENDINGと記録し、workerの完了結果だけからCOMPLETED/FAILEDを記録する。Boot EPGとbackground maintenanceの未準備分岐を揃え、非同期開始を実失敗と誤表示しない。
 - Framework CAS adapterを通すECM/EMM status保持のホスト試験を追加し、ホストCIの期待件数を401へ更新した。実機のCAS失敗原因・初回スキャンは未検証。
 
+# 2026-10-22 39.1の再生停滞診断
+
+- 入力欠落と再生不能の通常ログに、既存decoder owner上のpending入力、Codec空き入力、未処理入力callback、投入済み入力、保留映像出力、native render未完了数、MediaSync開始状態、未返却音声出力を記録する。native呼出しやrender完了待ちは追加しない。
+- native renderを停止させたRobolectric回帰試験から診断を読み、停滞中もplayback ownerが応答し未完了renderを識別できることを検査する。
+- 39.1の64件到達を原因そのものとは断定せず、容量・期限・復旧回数を変更しない。Codec/MediaSync内部の実機待機位置とCAS失敗のplatform statusは追加採取が必要であり、この変更だけで症状解消を確認したとは扱わない。
+
 ## 2026-10-21 Codec入力通知のFilterバッチ中先行消費（#207）
 
 - Filter一括callback中にCodecのinput-index callbackが到着した場合も、次のイベントの保持予算判定前に同じownerで入力返却とpending drainを実行する。callback threadはindex引渡しのみを行い、Decoder状態とgeneration判定は既存ownerに維持する。
