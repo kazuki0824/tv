@@ -2,6 +2,7 @@
 
 package com.maleicacid.tvinput.tis
 
+import com.maleicacid.tvinput.aribsi.SectionTransportLossSnapshot
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.StreamSelectorType
 import com.maleicacid.tvinput.common.TransportStreamId16
@@ -192,6 +193,41 @@ class ScanPlanPolicyTest {
             releaseFirst.countDown()
             executor.shutdownNow()
         }
+    }
+
+    @Test
+    fun completedCandidatePreservesFrameworkOverflowWithoutControllerAdmissionLoss() {
+        val before = SectionTransportLossSnapshot(inputDeliveryLoss = 0, filterOverflow = 0)
+        val after = SectionTransportLossSnapshot(inputDeliveryLoss = 0, filterOverflow = 2)
+        val outcome =
+            ChannelScanController.finalizeSiCollectionOutcome(
+                ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL,
+                finalSnapshotComplete = true,
+                finalRegistrationReadyServices = 1,
+            )
+        assertEquals(ChannelScanController.SiCollectionOutcome.COMPLETE, outcome)
+        assertEquals(
+            "candidateInputDeliveryLoss=0 candidateFilterOverflow=2",
+            ChannelScanController.candidateTransportLossDetail(before, after),
+        )
+        assertEquals(
+            "candidateInputDeliveryLoss=3 candidateFilterOverflow=2",
+            ChannelScanController.candidateTransportLossDetail(before, after.copy(inputDeliveryLoss = 3)),
+        )
+    }
+
+    @Test
+    fun scanCandidateOnlyReportsItsOwnTransportLossDeltas() {
+        val previous = SectionTransportLossSnapshot(inputDeliveryLoss = 5, filterOverflow = 4)
+        assertEquals(null, ChannelScanController.candidateTransportLossDetail(previous, previous))
+        assertEquals(
+            "candidateInputDeliveryLoss=0 candidateFilterOverflow=1",
+            ChannelScanController.candidateTransportLossDetail(previous, previous.copy(filterOverflow = 5)),
+        )
+        assertEquals(
+            "candidateInputDeliveryLoss=1 candidateFilterOverflow=0",
+            ChannelScanController.candidateTransportLossDetail(previous, previous.copy(inputDeliveryLoss = 6)),
+        )
     }
 
     @Test

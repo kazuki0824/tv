@@ -910,11 +910,13 @@ class TunerController(
     fun tuneForScan(
         candidate: ScanCandidate,
         eitPfActualOnly: Boolean = false,
-    ): TuneOutcome = callOnController { tuneForScanOnController(candidate, eitPfActualOnly) }
+        afterOldSectionFiltersClosed: (() -> Unit)? = null,
+    ): TuneOutcome = callOnController { tuneForScanOnController(candidate, eitPfActualOnly, afterOldSectionFiltersClosed) }
 
     private fun tuneForScanOnController(
         candidate: ScanCandidate,
         eitPfActualOnly: Boolean,
+        afterOldSectionFiltersClosed: (() -> Unit)?,
     ): TuneOutcome {
         val synthetic =
             ResolvedChannel(
@@ -931,7 +933,11 @@ class TunerController(
                 backendHint = candidate.backendHint,
                 satelliteBand = candidate.satelliteBand,
             )
-        return tuneResolvedChannel(synthetic, eitPfActualOnly = eitPfActualOnly)
+        return tuneResolvedChannel(
+            synthetic,
+            eitPfActualOnly = eitPfActualOnly,
+            afterOldSectionFiltersClosed = afterOldSectionFiltersClosed,
+        )
     }
 
     // SDKの既存DemuxはFrontend解放後の自動再接続失敗を公開しない。
@@ -959,15 +965,18 @@ class TunerController(
             }
         }.exceptionOrNull()
 
-    @Suppress("ReturnCount", "MaxLineLength")
+    @Suppress("ReturnCount", "MaxLineLength", "LongMethod")
     private fun tuneResolvedChannel(
         channel: ResolvedChannel,
         eitPfActualOnly: Boolean,
+        afterOldSectionFiltersClosed: (() -> Unit)? = null,
     ): TuneOutcome {
         if (tunerCloseFailure != null) {
             return TuneOutcome(false, Tuner.RESULT_UNKNOWN_ERROR, channel, tuneGeneration, "Tuner.close失敗後は資源解放未確定のため再選局不可")
         }
         resetBeforeTune()
+        // 旧Filter失効後・新Filter生成前に、同じownerでscan parserと候補別診断を初期化する。
+        afterOldSectionFiltersClosed?.invoke()
         val tunerInstance =
             availableTuner()
                 ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
@@ -1172,6 +1181,23 @@ class TunerController(
                     if (status == Filter.STATUS_DATA_READY) return
                     val message = "section filter 状態 inputId=$inputId pid=$pid status=$status generation=$generation"
                     if ((status and Filter.STATUS_OVERFLOW) != 0) {
+                        // Framework callback lockの中ではownerを待たず、現行性判定だけをcontrolへ委譲する。
+                        runCatching {
+                            sectionExecutor.executeControl {
+                                if (!released && isCurrentSectionFilter(pid, generation, filter)) {
+                                    sectionIngestController?.recordFilterOverflow()
+                                }
+                            }
+                        }.onFailure { error ->
+                            if (!released) {
+                                Log.w(
+                                    LogTags.TIS,
+                                    "section filter overflow診断の投入に失敗しました " +
+                                        "inputId=$inputId pid=$pid generation=$generation",
+                                    error,
+                                )
+                            }
+                        }
                         Log.w(LogTags.TIS, message)
                     } else {
                         Log.d(LogTags.TIS, message)
@@ -1330,8 +1356,11 @@ class TunerController(
                     }
                 }
             }) {
-                if (!released && tuneAccepted && generation == tuneGeneration) {
-                    ingest?.recordInputDeliveryLoss(pid, tableId)
+                // callback側ではowner待機せず、close後の同世代旧Filterを誤計数しない。
+                sectionExecutor.executeControl {
+                    if (!released && isCurrentSectionFilter(pid, generation, filter)) {
+                        ingest?.recordInputDeliveryLoss(pid, tableId)
+                    }
                 }
             }
         }.onFailure { error ->

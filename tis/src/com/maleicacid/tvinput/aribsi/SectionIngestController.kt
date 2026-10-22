@@ -21,6 +21,12 @@ data class SectionIngestCounter(
     val lastErrorTimeMillis: Long,
 )
 
+data class SectionTransportLossSnapshot(
+    val inputDeliveryLoss: Int,
+    val filterOverflow: Int,
+)
+
+@Suppress("TooManyFunctions")
 class SectionIngestController(
     private val engine: AribSiEngine,
 ) {
@@ -34,6 +40,9 @@ class SectionIngestController(
     @Volatile var inputDeliveryLossCount: Int = 0
         private set
 
+    @Volatile var filterOverflowCount: Int = 0
+        private set
+
     private val droppedByPid = linkedMapOf<TsPid, Int>()
     private var sdtActualReadCount = 0
     private var sdtOtherReadCount = 0
@@ -44,6 +53,7 @@ class SectionIngestController(
     @Synchronized
     fun resetForTune() {
         inputDeliveryLossCount = 0
+        filterOverflowCount = 0
         droppedByPid.clear()
         sdtActualReadCount = 0
         sdtOtherReadCount = 0
@@ -82,6 +92,15 @@ class SectionIngestController(
             }
         }
     }
+
+    // SDK FilterのoverflowはControllerの入場拒否と別の入力喪失として観測する。
+    @Synchronized
+    fun recordFilterOverflow() {
+        filterOverflowCount++
+    }
+
+    @Synchronized
+    fun transportLossSnapshot() = SectionTransportLossSnapshot(inputDeliveryLossCount, filterOverflowCount)
 
     @Suppress("MagicNumber")
     @Synchronized
@@ -135,7 +154,8 @@ class SectionIngestController(
     fun broadcastClockSnapshot(): AribBroadcastClockFact? = engine.broadcastClockSnapshot()
 
     fun diagnosticSummary(): String =
-        "inputDeliveryLoss=$inputDeliveryLossCount lostByPid=${lossByPidSummary()}; " +
+        "inputDeliveryLoss=$inputDeliveryLossCount filterOverflow=$filterOverflowCount " +
+            "lostByPid=${lossByPidSummary()}; " +
             diagnostics().joinToString("; ") { c ->
                 "pid=${c.pid.value} table=${c.tableId} status=${c.status} ok=" +
                     "${c.acceptedCount} invalidSection=${c.invalidSectionCount} malformed=${c.malformedCount} " +
