@@ -17,9 +17,12 @@ import org.robolectric.annotation.Implements
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowMediaCodec
 import org.robolectric.util.ReflectionHelpers
+import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -235,6 +238,62 @@ class PlaybackMediaSyncReleaseTest {
         }
     }
 
+    @Test
+    fun stopOnOwnerDoesNotRenderQueuedOutputsAfterFlush() {
+        withAttachedSync { pipeline, native, surface ->
+            val decoder = attachVideoDecoder(pipeline, native, surface)
+            val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            native.singleWaiterFlush = true
+            native.playing = true
+            ReflectionHelpers.setField(pipeline, "mediaSyncStarted", true)
+            try {
+                executor.callControl(1_000L) { videoOutput(decoder, 0) }
+                assertTrue(native.renderEntered.await(2, TimeUnit.SECONDS))
+                // 40系と同じく、実行中1件とworkerに未実行の2件を残してowner内から停止する。
+                executor.callControl(10_000L) {
+                    videoOutput(decoder, 1)
+                    videoOutput(decoder, 2)
+                    pipeline.stop()
+                }
+                assertTrue("codec-release" in native.events)
+                assertEquals(0, native.events.count { it == "render-after-pause" })
+            } finally {
+                native.finishRenderFixture()
+            }
+        }
+    }
+
+    @Test
+    fun stopBeforeNativeWorkerStartsDoesNotSubmitToPausedSync() {
+        withAttachedSync { pipeline, native, surface ->
+            val decoder = attachVideoDecoder(pipeline, native, surface)
+            val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            val worker = ReflectionHelpers.getField<Handler>(pipeline, "videoRenderHandler")
+            val workerHeld = CountDownLatch(1)
+            native.singleWaiterFlush = true
+            native.playing = true
+            ReflectionHelpers.setField(pipeline, "mediaSyncStarted", true)
+            assertTrue(
+                worker.post {
+                    workerHeld.countDown()
+                    check(native.workerGate.await(15, TimeUnit.SECONDS))
+                },
+            )
+            try {
+                assertTrue(workerHeld.await(2, TimeUnit.SECONDS))
+                executor.callControl(10_000L) {
+                    videoOutput(decoder, 0)
+                    // flushが先に完了してから、予約されたnative呼出しを開始させる。
+                    pipeline.stop()
+                }
+                assertTrue("codec-release" in native.events)
+                assertEquals(0, native.events.count { it == "render-after-pause" })
+            } finally {
+                native.finishRenderFixture()
+            }
+        }
+    }
+
     private fun attachVideoDecoder(
         pipeline: PlaybackPipeline,
         native: NativeMediaSync,
@@ -260,13 +319,16 @@ class PlaybackMediaSyncReleaseTest {
         return decoder
     }
 
-    private fun videoOutput(decoder: Any) {
+    private fun videoOutput(
+        decoder: Any,
+        index: Int = 0,
+    ) {
         val codec = ReflectionHelpers.getField<MediaCodec>(decoder, "codec")
         ReflectionHelpers.callInstanceMethod<Unit>(
             decoder,
             "onOutput",
             ReflectionHelpers.ClassParameter.from(MediaCodec::class.java, codec),
-            ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 0),
+            ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, index),
             ReflectionHelpers.ClassParameter.from(
                 MediaCodec.BufferInfo::class.java,
                 MediaCodec.BufferInfo().apply { set(0, 1, 90_000L, 0) },
@@ -286,8 +348,13 @@ class PlaybackMediaSyncReleaseTest {
             renderTimestampNs: Long,
         ) {
             val owner = requireNotNull(sync)
+            if (owner.singleWaiterFlush) {
+                owner.awaitSingleFlush()
+            }
             owner.renderEntered.countDown()
-            if (!owner.playing || owner.blockActiveRender) check(owner.resumeRender.await(5, TimeUnit.SECONDS))
+            if (!owner.singleWaiterFlush && (!owner.playing || owner.blockActiveRender)) {
+                check(owner.resumeRender.await(5, TimeUnit.SECONDS))
+            }
             owner.events += "render"
             owner.renderCompleted.countDown()
         }
@@ -316,6 +383,7 @@ class PlaybackMediaSyncReleaseTest {
             ReflectionHelpers.setField(pipeline, "mediaSync", sync)
             action(pipeline, native, output)
         } finally {
+            native.finishRenderFixture()
             native.failNextDisconnect = false
             runCatching { pipeline.release() }
             NativeMediaSync.owners.clear()
@@ -331,11 +399,39 @@ class PlaybackMediaSyncReleaseTest {
             val owners = IdentityHashMap<Surface, NativeMediaSync>()
         }
 
-        val events = mutableListOf<String>()
+        val events: MutableList<String> = Collections.synchronizedList(mutableListOf())
         val renderEntered = CountDownLatch(1)
         val renderCompleted = CountDownLatch(1)
         val resumeRender = CountDownLatch(1)
+
+        @Volatile
         var playing = false
+        var singleWaiterFlush = false
+        val workerGate = CountDownLatch(1)
+        private val finishFixture = AtomicBoolean(false)
+        private val currentWaiter = AtomicReference<CountDownLatch?>()
+
+        fun awaitSingleFlush() {
+            val waiter = CountDownLatch(1)
+            currentWaiter.set(waiter)
+            if (!playing) events += "render-after-pause"
+            renderEntered.countDown()
+            // AOSP MediaSync::flushは現在のwaiterを起こすだけで、後着frameの通行許可ではない。
+            // 15秒はfixture漏れの検出期限。製品の5秒待機より先に模擬nativeを成功させない。
+            try {
+                if (!finishFixture.get()) check(waiter.await(15, TimeUnit.SECONDS))
+            } finally {
+                currentWaiter.compareAndSet(waiter, null)
+            }
+        }
+
+        fun finishRenderFixture() {
+            finishFixture.set(true)
+            currentWaiter.get()?.countDown()
+            workerGate.countDown()
+            resumeRender.countDown()
+        }
+
         var blockActiveRender = false
         var failNextDisconnect = false
         var failNextRelease = false
@@ -383,6 +479,8 @@ class PlaybackMediaSyncReleaseTest {
 
         @Implementation
         fun flush() {
+            if (singleWaiterFlush) currentWaiter.get()?.countDown()
+            workerGate.countDown()
             resumeRender.countDown()
             if (failNextFlush) {
                 failNextFlush = false
