@@ -215,7 +215,10 @@ class FrameworkCasCloseTest {
         }
     }
 
-    @Test fun ecmAndEmmStateFailuresRetainPlatformStatusInDiagnostics() {
+    // 同じFramework接続のECM/EMM失敗と終了処理を一つの試験に保持する。
+    @Suppress("NestedBlockDepth")
+    @Test
+    fun ecmAndEmmStateFailuresRetainPlatformStatusInDiagnostics() {
         val faults = MediaCas.Faults
         faults.reset()
         try {
