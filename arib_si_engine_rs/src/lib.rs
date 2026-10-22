@@ -143,17 +143,14 @@ impl ParserState {
         }
     }
 
-    fn admits_storage(storage: (usize, usize)) -> bool {
-        storage.0 <= MAX_RETAINED_SECTION_BYTES && storage.1 <= MAX_RETAINED_SECTIONS
-    }
-
     fn is_section_for_discovery(&self, pid: u16, table_id: u8) -> bool {
         is_fixed_pid_si_table_for_discovery(pid, table_id)
             || (table_id == 0x02 && self.collector.is_known_pmt_pid(pid))
     }
 
     fn ingest_section(&mut self, pid: u16, section: &[u8]) -> jint {
-        self.maintain_at(Instant::now());
+        let now = Instant::now();
+        self.maintain_at(now);
         if self.identity_exhausted {
             return STATUS_INTERNAL_ERROR;
         }
@@ -175,11 +172,15 @@ impl ParserState {
                 self.invalid_section_reason = Some(InvalidSectionReason::Crc);
                 return self.last_status;
             }
-            if !Self::admits_storage(self.eit_instances.projected_section_storage(section)) {
+            if !self.eit_instances.admits_section_at(
+                section,
+                now,
+                (MAX_RETAINED_SECTION_BYTES, MAX_RETAINED_SECTIONS),
+            ) {
                 self.last_status = STATUS_COLLECTION_LIMIT_EXCEEDED;
                 return self.last_status;
             }
-            self.eit_instances.ingest(section);
+            self.eit_instances.ingest_at(section, now);
         }
         let Some(next_sections_seen) = self.sections_seen.checked_add(1) else {
             self.mark_identity_exhausted();
@@ -223,11 +224,16 @@ impl ParserState {
             );
             // 不正descriptor loopは診断付き入力として扱い、意味解析前に
             // section全体を破棄する理由にはしない。復旧不能なsection length / CRC errorは上で拒否する。
-            if !Self::admits_storage(self.collector.projected_section_storage(pid, section)) {
+            if !self.collector.admits_section_at(
+                pid,
+                section,
+                now,
+                (MAX_RETAINED_SECTION_BYTES, MAX_RETAINED_SECTIONS),
+            ) {
                 self.last_status = STATUS_COLLECTION_LIMIT_EXCEEDED;
                 return self.last_status;
             }
-            self.collector.push_section(pid, section);
+            self.collector.push_section_at(pid, section, now);
             self.last_status = if malformed_descriptor_loop {
                 STATUS_MALFORMED_DESCRIPTOR
             } else {
@@ -1586,6 +1592,192 @@ mod tests {
             build_bulk_snapshot(&mut state).service_semantic_facts,
             before.service_semantic_facts
         );
+    }
+
+    fn unknown_descriptor_padding(mut size: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        while size > 0 {
+            let payload = (size - 2).min(255);
+            bytes.extend_from_slice(&[0x90, payload as u8]);
+            bytes.resize(bytes.len() + payload, 0);
+            size -= payload + 2;
+        }
+        bytes
+    }
+
+    fn large_eit_for_capacity_test(service: u16, version: u8) -> Vec<u8> {
+        let mut bytes = eit_section(service, version, 0, 0)[..14].to_vec();
+        bytes[1] = 0xff;
+        bytes[2] = 0xfd;
+        bytes.extend_from_slice(&[0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 1, 0, 0x8f, 0xe2]);
+        bytes.extend(unknown_descriptor_padding(4066));
+        section_with_crc(bytes)
+    }
+
+    #[test]
+    fn capacity_conflict_eit_invalidates_old_authority_without_growing_storage() {
+        let mut state = ParserState::default();
+        for service in 0..1024 {
+            assert_eq!(
+                state.ingest_section(0x12, &large_eit_for_capacity_test(service, 0)),
+                STATUS_OK
+            );
+        }
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(0, 1, 0, 0)),
+            STATUS_OK
+        );
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(1024, 0, 0, 0)),
+            STATUS_OK
+        );
+        let stored = state.eit_instances.section_storage();
+        assert!(
+            state
+                .eit_instances
+                .states()
+                .iter()
+                .find(|s| s.service_id == 0)
+                .unwrap()
+                .complete
+        );
+        assert_eq!(
+            state.ingest_section(0x12, &large_eit_for_capacity_test(0, 1)),
+            STATUS_OK
+        );
+        let after = build_bulk_snapshot(&mut state);
+        let target_state = after
+            .eit_instances
+            .iter()
+            .find(|s| s.service_id == 0)
+            .unwrap();
+        assert!(target_state.inconsistent && !target_state.complete);
+        assert_eq!(state.eit_instances.section_storage(), stored);
+        assert_eq!(
+            state.ingest_section(0x12, &eit_section(0, 2, 0, 0)),
+            STATUS_OK
+        );
+        assert!(
+            state
+                .eit_instances
+                .states()
+                .iter()
+                .find(|s| s.service_id == 0)
+                .unwrap()
+                .complete
+        );
+    }
+
+    #[test]
+    fn capacity_conflict_pmt_retires_old_stream_and_ca_facts() {
+        let mut state = populated_live_parser();
+        let initial_pmt = section_with_crc(vec![
+            2, 0xb0, 0x1d, 0, 1, 0xc3, 0, 0, 0xe1, 1, 0xf0, 6, 9, 4, 0, 5, 0xe1, 0x20, 0x1b, 0xe1,
+            1, 0xf0, 0, 0x0f, 0xe1, 2, 0xf0, 0,
+        ]);
+        assert_eq!(state.ingest_section(0x100, &initial_pmt), STATUS_OK);
+        assert_eq!(
+            state.collector.state().snapshot.services[0]
+                .program_ca_descriptors
+                .len(),
+            1
+        );
+        let mut extension = 2u16;
+        for large in [true, false] {
+            loop {
+                let [high, low] = extension.to_be_bytes();
+                let mut cat = vec![1, 0xb0, 9, high, low, 0xc1, 0, 0];
+                if large {
+                    cat[1] = 0xb3;
+                    cat[2] = 0xfd;
+                    cat.extend(unknown_descriptor_padding(1012));
+                }
+                let status = state.ingest_section(1, &section_with_crc(cat));
+                if status == STATUS_COLLECTION_LIMIT_EXCEEDED {
+                    break;
+                }
+                assert_eq!(status, STATUS_OK);
+                extension += 1;
+            }
+        }
+        assert!(state.collector.state().semantic_facts_by_service[0].pmt_parsed);
+        let mut pmt = vec![2, 0xb3, 0xfd, 0, 1, 0xc3, 0, 0, 0xe1, 1, 0xf3, 0xe6];
+        pmt.extend(unknown_descriptor_padding(998));
+        pmt.extend_from_slice(&[0x1b, 0xe1, 1, 0xf0, 0, 0x0f, 0xe1, 2, 0xf0, 0]);
+        let pmt = section_with_crc(pmt);
+        let stored = state.collector.section_storage();
+        assert_eq!(state.ingest_section(0x100, &pmt), STATUS_OK);
+        let facts = state.collector.state();
+        assert!(!facts.semantic_facts_by_service[0].pmt_parsed);
+        assert!(facts.snapshot.services[0].streams.is_empty());
+        assert!(facts.snapshot.services[0].program_ca_descriptors.is_empty());
+        assert_eq!(state.collector.section_storage(), stored);
+    }
+
+    #[test]
+    fn retention_capacity_repeat_and_version_update_workload() {
+        for (si_tables, eit_tables) in [(4usize, 1u16), (8192, 8192)] {
+            let mut state = populated_live_parser();
+            for extension in 2..(si_tables - 2) as u16 {
+                let [high, low] = extension.to_be_bytes();
+                assert_eq!(
+                    state.ingest_section(
+                        1,
+                        &section_with_crc(vec![1, 0xb0, 9, high, low, 0xc1, 0, 0])
+                    ),
+                    STATUS_OK
+                );
+            }
+            for service in 0..eit_tables {
+                assert_eq!(
+                    state.ingest_section(0x12, &eit_section(service, 0, 0, 0)),
+                    STATUS_OK
+                );
+            }
+            let pat = section_with_crc(vec![0, 0xb0, 0x0d, 0, 0x11, 0xc1, 0, 0, 0, 1, 0xe1, 0]);
+            let started = Instant::now();
+            for index in 0..2000 {
+                let version = (index / 100) as u8;
+                let pmt = section_with_crc(vec![
+                    2,
+                    0xb0,
+                    0x17,
+                    0,
+                    1,
+                    0xc1 | (version << 1),
+                    0,
+                    0,
+                    0xe1,
+                    1,
+                    0xf0,
+                    0,
+                    0x1b,
+                    0xe1,
+                    1,
+                    0xf0,
+                    0,
+                    0x0f,
+                    0xe1,
+                    2,
+                    0xf0,
+                    0,
+                ]);
+                assert_eq!(state.ingest_section(0, &pat), STATUS_OK);
+                assert_eq!(state.ingest_section(0x100, &pmt), STATUS_OK);
+                assert_eq!(
+                    state.ingest_section(0x12, &eit_section(0, version, 0, 0)),
+                    STATUS_OK
+                );
+            }
+            eprintln!("SI_RETENTION_WORKLOAD si={si_tables} eit={eit_tables} inputs=6000 updates=38 elapsed_us={}", started.elapsed().as_micros());
+            assert!(state.collector.state().semantic_facts_by_service[0].pmt_parsed);
+            assert_eq!(state.eit_instances.states().len(), usize::from(eit_tables));
+            assert!(state
+                .eit_instances
+                .states()
+                .iter()
+                .all(|table| table.complete && !table.inconsistent));
+        }
     }
 
     #[test]

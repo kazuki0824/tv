@@ -38,11 +38,16 @@ pub struct EitInstanceState {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EitInstances {
     instances: BTreeMap<TableKey, Instance>,
+    // 現在p/f actualの最も早い失効候補。表の所有・失効判定は既存trackerだけを正とする。
+    next_expiry: Option<Instant>,
 }
 
 impl EitInstances {
     /// 受信が途切れた現在p/f actualだけを退役する。周期不明のschedule/other/nextに適用しない。
     pub fn expire_at(&mut self, now: Instant) -> bool {
+        if self.next_expiry.map_or(true, |deadline| now < deadline) {
+            return false;
+        }
         let previous = self.instances.len();
         self.instances.retain(|key, instance| {
             key.0 != 0x4e
@@ -51,24 +56,51 @@ impl EitInstances {
                     now.saturating_duration_since(last) < TABLE_REACQUISITION_AGE
                 })
         });
+        self.next_expiry = self
+            .instances
+            .iter()
+            .filter(|(key, _)| key.0 == 0x4e && key.4)
+            .filter_map(|(_, instance)| {
+                instance
+                    .tracker
+                    .last_observed_at?
+                    .checked_add(TABLE_REACQUISITION_AGE)
+            })
+            .min();
         self.instances.len() != previous
     }
 
-    pub fn projected_section_storage(&self, section: &[u8]) -> (usize, usize) {
-        let total = self
-            .instances
+    pub fn admits_section_at(&self, section: &[u8], now: Instant, limits: (usize, usize)) -> bool {
+        let (old, new) = self.section_storage_change_at(section, now);
+        // 同版反復・矛盾検出など保持を増やさない入力で全表を走査しない。
+        if new.0 <= old.0 && new.1 <= old.1 {
+            return true;
+        }
+        let total = self.section_storage();
+        total.0 - old.0 + new.0 <= limits.0 && total.1 - old.1 + new.1 <= limits.1
+    }
+
+    pub fn section_storage(&self) -> (usize, usize) {
+        self.instances
             .values()
             .map(|instance| instance.tracker.storage())
-            .fold((0, 0), |sum, value| (sum.0 + value.0, sum.1 + value.1));
+            .fold((0, 0), |sum, value| (sum.0 + value.0, sum.1 + value.1))
+    }
+
+    fn section_storage_change_at(
+        &self,
+        section: &[u8],
+        now: Instant,
+    ) -> ((usize, usize), (usize, usize)) {
         let Some(header) = parse_section_header(section) else {
-            return total;
+            return ((0, 0), (0, 0));
         };
         if !(0x4e..=0x6f).contains(&header.table_id)
             || section.len() < 18
             || header.total_length != section.len()
             || !section_crc_valid_with_header(section, &header)
         {
-            return total;
+            return ((0, 0), (0, 0));
         }
         let (Some(version), Some(number), Some(last), Some(current)) = (
             header.version,
@@ -76,7 +108,7 @@ impl EitInstances {
             header.last_section_number,
             header.current_next_indicator,
         ) else {
-            return total;
+            return ((0, 0), (0, 0));
         };
         let key = TableKey(
             header.table_id,
@@ -88,13 +120,17 @@ impl EitInstances {
         let tracker = self.instances.get(&key).map(|instance| &instance.tracker);
         let old = tracker.map_or((0, 0), SectionTracker::storage);
         let new = tracker.map_or_else(
-            || SectionTracker::default().projected_storage(version, number, last, section),
-            |tracker| tracker.projected_storage(version, number, last, section),
+            || SectionTracker::default().projected_storage_at(version, number, last, section, now),
+            |tracker| tracker.projected_storage_at(version, number, last, section, now),
         );
-        (total.0 - old.0 + new.0, total.1 - old.1 + new.1)
+        (old, new)
     }
 
     pub fn ingest(&mut self, section: &[u8]) {
+        self.ingest_at(section, Instant::now());
+    }
+
+    pub fn ingest_at(&mut self, section: &[u8], now: Instant) {
         let Some(header) = parse_section_header(section) else {
             return;
         };
@@ -120,8 +156,7 @@ impl EitInstances {
             u16::from_be_bytes([section[3], section[4]]),
             current,
         );
-        // 派生factの失効とsection証拠の置換は同じ受信時刻で判定する。
-        let now = Instant::now();
+        // 保持量予測・派生factの失効・section証拠置換は同じ入力時刻で判定する。
         let instance = self.instances.entry(key).or_default();
         if !instance.tracker.accepts_version_at(version, now) {
             return;
@@ -135,10 +170,15 @@ impl EitInstances {
             instance.safe.clear();
             instance.segment_ends.clear();
         }
-        if !instance
+        let changed = instance
             .tracker
-            .observe_at(version, number, last, section, now)
-        {
+            .observe_at(version, number, last, section, now);
+        if key.0 == 0x4e && key.4 {
+            if let Some(deadline) = now.checked_add(TABLE_REACQUISITION_AGE) {
+                self.next_expiry = Some(self.next_expiry.map_or(deadline, |old| old.min(deadline)));
+            }
+        }
+        if !changed {
             return;
         }
         if header.table_id >= 0x50 {

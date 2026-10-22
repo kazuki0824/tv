@@ -15,10 +15,6 @@ pub(crate) struct SectionTracker {
 
 impl SectionTracker {
     /// 継続受信中は半周未満の前進だけを採用し、受信断後は当該表だけ再同期する。
-    pub(crate) fn accepts_version(&self, version: u8) -> bool {
-        self.accepts_version_at(version, Instant::now())
-    }
-
     pub(crate) fn accepts_version_at(&self, version: u8, now: Instant) -> bool {
         self.reacquisition_due_at(now)
             || self.version.map_or(true, |old| {
@@ -26,6 +22,7 @@ impl SectionTracker {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn needs_reacquisition(&self, version: u8, number: u8, bytes: &[u8]) -> bool {
         self.needs_reacquisition_at(version, number, bytes, Instant::now())
     }
@@ -56,6 +53,7 @@ impl SectionTracker {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn projected_storage(
         &self,
         version: u8,
@@ -63,12 +61,23 @@ impl SectionTracker {
         last: u8,
         bytes: &[u8],
     ) -> (usize, usize) {
+        self.projected_storage_at(version, number, last, bytes, Instant::now())
+    }
+
+    pub(crate) fn projected_storage_at(
+        &self,
+        version: u8,
+        number: u8,
+        last: u8,
+        bytes: &[u8],
+        now: Instant,
+    ) -> (usize, usize) {
         let stored = self.storage();
-        if !self.accepts_version(version) {
-            // 事前判定と採用の間に受信断期限を跨いでも、置換後の量を過小評価しない。
-            return (stored.0.max(bytes.len()), stored.1.max(1));
+        if !self.accepts_version_at(version, now) {
+            return stored;
         }
-        if self.version != Some(version) || self.needs_reacquisition(version, number, bytes) {
+        if self.version != Some(version) || self.needs_reacquisition_at(version, number, bytes, now)
+        {
             return if number <= last {
                 (bytes.len(), 1)
             } else {
@@ -82,7 +91,7 @@ impl SectionTracker {
                 .last_section_number
                 .is_some_and(|expected| expected != last)
         {
-            (stored.0.max(bytes.len()), stored.1)
+            stored
         } else {
             (stored.0 + bytes.len(), stored.1 + 1)
         }

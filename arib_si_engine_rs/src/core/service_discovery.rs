@@ -1062,14 +1062,37 @@ impl ServiceDiscoveryEngine {
 
 impl ServiceDiscoveryCollector {
     /// 既存の表trackerから保持量を算出し、同版反復や版の置換で累積課金しない。
-    pub fn projected_section_storage(&self, pid: u16, section: &[u8]) -> (usize, usize) {
-        let total = self
-            .section_trackers
+    pub fn admits_section_at(
+        &self,
+        pid: u16,
+        section: &[u8],
+        now: std::time::Instant,
+        limits: (usize, usize),
+    ) -> bool {
+        let (old, new) = self.section_storage_change_at(pid, section, now);
+        // 同版反復・矛盾検出など保持を増やさない入力で全表を走査しない。
+        if new.0 <= old.0 && new.1 <= old.1 {
+            return true;
+        }
+        let total = self.section_storage();
+        total.0 - old.0 + new.0 <= limits.0 && total.1 - old.1 + new.1 <= limits.1
+    }
+
+    pub fn section_storage(&self) -> (usize, usize) {
+        self.section_trackers
             .values()
             .map(SectionTracker::storage)
-            .fold((0, 0), |sum, value| (sum.0 + value.0, sum.1 + value.1));
+            .fold((0, 0), |sum, value| (sum.0 + value.0, sum.1 + value.1))
+    }
+
+    fn section_storage_change_at(
+        &self,
+        pid: u16,
+        section: &[u8],
+        now: std::time::Instant,
+    ) -> ((usize, usize), (usize, usize)) {
         let Some(header) = parse_section_header(section) else {
-            return total;
+            return ((0, 0), (0, 0));
         };
         let (Some(extension), Some(version), Some(number), Some(last)) = (
             header.table_id_extension,
@@ -1077,7 +1100,7 @@ impl ServiceDiscoveryCollector {
             header.section_number,
             header.last_section_number,
         ) else {
-            return total;
+            return ((0, 0), (0, 0));
         };
         let scope = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
         let tracker = self
@@ -1085,10 +1108,10 @@ impl ServiceDiscoveryCollector {
             .get(&(pid, header.table_id, extension, scope));
         let old = tracker.map_or((0, 0), SectionTracker::storage);
         let new = tracker.map_or_else(
-            || SectionTracker::default().projected_storage(version, number, last, section),
-            |tracker| tracker.projected_storage(version, number, last, section),
+            || SectionTracker::default().projected_storage_at(version, number, last, section, now),
+            |tracker| tracker.projected_storage_at(version, number, last, section, now),
         );
-        (total.0 - old.0 + new.0, total.1 - old.1 + new.1)
+        (old, new)
     }
 
     pub fn reset_collection(&mut self) {
@@ -1121,11 +1144,14 @@ impl ServiceDiscoveryCollector {
 
 impl ServiceDiscoveryCollector {
     pub fn push_section(&mut self, pid: u16, section: &[u8]) {
+        self.push_section_at(pid, section, std::time::Instant::now());
+    }
+
+    pub fn push_section_at(&mut self, pid: u16, section: &[u8], now: std::time::Instant) {
         if !valid_current_section(section) {
             return;
         }
         // 期限境界を跨いでも版判定・派生fact失効・証拠置換を一致させる。
-        let now = std::time::Instant::now();
         if !self.accepts_section_version(pid, section, now) {
             return;
         }

@@ -17,7 +17,7 @@ SI parser内部のcollection generation / ingest sequence / parser handleは `..
 
 JNIの実行失敗と正常な空値の契約は`../arib_si_engine_rs/DESIGN_JA.md`の「実行失敗と正常な空値の区別」を正とする。TISはJNIの実行失敗を呼出し元へ伝え、SI事実なし・番組キーなし・JSON内容不正へ変換しない。走査・番組更新では当該操作の失敗として扱い、失敗したスナップショットを登録・更新・削除判断へ使用しない。具体的な呼出しと受取補助関数の使用規則は、`CODE_CONVENTION.md`を正とする。
 
-走査の待機時間・安定待ち・最大期限は`SystemClock.elapsedRealtime()`の差で測り、端末の時刻補正に依存させない。SI境界のcollectionは`../arib_si_engine_rs/DESIGN_JA.md`の有限寿命・入力上限に従う。上限時に破棄されたsnapshotから登録完了・EPG完了を導出しない。継続視聴のdecoder資源寿命はSI collectionの再同期とは独立している。
+走査の待機時間・安定待ち・最大期限は`SystemClock.elapsedRealtime()`の差で測り、端末の時刻補正に依存させない。SIの内部保持・表ごとの失効・実保持量の上限は`../arib_si_engine_rs/DESIGN_JA.md`を正とする。反復入力の回数・累積byte数・一律の経過時間でsnapshot全体を破棄しない。保持量を増やす入力が上限により拒否されても、無関係な既存の有効なSI事実と放送時計は保持する。拒否された入力を新たな登録完了・EPG完了・Program削除権限の根拠にせず、矛盾を観測した表の旧完成根拠は失効させる。継続視聴のdecoder資源寿命はSI collectionの再同期とは独立している。
 
 candidateのSI収集期限と、section filter停止後に受信済みfactを確定するfinal snapshot取得期限は別の有限区間とする。収集期限到達後は新しいcollection snapshot attemptを開始しない。section filter停止完了時点からfinalization用の`maxWaitMs`を開始し、同じnon-blocking typed snapshot入口を有限retryする。これにより、収集期限を使い切ってfilterを停止した正常経路を理由にfinal snapshot attemptを0回にしない。finalizationでもdeadline一致・超過後は新規attemptを開始せず、lock busyを空snapshotへ読み替えない。
 
