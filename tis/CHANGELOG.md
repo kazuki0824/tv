@@ -1,3 +1,13 @@
+# 2026-10-23 40系の停止競合・JNI設定漏れの修正前回帰試験（#207）
+
+- `PlaybackMediaSyncReleaseTest`へ、実行中のnative描画と未実行の2件を残したowner内停止、およびnative worker開始前にflushが先行する停止の2試験を追加した。実際の`PlaybackPipeline.stop()`を呼び、停止完了と停止後の描画再投入なしを要求する。
+- 新fixtureは[LineageOS 22.1 MediaSync::flush / onFrameAvailableFromInput](https://github.com/LineageOS/android_frameworks_av/blob/lineage-22.1/media/libstagefright/MediaSync.cpp)の現在の待機だけを解除する振る舞いを模擬する。既存fixtureの一度開くと永久に開いたままのラッチでは検出できなかった後着描画の再待機を検査する。15秒はfixture自身の終了保証用で、製品の5秒待機より先に模擬nativeを成功させないための試験用期限である。製品の期限・資源上限は変更しない。
+- 既存TIS host CIの製品設定検査へ`jni::wrapper::objects..`の書込み元VERBOSE抑止を追加した。40系ZIPのlogcatは同タグ845,112行、別添tuner-fixed-40.logでは0行だったため、表示側のフィルタだけでは抑止成功と判定しない。
+- 40系はtv `1a6beb6`とtools #18のビルドであり、停止直後のCodec `queueBuffer`は38.050584秒、そのうち約38.01秒はsleep。native入力の待機とownerの`awaitRenderSubmissionsBeforeMediaSyncRelease`が重なる。上流の音声192件飽和とは別の停止競合として扱う。
+- 音声は07:59:21.502の入力診断でpending=0、25.719で129、30.798で188、30.971で192件の拒否となった。その間も音声consumeは進行しており、完全停止だけでは説明しない。2 vCPUの約19.778秒区間は約95.82%稼働し、JNI/logcat、HAL、表示処理等が共存する。これらの寄与の一意な分離は未証明で、容量増加や音声経路の推測修正を加えない。
+- 検証：本番KotlinをAndroid 15実SDKでコンパイルし、Robolectric 4.16.1 / SDK 35の`JUnitCore com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest`で13件中既存11件成功、追加2件のみ停止期限超過（index=0 / 1）で失敗した。既存host CIのXML・製品設定検査を抽出実行するとobjectsタグ不足で失敗。追加試験のktlint・detektと`git diff --check`は成功した。
+- 今回は失敗する試験を先にPushする段階であり、本番実装・製品設定は未修正。停止回帰2件とJNI設定検査は失敗を期待する。実機解消、Android製品build、atest/VTSは未検証。修正後の成功確認は後続の実装修正段階で行う。
+
 # 2026-10-23 映像出力所有順の説明とイベント領域の設計用語（#207）
 
 - PlaybackPipelineのnative render完了・失敗処理、待機期限、資源切断前の終了待ち、失敗時owner保持の4コメントと、診断スクリプトのmediatuner所有の説明を日本語へ変更した。処理・期限・所有順は変更しない。
