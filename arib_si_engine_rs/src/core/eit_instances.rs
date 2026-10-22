@@ -41,14 +41,15 @@ pub struct EitInstances {
 }
 
 impl EitInstances {
-    /// 受信が途切れたEIT表だけを退役し、一般SIと時計の寿命に影響させない。
+    /// 受信が途切れた現在p/f actualだけを退役する。周期不明のschedule/other/nextに適用しない。
     pub fn expire_at(&mut self, now: Instant) -> bool {
         let previous = self.instances.len();
-        self.instances.retain(|_, instance| {
-            instance
-                .tracker
-                .last_observed_at
-                .is_some_and(|last| now.saturating_duration_since(last) < TABLE_REACQUISITION_AGE)
+        self.instances.retain(|key, instance| {
+            key.0 != 0x4e
+                || !key.4
+                || instance.tracker.last_observed_at.is_some_and(|last| {
+                    now.saturating_duration_since(last) < TABLE_REACQUISITION_AGE
+                })
         });
         self.instances.len() != previous
     }
@@ -119,16 +120,25 @@ impl EitInstances {
             u16::from_be_bytes([section[3], section[4]]),
             current,
         );
+        // 派生factの失効とsection証拠の置換は同じ受信時刻で判定する。
+        let now = Instant::now();
         let instance = self.instances.entry(key).or_default();
-        if !instance.tracker.accepts_version(version) {
+        if !instance.tracker.accepts_version_at(version, now) {
             return;
         }
-        if instance.tracker.version != Some(version) {
+        if instance.tracker.version != Some(version)
+            || instance
+                .tracker
+                .needs_reacquisition_at(version, number, section, now)
+        {
             instance.sections.clear();
             instance.safe.clear();
             instance.segment_ends.clear();
         }
-        if !instance.tracker.observe(version, number, last, section) {
+        if !instance
+            .tracker
+            .observe_at(version, number, last, section, now)
+        {
             return;
         }
         if header.table_id >= 0x50 {
@@ -240,12 +250,74 @@ mod tests {
         });
         store.ingest(&section(31, true, 0, 0));
         store.expire_at(now);
-        assert_eq!(store.states().len(), 1);
-        assert!(store.states()[0].current_next_indicator);
+        assert_eq!(store.states().len(), 2);
         store.expire_at(now + TABLE_REACQUISITION_AGE + std::time::Duration::from_secs(1));
-        assert!(store.states().is_empty());
+        assert_eq!(store.states().len(), 1);
+        assert!(!store.states()[0].current_next_indicator);
         store.ingest(&section(16, true, 0, 0));
-        assert_eq!(store.states()[0].version, 16);
+        assert_eq!(
+            store
+                .states()
+                .iter()
+                .find(|state| state.current_next_indicator)
+                .unwrap()
+                .version,
+            16
+        );
+    }
+
+    #[test]
+    fn slow_schedule_and_other_pf_survive_silence_and_identical_repeats() {
+        let mut store = EitInstances::default();
+        for table_id in [0x4f, 0x50, 0x60] {
+            let sections: Vec<_> = (0..=1)
+                .map(|number| {
+                    let mut bytes = section(3, true, number, 1);
+                    bytes.truncate(bytes.len() - 4);
+                    bytes[0] = table_id;
+                    bytes[13] = table_id;
+                    bytes.extend_from_slice(&crc32_mpeg(&bytes).to_be_bytes());
+                    bytes
+                })
+                .collect();
+            store.ingest(&sections[0]);
+            store.instances.values_mut().for_each(|instance| {
+                instance.tracker.last_observed_at =
+                    Some(Instant::now() - std::time::Duration::from_secs(360));
+            });
+            assert!(!store.expire_at(Instant::now()));
+            store.ingest(&sections[1]);
+            let expected = store.states();
+            assert!(expected.iter().all(|state| state.complete));
+            store.instances.values_mut().for_each(|instance| {
+                instance.tracker.last_observed_at =
+                    Some(Instant::now() - std::time::Duration::from_secs(360));
+            });
+            assert!(!store.expire_at(Instant::now()));
+            store.ingest(&sections[0]);
+            assert_eq!(store.states(), expected);
+        }
+    }
+
+    #[test]
+    fn same_version_reacquisition_drops_old_derived_section_evidence() {
+        let mut store = EitInstances::default();
+        store.ingest(&section(3, true, 0, 1));
+        store.ingest(&section(3, true, 1, 1));
+        assert!(store.states()[0].complete);
+        store.instances.values_mut().for_each(|instance| {
+            instance.tracker.last_observed_at = Some(Instant::now() - TABLE_REACQUISITION_AGE);
+        });
+        let mut replacement = section(3, true, 0, 1);
+        replacement.truncate(replacement.len() - 4);
+        replacement[13] = 0x4f;
+        replacement.extend_from_slice(&crc32_mpeg(&replacement).to_be_bytes());
+        store.ingest(&replacement);
+        let state = &store.states()[0];
+        assert!(!state.complete);
+        assert_eq!(state.received_sections, vec![0]);
+        assert_eq!(state.safe_sections, vec![0]);
+        assert_eq!(state.missing_sections, vec![1]);
     }
 
     #[test]

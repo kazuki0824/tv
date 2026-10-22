@@ -1124,13 +1124,15 @@ impl ServiceDiscoveryCollector {
         if !valid_current_section(section) {
             return;
         }
-        if !self.accepts_section_version(pid, section) {
+        // 期限境界を跨いでも版判定・派生fact失効・証拠置換を一致させる。
+        let now = std::time::Instant::now();
+        if !self.accepts_section_version(pid, section, now) {
             return;
         }
-        if self.section_version_changed(pid, section) {
+        if self.section_version_changed(pid, section, now) {
             self.invalidate_changed_table(pid, section);
         }
-        if !self.track_section(pid, section) {
+        if !self.track_section(pid, section, now) {
             if let Some(header) = parse_section_header(section) {
                 if let Some(extension) = header.table_id_extension {
                     if header.table_id == 0x02
@@ -1486,7 +1488,7 @@ impl ServiceDiscoveryCollector {
             .invalidate_table(pid, header.table_id, table_extension);
     }
 
-    fn section_version_changed(&self, pid: u16, section: &[u8]) -> bool {
+    fn section_version_changed(&self, pid: u16, section: &[u8], now: std::time::Instant) -> bool {
         let Some(header) = parse_section_header(section) else {
             return false;
         };
@@ -1503,11 +1505,14 @@ impl ServiceDiscoveryCollector {
         self.section_trackers
             .get(&(pid, header.table_id, table_extension, scope_extension))
             .is_some_and(|tracker| {
-                tracker.version != Some(version) || tracker.needs_reacquisition()
+                tracker.version != Some(version)
+                    || header.section_number.is_some_and(|number| {
+                        tracker.needs_reacquisition_at(version, number, section, now)
+                    })
             })
     }
 
-    fn accepts_section_version(&self, pid: u16, section: &[u8]) -> bool {
+    fn accepts_section_version(&self, pid: u16, section: &[u8], now: std::time::Instant) -> bool {
         let Some(header) = parse_section_header(section) else {
             return false;
         };
@@ -1517,10 +1522,10 @@ impl ServiceDiscoveryCollector {
         let scope = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
         self.section_trackers
             .get(&(pid, header.table_id, extension, scope))
-            .map_or(true, |tracker| tracker.accepts_version(version))
+            .map_or(true, |tracker| tracker.accepts_version_at(version, now))
     }
 
-    fn track_section(&mut self, pid: u16, section: &[u8]) -> bool {
+    fn track_section(&mut self, pid: u16, section: &[u8], now: std::time::Instant) -> bool {
         let Some(header) = parse_section_header(section) else {
             return false;
         };
@@ -1536,7 +1541,7 @@ impl ServiceDiscoveryCollector {
         self.section_trackers
             .entry((pid, header.table_id, extension, scope))
             .or_default()
-            .observe(version, number, last, section)
+            .observe_at(version, number, last, section, now)
     }
 
     fn track_transport_scopes(&mut self, section: &[u8]) {
