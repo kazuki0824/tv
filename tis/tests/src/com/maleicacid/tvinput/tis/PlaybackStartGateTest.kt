@@ -126,68 +126,13 @@ class PlaybackStartGateTest {
     @Test
     fun terminalCodecErrorsRetainCleanupAndNotifyOriginalGeneration() {
         val signature = signature(TsPid(0x101), TsPid(0x102))
-        for ((reclaimed, recoverable, attempted) in listOf(
-            Triple(false, false, false),
-            Triple(true, false, false),
-            Triple(false, true, true),
-        )) {
-            for (waiting in listOf(false, true)) {
-                for (isAudio in listOf(false, true)) {
-                    check(PlaybackPipeline.codecRecoveryDelay(reclaimed, recoverable, false, attempted) == null)
-                    val cleanup = ResourceCleanup()
-                    var owned = true
-                    var reject = true
-                    var generation = 7L
-                    var newPlayback = 0
-                    var notifications = 0
-                    var state: PlaybackStartState =
-                        if (waiting) {
-                            PlaybackStartState.WaitingFirstOutput(signature, 7L)
-                        } else {
-                            PlaybackStartState.Started(signature, 7L)
-                        }
-                    val execution =
-                        runCatching {
-                            PlaybackPipeline.completePlaybackFailureAction(7L, onUnavailable = {
-                                check(it.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
-                                check(it.generation == 7L && generation != it.generation)
-                                check(PlaybackStartTransitions.acceptsGeneration(state, it.generation))
-                                state = PlaybackStartTransitions.failCurrentGeneration(state, it.generation)
-                                notifications++
-                            }) {
-                                // 音声縮退のstart内、または映像終端のstop内での解放失敗。
-                                generation++
-                                cleanup.release("filter") { if (reject) error("filter close") else owned = false }
-                                cleanup.requireComplete()
-                                if (isAudio) newPlayback++
-                            }
-                        }
-                    check(execution.isSuccess && newPlayback == 0 && notifications == 1)
-                    check(state == PlaybackStartState.Failed(signature, 7L))
-                    check(owned && cleanup.hasPending)
-                    reject = false
-                    cleanup.retry()
-                    cleanup.requireComplete()
-                    check(!owned && !cleanup.hasPending)
-                }
-            }
-        }
-    }
-
-    // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
-    @Suppress("LongMethod")
-    @Test
-    fun codecRecoveryCleanupFailureNotifiesOriginalSessionAndRetainsResources() {
-        val signature = signature(TsPid(0x101), TsPid(0x102))
         for (waiting in listOf(false, true)) {
-            for (failedResource in listOf("filter", "decoder", "MediaSync")) {
+            for (isAudio in listOf(false, true)) {
                 val cleanup = ResourceCleanup()
-                val owned = linkedSetOf("filter", "decoder", "MediaSync")
-                var rejectRelease = true
+                var owned = true
+                var reject = true
                 var generation = 7L
-                var contextPresent = true
-                var scheduled = 0
-                var restarted = 0
+                var newPlayback = 0
                 var notifications = 0
                 var state: PlaybackStartState =
                     if (waiting) {
@@ -195,89 +140,29 @@ class PlaybackStartGateTest {
                     } else {
                         PlaybackStartState.Started(signature, 7L)
                     }
-                val result =
+                val execution =
                     runCatching {
-                        PlaybackPipeline.recoverCodecGeneration(
-                            originGeneration = 7L,
-                            stop = {
-                                generation++
-                                contextPresent = false
-                                for (resource in owned.toList()) {
-                                    cleanup.release(resource) {
-                                        if (resource == failedResource && rejectRelease) error(resource)
-                                        owned.remove(resource)
-                                    }
-                                }
-                                cleanup.requireComplete()
-                                generation
-                            },
-                            schedule = {
-                                scheduled++
-                                true
-                            },
-                            isCurrent = { it == generation },
-                            restart = { restarted++ },
-                            onUnavailable = {
-                                notifications++
-                                check(it.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
-                                check(it.generation == 7L && it.generation != generation)
-                                check(PlaybackStartTransitions.acceptsGeneration(state, it.generation))
-                                state = PlaybackStartTransitions.failCurrentGeneration(state, it.generation)
-                            },
-                        )
+                        PlaybackPipeline.completePlaybackFailureAction(7L, onUnavailable = {
+                            check(it.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
+                            check(it.generation == 7L && generation != it.generation)
+                            check(PlaybackStartTransitions.acceptsGeneration(state, it.generation))
+                            state = PlaybackStartTransitions.failCurrentGeneration(state, it.generation)
+                            notifications++
+                        }) {
+                            // 音声縮退のstart内、または映像終端のstop内での解放失敗。
+                            generation++
+                            cleanup.release("filter") { if (reject) error("filter close") else owned = false }
+                            cleanup.requireComplete()
+                            if (isAudio) newPlayback++
+                        }
                     }
-                check(result.isSuccess && !contextPresent)
-                check(scheduled == 0 && restarted == 0 && notifications == 1)
+                check(execution.isSuccess && newPlayback == 0 && notifications == 1)
                 check(state == PlaybackStartState.Failed(signature, 7L))
-                check(cleanup.hasPending && owned == setOf(failedResource))
-                rejectRelease = false
+                check(owned && cleanup.hasPending)
+                reject = false
                 cleanup.retry()
                 cleanup.requireComplete()
-                check(owned.isEmpty() && !cleanup.hasPending)
-            }
-        }
-    }
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    @Test
-    fun codecRecoveryReservationAndDeferredFailureUseOriginAndStaleRetryIsRejected() {
-        for (scenario in listOf("reservation failure", "restart failure", "stale", "success")) {
-            var generation = 7L
-            var pending: (() -> Unit)? = null
-            var restarted = 0
-            val failures = mutableListOf<PlaybackPipeline.PlaybackUnavailable>()
-            PlaybackPipeline.recoverCodecGeneration(
-                originGeneration = 7L,
-                stop = { ++generation },
-                schedule = {
-                    pending = it
-                    scenario != "reservation failure"
-                },
-                isCurrent = { it == generation },
-                restart = {
-                    restarted++
-                    generation++
-                    if (scenario == "restart failure") error("restart cleanup")
-                },
-                onUnavailable = { failures += it },
-            )
-            if (scenario == "stale") generation++
-            if (scenario != "reservation failure") check(runCatching { requireNotNull(pending).invoke() }.isSuccess)
-            when (scenario) {
-                "reservation failure", "restart failure" -> {
-                    check(failures.single().generation == 7L)
-                    check(failures.single().reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
-                    check(restarted == if (scenario == "restart failure") 1 else 0)
-                }
-
-                "stale" -> {
-                    check(restarted == 0 && failures.isEmpty())
-                }
-
-                "success" -> {
-                    check(restarted == 1 && failures.isEmpty())
-                }
+                check(!owned && !cleanup.hasPending)
             }
         }
     }
@@ -359,12 +244,15 @@ class PlaybackStartGateTest {
     }
 
     @Test
-    fun retriesOnlyRecoverableStartupAndRenderFailures() {
+    fun retriesOnlyRecoverablePlaybackFailures() {
         val allowed =
             setOf(
                 PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT,
                 PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
                 PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
+                PlaybackPipeline.PlaybackUnavailableReason.RECOVERABLE_CODEC_ERROR,
+                PlaybackPipeline.PlaybackUnavailableReason.COMPRESSED_INPUT_LOSS,
+                PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FALLBACK_REQUIRED,
             )
         PlaybackPipeline.PlaybackUnavailableReason.entries.forEach { reason ->
             check(MaleicacidLiveSession.isRecoverablePlaybackFailure(reason) == (reason in allowed))

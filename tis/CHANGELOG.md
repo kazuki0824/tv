@@ -1,3 +1,18 @@
+# 2026-10-25 再開予約をSessionへ集約（#207）
+
+- PipelineのCodec再試行履歴・再開予約・音声縮退の直接再開を削除。入力欠落、recoverable/transient Codec障害、構成・初回出力期限、映像出力障害は旧世代の停止・解放後に元generation付きで通知する。解放失敗は`PLAYBACK_RECOVERY_FAILED`として通知し、再試行可能な障害に混ぜない。ERROR_RECLAIMED・無効Surfaceはtimer再開対象にしない。
+- Sessionの予約を一件に統一し、実行・取消時に消費する。既存300ms後にtune・署名・失敗世代・Failed・release・Surface・信号を照合し、通常開始入口とControllerから最新SI/CAS/視聴制限/trackを再評価する。SI更新による待機迂回を防ぐ。音声縮退はSessionが音声を無効化して同じ入口から再開する。Pipelineの開始は既存資源判定を共有し、停止済み世代を重複停止しない。出力先・PCM変更の同期再構成は障害後の再試行と区別して維持する。
+- 廃止するPipelineの回数制限・予約helperに依存する通常ホスト試験3件とRobolectric試験1件を削除。残る停止・元世代通知の試験を新契約に合わせ、試験だけの代替製品機構は設けない。CI件数gateはホスト412→409、受付45→44。入力バッチ試験はnative完了との競合を同期し、Surface障害試験は実停止に対応する既存MediaSync shadowを使用する。
+- Robolectric CI指定10クラス87件成功（受付44件・MediaSync解放14件を含む）、failure/error/skipは0。`testDebugUnitTest -Pkotlin.incremental=false`で実行。ローカル増分cache破損後は増分コンパイルを無効化した。前段の二度目の再試行資格の失敗は成功へ転じた。予約の2試験は状態境界・実予約処理の検証であり、onTune/onRelease全経路や実Codecの再開成功を証明しない。
+- 通常ホスト構成で本番・全ホスト試験Kotlinをコンパイルし、`PlaybackStartGateTest`、`PlaybackResourceCleanupTest`、`PlaybackFailureCallbacksTest`をJUnit実行。49件中43件成功、6件はSI JNIライブラリ不在による実行環境エラー。SIを使うscan/tune試験の成功やホストCI全体の成功とは扱わない。Android製品build・atest/VTS・実機での回復・300msの負荷妥当性は未確認。
+
+| 条件 | 対象・処理経路 | 確認コマンド | 出力要約・未分類ヒット | 判定 |
+|---|---|---|---|---|
+| 既知NG: 同じ選局の後の障害で資格を失う | `MaleicacidLiveSession.kt`の予約消費→通常開始入口、`PlaybackFilterAdmissionTest.kt` | Gradle CI指定10クラスの`testDebugUnitTest` | 87件成功。`laterRecoverableFailureInSameTuneCanBecomeEligibleAgain`成功。未分類なし | ホスト範囲OK |
+| 停止・解放失敗の区別と元世代通知 | `PlaybackPipeline.kt`の`failPlayback`→停止→通知、`PlaybackFailureCallbacksTest.kt` | 上記3クラスのJUnitCore | 音声失敗・再構成・解放失敗の試験成功。別のSI依存6件はJNI不在に分類 | 対象経路OK、全体未確認 |
+| 旧履歴・予約・縮退結果fieldの参照残り | 本番、host、tests | `rg -n 'codecRecoveryAttempted|retriedPlaybackSignature|recoverCodecGeneration|codecRecoveryDelay|videoOnly' tis --glob '!**/build/**' --glob '!**/.gradle/**'` | 変更履歴を除く定義・参照0件。全Kotlin型照合成功。未分類なし | OK |
+| 製品の再開・最終描画 | `INTEGRATION.md`の集約後再開確認 | 未実行 | 製品build/実機なし | 未確認 |
+
 # 2026-10-25 再試行方針の仕様確定と修正前の回帰試験（#207）
 
 - 再試行判断・予約をSessionへ集約する設計を確定。Pipelineは障害分類と停止・解放、Controllerは現在選局・CAS照合を担当する。停止完了後300msの既存Session待機値を引き継ぎ、通算一回制限を廃止する。300msの実機負荷妥当性は未実証。持続障害では間隔を置いた再試行が続く。保持予算の数値は変更しない。

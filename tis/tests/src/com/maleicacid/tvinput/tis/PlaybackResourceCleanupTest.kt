@@ -166,18 +166,6 @@ class PlaybackResourceCleanupTest {
         check(failure === generationFailure)
     }
 
-    @Test fun codecRecoveryIsBoundedAndReclaimedAlwaysTerminates() {
-        check(PlaybackPipeline.codecRecoveryDelay(false, true, false, false) == 0L)
-        check(PlaybackPipeline.codecRecoveryDelay(false, false, true, false) == 100L)
-        check(PlaybackPipeline.codecRecoveryDelay(false, false, false, false) == null)
-        for (recoverable in listOf(false, true)) {
-            for (transient in listOf(false, true)) {
-                check(PlaybackPipeline.codecRecoveryDelay(true, recoverable, transient, false) == null)
-                check(PlaybackPipeline.codecRecoveryDelay(false, recoverable, transient, true) == null)
-            }
-        }
-    }
-
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test

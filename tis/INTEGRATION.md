@@ -351,3 +351,9 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 `PLAYBACK_INPUT_LOSS`および再生不能理由ログの`video`/`audio`状態を確認する。`inboundInputCallbacks`は到着済みでownerが未処理のCodec入力callback、`queuedInputs`はCodecへ投入してまだ返却されていない入力、`nativeRenderPending`はnativeへの出力buffer返却呼出しが未完了の数を表す。これらは同じplayback ownerで読んだ資源状態であり、native内部の待機相手や最終表示を証明しない。
 
 `pendingSamples=64`だけで件数上限が不適切とは判断しない。上記採取操作を選局前から実行し、詰まった直後・再選局より前にsnapshotを保存する。`PLAYBACK_VIDEO_SUBMIT/RETURN`、Codec入力返却、MediaSyncの入力・出力、native stackを対応付ける。Compatibility modeでは最終表示callbackがないこと自体を再生失敗にしない。private callbackの不在を理由に必要な通常ログ・native stackまで採取済みと扱わない。
+
+### Sessionへ集約した障害後再開の統合確認
+
+再開仕様は`DESIGN_JA.md`の「再生障害後の再開判断と予約」を正とする。対象stackを含む製品buildで、同じ選局の二回目以降の入力欠落からも再開できること、待機中の停止・再選局・release・Surface無効化・信号喪失・CAS未準備・視聴禁止が旧世代を再開させないことを確認する。音声障害後は映像のみで再開し、自動で音声を再有効化しないことも確認する。
+
+停止完了、Sessionの障害受理、次の開始、世代番号、映像利用可能の根拠を既存ログで照合する。継続的な入力欠落時は300ms待機の実機負荷・再生不能時間を測り、再開したという事実だけで妥当と判定しない。ホスト試験の予約資格・解放順序の成功を、実Codec・最終描画・製品buildの成功へ読み替えない。VMのCPU数と視聴チャンネルは記録し、入力保持上限の変更と同時評価にしない。

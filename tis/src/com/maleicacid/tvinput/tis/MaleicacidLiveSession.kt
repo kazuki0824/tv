@@ -74,8 +74,8 @@ class MaleicacidLiveSession(
     private var streamVolume: Float = 1.0f
     private var playbackState: PlaybackStartState = PlaybackStartState.Idle
 
-    // 受理されたtune内の同一署名に対して、回復可能な起動失敗の再試行は最大1回。
-    private var retriedPlaybackSignature: AvPlaybackSignature? = null
+    // 同時に一件の再開予約だけを保持し、取消・実行後は後の障害を受け付ける。
+    private var playbackRetryTask: Runnable? = null
 
     // セクション更新ごとの重複ログを抑える診断用の最終出力値.判定の正本ではない。
     private var lastPlaybackGateDiagnostic: String? = null
@@ -273,10 +273,11 @@ class MaleicacidLiveSession(
             }.getOrDefault(false)
 
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
+        cancelPlaybackRetry()
         this.surface = surface
         tunerController.setSurface(surface)
         tracePlaybackGate(if (surface == null) "SURFACE_DETACHED" else "SURFACE_ATTACHED")
-        if (surface == null) {
+        if (surface?.isValid != true) {
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
@@ -419,7 +420,7 @@ class MaleicacidLiveSession(
         aribSiEngine.reset()
         sectionIngestController.resetForTune()
         playbackState = PlaybackStartState.Idle
-        retriedPlaybackSignature = null
+        cancelPlaybackRetry()
         currentService = null
         currentRatingProfile = AribRatingMapper.BroadcastProfile.UNRESOLVED
         currentGeneration = 0L
@@ -487,7 +488,7 @@ class MaleicacidLiveSession(
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount", "TooGenericExceptionCaught")
+    @Suppress("CyclomaticComplexMethod", "ComplexCondition", "LongMethod", "MaxLineLength", "ReturnCount", "TooGenericExceptionCaught")
     private fun refreshDynamicSiAndCasFilters() {
         val serviceKey = currentService ?: return
         val previouslyPending = initialLiveSiPending(currentServicePolicy())
@@ -522,6 +523,7 @@ class MaleicacidLiveSession(
             try {
                 tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, currentGeneration, decision.casDecisionReady)
             } catch (failure: Exception) {
+                cancelPlaybackRetry()
                 playbackState = PlaybackStartState.Stopped
                 try {
                     SectionFilterPolicy.completeCleanup(
@@ -545,8 +547,9 @@ class MaleicacidLiveSession(
             // 情報収集中はCAS故障ではない。再生中だけ停止してbufferingへ遷移する。
             if (playbackState is PlaybackStartState.Started ||
                 playbackState is PlaybackStartState.WaitingFirstOutput ||
-                playbackState is PlaybackStartState.Starting
+                playbackState is PlaybackStartState.Starting || playbackRetryTask != null
             ) {
+                cancelPlaybackRetry()
                 playbackState = PlaybackStartState.Stopped
                 // ControllerのCAS更新が既にpipelineを停止しているため、世代を二重に進めない。
                 beginCaptionPresentationGeneration(-1L, false)
@@ -574,8 +577,9 @@ class MaleicacidLiveSession(
             val wasActive =
                 playbackState is PlaybackStartState.Started ||
                     playbackState is PlaybackStartState.WaitingFirstOutput ||
-                    playbackState is PlaybackStartState.Starting
+                    playbackState is PlaybackStartState.Starting || playbackRetryTask != null
             if (wasActive) {
+                cancelPlaybackRetry()
                 playbackState = PlaybackStartState.Stopped
                 tunerController.stopPlayback()
                 beginCaptionPresentationGeneration(-1L, false)
@@ -615,6 +619,7 @@ class MaleicacidLiveSession(
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount")
     private fun maybeStartPlayback(service: AribService): Boolean {
+        if (releaseOnce.get() || frontendSignalUnavailable || playbackRetryTask != null) return false
         val servicePolicy = currentServicePolicy()
         val casLinkageReady = currentCasLinkageReady()
         if (!servicePolicy.livePlaybackEligible(casLinkageReady)) {
@@ -673,6 +678,7 @@ class MaleicacidLiveSession(
                 "UNSUPPORTED_AV_SELECTION videoType=${selection.video?.streamType} " +
                     "audioType=${selection.audio?.streamType} audioOnly=$audioOnly",
             )
+            cancelPlaybackRetry()
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
@@ -706,6 +712,7 @@ class MaleicacidLiveSession(
                 "audioPid=${selection.audio?.elementaryPid} audioType=${selection.audio?.streamType} " +
                 "requiresCas=${servicePolicy.requiresCas}",
         )
+        cancelPlaybackRetry()
         playbackState = PlaybackStartState.Starting(signature)
         val result = tunerController.startPlayback(selection, servicePolicy.requiresCas, currentGeneration)
         val next =
@@ -1149,10 +1156,7 @@ class MaleicacidLiveSession(
         acceptPlaybackGenerationRestart(
             playbackState,
             restart,
-            accept = { next ->
-                if (restart.videoOnly) audioFallbackDisabled = true
-                updatePlaybackStartState(next)
-            },
+            accept = ::updatePlaybackStartState,
             notifyUnavailable = { notifyVideoUnavailable(it) },
         )
     }
@@ -1160,6 +1164,7 @@ class MaleicacidLiveSession(
     private fun handleTunerResourceLost(lostTuneGeneration: Long) {
         if (lostTuneGeneration != currentGeneration) return
         frontendSignalUnavailable = false
+        cancelPlaybackRetry()
         playbackState = PlaybackStartState.Stopped
         beginCaptionPresentationGeneration(-1L, false)
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
@@ -1173,6 +1178,7 @@ class MaleicacidLiveSession(
         when (event) {
             OnTuneEventListener.SIGNAL_NO_SIGNAL, OnTuneEventListener.SIGNAL_LOST_LOCK -> {
                 frontendSignalUnavailable = true
+                cancelPlaybackRetry()
                 playbackState = PlaybackStartState.Stopped
                 tunerController.stopPlayback()
                 beginCaptionPresentationGeneration(-1L, false)
@@ -1204,6 +1210,7 @@ class MaleicacidLiveSession(
                 "reason=${reason.reason} detail=${reason.detail}",
         )
         if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED) {
+            cancelPlaybackRetry()
             playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
             beginCaptionPresentationGeneration(-1L, false)
             notifyVideoUnavailable(mapUnavailableReason(reason))
@@ -1234,14 +1241,20 @@ class MaleicacidLiveSession(
             return
         }
         // ECM失敗でpipelineが停止済みなら、直後の復旧通知が最新readyを観測しても同じ署名を再開できる。
-        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY) {
+        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY ||
+            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_RESOURCES_RECLAIMED ||
+            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.SURFACE_NOT_SET
+        ) {
+            cancelPlaybackRetry()
             playbackState = PlaybackStartState.Stopped
         }
+        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FALLBACK_REQUIRED) {
+            audioFallbackDisabled = true
+        }
         val videoStartupFailed =
-            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
+            isRecoverablePlaybackFailure(reason.reason) ||
                 reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_CODEC_ERROR ||
-                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT ||
-                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED ||
+                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM ||
                 reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_FILTER_NOT_STARTED
         if (videoStartupFailed) {
             val signature = PlaybackStartTransitions.signature(playbackState)
@@ -1257,38 +1270,50 @@ class MaleicacidLiveSession(
         scheduleRecoverablePlaybackRetry(reason)
     }
 
+    private fun cancelPlaybackRetry() {
+        playbackRetryTask?.let(unblockTimerHandler::removeCallbacks)
+        playbackRetryTask = null
+    }
+
     // 同じ再生世代と回復権限の照合を一つの境界で完結する。
-    @Suppress("CyclomaticComplexMethod", "ComplexCondition", "ReturnCount")
+    @Suppress("ComplexCondition", "ReturnCount")
     private fun scheduleRecoverablePlaybackRetry(reason: PlaybackPipeline.PlaybackUnavailable) {
-        val recoverable = isRecoverablePlaybackFailure(reason.reason)
-        if (!recoverable || releaseOnce.get() || frontendSignalUnavailable || surface?.isValid != true) return
+        if (!isRecoverablePlaybackFailure(reason.reason) || releaseOnce.get() ||
+            frontendSignalUnavailable || surface?.isValid != true
+        ) {
+            return
+        }
         val failed = playbackState as? PlaybackStartState.Failed ?: return
-        if (failed.pipelineGeneration != reason.generation || retriedPlaybackSignature == failed.signature) return
+        if (failed.pipelineGeneration != reason.generation || playbackRetryTask != null) return
         val tuneGeneration = currentGeneration
-        retriedPlaybackSignature = failed.signature
-        val failedGeneration = failed.pipelineGeneration
-        // 既存のSession ownerへ戻す。新しい回復workerや再生state machineは設けない。
-        val scheduled =
-            unblockTimerHandler.postDelayed({
-                enqueueSessionAction {
-                    val current = playbackState as? PlaybackStartState.Failed ?: return@enqueueSessionAction
-                    if (releaseOnce.get() || tuneGeneration != currentGeneration ||
-                        current.signature != failed.signature || current.pipelineGeneration != failedGeneration ||
-                        surface?.isValid != true || frontendSignalUnavailable
-                    ) {
-                        return@enqueueSessionAction
+        // 予約を消費してから通常の開始入口へ戻る。過去の復旧回数は開始条件にしない。
+        val task =
+            object : Runnable {
+                override fun run() {
+                    enqueueSessionAction {
+                        if (playbackRetryTask !== this) return@enqueueSessionAction
+                        playbackRetryTask = null
+                        val current = playbackState as? PlaybackStartState.Failed ?: return@enqueueSessionAction
+                        if (releaseOnce.get() || tuneGeneration != currentGeneration ||
+                            current != failed || surface?.isValid != true || frontendSignalUnavailable
+                        ) {
+                            return@enqueueSessionAction
+                        }
+                        playbackState = PlaybackStartState.Idle
+                        latestService?.let(::maybeStartPlayback)
                     }
-                    playbackState = PlaybackStartState.Idle
-                    latestService?.let(::maybeStartPlayback)
                 }
-            }, RECOVERABLE_PLAYBACK_RETRY_DELAY_MS)
-        if (!scheduled) {
+            }
+        playbackRetryTask = task
+        if (!unblockTimerHandler.postDelayed(task, RECOVERABLE_PLAYBACK_RETRY_DELAY_MS)) {
+            playbackRetryTask = null
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "再生再試行timerの投入に失敗しました")
         }
     }
 
     private fun stopPlaybackForBlockedContent(blocked: BlockedContent) {
         notifyContentBlocked(blocked.rating)
+        cancelPlaybackRetry()
         playbackState = PlaybackStartState.Stopped
         tunerController.stopPlayback()
         beginCaptionPresentationGeneration(-1L, false)
@@ -1679,6 +1704,7 @@ class MaleicacidLiveSession(
         synchronized(tuneRequestLock) { pendingTuneUri = null }
         captionEnabled = false
         selectedSubtitleTrackId = null
+        cancelPlaybackRetry()
         playbackState = PlaybackStartState.Stopped
         val pending = releaseCleanup
         val cleanup = pending ?: ResourceCleanup().also { releaseCleanup = it }
@@ -1701,7 +1727,10 @@ class MaleicacidLiveSession(
         internal fun isRecoverablePlaybackFailure(reason: PlaybackPipeline.PlaybackUnavailableReason): Boolean =
             reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT ||
                 reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
-                reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED
+                reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED ||
+                reason == PlaybackPipeline.PlaybackUnavailableReason.RECOVERABLE_CODEC_ERROR ||
+                reason == PlaybackPipeline.PlaybackUnavailableReason.COMPRESSED_INPUT_LOSS ||
+                reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FALLBACK_REQUIRED
 
         internal fun casGateUnavailableReason(
             decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision,
@@ -1733,17 +1762,7 @@ class MaleicacidLiveSession(
             notifyUnavailable: (Int) -> Unit,
         ) {
             if (!PlaybackStartTransitions.acceptsGeneration(current, restart.originGeneration)) return
-            val previousSignature = PlaybackStartTransitions.signature(current) ?: return
-            val signature =
-                if (restart.videoOnly) {
-                    previousSignature.copy(
-                        audioPid = null,
-                        audioStreamType = null,
-                        audioConfiguration = null,
-                    )
-                } else {
-                    previousSignature
-                }
+            val signature = PlaybackStartTransitions.signature(current) ?: return
             val result = restart.result
             val next =
                 PlaybackStartTransitions.afterRestartResult(
