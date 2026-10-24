@@ -1,3 +1,11 @@
+# 2026-10-24 42系の映像native入力待機を固定する修正前回帰試験（#207）
+
+- `PlaybackFilterAdmissionTest`のCodec native入力shadowへ待機を注入し、本番Filter→decoder→`QueueRequest.queue()`の入力経路を通す。映像native入力が戻らない間にも制御処理と消費済み音声のCodec返却が進むことを別々に要求する2試験を追加した。音声はMediaSync callbackからownerへの引渡し境界を起点とし、native MediaSync自体や実機の表示待機は再現しない。
+- 同じ音声所有fixtureで映像native入力が待たない場合の返却成功を対照試験として追加した。待機の到達と解除はラッチで同期し、失敗時も解除してownerを回収する。15秒はfixture終了保証用であり、製品の待機期限・容量・所有規則は変更しない。Robolectric CIの試験数gateを35件から38件へ更新した。
+- 根拠はa8d6778の42系MXワンセグ1で、停止前snapshotのplayback ownerが`native_queueLinearBlock`内で待ち、PerfettoのCodec入力待機が約3.191秒、音声consumeのowner待機が約2.936秒だったこと。映像出力workerだけの分離では入力native呼出しによる共通ownerの停止を防げない。容量拒否全体の唯一の原因や永久deadlockと断定しない。
+- 検証：Gradle 8.9 / Robolectric 4.16.1 / SDK 35で本番・試験Kotlinをコンパイルし、38件中既存35件と対照1件が成功、新規待機回帰2件だけが制御処理・音声出力返却のassertionで失敗した。試験準備時のCodec一覧キャッシュは新fixture内で破棄して音声Codecを登録する。ktlint 1.8.0、detekt 1.23.8、`git diff --check`は成功。CIも修正前回帰2件の失敗を期待する段階である。
+- 今回は修正前回帰を先に追加する段階で、本番実装の修正、Android製品build、atest/VTS、実機での改善確認は行わない。
+
 # 2026-10-23 停止時の後着映像投入とJNI内部TRACE抑止（#207）
 
 - `VideoDecoderPipeline.stopRenderSubmissions`でatomic停止フラグを立て、予約済みの未実行出力は既存workerで非描画返却する。実行中出力をflushで起こして全完了を待ってからMediaSyncをpause/flush・切断・releaseする。フラグ検査を通過済みの呼出しとの競合でも、完了前にpauseしない。既存の停止期限・失敗時の参照保持・再試行・PCM/Codec解放順は維持し、新workerやqueue、容量上限は追加しない。

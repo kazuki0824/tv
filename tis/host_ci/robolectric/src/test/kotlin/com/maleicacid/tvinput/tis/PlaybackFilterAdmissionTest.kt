@@ -1193,6 +1193,109 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    @Test
+    fun videoNativeInputWaitDoesNotBlockPlaybackControl() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            fixture.withVideoInputWaiting(codec) {
+                val completed = CountDownLatch(1)
+                fixture.executor.executeControl { completed.countDown() }
+                assertTrue(completed.await(2, TimeUnit.SECONDS), "映像native入力の待機中も制御処理が進むこと")
+            }
+        }
+    }
+
+    @Test
+    fun videoNativeInputWaitDoesNotDelayConsumedAudioOutput() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val videoCodec = fixture.attachCodec()
+            val audioCodec = fixture.prepareConsumedAudioOutput()
+            fixture.withVideoInputWaiting(videoCodec) {
+                fixture.postAudioConsumed()
+                assertTrue(
+                    Shadow.extract<NativeCodec>(audioCodec).outputReleased.await(2, TimeUnit.SECONDS),
+                    "映像native入力の待機中も消費済み音声出力をCodecへ返すこと",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun consumedAudioOutputReturnsWithoutVideoNativeInputWait() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val videoCodec = fixture.attachCodec()
+            val audioCodec = fixture.prepareConsumedAudioOutput()
+            deliver(fixture.avFilter(false), mappedMediaEvent())
+            postCodecCallback(videoCodec, 1, 0, null)
+            assertTrue(Shadow.extract<NativeCodec>(videoCodec).inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.postAudioConsumed()
+            assertTrue(Shadow.extract<NativeCodec>(audioCodec).outputReleased.await(2, TimeUnit.SECONDS))
+            fixture.drain()
+            assertTrue(ReflectionHelpers.getField<Map<Int, Any>>(fixture.pipeline, "outstandingAudioOutputs").isEmpty())
+        }
+    }
+
+    private fun Fixture.withVideoInputWaiting(
+        codec: MediaCodec,
+        action: () -> Unit,
+    ) {
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        Shadow.extract<NativeCodec>(codec).onInputQueue = {
+            entered.countDown()
+            // 製品の期限ではなく、異常時にも模擬nativeを終了させるfixtureの上限。
+            check(resume.await(15, TimeUnit.SECONDS)) { "模擬native入力の解除が行われなかった" }
+        }
+        try {
+            deliver(avFilter(false), mappedMediaEvent())
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(entered.await(5, TimeUnit.SECONDS), "本番の入力経路がnative境界へ到達すること")
+            action()
+        } finally {
+            resume.countDown()
+            drain()
+        }
+    }
+
+    private fun Fixture.prepareConsumedAudioOutput(): MediaCodec {
+        decoder(audio = true)
+        // 映像Codec作成時の一覧キャッシュを破棄してから音声Codecを登録する。
+        ShadowMediaCodecList.reset()
+        val codec = attachCodec(audio = true)
+        armCompatibilityAvailability(7L)
+        // MediaSyncが保持しているPCMの所有だけを準備し、返却処理は本番経路を通す。
+        val output =
+            Class
+                .forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$AudioOutput")
+                .declaredConstructors
+                .single()
+                .apply { isAccessible = true }
+                .newInstance(
+                    codec,
+                    0,
+                    ReflectionHelpers.callConstructor(MediaCodec.OutputFrame::class.java),
+                    ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java),
+                    ByteBuffer.allocate(4),
+                    4,
+                    0L,
+                )
+        executor.callControl(5_000L) {
+            ReflectionHelpers.getField<MutableMap<Int, Any>>(pipeline, "outstandingAudioOutputs")[32] = output
+        }
+        return codec
+    }
+
+    private fun Fixture.postAudioConsumed() {
+        // MediaSync callbackのowner引渡し境界から検査する。native callback発火自体は模擬しない。
+        invoke("enqueuePlaybackAction", {
+            invoke("onAudioBufferConsumedOnPlaybackExecutor", requireNotNull(availabilitySync), 7L, 32)
+            Unit
+        })
+    }
+
     private fun availabilityLogMessages(): List<String> =
         ShadowLog
             .getLogsForTag(LogTags.TIS)
@@ -1847,6 +1950,7 @@ class PlaybackFilterAdmissionTest {
     class NativeCodec : ShadowMediaCodec() {
         val inputQueued = CountDownLatch(1)
         val outputReleased = CountDownLatch(1)
+        var onInputQueue: () -> Unit = {}
         var onOutputRelease: () -> Unit = {}
 
         @Implementation
@@ -1864,6 +1968,7 @@ class PlaybackFilterAdmissionTest {
         ) {
             assertEquals(1, bufferInfos.size)
             inputQueued.countDown()
+            onInputQueue()
         }
 
         @Implementation
