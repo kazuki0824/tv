@@ -1238,6 +1238,175 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    @Test
+    fun earlyInputIndexReturnDoesNotReleaseSampleInsideNativeQueue() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            val sample = mappedMediaEvent()
+            val native = Shadow.extract<NativeMediaEvent>(sample)
+            val entered = CountDownLatch(1)
+            val resume = CountDownLatch(1)
+            val released = CountDownLatch(1)
+            native.onRelease = { released.countDown() }
+            Shadow.extract<NativeCodec>(codec).onInputQueue = {
+                postCodecCallback(codec, 1, 0, null)
+                entered.countDown()
+                check(resume.await(15, TimeUnit.SECONDS))
+            }
+            try {
+                deliver(fixture.avFilter(false), sample)
+                postCodecCallback(codec, 1, 0, null)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                val callbackDelivered = CountDownLatch(1)
+                ReflectionHelpers
+                    .getField<android.os.Handler>(fixture.pipeline, "codecCallbackHandler")
+                    .post { callbackDelivered.countDown() }
+                assertTrue(callbackDelivered.await(5, TimeUnit.SECONDS))
+                fixture.executor.callControl(5_000L) { assertEquals(0, native.releases) }
+                resume.countDown()
+                assertTrue(released.await(5, TimeUnit.SECONDS))
+                fixture.drain()
+                assertEquals(1, native.releases)
+            } finally {
+                resume.countDown()
+            }
+        }
+    }
+
+    @Test
+    fun failedNativeVideoInputReleasesSampleAndReportsDecoderFailure() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            val sample = mappedMediaEvent()
+            val released = CountDownLatch(1)
+            Shadow.extract<NativeMediaEvent>(sample).onRelease = { released.countDown() }
+            Shadow.extract<NativeCodec>(codec).onInputQueue = {
+                postCodecCallback(codec, 1, 0, null)
+                error("模擬native入力失敗")
+            }
+            deliver(fixture.avFilter(false), sample)
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(released.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(sample).releases)
+            assertEquals(listOf(PlaybackPipeline.PlaybackUnavailableReason.VIDEO_CODEC_ERROR), fixture.failures.map { it.first })
+        }
+    }
+
+    @Test
+    @Config(shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class])
+    fun stopFlushesSyncAndWaitsForNativeInputBeforeReleasingSample() {
+        checkVideoInputStop(nativeStarted = true)
+    }
+
+    @Test
+    @Config(shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class])
+    fun stopCancelsVideoInputStillWaitingForWorker() {
+        checkVideoInputStop(nativeStarted = false)
+    }
+
+    private fun checkVideoInputStop(nativeStarted: Boolean) {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            val sync = MediaSync()
+            val nativeSync = Shadow.extract<PlaybackMediaSyncReleaseTest.NativeMediaSync>(sync)
+            ReflectionHelpers.setField(fixture.pipeline, "mediaSync", sync)
+            nativeSync.playing = true
+            val sample = mappedMediaEvent()
+            val nativeEvent = Shadow.extract<NativeMediaEvent>(sample)
+            val entered = CountDownLatch(1)
+            val resume = nativeSync.workerGate
+            Shadow.extract<NativeCodec>(codec).onInputQueue = {
+                entered.countDown()
+                check(resume.await(15, TimeUnit.SECONDS))
+                assertEquals(0, nativeEvent.releases)
+                assertFalse("release" in nativeSync.events)
+                assertTrue(nativeSync.playing)
+            }
+            try {
+                if (!nativeStarted) {
+                    ReflectionHelpers.getField<android.os.Handler>(fixture.pipeline, "videoRenderHandler").post {
+                        entered.countDown()
+                        check(resume.await(15, TimeUnit.SECONDS))
+                    }
+                    assertTrue(entered.await(5, TimeUnit.SECONDS))
+                }
+                deliver(fixture.avFilter(false), sample)
+                postCodecCallback(codec, 1, 0, null)
+                val callbackDelivered = CountDownLatch(1)
+                ReflectionHelpers
+                    .getField<android.os.Handler>(fixture.pipeline, "codecCallbackHandler")
+                    .post { callbackDelivered.countDown() }
+                assertTrue(callbackDelivered.await(5, TimeUnit.SECONDS))
+                val inputDelivered = CountDownLatch(1)
+                fixture.executor.executeData { inputDelivered.countDown() }
+                assertTrue(inputDelivered.await(5, TimeUnit.SECONDS))
+                fixture.executor.callControl(5_000L) {
+                    val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
+                    assertTrue(ReflectionHelpers.getField<Any?>(decoder, "inputSubmission") != null)
+                }
+                if (nativeStarted) assertTrue(entered.await(5, TimeUnit.SECONDS))
+                fixture.executor.callControl(10_000L) { fixture.pipeline.stop() }
+                assertEquals(1, nativeEvent.releases)
+                assertTrue("release" in nativeSync.events)
+                assertEquals(if (nativeStarted) 0L else 1L, Shadow.extract<NativeCodec>(codec).inputQueued.count)
+            } finally {
+                resume.countDown()
+            }
+        }
+    }
+
+    @Test
+    @Config(shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class])
+    fun lateInputCallbackAfterStopTimeoutKeepsSampleUntilStopRetry() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            val sync = MediaSync()
+            val nativeSync = Shadow.extract<PlaybackMediaSyncReleaseTest.NativeMediaSync>(sync)
+            ReflectionHelpers.setField(fixture.pipeline, "mediaSync", sync)
+            val sample = mappedMediaEvent()
+            val nativeEvent = Shadow.extract<NativeMediaEvent>(sample)
+            val entered = CountDownLatch(1)
+            val resume = CountDownLatch(1)
+            Shadow.extract<NativeCodec>(codec).onInputQueue = {
+                entered.countDown()
+                check(resume.await(15, TimeUnit.SECONDS))
+                postCodecCallback(codec, 1, 0, null)
+            }
+            try {
+                deliver(fixture.avFilter(false), sample)
+                postCodecCallback(codec, 1, 0, null)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                fixture.executor.callControl(10_000L) {
+                    kotlin.test.assertFailsWith<IllegalStateException> { fixture.pipeline.stop() }
+                }
+                assertEquals(0, nativeEvent.releases)
+                assertFalse("release" in nativeSync.events)
+                resume.countDown()
+                for (handler in listOf("videoRenderHandler", "codecCallbackHandler")) {
+                    val completed = CountDownLatch(1)
+                    ReflectionHelpers
+                        .getField<android.os.Handler>(fixture.pipeline, handler)
+                        .post { completed.countDown() }
+                    assertTrue(completed.await(5, TimeUnit.SECONDS))
+                }
+                fixture.executor.callControl(5_000L) {
+                    assertFalse(ReflectionHelpers.getField<Boolean>(fixture.pipeline, "videoInputQueued"))
+                    assertEquals(0, nativeEvent.releases)
+                    fixture.pipeline.stop()
+                }
+                assertEquals(1, nativeEvent.releases)
+                assertTrue("release" in nativeSync.events)
+            } finally {
+                resume.countDown()
+            }
+        }
+    }
+
     private fun Fixture.withVideoInputWaiting(
         codec: MediaCodec,
         action: () -> Unit,
@@ -1682,11 +1851,25 @@ class PlaybackFilterAdmissionTest {
         }
 
         fun drain() {
-            val done = CountDownLatch(1)
-            executor.executeData { done.countDown() }
-            assertTrue(done.await(5, TimeUnit.SECONDS))
-            // owner taskのfinallyでpermitを返す時点まで確認する。
-            executor.callControl(5_000L) { Unit }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            do {
+                val done = CountDownLatch(1)
+                executor.executeData { done.countDown() }
+                assertTrue(done.await(5, TimeUnit.SECONDS))
+                // ownerだけでなく、既に配送したnative入力とその完了処理まで進める。
+                val inputPending =
+                    executor.callControl(5_000L) {
+                        val decoder = ReflectionHelpers.getField<Any?>(pipeline, "videoDecoder")
+                        decoder != null && ReflectionHelpers.getField<Any?>(decoder, "inputSubmission") != null
+                    }
+                if (!inputPending) return
+                val nativeDone = CountDownLatch(1)
+                ReflectionHelpers
+                    .getField<android.os.Handler>(pipeline, "videoRenderHandler")
+                    .post { nativeDone.countDown() }
+                assertTrue(nativeDone.await(5, TimeUnit.SECONDS))
+                assertTrue(System.nanoTime() < deadline, "配送済みnative入力の完了処理が進むこと")
+            } while (true)
         }
 
         // 本番にtest入口を追加せず、同じfixtureから既存private操作を呼び出す。

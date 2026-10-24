@@ -54,7 +54,7 @@ class PlaybackPipeline(
     private val codecCallbackThread = HandlerThread("maleicacid-codec-$inputId").apply { start() }
     private val codecCallbackHandler = Handler(codecCallbackThread.looper)
 
-    // native render待機をplayback ownerとCodec callback配送の双方から切り離す。
+    // 映像のnative入力・出力待機をplayback ownerとCodec callback配送の双方から切り離す。
     private val videoRenderThread = HandlerThread("maleicacid-video-render-$inputId").apply { start() }
     private val videoRenderHandler = Handler(videoRenderThread.looper)
 
@@ -117,6 +117,17 @@ class PlaybackPipeline(
         val codec: MediaCodec,
         val index: Int,
         val completed: java.util.concurrent.CompletableFuture<RuntimeException?>,
+    )
+
+    private data class InputSubmission(
+        val codec: MediaCodec,
+        val index: Int,
+        val sample: MediaSample,
+        val completed: java.util.concurrent.CompletableFuture<RuntimeException?> =
+            java.util.concurrent.CompletableFuture(),
+        // workerが完了通知前に設定し、ownerはFuture完了後にだけ読む。
+        var queued: Boolean = false,
+        var queueDurationNs: Long = 0L,
     )
 
     private enum class VideoAvailabilityMode {
@@ -1721,6 +1732,8 @@ class PlaybackPipeline(
 
         // FrameworkのC2Buffer複製は元MediaEventの寿命を継承しない。入力返却まで同じdecoderが保持する。
         private val queuedSamples = mutableMapOf<Int, MediaSample>()
+        private var inputSubmission: InputSubmission? = null
+        private val inputStopping = AtomicBoolean(false)
         protected abstract val budget: PlaybackBudget
         protected abstract val configurationProbeKind: CodecHeaderProbe.Kind
         protected abstract val generation: Long
@@ -1731,7 +1744,8 @@ class PlaybackPipeline(
 
         open fun flowSummary(): String =
             "pendingSamples=${pendingSamples.size} availableInputs=${availableInputIndexes.size} " +
-                "inboundInputCallbacks=${inboundCodecInputIndexes.size} queuedInputs=${queuedSamples.size}"
+                "inboundInputCallbacks=${inboundCodecInputIndexes.size} queuedInputs=${queuedSamples.size} " +
+                "nativeInputPending=${hasPendingInputSubmission()}"
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
@@ -1775,8 +1789,7 @@ class PlaybackPipeline(
         @Suppress("TooGenericExceptionCaught", "ReturnCount")
         fun queue(sample: MediaSample) {
             try {
-                // 進行中のFilter callbackの途中で届いたCodec入力indexも回収する。
-                drainIncomingCodecInputIndexes()
+                if (!prepareInputAdmission(sample)) return
                 if (sample.size > budget.singleEventLimitBytes) {
                     oversizedSamplesDropped++
                     releaseMediaSample(sample)
@@ -1829,6 +1842,22 @@ class PlaybackPipeline(
             }
         }
 
+        // 先行入力の完了処理が失敗した場合も、まだ受理していないsampleを返却する。
+        @Suppress("TooGenericExceptionCaught")
+        private fun prepareInputAdmission(sample: MediaSample): Boolean {
+            try {
+                drainIncomingCodecInputIndexes()
+            } catch (error: RuntimeException) {
+                releaseMediaSample(sample)
+                throw error
+            }
+            if (inputStopping.get() || generation != playbackGeneration) {
+                releaseMediaSample(sample)
+                return false
+            }
+            return true
+        }
+
         private fun pendingInputDiagnostic(
             sample: MediaSample,
             queueBudget: QueueBudget,
@@ -1843,7 +1872,10 @@ class PlaybackPipeline(
 
         // 単一ownerのみがCodecの入力所有を変更する。callback threadはindexを引き渡すだけ。
         private fun drainIncomingCodecInputIndexes() {
-            while (true) {
+            if (inputStopping.get() || generation != playbackGeneration) return
+            consumeInputSubmission(stopping = false)
+            // native呼出し完了前にindexが返っても、借用中のMediaEventを解放しない。
+            while (inputSubmission == null && !inputStopping.get()) {
                 val (callbackCodec, index) = inboundCodecInputIndexes.poll() ?: return
                 if (generation != playbackGeneration || codec !== callbackCodec) continue
                 val isAudio = this is AudioDecoderPipeline
@@ -1873,8 +1905,10 @@ class PlaybackPipeline(
             sample: MediaSample,
             queueBudget: QueueBudget,
         ): Boolean {
-            if (pendingSamples.size + 1 > queueBudget.maxSamples) return false
-            if (pendingSamples.sumOf { it.size.toLong() } + sample.size > queueBudget.maxBytes) return false
+            val submitting = inputSubmission?.sample
+            if (pendingSamples.size + (if (submitting == null) 0 else 1) + 1 > queueBudget.maxSamples) return false
+            val heldBytes = pendingSamples.sumOf { it.size.toLong() } + (submitting?.size ?: 0)
+            if (heldBytes + sample.size > queueBudget.maxBytes) return false
             // PTSはメディア時刻であり、保持メモリや入力滞留の実時間を示さない。
             // PTSの離隔だけで拒否すると少数の有効サンプルでも圧縮入力欠落を人工的に作る。
             return true
@@ -1916,7 +1950,7 @@ class PlaybackPipeline(
                             index: Int,
                         ) {
                             inboundCodecInputIndexes.offer(codec to index)
-                            enqueuePlaybackAction { drainIncomingCodecInputIndexes() }
+                            enqueuePlaybackAction { finishCodecInput() }
                         }
 
                         override fun onOutputBufferAvailable(
@@ -2011,43 +2045,121 @@ class PlaybackPipeline(
             }
         }
 
-        // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-        @Suppress("TooGenericExceptionCaught", "MagicNumber", "MaxLineLength")
         private fun drainPendingInput() {
-            val decoder = codec ?: return
+            val decoder = codec
+            if (decoder == null || inputStopping.get() || inputSubmission != null) return
             while (pendingSamples.isNotEmpty() && availableInputIndexes.isNotEmpty()) {
                 val inputIndex = availableInputIndexes.removeFirst()
                 val sample = pendingSamples.removeFirst()
-                var queued = false
+                val submission = InputSubmission(decoder, inputIndex, sample)
+                inputSubmission = submission
+                if (this is VideoDecoderPipeline) {
+                    if (!videoRenderHandler.post {
+                            queueNativeInput(submission)
+                            enqueuePlaybackAction {
+                                if (generation == playbackGeneration && codec === decoder) finishCodecInput()
+                            }
+                        }
+                    ) {
+                        submission.completed.complete(IllegalStateException("native映像入力workerへ配送できません"))
+                        consumeInputSubmission(stopping = false)
+                    }
+                    return
+                }
+                queueNativeInput(submission)
+                consumeInputSubmission(stopping = false)
+            }
+        }
+
+        // Future完了まではworkerだけがsubmissionの結果を書き、decoder状態はownerに残す。
+        @Suppress("TooGenericExceptionCaught")
+        private fun queueNativeInput(submission: InputSubmission) {
+            val failure =
                 try {
-                    val recordQueueLatency =
-                        Log.isLoggable(LogTags.TIS, Log.DEBUG) &&
-                            (dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio) + 1L) % 32L == 0L
-                    val startedAtNs = if (recordQueueLatency) System.nanoTime() else 0L
-                    decoder
-                        .getQueueRequest(inputIndex)
-                        .setLinearBlock(sample.block, sample.offset, sample.size)
-                        .setPresentationTimeUs(sample.presentationTimeUs)
-                        .queue()
-                    queuedSamples[inputIndex] = sample
-                    queued = true
+                    if (!inputStopping.get()) {
+                        val startedAtNs = System.nanoTime()
+                        val sample = submission.sample
+                        submission.codec
+                            .getQueueRequest(submission.index)
+                            .setLinearBlock(sample.block, sample.offset, sample.size)
+                            .setPresentationTimeUs(sample.presentationTimeUs)
+                            .queue()
+                        submission.queueDurationNs = System.nanoTime() - startedAtNs
+                        submission.queued = true
+                    }
+                    null
+                } catch (error: RuntimeException) {
+                    error
+                }
+            submission.completed.complete(failure)
+        }
+
+        @Suppress("TooGenericExceptionCaught")
+        private fun finishCodecInput() {
+            if (inputStopping.get() || generation != playbackGeneration) return
+            try {
+                drainIncomingCodecInputIndexes()
+                drainPendingInput()
+            } catch (error: RuntimeException) {
+                onDecoderFailure(error)
+                close()
+            }
+        }
+
+        @Suppress("MagicNumber", "MaxLineLength")
+        private fun consumeInputSubmission(stopping: Boolean) {
+            val submission = inputSubmission ?: return
+            if (!submission.completed.isDone) return
+            val failure = submission.completed.getNow(null)
+            inputSubmission = null
+            val sample = submission.sample
+            if (submission.queued) {
+                queuedSamples[submission.index] = sample
+                if (!stopping) {
                     backpressureStartedAtMs = null
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
-                    if (recordQueueLatency) {
+                    if (Log.isLoggable(LogTags.TIS, Log.DEBUG) &&
+                        dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio) % 32L == 0L
+                    ) {
                         Log.d(
                             LogTags.TIS,
                             "PLAYBACK_CODEC_INPUT_QUEUE sessionId=$sessionId generation=$generation isAudio=${sample.isAudio} " +
-                                "index=$inputIndex bytes=${sample.size} ptsUs=${sample.presentationTimeUs} " +
-                                "queueUs=${(System.nanoTime() - startedAtNs) / 1_000L} " +
+                                "index=${submission.index} bytes=${sample.size} ptsUs=${sample.presentationTimeUs} " +
+                                "queueUs=${submission.queueDurationNs / 1_000L} " +
                                 "pending=${pendingSamples.size} queued=${queuedSamples.size}",
                         )
                     }
                     onCompressedInputQueued(sample)
-                } finally {
-                    // 成功時は入力index返却またはdecoder解放まで保持し、失敗時だけ即時返却する。
-                    if (!queued) releaseMediaSample(sample)
                 }
+            } else {
+                releaseMediaSample(sample)
             }
+            if (failure != null) {
+                if (!stopping) throw failure
+                Log.w(LogTags.TIS, "停止中のCodec入力に失敗しました index=${submission.index}", failure)
+            }
+        }
+
+        protected fun stopInputSubmissions() {
+            inputStopping.set(true)
+        }
+
+        protected fun hasPendingInputSubmission(): Boolean = inputSubmission?.completed?.isDone == false
+
+        @Suppress("ThrowsCount")
+        protected fun awaitInputSubmissionBeforeMediaSyncRelease() {
+            val submission = inputSubmission ?: return
+            try {
+                submission.completed.get(PLAYBACK_CONTROL_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (error: java.util.concurrent.TimeoutException) {
+                throw IllegalStateException("native映像入力が停止期限までに完了しません index=${submission.index}", error)
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw IllegalStateException("native映像入力の回収待機が中断されました", error)
+            } catch (error: java.util.concurrent.ExecutionException) {
+                throw IllegalStateException("native映像入力の回収に失敗しました", error)
+            }
+            consumeInputSubmission(stopping = true)
         }
 
         protected abstract fun codecMime(): String
@@ -2157,12 +2269,14 @@ class PlaybackPipeline(
         private val renderStopping = AtomicBoolean(false)
 
         fun stopRenderSubmissions(sync: MediaSync?) {
+            stopInputSubmissions()
             renderStopping.set(true)
             // 実行中の呼出しだけを起こす。完了まで再生を維持し、検査直後のnative進入もpauseへ競合させない。
-            if (sync != null && renderSubmissions.any { !it.completed.isDone }) {
+            if (sync != null && (hasPendingInputSubmission() || renderSubmissions.any { !it.completed.isDone })) {
                 resourceCleanup.releaseOwned("MediaSync flush", sync) { sync.flush() }
             }
             awaitRenderSubmissionsBeforeMediaSyncRelease()
+            awaitInputSubmissionBeforeMediaSyncRelease()
         }
 
         override fun flowSummary(): String =
@@ -2216,6 +2330,7 @@ class PlaybackPipeline(
         }
 
         override fun close() {
+            stopRenderSubmissions(mediaSync)
             // 未描画の出力bufferも既存Codecのstop/releaseで回収する。
             pendingOutputs.clear()
             super.close()
