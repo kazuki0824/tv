@@ -1,3 +1,12 @@
+# 2026-10-24 映像native入力を既存映像workerへ分離（#207）
+
+- `DecoderPipeline`の映像`QueueRequest.queue()`を既存の映像出力Handlerへ配送し、音声返却・制御を担う共通playback ownerをnative入力待機から解放する。追加worker、payloadコピー、別入力queue、容量増加はない。投入中は1呼出しとし、未投入の残りは既存pendingSamplesで保持する。投入中sampleも既存の件数・byte予算へ含める。
+- native呼出し結果をFutureでownerへ渡し、入力進捗・再生開始・例外通知・MediaEvent解放をownerに保持する。早着入力index callbackはnative完了後に処理し、成功した入力はindex返却またはCodec解放まで保持する。配送拒否・native失敗・停止による未実行入力の取消しは一度だけ返却する。先行入力の失敗を次sample受理前に取り込む場合も、その未受理sampleを返却する。
+- 停止時は新しい入力投入を止め、MediaSync flush後にnative入力・出力の完了を待ち、その後でpause・解放する。停止期限超過時は入力・Codec・MediaSyncを保持し、停止再試行へ残す。停止後の古いCodec callbackと完了通知は再生を進めない。設計書の入力owner・実行worker・停止順序を更新した。
+- 工程2の回帰2件に加え、早着index返却、native入力失敗、入力待機中の停止、worker実行前の入力取消し、停止期限超過後の後着callbackと停止再試行の5件を追加した。Robolectric CIの受付試験数gateを38件から43件へ更新する。既存fixtureのdrainは配送済みnative入力の完了も待ち、継続再生試験が未投入indexを再返却しないよう同期する。
+- 検証：Gradle 8.9 / Robolectric 4.16.1 / SDK 35でCI指定10クラス86件が成功（入力43件、停止14件を含む）。工程2の失敗2件は成功へ転じた。停止期限超過後の後着callback試験も、世代・停止状態の検査追加前の失敗と追加後の成功を確認した。変更Kotlinのktlint 1.8.0、detekt 1.23.8、`git diff --check`は成功。
+- Android製品build、atest/VTS、実機MXワンセグ1での改善は未検証。実機の全容量拒否・黒画面を解消済みとは扱わない。製品統合文書へ入力停滞の再評価条件を追記した。
+
 # 2026-10-24 42系の映像native入力待機を固定する修正前回帰試験（#207）
 
 - `PlaybackFilterAdmissionTest`のCodec native入力shadowへ待機を注入し、本番Filter→decoder→`QueueRequest.queue()`の入力経路を通す。映像native入力が戻らない間にも制御処理と消費済み音声のCodec返却が進むことを別々に要求する2試験を追加した。音声はMediaSync callbackからownerへの引渡し境界を起点とし、native MediaSync自体や実機の表示待機は再現しない。

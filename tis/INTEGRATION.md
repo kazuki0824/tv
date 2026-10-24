@@ -340,6 +340,12 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 - android:canRecord="false" が product manifest metadata に反映される。
 ```
 
+### 映像native入力待機の修正後確認
+
+同一ビルドで、`stop && start`後と端末reboot後を分け、MXワンセグ1を選局する。各試行のtv/toolsのHEAD、選局時刻、症状時刻を記録し、上記の診断採取でlogcat・Perfetto・停止前のJava/native stackを同じ区間として保持する。特定のWARN出力だけを採取開始条件にせず、画面停滞を観測した時点で停止前のsnapshotを採る。
+
+`PLAYBACK_CODEC_INPUT_QUEUE`の長いqueueUsが残る場合、映像workerでのnative待機と、共通playback owner上の`PLAYBACK_MEDIASYNC_AUDIO_CONSUMED`のownerWaitUs・制御処理を対応付ける。映像native入力待機中にも音声返却と制御が進むこと、選局解除・再選局で`PLAYBACK_STOP_COMPLETE`へ到達することを確認する。native入力の所要時間自体がゼロになることを合格条件にしない。`PENDING_QUEUE_FULL`・Codec例外・映像破損・黒画面が残る場合は、その区間を別の未解決として解析し、host回帰成功だけで実機改善へ読み替えない。
+
 ### 通常ログで入力待ちが満杯になった場合
 
 `PLAYBACK_INPUT_LOSS`および再生不能理由ログの`video`/`audio`状態を確認する。`inboundInputCallbacks`は到着済みでownerが未処理のCodec入力callback、`queuedInputs`はCodecへ投入してまだ返却されていない入力、`nativeRenderPending`はnativeへの出力buffer返却呼出しが未完了の数を表す。これらは同じplayback ownerで読んだ資源状態であり、native内部の待機相手や最終表示を証明しない。
