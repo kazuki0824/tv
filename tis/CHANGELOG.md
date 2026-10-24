@@ -127,6 +127,12 @@
 - T5: Android 15 Robolectric fixtureで有界キューに対するPTS幅3秒超の少量音声入力、および4秒相当のMPEG-2入力120回・Codec出力／描画callback・入力index返却を検証する回帰を追加。診断counter reset試験も追従した。
 - **検証範囲:** 実装・設計・テストの変更をPRへ反映したが、Android製品build、Robolectricの実行、実端末のCodec処理能力・黒画面解消はこの変更だけでは確認できていない。実Codecで入力を消費できない場合はbytes/件数上限に達して失敗し得るため、診断traceと速度比較による原因切分けが残る。toolsの診断PR #17と恒久修正PR #18/19の統合は行わない。
 
+## 2026-10-18 導入履歴に基づく修正の配置是正
+
+- main由来の未使用状態・恒等sessionId関数と音声stream_typeの本番・試験共通化を独立修正として所有する。boot/background診断とsessionId試験関数は69e9a72、番組評価診断とdirty-window破棄counterおよび音声対応表の複製はmainへ取り込み済みの#54（30d45cd）に由来する。
+- #142（5d072e4）で導入され#116へ統合されたdual-mono恒等試験関数の削除は#116へ移動し、後続PRはその修正を継承する。診断削除・Provider試験・音声対応表の共通化のコードと試験期待値は配置変更前と同一。
+- 既存ログ、Direct Boot永続状態、番組評価の選択と失敗返却、再生動作は維持する。新owner・worker・復旧経路は追加しない。製品build・atest・実機は未実施。
+
 ## 2026-10-18 導入元に戻したdual-mono試験の是正
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。

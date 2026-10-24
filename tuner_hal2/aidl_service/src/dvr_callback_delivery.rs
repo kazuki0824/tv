@@ -535,8 +535,8 @@ fn record_post_commit_accounting_failure_fallback(
         ),
     );
     if fallback_record_result.is_err() {
-        // The fallback helper increments the context-owned failure counter; post-commit public
-        // methods must not be reversed by this diagnostic-store failure.
+        // fallback helperがcontext所有の失敗counterを増やす。診断保存の失敗を理由に、
+        // commit済みの公開methodを取り消してはならない。
     }
 }
 

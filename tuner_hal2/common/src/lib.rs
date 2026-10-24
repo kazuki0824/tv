@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub const TUNER_SERVICE_NAME: &str = "android.hardware.tv.tuner.ITuner/default";
-/// LineageOS 22.1 / Android 15 TRM resource handles preserve 8 bits of resource ID.
+/// LineageOS 22.1 / Android 15のTRM資源handleでは、資源IDの下位8ビットを保持する。
 pub const ANDROID15_TRM_RESOURCE_ID_MAX: i32 = 0xff;
 pub const TS_PACKET_SIZE: usize = 188;
 pub const MAX_ARIB_SHORT_SECTION_LENGTH: usize = 1021;
