@@ -1814,10 +1814,9 @@ class PlaybackPipeline(
             val submitting = inputSubmission?.sample
             if (pendingSamples.size + (if (submitting == null) 0 else 1) + 1 > queueBudget.maxSamples) return false
             val heldBytes = pendingSamples.sumOf { it.size.toLong() } + (submitting?.size ?: 0)
-            if (heldBytes + sample.size > queueBudget.maxBytes) return false
             // PTSはメディア時刻であり、保持メモリや入力滞留の実時間を示さない。
             // PTSの離隔だけで拒否すると少数の有効サンプルでも圧縮入力欠落を人工的に作る。
-            return true
+            return heldBytes + sample.size <= queueBudget.maxBytes
         }
 
         // MPEG-2は8byte、AVC/HEVCはconfig NAL、音声は構成headerだけを保持する。

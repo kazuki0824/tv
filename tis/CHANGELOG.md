@@ -1,3 +1,8 @@
+# 2026-10-25 入力予算判定の冗長分岐を簡素化（#207）
+
+- Qodanaの`RedundantIf`指摘に対応し、`withinQueueBudget()`のbyte上限比較を直接返す。冗長分岐の導入は#207の`3bb499c3`（PTS span判定の撤去時）で、`54f6e12`で投入中sampleを含む現行比較式へ変更された。件数・byte予算、投入中sampleの会計、境界値を含む受付結果は変更しない。動作を変えない簡素化のため専用試験を追加しない。
+- 検証：既存`PlaybackFilterAdmissionTest`44件成功、failure/error/skipは0。ktlint・detekt・`git diff --check`成功。Qodanaの再判定はpush後のCIで確認する。
+
 # 2026-10-25 再開予約をSessionへ集約（#207）
 
 - PipelineのCodec再試行履歴・再開予約・音声縮退の直接再開を削除。入力欠落、recoverable/transient Codec障害、構成・初回出力期限、映像出力障害は旧世代の停止・解放後に元generation付きで通知する。解放失敗は`PLAYBACK_RECOVERY_FAILED`として通知し、再試行可能な障害に混ぜない。ERROR_RECLAIMED・無効Surfaceはtimer再開対象にしない。
