@@ -308,30 +308,12 @@ class PlaybackFilterAdmissionTest {
             assertNull(ReflectionHelpers.getField<Any?>(fixture.pipeline, "videoDecoder"))
             assertNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "videoFilter"))
             assertEquals(1, Shadow.extract<NativeMediaEvent>(pending).releases)
-            // fixtureには再開対象を設定していないため、元世代へ回復不能を通知する。
+            // 停止完了後、失敗した元世代と入力欠落の種別をSessionへ渡す。
             assertTrue(
                 fixture.unavailable.any {
-                    it.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED && it.generation == 7L
+                    it.reason == PlaybackPipeline.PlaybackUnavailableReason.COMPRESSED_INPUT_LOSS && it.generation == 7L
                 },
             )
-        }
-        Fixture().use { fixture ->
-            fixture.decoder()
-            fixture.attachCodec()
-            fixture.audioSelection()
-            ReflectionHelpers.setField(fixture.pipeline, "activeTuner", fixture.tuner)
-            val filter = fixture.avFilter(false)
-            status(filter, Filter.STATUS_OVERFLOW)
-            fixture.drain()
-            assertTrue(ReflectionHelpers.getField<Boolean>(fixture.pipeline, "codecRecoveryAttempted"))
-            assertNull(ReflectionHelpers.getField<Any?>(fixture.pipeline, "videoDecoder"))
-            assertTrue(fixture.unavailable.isEmpty())
-            // stop後にmain handlerの再生成予約が届いても旧選局を再開しない。
-            fixture.pipeline.stop()
-            Shadows.shadowOf(Looper.getMainLooper()).idle()
-            fixture.drain()
-            assertNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "videoFilter"))
-            assertTrue(fixture.unavailable.isEmpty())
         }
     }
 
@@ -429,23 +411,6 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(0, Shadow.extract<NativeMediaEvent>(event).blockReads)
                 assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
             }
-        }
-    }
-
-    @Test
-    fun compressedInputRecoveryStopsPriorGenerationExactlyOnceBeforeRestart() {
-        Fixture().use { fixture ->
-            fixture.audioSelection()
-            val initialGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
-            fixture.executor.callControl(5_000L) {
-                ReflectionHelpers.setField(fixture.pipeline, "activeTuner", fixture.tuner)
-                fixture.invoke("recoverAfterCompressedInputLoss", initialGeneration, "injected input loss")
-            }
-            assertEquals(initialGeneration + 1L, fixture.pipeline.currentPlaybackGenerationForTest())
-            Shadows.shadowOf(Looper.getMainLooper()).idle()
-            fixture.drain()
-            // stop済み世代から新世代を一度だけ開始する。Surface不足での開始失敗は本試験の対象外。
-            assertEquals(initialGeneration + 2L, fixture.pipeline.currentPlaybackGenerationForTest())
         }
     }
 
@@ -549,6 +514,16 @@ class PlaybackFilterAdmissionTest {
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
                 while (inbox.isEmpty() && System.nanoTime() < deadline) Thread.yield()
                 assertTrue(inbox.isNotEmpty(), "Codec input callback must have arrived")
+            }
+            samples[1].let { second ->
+                Shadow.extract<NativeMediaEvent>(second).onBlockRead = {
+                    // 投入中1件も予算に含むため、模擬native完了を次のsample受付前に確定する。
+                    val completed = CountDownLatch(1)
+                    ReflectionHelpers
+                        .getField<android.os.Handler>(fixture.pipeline, "videoRenderHandler")
+                        .post { completed.countDown() }
+                    assertTrue(completed.await(5, TimeUnit.SECONDS))
+                }
             }
             deliver(filter, samples.toTypedArray())
             fixture.drain()
@@ -1078,11 +1053,14 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    @Config(shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class])
     fun compatibilityRejectsKnownSurfaceFailureAndExactModeRejectsCodecOnlyEvidence() {
         for (mode in listOf("surface-failed", "surface-invalid", "exact")) {
             Fixture().use { fixture ->
                 fixture.decoder()
                 val codec = fixture.attachCodec()
+                // Surface障害で本番の停止まで進むため、解放可能なMediaSync shadowを使う。
+                fixture.availabilitySync = MediaSync()
                 val armedAt = fixture.armCompatibilityAvailability(7L, exact = mode == "exact")
                 if (mode == "surface-failed") {
                     fixture.invoke(
@@ -1885,6 +1863,8 @@ class PlaybackFilterAdmissionTest {
             val constructor = type.declaredConstructors.single().apply { isAccessible = true }
             val sink: (PlaybackPipeline.PlaybackUnavailableReason, String) -> Unit = { reason, detail ->
                 failures += reason to detail
+                // 本番video error sinkと同じ停止・通知境界へ接続する。
+                if (!audio) invoke("failPlayback", 7L, reason, detail)
             }
             val decoder =
                 if (audio) {

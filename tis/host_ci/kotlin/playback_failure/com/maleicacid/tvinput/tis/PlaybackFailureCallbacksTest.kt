@@ -603,7 +603,7 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun audioOnlyStopsBeforeNotifyingAndFailedVideoOnlyResultReachesSession() {
+    @Test fun audioFailureStopsBeforeNotifyingOriginalGeneration() {
         for (audioOnly in listOf(false, true)) {
             val fixture = Fixture(false, audioOnly, failCleanup = false)
             fixture.invoke(
@@ -613,18 +613,16 @@ class PlaybackFailureCallbacksTest {
                 audioOnly,
             )
             check(fixture.notifications == 1 && fixture.state is PlaybackStartState.Failed)
-            if (audioOnly) {
-                check(fixture.restarts.isEmpty())
-                check(fixture.failures.single().generation == 7L)
-                check(fixture.failures.single().reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE)
-                check(fixture.pipeline.currentPlaybackGenerationForTest() == 8L)
-            } else {
-                val restart = fixture.restarts.single()
-                check(restart.videoOnly && restart.originGeneration == 7L && restart.result.generation == 9L)
-                check(!restart.result.startedVideo && !restart.result.firstFramePending)
-                check(PlaybackStartTransitions.signature(fixture.state)?.audioPid == null)
-                check(PlaybackStartTransitions.pipelineGeneration(fixture.state) == 9L)
-            }
+            check(fixture.restarts.isEmpty())
+            check(fixture.failures.single().generation == 7L)
+            val expected =
+                if (audioOnly) {
+                    PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE
+                } else {
+                    PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FALLBACK_REQUIRED
+                }
+            check(fixture.failures.single().reason == expected)
+            check(fixture.pipeline.currentPlaybackGenerationForTest() == 8L)
         }
     }
 

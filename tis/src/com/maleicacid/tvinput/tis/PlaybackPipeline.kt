@@ -142,6 +142,10 @@ class PlaybackPipeline(
         AUDIO_FILTER_NOT_STARTED,
         VIDEO_OUTPUT_RENDER_FAILED,
         VIDEO_CODEC_ERROR,
+        RECOVERABLE_CODEC_ERROR,
+        CODEC_RESOURCES_RECLAIMED,
+        COMPRESSED_INPUT_LOSS,
+        AUDIO_FALLBACK_REQUIRED,
         PLAYBACK_RECOVERY_FAILED,
         CODEC_CONFIG_TIMEOUT,
         FIRST_FRAME_TIMEOUT,
@@ -189,7 +193,6 @@ class PlaybackPipeline(
     data class PlaybackGenerationRestart(
         val originGeneration: Long,
         val result: StartResult,
-        val videoOnly: Boolean = false,
     )
 
     enum class DualMonoPresentation { MAIN, SUB, MAIN_SUB }
@@ -447,7 +450,6 @@ class PlaybackPipeline(
         selection: TunerController.AvStreamSelection,
     ): StartResult =
         runOnPlaybackExecutorBlocking {
-            codecRecoveryAttempted = false
             startRequestedPlayback(tuner, channel, selection)
         }
 
@@ -472,8 +474,6 @@ class PlaybackPipeline(
             )
         }
 
-    private var codecRecoveryAttempted = false
-
     // 既存owner上の資源状態だけを読む。native問い合わせや別workerの完了待ちは行わない。
     private fun decoderFlowSummary(): String =
         "mediaSyncStarted=$mediaSyncStarted video={${videoDecoder?.flowSummary()}} " +
@@ -491,107 +491,61 @@ class PlaybackPipeline(
             LogTags.TIS,
             "PLAYBACK_CODEC_ERROR sessionId=$sessionId generation=$generation isAudio=$isAudio " +
                 "code=${error.errorCode} diagnostic=${error.diagnosticInfo} recoverable=${error.isRecoverable} " +
-                "transient=${error.isTransient} recoveryAttempted=$codecRecoveryAttempted " +
+                "transient=${error.isTransient} " +
                 "progress=${dataPathProgress.summary()}",
         )
-        val retryDelay =
-            codecRecoveryDelay(
-                error.errorCode == MediaCodec.CodecException.ERROR_RECLAIMED,
-                error.isRecoverable,
-                error.isTransient,
-                codecRecoveryAttempted,
-            )
-        val tuner = activeTuner
-        val channel = activeChannel
-        val selection = activeSelection
+        val reason =
+            when {
+                error.errorCode == MediaCodec.CodecException.ERROR_RECLAIMED -> {
+                    PlaybackUnavailableReason.CODEC_RESOURCES_RECLAIMED
+                }
 
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun reportUnrecoverableCodecError() {
-            completePlaybackFailureAction(generation, onVideoUnavailable) {
-                if (isAudio) {
+                error.isRecoverable || error.isTransient -> {
+                    PlaybackUnavailableReason.RECOVERABLE_CODEC_ERROR
+                }
+
+                isAudio -> {
                     handleAudioFailure(
                         PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
                         error.diagnosticInfo,
-                        channel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO,
+                        activeChannel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO,
                     )
-                } else {
-                    stopOnPlaybackExecutor()
-                    onVideoUnavailable(PlaybackUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.diagnosticInfo, generation))
+                    return
+                }
+
+                else -> {
+                    PlaybackUnavailableReason.VIDEO_CODEC_ERROR
                 }
             }
-        }
-        if (retryDelay == null) {
-            reportUnrecoverableCodecError()
-            return
-        }
-        if (tuner == null || channel == null || selection == null) {
-            reportUnrecoverableCodecError()
-            return
-        }
-        codecRecoveryAttempted = true
-        recoverCodecGeneration(
-            originGeneration = generation,
-            stop = {
-                stopOnPlaybackExecutor()
-                playbackGeneration
-            },
-            schedule = { retry -> mainHandler.postDelayed({ enqueuePlaybackAction(retry) }, retryDelay) },
-            isCurrent = { it == playbackGeneration },
-            restart = {
-                val restarted = startOnPlaybackExecutor(tuner, channel, selection, afterRecoveryStop = true)
-                onPlaybackGenerationRestarted(PlaybackGenerationRestart(generation, restarted))
-            },
-            onUnavailable = onVideoUnavailable,
-        )
+        failPlayback(generation, reason, error.diagnosticInfo)
     }
 
     // 圧縮入力欠落後は旧Codecの参照pictureやMediaSyncの時刻状態を継続しない。
-    // Codec errorと同じ再生世代owner・再生成回数を使い、別の復旧loopを設けない。
-    // 再生成に必要な参照と既存の回数制限を一つの失敗境界で検査する。
-    @Suppress("ComplexCondition")
-    private fun recoverAfterCompressedInputLoss(
+    // 停止完了だけを元世代へ通知し、再開判断と予約はSessionに委ねる。
+    private fun stopAfterCompressedInputLoss(
         generation: Long,
         detail: String,
     ) {
         if (generation != playbackGeneration || released.get()) return
-        val tuner = activeTuner
-        val channel = activeChannel
-        val selection = activeSelection
         Log.w(
             LogTags.TIS,
             "PLAYBACK_INPUT_LOSS inputId=$inputId sessionId=$sessionId generation=$generation " +
-                "recoveryAttempted=$codecRecoveryAttempted detail=$detail progress=${dataPathProgress.summary()} " +
-                decoderFlowSummary(),
+                "detail=$detail progress=${dataPathProgress.summary()} ${decoderFlowSummary()}",
         )
-        if (codecRecoveryAttempted || tuner == null || channel == null || selection == null) {
-            completePlaybackFailureAction(generation, onVideoUnavailable) {
-                stopOnPlaybackExecutor()
-                onVideoUnavailable(
-                    PlaybackUnavailable(
-                        PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED,
-                        "圧縮AV入力欠落後の再生成を開始できません",
-                        generation,
-                    ),
-                )
-            }
-            return
+        failPlayback(generation, PlaybackUnavailableReason.COMPRESSED_INPUT_LOSS, detail)
+    }
+
+    // 解放が完了しない限り再開可能な通知を出さない。通知には停止前の世代を保持する。
+    private fun failPlayback(
+        generation: Long,
+        reason: PlaybackUnavailableReason,
+        detail: String,
+    ) {
+        if (generation != playbackGeneration) return
+        completePlaybackFailureAction(generation, onVideoUnavailable) {
+            stopOnPlaybackExecutor()
+            onVideoUnavailable(PlaybackUnavailable(reason, detail, generation))
         }
-        codecRecoveryAttempted = true
-        recoverCodecGeneration(
-            originGeneration = generation,
-            stop = {
-                stopOnPlaybackExecutor()
-                playbackGeneration
-            },
-            schedule = { retry -> mainHandler.post { enqueuePlaybackAction(retry) } },
-            isCurrent = { it == playbackGeneration },
-            restart = {
-                val restarted = startOnPlaybackExecutor(tuner, channel, selection, afterRecoveryStop = true)
-                onPlaybackGenerationRestarted(PlaybackGenerationRestart(generation, restarted))
-            },
-            onUnavailable = onVideoUnavailable,
-        )
     }
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
@@ -604,17 +558,9 @@ class PlaybackPipeline(
         tuner: Tuner,
         channel: TunerController.ResolvedChannel,
         selection: TunerController.AvStreamSelection,
-        afterRecoveryStop: Boolean = false,
     ): StartResult {
-        if (afterRecoveryStop) {
-            // 同一ownerのrecoverCodecGenerationが旧generationを停止済み。二度目のstopで世代を消費しない。
-            check(
-                activeTuner == null && activeChannel == null && mediaSync == null &&
-                    videoDecoder == null && audioDecoder == null && !resourceCleanup.hasPending,
-            ) { "Codec復旧前の停止が完了していません" }
-        } else {
-            stopOnPlaybackExecutor()
-        }
+        // 障害後の停止完了通知から来た通常startでは、旧世代を二重に停止しない。
+        if (hasActivePlaybackResources()) stopOnPlaybackExecutor()
         val startGeneration = nextPlaybackGenerationOrFence()
         playbackGeneration = startGeneration
         dataPathProgress.reset()
@@ -672,7 +618,7 @@ class PlaybackPipeline(
                     requireNotNull(mediaSyncInputSurface),
                     startGeneration,
                 ) { reason, detail ->
-                    emitUnavailableForGeneration(startGeneration, reason, detail)
+                    failPlayback(startGeneration, reason, detail)
                 }.also { videoDecoder = it }
             } else {
                 null
@@ -912,7 +858,7 @@ class PlaybackPipeline(
                                                 if (inputIsCurrent()) {
                                                     val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
                                                     if (target?.hasConfiguredCodec() == true) {
-                                                        recoverAfterCompressedInputLoss(
+                                                        stopAfterCompressedInputLoss(
                                                             filterGeneration,
                                                             "RESTART_EVENT isAudio=$isAudio pid=$pidValue",
                                                         )
@@ -983,7 +929,7 @@ class PlaybackPipeline(
                                 inputIdentity.set(null)
                                 val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
                                 if (target?.hasConfiguredCodec() == true) {
-                                    recoverAfterCompressedInputLoss(
+                                    stopAfterCompressedInputLoss(
                                         filterGeneration,
                                         "FILTER_OVERFLOW isAudio=$isAudio pid=$pidValue status=$status",
                                     )
@@ -1401,7 +1347,7 @@ class PlaybackPipeline(
                 if (!videoPathExpected) return
                 mediaSyncSurfaceFailed = true
                 waitingAvailabilityArm = null
-                emitUnavailable(PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "MEDIASYNC_ERROR_SURFACE_FAIL extra=$extra")
+                failPlayback(generation, PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "MEDIASYNC_ERROR_SURFACE_FAIL extra=$extra")
             }
 
             MediaSync.MEDIASYNC_ERROR_AUDIOTRACK_FAIL -> {
@@ -1468,32 +1414,15 @@ class PlaybackPipeline(
         detail: String,
         audioOnly: Boolean,
     ) {
-        val originGeneration = playbackGeneration
-        val restartTuner = activeTuner
-        val restartChannel = activeChannel
-        val restartSelection = activeSelection
-        completePlaybackFailureAction(originGeneration, onVideoUnavailable) {
-            if (audioOnly) {
-                stopOnPlaybackExecutor()
-                onVideoUnavailable(PlaybackUnavailable(reason, detail, originGeneration))
-                return@completePlaybackFailureAction
+        val failure =
+            if (!audioOnly && activeSelection?.video != null) {
+                PlaybackUnavailableReason.AUDIO_FALLBACK_REQUIRED
+            } else if (audioOnly) {
+                reason
+            } else {
+                PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED
             }
-            logAudioUnavailable(reason, "$detail; recreating MediaSync generation for video-only fallback")
-            if (restartTuner == null || restartChannel == null || restartSelection?.video == null) {
-                stopOnPlaybackExecutor()
-                onVideoUnavailable(
-                    PlaybackUnavailable(
-                        PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED,
-                        "$detail; 映像のみの再起動contextを取得できません",
-                        originGeneration,
-                    ),
-                )
-                return@completePlaybackFailureAction
-            }
-            val restarted = startOnPlaybackExecutor(restartTuner, restartChannel, restartSelection.copy(audio = null))
-            onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted, videoOnly = true))
-            // 失敗StartResultの外部通知は、結果を受理して世代を更新するSessionが所有する。
-        }
+        failPlayback(playbackGeneration, failure, detail)
     }
 
     private fun onCompressedInputQueued(sample: MediaSample) {
@@ -1538,12 +1467,12 @@ class PlaybackPipeline(
         mainHandler.postDelayed({
             enqueuePlaybackAction {
                 if (shouldTriggerFirstFrameTimeoutForTest(generation, playbackGeneration, videoAvailableNotified.get())) {
-                    emitUnavailable(
+                    failPlayback(
+                        generation,
                         PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
                         "初回映像callbackが期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms mode=$videoAvailabilityMode " +
                             "progress=${dataPathProgress.summary()}",
                     )
-                    stopOnPlaybackExecutor()
                 }
             }
         }, FIRST_FRAME_TIMEOUT_MS)
@@ -1567,24 +1496,18 @@ class PlaybackPipeline(
                             return@enqueuePlaybackAction
                         }
                         videoOutputStallTask = null
-                        emitUnavailableForGeneration(
+                        failPlayback(
                             generation,
                             PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
                             "映像描画callbackが継続期限を超過しました progress=${dataPathProgress.summary()}",
                         )
-                        stopOnPlaybackExecutor()
                     }
                 }
             }
         videoOutputStallTask = timeout
         if (!mainHandler.postDelayed(timeout, VIDEO_OUTPUT_STALL_TIMEOUT_MS)) {
             videoOutputStallTask = null
-            emitUnavailableForGeneration(
-                generation,
-                PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
-                "映像出力監視を予約できません",
-            )
-            stopOnPlaybackExecutor()
+            failPlayback(generation, PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED, "映像出力監視を予約できません")
         }
     }
 
@@ -1761,24 +1684,13 @@ class PlaybackPipeline(
                         val detail =
                             "DECODER_STARTUP_TIMEOUT stage=$expired deadlineMs=${budget.decoderStartupDeadlineMs} " +
                                 "progress=${dataPathProgress.summary()}"
-                        if (this@DecoderPipeline is AudioDecoderPipeline) {
-                            handleAudioFailure(
-                                PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                                detail,
-                                activeChannel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO,
-                            )
-                        } else {
-                            val reason =
-                                if (expired ==
-                                    DecoderStartupDeadline.Stage.CONFIGURATION
-                                ) {
-                                    PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT
-                                } else {
-                                    PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT
-                                }
-                            emitUnavailableForGeneration(generation, reason, detail)
-                            stopOnPlaybackExecutor()
-                        }
+                        val reason =
+                            if (expired == DecoderStartupDeadline.Stage.CONFIGURATION) {
+                                PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT
+                            } else {
+                                PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT
+                            }
+                        failPlayback(generation, reason, detail)
                     }
                 }
             startupTimeout = timeout
@@ -1796,7 +1708,7 @@ class PlaybackPipeline(
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
                     onSampleRejected("SAMPLE_TOO_LARGE size=${sample.size} limit=${budget.singleEventLimitBytes}")
                     if (codec != null) {
-                        recoverAfterCompressedInputLoss(
+                        stopAfterCompressedInputLoss(
                             generation,
                             "SAMPLE_TOO_LARGE isAudio=${sample.isAudio} size=${sample.size}",
                         )
@@ -1809,7 +1721,7 @@ class PlaybackPipeline(
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
                     releaseMediaSample(sample)
                     if (codec != null) {
-                        recoverAfterCompressedInputLoss(generation, pendingInputDiagnostic(sample, queueBudget))
+                        stopAfterCompressedInputLoss(generation, pendingInputDiagnostic(sample, queueBudget))
                         return
                     }
                     val nowMs = SystemClock.elapsedRealtime()
@@ -2193,7 +2105,7 @@ class PlaybackPipeline(
         // 構成後の拒否は圧縮参照の欠落として扱う。構成前は既存起動期限で制限する。
         fun inputAdmissionRejected(rejectedAtMs: Long) {
             if (codec != null) {
-                recoverAfterCompressedInputLoss(
+                stopAfterCompressedInputLoss(
                     generation,
                     "CALLBACK_CAPACITY isAudio=${this is AudioDecoderPipeline} rejectedAtMs=$rejectedAtMs",
                 )
@@ -2409,7 +2321,6 @@ class PlaybackPipeline(
                 },
                 error.message.orEmpty(),
             )
-            stopOnPlaybackExecutor()
         }
 
         override fun onCodecConfigTimeout() {
@@ -2417,12 +2328,10 @@ class PlaybackPipeline(
                 PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT,
                 "video decoder 構成に必要な ES header が見つかりません progress=${dataPathProgress.summary()}",
             )
-            stopOnPlaybackExecutor()
         }
 
         override fun onBackpressureDeadline(detail: String) {
             errorSink(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "DECODER_BACKPRESSURE_TIMEOUT $detail")
-            stopOnPlaybackExecutor()
         }
 
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -2438,7 +2347,7 @@ class PlaybackPipeline(
             }
             if (!outputSurface.isValid) {
                 releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, false) }
-                errorSink(PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "video output Surface が無効です")
+                errorSink(PlaybackUnavailableReason.SURFACE_NOT_SET, "video output Surface が無効です")
                 return
             }
             if (mediaSyncStarted) {
@@ -3517,15 +3426,17 @@ class PlaybackPipeline(
     fun stopIfActive(): Boolean {
         wakeBlockedVideoOutputBeforeStop()
         return runOnPlaybackExecutorBlocking {
-            val active =
-                activeTuner != null || activeChannel != null || mediaSync != null ||
-                    videoDecoder != null || audioDecoder != null || videoFilter != null ||
-                    audioFilter != null || subtitleFilter != null || superimposeFilter != null ||
-                    resourceActivityReported || resourceCleanup.hasPending
+            val active = hasActivePlaybackResources()
             if (active) stopOnPlaybackExecutor()
             active
         }
     }
+
+    private fun hasActivePlaybackResources(): Boolean =
+        activeTuner != null || activeChannel != null || mediaSync != null ||
+            videoDecoder != null || audioDecoder != null || videoFilter != null ||
+            audioFilter != null || subtitleFilter != null || superimposeFilter != null ||
+            resourceActivityReported || resourceCleanup.hasPending
 
     /** 停止で世代を更新しても、失敗した再生を所有するSessionへ通知する。 */
     internal fun stopAndReportUnavailable(
@@ -3811,43 +3722,6 @@ class PlaybackPipeline(
                 )
             }
         }
-
-        // 独立した既存入力を明示し、引数数だけを理由に別の状態保持型を導入しない。
-        @Suppress("LongParameterList")
-        internal fun recoverCodecGeneration(
-            originGeneration: Long,
-            stop: () -> Long,
-            schedule: (() -> Unit) -> Boolean,
-            isCurrent: (Long) -> Boolean,
-            restart: () -> Unit,
-            onUnavailable: (PlaybackUnavailable) -> Unit,
-        ) {
-            completePlaybackFailureAction(originGeneration, onUnavailable) {
-                val stoppedGeneration = stop()
-                check(
-                    schedule {
-                        if (isCurrent(stoppedGeneration)) {
-                            completePlaybackFailureAction(originGeneration, onUnavailable, restart)
-                        }
-                    },
-                ) { "decoderの再生成を予約できません" }
-            }
-        }
-
-        // 設計で固定したcodec別のメモリ予算・待機時間を、この表で直接照合する。
-        @Suppress("MagicNumber")
-        internal fun codecRecoveryDelay(
-            reclaimed: Boolean,
-            recoverable: Boolean,
-            transient: Boolean,
-            attempted: Boolean,
-        ): Long? =
-            when {
-                reclaimed || attempted -> null
-                transient -> 100L
-                recoverable -> 0L
-                else -> null
-            }
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
         @Suppress("TooGenericExceptionCaught")
