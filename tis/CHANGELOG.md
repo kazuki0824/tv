@@ -1,7 +1,80 @@
+# 2026-10-25 入力予算判定の冗長分岐を簡素化（#207）
+
+- Qodanaの`RedundantIf`指摘に対応し、`withinQueueBudget()`のbyte上限比較を直接返す。冗長分岐の導入は#207の`3bb499c3`（PTS span判定の撤去時）で、`54f6e12`で投入中sampleを含む現行比較式へ変更された。件数・byte予算、投入中sampleの会計、境界値を含む受付結果は変更しない。動作を変えない簡素化のため専用試験を追加しない。
+- 検証：既存`PlaybackFilterAdmissionTest`44件成功、failure/error/skipは0。ktlint・detekt・`git diff --check`成功。Qodanaの再判定はpush後のCIで確認する。
+
+# 2026-10-25 再開予約をSessionへ集約（#207）
+
+- PipelineのCodec再試行履歴・再開予約・音声縮退の直接再開を削除。入力欠落、recoverable/transient Codec障害、構成・初回出力期限、映像出力障害は旧世代の停止・解放後に元generation付きで通知する。解放失敗は`PLAYBACK_RECOVERY_FAILED`として通知し、再試行可能な障害に混ぜない。ERROR_RECLAIMED・無効Surfaceはtimer再開対象にしない。
+- Sessionの予約を一件に統一し、実行・取消時に消費する。既存300ms後にtune・署名・失敗世代・Failed・release・Surface・信号を照合し、通常開始入口とControllerから最新SI/CAS/視聴制限/trackを再評価する。SI更新による待機迂回を防ぐ。音声縮退はSessionが音声を無効化して同じ入口から再開する。Pipelineの開始は既存資源判定を共有し、停止済み世代を重複停止しない。出力先・PCM変更の同期再構成は障害後の再試行と区別して維持する。
+- 廃止するPipelineの回数制限・予約helperに依存する通常ホスト試験3件とRobolectric試験1件を削除。残る停止・元世代通知の試験を新契約に合わせ、試験だけの代替製品機構は設けない。CI件数gateはホスト412→409、受付45→44。入力バッチ試験はnative完了との競合を同期し、Surface障害試験は実停止に対応する既存MediaSync shadowを使用する。
+- Robolectric CI指定10クラス87件成功（受付44件・MediaSync解放14件を含む）、failure/error/skipは0。`testDebugUnitTest -Pkotlin.incremental=false`で実行。ローカル増分cache破損後は増分コンパイルを無効化した。前段の二度目の再試行資格の失敗は成功へ転じた。予約の2試験は状態境界・実予約処理の検証であり、onTune/onRelease全経路や実Codecの再開成功を証明しない。
+- 通常ホスト構成で本番・全ホスト試験Kotlinをコンパイルし、`PlaybackStartGateTest`、`PlaybackResourceCleanupTest`、`PlaybackFailureCallbacksTest`をJUnit実行。49件中43件成功、6件はSI JNIライブラリ不在による実行環境エラー。SIを使うscan/tune試験の成功やホストCI全体の成功とは扱わない。Android製品build・atest/VTS・実機での回復・300msの負荷妥当性は未確認。
+
+| 条件 | 対象・処理経路 | 確認コマンド | 出力要約・未分類ヒット | 判定 |
+|---|---|---|---|---|
+| 既知NG: 同じ選局の後の障害で資格を失う | `MaleicacidLiveSession.kt`の予約消費→通常開始入口、`PlaybackFilterAdmissionTest.kt` | Gradle CI指定10クラスの`testDebugUnitTest` | 87件成功。`laterRecoverableFailureInSameTuneCanBecomeEligibleAgain`成功。未分類なし | ホスト範囲OK |
+| 停止・解放失敗の区別と元世代通知 | `PlaybackPipeline.kt`の`failPlayback`→停止→通知、`PlaybackFailureCallbacksTest.kt` | 上記3クラスのJUnitCore | 音声失敗・再構成・解放失敗の試験成功。別のSI依存6件はJNI不在に分類 | 対象経路OK、全体未確認 |
+| 旧履歴・予約・縮退結果fieldの参照残り | 本番、host、tests | `rg -n 'codecRecoveryAttempted|retriedPlaybackSignature|recoverCodecGeneration|codecRecoveryDelay|videoOnly' tis --glob '!**/build/**' --glob '!**/.gradle/**'` | 変更履歴を除く定義・参照0件。全Kotlin型照合成功。未分類なし | OK |
+| 製品の再開・最終描画 | `INTEGRATION.md`の集約後再開確認 | 未実行 | 製品build/実機なし | 未確認 |
+
+# 2026-10-25 再試行方針の仕様確定と修正前の回帰試験（#207）
+
+- 再試行判断・予約をSessionへ集約する設計を確定。Pipelineは障害分類と停止・解放、Controllerは現在選局・CAS照合を担当する。停止完了後300msの既存Session待機値を引き継ぎ、通算一回制限を廃止する。300msの実機負荷妥当性は未実証。持続障害では間隔を置いた再試行が続く。保持予算の数値は変更しない。
+- 再開時は通常の開始入口で最新の視聴条件を確認する。停止完了通知は失敗元generationへ関連付け、予約はtune・署名・失敗世代・Failed状態・releaseを照合して実行する。未解放資源があれば再開しない。製品実装の反映は後続工程であり、このコミットで完了したとは扱わない。
+- 既存Robolectric受付試験に2件追加。同じ選局で別の再生世代が失敗しても再試行を受理する動作と、停止・解放・別選局の状態境界後に予約が状態を上書きしない動作を実Sessionの予約処理で検査する。fixtureは端末初期化を省き、状態境界を設定する。onTune/onRelease全経路、実Codec再開、最終描画の実証ではない。削除予定の再試行履歴フィールドの値や存在は検査しない。
+- ローカル実行: `ANDROID_HOME=/tmp/tv42-sdk /tmp/tv42-tools/gradle-8.9/bin/gradle -p tis/host_ci/robolectric testDebugUnitTest --tests '*PlaybackFilterAdmissionTest' --tests '*PlaybackMediaSyncReleaseTest' --offline`。受付45件中44件成功・1件失敗、解放14件成功、error/skipは0。失敗は `laterRecoverableFailureInSameTuneCanBecomeEligibleAgain` の二度目の再試行受付で、Idleを期待するところFailedのまま。既存一回制限による修正前の失敗を固定し、Ignoreや失敗許容で隠さない。CIの受付件数gateを43から45へ更新したため、本段階のCIは当該未修正動作で失敗する。
+- 変更Kotlinのktlint・detektと`git diff --check`は成功。Android製品build・atest/VTS・実機再生は未実施。停止・選局との両立は上記状態境界試験と既存寿命管理の静的確認の範囲であり、集約後実装の全経路検証は後続工程に残る。
+
+# 2026-10-24 映像native入力を既存映像workerへ分離（#207）
+
+- `DecoderPipeline`の映像`QueueRequest.queue()`を既存の映像出力Handlerへ配送し、音声返却・制御を担う共通playback ownerをnative入力待機から解放する。追加worker、payloadコピー、別入力queue、容量増加はない。投入中は1呼出しとし、未投入の残りは既存pendingSamplesで保持する。投入中sampleも既存の件数・byte予算へ含める。
+- native呼出し結果をFutureでownerへ渡し、入力進捗・再生開始・例外通知・MediaEvent解放をownerに保持する。早着入力index callbackはnative完了後に処理し、成功した入力はindex返却またはCodec解放まで保持する。配送拒否・native失敗・停止による未実行入力の取消しは一度だけ返却する。先行入力の失敗を次sample受理前に取り込む場合も、その未受理sampleを返却する。
+- 停止時は新しい入力投入を止め、MediaSync flush後にnative入力・出力の完了を待ち、その後でpause・解放する。停止期限超過時は入力・Codec・MediaSyncを保持し、停止再試行へ残す。停止後の古いCodec callbackと完了通知は再生を進めない。設計書の入力owner・実行worker・停止順序を更新した。
+- 工程2の回帰2件に加え、早着index返却、native入力失敗、入力待機中の停止、worker実行前の入力取消し、停止期限超過後の後着callbackと停止再試行の5件を追加した。Robolectric CIの受付試験数gateを38件から43件へ更新する。既存fixtureのdrainは配送済みnative入力の完了も待ち、継続再生試験が未投入indexを再返却しないよう同期する。
+- 検証：Gradle 8.9 / Robolectric 4.16.1 / SDK 35でCI指定10クラス86件が成功（入力43件、停止14件を含む）。工程2の失敗2件は成功へ転じた。停止期限超過後の後着callback試験も、世代・停止状態の検査追加前の失敗と追加後の成功を確認した。変更Kotlinのktlint 1.8.0、detekt 1.23.8、`git diff --check`は成功。
+- Android製品build、atest/VTS、実機MXワンセグ1での改善は未検証。実機の全容量拒否・黒画面を解消済みとは扱わない。製品統合文書へ入力停滞の再評価条件を追記した。
+
+# 2026-10-24 42系の映像native入力待機を固定する修正前回帰試験（#207）
+
+- `PlaybackFilterAdmissionTest`のCodec native入力shadowへ待機を注入し、本番Filter→decoder→`QueueRequest.queue()`の入力経路を通す。映像native入力が戻らない間にも制御処理と消費済み音声のCodec返却が進むことを別々に要求する2試験を追加した。音声はMediaSync callbackからownerへの引渡し境界を起点とし、native MediaSync自体や実機の表示待機は再現しない。
+- 同じ音声所有fixtureで映像native入力が待たない場合の返却成功を対照試験として追加した。待機の到達と解除はラッチで同期し、失敗時も解除してownerを回収する。15秒はfixture終了保証用であり、製品の待機期限・容量・所有規則は変更しない。Robolectric CIの試験数gateを35件から38件へ更新した。
+- 根拠はa8d6778の42系MXワンセグ1で、停止前snapshotのplayback ownerが`native_queueLinearBlock`内で待ち、PerfettoのCodec入力待機が約3.191秒、音声consumeのowner待機が約2.936秒だったこと。映像出力workerだけの分離では入力native呼出しによる共通ownerの停止を防げない。容量拒否全体の唯一の原因や永久deadlockと断定しない。
+- 検証：Gradle 8.9 / Robolectric 4.16.1 / SDK 35で本番・試験Kotlinをコンパイルし、38件中既存35件と対照1件が成功、新規待機回帰2件だけが制御処理・音声出力返却のassertionで失敗した。試験準備時のCodec一覧キャッシュは新fixture内で破棄して音声Codecを登録する。ktlint 1.8.0、detekt 1.23.8、`git diff --check`は成功。CIも修正前回帰2件の失敗を期待する段階である。
+- 今回は修正前回帰を先に追加する段階で、本番実装の修正、Android製品build、atest/VTS、実機での改善確認は行わない。
+
+# 2026-10-23 停止時の後着映像投入とJNI内部TRACE抑止（#207）
+
+- `VideoDecoderPipeline.stopRenderSubmissions`でatomic停止フラグを立て、予約済みの未実行出力は既存workerで非描画返却する。実行中出力をflushで起こして全完了を待ってからMediaSyncをpause/flush・切断・releaseする。フラグ検査を通過済みの呼出しとの競合でも、完了前にpauseしない。既存の停止期限・失敗時の参照保持・再試行・PCM/Codec解放順は維持し、新workerやqueue、容量上限は追加しない。
+- 工程2の停止回帰2件に非描画返却件数を追加し、停止判定通過後のnative投入がflushより遅れる競合を追加した。Robolectric CIの試験数gateも11件から14件へ更新した。Android 15実SDKへの本番コンパイルとRobolectric 4.16.1 / SDK 35で停止関連14件が成功。修正前の追加2件は停止期限超過で失敗していた。
+- 工程2で追加した`log.tag.jni::wrapper::objects..=D`の存在検査を撤回した。Android標準Rust loggerは書込み前に23バイトへタグを短縮し、LineageOSのproperty名検査は連続・末尾ドットを拒否するため、この設定要求は実現不能だった。短縮前の完全module名やprefixのpropertyでも一致しない。
+- SI JNIの標準logger初期化・targetフィルタへ抑止を移し、既存のjnienv propertyと無効な設定要求のCIブロックを除去した。JNI TRACEだけを抑止する実動作試験・Soong/host依存・Rust側設計/履歴は`arib_si_engine_rs`に収録する。`tis/DESIGN_JA.md`の停止順序と`INTEGRATION.md`のログ採取・詳細診断方法を更新した。
+- 再生入力・世代・起動・音声切替の`PlaybackFilterAdmissionTest` 35件、Kotlin変更のktlint・detekt、XML/製品統合CI検査は成功。Android製品build、atest/VTS、実機のログ抑止・停止完了・再選局は未検証で、次の製品buildで確認する。音声キュー飽和の初発原因を解消したとは扱わず、同条件のlogcat/Perfettoで再評価する。
+
+# 2026-10-23 40系の停止競合・JNI設定漏れの修正前回帰試験（#207）
+
+- `PlaybackMediaSyncReleaseTest`へ、実行中のnative描画と未実行の2件を残したowner内停止、およびnative worker開始前にflushが先行する停止の2試験を追加した。実際の`PlaybackPipeline.stop()`を呼び、停止完了と停止後の描画再投入なしを要求する。
+- 新fixtureは[LineageOS 22.1 MediaSync::flush / onFrameAvailableFromInput](https://github.com/LineageOS/android_frameworks_av/blob/lineage-22.1/media/libstagefright/MediaSync.cpp)の現在の待機だけを解除する振る舞いを模擬する。既存fixtureの一度開くと永久に開いたままのラッチでは検出できなかった後着描画の再待機を検査する。15秒はfixture自身の終了保証用で、製品の5秒待機より先に模擬nativeを成功させないための試験用期限である。製品の期限・資源上限は変更しない。
+- 既存TIS host CIの製品設定検査へ`jni::wrapper::objects..`の書込み元VERBOSE抑止を追加した。40系ZIPのlogcatは同タグ845,112行、別添tuner-fixed-40.logでは0行だったため、表示側のフィルタだけでは抑止成功と判定しない。
+- 40系はtv `1a6beb6`とtools #18のビルドであり、停止直後のCodec `queueBuffer`は38.050584秒、そのうち約38.01秒はsleep。native入力の待機とownerの`awaitRenderSubmissionsBeforeMediaSyncRelease`が重なる。上流の音声192件飽和とは別の停止競合として扱う。
+- 音声は07:59:21.502の入力診断でpending=0、25.719で129、30.798で188、30.971で192件の拒否となった。その間も音声consumeは進行しており、完全停止だけでは説明しない。2 vCPUの約19.778秒区間は約95.82%稼働し、JNI/logcat、HAL、表示処理等が共存する。これらの寄与の一意な分離は未証明で、容量増加や音声経路の推測修正を加えない。
+- 検証：本番KotlinをAndroid 15実SDKでコンパイルし、Robolectric 4.16.1 / SDK 35の`JUnitCore com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest`で13件中既存11件成功、追加2件のみ停止期限超過（index=0 / 1）で失敗した。既存host CIのXML・製品設定検査を抽出実行するとobjectsタグ不足で失敗。追加試験のktlint・detektと`git diff --check`は成功した。
+- 今回は失敗する試験を先にPushする段階であり、本番実装・製品設定は未修正。停止回帰2件とJNI設定検査は失敗を期待する。実機解消、Android製品build、atest/VTSは未検証。修正後の成功確認は後続の実装修正段階で行う。
+
+# 2026-10-23 映像出力所有順の説明とイベント領域の設計用語（#207）
+
+- PlaybackPipelineのnative render完了・失敗処理、待機期限、資源切断前の終了待ち、失敗時owner保持の4コメントと、診断スクリプトのmediatuner所有の説明を日本語へ変更した。処理・期限・所有順は変更しない。
+- SI保持の文書更新を継承し、AV入力保持の説明に残った共有slotという語を現在のイベント専用DMA-BUF領域へ合わせた。queue成功時の早期解放を認めず、Codec入力index返却またはdecoder解放まで保持する既存契約は維持する。
+
 # 2026-10-23 SI保持上限の設計記述の追従（#116）
 
 - SI全体を有限寿命・累積入力上限で破棄する旧記述を削除し、実保持量を増やす入力の拒否、既存の無関係な事実・時計の保持、対象表の矛盾根拠失効へ合わせた。拒否入力を新しい登録・Program削除権限の根拠にしない条件は維持する。
 - TISの新しい状態・受付経路は追加しない。Rustの矛盾検出と保持量判定は同モジュールのDESIGN/CHANGELOGを正とする。
+# 反復SI入力後の再生継続回帰
+
+- 実JNIにPAT/SDT/NIT/PMTを投入した既存live fixtureで、9,000回の同一PAT反復後もREADYを保ち、その判断を実controllerのCAS/filter更新へ渡してpipeline世代・PMT filterが維持されることを検証する。
+- 既存の矛盾PMTによる停止試験を維持し、SI/CASゲートを緩和せず反復入力だけでは停止しないことを区別する。host CIの期待試験数を1件増やした。
+- Rustの期限境界試験と組み合わせて全消去の回帰を検出する。実機の長時間視聴、Codec/MediaSync停滞、BS ECM/EMM失敗の原因解消は未検証。
 
 # ライブSI継続保持のJNI試験追従
 
@@ -15,9 +88,140 @@
 - Program cleanupの非同期開始・実行中はPENDINGと記録し、workerの完了結果だけからCOMPLETED/FAILEDを記録する。Boot EPGとbackground maintenanceの未準備分岐を揃え、非同期開始を実失敗と誤表示しない。
 - Framework CAS adapterを通すECM/EMM status保持のホスト試験を追加し、ホストCIの期待件数を401へ更新した。実機のCAS失敗原因・初回スキャンは未検証。
 
+# 2026-10-22 39.1の再生停滞診断
+
+- 入力欠落と再生不能の通常ログに、既存decoder owner上のpending入力、Codec空き入力、未処理入力callback、投入済み入力、保留映像出力、native render未完了数、MediaSync開始状態、未返却音声出力を記録する。native呼出しやrender完了待ちは追加しない。
+- native renderを停止させたRobolectric回帰試験から診断を読み、停滞中もplayback ownerが応答し未完了renderを識別できることを検査する。
+- 39.1の64件到達を原因そのものとは断定せず、容量・期限・復旧回数を変更しない。Codec/MediaSync内部の実機待機位置とCAS失敗のplatform statusは追加採取が必要であり、この変更だけで症状解消を確認したとは扱わない。
+
+## 2026-10-21 Codec入力通知のFilterバッチ中先行消費（#207）
+
+- Filter一括callback中にCodecのinput-index callbackが到着した場合も、次のイベントの保持予算判定前に同じownerで入力返却とpending drainを実行する。callback threadはindex引渡しのみを行い、Decoder状態とgeneration判定は既存ownerに維持する。
+- 現行MPEG-2の48件pending上限や16MiB callback permitを無条件増加させず、不要な人工的破棄を減らす。
+- 変更前に49イベントの途中入力通知で48件目以降の人工破棄を確認するRobolectric回帰を追加。実機の低速Codec、永続的な出力停止、メモリ使用量は別途検証する。
+
+## 2026-10-21 R1 native映像出力中も再生ownerを進行させる（#207）
+
+- Native MediaCodec.releaseOutputBuffer(renderTimestampNs)の待機を既存playback ownerとCodec callback HandlerThreadから独立させ、セッション単位の直列HandlerThreadへ配送する。MediaCodecの貸与済み出力indexの寿命が自然な並列上限であり、固定数の追加render pool/出力payloadコピーは設けない。
+- render結果は既存ownerで回収し、停止時はMediaSyncをflushしてからnative実行の完了を確認する。期限超過時は停止失敗として所有権を保持し、解放成功を捏造しない。releaseが失敗した場合もshutdownせず回収を再試行できるようにする。
+- Android 15 Robolectricで、native描画待機中もcontrol ownerが進行し、停止時のMediaSync/Codecの解放順序を維持することを検査。実Codecと実Surfaceの持続描画は端末検証待ち。
+
+## 2026-10-21 startup前3件制限の撤廃とR3〜R5の回帰 (#207)
+
+- decoder構成前の保持イベントは、Codec別に既存設計で確定するstartup件数・byte予算だけで有界化する。HALの廃止済み8-slot前提から残った3件制限を撤廃し、合法入力を構成ヘッダー未発見だけで人工的に欠落させない。
+- 最大16MiB単一AVイベントのcallback受付と複数イベント超過時の拒否を区別し、既存16MiB共有permitを維持する。R4のCodec復旧では既停止generationを二重停止せず、R5のCAS未確定時は再生資源がない状態で世代を進めない。
+- Robolectricでstartup予算内の12件保持と起動期限での解放、16MiB/過大callback、復旧の一回停止、CAS反復stopを検証する。実機の処理速度と長時間再生成功は別途検証する。
+
+## 2026-10-19 36系JNI TRACEの限定抑制（#207）
+
+- 36系のPerfetto・native stackで、SI DTOのJNI object構築中に`jni::wrapper::jnienv`のVERBOSEログが大量発生し、2 vCPUでTISとlogdの負荷が顕著だったことを確認。
+- Android既定`liblog_rust.dylib.so`のloggerを置き換えたり、`JNI_OnLoad`から全Rust moduleの最大log levelを変更したりせず、product system_ext property `log.tag.jni::wrapper::jnienv=D`で該当タグのVERBOSEだけを通常時に抑止する。必要時は`adb shell setprop log.tag.jni::wrapper::jnienv V`で再有効化し、終了後Dへ復元できる。Java TIS DEBUGと他タグのログは維持する。
+- 構成値と診断切替を`tis/INTEGRATION.md`へ記載。製品build・実機でのproperty反映・同条件でのfps/CPU比較は未実施。ログ生成抑制がCodecバッファ停滞の解消を示すものではない。
+
+## 2026-10-19 35.1入力飽和の再評価と原因計測（#207）
+
+- T1: 16MiBのcallback payload共有permitは未処理入口の有限受付枠として維持。HALの保持bytesやCodec内部メモリを実測・代替するものではない。容量拒否では予約KiB・イベント数・payload bytesを診断に残し、拒否が生じる事象そのものを区別できるようにした。
+- T2: `QueueBudget`でPTS span（2〜3.5秒）を資源保持量の制限として使うのを除去。35.1の音声は約12KiB／71イベントで、bytes・件数は上限内なのに3秒のPTS離隔だけで圧縮入力が欠落した。PTSは実経過時間ではないため、件数とbytesのみを入力・音声output受付の有限上限とし、PTS spanは拒否時の診断値へ残す。
+- T3: callback受付超過・Codec入力受付上限等により**実際に圧縮sampleを解放した場合**はCodec参照pictureをそのまま継続利用せず、従来の1回の世代再生成へ接続する方針を維持。PTSだけで発生した人工的な欠落を無くし、再試行workerや新しい復旧状態は追加しない。設計書の「一度sampleを破棄しても継続」との矛盾を解消。
+- T4: 既存playback ownerでcallback→owner到達、Codec queue、入力index返却、出力callback、MediaSync音声consumeの進捗と所要時間をDEBUG採取できるようにした。世代別の入力index再通知・返却・音声consumeは既存`PlaybackDataPathProgress`に追記し、DEBUGの所要時間ログは32/64件ごとの採取とする。新worker、producer queue、時間判定へのfeedbackは導入しない。
+- T5: Android 15 Robolectric fixtureで有界キューに対するPTS幅3秒超の少量音声入力、および4秒相当のMPEG-2入力120回・Codec出力／描画callback・入力index返却を検証する回帰を追加。診断counter reset試験も追従した。
+- **検証範囲:** 実装・設計・テストの変更をPRへ反映したが、Android製品build、Robolectricの実行、実端末のCodec処理能力・黒画面解消はこの変更だけでは確認できていない。実Codecで入力を消費できない場合はbytes/件数上限に達して失敗し得るため、診断traceと速度比較による原因切分けが残る。toolsの診断PR #17と恒久修正PR #18/19の統合は行わない。
+
 ## 2026-10-18 導入元に戻したdual-mono試験の是正
 
 - #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
+
+## 2026-10-18 Framework診断差分revertの是正
+
+- 部分revertに混入したtoolsの作業branchへの参照文と「ビルド前の準備」の見出しを取り消す。Framework診断patchとビルド手順の追加差分を消し、新しい統合規定をtvへ加えない。採取手順とTIS自身の診断は維持する。
+
+## 2026-10-18 再生入力欠落とMediaSync停止失敗のレビュー是正
+
+- 構成前でもdecoderの保留入力受理時にOVERFLOW集約を解除し、次の欠落でprobe・保留入力を再回収する。Codec投入進捗による解除を置換する。
+- MediaSync release未完了の間は既存ownerにPCM・Codec・入力Surface・AudioTrackを保持する。既存ResourceCleanupの再試行成功後だけ停止の後段へ進み、重複した解放登録を避ける。
+- RestartEventの一般則を構成前の局所回収／構成後の全世代再生成と統一する。既存回復機構は変更しない。
+- 連続OVERFLOWの既存期待値を修正し、欠落を跨ぐMPEG-2 header誤結合、flush/release継続失敗→成功後のCodec解放の回帰を追加。flush失敗/release成功でもCodec回収まで検査し、CI件数を29+7へ更新する。
+- 修正前は新規・更新試験3件が失敗し、修正後はKotlin 1.9.22の製品compileとAndroid 15 Robolectric再生36件が成功。ローカルはキャッシュ済み依存による直接compile/JUnit実行でありGradle実行ではない。Android製品build・atest・VTS・実機症状解消は未実施。
+
+## 2026-10-18 Framework診断差分の配置をrevert
+
+- `0c0116d`で追加したFramework診断patchと、その手動適用・build手順を取り消す。製品ビルド側PR #17がpatch本体と適用を所有し、TIS統合手順は参照だけにする。
+- 同commitのMPEG Audio予約値修正・音声PID設計是正・TIS診断・採取scriptは取り消さない。既存Exact-mode patchも今回のrevert対象ではない。
+- 製品コード・試験の差分なし。Framework patchの内容一致、tools側の適用・再実行・欠落時の失敗をhostで確認。Android build・atest・VTS・実機確認は未実施。
+
+## 2026-10-18 診断追加に伴うhost compile回帰の是正
+
+- 既存host Log stubへAndroid APIと同じDEBUG値・isLoggableシグネチャを追加。hostでは診断を無効にし、製品のpropertyによるDEBUG制御には変更を加えない。新owner・worker・property模擬機構は追加しない。
+- 直前の「Kotlin compile成功」はRobolectricのcompileであり、独立したhost stub構成のcompile成功を意味しなかった。同構成での未定義参照によるCI失敗を認め、検証範囲を訂正する。
+
+## 2026-10-18 MPEG Audio予約値検証と実機診断採取
+
+- #207レビュー2件: 音声PIDのみの切替条件を一箇所へ集約し、PTS/MediaSync全世代再生成の一般則から例外を参照する。実装の局所Filter交換と設計を一致させた。
+- 既存`EsHeaderParser.mpegAudioFormat`で予約version/layerを拒否する。CodecHeaderProbe→MediaFormatの回帰で`FF EB 90 64`・`FF F9 90 64`の拒否と、後続の分割された`FF FB 90 64`の正常構成を確認する。新しいparser・判断表は追加しない。
+- TISのDEBUG診断へMediaSync生成区間と世代、Codec映像出力の要求/返却、callbackのPTS/受信時刻を追加。availability・資源寿命・回復動作は変更しない。
+- Framework用MediaSync診断patchを追加。DEBUG有効時だけnative instance、buffer ID、入力frame、media時刻/表示予定時刻、出力queue結果/次frame番号を記録し、Exact listenerや新しいAPI・保持状態は追加しない。tv checkoutだけではFrameworkへ適用されない。
+- Perfetto設定、ホスト採取/snapshot script、INTEGRATIONのビルド/採取/照合手順を追加。native stack、SurfaceFlinger layers/FrameTimeline、外部撮影を組み合わせる。Java stackやqueue成功を最終present成功と扱わず、採取失敗・trace loss・上流画素内容の未確定を明記する。
+- 新回帰は修正前に予約versionの誤受理で失敗し、修正後はRobolectric playback 28件＋MediaSync 6件が省略なしで成功。Robolectric構成のKotlin compile、変更範囲ktlint 1.8.0/detekt 1.23.8、Bash構文確認は成功。模擬adbによる採取成功/失敗・property復元・native採取成功/失敗の4ケースを確認した。
+- MediaSync原本blob `a3f55da7116afd0b976aec1b23c6917e0578db50`へのpatch適用、既存Exact patchとの両順序適用と結果一致を確認。native Soong build、端末でのPerfetto data source/ログ対応、実native stack採取、実波症状解消は未検証。模擬adbやpatch適用確認をこれらの代替証明としない。
+
+## 2026-10-18 起動前の映像待機とCompatibility時刻比較
+
+- #207: rate 0のMediaSyncへ同期renderして同じowner上の音声準備・開始・停止を塞がないよう、開始前の映像出力はCodecの貸与bufferのまま保持し、既存startup gateで再生開始後に渡す。独自の枠数・期限延長・workerは追加しない。
+- Compatibility判定はcallback入口の単調時計の受信時刻とarm時刻を比較する。中間SurfaceのCCodec通知に渡るPTS(ns)と`System.nanoTime()`を比較する誤りを除去した。旧世代・無効Surface・Surface error・Exact modeの拒否条件は維持する。
+- 修正前に、PTS/armの比較2件と、pause中の映像出力が開始・停止を塞ぐ2件のRobolectric試験が失敗することを確認。native Codec/MediaSync境界は模擬であり実機再現の証明ではない。
+- 修正後検証: `gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest --tests '*PlaybackFilterAdmissionTest' --tests '*PlaybackMediaSyncReleaseTest'`で27+6件成功。`LifecycleControlDeadlineTest`はKotlin 1.9.22で本体executor/ResourceCleanupと既存Log stubをコンパイルし、JUnitCoreで20件成功。変更Kotlinのktlint 1.8.0・detekt 1.23.8も成功。Soong/atest/実機は未実施。
+- 既存control待機超過の原因例外へownerスレッドのJava stackを添付する。未開始taskの取消しを先に確定し、開始済み操作の結果未確定・元ownerでのcleanupという契約は変更しない。
+- 34.1の各黒画面、旧映像の再表示、最後の停止不能をすべて同じ原因と確定したものではない。特に最後の世代は映像Codec生成ログがなく、今回の起動前映像待機だけでは説明できない。実機の症状解消は未確認。
+
+## 2026-10-18 再生失敗と停止位置の診断
+
+- #207: Sessionが受理した再生不能理由・詳細・世代、圧縮入力欠落の発生箇所、停止前の既存AV進捗と停止段階をログへ残す。pending queue拒否では既存の件数・bytes・PTS幅・Codec入力所有数を記録する。
+- 34.1（fe7ad3c）の黒画面・旧映像再表示の原因確定用。期限・容量・復旧回数・資源寿命は変更せず、症状の修正完了とは扱わない。実機検証は未実施。
+
+## 圧縮入力欠落後のCodec参照状態の退役
+
+- #207: 構成済みCodecに対するAV OVERFLOW、RestartEvent、owner受付拒否、sample拒否を既存の全再生generation終了・再生成へ接続。Filter.flushだけで旧Codecを継続せず、Codec errorと共通の一回の自動復旧制限を使う。構成前の局所flushは維持する。
+- HAL同時8eventという廃止済み前提をstartup保持の説明から除去した。TISにAU parser、PTS補間、別の復旧owner/queueは追加しない。
+- 構成済みCodecのoverflowが旧decoder/filterを退役し、再開対象がない場合に元世代へ失敗通知するRobolectric回帰試験へ更新。Android実機・zapping・色の解消は未確認。
+
+## 2026-10-17 MediaSync停止順序とCodec入力寿命
+
+- Android 15のCodec投入用C2Bufferが元MediaEventの解放通知を共有しないため、元event/blockを入力index返却またはdecoder解放成功まで保持し、HAL共有slotの早期再利用を防ぐ。
+- NHK停止後の再選局でCodec停止が待機超過したログを受け、MediaSyncのflush・解放をPCM返却とCodec停止より先へ移動。既存ownerとcleanupを使用する。
+- 停止順序とflush／解放失敗をRobolectricで検査する。実機の映像破損・AAC入力不足・停止回復は別途確認が必要。
+
+# ExactからCompatibilityへの降格時の継続監視取消し
+
+- private callbackの再arm不成立時に既存Exact watchdogを取り消し、実行時もcurrent modeを照合する。同じowner/世代上で処理し、Compatibilityの正常なCodec進捗を最終出力timeoutとして停止しない。
+- Android15 Robolectricで初回Exact成功から再arm不成立・Compatibility降格・7秒間のCodec callback継続を検査する。初回Exact eventはfixtureで配送し、再armのprivate API不在はstock SDKの実経路を通す。実機検証の代替にはしない。
+
+# 任意MediaSync patch未適用時の近似Compatibility復元
+
+- private callback不在/登録失敗時はcurrent Codecの公開描画callbackを近似available根拠として使用し、最終output成功と区別して診断する。
+- generation、Codec identity、arm時刻、Surface有効性とMediaSync Surface errorを検査し、ExactではCodec callbackだけで通知しない。
+- Compatibilityは厳密な最終出力watchdogを開始しない。初回callback欠落と最終出力の観測不能を区別する。
+- Robolectricへstock本番arm・一度のavailable・旧callback・確認済みSurface異常・Exactの分離を追加した。
+
+# 音声PID切替失敗後の同一選択による復旧
+
+- 新Filter開始成功後に選択を確定し、失敗時は旧選択と既存cleanup義務を保持する。
+- Sessionの無条件noopを除去し、実Filter不在なら同一track再選択から音声入力を再取得する。映像とMediaSyncの世代は維持する。
+- close/open/configure/start失敗とSession選択・実Filter・再選択復旧をAndroid15 Robolectricで検査する。
+
+# 最終出力可用性と音声選択の局所切替
+
+- Codec→MediaSync入力callbackによるavailable確定と継続watchdog更新を除去し、既存の最終出力one-shotを再armして継続を観測する。未パッチOSは観測不能を診断し初回期限で失敗する。
+- 同一音声再選択をnoopとし、同じvideo/PCR/audio構成でのPID変更は音声Filterだけを切り替える。PCM/codec構成変更では既存のMediaSync全世代再生成を維持する。
+- Sessionの再選択判定と成功signatureを追従し、旧Filter入力の拒否、同一構成/PID切替の映像owner保持、Codec入力callbackによる誤available/watchdog更新防止をRobolectricで検査する。
+- 設計と統合文書を追従。Android Soong・実機VTS・実デコーダ・実波の検証は未実施。
+
+# ライブ再生のcodec別最小ヘッダprobeへの移行（PR #207）
+
+- ES履歴を256/512/768 KiB保持して繰返し解析する方式を廃止。MPEG-2 Videoはsequence headerに必要な8 byte、MPEG audioは4 byte、AVC/HEVCはconfig用のSPS/PPS/VPS NAL（1件16 KiB以内）、AAC ADTSは構成に必要な1 frame（13-bit frame長以内）だけを有限保持する。
+- MediaEventの境界をまたぐstart code/NALを逐次検出し、構成に不要な映像音声ES本文を保持しない。GOP/AU再構成、独自PTS補完、追加ESキューは設けず、元LinearBlockの直接queue契約を維持する。
+- 構成前の未queue MediaEventは同時3件以下に抑え、HAL 8-slot受付の進行性を確保。ヘッダ未検出時の失敗期限は既存のdecoder startup deadlineを正本とする。
+- MPEG-2先頭1 MiB超のヘッダ探索、AVC/HEVCのパラメータセット跨ぎ、MPEG audio、ADTSのフレーム境界と超過異常のhost回帰6件を追加。RobolectricのMPEG-2 decoder fixtureも修正した。
+- Android Soong、現HEADのhost/Robolectric/Quality CI、実波連続再生は未実施・未確認。HEVC/AVC/AACの実codec適合は実機検証まで未確定。
 
 # Section Filter拒否時の現行性再確認
 

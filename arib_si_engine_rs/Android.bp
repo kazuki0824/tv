@@ -45,6 +45,8 @@ rust_ffi_shared {
     min_sdk_version: "35",
     rustlibs: [
         "libjni",
+        "libandroid_logger",
+        "liblog_rust",
         "libmaleicacid_arib_si_engine_core",
     ],
 }
@@ -104,6 +106,8 @@ rust_test {
     edition: "2021",
     rustlibs: [
         "libjni",
+        "libandroid_logger",
+        "liblog_rust",
         "libserde_json",
         "libmaleicacid_arib_si_engine_core",
     ],

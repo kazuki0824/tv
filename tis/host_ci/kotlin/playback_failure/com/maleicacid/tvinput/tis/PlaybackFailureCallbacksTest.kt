@@ -24,6 +24,7 @@ import org.junit.Test
 import sun.misc.Unsafe
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 // 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
 @Suppress("TooManyFunctions", "LargeClass")
@@ -597,7 +598,7 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun audioOnlyStopsBeforeNotifyingAndFailedVideoOnlyResultReachesSession() {
+    @Test fun audioFailureStopsBeforeNotifyingOriginalGeneration() {
         for (audioOnly in listOf(false, true)) {
             val fixture = Fixture(false, audioOnly, failCleanup = false)
             fixture.invoke(
@@ -607,18 +608,16 @@ class PlaybackFailureCallbacksTest {
                 audioOnly,
             )
             check(fixture.notifications == 1 && fixture.state is PlaybackStartState.Failed)
-            if (audioOnly) {
-                check(fixture.restarts.isEmpty())
-                check(fixture.failures.single().generation == 7L)
-                check(fixture.failures.single().reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE)
-                check(fixture.pipeline.currentPlaybackGenerationForTest() == 8L)
-            } else {
-                val restart = fixture.restarts.single()
-                check(restart.videoOnly && restart.originGeneration == 7L && restart.result.generation == 9L)
-                check(!restart.result.startedVideo && !restart.result.firstFramePending)
-                check(PlaybackStartTransitions.signature(fixture.state)?.audioPid == null)
-                check(PlaybackStartTransitions.pipelineGeneration(fixture.state) == 9L)
-            }
+            check(fixture.restarts.isEmpty())
+            check(fixture.failures.single().generation == 7L)
+            val expected =
+                if (audioOnly) {
+                    PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE
+                } else {
+                    PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FALLBACK_REQUIRED
+                }
+            check(fixture.failures.single().reason == expected)
+            check(fixture.pipeline.currentPlaybackGenerationForTest() == 8L)
         }
     }
 
@@ -634,6 +633,29 @@ class PlaybackFailureCallbacksTest {
         fixture.rejectRelease = false
         fixture.cleanup.retry()
         fixture.cleanup.requireComplete()
+    }
+
+    @Test
+    fun repeatedSiBeyondFormerCollectionLimitKeepsPlaybackControllerGeneration() {
+        LiveSiFixture().use { live ->
+            live.ingestInitialTables()
+            live.ingestPmt()
+            val generation = live.playback.pipeline.currentPlaybackGenerationForTest()
+            repeat(9_000) { live.ingest(0, "00b00d0011c100000001e1004521f9b6") }
+            val snapshot = live.engine.livePlaybackSnapshot()
+            val decision = live.decision()
+            check(decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY)
+            val result =
+                live.controller.updateCasMetadataAndFilters(
+                    snapshot.caMetadata,
+                    snapshot.pmtPidsFor(live.key),
+                    7L,
+                    decision.casDecisionReady,
+                )
+            check(result != null)
+            check(live.playback.pipeline.currentPlaybackGenerationForTest() == generation)
+            check(live.dynamicPids("dynamicPmtPids") == setOf(TsPid(0x100)))
+        }
     }
 
     // 実JNIのPAT/SDTから本番session refreshとcontrollerのFilter開始までを通す。
@@ -689,17 +711,19 @@ class PlaybackFailureCallbacksTest {
                 live.ingest(0x100, "02b0170001c10000e102f0001be101f0000fe102f000a3052165")
                 check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
                 live.refresh()
-                check(live.state() == PlaybackStartState.Stopped)
-                check(live.playback.pipeline.currentPlaybackGenerationForTest() == 8L)
+                check(live.state() == if (playing) PlaybackStartState.Stopped else PlaybackStartState.Idle)
+                check(live.playback.pipeline.currentPlaybackGenerationForTest() == 8L) {
+                    "playing=$playing actual=${live.playback.pipeline.currentPlaybackGenerationForTest()}"
+                }
                 check(MediaCas.Faults.pluginCloses == 1)
                 check(live.dynamicPids("dynamicEcmPids").isEmpty() && live.dynamicPids("dynamicEmmPids").isEmpty())
                 check(live.dynamicPids("dynamicPmtPids") == setOf(TsPid(0x100)))
                 check(Filter::class.java.getField("closes").getInt(emmFilter) == 1)
                 check(Filter::class.java.getField("closes").getInt(live.filter) == 0)
-                check(live.pendingNotifications.size == 1)
+                check(live.pendingNotifications.size == if (playing) 1 else 0)
                 live.ingestPmt()
                 check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
-                check(live.state() == PlaybackStartState.Stopped)
+                check(live.state() == if (playing) PlaybackStartState.Stopped else PlaybackStartState.Idle)
             }
         }
     }
@@ -1400,6 +1424,8 @@ class PlaybackFailureCallbacksTest {
             set("executor", LifecycleSerialExecutor("playback-fixture"))
             set("playbackGeneration", 7L)
             set("released", AtomicBoolean(false))
+            // Unsafeによるconstructor省略時も停止前のnative wake参照を初期化する。
+            set("blockedVideoOutputSync", AtomicReference<MediaSync?>())
             set("videoAvailableNotified", AtomicBoolean(!waiting))
             set("resourceCleanup", cleanup)
             // Unsafe fixtureはconstructor初期化を省くため、本番の診断専用fieldを明示初期化する。
