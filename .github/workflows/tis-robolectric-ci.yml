@@ -77,7 +77,7 @@ jobs:
           assert startup.get("skipped", "0") == "0", startup.attrib
           playback_report = report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest.xml")
           playback = ET.parse(playback_report).getroot()
-          assert playback.get("tests") == "35", playback.attrib
+          assert playback.get("tests") == "38", playback.attrib
           assert playback.get("failures") == "0" and playback.get("errors") == "0", playback.attrib
           assert playback.get("skipped", "0") == "0", playback.attrib
           for case in playback.findall("testcase"):
