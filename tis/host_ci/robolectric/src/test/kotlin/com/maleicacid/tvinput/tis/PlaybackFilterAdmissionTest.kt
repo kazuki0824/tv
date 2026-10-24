@@ -71,6 +71,107 @@ import kotlin.test.assertTrue
 @Suppress("TooManyFunctions", "LargeClass")
 class PlaybackFilterAdmissionTest {
     @Test
+    fun laterRecoverableFailureInSameTuneCanBecomeEligibleAgain() {
+        RetryFixture().use { fixture ->
+            fixture.failAndSchedule(7L)
+            fixture.runReservation()
+            assertEquals(PlaybackStartState.Idle, fixture.state())
+            // 再開後の別世代で同種の障害が再発しても、過去の再試行だけで打ち切らない。
+            fixture.failAndSchedule(9L)
+            fixture.runReservation()
+            assertEquals(PlaybackStartState.Idle, fixture.state())
+        }
+    }
+
+    @Test
+    fun delayedRecoveryCannotReplaceStoppedReleasedOrNewTuneState() {
+        for (boundary in listOf("stop", "release", "tune")) {
+            RetryFixture().use { fixture ->
+                fixture.failAndSchedule(7L)
+                val next = PlaybackStartState.Stopped
+                fixture.executor.callControl(5_000L) {
+                    ReflectionHelpers.setField(fixture.session, "playbackState", next)
+                    if (boundary == "release") fixture.released.set(true)
+                    if (boundary == "tune") {
+                        ReflectionHelpers.setField(fixture.session, "currentGeneration", 2L)
+                        ReflectionHelpers.setField(
+                            fixture.session,
+                            "playbackState",
+                            PlaybackStartState.Failed(fixture.signature, 9L),
+                        )
+                    }
+                }
+                val expected = fixture.state()
+                fixture.runReservation()
+                assertEquals(expected, fixture.state())
+            }
+        }
+    }
+
+    // JNI等の端末初期化を省略し、Sessionの実予約処理と既存executorを実行する。
+    // SIは未取得とし、再試行受付までを検査する。実Codec再開・描画の証明ではない。
+    private class RetryFixture : AutoCloseable {
+        val executor = LifecycleSerialExecutor("session-recovery-test")
+        val released = AtomicBoolean(false)
+        val signature = AvPlaybackSignature(ServiceKey(4, 0x4010, 101), TsPid(0x100), TsPid(0x101), 0x1b, null, null, true, false)
+        val session: MaleicacidLiveSession
+        private val texture = SurfaceTexture(0)
+        private val surface = Surface(texture)
+
+        init {
+            val unsafeType = Class.forName("sun.misc.Unsafe")
+            val unsafe = unsafeType.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
+            session =
+                unsafeType
+                    .getMethod("allocateInstance", Class::class.java)
+                    .invoke(unsafe, MaleicacidLiveSession::class.java) as MaleicacidLiveSession
+            ReflectionHelpers.setField(session, "sessionExecutor", executor)
+            ReflectionHelpers.setField(session, "releaseOnce", released)
+            ReflectionHelpers.setField(session, "unblockTimerHandler", android.os.Handler(Looper.getMainLooper()))
+            ReflectionHelpers.setField(session, "surface", surface)
+            ReflectionHelpers.setField(session, "currentGeneration", 1L)
+            check(surface.isValid)
+        }
+
+        fun failAndSchedule(generation: Long) {
+            executor.callControl(5_000L) {
+                ReflectionHelpers.setField(session, "playbackState", PlaybackStartState.Failed(signature, generation))
+                MaleicacidLiveSession::class.java
+                    .getDeclaredMethod(
+                        "scheduleRecoverablePlaybackRetry",
+                        PlaybackPipeline.PlaybackUnavailable::class.java,
+                    ).apply { isAccessible = true }
+                    .invoke(
+                        session,
+                        PlaybackPipeline.PlaybackUnavailable(
+                            PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
+                            "injected",
+                            generation,
+                        ),
+                    )
+            }
+        }
+
+        fun runReservation() {
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(301L))
+            val drained = CountDownLatch(1)
+            executor.executeData { drained.countDown() }
+            check(drained.await(5, TimeUnit.SECONDS))
+        }
+
+        fun state(): PlaybackStartState = executor.callControl(5_000L) { ReflectionHelpers.getField(session, "playbackState") }
+
+        override fun close() {
+            released.set(true)
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(301L))
+            executor.shutdownNow()
+            check(executor.awaitTermination(5, TimeUnit.SECONDS))
+            surface.release()
+            texture.release()
+        }
+    }
+
+    @Test
     fun secondOverflowMustInvalidatePartialHeader() {
         Fixture().use { fixture ->
             fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)

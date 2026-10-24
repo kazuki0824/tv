@@ -1,3 +1,11 @@
+# 2026-10-25 再試行方針の仕様確定と修正前の回帰試験（#207）
+
+- 再試行判断・予約をSessionへ集約する設計を確定。Pipelineは障害分類と停止・解放、Controllerは現在選局・CAS照合を担当する。停止完了後300msの既存Session待機値を引き継ぎ、通算一回制限を廃止する。300msの実機負荷妥当性は未実証。持続障害では間隔を置いた再試行が続く。保持予算の数値は変更しない。
+- 再開時は通常の開始入口で最新の視聴条件を確認する。停止完了通知は失敗元generationへ関連付け、予約はtune・署名・失敗世代・Failed状態・releaseを照合して実行する。未解放資源があれば再開しない。製品実装の反映は後続工程であり、このコミットで完了したとは扱わない。
+- 既存Robolectric受付試験に2件追加。同じ選局で別の再生世代が失敗しても再試行を受理する動作と、停止・解放・別選局の状態境界後に予約が状態を上書きしない動作を実Sessionの予約処理で検査する。fixtureは端末初期化を省き、状態境界を設定する。onTune/onRelease全経路、実Codec再開、最終描画の実証ではない。削除予定の再試行履歴フィールドの値や存在は検査しない。
+- ローカル実行: `ANDROID_HOME=/tmp/tv42-sdk /tmp/tv42-tools/gradle-8.9/bin/gradle -p tis/host_ci/robolectric testDebugUnitTest --tests '*PlaybackFilterAdmissionTest' --tests '*PlaybackMediaSyncReleaseTest' --offline`。受付45件中44件成功・1件失敗、解放14件成功、error/skipは0。失敗は `laterRecoverableFailureInSameTuneCanBecomeEligibleAgain` の二度目の再試行受付で、Idleを期待するところFailedのまま。既存一回制限による修正前の失敗を固定し、Ignoreや失敗許容で隠さない。CIの受付件数gateを43から45へ更新したため、本段階のCIは当該未修正動作で失敗する。
+- 変更Kotlinのktlint・detektと`git diff --check`は成功。Android製品build・atest/VTS・実機再生は未実施。停止・選局との両立は上記状態境界試験と既存寿命管理の静的確認の範囲であり、集約後実装の全経路検証は後続工程に残る。
+
 # 2026-10-24 映像native入力を既存映像workerへ分離（#207）
 
 - `DecoderPipeline`の映像`QueueRequest.queue()`を既存の映像出力Handlerへ配送し、音声返却・制御を担う共通playback ownerをnative入力待機から解放する。追加worker、payloadコピー、別入力queue、容量増加はない。投入中は1呼出しとし、未投入の残りは既存pendingSamplesで保持する。投入中sampleも既存の件数・byte予算へ含める。
