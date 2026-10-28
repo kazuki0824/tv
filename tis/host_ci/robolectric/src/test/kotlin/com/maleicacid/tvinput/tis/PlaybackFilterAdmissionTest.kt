@@ -1333,13 +1333,12 @@ class PlaybackFilterAdmissionTest {
             val audio = fixture.avFilter(true)
             val selection = fixture.audioSelection()
             // PID-onlyではなく、音声形式変更による全再生世代の再生成を検査する。
-            val next =
-                selection.copy(
-                    audio = selection.audio!!.copy(
-                        elementaryPid = TsPid(0x111),
-                        streamType = 0x03,
-                    ),
+            val nextAudio =
+                requireNotNull(selection.audio).copy(
+                    elementaryPid = TsPid(0x111),
+                    streamType = 0x03,
                 )
+            val next = selection.copy(audio = nextAudio)
             val result = fixture.pipeline.switchAudio(fixture.tuner, next)
             assertFalse(result.switchedAudio)
             assertEquals(-1L, result.generation)

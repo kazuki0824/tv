@@ -62,7 +62,7 @@
 
 - 音声のみの再生中はSurface着脱を理由に再生状態・MediaSync音声資源を破棄しない。
 - 映像を伴う音声トラック切替は、#207の音声PID-only切替を維持し、全再生成が必要な場合だけPipelineのSurface有効性を検査して旧世代を維持する。Session側でPID-onlyまで拒否していた過度のgateを除去した。
-- Session・Pipeline・ホスト試験・Robolectric試験と設計を更新。音声PID-onlyを不当に拒否するRobolectricデグレ、host fixtureの未初期化`releaseOnce`、整形違反を修正した。Soong、atest、VTS、実機でのSurface再接続・競合は未検証。
+- Session・Pipeline・ホスト試験・Robolectric試験と設計を更新。音声PID-onlyを不当に拒否するRobolectricデグレ、host fixtureの未初期化`releaseOnce`、整形違反を修正した。hostのcleanup失敗試験はSurface不要なaudio-only経路で維持し、Robolectricの追加1件に合わせてCIの期待値を修正した。Soong、atest、VTS、実機でのSurface再接続・競合は未検証。
 
 # 2026-10-28 映像再生開始のSurface前提条件
 

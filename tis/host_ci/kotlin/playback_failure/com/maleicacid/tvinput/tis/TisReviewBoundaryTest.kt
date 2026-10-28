@@ -26,6 +26,7 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import org.junit.Test
 import sun.misc.Unsafe
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 // 実TIS境界の失敗注入を同じhost fixtureで検査し、関数数だけを理由にfixtureを複製しない。
@@ -511,7 +512,7 @@ class TisReviewBoundaryTest {
             val controller = allocate(TunerController::class.java)
             set(controller, "sectionExecutor", executor)
             set(session, "tunerController", controller)
-            set(session, "releaseOnce", java.util.concurrent.atomic.AtomicBoolean(false))
+            set(session, "releaseOnce", AtomicBoolean(false))
             set(session, "dualMonoPresentation", PlaybackPipeline.DualMonoPresentation.MAIN)
             val base = android.media.tv.TvInputService.Session::class.java
             base.getDeclaredField("mLock").apply { isAccessible = true }.set(session, Any())
