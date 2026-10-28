@@ -1,5 +1,9 @@
-# system_serverの再生成でTRMのFrontend登録が失われるため、
-# TRMに一度だけ登録する既存mediatunerをzygote停止時に再生成する。
-# 未起動のlazy media.tunerを起動せず、vendor HALは停止しない。
+# 明示的なFramework停止中は旧TRMへ再登録しない。
+# vendor HALを止めず、media.tunerだけを次のTRM公開まで停止する。
 on property:init.svc.zygote=stopped
-    restart --only-if-running media.tuner
+    stop media.tuner
+
+# 非lazy構成のTRMがBinder公開後に送る標準通知を使用する。
+# 停止処理中の旧processが残っていても、新TRMに登録するprocessへ置換する。
+on property:tuner.server.enable=true
+    restart media.tuner

@@ -99,10 +99,12 @@ jobs:
               line.strip() for line in rc.splitlines()
               if line.strip() and not line.lstrip().startswith("#")
           ]
-          # 明示的stopだけを補完する。通常restartは標準zygote onrestartが担当。
+          # 明示的stopとTRM公開後の再起動を接続する。独立した準備propertyは持たない。
           assert actions == [
               "on property:init.svc.zygote=stopped",
-              "restart --only-if-running media.tuner",
-          ], "only the explicit-stop recovery action is permitted"
+              "stop media.tuner",
+              "on property:tuner.server.enable=true",
+              "restart media.tuner",
+          ], "explicit stop must defer restart until TRM publication"
           print("system init packaging: static contract satisfied (device recovery untested)")
           PY
