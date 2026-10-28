@@ -697,6 +697,11 @@ class MaleicacidLiveSession(
             notifyVideoUnavailable(mapUnavailableReason(failure))
             return false
         }
+        // SI更新などの再評価で、Surface待ちを失敗試行や新しい再生世代へ変換しない。
+        if (selection.video != null && surface?.isValid != true) {
+            tracePlaybackGate("START_WAITING_SURFACE")
+            return false
+        }
         val signature = playbackSignatureFor(service, selection)
         if (signature == null) {
             tracePlaybackGate("INVALID_PLAYBACK_SIGNATURE")

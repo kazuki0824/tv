@@ -58,6 +58,14 @@
 - CurrentProgramRatingResolverのquery、候補読取り、サービス照合、先頭候補選択を読み合わせ、実装との整合を確認した。実装・SQLの選択順・試験は変更しない。
 - 文書のみの修正のため、build・ホスト試験・atest/VTS・実機試験は実施していない。
 
+# 2026-10-28 映像再生開始のSurface前提条件
+
+- Sessionの選択済みAVに映像がある場合、Surface未設定・無効の間は開始要求を発行せず、再生状態を変更せず待つ。SI更新等の再評価による不要な開始・失敗確定を防ぐ。音声のみの選択には同条件を課さず、Pipeline側の資源検査は維持する。
+- DESIGNへ開始待ちと既存再評価経路の契約を追記した。独立した予約、状態、再試行履歴は追加しない。
+- 実Sessionを呼ぶホスト回帰試験を2件追加し、Idle／Stoppedでの反復評価が開始へ進まないことと、音声のみのStartedがSurfaceなしでも継続することを検証。CI期待件数を401から403へ更新した。
+- 本番・試験Kotlinのコンパイル、対象HEADのSI JNIを使用したホスト403件、変更Kotlinのktlint 1.8.0・detekt 1.23.8、差分検査が成功。#116の修正前コードではSurface待ち試験が不要な開始・失敗確定へ到達して失敗し、音声のみの試験は成功することを確認した。
+- Android/Soong、atest/VTS、実機でのSurface再接続・無効化競合と黒画面解消の確認は未実施。ホスト試験は実機の映像出力成功を証明しない。
+
 # 2026-10-28 現在番組選択の診断状態に関する設計記述を整理（#210）
 
 - 削除済みの`CurrentProgramResolutionDiagnostic`と保持項目に関する旧記述を除去し、未読診断snapshotを保持しない現行方針へ統一した。ARIB `event_id`の`COLUMN_EVENT_ID`およびJSON v1 `programKey.eventId`への投影契約は維持する。
