@@ -7,7 +7,7 @@
 # 2026-10-28 明示的Framework停止後のTRM公開待ち
 
 - #202由来のzygote停止直後のmediatuner再起動を、停止と新TRM公開後の標準`tuner.server.enable=true`通知による再起動へ分けた。旧TRMの死んだBinderを取得する競合を避け、停止処理中のprocessにも再起動を予約する。
-- 製品rcの静的CI期待値を更新し、INTEGRATIONへ非lazy／lazy・標準enableとの関係と実機受入れ条件を記載した。prebuilt_etcの実配置名へ文書を合わせた。
+- 製品rcの静的CI期待値を更新し、INTEGRATIONへ非lazy／lazy・標準enableとの関係と実機受入れ条件を記載した。レビューで確認したSoongの既定配置名（module名）をそのまま使用せず、`filename_from_src: true`で`.rc`拡張子を保持し、CIと配置確認手順を一致させた。
 - 静的配置検査と差分検査を実施。Android/Soong build、init/Binder実動作、通常起動・反復stop/start・自動再起動・lazy構成の実機検証は未実施。
 
 # 2026-10-22 PX4 worker異常終了時のSTOP失敗（#116）

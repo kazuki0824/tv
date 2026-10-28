@@ -77,6 +77,7 @@ jobs:
           assert len(modules) == 1, "system init module must be unique"
           module = modules[0]
           assert 'src: "init/mediatuner-trm-lifecycle.rc"' in module
+          assert 'filename_from_src: true' in module, "init rc must install with .rc suffix"
           assert 'sub_dir: "init"' in module
           assert not any(
               flag in module

@@ -374,6 +374,7 @@ rust_binary {
 prebuilt_etc {
     name: "maleicacid_mediatuner_trm_lifecycle_rc",
     src: "init/mediatuner-trm-lifecycle.rc",
+    filename_from_src: true,
     sub_dir: "init",
 }
 
