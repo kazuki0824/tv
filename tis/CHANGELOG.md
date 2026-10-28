@@ -48,6 +48,11 @@
 - CurrentProgramRatingResolverのquery、候補読取り、サービス照合、先頭候補選択を読み合わせ、実装との整合を確認した。実装・SQLの選択順・試験は変更しない。
 - 文書のみの修正のため、build・ホスト試験・atest/VTS・実機試験は実施していない。
 
+# 2026-10-28 現在番組選択の診断状態に関する設計記述を整理（#210）
+
+- 削除済みの`CurrentProgramResolutionDiagnostic`と保持項目に関する旧記述を除去し、未読診断snapshotを保持しない現行方針へ統一した。ARIB `event_id`の`COLUMN_EVENT_ID`およびJSON v1 `programKey.eventId`への投影契約は維持する。
+- 検証：現行resolverとTIS/SIの設計契約を照合し、旧診断型への現行規範参照が残っていないことと`git diff --check`を確認した。文書のみの変更であり、実行テストの追加・再実行は行っていない。
+
 # 2026-10-25 入力予算判定の冗長分岐を簡素化（#207）
 
 - Qodanaの`RedundantIf`指摘に対応し、`withinQueueBudget()`のbyte上限比較を直接返す。冗長分岐の導入は#207の`3bb499c3`（PTS span判定の撤去時）で、`54f6e12`で投入中sampleを含む現行比較式へ変更された。件数・byte予算、投入中sampleの会計、境界値を含む受付結果は変更しない。動作を変えない簡素化のため専用試験を追加しない。

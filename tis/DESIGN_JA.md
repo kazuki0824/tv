@@ -535,7 +535,7 @@ publish fingerprint は、provider-data bytesを含む TvProvider へ実際に�
 
 現在番組 resolver は `TvContract.buildProgramsUriForChannel(channelUri, now, now + 1ms)` の時間範囲URIを使用し、TvProvider queryのSQL `selection` / `selectionArgs` は渡さない。このURIが `END_TIME_UTC_MILLIS > now AND START_TIME_UTC_MILLIS < now + 1ms` のoverlapへ絞るため、整数ms時刻では現在番組の `START_TIME_UTC_MILLIS <= now AND END_TIME_UTC_MILLIS > now` と一致する。sort order は `START_TIME_UTC_MILLIS DESC, END_TIME_UTC_MILLIS ASC, _ID DESC` に固定する。TvProviderが指定したsort orderで返すcursorの順序を前提とし、サービス照合を通過した行のうち先頭の1件を選ぶ。overlapがある場合も同じ順序で選択し、Kotlin側では再整列しない。
 
-現在番組選択の診断は process-local `CurrentProgramResolutionDiagnostic` とし、`selectionRule`、`overlapCount`、`selectedProgramId` を保持できる。`selectionRule` は `START_DESC_END_ASC_ID_DESC` とし、対象なしの場合は empty string とする。この診断は `Programs.COLUMN_INTERNAL_PROVIDER_DATA` へ永続化せず、publish fingerprint、Program identity、unblock identity の構成要素にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
+ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
 
 ## CA descriptor / provider-data 直列化
 
