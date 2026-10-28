@@ -1325,6 +1325,33 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun audioRestartWithMissingSurfacePreservesVideoAndPlaybackGeneration() {
+        Fixture().use { fixture ->
+            fixture.decoder(false)
+            fixture.decoder(true)
+            val video = fixture.avFilter(false)
+            val audio = fixture.avFilter(true)
+            val selection = fixture.audioSelection()
+            // PID-onlyではなく、音声形式変更による全再生世代の再生成を検査する。
+            val next =
+                selection.copy(
+                    audio = selection.audio!!.copy(
+                        elementaryPid = TsPid(0x111),
+                        streamType = 0x03,
+                    ),
+                )
+            val result = fixture.pipeline.switchAudio(fixture.tuner, next)
+            assertFalse(result.switchedAudio)
+            assertEquals(-1L, result.generation)
+            assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertEquals(selection, ReflectionHelpers.getField<Any>(fixture.pipeline, "activeSelection"))
+            assertEquals(0, Shadow.extract<NativeFilter>(video).closes)
+            assertEquals(0, Shadow.extract<NativeFilter>(audio).closes)
+            assertTrue(fixture.unavailable.isEmpty())
+        }
+    }
+
+    @Test
     fun videoNativeInputWaitDoesNotBlockPlaybackControl() {
         Fixture().use { fixture ->
             fixture.decoder()

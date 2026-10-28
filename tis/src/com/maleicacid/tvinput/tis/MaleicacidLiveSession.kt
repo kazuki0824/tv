@@ -834,8 +834,6 @@ class MaleicacidLiveSession(
                 val previousAudioFallbackDisabled = audioFallbackDisabled
                 val previousDualMonoPresentation = dualMonoPresentation
                 if (playbackState !is PlaybackStartState.Started) return false
-                // 音声PID切替前に、映像出力Surfaceの有効性を確認する。
-                if (tracks.any { it.type == TvTrackInfo.TYPE_VIDEO } && surface?.isValid != true) return false
                 preferredAudioTrackId = trackId
                 audioFallbackDisabled = false
                 if (trackId != previousAudioTrackId) dualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN

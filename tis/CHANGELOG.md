@@ -61,8 +61,8 @@
 # 2026-10-28 Surface着脱時の音声保持と音声トラック切替の開始前検査（#212）
 
 - 音声のみの再生中はSurface着脱を理由に再生状態・MediaSync音声資源を破棄しない。
-- 映像を伴う音声トラック切替は選択変更の前に有効Surfaceを検査する。#207の音声PID切替最適化を保持する。
-- Session・Pipelineと設計を更新し、ホスト回帰試験を追加。Soong、atest、VTS、実機でのSurface再接続・競合は未検証。
+- 映像を伴う音声トラック切替は、#207の音声PID-only切替を維持し、全再生成が必要な場合だけPipelineのSurface有効性を検査して旧世代を維持する。Session側でPID-onlyまで拒否していた過度のgateを除去した。
+- Session・Pipeline・ホスト試験・Robolectric試験と設計を更新。音声PID-onlyを不当に拒否するRobolectricデグレ、host fixtureの未初期化`releaseOnce`、整形違反を修正した。Soong、atest、VTS、実機でのSurface再接続・競合は未検証。
 
 # 2026-10-28 映像再生開始のSurface前提条件
 

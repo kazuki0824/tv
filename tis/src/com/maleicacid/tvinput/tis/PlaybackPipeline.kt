@@ -777,6 +777,10 @@ class PlaybackPipeline(
                 AudioSwitchResult(false, listOf("AUDIO_PID_SWITCH_FAILED: ${error.message}"))
             }
         }
+        // PID-only切替では映像世代を保持する。全再生成の経路だけSurfaceを要求する。
+        if (selection.video != null && surface?.isValid != true) {
+            return AudioSwitchResult(false, listOf("有効な映像Surfaceを待機しています"))
+        }
         val restarted = startRequestedPlayback(tuner, channel, selection)
         return AudioSwitchResult(
             switchedAudio = restarted.startedAudio,

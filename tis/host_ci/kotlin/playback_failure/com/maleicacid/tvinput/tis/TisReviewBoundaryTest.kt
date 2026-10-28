@@ -511,6 +511,7 @@ class TisReviewBoundaryTest {
             val controller = allocate(TunerController::class.java)
             set(controller, "sectionExecutor", executor)
             set(session, "tunerController", controller)
+            set(session, "releaseOnce", java.util.concurrent.atomic.AtomicBoolean(false))
             set(session, "dualMonoPresentation", PlaybackPipeline.DualMonoPresentation.MAIN)
             val base = android.media.tv.TvInputService.Session::class.java
             base.getDeclaredField("mLock").apply { isAccessible = true }.set(session, Any())
@@ -518,8 +519,11 @@ class TisReviewBoundaryTest {
             val key = ServiceKey(4, 1, 1)
             val stream = AribElementaryStream(TsPid(0x101), if (audioOnly) 0x03 else 0x02, null, null, null)
             val streams =
-                if (audioOnly) listOf(stream)
-                else listOf(stream, AribElementaryStream(TsPid(0x102), 0x03, null, null, null))
+                if (audioOnly) {
+                    listOf(stream)
+                } else {
+                    listOf(stream, AribElementaryStream(TsPid(0x102), 0x03, null, null, null))
+                }
             val service =
                 AribService(
                     serviceKey = key,
@@ -609,33 +613,12 @@ class TisReviewBoundaryTest {
                 .apply { isAccessible = true }
         // 未初期化callbackに触れれば失敗する。音声のみの着脱では通知・停止してはならない。
         setter.invoke(pipeline, null)
-        check(pipeline.javaClass.getDeclaredField("activeSelection").apply { isAccessible = true }.get(pipeline) === selection)
-    }
-
-    @Test fun videoAudioTrackSwitchWithoutSurfaceDoesNotMutatePreference() {
-        withSurfaceWaitSession(audioOnly = false) { session, service ->
-            val controller =
-                session.javaClass.getDeclaredField("tunerController").apply { isAccessible = true }.get(session) as TunerController
-            val selection = controller.selectAvStreams(service.serviceKey, service.pcrPid, service.streams)
-            val signature =
-                session.javaClass.getDeclaredMethod(
-                    "playbackSignatureFor",
-                    AribService::class.java,
-                    TunerController.AvStreamSelection::class.java,
-                ).apply { isAccessible = true }.invoke(session, service, selection) as AvPlaybackSignature
-            val before = PlaybackStartState.Started(signature, 7L)
-            set(session, "playbackState", before)
-            val audioTrack = controller.tracksFor(service.streams).first { it.type == android.media.tv.TvTrackInfo.TYPE_AUDIO }
-            val select =
-                session.javaClass.getDeclaredMethod(
-                    "onSelectTrackOnSessionExecutor",
-                    Int::class.javaPrimitiveType,
-                    String::class.java,
-                ).apply { isAccessible = true }
-            check(select.invoke(session, android.media.tv.TvTrackInfo.TYPE_AUDIO, audioTrack.id) == false)
-            check(session.javaClass.getDeclaredField("playbackState").apply { isAccessible = true }.get(session) === before)
-            check(session.javaClass.getDeclaredField("preferredAudioTrackId").apply { isAccessible = true }.get(session) == null)
-        }
+        val retainedSelection =
+            pipeline.javaClass
+                .getDeclaredField("activeSelection")
+                .apply { isAccessible = true }
+                .get(pipeline)
+        check(retainedSelection === selection)
     }
 
     @Test fun holdingParentalPermissionDoesNotCommitVideoAvailability() {
