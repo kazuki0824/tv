@@ -277,6 +277,11 @@ class MaleicacidLiveSession(
         this.surface = surface
         tunerController.setSurface(surface)
         tracePlaybackGate(if (surface == null) "SURFACE_DETACHED" else "SURFACE_ATTACHED")
+        // 音声のみの再生は映像Surfaceの着脱に依存しない。
+        if (PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)) {
+            if (playbackState !is PlaybackStartState.Started) refreshDynamicSiAndCasFilters()
+            return true
+        }
         if (surface?.isValid != true) {
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
@@ -829,6 +834,8 @@ class MaleicacidLiveSession(
                 val previousAudioFallbackDisabled = audioFallbackDisabled
                 val previousDualMonoPresentation = dualMonoPresentation
                 if (playbackState !is PlaybackStartState.Started) return false
+                // 音声PID切替前に、映像出力Surfaceの有効性を確認する。
+                if (tracks.any { it.type == TvTrackInfo.TYPE_VIDEO } && surface?.isValid != true) return false
                 preferredAudioTrackId = trackId
                 audioFallbackDisabled = false
                 if (trackId != previousAudioTrackId) dualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN

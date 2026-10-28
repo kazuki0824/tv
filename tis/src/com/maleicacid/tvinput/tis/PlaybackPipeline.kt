@@ -439,9 +439,10 @@ class PlaybackPipeline(
     }
 
     private fun setSurfaceOnPlaybackExecutor(newSurface: Surface?) {
-        if (surface !== newSurface && mediaSync != null) stopOnPlaybackExecutor()
+        val videoActive = activeSelection?.video != null
+        if (videoActive && surface !== newSurface && mediaSync != null) stopOnPlaybackExecutor()
         surface = newSurface
-        if (newSurface == null) emitUnavailable(PlaybackUnavailableReason.SURFACE_DETACHED)
+        if (videoActive && newSurface == null) emitUnavailable(PlaybackUnavailableReason.SURFACE_DETACHED)
     }
 
     fun start(
