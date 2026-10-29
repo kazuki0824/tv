@@ -122,12 +122,23 @@ class TunerController(
     private inner class TunerSectionFilterHandle(
         override val pid: TsPid,
         private val artifacts: MutableList<SectionFilterArtifact>,
-        private val generation: Long,
+        val generation: Long,
     ) : SectionFilterHandle {
-        private var closing = false
+        @Volatile private var closing = false
         val isClosed: Boolean get() = artifacts.isEmpty()
         override val isOpen: Boolean get() = !closing && artifacts.isNotEmpty() && artifacts.all { it.started }
         override val filterObjectCount: Int get() = artifacts.size
+
+        fun recordInputDeliveryLossIfCurrent(
+            ingest: SectionIngestController?,
+            tableId: Int?,
+        ) {
+            // callback側ではowner専用のFilter集合を読まず、既存handleの閉鎖状態を使う。
+            if (released || closing) return
+            if (tuneAccepted && generation == tuneGeneration) {
+                ingest?.recordInputDeliveryLoss(pid, tableId)
+            }
+        }
 
         override fun close(): Unit =
             callOnController {
@@ -1153,6 +1164,8 @@ class TunerController(
             Log.w(LogTags.TIS, "$detail inputId=$inputId pid=$pid generation=$generation")
             return UnavailableSectionFilterHandle(pid, detail)
         }
+        val artifacts = mutableListOf<SectionFilterArtifact>()
+        val handle = TunerSectionFilterHandle(pid, artifacts, generation)
         val callback =
             object : FilterCallback {
                 override fun onFilterEvent(
@@ -1160,7 +1173,7 @@ class TunerController(
                     events: Array<FilterEvent>,
                 ) {
                     events.filterIsInstance<SectionEvent>().forEach { event ->
-                        handleSectionFilterEvent(filter, event, pid, generation)
+                        handleSectionFilterEvent(filter, event, handle)
                     }
                 }
 
@@ -1178,8 +1191,6 @@ class TunerController(
                     }
                 }
             }
-        val artifacts = mutableListOf<SectionFilterArtifact>()
-        val handle = TunerSectionFilterHandle(pid, artifacts, generation)
         sectionFilterHandles[pid] = handle
         try {
             for (settings in sectionSettingsForPid(pid, eitPfActualOnly)) {
@@ -1225,14 +1236,16 @@ class TunerController(
     private fun handleSectionFilterEvent(
         filter: Filter,
         event: SectionEvent,
-        pid: TsPid,
-        generation: Long,
+        handle: TunerSectionFilterHandle,
     ) {
+        val pid = handle.pid
+        val generation = handle.generation
         val length = event.dataLength.toLong()
         when (SectionFilterPolicy.dataLengthDecision(length)) {
             SectionFilterPolicy.DataLengthDecision.MALFORMED -> {
                 runCatching {
                     postOnControllerData {
+                        if (!isCurrentSectionFilter(pid, generation, filter)) return@postOnControllerData
                         recordSectionMalformedDrop(pid, "dataLength=$length")
                     }
                 }
@@ -1242,6 +1255,7 @@ class TunerController(
                 val drained = drainSectionEventPayload(filter, length)
                 runCatching {
                     postOnControllerData {
+                        if (!isCurrentSectionFilter(pid, generation, filter)) return@postOnControllerData
                         recordSectionOversizedDrop(pid, length)
                         if (drained != length) {
                             recordSectionReadError(
@@ -1254,22 +1268,24 @@ class TunerController(
             }
 
             SectionFilterPolicy.DataLengthDecision.ACCEPT -> {
-                readAndIngestSectionEvent(filter, pid, generation, length)
+                readAndIngestSectionEvent(filter, handle, length)
             }
         }
     }
 
     private fun readAndIngestSectionEvent(
         filter: Filter,
-        pid: TsPid,
-        generation: Long,
+        handle: TunerSectionFilterHandle,
         length: Long,
     ) {
+        val pid = handle.pid
+        val generation = handle.generation
         val section = ByteArray(length.toInt())
         val readResult = runCatching { filter.read(section, 0, section.size.toLong()) }
         if (readResult.isFailure) {
             runCatching {
                 postOnControllerData {
+                    if (!isCurrentSectionFilter(pid, generation, filter)) return@postOnControllerData
                     recordSectionReadError(
                         pid,
                         "exception=${readResult.exceptionOrNull()?.message}",
@@ -1280,20 +1296,20 @@ class TunerController(
         }
         deliverSectionRead(
             filter = filter,
-            pid = pid,
-            generation = generation,
             section = section,
             read = readResult.getOrThrow(),
+            handle = handle,
         )
     }
 
     private fun deliverSectionRead(
         filter: Filter,
-        pid: TsPid,
-        generation: Long,
         section: ByteArray,
         read: Int,
+        handle: TunerSectionFilterHandle,
     ) {
+        val pid = handle.pid
+        val generation = handle.generation
         val ingest = sectionIngestController
         val tableId = if (read == section.size) section.firstOrNull()?.toUByte()?.toInt() else null
         runCatching {
@@ -1327,9 +1343,7 @@ class TunerController(
                     }
                 }
             }) {
-                if (!released && tuneAccepted && generation == tuneGeneration) {
-                    ingest?.recordInputDeliveryLoss(pid, tableId)
-                }
+                handle.recordInputDeliveryLossIfCurrent(ingest, tableId)
             }
         }.onFailure { error ->
             if (!released) {

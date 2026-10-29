@@ -295,6 +295,9 @@ class TunerFrontendLeaseTransitionTest {
             val pid = WellKnownSectionPid.SDT_BAT
             // 既存の公開入口で同じ選局世代のSDTだけを閉鎖・再生成する。
             val filters = ReflectionHelpers.getField<Map<TsPid, List<Filter>>>(controller, "sectionFilters")
+            val handles =
+                ReflectionHelpers.getField<Map<TsPid, SectionFilterHandle>>(controller, "sectionFilterHandles")
+            val staleHandle = handles.getValue(pid)
             val stale = filters.getValue(pid).single()
             controller.closeSectionFilter(pid)
             check(controller.openSectionFilter(pid).isOpen)
@@ -312,7 +315,13 @@ class TunerFrontendLeaseTransitionTest {
                         it.name.startsWith("deliverSectionRead")
                     }
                 method.isAccessible = true
-                method.invoke(controller, filter, pid.value, generation, byteArrayOf(tableId.toByte()), 1)
+                method.invoke(
+                    controller,
+                    filter,
+                    byteArrayOf(tableId.toByte()),
+                    1,
+                    if (filter === stale) staleHandle else handles.getValue(pid),
+                )
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
                 while (executor.completedTaskCount == before && System.nanoTime() < deadline) Thread.yield()
                 check(executor.completedTaskCount > before)

@@ -46,6 +46,7 @@ jobs:
             --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest \
             --tests com.maleicacid.tvinput.tis.FrameworkTunerScanBoundaryTest \
             --tests com.maleicacid.tvinput.tis.TunerFrontendLeaseTransitionTest \
+            --tests com.maleicacid.tvinput.tis.TunerSectionSourceDiagnosticTest \
             --tests com.maleicacid.tvinput.tis.ProgramBatchIpcBudgetTest \
             --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest \
             --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest \
@@ -65,6 +66,10 @@ jobs:
           assert suite.get("skipped", "0") == "0", suite.attrib
           for case in suite.findall("testcase"):
               print(f"Android 15実SDK境界試験: {case.get('name')} success")
+          source = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.TunerSectionSourceDiagnosticTest.xml")).getroot()
+          assert source.get("tests") == "4", source.attrib
+          assert source.get("failures") == "0" and source.get("errors") == "0", source.attrib
+          assert source.get("skipped", "0") == "0", source.attrib
           startup = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest.xml")).getroot()
           assert startup.get("tests") == "2", startup.attrib
           assert startup.get("failures") == "0" and startup.get("errors") == "0", startup.attrib

@@ -515,7 +515,7 @@ class PlaybackFailureCallbacksTest {
                 fixture.notifications++
             }
             check(fixture.notifications == 1)
-            fixture.checkRetainedThenReleased()
+            fixture.checkRetainedThenReleased(expectedFailedAttempts = if (switchAudio) 2 else 3)
         }
     }
 
@@ -1444,12 +1444,12 @@ class PlaybackFailureCallbacksTest {
             checkRetainedThenReleased()
         }
 
-        fun checkRetainedThenReleased() {
-            check(cleanup.hasPending && resourceOwned && releaseAttempts == 2)
+        fun checkRetainedThenReleased(expectedFailedAttempts: Int = 2) {
+            check(cleanup.hasPending && resourceOwned && releaseAttempts == expectedFailedAttempts)
             check(field("activeTuner").get(pipeline) == null && field("activeChannel").get(pipeline) == null)
             rejectRelease = false
             pipeline.stop()
-            check(!cleanup.hasPending && !resourceOwned && releaseAttempts == 3)
+            check(!cleanup.hasPending && !resourceOwned && releaseAttempts == expectedFailedAttempts + 1)
         }
 
         fun set(

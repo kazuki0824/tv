@@ -29,7 +29,7 @@ scanのtune eventはtune generation付きで扱い、current candidateのgenerat
 
 同期再生開始で実行時例外が発生した場合も、既存の再生executor上で停止処理へ接続し、部分生成済みFilter・Decoder・MediaSyncを回収する。解放失敗は`ResourceCleanup`へ保持し、開始失敗と回収失敗の双方を開始結果の診断へ返す。同期要求の失敗通知は呼出元Sessionが所有する。
 
-SDT読取数は、controller所有者がFilter実体・選局世代の現行性と正常長を確認した後、解析前に加算する。同一世代で置換済みのFilterによる後着は含めない。有限data受付で拒否した入力は配送喪失数へ記録し、読取数には含めない。診断のために別worker・queueや非同期control通知を追加しない。
+SDT読取数は、controller所有者がFilter実体・選局世代の現行性と正常長を確認した後、解析前に加算する。同一世代で置換済みのFilterによる後着は含めない。不正長・過大長・読取例外もowner上で現行性を照合してから診断する。有限data受付の拒否は既存Filterハンドルの閉鎖状態と世代をcallback側で確認し、現行入力だけを配送喪失数へ記録して読取数には含めない。callback側からowner専用のFilter集合を参照しない。診断のために別worker・queueや非同期control通知を追加しない。
 
 ## BS と CS110 の選局契約
 
