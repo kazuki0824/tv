@@ -1740,7 +1740,6 @@ class PlaybackPipeline(
                     onSampleRejected(reason)
                     if (backpressureDeadlineReached(startedAtMs, nowMs, deadlineMs)) {
                         onBackpressureDeadline(reason)
-                        close()
                     }
                     return
                 }
@@ -1750,7 +1749,6 @@ class PlaybackPipeline(
             } catch (e: RuntimeException) {
                 Log.w(LogTags.TIS, "decoder queue/drain に失敗しました", e)
                 onDecoderFailure(e)
-                close()
             }
         }
 
@@ -2013,7 +2011,6 @@ class PlaybackPipeline(
                 drainPendingInput()
             } catch (error: RuntimeException) {
                 onDecoderFailure(error)
-                close()
             }
         }
 
@@ -2093,8 +2090,6 @@ class PlaybackPipeline(
 
         protected abstract fun onDecoderFailure(error: RuntimeException)
 
-        protected abstract fun onCodecConfigTimeout()
-
         protected abstract fun onBackpressureDeadline(detail: String)
 
         protected open fun onSampleRejected(reason: String) {
@@ -2122,7 +2117,6 @@ class PlaybackPipeline(
             onSampleRejected(detail)
             if (backpressureDeadlineReached(startedAtMs, nowMs, deadlineMs)) {
                 onBackpressureDeadline(detail)
-                close()
             }
         }
 
@@ -2322,13 +2316,6 @@ class PlaybackPipeline(
             )
         }
 
-        override fun onCodecConfigTimeout() {
-            errorSink(
-                PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT,
-                "video decoder 構成に必要な ES header が見つかりません progress=${dataPathProgress.summary()}",
-            )
-        }
-
         override fun onBackpressureDeadline(detail: String) {
             errorSink(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "DECODER_BACKPRESSURE_TIMEOUT $detail")
         }
@@ -2471,13 +2458,6 @@ class PlaybackPipeline(
                     PlaybackUnavailableReason.AUDIO_UNAVAILABLE
                 },
                 error.message.orEmpty(),
-            )
-        }
-
-        override fun onCodecConfigTimeout() {
-            errorSink(
-                PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                "audio decoder 構成に必要な ES header が見つかりません progress=${dataPathProgress.summary()}",
             )
         }
 

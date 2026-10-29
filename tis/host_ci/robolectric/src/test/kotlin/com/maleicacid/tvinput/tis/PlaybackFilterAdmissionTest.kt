@@ -20,6 +20,7 @@ import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.MediaEvent
 import android.media.tv.tuner.filter.PesEvent
 import android.media.tv.tuner.filter.RestartEvent
+import android.os.Handler
 import android.os.Looper
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribCodecFacts
@@ -1427,6 +1428,49 @@ class PlaybackFilterAdmissionTest {
 
     @Test
     @Config(shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class])
+    fun videoInputFailureRetainsCodecAndQueuedSampleUntilSyncReleaseRetry() = checkInputFailureWithPendingSyncRelease(false)
+
+    @Test
+    @Config(shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class])
+    fun audioInputFailureRetainsCodecAndQueuedSampleUntilSyncReleaseRetry() = checkInputFailureWithPendingSyncRelease(true)
+
+    private fun checkInputFailureWithPendingSyncRelease(audio: Boolean) {
+        Fixture().use { fixture ->
+            fixture.decoder(audio = audio, stopOnFailure = true)
+            val codec = fixture.attachCodec(audio = audio)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, if (audio) "audioDecoder" else "videoDecoder")
+            val sync = MediaSync()
+            val nativeSync = Shadow.extract<PlaybackMediaSyncReleaseTest.NativeMediaSync>(sync)
+            ReflectionHelpers.setField(fixture.pipeline, "mediaSync", sync)
+            val filter = fixture.avFilter(audio)
+            val retained = mappedMediaEvent()
+            deliver(filter, retained)
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(Shadow.extract<NativeCodec>(codec).inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            assertEquals(0, Shadow.extract<NativeMediaEvent>(retained).releases)
+            nativeSync.failNextFlush = true
+            nativeSync.failNextRelease = true
+            Shadow.extract<NativeCodec>(codec).onInputQueue = { error("模擬入力失敗") }
+            postCodecCallback(codec, 1, 1, null)
+            val callbackDelivered = CountDownLatch(1)
+            ReflectionHelpers.getField<Handler>(fixture.pipeline, "codecCallbackHandler").post { callbackDelivered.countDown() }
+            assertTrue(callbackDelivered.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            deliver(filter, mappedMediaEvent())
+            fixture.drain()
+            assertTrue(ReflectionHelpers.getField<MediaCodec?>(decoder, "codec") === codec)
+            assertEquals(0, Shadow.extract<NativeMediaEvent>(retained).releases)
+            assertTrue(ReflectionHelpers.getField<ResourceCleanup>(fixture.pipeline, "resourceCleanup").hasPending)
+            assertTrue(fixture.unavailable.any { it.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED })
+            fixture.pipeline.stop()
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(retained).releases)
+            assertFalse(ReflectionHelpers.getField<ResourceCleanup>(fixture.pipeline, "resourceCleanup").hasPending)
+        }
+    }
+
+    @Test
+    @Config(shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class])
     fun stopFlushesSyncAndWaitsForNativeInputBeforeReleasingSample() {
         checkVideoInputStop(nativeStarted = true)
     }
@@ -1908,6 +1952,7 @@ class PlaybackFilterAdmissionTest {
         fun decoder(
             audio: Boolean = false,
             videoKind: PlaybackPipeline.VideoCodecKind = PlaybackPipeline.VideoCodecKind.AVC,
+            stopOnFailure: Boolean = !audio,
         ) {
             val name = if (audio) "AudioDecoderPipeline" else "VideoDecoderPipeline"
             val type = Class.forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$$name")
@@ -1915,7 +1960,13 @@ class PlaybackFilterAdmissionTest {
             val sink: (PlaybackPipeline.PlaybackUnavailableReason, String) -> Unit = { reason, detail ->
                 failures += reason to detail
                 // 本番video error sinkと同じ停止・通知境界へ接続する。
-                if (!audio) invoke("failPlayback", 7L, reason, detail)
+                if (stopOnFailure) {
+                    if (audio) {
+                        invoke("handleAudioFailure", reason, detail, true)
+                    } else {
+                        invoke("failPlayback", 7L, reason, detail)
+                    }
+                }
             }
             val decoder =
                 if (audio) {

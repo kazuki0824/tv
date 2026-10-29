@@ -1,3 +1,10 @@
+# 2026-10-30 Decoder入力障害後の解放をPipeline停止へ統一（#207）
+
+- 入力障害・過負荷期限の通知後に重ねて呼ぶDecoder.closeを4箇所除去し、MediaSync解放失敗中のCodec・投入済みsample保持を迂回しない。
+- 音声／映像の実Filter→Codec入力失敗から資源保持と後続停止の一度だけの回収を検査する2試験をCIに追加する。
+- 呼出元のないonCodecConfigTimeout宣言と2実装を削除する。構成期限は既存startup deadlineに集約済み。
+- 新しいowner・worker・queue・復旧状態は追加しない。テストはCIで検証する。実機の待機原因と回帰の証跡は未取得。
+
 # 2026-10-30 親のFilterハンドル境界へ配送拒否試験を追従（#206）
 
 - 既存の旧Filter／現行Filter対照試験に、それぞれのハンドルを渡す。

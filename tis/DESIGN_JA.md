@@ -943,3 +943,5 @@ Program cleanupの完了通知は準備済み同期経路とworker完了経路�
 ### 再生診断と最終表示の観測境界
 
 再生のDEBUG診断は既存session/generationとPTS、MediaSync生成区間、Codecへの映像出力返却要求・完了・callback受信、Filter callbackからownerへの待ち時間、Codec入力の投入/再利用、Codec出力callbackのowner待ち、MediaSync音声消費を記録する。診断はavailabilityの根拠、資源寿命、再試行、ownerの選択を変えず、追加workerや台帳を持たない。最終表示の識別はTISだけで実装せず、Framework MediaSyncのbuffer ID/queue結果とSurfaceFlingerの合成・表示traceを使用する。出力queue成功と実present、Codec→MediaSync入力callbackと最終出力を区別する。診断の有効化・platform差分・採取成立条件は`INTEGRATION.md`の「黒画面・停止不能・旧映像の診断採取」を参照する。
+
+入力障害通知後のDecoder資源回収も既存Pipeline停止が所有する。Decoderから重複closeせず、MediaSync解放失敗時のCodec・投入済みsample保持を迂回しない。
