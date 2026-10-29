@@ -289,10 +289,12 @@ class TunerFrontendLeaseTransitionTest {
                 val deliver =
                     TunerController::class.java.declaredMethods.single { it.name.startsWith("deliverSectionRead") }
                 deliver.isAccessible = true
-                val generation = controller.currentGeneration()
+                val handles =
+                    ReflectionHelpers.getField<Map<TsPid, SectionFilterHandle>>(controller, "sectionFilterHandles")
+                val oldHandle = handles.getValue(WellKnownSectionPid.PAT)
                 val section = byteArrayOf(0x00, 0x00, 0x00)
                 controller.closeSectionFilter(WellKnownSectionPid.PAT)
-                deliver.invoke(controller, oldPat, WellKnownSectionPid.PAT.value, generation, section, section.size)
+                deliver.invoke(controller, oldPat, section, section.size, oldHandle)
                 controller.currentGeneration()
                 check(ingest.inputDeliveryLossCount == 0)
 
@@ -302,7 +304,7 @@ class TunerFrontendLeaseTransitionTest {
                 check(newPat.isOpen)
                 val activePat = sdk.filters.last()
                 check(activePat !== oldPat && activePat !== nextPat)
-                deliver.invoke(controller, activePat, WellKnownSectionPid.PAT.value, generation, section, section.size)
+                deliver.invoke(controller, activePat, section, section.size, newPat)
                 controller.currentGeneration()
                 check(ingest.inputDeliveryLossCount == 1)
             } finally {
