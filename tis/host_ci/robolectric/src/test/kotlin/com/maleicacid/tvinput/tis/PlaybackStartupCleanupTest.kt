@@ -49,6 +49,8 @@ class PlaybackStartupCleanupTest {
         assertRejectedStartupCleanup(true)
     }
 
+    // 同じ開始transactionの資源所有と二次失敗を一続きで照合する。
+    @Suppress("LongMethod")
     private fun assertRejectedStartupCleanup(rejectDisconnect: Boolean) {
         val texture = SurfaceTexture(0)
         val surface = Surface(texture)
