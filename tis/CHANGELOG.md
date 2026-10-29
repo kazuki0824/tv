@@ -1,3 +1,8 @@
+# 2026-10-30 Frontend選局とscan回収の試験を分離（#209）
+
+- scan owner／one-shot close／setup受付の6試験をTunerScanCleanupTestへ移し、元クラスに12試験を維持する。既存Shadowと生成helperを共有し、製品状態やworkerは追加しない。
+- CIの対象と件数を12＋6へ更新する。親の診断試験にも本PRのTRM Shadowを継承し、競合で失われないよう親の診断・停止所有者の文書を維持する。試験はCIで確認する。
+
 # 2026-10-30 Decoder入力障害後の解放をPipeline停止へ統一（#207）
 
 - 入力障害・過負荷期限の通知後に重ねて呼ぶDecoder.closeを4箇所除去し、MediaSync解放失敗中のCodec・投入済みsample保持を迂回しない。

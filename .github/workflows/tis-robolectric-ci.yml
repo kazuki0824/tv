@@ -46,6 +46,7 @@ jobs:
             --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest \
             --tests com.maleicacid.tvinput.tis.FrameworkTunerScanBoundaryTest \
             --tests com.maleicacid.tvinput.tis.TunerFrontendLeaseTransitionTest \
+            --tests com.maleicacid.tvinput.tis.TunerScanCleanupTest \
             --tests com.maleicacid.tvinput.tis.TunerSectionSourceDiagnosticTest \
             --tests com.maleicacid.tvinput.tis.ProgramBatchIpcBudgetTest \
             --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest \
@@ -83,11 +84,15 @@ jobs:
           for case in playback.findall("testcase"):
               print(f"Android 15実SDK playback受付試験: {case.get('name')} success")
           lease = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.TunerFrontendLeaseTransitionTest.xml")).getroot()
-          assert lease.get("tests") == "18", lease.attrib
+          assert lease.get("tests") == "12", lease.attrib
           assert lease.get("failures") == "0" and lease.get("errors") == "0", lease.attrib
           assert lease.get("skipped", "0") == "0", lease.attrib
           for case in lease.findall("testcase"):
               print(f"Android 15実SDK Frontend解放試験: {case.get('name')} success")
+          scan_cleanup = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.TunerScanCleanupTest.xml")).getroot()
+          assert scan_cleanup.get("tests") == "6", scan_cleanup.attrib
+          assert scan_cleanup.get("failures") == "0" and scan_cleanup.get("errors") == "0", scan_cleanup.attrib
+          assert scan_cleanup.get("skipped", "0") == "0", scan_cleanup.attrib
           sync = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest.xml")).getroot()
           assert sync.get("tests") == "14", sync.attrib
           assert sync.get("failures") == "0" and sync.get("errors") == "0", sync.attrib

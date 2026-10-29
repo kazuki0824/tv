@@ -29,7 +29,7 @@ scanのtune eventはtune generation付きで扱い、current candidateのgenerat
 
 同期再生開始で実行時例外が発生した場合も、既存の再生executor上で停止処理へ接続し、部分生成済みFilter・Decoder・MediaSyncを回収する。解放失敗は`ResourceCleanup`へ保持し、開始失敗と回収失敗の双方を開始結果の診断へ返す。同期要求の失敗通知は呼出元Sessionが所有する。
 
-SDT読取数は、controller所有者がFilter実体・選局世代の現行性と正常長を確認した後、解析前に加算する。同一世代で置換済みのFilterによる後着は含めない。有限data受付で拒否した入力は配送喪失数へ記録し、読取数には含めない。診断のために別worker・queueや非同期control通知を追加しない。
+SDT読取数は、controller所有者がFilter実体・選局世代の現行性と正常長を確認した後、解析前に加算する。同一世代で置換済みのFilterによる後着は含めない。不正長・過大長・読取例外もowner上で現行性を照合してから診断する。有限data受付の拒否は既存Filterハンドルの閉鎖状態と世代をcallback側で確認し、現行入力だけを配送喪失数へ記録して読取数には含めない。callback側からowner専用のFilter集合を参照しない。診断のために別worker・queueや非同期control通知を追加しない。
 
 ## BS と CS110 の選局契約
 
@@ -187,6 +187,8 @@ source `MediaEvent` / `LinearBlock`は、`QueueRequest.queue()`成功後も同�
 secure-memory handle、tunneled playback、platform passthroughは本製品が提供しない恒久的なplayback capabilityであり、時点依存の一時除外ではない。TISはsecure `MediaEvent`をclear-memoryへcopyできると仮定せず、その経路をadvertiseしない。r52のCAS対応もdescramble後のclear ESをこのdirect non-passthrough経路へ接続できるサービスだけをライブ視聴成功対象とする。
 
 デコード後のA/V同期とSurface提示はAndroid標準`MediaSync`だけを使用する。decoder output の `BufferInfo.presentationTimeUs` をMediaSyncへ渡すmedia timeの正本とする。video decoder出力は`MediaSync.setSurface(sessionSurface)`後の`createInputSurface()`へ接続し、output timestampをMediaSyncへ渡す。audio decoder出力PCMは`MediaSync.queueAudio()`へpresentation time付きで渡し、`MediaSync.Callback.onAudioBufferConsumed()`を受けるまでaudio output bufferの所有権を保持する。独自media clock、PCR→wallclock変換、独自future render / late drop schedulerを設けない。
+
+入力障害通知後のDecoder資源回収も既存Pipeline停止が所有する。Decoderから重複closeせず、MediaSync解放失敗時のCodec・投入済みsample保持を迂回しない。
 
 MediaCodecの入力可能callbackは、playback ownerがFilterの複数イベントを処理中にも到着し得る。Codec callback threadは入力indexだけをthread-safeに引き渡し、Codec callback処理自体とDecoderの状態更新は既存playback ownerだけで行う。Ownerは各MediaEventの予算判定に入る前に受信済み入力indexを消費し、Codecが返却したindexに紐づく旧MediaEvent/LinearBlockを解放してpending入力をdrainする。Filter callbackの1バッチ終了までCodec入力返却の通知を待たせて人工的な48件飽和を起こさず、MPEG-2 48件上限などの実メモリ保護とcodec世代照合を維持する。映像の`QueueRequest.queue()`は既存の映像出力workerで実行し、native待機が共通playback owner上の音声消費callback・制御を停止させない。decoderごとの投入中呼出しは1件とし、それ以外は既存pendingSamplesに保持する。この1件は同期呼出しの直列性を保つための実行状態であり、新しい入力容量ではない。投入中sampleも既存pending件数・byte予算に含める。音声のCodec投入は従来のowner上で実行する。追加worker、payloadコピー、別の入力queue、容量上限の引上げは行わない。
 

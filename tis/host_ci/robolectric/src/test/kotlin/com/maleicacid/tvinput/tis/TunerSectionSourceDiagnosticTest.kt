@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit
     instrumentedPackages = ["com.maleicacid.tvinput.aribsi"],
     shadows = [
         NativeTuner::class,
+        TunerFrontendLeaseTransitionTest.NativeTrm::class,
         TunerFrontendLeaseTransitionTest.NativeFilter::class,
         TunerFrontendLeaseTransitionTest.SiEngineBoundary::class,
     ],
