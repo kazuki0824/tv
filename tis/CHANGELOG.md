@@ -29,6 +29,10 @@
 # 2026-10-30 Frontend回帰試験数の継承（#209）
 
 - #116の同一世代SDT Filter回帰を継承し、本PRで追加されたCIのFrontend試験数gateを17から18へ更新する。実行はCIに委ねる。
+# 2026-10-30 現在番組選択の回帰試験を標準整形（#210）
+
+- CurrentProgramRatingResolverTestの複数行式をktlint 1.8.0で整形した。試験の入力・期待値と製品実装は変更しない。
+- テスト実行はCIに委ねる。整形修正は#212へ継承する。
 
 # 2026-10-30 Section読取診断と再生開始例外の回収（#116）
 
@@ -41,6 +45,12 @@
 - 再試行予約と300ms後の実行では、失敗したAV署名に映像PIDがある場合だけ有効Surfaceを要求する。音声のみの回復可能なCodec障害はSurface未設定でも再試行し、映像のSurface失効時の拒否と既存世代・取消しfenceは維持する。
 - Session所有の既存予約・executorだけを使い、新しいowner、再試行履歴、worker、queueを設けない。
 - Android 15 Robolectricの実Session再試行fixtureへ、Surfaceなしaudio-onlyの別世代反復再試行と、映像の予約・実行それぞれにおけるSurface拒否を追加。受付試験のCI期待値を44件から46件へ更新する。実Codec・実機復旧はこの試験では証明しない。
+
+# 2026-10-30 現在番組選択の不要な全候補List生成を削除（#210）
+
+- CurrentProgramRatingResolverは指定sortOrderのcursorを順に読み、サービス照合に成功した最初の候補を選択して直ちに閉じる。未使用になったoverlapCount診断のための全候補List生成を廃止する。
+- 後続の不正行を読まない先頭候補、候補が空の場合のunrated fallback、query失敗伝播をAndroid 15 Robolectricで検査する。TvProviderの選択順序、EIT優先、content rating/unblock identityの規範は変更しない。
+- 独立したstate、helper owner、worker、容量予算は追加しない。Android製品build・実機TvProviderでの照合は未実施。
 
 # 2026-10-29 現在番組選択の整列責務の記述を訂正
 

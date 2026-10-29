@@ -236,13 +236,12 @@ class CurrentProgramRatingResolver internal constructor(
             } catch (e: RuntimeException) {
                 return TvProviderLookupResult.QueryFailed(e.message ?: e.javaClass.name)
             } ?: return TvProviderLookupResult.QueryFailed("QUERY_RETURNED_NULL_CURSOR")
-        val candidates =
+        val selected =
             try {
-                readCandidates(cursor, serviceKey)
+                firstMatchingCandidate(cursor, serviceKey)
             } catch (e: RuntimeException) {
                 return TvProviderLookupResult.QueryFailed(e.message ?: e.javaClass.name)
-            }
-        val selected = candidates.firstOrNull() ?: return TvProviderLookupResult.Success(null)
+            } ?: return TvProviderLookupResult.Success(null)
         val ratingSet =
             CurrentProgramRatingSet(
                 ratings = AribRatingMapper.parseFlattenedList(selected.flattenedRatings),
@@ -256,17 +255,17 @@ class CurrentProgramRatingResolver internal constructor(
         return TvProviderLookupResult.Success(ratingSet)
     }
 
-    private fun readCandidates(
+    // TvProviderがsortOrderで返した先頭の適格候補だけを読み、cursorは必ず閉じる。
+    private fun firstMatchingCandidate(
         cursor: android.database.Cursor,
         serviceKey: ServiceKey?,
-    ): List<Candidate> {
-        val candidates = mutableListOf<Candidate>()
+    ): Candidate? {
         cursor.use { current ->
             while (current.moveToNext()) {
-                candidateFromCurrentRow(current, serviceKey)?.let(candidates::add)
+                candidateFromCurrentRow(current, serviceKey)?.let { return it }
             }
         }
-        return candidates
+        return null
     }
 
     private fun candidateFromCurrentRow(
