@@ -84,6 +84,34 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun audioOnlyRecoverableFailureCanRetryWithoutVideoSurface() {
+        RetryFixture(audioOnly = true, surfaceReady = false).use { fixture ->
+            for (generation in listOf(7L, 9L)) {
+                fixture.failAndSchedule(generation, PlaybackPipeline.PlaybackUnavailableReason.RECOVERABLE_CODEC_ERROR)
+                assertTrue(fixture.hasReservation())
+                fixture.runReservation()
+                assertEquals(PlaybackStartState.Idle, fixture.state())
+            }
+        }
+    }
+
+    @Test
+    fun videoRecoveryRequiresValidSurfaceBothWhenScheduledAndWhenRun() {
+        RetryFixture(surfaceReady = false).use { fixture ->
+            fixture.failAndSchedule(7L)
+            assertFalse(fixture.hasReservation())
+            assertEquals(PlaybackStartState.Failed(fixture.signature, 7L), fixture.state())
+        }
+        RetryFixture().use { fixture ->
+            fixture.failAndSchedule(7L)
+            assertTrue(fixture.hasReservation())
+            fixture.detachSurface()
+            fixture.runReservation()
+            assertEquals(PlaybackStartState.Failed(fixture.signature, 7L), fixture.state())
+        }
+    }
+
+    @Test
     fun delayedRecoveryCannotReplaceStoppedReleasedOrNewTuneState() {
         for (boundary in listOf("stop", "release", "tune")) {
             RetryFixture().use { fixture ->
@@ -110,10 +138,23 @@ class PlaybackFilterAdmissionTest {
 
     // JNI等の端末初期化を省略し、Sessionの実予約処理と既存executorを実行する。
     // SIは未取得とし、再試行受付までを検査する。実Codec再開・描画の証明ではない。
-    private class RetryFixture : AutoCloseable {
+    private class RetryFixture(
+        audioOnly: Boolean = false,
+        surfaceReady: Boolean = true,
+    ) : AutoCloseable {
         val executor = LifecycleSerialExecutor("session-recovery-test")
         val released = AtomicBoolean(false)
-        val signature = AvPlaybackSignature(ServiceKey(4, 0x4010, 101), TsPid(0x100), TsPid(0x101), 0x1b, null, null, true, false)
+        val signature =
+            AvPlaybackSignature(
+                serviceKey = ServiceKey(4, 0x4010, 101),
+                pcrPid = TsPid(0x100),
+                videoPid = if (audioOnly) null else TsPid(0x101),
+                videoStreamType = if (audioOnly) null else 0x1b,
+                audioPid = if (audioOnly) TsPid(0x102) else null,
+                audioStreamType = if (audioOnly) 0x03 else null,
+                clear = true,
+                keyTokenAvailable = false,
+            )
         val session: MaleicacidLiveSession
         private val texture = SurfaceTexture(0)
         private val surface = Surface(texture)
@@ -128,12 +169,15 @@ class PlaybackFilterAdmissionTest {
             ReflectionHelpers.setField(session, "sessionExecutor", executor)
             ReflectionHelpers.setField(session, "releaseOnce", released)
             ReflectionHelpers.setField(session, "unblockTimerHandler", android.os.Handler(Looper.getMainLooper()))
-            ReflectionHelpers.setField(session, "surface", surface)
+            ReflectionHelpers.setField(session, "surface", surface.takeIf { surfaceReady })
             ReflectionHelpers.setField(session, "currentGeneration", 1L)
             check(surface.isValid)
         }
 
-        fun failAndSchedule(generation: Long) {
+        fun failAndSchedule(
+            generation: Long,
+            reason: PlaybackPipeline.PlaybackUnavailableReason = PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
+        ) {
             executor.callControl(5_000L) {
                 ReflectionHelpers.setField(session, "playbackState", PlaybackStartState.Failed(signature, generation))
                 MaleicacidLiveSession::class.java
@@ -144,12 +188,19 @@ class PlaybackFilterAdmissionTest {
                     .invoke(
                         session,
                         PlaybackPipeline.PlaybackUnavailable(
-                            PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
+                            reason,
                             "injected",
                             generation,
                         ),
                     )
             }
+        }
+
+        fun hasReservation(): Boolean =
+            executor.callControl(5_000L) { ReflectionHelpers.getField<Any?>(session, "playbackRetryTask") != null }
+
+        fun detachSurface() {
+            executor.callControl(5_000L) { ReflectionHelpers.setField(session, "surface", null) }
         }
 
         fun runReservation() {

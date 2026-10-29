@@ -21,6 +21,11 @@
 - 同期再生開始の実行時例外も既存stopOnPlaybackExecutorへ接続する。回収失敗はResourceCleanupへ保持し、元例外のsuppressedとStartResultの診断へ追記する。Sessionによる同期失敗通知は維持する。
 - 同一世代のSDT Filter再生成、postDelayed=false後の部分生成資源回収・二次回収失敗保持の回帰試験を追加し、Robolectric CIへ新試験クラスを登録する。
 - 設計と診断コメントを更新した。追加のowner・worker・queue・再試行機構は設けない。テスト実行はCIに委ね、Android製品build・実機試験は未実施。
+# 2026-10-30 音声のみの再生障害後のSurface非依存再試行を修正（#207）
+
+- 再試行予約と300ms後の実行では、失敗したAV署名に映像PIDがある場合だけ有効Surfaceを要求する。音声のみの回復可能なCodec障害はSurface未設定でも再試行し、映像のSurface失効時の拒否と既存世代・取消しfenceは維持する。
+- Session所有の既存予約・executorだけを使い、新しいowner、再試行履歴、worker、queueを設けない。
+- Android 15 Robolectricの実Session再試行fixtureへ、Surfaceなしaudio-onlyの別世代反復再試行と、映像の予約・実行それぞれにおけるSurface拒否を追加。受付試験のCI期待値を44件から46件へ更新する。実Codec・実機復旧はこの試験では証明しない。
 
 # 2026-10-29 現在番組選択の整列責務の記述を訂正
 

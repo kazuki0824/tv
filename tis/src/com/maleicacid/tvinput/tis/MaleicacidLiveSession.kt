@@ -1278,12 +1278,13 @@ class MaleicacidLiveSession(
     // 同じ再生世代と回復権限の照合を一つの境界で完結する。
     @Suppress("ComplexCondition", "ReturnCount")
     private fun scheduleRecoverablePlaybackRetry(reason: PlaybackPipeline.PlaybackUnavailable) {
+        val failed = playbackState as? PlaybackStartState.Failed ?: return
+        // 映像Surfaceは失敗した再生世代に映像がある場合だけ再試行の前提とする。
         if (!isRecoverablePlaybackFailure(reason.reason) || releaseOnce.get() ||
-            frontendSignalUnavailable || surface?.isValid != true
+            frontendSignalUnavailable || (failed.signature.videoPid != null && surface?.isValid != true)
         ) {
             return
         }
-        val failed = playbackState as? PlaybackStartState.Failed ?: return
         if (failed.pipelineGeneration != reason.generation || playbackRetryTask != null) return
         val tuneGeneration = currentGeneration
         // 予約を消費してから通常の開始入口へ戻る。過去の復旧回数は開始条件にしない。
@@ -1295,7 +1296,8 @@ class MaleicacidLiveSession(
                         playbackRetryTask = null
                         val current = playbackState as? PlaybackStartState.Failed ?: return@enqueueSessionAction
                         if (releaseOnce.get() || tuneGeneration != currentGeneration ||
-                            current != failed || surface?.isValid != true || frontendSignalUnavailable
+                            current != failed || (current.signature.videoPid != null && surface?.isValid != true) ||
+                            frontendSignalUnavailable
                         ) {
                             return@enqueueSessionAction
                         }
