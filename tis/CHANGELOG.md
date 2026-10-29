@@ -1,3 +1,10 @@
+# 2026-10-30 Section読取診断と再生開始例外の回収（#116）
+
+- SDT読取診断を、既存controller上の世代・Filter実体照合と正常長確認の後へ移した。有限data受付で拒否された入力は配送喪失へ記録し、読取数に含めない。同一世代のFilter置換後着を除外する。
+- 同期再生開始の実行時例外も既存stopOnPlaybackExecutorへ接続する。回収失敗はResourceCleanupへ保持し、元例外のsuppressedとStartResultの診断へ追記する。Sessionによる同期失敗通知は維持する。
+- 同一世代のSDT Filter再生成、postDelayed=false後の部分生成資源回収・二次回収失敗保持の回帰試験を追加し、Robolectric CIへ新試験クラスを登録する。
+- 設計と診断コメントを更新した。追加のowner・worker・queue・再試行機構は設けない。テスト実行はCIに委ね、Android製品build・実機試験は未実施。
+
 # 2026-10-29 現在番組選択の整列責務の記述を訂正
 
 - DESIGNの「cursor返却順に依存しない」という記述を、TvProviderへ指定したsort orderで返された行から、サービス照合を通過した先頭行を選ぶ契約へ訂正した。Kotlin側で再整列しないことを明記した。

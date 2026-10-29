@@ -49,6 +49,7 @@ jobs:
             --tests com.maleicacid.tvinput.tis.ProgramBatchIpcBudgetTest \
             --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest \
             --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest \
+            --tests com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest \
             --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest
 
       - name: 実SDK scan境界試験の実行結果を確認
@@ -64,6 +65,10 @@ jobs:
           assert suite.get("skipped", "0") == "0", suite.attrib
           for case in suite.findall("testcase"):
               print(f"Android 15実SDK境界試験: {case.get('name')} success")
+          startup = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest.xml")).getroot()
+          assert startup.get("tests") == "2", startup.attrib
+          assert startup.get("failures") == "0" and startup.get("errors") == "0", startup.attrib
+          assert startup.get("skipped", "0") == "0", startup.attrib
           playback_report = report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest.xml")
           playback = ET.parse(playback_report).getroot()
           assert playback.get("tests") == "17", playback.attrib

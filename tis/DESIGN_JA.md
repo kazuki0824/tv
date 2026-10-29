@@ -25,6 +25,12 @@ scan用Tunerのcurrent tune generationに対して`OnTuneEventListener.SIGNAL_NO
 
 scanのtune eventはtune generation付きで扱い、current candidateのgenerationに属する信号利用不能eventだけを当該collectionへ適用する。`Tuner.tune()`の結果をscan側が受け取ってgenerationをactive化する前に同世代eventが到着する競合は保持し、active化後のcollectionで観測できるようにする。後続candidateがactiveになった後の旧generation eventは後続collectionへ作用させない。active generation、resource-lost generation、信号利用不能eventの世代fenceは`ChannelScanController.ScanGenerationFence`に集約し、同じscan generationの第二の状態ownerを追加しない。
 
+### 再生開始途中の例外とSDT読取診断
+
+同期再生開始で実行時例外が発生した場合も、既存の再生executor上で停止処理へ接続し、部分生成済みFilter・Decoder・MediaSyncを回収する。解放失敗は`ResourceCleanup`へ保持し、開始失敗と回収失敗の双方を開始結果の診断へ返す。同期要求の失敗通知は呼出元Sessionが所有する。
+
+SDT読取数は、controller所有者がFilter実体・選局世代の現行性と正常長を確認した後、解析前に加算する。同一世代で置換済みのFilterによる後着は含めない。有限data受付で拒否した入力は配送喪失数へ記録し、読取数には含めない。診断のために別worker・queueや非同期control通知を追加しない。
+
 ## BS と CS110 の選局契約
 
 BS/CS110の通常scan候補、channel保存、再選局でTISが生成する周波数・typed stream selectorの規範値は `../開発規則.md` の日本向けscan/選局契約を唯一の正本とする。TISはその候補をAOSP Tuner SDKのtyped settingsへ変換し、px4の相対slot、Linux DVBの`DTV_STREAM_ID`、HAL内部backend種別・能力を取得・推測・保存しない。AOSP公開`FrontendInfo.type`と`statusCapabilities`はfrontend選択とBS候補source選択に使用できる。

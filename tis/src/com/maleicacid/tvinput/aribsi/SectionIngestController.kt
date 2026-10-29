@@ -52,8 +52,8 @@ class SectionIngestController(
         counters.clear()
     }
 
-    // 正常長のfilter.read()が得たSDT-actual/otherをcontroller queue投入前に観測する。
-    // これでHAL未配送・queue投入拒否・Rust解析拒否を区別できる。
+    // 正常長のSDTを既存controller所有者がFilter実体・世代照合後、解析前に観測する。
+    // 投入拒否は別の配送喪失数へ記録し、この読取数には含めない。
     @Suppress("MagicNumber")
     @Synchronized
     fun recordSdtRead(

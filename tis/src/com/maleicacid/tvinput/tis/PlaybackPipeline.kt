@@ -401,9 +401,15 @@ class PlaybackPipeline(
         try {
             startOnPlaybackExecutor(tuner, channel, selection)
         } catch (error: RuntimeException) {
+            // 部分生成した資源も既存の停止処理で回収し、未完義務はResourceCleanupに残す。
+            val cleanupFailure = runCatching { stopOnPlaybackExecutor() }.exceptionOrNull()
+            if (cleanupFailure != null && cleanupFailure !== error) error.addSuppressed(cleanupFailure)
             // 同期要求では呼出元Sessionが失敗結果を確定して通知する。
             Log.w(LogTags.TIS, "playback start failed inputId=$inputId generation=$playbackGeneration", error)
-            StartResult.failedAfterRestart(playbackGeneration, listOf(error.message.orEmpty()))
+            StartResult.failedAfterRestart(
+                playbackGeneration,
+                listOfNotNull(error.message.orEmpty(), cleanupFailure?.message),
+            )
         }
 
     private var codecRecoveryAttempted = false

@@ -281,6 +281,52 @@ class TunerFrontendLeaseTransitionTest {
         }
     }
 
+    @Test
+    fun sameGenerationReplacedSdtFilterCannotIncrementReadDiagnostic() {
+        val controller = controller()
+        val engine = AribSiEngine(RuntimeEnvironment.getApplication())
+        val ingest = SectionIngestController(engine)
+        controller.setSectionIngestController(ingest)
+        NativeTuner.successfulTunes = true
+        val executor = ReflectionHelpers.getField<ControllerSerialExecutor>(controller, "sectionExecutor")
+        try {
+            check(controller.tuneForScan(terrestrial()).success)
+            val generation = ReflectionHelpers.getField<Long>(controller, "tuneGeneration")
+            val pid = WellKnownSectionPid.SDT_BAT
+            // 既存の公開入口で同じ選局世代のSDTだけを閉鎖・再生成する。
+            val filters = ReflectionHelpers.getField<Map<TsPid, List<Filter>>>(controller, "sectionFilters")
+            val stale = filters.getValue(pid).single()
+            controller.closeSectionFilter(pid)
+            check(controller.openSectionFilter(pid).isOpen)
+            val current = filters.getValue(pid).single()
+            check(current !== stale)
+            check(ReflectionHelpers.getField<Long>(controller, "tuneGeneration") == generation)
+
+            fun read(
+                filter: Filter,
+                tableId: Int,
+            ) {
+                val before = executor.completedTaskCount
+                val method =
+                    TunerController::class.java.declaredMethods.single {
+                        it.name.startsWith("deliverSectionRead")
+                    }
+                method.isAccessible = true
+                method.invoke(controller, filter, pid.value, generation, byteArrayOf(tableId.toByte()), 1)
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                while (executor.completedTaskCount == before && System.nanoTime() < deadline) Thread.yield()
+                check(executor.completedTaskCount > before)
+            }
+            for (tableId in listOf(0x42, 0x46)) read(stale, tableId)
+            check("sdtActualRead=0 sdtOtherRead=0" in ingest.sdtDeliveryDiagnostic())
+            for (tableId in listOf(0x42, 0x46)) read(current, tableId)
+            check("sdtActualRead=1 sdtOtherRead=1" in ingest.sdtDeliveryDiagnostic())
+        } finally {
+            controller.release()
+            engine.close()
+        }
+    }
+
     private fun deliverPat(filter: Filter) {
         // 既存native PAT受理試験と同じ有効section。section_length=13、CRC-32/MPEG=4521f9b6。
         val payload = VALID_PAT
@@ -555,7 +601,10 @@ class TunerFrontendLeaseTransitionTest {
             pid: TsPid,
             section: ByteArray,
         ): SiIngestResult {
-            check(pid == WellKnownSectionPid.PAT && section.contentEquals(VALID_PAT))
+            check(
+                (pid == WellKnownSectionPid.PAT && section.contentEquals(VALID_PAT)) ||
+                    (pid == WellKnownSectionPid.SDT_BAT && section.size == 1 && section[0].toInt() in listOf(0x42, 0x46)),
+            )
             return SiIngestResult(pid, SiStatus.OK)
         }
 

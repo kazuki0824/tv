@@ -1296,10 +1296,6 @@ class TunerController(
     ) {
         val ingest = sectionIngestController
         val tableId = if (read == section.size) section.firstOrNull()?.toUByte()?.toInt() else null
-        val currentTune = !released && tuneAccepted && generation == tuneGeneration
-        if (tableId != null && currentTune) {
-            ingest?.recordSdtRead(pid, tableId)
-        }
         runCatching {
             postOnControllerData({
                 val sourceIsCurrent = isCurrentSectionFilter(pid, generation, filter)
@@ -1311,6 +1307,7 @@ class TunerController(
                     )
                 ) {
                     SectionFilterPolicy.ReadDecision.INGEST -> {
+                        if (tableId != null) ingest?.recordSdtRead(pid, tableId)
                         onSectionFromFilter(pid, section, generation, filter)
                     }
 
