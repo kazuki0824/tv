@@ -278,7 +278,9 @@ class MaleicacidLiveSession(
         tracePlaybackGate(if (surface == null) "SURFACE_DETACHED" else "SURFACE_ATTACHED")
         // 音声のみの再生は映像Surfaceの着脱に依存しない。
         if (PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)) {
-            if (playbackState !is PlaybackStartState.Started && playbackRetryTask == null) refreshDynamicSiAndCasFilters()
+            if (playbackState !is PlaybackStartState.Started && playbackRetryTask == null) {
+                refreshDynamicSiAndCasFilters()
+            }
             return true
         }
         cancelPlaybackRetry()

@@ -1,3 +1,7 @@
+# 2026-10-30 音声のみのSurface受付条件を整形（#212）
+
+- 再生状態と再試行予約の判定を維持したまま複数行へ整形し、detekt MaxLineLengthを解消する。CIで検証する。
+
 # 2026-10-30 Frontend選局とscan回収の試験を分離（#209）
 
 - scan owner／one-shot close／setup受付の6試験をTunerScanCleanupTestへ移し、元クラスに12試験を維持する。既存Shadowと生成helperを共有し、製品状態やworkerは追加しない。
