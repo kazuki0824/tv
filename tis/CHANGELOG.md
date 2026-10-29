@@ -1,6 +1,6 @@
 # 2026-10-30 旧Filter診断の隔離とhost試験の解放回数を修正（#116）
 
-- CIで検出した試験の入れ子型SectionFilterHandleのimport不足を補った。
+- CIで検出した試験の入れ子型SectionFilterHandleのimport不足を補った。開始と音声切替の各fixtureで、開始失敗と二次cleanup失敗の両診断を別々に返すこと、失敗中の資源保持、次のstopによる一度だけの回収を検査する。
 
 - 不正長・過大長・読取例外をowner上の現行Filter照合で除外し、受付拒否は既存ハンドルの閉鎖状態・世代で照合する。診断worker・queue・台帳は増設しない。
 - 置換／再選局の旧Filterと現行Filterの対照4試験をCIへ追加する。既存SDT試験もハンドル境界へ追従する。

@@ -500,7 +500,10 @@ class PlaybackFailureCallbacksTest {
             }
             // 開始例外後の回収でも世代を失効させるため、固定増分ではなく返却された現世代を照合する。
             check(generation > 7L && generation == fixture.pipeline.currentPlaybackGenerationForTest())
-            check(diagnostics.any { it.contains("injected filter") })
+            // 開始失敗とcatch内再停止の失敗が、別々の診断として呼出元へ返る。
+            check(diagnostics.count { it.contains("injected filter") } == 2) {
+                "switchAudio=$switchAudio diagnostics=$diagnostics"
+            }
             check(fixture.failures.isEmpty() && fixture.notifications == 0)
             val next =
                 PlaybackStartTransitions.afterRestartResult(
