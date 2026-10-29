@@ -498,7 +498,9 @@ class PlaybackFailureCallbacksTest {
                 generation = result.generation
                 diagnostics = result.diagnostics
             }
-            check(generation == 8L && diagnostics.any { it.contains("injected filter") })
+            // 開始例外後の回収でも世代を失効させるため、固定増分ではなく返却された現世代を照合する。
+            check(generation > 7L && generation == fixture.pipeline.currentPlaybackGenerationForTest())
+            check(diagnostics.any { it.contains("injected filter") })
             check(fixture.failures.isEmpty() && fixture.notifications == 0)
             val next =
                 PlaybackStartTransitions.afterRestartResult(

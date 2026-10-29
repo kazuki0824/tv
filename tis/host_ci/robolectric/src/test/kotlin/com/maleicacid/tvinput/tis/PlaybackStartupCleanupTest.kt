@@ -105,9 +105,17 @@ class PlaybackStartupCleanupTest {
             assertTrue(result.diagnostics.any { it.contains("decoder起動期限を予約できません") })
             assertTrue(decoder != null)
             assertEquals(1, Shadow.extract<PlaybackFilterAdmissionTest.NativeFilter>(checkNotNull(filter)).closes)
-            assertEquals(null, ReflectionHelpers.getField<Any?>(pipeline, "videoDecoder"))
+            val retainedDecoder = ReflectionHelpers.getField<Any?>(pipeline, "videoDecoder")
+            val retainedSync = ReflectionHelpers.getField<Any?>(pipeline, "mediaSync")
             assertEquals(null, ReflectionHelpers.getField<Any?>(pipeline, "videoFilter"))
-            assertEquals(null, ReflectionHelpers.getField<Any?>(pipeline, "mediaSync"))
+            if (rejectDisconnect) {
+                // MediaSync回収前にDecoder停止できない構成では、同じ既存ownerに保持してよい。
+                assertTrue(retainedDecoder == null || retainedDecoder === decoder)
+                assertTrue(retainedSync == null || retainedSync === sync)
+            } else {
+                assertEquals(null, retainedDecoder)
+                assertEquals(null, retainedSync)
+            }
             val cleanup = ReflectionHelpers.getField<ResourceCleanup>(pipeline, "resourceCleanup")
             val native = Shadow.extract<NativeMediaSync>(checkNotNull(sync))
             assertEquals(rejectDisconnect, cleanup.hasPending)
@@ -122,6 +130,8 @@ class PlaybackStartupCleanupTest {
             native.rejectCleanup = false
             pipeline.stop()
             assertFalse(cleanup.hasPending)
+            assertEquals(null, ReflectionHelpers.getField<Any?>(pipeline, "videoDecoder"))
+            assertEquals(null, ReflectionHelpers.getField<Any?>(pipeline, "mediaSync"))
             assertFalse(native.connected)
             assertEquals(1, native.events.count { it == "release" })
         } finally {

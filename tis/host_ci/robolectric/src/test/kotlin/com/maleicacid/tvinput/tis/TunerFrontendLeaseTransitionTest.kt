@@ -603,7 +603,10 @@ class TunerFrontendLeaseTransitionTest {
         ): SiIngestResult {
             check(
                 (pid == WellKnownSectionPid.PAT && section.contentEquals(VALID_PAT)) ||
-                    (pid == WellKnownSectionPid.SDT_BAT && section.size == 1 && section[0].toInt() in listOf(0x42, 0x46)),
+                    (
+                        pid == WellKnownSectionPid.SDT_BAT && section.size == 1 &&
+                            section[0].toInt() in listOf(0x42, 0x46)
+                    ),
             )
             return SiIngestResult(pid, SiStatus.OK)
         }
