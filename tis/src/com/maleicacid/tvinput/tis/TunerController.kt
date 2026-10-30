@@ -1192,7 +1192,7 @@ class TunerController(
                     // DATA_READYはsectionごとに繰り返され、ログ喪失の原因になるため記録しない。
                     if (status == Filter.STATUS_DATA_READY) return
                     val message = "section filter 状態 inputId=$inputId pid=$pid status=$status generation=$generation"
-                    if (sectionFilterStatusIsOverflow(status)) {
+                    if ((status and Filter.STATUS_OVERFLOW) != 0) {
                         // Framework callback lockの中ではownerを待たず、現行性判定だけをcontrolへ委譲する。
                         runCatching {
                             sectionExecutor.executeControl {
@@ -2296,8 +2296,6 @@ class TunerController(
 
         private const val EXHAUSTED_TUNE_GENERATION = -1L
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
-
-        internal fun sectionFilterStatusIsOverflow(status: Int): Boolean = (status and Filter.STATUS_OVERFLOW) != 0
 
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 
