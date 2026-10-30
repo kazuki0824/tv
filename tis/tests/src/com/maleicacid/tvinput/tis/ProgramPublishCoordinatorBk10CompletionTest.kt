@@ -350,7 +350,8 @@ class ProgramPublishCoordinatorBk10CompletionTest {
     @Test fun dirtyWindowQueueHasOneBoundedLruLimit() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        val coordinator = ProgramPublishCoordinator(writer)
+        var now = 0L
+        val coordinator = ProgramPublishCoordinator(writer) { now }
         writer.upsertChannels(
             listOf(
                 ChannelRecord(
@@ -385,7 +386,22 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(coordinator.retryWindowCountForTest() == ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST) {
             "再試行区間は単一の有界LRUに収める必要があります"
         }
-        check(coordinator.droppedRetryWindowCountForTest(key) == 1)
+        store.deletedWindows.clear()
+        store.failDelete = false
+        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
+        val current =
+            windows.first().copy(
+                windowEndMs = windows.last().windowEndMs,
+            )
+        coordinator.publishWithUpdates(
+            mode = ChannelScanController.PublishMode.SETUP_SCAN,
+            allPrograms = emptyList(),
+            updateWindows = listOf(current),
+            allowedServiceKeys = null,
+        )
+        val expected = (listOf(current) + windows.drop(1)).map { it.windowStartMs to it.windowEndMs }.toSet()
+        check(store.deletedWindows.toSet() == expected) { "退避済みの最古区間を再試行してはなりません" }
+        check(coordinator.retryWindowCountForTest() == 0)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

@@ -96,8 +96,8 @@ class AribBroadcastClockTest {
         check(totUpdate.authority.generation == first.generation)
         check(AribBroadcastClock.continuityToleranceMillisForTest() == 2_000L)
 
-        // Production scheduler integration: same-generation clock update must remove the old Runnable,
-        // arm a new delay, and make a racing old Runnable inert by arm-sequence identity.
+        // 本番schedulerでは、同一generationの時刻更新時に古いRunnableを取り除き、
+        // 新たな遅延実行を設定する。競合して実行された古いRunnableもarm-sequenceの識別子で無効化する。
         val timers = FakeTimers()
         val due = mutableListOf<Pair<String, ByteArray>>()
         var clockGeneration = 11L
@@ -208,8 +208,8 @@ class AribBroadcastClockTest {
             ) == null,
         )
 
-        // Production scheduler integration: a new clock generation cancels the pending arm.
-        // Even if the removed Runnable races and executes, it must not display or re-arm.
+        // 本番schedulerでは、時計のgenerationが変わると保留中の遅延実行を取り消す。
+        // 除去済みのRunnableが競合して実行されても、表示や再設定を行ってはならない。
         val timers = FakeTimers()
         val due = mutableListOf<String>()
         var clockGeneration = 21L

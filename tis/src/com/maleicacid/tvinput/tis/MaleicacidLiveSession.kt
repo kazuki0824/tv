@@ -168,8 +168,8 @@ class MaleicacidLiveSession(
         tunerController.setOnSubtitlePesCallback { generation, trackId, pesData, timestamp, broadcastStatementTime ->
             enqueueSessionAction {
                 if (PlaybackStartTransitions.acceptsGeneration(playbackState, generation)) {
-                    // Rust caption JNI parses management/STM facts before this callback.
-                    // Rebuild TIF tracks so newly discovered language_tag values become selectable.
+                    // Rust字幕JNIは、このcallbackの前に管理データとSTMの情報を解析する。
+                    // 新たに検出したlanguage_tagを選択できるよう、TIFのtrack一覧を再構築する。
                     latestService?.let(::updateTracks)
                     if (trackId.startsWith("superimpose:")) {
                         if (broadcastStatementTime != null) {

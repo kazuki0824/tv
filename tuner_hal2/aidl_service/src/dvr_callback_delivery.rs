@@ -534,10 +534,11 @@ fn record_post_commit_accounting_failure_fallback(
             fallback_error,
         ),
     );
-    if fallback_record_result.is_err() {
-        // The fallback helper increments the context-owned failure counter; post-commit public
-        // methods must not be reversed by this diagnostic-store failure.
-    }
+    let Ok(()) = fallback_record_result else {
+        // 記録失敗は既存storeのcounterへ計上済み。ここで診断処理を終え、
+        // commit済みの公開結果を取り消したり、同じ失敗を二重計上したりしない。
+        return;
+    };
 }
 
 fn record_dvr_status_notifier_lifecycle_outcome(

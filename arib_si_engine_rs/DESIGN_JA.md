@@ -411,7 +411,7 @@ Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通�
 
 ### current-program 診断情報
 
-現在番組選択の `overlapCount`、`selectedProgramId`、`selectionRule` は TvProvider row id と process 内の query 結果に依存する runtime 診断であり、`ProgramProviderDataV1` へ保存しない。これらは TIS が process-local `CurrentProgramResolutionDiagnostic` として保持し、provider-data identity、canonical bytes、publish fingerprint の入力にしない。Rust provider-data schema と JNI に `diagnostics.currentProgram` および `appendCurrentProgramDiagnostics()` を設けない。
+TvProvider row idやprocess内のquery結果に依存する現在番組選択の診断情報は、`ProgramProviderDataV1`へ保存せず、provider-data identity、canonical bytes、publish fingerprintの入力にしない。TISの状態保持方針は`../tis/DESIGN_JA.md`の「未使用の診断状態と試験専用関数」を正とする。Rust provider-data schema と JNI に `diagnostics.currentProgram` および `appendCurrentProgramDiagnostics()` を設けない。
 
 ### ChannelProviderDataV1
 

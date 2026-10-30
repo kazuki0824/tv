@@ -29,6 +29,10 @@
 # 2026-10-30 Frontend回帰試験数の継承（#209）
 
 - #116の同一世代SDT Filter回帰を継承し、本PRで追加されたCIのFrontend試験数gateを17から18へ更新する。実行はCIに委ねる。
+# 2026-10-30 現在番組選択の回帰試験を標準整形（#210）
+
+- CurrentProgramRatingResolverTestの複数行式をktlint 1.8.0で整形した。試験の入力・期待値と製品実装は変更しない。
+- テスト実行はCIに委ねる。整形修正は#212へ継承する。
 
 # 2026-10-30 Section読取診断と再生開始例外の回収（#116）
 
@@ -42,11 +46,22 @@
 - Session所有の既存予約・executorだけを使い、新しいowner、再試行履歴、worker、queueを設けない。
 - Android 15 Robolectricの実Session再試行fixtureへ、Surfaceなしaudio-onlyの別世代反復再試行と、映像の予約・実行それぞれにおけるSurface拒否を追加。受付試験のCI期待値を44件から46件へ更新する。実Codec・実機復旧はこの試験では証明しない。
 
+# 2026-10-30 現在番組選択の不要な全候補List生成を削除（#210）
+
+- CurrentProgramRatingResolverは指定sortOrderのcursorを順に読み、サービス照合に成功した最初の候補を選択して直ちに閉じる。未使用になったoverlapCount診断のための全候補List生成を廃止する。
+- 後続の不正行を読まない先頭候補、候補が空の場合のunrated fallback、query失敗伝播をAndroid 15 Robolectricで検査する。TvProviderの選択順序、EIT優先、content rating/unblock identityの規範は変更しない。
+- 独立したstate、helper owner、worker、容量予算は追加しない。Android製品build・実機TvProviderでの照合は未実施。
+
 # 2026-10-29 現在番組選択の整列責務の記述を訂正
 
 - DESIGNの「cursor返却順に依存しない」という記述を、TvProviderへ指定したsort orderで返された行から、サービス照合を通過した先頭行を選ぶ契約へ訂正した。Kotlin側で再整列しないことを明記した。
 - CurrentProgramRatingResolverのquery、候補読取り、サービス照合、先頭候補選択を読み合わせ、実装との整合を確認した。実装・SQLの選択順・試験は変更しない。
 - 文書のみの修正のため、build・ホスト試験・atest/VTS・実機試験は実施していない。
+
+# 2026-10-28 現在番組選択の診断状態に関する設計記述を整理（#210）
+
+- 削除済みの`CurrentProgramResolutionDiagnostic`と保持項目に関する旧記述を除去し、未読診断snapshotを保持しない現行方針へ統一した。ARIB `event_id`の`COLUMN_EVENT_ID`およびJSON v1 `programKey.eventId`への投影契約は維持する。
+- 検証：現行resolverとTIS/SIの設計契約を照合し、旧診断型への現行規範参照が残っていないことと`git diff --check`を確認した。文書のみの変更であり、実行テストの追加・再実行は行っていない。
 
 # 2026-10-25 入力予算判定の冗長分岐を簡素化（#207）
 
@@ -176,6 +191,12 @@
 - T4: 既存playback ownerでcallback→owner到達、Codec queue、入力index返却、出力callback、MediaSync音声consumeの進捗と所要時間をDEBUG採取できるようにした。世代別の入力index再通知・返却・音声consumeは既存`PlaybackDataPathProgress`に追記し、DEBUGの所要時間ログは32/64件ごとの採取とする。新worker、producer queue、時間判定へのfeedbackは導入しない。
 - T5: Android 15 Robolectric fixtureで有界キューに対するPTS幅3秒超の少量音声入力、および4秒相当のMPEG-2入力120回・Codec出力／描画callback・入力index返却を検証する回帰を追加。診断counter reset試験も追従した。
 - **検証範囲:** 実装・設計・テストの変更をPRへ反映したが、Android製品build、Robolectricの実行、実端末のCodec処理能力・黒画面解消はこの変更だけでは確認できていない。実Codecで入力を消費できない場合はbytes/件数上限に達して失敗し得るため、診断traceと速度比較による原因切分けが残る。toolsの診断PR #17と恒久修正PR #18/19の統合は行わない。
+
+## 2026-10-18 導入履歴に基づく修正の配置是正
+
+- main由来の未使用状態・恒等sessionId関数と音声stream_typeの本番・試験共通化を独立修正として所有する。boot/background診断とsessionId試験関数は69e9a72、番組評価診断とdirty-window破棄counterおよび音声対応表の複製はmainへ取り込み済みの#54（30d45cd）に由来する。
+- #142（5d072e4）で導入され#116へ統合されたdual-mono恒等試験関数の削除は#116へ移動し、後続PRはその修正を継承する。診断削除・Provider試験・音声対応表の共通化のコードと試験期待値は配置変更前と同一。
+- 既存ログ、Direct Boot永続状態、番組評価の選択と失敗返却、再生動作は維持する。新owner・worker・復旧経路は追加しない。製品build・atest・実機は未実施。
 
 ## 2026-10-18 導入元に戻したdual-mono試験の是正
 

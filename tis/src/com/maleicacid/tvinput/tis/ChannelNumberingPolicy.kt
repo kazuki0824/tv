@@ -31,7 +31,7 @@ object ChannelNumberingPolicy {
     ): String {
         val key = remoteKey?.takeIf { it in 1..12 } ?: return service.serviceKey.serviceId.toString()
         val serviceId = service.serviceKey.serviceId
-        // ARIB TR-B14 Vol.7 encodes service type in b8..b7 and service number in b2..b0.
+        // ARIB TR-B14 Vol.7では、サービス種別をb8..b7、サービス番号をb2..b0に符号化する。
         val serviceType = (serviceId ushr 7) and 0x03
         val serviceNumber = serviceId and 0x07
         val threeDigitNumber = serviceType * 200 + key * 10 + (serviceNumber + 1)

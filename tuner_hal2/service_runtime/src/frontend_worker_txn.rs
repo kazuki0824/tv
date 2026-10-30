@@ -3771,9 +3771,8 @@ fn run_frontend_backend_tune_session_worker(
                     }
                 }
             }
-            // Missing Section callbacks alone do not identify the stalled boundary.
-            // Emit one bounded observation per five seconds without retaining a
-            // second owner of Frontend/Demux relation or streaming state.
+            // Section callbackの欠落だけでは、どの境界で停止したかを特定できない。
+            // Frontend/Demuxの関係やstreaming状態の第二ownerを保持せず、5秒ごとに有界の診断を1件出力する。
             #[cfg(target_os = "android")]
             if backend == FrontendBackendKind::Px4CharDevice
                 && signal_state == FrontendSignalState::Locked

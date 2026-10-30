@@ -52,6 +52,7 @@ jobs:
             --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest \
             --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest \
             --tests com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest \
+            --tests com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest \
             --tests com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest \
             --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest
 
@@ -83,6 +84,10 @@ jobs:
           assert playback.get("skipped", "0") == "0", playback.attrib
           for case in playback.findall("testcase"):
               print(f"Android 15実SDK playback受付試験: {case.get('name')} success")
+          resolver = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest.xml")).getroot()
+          assert resolver.get("tests") == "2", resolver.attrib
+          assert resolver.get("failures") == "0" and resolver.get("errors") == "0", resolver.attrib
+          assert resolver.get("skipped", "0") == "0", resolver.attrib
           lease = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.TunerFrontendLeaseTransitionTest.xml")).getroot()
           assert lease.get("tests") == "12", lease.attrib
           assert lease.get("failures") == "0" and lease.get("errors") == "0", lease.attrib

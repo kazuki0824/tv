@@ -245,10 +245,8 @@ fn default_lnb_entry_for_frontend(
     id: LnbRuntimeId,
 ) -> Option<LnbRegistryEntry> {
     let profile = match entry.lnb_profile? {
-        // ExternalOrShared is product wiring evidence for keeping the
-        // satellite frontend powered.  It is not evidence for any
-        // caller-controllable ILnb operation, so it must not create a public
-        // LNB endpoint.
+        // ExternalOrSharedは衛星frontendへの給電を維持する製品配線上の根拠である。
+        // 呼出し元が制御できるILnb操作の根拠にはならないため、公開LNB endpointを生成しない。
         LnbRegistryProfile::NoPower => return None,
         profile => profile,
     };

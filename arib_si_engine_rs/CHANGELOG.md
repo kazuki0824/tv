@@ -1,3 +1,8 @@
+# 2026-10-28 現在番組選択の診断状態に関する設計参照を整理（#210）
+
+- TISが削除済みの`CurrentProgramResolutionDiagnostic`を保持するという旧記述を除去し、状態保持方針の正本をTIS設計書へ集約した。現在番組選択の診断情報をprovider-data・identity・canonical bytes・publish fingerprintへ混ぜない契約と、診断用schema/JNI入口を設けない契約は維持する。
+- 検証：TISの現行実装・設計とprovider-dataの契約を照合し、`git diff --check`を確認した。文書のみの変更であり、実行テストの追加・再実行は行っていない。
+
 # 2026-10-23 SI JNIロード時の標準logger初期化とJNI TRACE選別（#207）
 
 - `jni_logging`をJNI crateへ接続し、公開`JNI_OnLoad`で`android_logger::init_once`を実行してJNI 1.6を返す。標準`FilterBuilder`の`trace,jni::=debug`で、短縮タグに依存せずJNI内部TRACEだけを整形・書込み前に除外する。最大レベルはTRACE、JNI DEBUG以上・他targetのTRACEは維持する。独自logger、別worker、runtime切替APIは追加しない。
