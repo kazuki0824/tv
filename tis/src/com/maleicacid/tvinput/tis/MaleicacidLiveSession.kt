@@ -454,8 +454,6 @@ class MaleicacidLiveSession(
         if (channelUri == null) return false
         lastPlaybackGateDiagnostic = null
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
-        aribSiEngine.reset()
-        sectionIngestController.resetForTune()
         playbackState = PlaybackStartState.Idle
         cancelPlaybackRetry()
         currentService = null
@@ -482,7 +480,11 @@ class MaleicacidLiveSession(
         superimposeController.setEnabled(true)
         superimposeController.selectTrack(null)
         currentTrackSignature = emptySet()
-        val outcome = tunerController.tuneForLive(channelUri)
+        val outcome =
+            tunerController.tuneForLive(channelUri) {
+                aribSiEngine.reset()
+                sectionIngestController.resetForTune()
+            }
         if (!outcome.success || outcome.channel == null) {
             tracePlaybackGate("TUNE_FAILED result=${outcome.resultCode} detail=${outcome.message}")
             notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)

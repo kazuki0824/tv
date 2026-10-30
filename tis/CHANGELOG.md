@@ -37,6 +37,11 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 - TvProvider投影文書の重複記述を既存delivery system対応表へ統一し、部分受信とISDB-C非対応の記載矛盾を解消した。
 - 採用済み契約の変更なし。静的照合のみで、実行テストはCIに委ねる。
 
+# 2026-10-30 ライブSI resetを旧Filter失効後へ移動
+
+- Sessionの先行resetを既存Controllerの旧Filter解放後callbackへ移し、旧Sectionの新SIへの混入を防ぐ。scanと同じ順序をライブへ適用する設計変更。
+- 不可逆close失敗でreset callbackを実行しない回帰を既存SDK fixtureへ追加。共通切替経路のscan回帰と併せてCIで確認する。実機の39.1事象の原因確定・解消を主張しない。
+
 # 2026-10-30 全件監査の完了通知・UI競合修正
 
 - Boot EPG jobの世代登録と早期完了の受渡しを既存RunContextの同じ短いmonitorで直列化する。完了通知の取逃しを除去し、既存の一回完了・停止fenceを維持する。

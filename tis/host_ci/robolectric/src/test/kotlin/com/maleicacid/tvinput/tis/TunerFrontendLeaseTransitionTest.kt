@@ -189,7 +189,9 @@ class TunerFrontendLeaseTransitionTest {
             check(!controller.tuneForScan(terrestrial()).success)
             val beforeClose = sdk.closeCalls
             val beforeClear = sdk.clearTuneListenerCalls
-            val result = controller.tuneForLive(Uri.parse("content://android.media.tv/channel/999999"))
+            var resets = 0
+            val result = controller.tuneForLive(Uri.parse("content://android.media.tv/channel/999999")) { resets++ }
+            check(resets == 0)
             check(!result.success && result.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
             check(result.message.contains("資源解放未確定"))
             check(sdk.closeCalls == beforeClose && sdk.clearTuneListenerCalls == beforeClear)
