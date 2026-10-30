@@ -74,8 +74,8 @@ class ControllerSerialExecutorReviewBoundaryTest {
     }
 
     @Test
-    fun controllerExecutorExpandedBudgetAdmitsMultipleFilterBurstsButRemainsBounded() {
-        val executor = ControllerSerialExecutor("multi-filter-section-budget", maxPendingDataTasks = 16)
+    fun controllerSectionBurstAdmissionRemainsBoundedWithoutHardwareCapacityHeuristic() {
+        val executor = ControllerSerialExecutor("section-admission-boundary", maxPendingDataTasks = 16)
         val started = CountDownLatch(1)
         val releaseControl = CountDownLatch(1)
         val slots =
@@ -85,17 +85,16 @@ class ControllerSerialExecutorReviewBoundaryTest {
                 .apply { isAccessible = true }
                 .get(executor) as Semaphore
         try {
-            executor.expandDataTaskCapacity(32)
             executor.executeControl {
                 started.countDown()
                 runCatching { releaseControl.await() }
             }
             check(started.await(WAIT_SECONDS, TimeUnit.SECONDS))
-            repeat(32) { executor.executeData { error("未実行data taskが実行されました") } }
+            repeat(16) { executor.executeData { error("未実行data taskが実行されました") } }
             check(slots.availablePermits() == 0)
             check(runCatching { executor.executeData {} }.exceptionOrNull() is DataCapacityExceededException)
-            check(executor.shutdownNow().size == 32)
-            check(slots.availablePermits() == 32)
+            check(executor.shutdownNow().size == 16)
+            check(slots.availablePermits() == 16)
         } finally {
             releaseControl.countDown()
             executor.shutdownNow()
