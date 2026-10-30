@@ -101,6 +101,7 @@ class SetupActivity :
 
     override fun onScanStateChanged(state: ScanState) {
         runOnUiThread {
+            if (ChannelScanManager.currentState() !== state) return@runOnUiThread
             val running = state is ScanState.Running
             scanButton.isEnabled = !invalidInputId && !running
             cancelButton.isEnabled = running

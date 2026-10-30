@@ -17,6 +17,7 @@ import android.media.tv.tuner.frontend.FrontendSettings
 import android.media.tv.tunerresourcemanager.ITunerResourceManager
 import android.media.tv.tunerresourcemanager.TunerResourceManager
 import android.net.Uri
+import android.widget.Button
 import android.widget.TextView
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.SectionIngestController
@@ -278,6 +279,30 @@ class TunerScanCleanupTest {
             managerExecutor.submit {}.get(5, TimeUnit.SECONDS)
             runCatching { controller.release() }
             owner.compareAndSet(task, null)
+            ReflectionHelpers.setField(ChannelScanManager, "state", oldState)
+            activityController.destroy()
+        }
+    }
+
+    @Test
+    fun oldScanNotificationCannotOverwriteNewScanUi() {
+        val oldState = ChannelScanManager.currentState()
+        val activityController = Robolectric.buildActivity(SetupActivity::class.java).create()
+        val activity = activityController.get()
+        try {
+            val current = ScanState.Running(0L, 8, ScanPurpose.SETUP_SCAN)
+            ReflectionHelpers.setField(ChannelScanManager, "state", current)
+            ReflectionHelpers.setField(activity, "setupGeneration", 8)
+            activity.onScanStateChanged(current)
+            val status = ReflectionHelpers.getField<TextView>(activity, "statusView")
+            val scan = ReflectionHelpers.getField<Button>(activity, "scanButton")
+            val cancel = ReflectionHelpers.getField<Button>(activity, "cancelButton")
+            val currentText = status.text.toString()
+            activity.onScanStateChanged(ScanState.Failed("OLD_FAILURE", 7, ScanPurpose.SETUP_SCAN))
+            check(status.text.toString() == currentText)
+            check(!scan.isEnabled && cancel.isEnabled)
+            check(!activity.isFinishing)
+        } finally {
             ReflectionHelpers.setField(ChannelScanManager, "state", oldState)
             activityController.destroy()
         }

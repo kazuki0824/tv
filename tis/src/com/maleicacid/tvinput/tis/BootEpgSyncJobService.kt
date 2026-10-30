@@ -20,7 +20,23 @@ class BootEpgSyncJobService : JobService() {
         val stopped: AtomicBoolean = AtomicBoolean(false),
         val scanGeneration: AtomicInteger = AtomicInteger(0),
         val earlyCompletion: AtomicReference<ScanCompletion?> = AtomicReference(null),
-    )
+    ) {
+        fun acceptCompletion(completion: ScanCompletion): Boolean =
+            synchronized(this) {
+                if (scanGeneration.get() == 0) {
+                    earlyCompletion.compareAndSet(null, completion)
+                    false
+                } else {
+                    scanGeneration.compareAndSet(completion.generation, 0)
+                }
+            }
+
+        fun bindGeneration(generation: Int): ScanCompletion? =
+            synchronized(this) {
+                scanGeneration.set(generation)
+                earlyCompletion.getAndSet(null)
+            }
+    }
 
     private val activeRun = AtomicReference<RunContext?>(null)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -73,16 +89,11 @@ class BootEpgSyncJobService : JobService() {
         val generation =
             ChannelScanManager.startBootEpgSyncIfIdle(applicationContext, inputId, targetChannels) { completedGeneration, needsReschedule ->
                 if (activeRun.get() !== run || run.stopped.get()) return@startBootEpgSyncIfIdle
-                val activeGeneration = run.scanGeneration.get()
-                if (activeGeneration == 0) {
-                    run.earlyCompletion.compareAndSet(null, ScanCompletion(completedGeneration, needsReschedule))
-                    return@startBootEpgSyncIfIdle
-                }
-                if (!run.scanGeneration.compareAndSet(completedGeneration, 0)) return@startBootEpgSyncIfIdle
-                finish(run, needsReschedule)
+                val shouldFinish = run.acceptCompletion(ScanCompletion(completedGeneration, needsReschedule))
+                if (shouldFinish) finish(run, needsReschedule)
             } ?: return finish(run, needsReschedule = true)
-        run.scanGeneration.set(generation)
-        run.earlyCompletion.getAndSet(null)?.takeIf { it.generation == generation }?.let { completion ->
+        val earlyCompletion = run.bindGeneration(generation)
+        earlyCompletion?.takeIf { it.generation == generation }?.let { completion ->
             if (run.scanGeneration.compareAndSet(generation, 0)) finish(run, completion.needsReschedule)
         }
         return true
