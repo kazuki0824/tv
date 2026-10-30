@@ -41,6 +41,11 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 
+/** Framework TunerのcloseFrontend()/close()が一回限りで失敗した後は、同じSDK instanceへの再投入は不可能。 */
+internal class TunerOneShotCloseFailure(
+    cause: Throwable,
+) : IllegalStateException("Tuner解放失敗で資源解放未確定（Framework one-shot）", cause)
+
 /** 連続する同一CAS失敗の初回と二倍間隔の集約点だけを記録する。 */
 internal fun shouldLogCasDiagnosticOccurrence(count: Long): Boolean = count > 0L && (count and (count - 1L)) == 0L
 
@@ -564,6 +569,7 @@ class TunerController(
         if (tunerInstance === existingTuner) {
             val closeFailure = runCatching { tunerInstance.closeFrontend() }.exceptionOrNull()
             if (closeFailure != null) {
+                tunerCloseFailure = closeFailure
                 return BsFrontendSelectionResult(
                     null,
                     Tuner.RESULT_UNKNOWN_ERROR,
@@ -962,14 +968,7 @@ class TunerController(
         runCatching {
             tunerCloseFailure?.let { throw IllegalStateException("Tuner.close失敗後の再試行は禁止", it) }
             if (frontendLeaseType != null && (frontendLeaseType != nextType || reselectSpecificFrontend)) {
-                try {
-                    tunerInstance.close()
-                } catch (error: RuntimeException) {
-                    // AOSPはfinallyでmClosed=trueにする。旧Tunerも新Tunerも選局に使用しない。
-                    tunerCloseFailure = error
-                    Log.w(LogTags.TIS, "Tuner.closeに失敗し資源解放が未確定 inputId=$inputId", error)
-                    throw error
-                }
+                closeTunerAfterFrontendRelease(tunerInstance)
                 tuner = null
                 frontendLeaseType = null
                 tuner = createTuner() ?: error("異種frontend切替後のTuner再生成に失敗しました")
@@ -2129,7 +2128,7 @@ class TunerController(
 
     fun release() {
         if (released) {
-            tunerCloseFailure?.let { throw IllegalStateException("Tuner.close失敗で資源解放未確定", it) }
+            tunerCloseFailure?.let { throw TunerOneShotCloseFailure(it) }
             return
         }
         if (sectionExecutor.isOwnerThread()) {
@@ -2143,16 +2142,21 @@ class TunerController(
         try {
             callOnController(cleanup = true) { releaseOnController() }
         } finally {
-            // one-shot close失敗でもController内部のexecutorだけは確実に終了させる。
+            // 再試行可能な解放義務がなくなった場合だけ実行器を終了する。
             if (released) sectionExecutor.shutdownNow()
         }
         Log.i(LogTags.TIS, "Tuner を解放します inputId=$inputId sessionId=$tvInputSessionId")
     }
 
-    @Suppress("TooGenericExceptionCaught", "ThrowsCount")
+    @Suppress(
+        "TooGenericExceptionCaught",
+        "ThrowsCount",
+        "CyclomaticComplexMethod",
+        "LongMethod",
+    )
     private fun releaseOnController() {
         if (released) {
-            tunerCloseFailure?.let { throw IllegalStateException("Tuner.close失敗で資源解放未確定", it) }
+            tunerCloseFailure?.let { throw TunerOneShotCloseFailure(it) }
             return
         }
         invalidateTuneOnController()
@@ -2194,21 +2198,31 @@ class TunerController(
         release { if (tunerCloseFailure == null) tuner?.clearOnTuneEventListener() }
         currentTune = null
         tuneAccepted = false
-        release {
-            tunerCloseFailure?.let { throw IllegalStateException("以前のTuner.close失敗で資源解放未確定", it) }
-            try {
-                tuner?.close()
-            } catch (error: RuntimeException) {
-                tunerCloseFailure = error
-                throw error
-            }
-            tuner = null
-            frontendLeaseType = null
-        }
-        // one-shot closeが失敗したControllerは再試行できないため内部executorを終端する。
-        if (tunerCloseFailure != null) released = true
+        // 再試行可能な他資源の回収完了前に、不可逆なSDK closeへ進めない。
         failure?.let { throw it }
+        tunerCloseFailure?.let { throw TunerOneShotCloseFailure(it) }
+        tuner?.let { closeTunerAfterFrontendRelease(it) }
+        tuner = null
+        frontendLeaseType = null
+        // 各既存ownerが保持する未解放資源は同じ実行器から再試行する。
+        // PlaybackPipeline内のResourceCleanupも完了前には退役させない。
+        // SDK client/native後始末を含む完了確認前にownerや実行器を退役させない。
         released = true
+    }
+
+    // FrontendClientは失敗時にもnative参照を破棄するため、closeFrontendも再試行不能。
+    // 元の失敗を保持し、後続closeのno-opやINVALID_STATEを回収成功と解釈しない。
+    // FrameworkのRuntimeExceptionを元原因のままone-shot未完義務へ分類する境界。
+    @Suppress("TooGenericExceptionCaught")
+    private fun closeTunerAfterFrontendRelease(instance: Tuner) {
+        try {
+            instance.closeFrontend()
+            instance.close()
+        } catch (error: RuntimeException) {
+            tunerCloseFailure = error
+            Log.w(LogTags.TIS, "Tunerのone-shot解放に失敗 inputId=$inputId", error)
+            throw TunerOneShotCloseFailure(error)
+        }
     }
 
     override fun close() = release()

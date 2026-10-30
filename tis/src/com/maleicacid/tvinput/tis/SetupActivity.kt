@@ -51,7 +51,9 @@ class SetupActivity :
                         statusView.setText(R.string.invalid_setup_request)
                         setResult(RESULT_CANCELED)
                     } else {
-                        setupGeneration = ChannelScanManager.startIfIdle(this@SetupActivity, resolved)
+                        val accepted =
+                            ChannelScanManager.startIfIdle(this@SetupActivity, resolved, this@SetupActivity::onScanStartRejected)
+                        if (accepted != null) setupGeneration = accepted
                     }
                 }
             }
@@ -70,6 +72,15 @@ class SetupActivity :
         if (invalidInputId) {
             setResult(RESULT_CANCELED)
         }
+    }
+
+    private fun onScanStartRejected(failure: ScanState.Failed?) {
+        statusView.text =
+            if (failure != null) {
+                scanStatusText(failure)
+            } else {
+                "前のスキャンを終了中です。少し待ってから再度開始してください。"
+            }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

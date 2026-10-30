@@ -1,5 +1,5 @@
 // TunerController公開選局入口を通す。Frameworkのnative/TRM接続だけをShadowで代替する。
-@file:Suppress("MagicNumber")
+@file:Suppress("MagicNumber", "MaxLineLength")
 
 package com.maleicacid.tvinput.tis
 
@@ -14,7 +14,10 @@ import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.SectionEvent
 import android.media.tv.tuner.frontend.FrontendInfo
 import android.media.tv.tuner.frontend.FrontendSettings
+import android.media.tv.tunerresourcemanager.ITunerResourceManager
+import android.media.tv.tunerresourcemanager.TunerResourceManager
 import android.net.Uri
+import android.widget.TextView
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SectionTransportLossSnapshot
@@ -27,6 +30,7 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.tis.TunerController.SectionFilterHandle
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
@@ -36,8 +40,12 @@ import org.robolectric.annotation.RealObject
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.util.ReflectionHelpers
 import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
 
 @RunWith(RobolectricTestRunner::class)
 @Config(
@@ -46,6 +54,7 @@ import java.util.concurrent.TimeUnit
     shadows = [
         TunerFrontendLeaseTransitionTest.NativeTuner::class,
         TunerFrontendLeaseTransitionTest.NativeFilter::class,
+        TunerFrontendLeaseTransitionTest.NativeTrm::class,
         TunerFrontendLeaseTransitionTest.SiEngineBoundary::class,
     ],
 )
@@ -111,33 +120,6 @@ class TunerFrontendLeaseTransitionTest {
             check(ReflectionHelpers.getField<Any?>(tuner, "mOnTuneEventExecutor") == null)
         } finally {
             controller.release()
-        }
-    }
-
-    @Test
-    fun failedOneShotTunerCloseCannotBeMisreadAsSuccessfulRetry() {
-        val controller = controller()
-        val sdk = checkNotNull(NativeTuner.current)
-        try {
-            check(!controller.tuneForScan(satellite()).success)
-            sdk.failNextFullClose = true
-            val first = controller.tuneForScan(terrestrial())
-            check(!first.success && first.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
-            check(sdk.oneShotClosed && sdk.fullClosed == 0 && sdk.closeCalls == 1)
-            val again = controller.tuneForScan(terrestrial())
-            check(!again.success && again.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
-            check(again.message.contains("資源解放未確定"))
-            check(sdk.closeCalls == 1 && sdk.requested == listOf(FrontendSettings.TYPE_ISDBS))
-            check(NativeTuner.instances.size == 1)
-            val bs = controller.prepareBsCandidateSource()
-            check(!bs.success && bs.resultCode == Tuner.RESULT_UNKNOWN_ERROR)
-            check(sdk.closeCalls == 1 && sdk.applied.isEmpty())
-            // terminal releaseもAOSPのclose再呼出しno-opを成功判定せず、実行器のみ閉じる。
-            check(runCatching { controller.release() }.isFailure)
-            check(runCatching { controller.release() }.isFailure)
-            check(sdk.closeCalls == 1 && sdk.fullClosed == 0)
-        } finally {
-            runCatching { controller.release() }
         }
     }
 
@@ -381,7 +363,7 @@ class TunerFrontendLeaseTransitionTest {
             val selected = controller.prepareBsCandidateSource()
             check(selected.success)
             check(oldSdk.fullClosed == 1)
-            check(oldSdk.closed == 0)
+            check(oldSdk.closed == 1)
             check(oldSdk.filters.all { Shadow.extract<NativeFilter>(it).closes == 1 })
             val newSdk = checkNotNull(NativeTuner.current)
             check(newSdk !== oldSdk)
@@ -490,26 +472,6 @@ class TunerFrontendLeaseTransitionTest {
         )
     }
 
-    private fun controller(): TunerController {
-        NativeTuner.instances.clear()
-        NativeTuner.current = null
-        NativeTuner.successfulTunes = false
-        NativeTuner.failNextConstruction = false
-        return TunerController(
-            RuntimeEnvironment.getApplication(),
-            "lease-integration-test",
-        )
-    }
-
-    private fun terrestrial(): ScanCandidate =
-        ScanCandidate(
-            ChannelRecord.DELIVERY_SYSTEM_ISDB_T,
-            FrequencyHz(473_142_857L),
-            displayChannel = "13",
-        )
-
-    private fun satellite(): ScanCandidate = JapanIsdbScanPlan.isdbs110CsBands().first()
-
     @Implements(Tuner::class)
     class NativeTuner {
         @RealObject private lateinit var actual: Tuner
@@ -517,6 +479,12 @@ class TunerFrontendLeaseTransitionTest {
         val requested = mutableListOf<Int>()
         val scanned = mutableListOf<Int>()
         var closed = 0
+        var frontendCloseResult = Tuner.RESULT_SUCCESS
+        private var frontendClientClosed = false
+        lateinit var trm: NativeTrm
+
+        fun frontendHandle(): Int? = ReflectionHelpers.getField(actual, "mFrontendHandle")
+
         var fullClosed = 0
         var failNextFullClose = false
         var oneShotClosed = false
@@ -548,6 +516,15 @@ class TunerFrontendLeaseTransitionTest {
             // Shadow constructorはJavaのfield initializerを飛ばすため、
             // clearOnTuneEventListener()が使うSDK既存のlockだけをテスト側で復元する。
             ReflectionHelpers.setField(actual, "mOnTuneEventLock", Any())
+            ReflectionHelpers.setField(actual, "mFrontendLock", ReentrantLock())
+            val manager =
+                ReflectionHelpers.callConstructor(
+                    TunerResourceManager::class.java,
+                    ReflectionHelpers.ClassParameter.from(ITunerResourceManager::class.java, null),
+                    ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 0),
+                )
+            trm = Shadow.extract(manager)
+            ReflectionHelpers.setField(actual, "mTunerResourceManager", manager)
             current = this
             instances += this
         }
@@ -572,6 +549,7 @@ class TunerFrontendLeaseTransitionTest {
             check(heldType == null || heldType == settings.type) { "SDKでは異種frontendを同一Tunerで選局できません" }
             requested += settings.type
             heldType = settings.type
+            ReflectionHelpers.setField(actual, "mFrontendHandle", 17)
             return if (successfulTunes) Tuner.RESULT_SUCCESS else Tuner.RESULT_UNAVAILABLE
         }
 
@@ -589,6 +567,7 @@ class TunerFrontendLeaseTransitionTest {
             check(heldType == null || heldType == settings.type) { "SDKでは異種frontendを同一Tunerで探索できません" }
             scanned += settings.type
             heldType = settings.type
+            ReflectionHelpers.setField(actual, "mFrontendHandle", 17)
             return Tuner.RESULT_UNAVAILABLE
         }
 
@@ -668,6 +647,7 @@ class TunerFrontendLeaseTransitionTest {
         fun applyFrontend(info: FrontendInfo): Int {
             check(fullClosed == 0 && heldType == null)
             heldType = info.type
+            ReflectionHelpers.setField(actual, "mFrontendHandle", 17)
             applied += info.type
             return Tuner.RESULT_SUCCESS
         }
@@ -678,26 +658,62 @@ class TunerFrontendLeaseTransitionTest {
         @Implementation
         fun closeFrontend() {
             closed++
+            // 公開closeFrontend/releaseFrontendのnative失敗→TRM解放順は実SDKのJavaを実行する。
+            Shadow.directlyOn<Void, Tuner>(actual, Tuner::class.java, "closeFrontend")
             heldType = null
+        }
+
+        @Implementation
+        @Suppress("UNUSED_PARAMETER")
+        fun nativeCloseFrontend(handle: Int): Int {
+            if (frontendClientClosed) return Tuner.RESULT_INVALID_STATE
+            // AOSP FrontendClient/TunerFrontendはclose結果によらず参照を破棄する。
+            frontendClientClosed = true
+            return frontendCloseResult
         }
 
         @Implementation
         fun close() {
             closeCalls++
             if (oneShotClosed) return // Android 15: 2回目以降のcloseはno-op
+            // SDK jarの版差に依存せず、対象LineageOS 22.1 close() finallyの不可逆性をモデル化する。
             oneShotClosed = true
             if (failNextFullClose) {
                 failNextFullClose = false
-                error("Tunerの解放途中で失敗しました")
+                error("Frontend解放後のDemux cleanup失敗を注入")
             }
             fullClosed++
             heldType = null
         }
     }
 
+    @Implements(TunerResourceManager::class)
+    class NativeTrm {
+        var frontendReleases = 0
+
+        @Implementation
+        // TRM IPCだけを固定成功へ置換し、SDKのlock取得/解放呼出しを維持する。
+        @Suppress("UNUSED_PARAMETER", "FunctionOnlyReturningConstant")
+        fun acquireLock(clientId: Int): Boolean = true
+
+        @Implementation
+        @Suppress("UNUSED_PARAMETER", "FunctionOnlyReturningConstant")
+        fun releaseLock(clientId: Int): Boolean = true
+
+        @Implementation
+        @Suppress("UNUSED_PARAMETER")
+        fun releaseFrontend(
+            handle: Int,
+            clientId: Int,
+        ) {
+            frontendReleases++
+        }
+    }
+
     @Implements(Filter::class)
     class NativeFilter {
         var closes = 0
+        var rejectClose = false
         private val pending = ArrayDeque<Byte>()
 
         fun offer(bytes: ByteArray) = bytes.forEach(pending::addLast)
@@ -730,6 +746,7 @@ class TunerFrontendLeaseTransitionTest {
         @Implementation
         fun nativeClose(): Int {
             closes++
+            if (rejectClose) return Tuner.RESULT_UNKNOWN_ERROR
             pending.clear()
             return Tuner.RESULT_SUCCESS
         }
@@ -762,6 +779,26 @@ class TunerFrontendLeaseTransitionTest {
     }
 
     companion object {
+        internal fun controller(): TunerController {
+            NativeTuner.instances.clear()
+            NativeTuner.current = null
+            NativeTuner.successfulTunes = false
+            NativeTuner.failNextConstruction = false
+            return TunerController(
+                RuntimeEnvironment.getApplication(),
+                "lease-integration-test",
+            )
+        }
+
+        internal fun terrestrial(): ScanCandidate =
+            ScanCandidate(
+                ChannelRecord.DELIVERY_SYSTEM_ISDB_T,
+                FrequencyHz(473_142_857L),
+                displayChannel = "13",
+            )
+
+        internal fun satellite(): ScanCandidate = JapanIsdbScanPlan.isdbs110CsBands().first()
+
         // NativeAribSiParserCasDiscoveryTest.PAT_BODYと同一の16-byte PAT/CRC-32/MPEG検査ベクトル。
         private val VALID_PAT =
             byteArrayOf(
