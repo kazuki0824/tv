@@ -177,8 +177,7 @@ jobs:
               assert all(not any(case.find(tag) is not None for tag in
                              ("skipped", "failure", "error")) for case in cases), name
               if name == "RealTsHalSiIntegrationTest":
-                  assert len(cases) == 1, name
-                  assert cases[0].get("name") == "realTsProducesServiceAndProgramFacts", name
+                  assert {case.get("name") for case in cases} == {"realTsProducesServiceAndProgramFacts", "realTsBurstLossAndRetransmissionStayWithinCandidate"}, name
               print(f"{name}: {len(cases)} passed")
           PYRESULT
 

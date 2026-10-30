@@ -3,6 +3,8 @@
 
 package com.maleicacid.tvinput.tis
 
+import android.media.tv.tuner.filter.Filter
+import android.media.tv.tuner.filter.SectionEvent
 import androidx.test.core.app.ApplicationProvider
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
@@ -21,14 +23,25 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.util.ReflectionHelpers
 import java.io.DataInputStream
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
+@Config(
+    sdk = [35],
+    shadows = [
+        TunerFrontendLeaseTransitionTest.NativeTuner::class,
+        TunerFrontendLeaseTransitionTest.NativeTrm::class,
+        TunerFrontendLeaseTransitionTest.NativeFilter::class,
+    ],
+)
 class RealTsHalSiIntegrationTest {
     // Rust JNIの未対応PID/table通知値。製品の公開定数を試験のために復活させない。
     private val ignoredUnsupportedPidOrTable = 1
@@ -53,6 +66,189 @@ class RealTsHalSiIntegrationTest {
             verifyIngest(engine, sections)
             verifyServices(engine, expected)
             verifyPrograms(engine, expected)
+        }
+    }
+
+    // 実TS/HAL/JNIを共用し、SDKのnative I/Oだけを既存Shadowへ接続する。
+    // 同じownerの飽和から候補切替までの時系列とfinallyによる解放を一続きで検査する。
+    @Suppress("LongMethod", "NestedBlockDepth", "MaxLineLength")
+    @Test(timeout = 60000)
+    fun realTsBurstLossAndRetransmissionStayWithinCandidate() {
+        val directory = File(checkNotNull(System.getProperty("realTs.fixtureDirectory")))
+        val expected = JSONObject(File(directory, "expected.json").readText())
+        val input = File(directory, expected.getString("fixture"))
+        assertEquals(expected.getString("sha256"), sha256(input.readBytes()))
+        val references = objects(expected.getJSONArray("section_reference"))
+        val sections = runHal(input, expected, references)
+        verifySections(sections, references)
+        AribSiEngine(ApplicationProvider.getApplicationContext()).use { engine ->
+            val tuner = TunerFrontendLeaseTransitionTest.controller()
+            val ingest = SectionIngestController(engine)
+            tuner.setSectionIngestController(ingest)
+            TunerFrontendLeaseTransitionTest.NativeTuner.successfulTunes = true
+            val owner = ReflectionHelpers.getField<ControllerSerialExecutor>(tuner, "sectionExecutor")
+            try {
+                check(tuner.tuneForScan(TunerFrontendLeaseTransitionTest.terrestrial()).success)
+                val pat = sections.first { it.pid == 0 }
+                deliver(tuner, pat)
+                awaitIdle(owner)
+                tuner.updatePmtFilters(engine.pmtPidsForSectionFilters(), tuner.currentGeneration())
+                val baseline = ingest.transportLossSnapshot()
+                val entered = CountDownLatch(1)
+                val resume = CountDownLatch(1)
+                val started = System.nanoTime()
+                owner.executeControl {
+                    entered.countDown()
+                    check(resume.await(10, TimeUnit.SECONDS))
+                }
+                try {
+                    check(entered.await(5, TimeUnit.SECONDS))
+                    // EIT先行で既存16枠を占有し、他FilterのPAT/PMT/SDT/NITを含むburstを同時配送する。
+                    val eit = sections.first { it.pid == 18 }
+                    repeat(16) { deliver(tuner, eit) }
+                    assertEquals(16, owner.queue.size)
+                    val groups = sections.groupBy { it.pid }
+                    val callbacks = Executors.newFixedThreadPool(groups.size)
+                    try {
+                        val futures = groups.values.map { group -> callbacks.submit { group.forEach { deliver(tuner, it) } } }
+                        futures.forEach { it.get(5, TimeUnit.SECONDS) }
+                    } finally {
+                        callbacks.shutdownNow()
+                        check(callbacks.awaitTermination(5, TimeUnit.SECONDS))
+                    }
+                    assertEquals(sections.size, ingest.inputDeliveryLossCount)
+                    assertEquals(16, owner.queue.size)
+                } finally {
+                    resume.countDown()
+                }
+                awaitIdle(owner)
+                val blockedNanos = System.nanoTime() - started
+                assertEquals(
+                    "candidateInputDeliveryLoss=${sections.size} candidateFilterOverflow=0",
+                    ChannelScanController.candidateTransportLossDetail(baseline, ingest.transportLossSnapshot()),
+                )
+                assertTrue(!collectionComplete(engine))
+                val replayStarted = System.nanoTime()
+                replay(tuner, owner, sections)
+                assertTrue(collectionComplete(engine))
+                verifyServices(engine, expected)
+                verifyPrograms(engine, expected)
+                // 回復しても同じ候補内の喪失履歴は消さない。
+                assertEquals(sections.size, ingest.inputDeliveryLossCount)
+                val replayNanos = System.nanoTime() - replayStarted
+                val staleFilter = filters(tuner).getValue(TsPid(17)).first()
+                val staleHandle = handles(tuner).getValue(TsPid(17))
+                tuner.closeSectionFilter(TsPid(17))
+                check(tuner.openSectionFilter(TsPid(17)).isOpen)
+                val sdt = sections.first { it.pid == 17 }
+                deliverStale(tuner, staleFilter, staleHandle, sdt)
+                awaitIdle(owner)
+                assertEquals(sections.size, ingest.inputDeliveryLossCount)
+                // 候補境界は実scanと同じ旧Filter停止後resetを使用する。
+                check(
+                    tuner
+                        .tuneForScan(TunerFrontendLeaseTransitionTest.terrestrial()) {
+                            engine.reset(SiDiscoveryProfile.ISDB_T)
+                            ingest.resetForTune()
+                        }.success,
+                )
+                val nextBaseline = ingest.transportLossSnapshot()
+                deliverStale(tuner, staleFilter, staleHandle, sdt)
+                awaitIdle(owner)
+                assertTrue(engine.serviceRegistrationSnapshot().services.isEmpty())
+                deliver(tuner, pat)
+                awaitIdle(owner)
+                tuner.updatePmtFilters(engine.pmtPidsForSectionFilters(), tuner.currentGeneration())
+                replay(tuner, owner, sections)
+                assertTrue(collectionComplete(engine))
+                assertEquals(null, ChannelScanController.candidateTransportLossDetail(nextBaseline, ingest.transportLossSnapshot()))
+                verifyServices(engine, expected)
+                val report = File(checkNotNull(System.getProperty("realTs.diagnosticsDirectory")), "section-burst.txt")
+                report.writeText(
+                    "sha256=${expected.getString(
+                        "sha256",
+                    )} sections=${sections.size} filters=${sections.map { it.pid }.distinct().size}\n" +
+                        "peakPending=16 rejected=${sections.size} filterOverflow=0 " +
+                        "blockedAndDrainNs=$blockedNanos replayNs=$replayNanos\n" +
+                        "beforeReplayComplete=false afterReplayComplete=true nextCandidateLoss=0 nextCandidateComplete=true\n",
+                )
+            } finally {
+                tuner.release()
+            }
+        }
+    }
+
+    private fun collectionComplete(engine: AribSiEngine): Boolean {
+        val snapshot = engine.serviceRegistrationSnapshot()
+        val complete =
+            SiCollectionRequirements(ChannelScanController.PublishMode.SETUP_SCAN, SiDiscoveryProfile.ISDB_T)
+                .evaluate(snapshot)
+                .complete
+        val outcome =
+            ChannelScanController.collectionOutcome(
+                complete,
+                2_000,
+                1_200,
+                snapshot.semanticFactsByServiceKey.size,
+                ChannelScanController.SiCollectionPolicy(),
+                allowStablePartial = false,
+            )
+        return outcome == ChannelScanController.SiCollectionOutcome.COMPLETE
+    }
+
+    private fun filters(tuner: TunerController): Map<TsPid, List<Filter>> = ReflectionHelpers.getField(tuner, "sectionFilters")
+
+    private fun handles(tuner: TunerController): Map<TsPid, TunerController.SectionFilterHandle> =
+        ReflectionHelpers.getField(tuner, "sectionFilterHandles")
+
+    private fun deliver(
+        tuner: TunerController,
+        section: Section,
+    ) {
+        val filter = filters(tuner).getValue(TsPid(section.pid)).first()
+        Shadow.extract<TunerFrontendLeaseTransitionTest.NativeFilter>(filter).offer(section.bytes)
+        val event =
+            ReflectionHelpers.callConstructor(
+                SectionEvent::class.java,
+                ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, section.bytes[0].toInt() and 255),
+                ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 0),
+                ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 0),
+                ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, section.bytes.size.toLong()),
+            )
+        checkNotNull(TunerFrontendLeaseTransitionTest.NativeTuner.current)
+            .filterCallbacks
+            .getValue(filter)
+            .onFilterEvent(filter, arrayOf(event))
+    }
+
+    private fun deliverStale(
+        tuner: TunerController,
+        filter: Filter,
+        handle: TunerController.SectionFilterHandle,
+        section: Section,
+    ) {
+        // close前にread済みだったbytesの後着。製品にテスト入口を追加しない。
+        val method = TunerController::class.java.declaredMethods.single { it.name.startsWith("deliverSectionRead") }
+        method.isAccessible = true
+        method.invoke(tuner, filter, section.bytes, section.bytes.size, handle)
+    }
+
+    private fun replay(
+        tuner: TunerController,
+        owner: ControllerSerialExecutor,
+        sections: List<Section>,
+    ) {
+        sections.forEach {
+            deliver(tuner, it)
+            awaitIdle(owner)
+        }
+    }
+
+    private fun awaitIdle(owner: ControllerSerialExecutor) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (owner.queue.isNotEmpty() || owner.activeCount != 0) {
+            check(System.nanoTime() < deadline) { "controllerが停止しません" }
+            Thread.sleep(1)
         }
     }
 
