@@ -5,6 +5,7 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
 import android.media.tv.TvContract
+import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
@@ -245,7 +246,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
                 serviceKey = key,
                 windowStartMs = program.startTimeMillis,
                 windowEndMs = program.startTimeMillis + program.durationMillis,
-                validProgramKeys = setOf(TvProviderWriter.programKeyForTest(program)),
+                validProgramKeys = setOf(ProviderDataBridge.buildProgramKey(program)),
                 deletionAuthoritative = false,
             )
 
@@ -342,8 +343,8 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val after = System.currentTimeMillis()
 
         val notBefore = coordinator.retryNotBeforeMillisForTest().single()
-        check(notBefore >= before + ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST)
-        check(notBefore <= after + ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST)
+        check(notBefore >= before + 60_000L)
+        check(notBefore <= after + 60_000L)
         check(coordinator.retryFailureClassesForTest() == setOf(ProgramPublishCoordinator.FailureClass.OBSOLETE_DELETE_FAILED))
     }
 
@@ -368,7 +369,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         )
 
         val windows =
-            (0 until (ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST + 1)).map { i ->
+            (0 until (512 + 1)).map { i ->
                 ProgramPublishCoordinator.EpgUpdateWindow(
                     serviceKey = key,
                     windowStartMs = program.startTimeMillis + i * 60_000L,
@@ -383,12 +384,12 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             updateWindows = windows,
             allowedServiceKeys = null,
         )
-        check(coordinator.retryWindowCountForTest() == ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST) {
+        check(coordinator.retryWindowCountForTest() == 512) {
             "再試行区間は単一の有界LRUに収める必要があります"
         }
         store.deletedWindows.clear()
         store.failDelete = false
-        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
+        now += 60_000L
         val current =
             windows.first().copy(
                 windowEndMs = windows.last().windowEndMs,
@@ -425,7 +426,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             )
         coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(old), setOf(key))
         check(store.deleteCalls == 1 && coordinator.retryWindowCountForTest() == 1)
-        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
+        now += 60_000L
         repeat(2) {
             val held = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), emptyList(), setOf(key))
             check(!held.hasCommittedTarget && store.deleteCalls == 1)
@@ -455,7 +456,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         writer.upsertChannels(
             listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())),
         )
-        val currentKey = TvProviderWriter.programKeyForTest(program)
+        val currentKey = ProviderDataBridge.buildProgramKey(program)
         val old =
             ProgramPublishCoordinator.EpgUpdateWindow(
                 key,
@@ -467,7 +468,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val failed = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(old), setOf(key))
         check(failed.failures.any { it.operation == "program-delete-obsolete" })
         check(store.deleteCalls == 1 && coordinator.retryWindowCountForTest() == 1)
-        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
+        now += 60_000L
         store.failDelete = false
         val partial =
             coordinator.publishWithUpdates(
@@ -527,7 +528,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             coordinator.publishWithUpdates(
                 ChannelScanController.PublishMode.BOOT_EPG_SYNC,
                 listOf(program),
-                listOf(window.copy(validProgramKeys = setOf(TvProviderWriter.programKeyForTest(program)))),
+                listOf(window.copy(validProgramKeys = setOf(ProviderDataBridge.buildProgramKey(program)))),
                 setOf(key),
             )
         check(valid.hasCommittedTarget && store.insertedPrograms == 1)
@@ -551,7 +552,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         fun publish(window: ProgramPublishCoordinator.EpgUpdateWindow) =
             coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(window), setOf(key))
         check(publish(old).failures.isNotEmpty())
-        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
+        now += 60_000L
         store.failDelete = false
         for ((start, end) in listOf(300L to 400L, 150L to 250L)) {
             val before = store.deletedWindows.size
@@ -581,7 +582,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
                 key,
                 program.startTimeMillis,
                 program.startTimeMillis + program.durationMillis,
-                setOf(TvProviderWriter.programKeyForTest(program)),
+                setOf(ProviderDataBridge.buildProgramKey(program)),
                 true,
             )
 
@@ -606,7 +607,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         store.failChannelQuery = true
         check(publishChanged().failures.isNotEmpty() && coordinator.retryWindowCountForTest() == 1)
         store.failChannelQuery = false
-        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
+        now += 60_000L
         val recovered = publishChanged()
         check(recovered.hasCommittedTarget && recovered.skippedUnchanged == 0)
         check(store.deleteCalls == before + 1 && coordinator.retryWindowCountForTest() == 0)

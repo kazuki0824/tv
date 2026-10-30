@@ -580,17 +580,6 @@ class TvProviderWriter private constructor(
             .listExistingChannels()
             .onFailure { error -> Log.w(LogTags.TIS, "既存channel復元に失敗しました inputId=$inputId", error) }
 
-    fun programValuesForTest(
-        channelId: Long,
-        program: ProgramRecord,
-    ): ContentValues =
-        programValues(
-            channelId,
-            program,
-            clearAbsentOptionalColumns = true,
-            providerData = (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).bytes,
-        )
-
     internal fun publicationInputSignature(
         program: ProgramRecord,
         windows: List<ProgramPublishCoordinator.EpgUpdateWindow>,
@@ -693,7 +682,7 @@ class TvProviderWriter private constructor(
     // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
     // 現行mapperの明示写像値をencodeする。未制約のProgramRecord値域は設計上の逸脱許可対象。
     @Suppress("AndroidLintWrongConstant", "CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "SpreadOperator")
-    private fun programValues(
+    internal fun programValues(
         channelId: Long,
         program: ProgramRecord,
         clearAbsentOptionalColumns: Boolean,
@@ -910,11 +899,6 @@ class TvProviderWriter private constructor(
                 TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
             )
 
-        fun programKeyForTest(program: ProgramRecord): String = ProviderDataBridge.buildProgramKey(program)
-
-        fun programProviderDataForTest(program: ProgramRecord): String =
-            (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json
-
         fun parseProgramKey(providerData: ByteArray?): String? = ProviderDataBridge.extractProgramKey(providerData)
 
         // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
@@ -994,38 +978,6 @@ class TvProviderWriter private constructor(
 
         internal fun signatureForContentValues(values: ContentValues): String =
             MessageDigest.getInstance("SHA-256").apply { appendRow(values) }.lowercaseHex()
-
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun signatureForProgramForTest(
-            channelId: Long,
-            program: ProgramRecord,
-        ): String {
-            val writer =
-                TvProviderWriter(
-                    "test",
-                    object : ChannelStore {
-                        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
-                            Result.success(keys.associateWith { channelId })
-
-                        override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(channelId)
-
-                        override fun updateChannel(
-                            channelId: Long,
-                            values: ContentValues,
-                        ): Result<Int> = Result.success(1)
-                    },
-                    testOnly = true,
-                )
-            return signatureForContentValues(
-                writer.programValues(
-                    channelId,
-                    program,
-                    clearAbsentOptionalColumns = true,
-                    providerData = (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).bytes,
-                ),
-            )
-        }
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

@@ -169,7 +169,7 @@ class SectionIngestController(
         status: Int,
     ) {
         val counter = counters.getOrPut(Triple(pid, tableId, status)) { MutableCounter() }
-        when (statusBucketForTest(status)) {
+        when (statusBucket(status)) {
             "accepted" -> {
                 counter.accepted++
             }
@@ -187,7 +187,7 @@ class SectionIngestController(
     }
 
     companion object {
-        fun statusBucketForTest(status: Int): String =
+        fun statusBucket(status: Int): String =
             when (status) {
                 SiStatus.OK -> "accepted"
                 SiStatus.INVALID_SECTION -> "invalid_section"

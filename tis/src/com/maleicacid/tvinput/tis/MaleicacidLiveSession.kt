@@ -276,8 +276,19 @@ class MaleicacidLiveSession(
         this.surface = surface
         tunerController.setSurface(surface)
         tracePlaybackGate(if (surface == null) "SURFACE_DETACHED" else "SURFACE_ATTACHED")
-        // 音声のみの再生は映像Surfaceの着脱に依存しない。
-        if (PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)) {
+        // 現在の再生世代にboundされた選択を優先し、SI一時未取得で予約を失効させない。
+        val signature =
+            when (val state = playbackState) {
+                is PlaybackStartState.Starting -> state.signature
+                is PlaybackStartState.WaitingFirstOutput -> state.signature
+                is PlaybackStartState.Started -> state.signature
+                is PlaybackStartState.Failed -> state.signature
+                PlaybackStartState.Idle, PlaybackStartState.Stopped -> null
+            }
+        val audioOnly =
+            signature?.takeIf { it.serviceKey == currentService }?.let { it.videoPid == null && it.audioPid != null }
+                ?: PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)
+        if (audioOnly) {
             if (playbackState !is PlaybackStartState.Started && playbackRetryTask == null) {
                 refreshDynamicSiAndCasFilters()
             }

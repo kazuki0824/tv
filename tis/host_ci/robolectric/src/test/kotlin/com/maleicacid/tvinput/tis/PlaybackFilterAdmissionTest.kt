@@ -114,6 +114,23 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun audioOnlySurfaceChangesPreserveRetryWhileServiceFactsAreMissing() {
+        RetryFixture(audioOnly = true, surfaceReady = false).use { fixture ->
+            fixture.failAndSchedule(7L, PlaybackPipeline.PlaybackUnavailableReason.RECOVERABLE_CODEC_ERROR)
+            val failed = fixture.state()
+            fixture.changeAudioOnlySurface(attach = true, serviceAvailable = false)
+            assertEquals(failed, fixture.state())
+            assertTrue(fixture.hasReservation())
+            fixture.changeAudioOnlySurface(attach = false, serviceAvailable = false)
+            assertEquals(failed, fixture.state())
+            assertTrue(fixture.hasReservation())
+            fixture.runReservation()
+            assertFalse(fixture.hasReservation())
+            assertEquals(PlaybackStartState.Idle, fixture.state())
+        }
+    }
+
+    @Test
     fun videoRecoveryRequiresValidSurfaceBothWhenScheduledAndWhenRun() {
         RetryFixture(surfaceReady = false).use { fixture ->
             fixture.failAndSchedule(7L)
@@ -219,7 +236,10 @@ class PlaybackFilterAdmissionTest {
 
         // 同じ予約のSurface接続・切断を既存Session境界へ注入するfixtureを保つ。
         @Suppress("LongMethod")
-        fun changeAudioOnlySurface(attach: Boolean) {
+        fun changeAudioOnlySurface(
+            attach: Boolean,
+            serviceAvailable: Boolean = true,
+        ) {
             val unsafeType = Class.forName("sun.misc.Unsafe")
             val unsafe = unsafeType.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
             val controller =
@@ -252,7 +272,7 @@ class PlaybackFilterAdmissionTest {
                             0L,
                             programs,
                             0L,
-                            listOf(service),
+                            if (serviceAvailable) listOf(service) else emptyList(),
                             emptyList(),
                             emptyMap(),
                             emptyList(),

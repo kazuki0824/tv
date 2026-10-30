@@ -38,40 +38,40 @@ class PlaybackAudioSinkR51FixTest {
     @Suppress("MaxLineLength")
     @Test
     fun r51SupportsAdtsAacButNotLatmLoasAudioStreamType() {
-        check(PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x0f))
-        check(!PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x11))
+        check(TunerSelectionPolicy.isSupportedAudioStreamType(0x0f))
+        check(!TunerSelectionPolicy.isSupportedAudioStreamType(0x11))
         check(PlaybackPipeline.audioFilterStreamType(0x0f) == AvSettings.AUDIO_STREAM_TYPE_AAC_ADTS)
         check(PlaybackPipeline.audioFilterStreamType(0x11) == AvSettings.AUDIO_STREAM_TYPE_UNDEFINED)
-        check(PlaybackPipeline.dualMonoModeForTest(PlaybackPipeline.DualMonoPresentation.MAIN) == AudioTrack.DUAL_MONO_MODE_LL)
-        check(PlaybackPipeline.dualMonoModeForTest(PlaybackPipeline.DualMonoPresentation.SUB) == AudioTrack.DUAL_MONO_MODE_RR)
-        check(PlaybackPipeline.dualMonoModeForTest(PlaybackPipeline.DualMonoPresentation.MAIN_SUB) == AudioTrack.DUAL_MONO_MODE_LR)
+        check(PlaybackPipeline.audioTrackDualMonoMode(PlaybackPipeline.DualMonoPresentation.MAIN) == AudioTrack.DUAL_MONO_MODE_LL)
+        check(PlaybackPipeline.audioTrackDualMonoMode(PlaybackPipeline.DualMonoPresentation.SUB) == AudioTrack.DUAL_MONO_MODE_RR)
+        check(PlaybackPipeline.audioTrackDualMonoMode(PlaybackPipeline.DualMonoPresentation.MAIN_SUB) == AudioTrack.DUAL_MONO_MODE_LR)
         check(
-            PlaybackPipeline.channelMaskForPcmOutputForTest(3) ==
+            PlaybackPipeline.PcmChannelMaskPolicy.canonicalForCount(3) ==
                 (android.media.AudioFormat.CHANNEL_OUT_STEREO or android.media.AudioFormat.CHANNEL_OUT_FRONT_CENTER),
         )
-        check(PlaybackPipeline.channelMaskForPcmOutputForTest(4) == android.media.AudioFormat.CHANNEL_OUT_QUAD)
+        check(PlaybackPipeline.PcmChannelMaskPolicy.canonicalForCount(4) == android.media.AudioFormat.CHANNEL_OUT_QUAD)
         check(
-            PlaybackPipeline.channelMaskForPcmOutputForTest(5) ==
+            PlaybackPipeline.PcmChannelMaskPolicy.canonicalForCount(5) ==
                 (android.media.AudioFormat.CHANNEL_OUT_QUAD or android.media.AudioFormat.CHANNEL_OUT_FRONT_CENTER),
         )
         check(
-            PlaybackPipeline.aribChannelMaskForConfigurationForTest("2/1") ==
+            PlaybackPipeline.PcmChannelMaskPolicy.fromChannelConfiguration("2/1") ==
                 (android.media.AudioFormat.CHANNEL_OUT_STEREO or android.media.AudioFormat.CHANNEL_OUT_BACK_CENTER),
         )
         check(
-            PlaybackPipeline.aribChannelMaskForConfigurationForTest("3/0") ==
+            PlaybackPipeline.PcmChannelMaskPolicy.fromChannelConfiguration("3/0") ==
                 (android.media.AudioFormat.CHANNEL_OUT_STEREO or android.media.AudioFormat.CHANNEL_OUT_FRONT_CENTER),
         )
-        check(PlaybackPipeline.aribChannelMaskForConfigurationForTest("2/2") == android.media.AudioFormat.CHANNEL_OUT_QUAD)
-        check(PlaybackPipeline.aribChannelMaskForConfigurationForTest("3/1") == android.media.AudioFormat.CHANNEL_OUT_SURROUND)
+        check(PlaybackPipeline.PcmChannelMaskPolicy.fromChannelConfiguration("2/2") == android.media.AudioFormat.CHANNEL_OUT_QUAD)
+        check(PlaybackPipeline.PcmChannelMaskPolicy.fromChannelConfiguration("3/1") == android.media.AudioFormat.CHANNEL_OUT_SURROUND)
         check(
-            PlaybackPipeline.resolvePcmChannelMaskForTest(android.media.AudioFormat.CHANNEL_OUT_5POINT1, 6, "3/2") ==
+            PlaybackPipeline.PcmChannelMaskPolicy.resolve(android.media.AudioFormat.CHANNEL_OUT_5POINT1, 6, "3/2") ==
                 android.media.AudioFormat.CHANNEL_OUT_5POINT1,
         )
         check(
-            PlaybackPipeline.resolvePcmChannelMaskForTest(null, 3, "2/1") ==
+            PlaybackPipeline.PcmChannelMaskPolicy.resolve(null, 3, "2/1") ==
                 (android.media.AudioFormat.CHANNEL_OUT_STEREO or android.media.AudioFormat.CHANNEL_OUT_BACK_CENTER),
         )
-        check(PlaybackPipeline.resolvePcmChannelMaskForTest(android.media.AudioFormat.CHANNEL_OUT_STEREO, 6, "3/2+LFE") == null)
+        check(PlaybackPipeline.PcmChannelMaskPolicy.resolve(android.media.AudioFormat.CHANNEL_OUT_STEREO, 6, "3/2+LFE") == null)
     }
 }

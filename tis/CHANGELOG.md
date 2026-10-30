@@ -1,3 +1,12 @@
+# 2026-10-30 レビュー5708139001：本番入口と試験fixtureを整理
+
+- 本番で使うpending-state読取り、SI status分類、Setup・scan受付、字幕・rating・再生の純粋判定を正規入口へ統一し、委譲だけのForTest APIを削除する。
+- Program公開のretry観測、署名試験の入力構築、PTS列fixtureと世代観測はtests/srcへ隔離する。未使用の偽ChannelStoreを構築する本番署名経路を削除し、試験は実publicationInputSignatureを検査する。
+- scan終了条件を実収集ループと共有し、最短待機・安定待機・EIT必須条件を実判定で確認する。独立した古い分類表を削除する。
+- 実callback経路を検証しない旧first-frame／字幕時刻／callback理由の複製述語と3試験を削除する。現在経路の検証はRobolectricのFilter入力・最終出力・字幕scheduler試験を使用する。
+- 同じserviceの再生署名をSurface遷移で優先し、SI未取得中も音声のみの失敗世代と予約を保持する実Session回帰を追加する。新しい予約ownerや状態台帳は追加しない。
+- テストはCIで実施する。実機native待機・最終描画・TRM再取得は未検証であり、host成功を製品受入完了とは扱わない。
+
 # 2026-10-30 音声のみのSurface受付条件を整形（#212）
 
 - 再生状態と再試行予約の判定を維持したまま複数行へ整形し、detekt MaxLineLengthを解消する。CIで検証する。

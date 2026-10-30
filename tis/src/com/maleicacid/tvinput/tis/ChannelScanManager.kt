@@ -148,21 +148,6 @@ object ChannelScanManager {
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    fun bootEpgSyncStartDecisionForTest(
-        activeLiveSessionCount: Int,
-        scanRunning: Boolean,
-        sessionCreationInProgress: Boolean = false,
-        playbackPipelineRunning: Boolean = false,
-    ): BootEpgSyncStartDecision =
-        bootEpgSyncStartDecision(activeLiveSessionCount, scanRunning, sessionCreationInProgress, playbackPipelineRunning)
-
-    fun liveSessionPreemptDecisionForTest(
-        scanRunning: Boolean,
-        purpose: ScanPurpose?,
-    ): LiveSessionPreemptDecision = liveSessionPreemptDecision(scanRunning, purpose)
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // setup terminalのtyped分岐は同一scan ownerで完結させ、状態写像だけを別ownerへ分散しない。
     @Suppress("LongMethod", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod")
     fun startIfIdle(
@@ -558,7 +543,7 @@ object ChannelScanManager {
         )
     }
 
-    private fun liveSessionPreemptDecision(
+    internal fun liveSessionPreemptDecision(
         scanRunning: Boolean,
         purpose: ScanPurpose?,
     ): LiveSessionPreemptDecision {
@@ -674,11 +659,11 @@ object ChannelScanManager {
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
-    private fun bootEpgSyncStartDecision(
+    internal fun bootEpgSyncStartDecision(
         activeLiveSessionCount: Int,
         scanRunning: Boolean,
-        sessionCreationInProgress: Boolean,
-        playbackPipelineRunning: Boolean,
+        sessionCreationInProgress: Boolean = false,
+        playbackPipelineRunning: Boolean = false,
     ): BootEpgSyncStartDecision =
         when {
             activeLiveSessionCount > 0 || sessionCreationInProgress -> BootEpgSyncStartDecision(false, "LIVE_SESSION_STARTING_OR_ACTIVE")
@@ -746,11 +731,11 @@ object ChannelScanManager {
         listeners.forEach { listener -> runCatching { listener.onScanStateChanged(newState) } }
     }
 
-    private fun backgroundMaintenanceStartDecision(
+    internal fun backgroundMaintenanceStartDecision(
         activeLiveSessionCount: Int,
         scanRunning: Boolean,
-        sessionCreationInProgress: Boolean,
-        playbackPipelineRunning: Boolean,
+        sessionCreationInProgress: Boolean = false,
+        playbackPipelineRunning: Boolean = false,
     ): BackgroundMaintenanceStartDecision =
         when {
             activeLiveSessionCount > 0 || sessionCreationInProgress -> {
@@ -772,14 +757,4 @@ object ChannelScanManager {
                 BackgroundMaintenanceStartDecision(true, null)
             }
         }
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    fun backgroundMaintenanceStartDecisionForTest(
-        activeLiveSessionCount: Int,
-        scanRunning: Boolean,
-        sessionCreationInProgress: Boolean = false,
-        playbackPipelineRunning: Boolean = false,
-    ): BackgroundMaintenanceStartDecision =
-        backgroundMaintenanceStartDecision(activeLiveSessionCount, scanRunning, sessionCreationInProgress, playbackPipelineRunning)
 }

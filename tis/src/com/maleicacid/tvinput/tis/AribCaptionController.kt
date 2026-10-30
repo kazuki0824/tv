@@ -292,7 +292,7 @@ class AribCaptionController(
         forceImmediate: Boolean,
     ) {
         val track = selectedTrack ?: return
-        if (!enabled || track.id != trackId) return
+        if (!shouldDrawCaption(enabled, track.id, trackId)) return
         if (!allowNoPts && timestamp == CaptionTimestamp.NoPts) {
             recordNoPtsRejected(trackId)
             return
@@ -719,7 +719,7 @@ class AribCaptionController(
         private const val CAPTION_MAX_PENDING_BYTES = 8L * 1024L * 1024L
         private const val CAPTION_MAX_FUTURE_HORIZON_MS = 60_000L
 
-        fun shouldDrawCaptionForTest(
+        internal fun shouldDrawCaption(
             enabled: Boolean,
             selectedTrackId: String?,
             incomingTrackId: String,

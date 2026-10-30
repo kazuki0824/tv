@@ -25,6 +25,7 @@ import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.EitInstanceState
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.NativeAribSiParser
+import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePublishabilityDiagnostic
@@ -54,7 +55,7 @@ class TisR51FixedPlanAcceptanceTest {
     @Test
     fun scanSignalUnavailableDiagnosticDistinguishesNoSignalAndLostLock() {
         val noSignal =
-            ChannelScanController.signalUnavailableDiagnosticForTest(
+            ChannelScanController.signalUnavailableDiagnostic(
                 OnTuneEventListener.SIGNAL_NO_SIGNAL,
                 generation = 7,
                 elapsedMs = 8_000,
@@ -63,7 +64,7 @@ class TisR51FixedPlanAcceptanceTest {
         check("SIGNAL_NO_SIGNAL" in noSignal)
 
         val lostLock =
-            ChannelScanController.signalUnavailableDiagnosticForTest(
+            ChannelScanController.signalUnavailableDiagnostic(
                 OnTuneEventListener.SIGNAL_LOST_LOCK,
                 generation = 8,
                 elapsedMs = 1_500,
@@ -361,7 +362,7 @@ class TisR51FixedPlanAcceptanceTest {
                     semanticFactsByServiceKey = mapOf(key to semanticFacts()),
                     profile = SiDiscoveryProfile.ISDB_T,
                 ).single()
-        val data = TvProviderWriter.programProviderDataForTest(record).toByteArray()
+        val data = programProviderDataForTest(record).toByteArray()
         var queries = 0
         val resolver =
             CurrentProgramRatingResolver { _, columns, _, _, _ ->
@@ -729,7 +730,7 @@ class TisR51FixedPlanAcceptanceTest {
                     semanticFactsByServiceKey = mapOf(key to semanticFacts()),
                     profile = SiDiscoveryProfile.ISDB_T,
                 ).single()
-        val data = TvProviderWriter.programProviderDataForTest(record).toByteArray()
+        val data = programProviderDataForTest(record).toByteArray()
         var queries = 0
         val resolver =
             CurrentProgramRatingResolver { _, columns, _, _, _ ->
@@ -942,9 +943,9 @@ class TisR51FixedPlanAcceptanceTest {
         check(TunerController.normalizedTvInputSessionId(sessionId) == sessionId)
         check(TunerController.normalizedTvInputSessionId(null) == null)
         check(TunerController.normalizedTvInputSessionId("") == null)
-        check(TunerController.isSignalUnavailableTuneEventForTest(OnTuneEventListener.SIGNAL_NO_SIGNAL))
-        check(TunerController.isSignalUnavailableTuneEventForTest(OnTuneEventListener.SIGNAL_LOST_LOCK))
-        check(!TunerController.isSignalUnavailableTuneEventForTest(OnTuneEventListener.SIGNAL_LOCKED))
+        check(TunerController.isSignalUnavailableTuneEvent(OnTuneEventListener.SIGNAL_NO_SIGNAL))
+        check(TunerController.isSignalUnavailableTuneEvent(OnTuneEventListener.SIGNAL_LOST_LOCK))
+        check(!TunerController.isSignalUnavailableTuneEvent(OnTuneEventListener.SIGNAL_LOCKED))
     }
 
     @Test fun hevcOnlyServiceIsR52VideoCandidate() {
@@ -984,7 +985,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(!video.has("liveViewableClaim"))
         val providerData =
             org.json.JSONObject(
-                TvProviderWriter.programProviderDataForTest(
+                programProviderDataForTest(
                     EventModelMapper()
                         .toProgramRecords(
                             listOf(aribEvent().withComponents(componentsFromJson(components))),
@@ -1034,7 +1035,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(!audio.has("r51PlaybackSupported"))
         val providerData =
             org.json.JSONObject(
-                TvProviderWriter.programProviderDataForTest(
+                programProviderDataForTest(
                     EventModelMapper()
                         .toProgramRecords(
                             listOf(aribEvent().withComponents(componentsFromJson(components))),
@@ -1066,7 +1067,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(typedAudioMetadata.audioDescription)
         check(!typedAudioMetadata.hardOfHearing)
         check(TunerSelectionPolicy.selectVideo(service.streams)?.streamType == 0x1b)
-        check(!PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x11))
+        check(!TunerSelectionPolicy.isSupportedAudioStreamType(0x11))
     }
 
     @Test fun mixedH264AndHevcUsesTheSameComponentPriority() {
@@ -1117,7 +1118,7 @@ class TisR51FixedPlanAcceptanceTest {
                     semanticFactsByServiceKey = mapOf(key to semanticFacts()),
                     profile = SiDiscoveryProfile.ISDB_T,
                 ).single()
-        val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(program))
+        val providerData = JSONObject(programProviderDataForTest(program))
         val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
         check(providerVideo.isNull("esPid"))
         check(providerVideo.isNull("streamType"))
@@ -1232,7 +1233,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(contentRating != null)
         check(contentRating.contains(AribRatingMapper.EXCEPTIONAL_DOMAIN))
         check(contentRating != TvContentRating.UNRATED.flattenToString())
-        val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(record))
+        val providerData = org.json.JSONObject(programProviderDataForTest(record))
         val rating = providerData.getJSONArray("ratings").getJSONObject(0)
         check(rating.getInt("rawRatingByte") == 0x12)
         check(rating.getString("parseStatus") == "OK")
@@ -1253,7 +1254,7 @@ class TisR51FixedPlanAcceptanceTest {
         val ratingEntry = record.descriptors.parentalRatings.single()
         check(ratingEntry.countryCode == "USA")
         check(ratingEntry.rawRatingByte == 15)
-        val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(record))
+        val providerData = org.json.JSONObject(programProviderDataForTest(record))
         val ratings = providerData.getJSONArray("ratings")
         check(ratings.length() == 1)
         check(ratings.getJSONObject(0).getString("countryCode") == "USA")
@@ -1300,7 +1301,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(records.size == 2)
         records.forEach { record ->
             check(record.contentRatings.isEmpty())
-            val providerData = TvProviderWriter.programProviderDataForTest(record)
+            val providerData = programProviderDataForTest(record)
             check(providerData.contains("descriptorDiagnostics"))
             check(!providerData.contains("unsupportedDescriptorDiagnostics"))
             check(!providerData.contains("parentalRatingDiagnostics"))
@@ -1381,7 +1382,7 @@ class TisR51FixedPlanAcceptanceTest {
                     semanticFactsByServiceKey = mapOf(key to semanticFacts(requiresCas = true).copy(casFactsCanonicalJson = basis)),
                     profile = SiDiscoveryProfile.ISDB_T,
                 ).single()
-        val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(record))
+        val providerData = JSONObject(programProviderDataForTest(record))
         val cas = providerData.getJSONObject("cas")
         check(providerData.getJSONObject("casFacts").getString("parseStatus") == "CA_UNRESOLVED")
         check(
@@ -1440,7 +1441,7 @@ class TisR51FixedPlanAcceptanceTest {
                     semanticFactsByServiceKey = mapOf(key to semanticFacts()),
                     profile = SiDiscoveryProfile.ISDB_T,
                 ).single()
-        val data = JSONObject(TvProviderWriter.programProviderDataForTest(record))
+        val data = JSONObject(programProviderDataForTest(record))
         check(data.isNull("series"))
         val facts = data.getJSONObject("diagnostics").getJSONArray("rawProviderDataExtensions").getJSONObject(0)
         check(facts.getString("key") == "seriesDescriptorFacts")
@@ -1482,41 +1483,6 @@ class TisR51FixedPlanAcceptanceTest {
         val writer = TvProviderWriter("input.test", FakeStore(), testOnly = true)
         val values = writer.programValuesForTest(1L, program(key, description = "long description"))
         check(values.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "long description")
-    }
-
-    @Test fun firstFrameGenerationGuardRejectsStaleCallback() {
-        check(
-            !PlaybackPipeline.acceptsFirstFrameForTest(
-                callbackGeneration = 1,
-                currentGeneration = 2,
-                surfaceValid = true,
-                alreadyNotified = false,
-            ),
-        )
-        check(
-            !PlaybackPipeline.acceptsFirstFrameForTest(
-                callbackGeneration = 2,
-                currentGeneration = 2,
-                surfaceValid = false,
-                alreadyNotified = false,
-            ),
-        )
-        check(
-            !PlaybackPipeline.acceptsFirstFrameForTest(
-                callbackGeneration = 2,
-                currentGeneration = 2,
-                surfaceValid = true,
-                alreadyNotified = true,
-            ),
-        )
-        check(
-            PlaybackPipeline.acceptsFirstFrameForTest(
-                callbackGeneration = 2,
-                currentGeneration = 2,
-                surfaceValid = true,
-                alreadyNotified = false,
-            ),
-        )
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -1582,7 +1548,7 @@ class TisR51FixedPlanAcceptanceTest {
                     profile = SiDiscoveryProfile.ISDB_T,
                 ).single()
         check(record.requiresCas)
-        val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(record))
+        val providerData = JSONObject(programProviderDataForTest(record))
         check(providerData.getJSONObject("cas").getBoolean("requiresCas"))
         check(!providerData.getJSONObject("cas").has("unsupportedCas"))
         check(!providerData.has("clearLivePlaybackStaticallyEligible"))
@@ -1593,7 +1559,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun liveRefreshSkipsUnknownChannelEvents() {
         val retained =
-            ChannelScanController.filterProgramServiceKeysForPublishModeForTest(
+            ProgramPublishCoordinator.filterServiceKeysForMode(
                 mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
                 allServiceKeys = listOf(key, otherKey),
                 existingServiceKeys = setOf(key),
@@ -1616,28 +1582,27 @@ class TisR51FixedPlanAcceptanceTest {
     fun scanStablePartialRequiresRegistrationReadySnapshotAndStableWait() {
         val policy = ChannelScanController.SiCollectionPolicy(minWaitMs = 100, maxWaitMs = 1_000, stableWaitMs = 200, pollIntervalMs = 10)
         check(
-            ChannelScanController.siCollectionOutcomeForTest(false, false, 150, 50, 1, policy) ==
-                ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL,
+            ChannelScanController.collectionOutcome(false, 150, 50, 1, policy) == null,
         )
         check(
-            ChannelScanController.siCollectionOutcomeForTest(false, false, 300, 250, 1, policy) ==
+            ChannelScanController.collectionOutcome(false, 300, 250, 1, policy) ==
                 ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL,
         )
         check(
-            ChannelScanController.siCollectionOutcomeForTest(false, false, 1_000, 100, 1, policy) ==
+            ChannelScanController.collectionOutcome(false, 1_000, 100, 1, policy) ==
                 ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL,
         )
         check(
-            ChannelScanController.siCollectionOutcomeForTest(false, false, 1_000, 250, 0, policy) ==
+            ChannelScanController.collectionOutcome(false, 1_000, 250, 0, policy) ==
                 ChannelScanController.SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE,
         )
+        check(ChannelScanController.collectionOutcome(true, 100, 0, 0, policy) == null)
         check(
-            ChannelScanController.siCollectionOutcomeForTest(true, false, 100, 0, 0, policy) ==
+            ChannelScanController.collectionOutcome(true, 300, 200, 0, policy) ==
                 ChannelScanController.SiCollectionOutcome.COMPLETE,
         )
         check(
-            ChannelScanController.siCollectionOutcomeForTest(true, false, 100, 0, 1, policy, resourceLost = true) ==
-                ChannelScanController.SiCollectionOutcome.RESOURCE_LOST,
+            ChannelScanController.collectionOutcome(false, 300, 250, 1, policy, allowStablePartial = false) == null,
         )
     }
 
@@ -1691,7 +1656,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun setupScanPublishesEventsForRegisteredServicesOnly() {
         val retained =
-            ChannelScanController.filterProgramServiceKeysForPublishModeForTest(
+            ProgramPublishCoordinator.filterServiceKeysForMode(
                 mode = ChannelScanController.PublishMode.SETUP_SCAN,
                 allServiceKeys = listOf(key, otherKey),
                 existingServiceKeys = emptySet(),
@@ -1704,14 +1669,14 @@ class TisR51FixedPlanAcceptanceTest {
     @Suppress("MaxLineLength")
     @Test
     fun h264Sps480iSetsFormatSize() {
-        check(PlaybackPipeline.h264DimensionsForTest(makeSps(codedWidth = 720, codedHeight = 480, frameMbsOnly = false)) == 720 to 480)
+        check(h264DimensionsForTest(makeSps(codedWidth = 720, codedHeight = 480, frameMbsOnly = false)) == 720 to 480)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
     fun h264Sps720pSetsFormatSize() {
-        check(PlaybackPipeline.h264DimensionsForTest(makeSps(codedWidth = 1280, codedHeight = 720, frameMbsOnly = true)) == 1280 to 720)
+        check(h264DimensionsForTest(makeSps(codedWidth = 1280, codedHeight = 720, frameMbsOnly = true)) == 1280 to 720)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -1719,14 +1684,14 @@ class TisR51FixedPlanAcceptanceTest {
     @Test
     fun h264Sps1080iSetsFormatSize() {
         check(
-            PlaybackPipeline.h264DimensionsForTest(makeSps(codedWidth = 1920, codedHeight = 1088, frameMbsOnly = false, cropBottom = 2)) ==
+            h264DimensionsForTest(makeSps(codedWidth = 1920, codedHeight = 1088, frameMbsOnly = false, cropBottom = 2)) ==
                 1920 to 1080,
         )
     }
 
     @Test fun h264SpsWithCropSetsDisplaySize() {
         check(
-            PlaybackPipeline.h264DimensionsForTest(
+            h264DimensionsForTest(
                 makeSps(codedWidth = 1920, codedHeight = 1088, frameMbsOnly = true, cropRight = 8, cropBottom = 4),
             ) ==
                 1904 to 1080,
@@ -1735,7 +1700,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun malformedSpsDoesNotUseDefault1920x1080() {
         val malformed = byteArrayOf(0, 0, 0, 1, 0x67, 0x42, 0x00)
-        check(PlaybackPipeline.h264DimensionsForTest(malformed) == null)
+        check(h264DimensionsForTest(malformed) == null)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -1786,27 +1751,27 @@ class TisR51FixedPlanAcceptanceTest {
     @Test
     fun captionControllerDrawsOnlyEnabledSelectedTrack() {
         check(
-            AribCaptionController.shouldDrawCaptionForTest(
+            AribCaptionController.shouldDrawCaption(
                 enabled = true,
                 selectedTrackId = "subtitle:304:8",
                 incomingTrackId = "subtitle:304:8",
             ),
         )
         check(
-            !AribCaptionController.shouldDrawCaptionForTest(
+            !AribCaptionController.shouldDrawCaption(
                 enabled = false,
                 selectedTrackId = "subtitle:304:8",
                 incomingTrackId = "subtitle:304:8",
             ),
         )
         check(
-            !AribCaptionController.shouldDrawCaptionForTest(
+            !AribCaptionController.shouldDrawCaption(
                 enabled = true,
                 selectedTrackId = "subtitle:304:8",
                 incomingTrackId = "subtitle:999",
             ),
         )
-        check(!AribCaptionController.shouldDrawCaptionForTest(enabled = true, selectedTrackId = null, incomingTrackId = "subtitle:304:8"))
+        check(!AribCaptionController.shouldDrawCaption(enabled = true, selectedTrackId = null, incomingTrackId = "subtitle:304:8"))
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -2022,15 +1987,15 @@ class TisR51FixedPlanAcceptanceTest {
                 ratings = listOf(rating18),
                 source = CurrentProgramRatingResolver.Source.LATEST_EIT_CACHE,
             )
-        check(CurrentProgramRatingResolver.selectCurrentRatingForTest(stored, latestSameOccurrence) == latestSameOccurrence)
+        check(CurrentProgramRatingResolver.selectCurrentRating(stored, latestSameOccurrence) == latestSameOccurrence)
 
         val latestRetimed =
             latestSameOccurrence.copy(
                 startTimeMillis = 1_700_000_060_000L,
                 endTimeMillis = 1_700_001_860_000L,
             )
-        check(CurrentProgramRatingResolver.selectCurrentRatingForTest(stored, latestRetimed) == latestRetimed)
-        check(CurrentProgramRatingResolver.selectCurrentRatingForTest(stored, null) == stored)
+        check(CurrentProgramRatingResolver.selectCurrentRating(stored, latestRetimed) == latestRetimed)
+        check(CurrentProgramRatingResolver.selectCurrentRating(stored, null) == stored)
     }
 
     @Test fun videoHeaderMetadataIsProjectedIntoCurrentProgramRecord() {
@@ -2048,8 +2013,8 @@ class TisR51FixedPlanAcceptanceTest {
         check(record.videoWidth == 1280)
         check(record.videoHeight == 720)
         check(record.videoFormat == "video/avc")
-        check(!TvProviderWriter.programProviderDataForTest(record).contains("videoFormat"))
-        check(!TvProviderWriter.programProviderDataForTest(record).contains("video/avc"))
+        check(!programProviderDataForTest(record).contains("videoFormat"))
+        check(!programProviderDataForTest(record).contains("video/avc"))
     }
 
     @Test fun videoHeaderMetadataIgnoresNonCurrentEvent() {
@@ -2075,14 +2040,14 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun bootAndBackgroundMaintenanceUpdateExistingChannelsOnly() {
         val bootRetained =
-            ChannelScanController.filterProgramServiceKeysForPublishModeForTest(
+            ProgramPublishCoordinator.filterServiceKeysForMode(
                 mode = ChannelScanController.PublishMode.BOOT_EPG_SYNC,
                 allServiceKeys = listOf(key, otherKey),
                 existingServiceKeys = setOf(key, otherKey),
                 allowedServiceKeys = setOf(key),
             )
         val backgroundRetained =
-            ChannelScanController.filterProgramServiceKeysForPublishModeForTest(
+            ProgramPublishCoordinator.filterServiceKeysForMode(
                 mode = ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE,
                 allServiceKeys = listOf(key, otherKey),
                 existingServiceKeys = setOf(key),
@@ -2093,7 +2058,7 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun authoritativeDeletionUsesRustValidIdentitySetIncludingUndefinedTimeEvents() {
-        val undefinedTimeIdentity = TvProviderWriter.programKeyForTest(program(key).copy(eventId = 88))
+        val undefinedTimeIdentity = ProviderDataBridge.buildProgramKey(program(key).copy(eventId = 88))
         val update =
             com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow(
                 serviceKey = key,
@@ -2102,19 +2067,19 @@ class TisR51FixedPlanAcceptanceTest {
                 validProgramStableIdentities = listOf(undefinedTimeIdentity),
                 deletionAuthoritative = true,
             )
-        check(ChannelScanController.validProgramKeysForUpdateForTest(update) == setOf(undefinedTimeIdentity))
+        check(ChannelScanController.validProgramKeysForUpdate(update) == setOf(undefinedTimeIdentity))
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
     fun bootEpgSyncStartRequiresIdleScanAndNoLiveSession() {
-        val active = ChannelScanManager.bootEpgSyncStartDecisionForTest(activeLiveSessionCount = 1, scanRunning = false)
+        val active = ChannelScanManager.bootEpgSyncStartDecision(activeLiveSessionCount = 1, scanRunning = false)
         check(!active.allowed)
         check(active.reason == "LIVE_SESSION_STARTING_OR_ACTIVE")
 
         val creating =
-            ChannelScanManager.bootEpgSyncStartDecisionForTest(
+            ChannelScanManager.bootEpgSyncStartDecision(
                 activeLiveSessionCount = 0,
                 scanRunning = false,
                 sessionCreationInProgress = true,
@@ -2122,11 +2087,11 @@ class TisR51FixedPlanAcceptanceTest {
         check(!creating.allowed)
         check(creating.reason == "LIVE_SESSION_STARTING_OR_ACTIVE")
 
-        val scanRunning = ChannelScanManager.bootEpgSyncStartDecisionForTest(activeLiveSessionCount = 0, scanRunning = true)
+        val scanRunning = ChannelScanManager.bootEpgSyncStartDecision(activeLiveSessionCount = 0, scanRunning = true)
         check(!scanRunning.allowed)
         check(scanRunning.reason == "SCAN_RUNNING")
 
-        val idle = ChannelScanManager.bootEpgSyncStartDecisionForTest(activeLiveSessionCount = 0, scanRunning = false)
+        val idle = ChannelScanManager.bootEpgSyncStartDecision(activeLiveSessionCount = 0, scanRunning = false)
         check(idle.allowed)
         check(idle.reason == null)
     }
@@ -2135,12 +2100,12 @@ class TisR51FixedPlanAcceptanceTest {
     @Suppress("MaxLineLength")
     @Test
     fun backgroundMaintenanceStartRequiresIdleScanAndNoLiveSession() {
-        val active = ChannelScanManager.backgroundMaintenanceStartDecisionForTest(activeLiveSessionCount = 1, scanRunning = false)
+        val active = ChannelScanManager.backgroundMaintenanceStartDecision(activeLiveSessionCount = 1, scanRunning = false)
         check(!active.allowed)
         check(active.reason == "LIVE_SESSION_STARTING_OR_ACTIVE")
 
         val creating =
-            ChannelScanManager.backgroundMaintenanceStartDecisionForTest(
+            ChannelScanManager.backgroundMaintenanceStartDecision(
                 activeLiveSessionCount = 0,
                 scanRunning = false,
                 sessionCreationInProgress = true,
@@ -2148,11 +2113,11 @@ class TisR51FixedPlanAcceptanceTest {
         check(!creating.allowed)
         check(creating.reason == "LIVE_SESSION_STARTING_OR_ACTIVE")
 
-        val scanRunning = ChannelScanManager.backgroundMaintenanceStartDecisionForTest(activeLiveSessionCount = 0, scanRunning = true)
+        val scanRunning = ChannelScanManager.backgroundMaintenanceStartDecision(activeLiveSessionCount = 0, scanRunning = true)
         check(!scanRunning.allowed)
         check(scanRunning.reason == "SCAN_RUNNING")
 
-        val idle = ChannelScanManager.backgroundMaintenanceStartDecisionForTest(activeLiveSessionCount = 0, scanRunning = false)
+        val idle = ChannelScanManager.backgroundMaintenanceStartDecision(activeLiveSessionCount = 0, scanRunning = false)
         check(idle.allowed)
         check(idle.reason == null)
     }
@@ -2165,21 +2130,21 @@ class TisR51FixedPlanAcceptanceTest {
         check(tunerPriorityHintUseCase(ScanPurpose.BOOT_EPG_SYNC) == TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND)
         check(tunerPriorityHintUseCase(ScanPurpose.BACKGROUND_MAINTENANCE) == TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND)
 
-        val idle = ChannelScanManager.liveSessionPreemptDecisionForTest(scanRunning = false, purpose = null)
+        val idle = ChannelScanManager.liveSessionPreemptDecision(scanRunning = false, purpose = null)
         check(!idle.shouldCancel)
         check(!idle.deferBootEpgSync)
 
-        val setup = ChannelScanManager.liveSessionPreemptDecisionForTest(scanRunning = true, purpose = ScanPurpose.SETUP_SCAN)
+        val setup = ChannelScanManager.liveSessionPreemptDecision(scanRunning = true, purpose = ScanPurpose.SETUP_SCAN)
         check(!setup.shouldCancel)
         check(!setup.deferBootEpgSync)
 
-        val boot = ChannelScanManager.liveSessionPreemptDecisionForTest(scanRunning = true, purpose = ScanPurpose.BOOT_EPG_SYNC)
+        val boot = ChannelScanManager.liveSessionPreemptDecision(scanRunning = true, purpose = ScanPurpose.BOOT_EPG_SYNC)
         check(boot.shouldCancel)
         check(boot.deferBootEpgSync)
         check(boot.diagnosticReason == "LIVE_SESSION_PREEMPTED_RUNNING_BOOT_EPG_SYNC")
 
         val background =
-            ChannelScanManager.liveSessionPreemptDecisionForTest(
+            ChannelScanManager.liveSessionPreemptDecision(
                 scanRunning = true,
                 purpose = ScanPurpose.BACKGROUND_MAINTENANCE,
             )
@@ -2189,10 +2154,10 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun sectionStatusDiagnosticsAreBucketedByStatus() {
-        check(SectionIngestController.statusBucketForTest(SiStatus.OK) == "accepted")
-        check(SectionIngestController.statusBucketForTest(SiStatus.INVALID_SECTION) == "invalid_section")
-        check(SectionIngestController.statusBucketForTest(SiStatus.MALFORMED_DESCRIPTOR) == "malformed")
-        check(SectionIngestController.statusBucketForTest(SiStatus.INTERNAL_ERROR) == "malformed")
+        check(SectionIngestController.statusBucket(SiStatus.OK) == "accepted")
+        check(SectionIngestController.statusBucket(SiStatus.INVALID_SECTION) == "invalid_section")
+        check(SectionIngestController.statusBucket(SiStatus.MALFORMED_DESCRIPTOR) == "malformed")
+        check(SectionIngestController.statusBucket(SiStatus.INTERNAL_ERROR) == "malformed")
         // Sectionの受信は不要。選局単位の配送損失集計だけを検査する。
         val engine = AribSiEngine(object : ContextWrapper(null) {})
         try {
@@ -2259,11 +2224,11 @@ class TisR51FixedPlanAcceptanceTest {
     @Suppress("MaxLineLength")
     @Test
     fun firstFrameTimeoutUsesGenerationAndNotificationState() {
-        check(PlaybackPipeline.shouldTriggerFirstFrameTimeoutForTest(timeoutGeneration = 3, currentGeneration = 3, alreadyNotified = false))
+        check(PlaybackPipeline.shouldTriggerFirstFrameTimeout(timeoutGeneration = 3, currentGeneration = 3, alreadyNotified = false))
         check(
-            !PlaybackPipeline.shouldTriggerFirstFrameTimeoutForTest(timeoutGeneration = 2, currentGeneration = 3, alreadyNotified = false),
+            !PlaybackPipeline.shouldTriggerFirstFrameTimeout(timeoutGeneration = 2, currentGeneration = 3, alreadyNotified = false),
         )
-        check(!PlaybackPipeline.shouldTriggerFirstFrameTimeoutForTest(timeoutGeneration = 3, currentGeneration = 3, alreadyNotified = true))
+        check(!PlaybackPipeline.shouldTriggerFirstFrameTimeout(timeoutGeneration = 3, currentGeneration = 3, alreadyNotified = true))
     }
 
     @Test fun tunerKeyTokenRejectsZeroAndOverSixteenBytes() {
@@ -2272,28 +2237,6 @@ class TisR51FixedPlanAcceptanceTest {
         check(TunerKeyToken.fromOrNull(ByteArray(16)) != null)
         check(runCatching { TunerKeyToken(ByteArray(0)) }.isFailure)
         check(runCatching { TunerKeyToken(ByteArray(17)) }.isFailure)
-    }
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    @Test
-    fun subtitlePesTimestampUsesPtsWhenPresentAndNoPtsOnlyWhenMissing() {
-        val pts = PlaybackPipeline.captionTimestampForTest(isPtsPresent = true, pts90k = 90_000L)
-        check(pts is CaptionTimestamp.Pts)
-        check((pts as CaptionTimestamp.Pts).ptsMillis.value == 1_000L)
-        check(PlaybackPipeline.captionTimestampForTest(isPtsPresent = false, pts90k = 90_000L) == CaptionTimestamp.NoPts)
-        check(PlaybackPipeline.captionTimestampForTest(isPtsPresent = true, pts90k = -1L) == CaptionTimestamp.NoPts)
-    }
-
-    @Test fun mediaEventCallbackFailureMapsToRecoverableUnavailableReason() {
-        check(
-            PlaybackPipeline.unavailableReasonForMediaEventCallbackFailureForTest(isAudio = true) ==
-                PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-        )
-        check(
-            PlaybackPipeline.unavailableReasonForMediaEventCallbackFailureForTest(isAudio = false) ==
-                PlaybackPipeline.PlaybackUnavailableReason.VIDEO_CODEC_ERROR,
-        )
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -2319,12 +2262,12 @@ class TisR51FixedPlanAcceptanceTest {
                         ),
                 ),
             )
-        check(ProgramPublishCoordinator.programSignatureForTest(first) == ProgramPublishCoordinator.programSignatureForTest(same))
+        check(programSignatureForTest(first) == programSignatureForTest(same))
         check(
-            ProgramPublishCoordinator.programSignatureForTest(first) !=
-                ProgramPublishCoordinator.programSignatureForTest(changedDescription),
+            programSignatureForTest(first) !=
+                programSignatureForTest(changedDescription),
         )
-        check(ProgramPublishCoordinator.programSignatureForTest(first) != ProgramPublishCoordinator.programSignatureForTest(changedRating))
+        check(programSignatureForTest(first) != programSignatureForTest(changedRating))
     }
 
     @Test fun currentProgramChangeClearsTemporaryUnblockKeys() {

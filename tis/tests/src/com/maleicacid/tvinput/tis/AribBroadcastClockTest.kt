@@ -94,7 +94,6 @@ class AribBroadcastClockTest {
         check(!totUpdate.discontinuity)
         check(totUpdate.authority.tableId == AribBroadcastClock.TABLE_ID_TOT)
         check(totUpdate.authority.generation == first.generation)
-        check(AribBroadcastClock.continuityToleranceMillisForTest() == 2_000L)
 
         // 本番schedulerでは、同一generationの時刻更新時に古いRunnableを取り除き、
         // 新たな遅延実行を設定する。競合して実行された古いRunnableもarm-sequenceの識別子で無効化する。

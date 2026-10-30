@@ -12,6 +12,7 @@ import com.maleicacid.tvinput.aribsi.AribFreeCaMode
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribSeries
+import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
@@ -113,7 +114,7 @@ class TvProviderWriterR51FixTest {
                 serviceKey = key,
                 windowStartMs = p.startTimeMillis,
                 windowEndMs = p.startTimeMillis + p.durationMillis,
-                validProgramKeys = setOf(TvProviderWriter.programKeyForTest(p)),
+                validProgramKeys = setOf(ProviderDataBridge.buildProgramKey(p)),
                 deletionAuthoritative = true,
             )
         writer.upsertProgramsForWindows(listOf(absentOptionalValues), listOf(authoritativeWindow))
@@ -168,7 +169,7 @@ class TvProviderWriterR51FixTest {
                 serviceKey = key,
                 windowStartMs = base.startTimeMillis,
                 windowEndMs = base.startTimeMillis + base.durationMillis,
-                validProgramKeys = setOf(TvProviderWriter.programKeyForTest(base)),
+                validProgramKeys = setOf(ProviderDataBridge.buildProgramKey(base)),
                 deletionAuthoritative = false,
             )
         val single =
@@ -296,7 +297,7 @@ class TvProviderWriterR51FixTest {
                 key,
                 program.startTimeMillis,
                 program.startTimeMillis + program.durationMillis,
-                setOf(TvProviderWriter.programKeyForTest(program)),
+                setOf(ProviderDataBridge.buildProgramKey(program)),
             )
         val plan = writer.prepareProgramPublication(listOf(program), listOf(window))
         check(requireNotNull(plan.fingerprint).matches(Regex("[0-9a-f]{64}")))

@@ -344,15 +344,10 @@ class CurrentProgramRatingResolver internal constructor(
          * 後の受信観測である。同一event/同一時刻ならrating refresh、同一eventの時刻変更
          * またはevent変更なら旧row失効として、いずれもEITを優先する。
          */
-        private fun selectCurrentRating(
+        internal fun selectCurrentRating(
             provider: CurrentProgramRatingSet?,
             latestEit: CurrentProgramRatingSet?,
         ): CurrentProgramRatingSet? = latestEit ?: provider
-
-        internal fun selectCurrentRatingForTest(
-            provider: CurrentProgramRatingSet?,
-            latestEit: CurrentProgramRatingSet?,
-        ): CurrentProgramRatingSet? = selectCurrentRating(provider, latestEit)
 
         fun stableProgramKey(
             serviceKey: ServiceKey,

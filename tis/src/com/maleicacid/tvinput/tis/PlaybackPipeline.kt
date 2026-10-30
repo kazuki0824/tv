@@ -31,7 +31,6 @@ import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.common.CaptionTimestamp
 import com.maleicacid.tvinput.common.LogTags
-import com.maleicacid.tvinput.common.PesPts90k
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -1471,7 +1470,7 @@ class PlaybackPipeline(
     private fun scheduleFirstFrameTimeout(generation: Long) {
         mainHandler.postDelayed({
             enqueuePlaybackAction {
-                if (shouldTriggerFirstFrameTimeoutForTest(generation, playbackGeneration, videoAvailableNotified.get())) {
+                if (shouldTriggerFirstFrameTimeout(generation, playbackGeneration, videoAvailableNotified.get())) {
                     failPlayback(
                         generation,
                         PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
@@ -1527,9 +1526,6 @@ class PlaybackPipeline(
         )
     }
 
-    @Suppress("unused")
-    internal fun currentPlaybackGenerationForTest(): Long = playbackGeneration
-
     private fun releaseMediaEvent(event: MediaEvent) {
         if (!resourceCleanup.release("MediaEvent") { event.release() }) {
             // 新しい入力の保持を止め、有限の受理済み入力と解放義務だけを同じownerへ残す。
@@ -1573,21 +1569,13 @@ class PlaybackPipeline(
     ): MediaSample? {
         val offset = event.offset
         val length = event.dataLength
-        if (offset < 0L || length <= 0L) {
+        val rangeDecision = mediaEventBoundsDecision(offset, length, Long.MAX_VALUE)
+        if (rangeDecision == MediaEventBoundsDecision.MALFORMED) {
             malformedSamplesDropped++
             Log.w(LogTags.TIS, "MediaEvent の offset/length が不正なため破棄します offset=$offset length=$length malformed=$malformedSamplesDropped")
             return null
         }
-        val end = offset + length
-        if (end < offset) {
-            malformedSamplesDropped++
-            Log.w(
-                LogTags.TIS,
-                "MediaEvent の offset+length が overflow したため破棄します offset=$offset length=$length malformed=$malformedSamplesDropped",
-            )
-            return null
-        }
-        if (length > Int.MAX_VALUE.toLong() || offset > Int.MAX_VALUE.toLong()) {
+        if (rangeDecision == MediaEventBoundsDecision.OVERSIZED) {
             oversizedSamplesDropped++
             Log.w(LogTags.TIS, "MediaEvent range をblock modelのInt範囲へ安全にnarrowできません offset=$offset length=$length")
             return null
@@ -1612,7 +1600,7 @@ class PlaybackPipeline(
                         .toLong()
                 }.onFailure { Log.w(LogTags.TIS, "MediaEvent LinearBlock の map に失敗しました", it) }
                     .getOrNull() ?: return null
-            if (end > capacity) {
+            if (mediaEventBoundsDecision(offset, length, capacity) == MediaEventBoundsDecision.OUT_OF_BOUNDS) {
                 malformedSamplesDropped++
                 Log.w(LogTags.TIS, "MediaEvent が LinearBlock 範囲外です offset=$offset length=$length capacity=$capacity")
                 return null
@@ -2715,11 +2703,9 @@ class PlaybackPipeline(
             payload[0].toInt() and 0xff == expectedDataIdentifier &&
             payload[1].toInt() and 0xff == CAPTION_PRIVATE_STREAM_ID
 
-    private enum class PtsTrack { VIDEO, AUDIO, CAPTION, SUPERIMPOSE }
+    internal enum class PtsTrack { VIDEO, AUDIO, CAPTION, SUPERIMPOSE }
 
-    private fun isAuthoritativePtsValid(pts90k: Long): Boolean = pts90k in 0..PTS_MASK
-
-    private class PtsEpochCoordinator {
+    internal class PtsEpochCoordinator {
         private data class TrackState(
             var rawPrevious: Long,
             var extendedPrevious: Long,
@@ -2811,12 +2797,6 @@ class PlaybackPipeline(
             "AUDIO_OUTPUT_BACKPRESSURE_TIMEOUT bytes=$byteCount samples=$sampleCount ptsSpanUs=$durationUs deadlineMs=$deadlineMs",
         )
     }
-
-    private fun backpressureDeadlineReached(
-        startedAtMs: Long,
-        nowMs: Long,
-        deadlineMs: Long,
-    ): Boolean = backpressureDeadlineReachedForTest(startedAtMs, nowMs, deadlineMs)
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
@@ -3019,16 +2999,12 @@ class PlaybackPipeline(
             val sarHeight: Int = 1,
         )
 
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun parseAvcSpsDimensionsForTest(spsWithStartCode: ByteArray): VideoDimensions? = parseAvcSpsDimensions(spsWithStartCode)
-
         // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
         // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("CyclomaticComplexMethod", "LongMethod", "MagicNumber", "MaxLineLength")
-        private fun parseAvcSpsDimensions(spsWithStartCode: ByteArray): VideoDimensions? =
+        internal fun parseAvcSpsDimensions(spsWithStartCode: ByteArray): VideoDimensions? =
             runCatching {
                 val rbsp = nalRbspPayload(spsWithStartCode)
                 val bits = CodecBitReader(rbsp)
@@ -3316,7 +3292,7 @@ class PlaybackPipeline(
                 (bytes[i + 2] == 1.toByte() || (i + 3 < bytes.size && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte()))
     }
 
-    private object PcmChannelMaskPolicy {
+    internal object PcmChannelMaskPolicy {
         // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
         @Suppress("ReturnCount")
         fun resolve(
@@ -3717,79 +3693,30 @@ class PlaybackPipeline(
             }
         }
 
-        private fun audioTrackDualMonoMode(presentation: DualMonoPresentation): Int =
+        internal fun audioTrackDualMonoMode(presentation: DualMonoPresentation): Int =
             when (presentation) {
                 DualMonoPresentation.MAIN -> AudioTrack.DUAL_MONO_MODE_LL
                 DualMonoPresentation.SUB -> AudioTrack.DUAL_MONO_MODE_RR
                 DualMonoPresentation.MAIN_SUB -> AudioTrack.DUAL_MONO_MODE_LR
             }
 
-        fun dualMonoModeForTest(presentation: DualMonoPresentation): Int = audioTrackDualMonoMode(presentation)
-
-        fun h264DimensionsForTest(spsWithStartCode: ByteArray): Pair<Int, Int>? =
-            EsHeaderParser.parseAvcSpsDimensionsForTest(spsWithStartCode)?.let {
-                it.width to
-                    it.height
-            }
-
-        fun acceptsFirstFrameForTest(
-            callbackGeneration: Long,
-            currentGeneration: Long,
-            surfaceValid: Boolean,
-            alreadyNotified: Boolean,
-        ): Boolean = callbackGeneration == currentGeneration && surfaceValid && !alreadyNotified
-
-        fun shouldTriggerFirstFrameTimeoutForTest(
+        fun shouldTriggerFirstFrameTimeout(
             timeoutGeneration: Long,
             currentGeneration: Long,
             alreadyNotified: Boolean,
         ): Boolean = timeoutGeneration == currentGeneration && !alreadyNotified
 
-        fun normalizedPtsTicksForTest(samples: List<Pair<String, Long>>): List<Long> {
-            val coordinator = PtsEpochCoordinator()
-            return samples.map { (track, rawPts) ->
-                coordinator.normalizeTicks(
-                    when (track) {
-                        "video" -> PtsTrack.VIDEO
-                        "audio" -> PtsTrack.AUDIO
-                        "subtitle", "caption" -> PtsTrack.CAPTION
-                        "superimpose" -> PtsTrack.SUPERIMPOSE
-                        else -> throw IllegalArgumentException("不明なPTS trackです: $track")
-                    },
-                    rawPts,
-                )
-            }
-        }
-
-        fun backpressureDeadlineReachedForTest(
+        internal fun backpressureDeadlineReached(
             startedAtMs: Long,
             nowMs: Long,
             deadlineMs: Long,
         ): Boolean = deadlineMs > 0L && nowMs >= startedAtMs && nowMs - startedAtMs >= deadlineMs
 
-        fun unavailableReasonForMediaEventCallbackFailureForTest(isAudio: Boolean): PlaybackUnavailableReason =
-            if (isAudio) PlaybackUnavailableReason.AUDIO_UNAVAILABLE else PlaybackUnavailableReason.VIDEO_CODEC_ERROR
+        internal fun isAuthoritativePtsValid(pts90k: Long?): Boolean = pts90k != null && pts90k in 0..PTS_MASK
 
-        @Suppress("UNUSED_PARAMETER")
-        fun shouldQueueMediaEventForPtsForTest(
-            isPtsPresent: Boolean,
-            pts90k: Long?,
-        ): Boolean = pts90k != null && pts90k in 0..PTS_MASK
-
-        fun captionTimestampForTest(
-            isPtsPresent: Boolean,
-            pts90k: Long?,
-        ): CaptionTimestamp =
-            if (isPtsPresent) {
-                PesPts90k.fromOrNull(pts90k)?.toCaptionPtsMillis()?.let { CaptionTimestamp.Pts(it) }
-                    ?: CaptionTimestamp.NoPts
-            } else {
-                CaptionTimestamp.NoPts
-            }
-
-        // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+        // 不正rangeを発生点で分類し、呼出元が既存counterと資源解放を扱う。
         @Suppress("ReturnCount")
-        fun mediaEventBoundsDecisionForTest(
+        internal fun mediaEventBoundsDecision(
             offset: Long,
             dataLength: Long,
             mappedCapacity: Long,
@@ -3829,23 +3756,6 @@ class PlaybackPipeline(
                 0x0f -> AvSettings.AUDIO_STREAM_TYPE_AAC_ADTS
                 else -> AvSettings.AUDIO_STREAM_TYPE_UNDEFINED
             }
-
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun isSupportedAudioStreamTypeForTest(streamType: Int): Boolean = AudioCodecKind.fromStreamType(streamType) != null
-
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun channelMaskForPcmOutputForTest(channelCount: Int): Int? = PcmChannelMaskPolicy.canonicalForCount(channelCount)
-
-        fun aribChannelMaskForConfigurationForTest(channelConfiguration: String?): Int? =
-            PcmChannelMaskPolicy.fromChannelConfiguration(channelConfiguration)
-
-        fun resolvePcmChannelMaskForTest(
-            decoderMask: Int?,
-            channelCount: Int,
-            channelConfiguration: String?,
-        ): Int? = PcmChannelMaskPolicy.resolve(decoderMask, channelCount, channelConfiguration)
 
         private const val AV_FILTER_BUFFER_BYTES = 16 * 1024 * 1024L
         private const val SUBTITLE_FILTER_BUFFER_BYTES = 256 * 1024L

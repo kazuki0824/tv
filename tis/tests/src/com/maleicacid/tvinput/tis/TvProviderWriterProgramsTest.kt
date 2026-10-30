@@ -17,6 +17,7 @@ import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.AribShortEventText
+import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.NetworkId16
 import com.maleicacid.tvinput.common.ServiceId16
@@ -266,7 +267,7 @@ class TvProviderWriterProgramsTest {
             store.programs.values
                 .single()
                 .getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
-        check(TvProviderWriter.parseProgramKey(providerData) == TvProviderWriter.programKeyForTest(p))
+        check(TvProviderWriter.parseProgramKey(providerData) == ProviderDataBridge.buildProgramKey(p))
         check(providerData.utf8Contains("\"schema\":\"maleicacid.tv.program\""))
         check(providerData.utf8Contains(TvProviderWriter.PROGRAM_KEY_FIELD))
         check(!providerData.utf8Contains("programKeyB64"))
@@ -336,7 +337,7 @@ class TvProviderWriterProgramsTest {
         check(row.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) == moved.startTimeMillis)
         check(row.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "moved")
         val providerData = row.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
-        check(TvProviderWriter.parseProgramKey(providerData) == TvProviderWriter.programKeyForTest(moved))
+        check(TvProviderWriter.parseProgramKey(providerData) == ProviderDataBridge.buildProgramKey(moved))
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -854,7 +855,7 @@ class TvProviderWriterProgramsTest {
                             serviceKey = key,
                             windowStartMs = p1.startTimeMillis,
                             windowEndMs = p3.startTimeMillis + p3.durationMillis,
-                            validProgramKeys = setOf(TvProviderWriter.programKeyForTest(p1), TvProviderWriter.programKeyForTest(p3)),
+                            validProgramKeys = setOf(ProviderDataBridge.buildProgramKey(p1), ProviderDataBridge.buildProgramKey(p3)),
                             deletionAuthoritative = false,
                         ),
                     ),
@@ -871,14 +872,14 @@ class TvProviderWriterProgramsTest {
                             serviceKey = key,
                             windowStartMs = p1.startTimeMillis,
                             windowEndMs = p3.startTimeMillis + p3.durationMillis,
-                            validProgramKeys = setOf(TvProviderWriter.programKeyForTest(p1), TvProviderWriter.programKeyForTest(p3)),
+                            validProgramKeys = setOf(ProviderDataBridge.buildProgramKey(p1), ProviderDataBridge.buildProgramKey(p3)),
                             deletionAuthoritative = true,
                         ),
                     ),
             )
         check(authoritative.deleted == 1)
         check(store.programs.size == 2)
-        val validKey = TvProviderWriter.programKeyForTest(p1)
+        val validKey = ProviderDataBridge.buildProgramKey(p1)
         check(TvProviderWriter.shouldDeleteOwnedObsoleteProgramRow("com.maleicacid.tv", "com.maleicacid.tv", null, setOf(validKey)))
         check(TvProviderWriter.shouldDeleteOwnedObsoleteProgramRow("com.maleicacid.tv", "com.maleicacid.tv", "obsolete", setOf(validKey)))
         check(!TvProviderWriter.shouldDeleteOwnedObsoleteProgramRow("other.package", "com.maleicacid.tv", null, setOf(validKey)))
@@ -887,7 +888,7 @@ class TvProviderWriterProgramsTest {
         check(
             store.programs.values.none { value ->
                 TvProviderWriter.parseProgramKey(value.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)) ==
-                    TvProviderWriter.programKeyForTest(p2)
+                    ProviderDataBridge.buildProgramKey(p2)
             },
         )
     }
@@ -951,8 +952,8 @@ class TvProviderWriterProgramsTest {
                             windowEndMs = nowUndefined.startTimeMillis + nowUndefined.durationMillis,
                             validProgramKeys =
                                 setOf(
-                                    TvProviderWriter.programKeyForTest(defined),
-                                    TvProviderWriter.programKeyForTest(nowUndefined),
+                                    ProviderDataBridge.buildProgramKey(defined),
+                                    ProviderDataBridge.buildProgramKey(nowUndefined),
                                 ),
                             deletionAuthoritative = true,
                         ),

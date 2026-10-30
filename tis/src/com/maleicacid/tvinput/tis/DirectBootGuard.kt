@@ -109,7 +109,7 @@ object DirectBootGuard {
         markSkipped(context, "TUNER_UNAVAILABLE")
     }
 
-    fun pendingStateForTest(context: Context): DirectBootPendingState {
+    fun pendingState(context: Context): DirectBootPendingState {
         val prefs = prefs(context)
         return DirectBootPendingState(
             pending = prefs.getBoolean(KEY_PENDING, false),

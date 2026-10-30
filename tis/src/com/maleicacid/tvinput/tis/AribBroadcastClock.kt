@@ -103,8 +103,6 @@ object AribBroadcastClock {
         return Deadline(clock.generation, (target - currentBroadcastMillis).coerceAtLeast(0L))
     }
 
-    internal fun continuityToleranceMillisForTest(): Long = CONTINUITY_TOLERANCE_MILLIS
-
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
     private fun validSource(sample: SourceSample): Boolean =

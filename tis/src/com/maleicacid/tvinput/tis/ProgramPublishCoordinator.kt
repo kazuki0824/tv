@@ -393,18 +393,9 @@ class ProgramPublishCoordinator(
             )
         }
 
-    fun retryWindowCountForTest(): Int = dirtyWindows.size
-
-    fun retryFailureClassesForTest(): Set<String> = dirtyWindows.values.map { it.failureClass }.toSet()
-
-    fun retryNotBeforeMillisForTest(): List<Long> = dirtyWindows.values.map { it.notBeforeMs }
-
     companion object {
-        const val RETRY_COOLDOWN_MS_FOR_TEST: Long = 60_000L
-        const val MAX_DIRTY_WINDOWS_FOR_TEST: Int = 512
-
-        private const val RETRY_COOLDOWN_MS = RETRY_COOLDOWN_MS_FOR_TEST
-        private const val MAX_DIRTY_WINDOWS = MAX_DIRTY_WINDOWS_FOR_TEST
+        private const val RETRY_COOLDOWN_MS: Long = 60_000L
+        private const val MAX_DIRTY_WINDOWS: Int = 512
 
         fun filterServiceKeysForMode(
             mode: ChannelScanController.PublishMode,
@@ -433,24 +424,8 @@ class ProgramPublishCoordinator(
                 }
             }
 
-        fun programSignatureForTest(programs: List<ProgramRecord>): String =
-            programs
-                .sortedWith(
-                    compareBy<ProgramRecord> { it.serviceKey.originalNetworkId }
-                        .thenBy { it.serviceKey.transportStreamId }
-                        .thenBy { it.serviceKey.serviceId }
-                        .thenBy { it.stableIdentity }
-                        .thenBy { it.eventId },
-                ).joinToString("|") { program ->
-                    projectedProgramSignature(program)
-                }
-
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
         private fun programIdentityForCoordinator(program: ProgramRecord): String = ProviderDataBridge.buildProgramKey(program)
-
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        private fun projectedProgramSignature(program: ProgramRecord): String = TvProviderWriter.signatureForProgramForTest(0L, program)
     }
 }

@@ -490,9 +490,9 @@ class TunerController(
         event: Int,
     ) {
         if (!tuneAccepted || generation != tuneGeneration || currentTune == null) return
-        when (event) {
-            OnTuneEventListener.SIGNAL_NO_SIGNAL, OnTuneEventListener.SIGNAL_LOST_LOCK -> playbackPipeline.stop()
-            OnTuneEventListener.SIGNAL_LOCKED -> Unit
+        when {
+            isSignalUnavailableTuneEvent(event) -> playbackPipeline.stop()
+            event == OnTuneEventListener.SIGNAL_LOCKED -> Unit
             else -> return
         }
         onTuneEventCallback?.invoke(generation, event)
@@ -2330,7 +2330,7 @@ class TunerController(
 
         internal fun normalizedTvInputSessionId(sessionId: String?): String? = sessionId?.takeIf { it.isNotBlank() }
 
-        internal fun isSignalUnavailableTuneEventForTest(event: Int): Boolean =
+        internal fun isSignalUnavailableTuneEvent(event: Int): Boolean =
             event == OnTuneEventListener.SIGNAL_NO_SIGNAL || event == OnTuneEventListener.SIGNAL_LOST_LOCK
     }
 }

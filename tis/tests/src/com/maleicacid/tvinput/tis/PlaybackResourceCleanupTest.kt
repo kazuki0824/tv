@@ -325,11 +325,11 @@ class PlaybackResourceCleanupTest {
     @Suppress("MaxLineLength")
     @Test
     fun scanAdmissionRequiresPlaybackStopIndependentlyOfLiveSessionCount() {
-        val boot = ChannelScanManager.bootEpgSyncStartDecisionForTest(0, false, false, playbackPipelineRunning = true)
+        val boot = ChannelScanManager.bootEpgSyncStartDecision(0, false, false, playbackPipelineRunning = true)
         check(!boot.allowed && boot.reason == "PLAYBACK_PIPELINE_RUNNING")
-        val maintenance = ChannelScanManager.backgroundMaintenanceStartDecisionForTest(0, false, false, playbackPipelineRunning = true)
+        val maintenance = ChannelScanManager.backgroundMaintenanceStartDecision(0, false, false, playbackPipelineRunning = true)
         check(!maintenance.allowed && maintenance.reason == "PLAYBACK_PIPELINE_RUNNING")
-        check(ChannelScanManager.bootEpgSyncStartDecisionForTest(0, false, false, playbackPipelineRunning = false).allowed)
-        check(ChannelScanManager.backgroundMaintenanceStartDecisionForTest(0, false, false, playbackPipelineRunning = false).allowed)
+        check(ChannelScanManager.bootEpgSyncStartDecision(0, false, false, playbackPipelineRunning = false).allowed)
+        check(ChannelScanManager.backgroundMaintenanceStartDecision(0, false, false, playbackPipelineRunning = false).allowed)
     }
 }

@@ -804,25 +804,17 @@ class ChannelScanController(
                         }
                         val elapsed = now - startedAt
                         val stableFor = now - stableSince
-                        if (counts.collectionStatus.complete && elapsed >= policy.minWaitMs && stableFor >= policy.stableWaitMs) {
-                            outcome = SiCollectionOutcome.COMPLETE
-                            break
-                        }
-                        val registrationReadySnapshotAvailable = counts.registrationReady > 0
-                        val stablePartialCollectionReady =
-                            !requirements.requiresEit && elapsed >= policy.minWaitMs && registrationReadySnapshotAvailable &&
-                                stableFor >= policy.stableWaitMs
-                        if (stablePartialCollectionReady) {
-                            outcome = SiCollectionOutcome.STABLE_PARTIAL
-                            break
-                        }
-                        if (elapsed >= policy.maxWaitMs) {
-                            outcome =
-                                if (registrationReadySnapshotAvailable) {
-                                    SiCollectionOutcome.TIMEOUT_PARTIAL
-                                } else {
-                                    SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
-                                }
+                        val completedOutcome =
+                            collectionOutcome(
+                                counts.collectionStatus.complete,
+                                elapsed,
+                                stableFor,
+                                counts.registrationReady,
+                                policy,
+                                allowStablePartial = !requirements.requiresEit,
+                            )
+                        if (completedOutcome != null) {
+                            outcome = completedOutcome
                             break
                         }
                         runCatching { Thread.sleep(policy.pollIntervalMs) }
@@ -1092,19 +1084,6 @@ class ChannelScanController(
 
         private val DEFAULT_SI_POLICY = SiCollectionPolicy()
 
-        // 公開方針の既存入口への委譲を一つの式に保つ。
-        @Suppress("MaxLineLength")
-        fun filterProgramServiceKeysForPublishModeForTest(
-            mode: PublishMode,
-            allServiceKeys: Iterable<ServiceKey>,
-            existingServiceKeys: Set<ServiceKey>,
-            allowedServiceKeys: Set<ServiceKey>?,
-        ): Set<ServiceKey> =
-            ProgramPublishCoordinator.filterServiceKeysForMode(mode, allServiceKeys, existingServiceKeys, allowedServiceKeys)
-
-        fun validProgramKeysForUpdateForTest(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
-            validProgramKeysForUpdate(update)
-
         private fun setupPublicationFailureTerminal(failures: List<TvProviderWriter.Diagnostic>): ScanTerminal? =
             if (failures.isEmpty()) {
                 null
@@ -1192,13 +1171,7 @@ class ChannelScanController(
                 else -> "UNKNOWN($event)"
             }
 
-        internal fun signalUnavailableDiagnosticForTest(
-            event: Int?,
-            generation: Long,
-            elapsedMs: Long,
-        ): String = signalUnavailableDiagnostic(event, generation, elapsedMs)
-
-        private fun signalUnavailableDiagnostic(
+        internal fun signalUnavailableDiagnostic(
             event: Int?,
             generation: Long,
             elapsedMs: Long,
@@ -1213,34 +1186,23 @@ class ChannelScanController(
                 "未完了SI snapshotはpublishへ使用しません elapsedMs=$elapsedMs"
         }
 
-        private fun validProgramKeysForUpdate(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
-            update.validProgramStableIdentities.toSet()
-
-        // 収集結果の独立した判定入力を明示し、試験用の呼出し形状と条件式を維持する。
-        @Suppress("LongParameterList", "MaxLineLength")
-        fun siCollectionOutcomeForTest(
+        // 収集ループと試験が同じ終了条件を使用し、待機継続はnullで表す。
+        @Suppress("LongParameterList")
+        internal fun collectionOutcome(
             discoveryComplete: Boolean,
-            cancelled: Boolean,
             elapsedMs: Long,
             stableForMs: Long,
             registrationReadyServices: Int,
             policy: SiCollectionPolicy,
-            resourceLost: Boolean = false,
-        ): SiCollectionOutcome =
+            allowStablePartial: Boolean = true,
+        ): SiCollectionOutcome? =
             when {
-                resourceLost -> {
-                    SiCollectionOutcome.RESOURCE_LOST
-                }
-
-                cancelled -> {
-                    SiCollectionOutcome.CANCELLED
-                }
-
-                discoveryComplete && elapsedMs >= policy.minWaitMs -> {
+                discoveryComplete && elapsedMs >= policy.minWaitMs && stableForMs >= policy.stableWaitMs -> {
                     SiCollectionOutcome.COMPLETE
                 }
 
-                elapsedMs >= policy.minWaitMs && registrationReadyServices > 0 && stableForMs >= policy.stableWaitMs -> {
+                allowStablePartial && elapsedMs >= policy.minWaitMs && registrationReadyServices > 0 &&
+                    stableForMs >= policy.stableWaitMs -> {
                     SiCollectionOutcome.STABLE_PARTIAL
                 }
 
@@ -1253,9 +1215,12 @@ class ChannelScanController(
                 }
 
                 else -> {
-                    SiCollectionOutcome.TIMEOUT_PARTIAL
+                    null
                 }
             }
+
+        internal fun validProgramKeysForUpdate(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
+            update.validProgramStableIdentities.toSet()
     }
 }
 
