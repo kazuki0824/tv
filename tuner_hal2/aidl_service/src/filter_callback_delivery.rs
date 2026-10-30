@@ -21,7 +21,8 @@ use maleicacid_tuner_hal2_service_runtime::{
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
     FilterEventDelivery, FilterEventDeliverySnapshot, FilterEventDispatcher, TunerServiceRuntime,
-    WorkerContext, WorkerRuntime,
+    ClassifiedWorkerTerminalResult, WorkerContext, WorkerFailureClassifier, WorkerRuntime,
+    WorkerTerminalResult,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -40,12 +41,25 @@ enum AidlFilterCallbackDelivery {
 impl AidlFilterEventDispatcher {
     pub fn new(context: &SharedAidlServiceContext) -> Result<Self, HalError> {
         let worker_context = Arc::downgrade(context);
-        let delay_worker = WorkerRuntime::spawn(
+        let observer_context = Arc::downgrade(context);
+        let delay_worker = WorkerRuntime::spawn_observed(
             "maleicacid-filter-delay-delivery".to_string(),
             0,
             1,
             move |control| run_filter_delay_delivery(worker_context, control),
-            || {},
+            move |terminal: &WorkerTerminalResult<()>| {
+                if let ClassifiedWorkerTerminalResult::Failure { category, error } =
+                    WorkerFailureClassifier::classify_terminal(
+                        terminal.clone(),
+                        "Filter遅延配送ワーカーがpanicしました",
+                    )
+                {
+                    log::error!("Filter遅延配送が終了しました: 分類={category:?} エラー={error:?}");
+                    if let Some(context) = observer_context.upgrade() {
+                        TunerServiceRuntime::mark_shared_service_critical(context.runtime().as_ref());
+                    }
+                }
+            },
         )
         .map_err(|error| HalError::Io {
             backend: "filter遅延配送",
@@ -402,12 +416,16 @@ fn take_callback_event_batch(
 
 impl FilterEventDispatcher for AidlFilterEventDispatcher {
     fn wake(&self) -> Result<(), HalError> {
-        self.delay_worker
-            .as_ref()
-            .ok_or(HalError::NotInitialized {
-                resource: "Filter delay worker",
-            })?
-            .wake()
+        let worker = self.delay_worker.as_ref().ok_or(HalError::NotInitialized {
+            resource: "Filter delay worker",
+        })?;
+        if worker.is_finished() {
+            return Err(HalError::cleanup_failed(
+                "Filter遅延配送",
+                "終了済みワーカーへ配送を要求できません",
+            ));
+        }
+        worker.wake()
     }
 
     fn dispatch(

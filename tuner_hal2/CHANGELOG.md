@@ -22,6 +22,13 @@
 - controlの手書きコメントを日本語化し、AV共有handleの確認項目を既存の未初期化表現契約へ参照統一した。
 - 採用済み契約の変更なし。静的照合のみで、実行テストはCIに委ねる。
 
+# 2026-10-30 共通workerの異常終了を既存ownerへ接続
+
+- reaper laneを既存WorkerRuntimeの型付き終端observerへ接続。panicで未完予約を残したまま無期限に待つ経路を、typed failure返却へ変更する。未完義務の早期解放・自動再実行はしない。
+- Filter遅延配送のruntime failure/panicを分類して診断し、全Filter共有workerの喪失を既存ServiceCriticalへ反映する。終了済みworkerへのwakeを成功扱いしない。
+- 既存spawn_with_contextの終端観測を公開factoryから再利用し、別worker・監視loop・資源台帳を追加しない。
+- 実reaper runnerのpanic、期限なし待機の失敗返却、予約保持、新規受付拒否、通常エラーとpanicの区別をCI回帰へ追加。テスト実行はCI、実機検証は未実施。
+
 # 2026-10-30 全件監査の既存契約内修正
 
 - Filter/DVR生成commitと固定LNB給電解放の結果をロック内で確定し、失敗時の後片付け・lease復元前にロックを解放する。同じruntime lockへの自己再入を除去し、既存rollback順序を維持する。

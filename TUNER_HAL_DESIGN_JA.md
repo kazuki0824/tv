@@ -1788,3 +1788,10 @@ AVCではPPS→SPS参照を確認し、PES内で最初に開始するAUだけを
 ### Frontend closeの回収完了
 
 Frontend closeは停止要求・起床後に進行中のbackend I/Oとworkerの終了を待ち、live data・電源を回収してから成功を返す。close専用のwall-clock期限は設けず、個別I/Oや選局の期限をclose失敗へ流用しない。既存stop/replacementのreaper所有も終了を待つ。実際のworker/cleanup失敗はそのまま返す。下位driver I/Oの有限終了が前提であり、driverが終了しない故障ではcloseも待機を継続する。Frameworkのclose失敗後再試行へ依存しない。
+
+
+### 共通回収laneとFilter遅延配送の異常終了
+
+共通reaper laneのruntime failureまたはpanicでは、既存回収器を失敗状態に固定し、未完予約・義務を解放しない。既存の保留照会・待機・新規受付から元のtyped errorを返し、panicはWorkerReaperPanickedとしてruntime failureと区別する。終了済みlaneを正常な処理能力として再利用せず、実行結果不明のjobを自動再実行しない。成功した既存jobの資源を異常jobと混同して早期再利用しない。
+
+Filter遅延配送は全Filterが共有するservice-wide workerであり、その異常終了後に正常な遅延配送を提供できない。WorkerFailureClassifierでruntime failureとpanicを分類して診断し、既存ServiceFailureStateをServiceCriticalへ閉じる。新workerによる盲目的な再実行、イベントの成功扱い、未解放AV handleの破棄は行わない。正常な所有者消滅・停止要求ではServiceCriticalにしない。終了済みworkerへのwakeは失敗を返す。
