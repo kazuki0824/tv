@@ -650,17 +650,17 @@ mod tests {
     #[test]
     fn regular_event_batch_respects_filter_and_aidl_generation() {
         let first = snapshot(FilterEventDelivery::Section {
-                data_length: 10,
-                table_id: 0x42,
-                version: 1,
-                section_num: 0,
-            });
+            data_length: 10,
+            table_id: 0x42,
+            version: 1,
+            section_num: 0,
+        });
         let second = snapshot(FilterEventDelivery::Section {
-                data_length: 20,
-                table_id: 0x42,
-                version: 1,
-                section_num: 0,
-            });
+            data_length: 20,
+            table_id: 0x42,
+            version: 1,
+            section_num: 0,
+        });
         let mut different_filter = snapshot(FilterEventDelivery::Section {
             data_length: 30,
             table_id: 0x42,
