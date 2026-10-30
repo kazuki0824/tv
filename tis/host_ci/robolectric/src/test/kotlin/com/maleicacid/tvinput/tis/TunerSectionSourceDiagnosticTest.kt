@@ -20,6 +20,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.util.ReflectionHelpers
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
@@ -71,7 +72,7 @@ class TunerSectionSourceDiagnosticTest {
             try {
                 check(entered.await(5, TimeUnit.SECONDS))
                 // この試験は容量値ではなく、満杯時の旧Filter/旧世代の診断隔離を検査する。
-                val slots = ReflectionHelpers.getField<java.util.concurrent.Semaphore>(fixture.executor, "pendingDataSlots")
+                val slots: Semaphore = ReflectionHelpers.getField(fixture.executor, "pendingDataSlots")
                 repeat(slots.availablePermits()) { fixture.executor.executeData {} }
                 // close前に読み出し済みで、配送だけが後着するcallbackを再現する。
                 fixture.deliver(fixture.stale)
