@@ -36,4 +36,6 @@ cargo test --manifest-path tuner_hal2/host_ci/Cargo.toml --locked \
 
 `realTsBurstLossAndRetransmissionStayWithinCandidate`は同じSHA-256のTSを実HAL実行器へ入力し、固定したsection参照値を照合してから既存SDK Filter Shadowのread/callbackへ接続する。製品Controller/SectionIngestController/実SI JNI/SiCollectionRequirements/collectionOutcomeを実行する。16件のEIT先行入力とowner control占有に続けてPID別callbackを並行実行し、ピーク16件、拒否件数、未完成→再送後完成、同候補の喪失保持、Filter交換と候補切替での旧入力拒否を検査する。
 
-`section-burst.txt`へ入力hash、section数、Filter PID数、ピーク保留、拒否数、占有開始からdrainまでの時間、再送処理時間を保存する。再送は各入力の完了を待つ決定的試験であり、放送の実到着率・RF受信・実機処理性能を再現する負荷試験ではない。この成功だけで16件の必要十分性、元の15,409件の再現、全環境でのSI収集成功を宣言しない。入力率、各control操作の占有時間、機種/buildと候補別診断を揃えた実機測定は未実施条件として残す。
+`section-burst.txt`では、入力hash・section数・PID数とhostの経過時間を、assert済みの固定期待値から区別する。`assertedExpectations`のピーク16、拒否数、overflow 0、完成状態は試験assertが検証した期待値であり、連続観測による実測レポートではない。`observedHostWallTime`だけがSystem.nanoTimeによる当該host試験の経過時間で、意図的なowner占有と逐次再投入を含む。再送は各入力の完了を待つ決定的試験であり、放送の実到着率・RF受信・実機処理性能を再現する負荷試験ではない。この成功だけで16件の必要十分性、元の15,409件の再現、全環境でのSI収集成功を宣言しない。入力率、各control操作の占有時間、機種/buildと候補別診断を揃えた実機測定は未実施条件として残す。
+
+`ChannelScanController.startSetupScan` / `collectSiForCandidate`自体は実行しない。`collectionOutcome`へ渡す最短待機・安定時間は固定値で、実scan timer、期限内の収集終端、TvProvider公開拒否、放送からの自律再送・SI再収集を検証したものではない。ここでの「候補切替」はTuner再選局と同じ旧Filter停止後reset・候補別snapshot境界の検査に限定する。実scan全体の保証が必要な場合は既存scan入口を通る別の回帰と実機証跡が必要であり、この試験から成功を推論しない。
