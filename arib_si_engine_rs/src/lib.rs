@@ -4,6 +4,7 @@ mod ca_descriptor;
 mod descriptors;
 mod discovery_requirements;
 mod eit;
+mod jni_logging;
 mod jvm_snapshot_generated;
 pub(crate) mod provider_data;
 mod sections;

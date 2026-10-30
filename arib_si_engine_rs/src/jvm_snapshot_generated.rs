@@ -1,5 +1,6 @@
 use super::{SiJniFailure, SiJniFailureReason};
-use jni::objects::{JObject, JValue};
+use jni::objects::{JMethodID, JObject, JValue};
+use jni::signature::{Primitive, ReturnType};
 use jni::JNIEnv;
 use maleicacid_arib_si_engine_core::codec_probe_dto::*;
 use maleicacid_arib_si_engine_core::runtime_snapshot_dto::*;
@@ -92,17 +93,24 @@ fn new_list<'local>(env: &mut JNIEnv<'local>) -> Result<JObject<'local>, SiJniFa
     jni_result(env.new_object("java/util/ArrayList", "()V", &[]))
 }
 
+// 各Listの生成時に取得したmethod IDだけを、子要素の追加で使い回す。
+// JNI IDは保持中のclass参照が有効な間にしか使用しない。
 fn add_to_list(
     env: &mut JNIEnv<'_>,
     list: &JObject<'_>,
     value: &JObject<'_>,
+    add: JMethodID,
 ) -> Result<(), SiJniFailure> {
-    jni_result(env.call_method(
-        list,
-        "add",
-        "(Ljava/lang/Object;)Z",
-        &[JValue::Object(value)],
-    ))?;
+    // SAFETY: addは同一処理内でjava/util/ArrayListから取得した
+    // (Ljava/lang/Object;)Zであり、classローカル参照の寿命内でのみ使う。
+    unsafe {
+        jni_result(env.call_method_unchecked(
+            list,
+            add,
+            ReturnType::Primitive(Primitive::Boolean),
+            &[JValue::Object(value).as_jni()],
+        ))?;
+    }
     Ok(())
 }
 
@@ -112,11 +120,14 @@ fn object_list<'local, T>(
     mut build: impl FnMut(&mut JNIEnv<'local>, &T) -> Result<JObject<'local>, SiJniFailure>,
 ) -> Result<JObject<'local>, SiJniFailure> {
     let list = new_list(env)?;
+    let class = jni_result(env.find_class("java/util/ArrayList"))?;
+    let add = jni_result(env.get_method_id(&class, "add", "(Ljava/lang/Object;)Z"))?;
     for value in values {
         let child = build(env, value)?;
-        add_to_list(env, &list, &child)?;
+        add_to_list(env, &list, &child, add)?;
         jni_result(env.delete_local_ref(child))?;
     }
+    jni_result(env.delete_local_ref(class))?;
     Ok(list)
 }
 
@@ -132,11 +143,14 @@ fn int_list<'local>(
     values: &[i32],
 ) -> Result<JObject<'local>, SiJniFailure> {
     let list = new_list(env)?;
+    let class = jni_result(env.find_class("java/util/ArrayList"))?;
+    let add = jni_result(env.get_method_id(&class, "add", "(Ljava/lang/Object;)Z"))?;
     for value in values {
         let child = boxed_int(env, Some(*value))?;
-        add_to_list(env, &list, &child)?;
+        add_to_list(env, &list, &child, add)?;
         jni_result(env.delete_local_ref(child))?;
     }
+    jni_result(env.delete_local_ref(class))?;
     Ok(list)
 }
 

@@ -74,6 +74,9 @@ class MaleicacidLiveSession(
     private var streamVolume: Float = 1.0f
     private var playbackState: PlaybackStartState = PlaybackStartState.Idle
 
+    // 同時に一件の再開予約だけを保持し、取消・実行後は後の障害を受け付ける。
+    private var playbackRetryTask: Runnable? = null
+
     // セクション更新ごとの重複ログを抑える診断用の最終出力値.判定の正本ではない。
     private var lastPlaybackGateDiagnostic: String? = null
     private var latestLiveSnapshot: com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot? = null
@@ -270,10 +273,11 @@ class MaleicacidLiveSession(
             }.getOrDefault(false)
 
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
+        cancelPlaybackRetry()
         this.surface = surface
         tunerController.setSurface(surface)
         tracePlaybackGate(if (surface == null) "SURFACE_DETACHED" else "SURFACE_ATTACHED")
-        if (surface == null) {
+        if (surface?.isValid != true) {
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
@@ -416,6 +420,7 @@ class MaleicacidLiveSession(
         aribSiEngine.reset()
         sectionIngestController.resetForTune()
         playbackState = PlaybackStartState.Idle
+        cancelPlaybackRetry()
         currentService = null
         currentRatingProfile = AribRatingMapper.BroadcastProfile.UNRESOLVED
         currentGeneration = 0L
@@ -483,7 +488,7 @@ class MaleicacidLiveSession(
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount", "TooGenericExceptionCaught")
+    @Suppress("CyclomaticComplexMethod", "ComplexCondition", "LongMethod", "MaxLineLength", "ReturnCount", "TooGenericExceptionCaught")
     private fun refreshDynamicSiAndCasFilters() {
         val serviceKey = currentService ?: return
         val previouslyPending = initialLiveSiPending(currentServicePolicy())
@@ -518,6 +523,7 @@ class MaleicacidLiveSession(
             try {
                 tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, currentGeneration, decision.casDecisionReady)
             } catch (failure: Exception) {
+                cancelPlaybackRetry()
                 playbackState = PlaybackStartState.Stopped
                 try {
                     SectionFilterPolicy.completeCleanup(
@@ -538,19 +544,17 @@ class MaleicacidLiveSession(
                 "CAS_FACTS_PENDING state=${decision.state} registrationReady=${decision.registrationReady} " +
                     "reasons=${decision.reasons}",
             )
-            playbackState = PlaybackStartState.Stopped
-            SectionFilterPolicy.completeCleanup(
-                { beginCaptionPresentationGeneration(-1L, false) },
-                {
-                    notifyVideoUnavailable(
-                        if (decision.registrationReady) {
-                            TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN
-                        } else {
-                            TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN
-                        },
-                    )
-                },
-            )
+            // 情報収集中はCAS故障ではない。再生中だけ停止してbufferingへ遷移する。
+            if (playbackState is PlaybackStartState.Started ||
+                playbackState is PlaybackStartState.WaitingFirstOutput ||
+                playbackState is PlaybackStartState.Starting || playbackRetryTask != null
+            ) {
+                cancelPlaybackRetry()
+                playbackState = PlaybackStartState.Stopped
+                // ControllerのCAS更新が既にpipelineを停止しているため、世代を二重に進めない。
+                beginCaptionPresentationGeneration(-1L, false)
+                notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING)
+            }
         }
         if (decision.registrationReady) {
             publishLiveProgramsForCurrentService()
@@ -558,22 +562,29 @@ class MaleicacidLiveSession(
         }
         if (!decision.casDecisionReady) return
         val casLinkageReady = currentCasLinkageReady()
-        if (casResult.diagnostics.any { it.state == CasController.State.ERROR } ||
-            !decision.livePlaybackEligible(casLinkageReady)
-        ) {
-            // ECM本文・鍵・資格情報を記録せず、失敗境界だけを特定する。
-            val casErrors =
-                casResult.diagnostics
-                    .filter { it.state == CasController.State.ERROR }
-                    .map { "${it.errorCode}:system=${it.caSystemId}:pid=${it.pid?.value}" }
+        // 接続待ちと実際のCAS失敗を区別する。未準備をCAS_UNKNOWNへ昇格させない。
+        val casErrors =
+            casResult.diagnostics
+                .filter { it.state == CasController.State.ERROR }
+                .map { "${it.errorCode}:system=${it.caSystemId}:pid=${it.pid?.value}" }
+        val casUnavailableReason = casGateUnavailableReason(decision, casLinkageReady, casErrors.isNotEmpty())
+        if (casUnavailableReason != null) {
             tracePlaybackGate(
-                "CAS_NOT_ELIGIBLE requiresCas=${decision.requiresCas} linkageReady=$casLinkageReady " +
+                "CAS_GATE_${if (casErrors.isEmpty()) "PENDING" else "ERROR"} " +
+                    "requiresCas=${decision.requiresCas} linkageReady=$casLinkageReady " +
                     "reasons=${decision.reasons} casErrors=$casErrors",
             )
-            playbackState = PlaybackStartState.Stopped
-            tunerController.stopPlayback()
-            beginCaptionPresentationGeneration(-1L, false)
-            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
+            val wasActive =
+                playbackState is PlaybackStartState.Started ||
+                    playbackState is PlaybackStartState.WaitingFirstOutput ||
+                    playbackState is PlaybackStartState.Starting || playbackRetryTask != null
+            if (wasActive) {
+                cancelPlaybackRetry()
+                playbackState = PlaybackStartState.Stopped
+                tunerController.stopPlayback()
+                beginCaptionPresentationGeneration(-1L, false)
+            }
+            if (wasActive || casErrors.isNotEmpty()) notifyVideoUnavailable(casUnavailableReason)
             return
         }
         if (service != null) {
@@ -608,6 +619,7 @@ class MaleicacidLiveSession(
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount")
     private fun maybeStartPlayback(service: AribService): Boolean {
+        if (releaseOnce.get() || frontendSignalUnavailable || playbackRetryTask != null) return false
         val servicePolicy = currentServicePolicy()
         val casLinkageReady = currentCasLinkageReady()
         if (!servicePolicy.livePlaybackEligible(casLinkageReady)) {
@@ -666,6 +678,7 @@ class MaleicacidLiveSession(
                 "UNSUPPORTED_AV_SELECTION videoType=${selection.video?.streamType} " +
                     "audioType=${selection.audio?.streamType} audioOnly=$audioOnly",
             )
+            cancelPlaybackRetry()
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
@@ -699,6 +712,7 @@ class MaleicacidLiveSession(
                 "audioPid=${selection.audio?.elementaryPid} audioType=${selection.audio?.streamType} " +
                 "requiresCas=${servicePolicy.requiresCas}",
         )
+        cancelPlaybackRetry()
         playbackState = PlaybackStartState.Starting(signature)
         val result = tunerController.startPlayback(selection, servicePolicy.requiresCas, currentGeneration)
         val next =
@@ -795,7 +809,7 @@ class MaleicacidLiveSession(
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount")
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount", "NestedBlockDepth")
     private fun onSelectTrackOnSessionExecutor(
         type: Int,
         trackId: String?,
@@ -852,6 +866,11 @@ class MaleicacidLiveSession(
                     commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
                 }
                 if (switched?.switchedAudio == true) {
+                    if (switched.generation < 0L) {
+                        (playbackState as? PlaybackStartState.Started)?.let { current ->
+                            updatePlaybackStartState(current.copy(signature = signature))
+                        }
+                    }
                     notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
                     true
                 } else {
@@ -1137,10 +1156,7 @@ class MaleicacidLiveSession(
         acceptPlaybackGenerationRestart(
             playbackState,
             restart,
-            accept = { next ->
-                if (restart.videoOnly) audioFallbackDisabled = true
-                updatePlaybackStartState(next)
-            },
+            accept = ::updatePlaybackStartState,
             notifyUnavailable = { notifyVideoUnavailable(it) },
         )
     }
@@ -1148,6 +1164,7 @@ class MaleicacidLiveSession(
     private fun handleTunerResourceLost(lostTuneGeneration: Long) {
         if (lostTuneGeneration != currentGeneration) return
         frontendSignalUnavailable = false
+        cancelPlaybackRetry()
         playbackState = PlaybackStartState.Stopped
         beginCaptionPresentationGeneration(-1L, false)
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
@@ -1161,6 +1178,7 @@ class MaleicacidLiveSession(
         when (event) {
             OnTuneEventListener.SIGNAL_NO_SIGNAL, OnTuneEventListener.SIGNAL_LOST_LOCK -> {
                 frontendSignalUnavailable = true
+                cancelPlaybackRetry()
                 playbackState = PlaybackStartState.Stopped
                 tunerController.stopPlayback()
                 beginCaptionPresentationGeneration(-1L, false)
@@ -1177,7 +1195,7 @@ class MaleicacidLiveSession(
     }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("ReturnCount")
+    @Suppress("ReturnCount", "LongMethod", "CyclomaticComplexMethod")
     private fun handlePlaybackUnavailable(reason: PlaybackPipeline.PlaybackUnavailable) {
         if (!PlaybackStartTransitions.acceptsUnavailable(playbackState, reason.generation)) {
             android.util.Log.w(
@@ -1186,7 +1204,13 @@ class MaleicacidLiveSession(
             )
             return
         }
+        android.util.Log.w(
+            com.maleicacid.tvinput.common.LogTags.TIS,
+            "PLAYBACK_UNAVAILABLE_ACCEPTED sessionId=$sessionId generation=${reason.generation} " +
+                "reason=${reason.reason} detail=${reason.detail}",
+        )
         if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED) {
+            cancelPlaybackRetry()
             playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
             beginCaptionPresentationGeneration(-1L, false)
             notifyVideoUnavailable(mapUnavailableReason(reason))
@@ -1217,13 +1241,20 @@ class MaleicacidLiveSession(
             return
         }
         // ECM失敗でpipelineが停止済みなら、直後の復旧通知が最新readyを観測しても同じ署名を再開できる。
-        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY) {
+        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY ||
+            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_RESOURCES_RECLAIMED ||
+            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.SURFACE_NOT_SET
+        ) {
+            cancelPlaybackRetry()
             playbackState = PlaybackStartState.Stopped
         }
+        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FALLBACK_REQUIRED) {
+            audioFallbackDisabled = true
+        }
         val videoStartupFailed =
-            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
+            isRecoverablePlaybackFailure(reason.reason) ||
                 reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_CODEC_ERROR ||
-                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT ||
+                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM ||
                 reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_FILTER_NOT_STARTED
         if (videoStartupFailed) {
             val signature = PlaybackStartTransitions.signature(playbackState)
@@ -1236,10 +1267,55 @@ class MaleicacidLiveSession(
             }
         }
         notifyVideoUnavailable(mapUnavailableReason(reason))
+        scheduleRecoverablePlaybackRetry(reason)
+    }
+
+    private fun cancelPlaybackRetry() {
+        playbackRetryTask?.let(unblockTimerHandler::removeCallbacks)
+        playbackRetryTask = null
+    }
+
+    // 同じ再生世代と回復権限の照合を一つの境界で完結する。
+    @Suppress("ComplexCondition", "ReturnCount")
+    private fun scheduleRecoverablePlaybackRetry(reason: PlaybackPipeline.PlaybackUnavailable) {
+        val failed = playbackState as? PlaybackStartState.Failed ?: return
+        // 映像Surfaceは失敗した再生世代に映像がある場合だけ再試行の前提とする。
+        if (!isRecoverablePlaybackFailure(reason.reason) || releaseOnce.get() ||
+            frontendSignalUnavailable || (failed.signature.videoPid != null && surface?.isValid != true)
+        ) {
+            return
+        }
+        if (failed.pipelineGeneration != reason.generation || playbackRetryTask != null) return
+        val tuneGeneration = currentGeneration
+        // 予約を消費してから通常の開始入口へ戻る。過去の復旧回数は開始条件にしない。
+        val task =
+            object : Runnable {
+                override fun run() {
+                    enqueueSessionAction {
+                        if (playbackRetryTask !== this) return@enqueueSessionAction
+                        playbackRetryTask = null
+                        val current = playbackState as? PlaybackStartState.Failed ?: return@enqueueSessionAction
+                        if (releaseOnce.get() || tuneGeneration != currentGeneration ||
+                            current != failed || (current.signature.videoPid != null && surface?.isValid != true) ||
+                            frontendSignalUnavailable
+                        ) {
+                            return@enqueueSessionAction
+                        }
+                        playbackState = PlaybackStartState.Idle
+                        latestService?.let(::maybeStartPlayback)
+                    }
+                }
+            }
+        playbackRetryTask = task
+        if (!unblockTimerHandler.postDelayed(task, RECOVERABLE_PLAYBACK_RETRY_DELAY_MS)) {
+            playbackRetryTask = null
+            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "再生再試行timerの投入に失敗しました")
+        }
     }
 
     private fun stopPlaybackForBlockedContent(blocked: BlockedContent) {
         notifyContentBlocked(blocked.rating)
+        cancelPlaybackRetry()
         playbackState = PlaybackStartState.Stopped
         tunerController.stopPlayback()
         beginCaptionPresentationGeneration(-1L, false)
@@ -1630,6 +1706,7 @@ class MaleicacidLiveSession(
         synchronized(tuneRequestLock) { pendingTuneUri = null }
         captionEnabled = false
         selectedSubtitleTrackId = null
+        cancelPlaybackRetry()
         playbackState = PlaybackStartState.Stopped
         val pending = releaseCleanup
         val cleanup = pending ?: ResourceCleanup().also { releaseCleanup = it }
@@ -1649,6 +1726,25 @@ class MaleicacidLiveSession(
     }
 
     companion object {
+        internal fun isRecoverablePlaybackFailure(reason: PlaybackPipeline.PlaybackUnavailableReason): Boolean =
+            reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT ||
+                reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
+                reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED ||
+                reason == PlaybackPipeline.PlaybackUnavailableReason.RECOVERABLE_CODEC_ERROR ||
+                reason == PlaybackPipeline.PlaybackUnavailableReason.COMPRESSED_INPUT_LOSS ||
+                reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FALLBACK_REQUIRED
+
+        internal fun casGateUnavailableReason(
+            decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision,
+            linkageReady: Boolean,
+            hasCasError: Boolean,
+        ): Int? =
+            when {
+                hasCasError -> TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN
+                !decision.livePlaybackEligible(linkageReady) -> TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING
+                else -> null
+            }
+
         internal fun initialLiveSiPending(decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision): Boolean =
             decision.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING
 
@@ -1668,17 +1764,7 @@ class MaleicacidLiveSession(
             notifyUnavailable: (Int) -> Unit,
         ) {
             if (!PlaybackStartTransitions.acceptsGeneration(current, restart.originGeneration)) return
-            val previousSignature = PlaybackStartTransitions.signature(current) ?: return
-            val signature =
-                if (restart.videoOnly) {
-                    previousSignature.copy(
-                        audioPid = null,
-                        audioStreamType = null,
-                        audioConfiguration = null,
-                    )
-                } else {
-                    previousSignature
-                }
+            val signature = PlaybackStartTransitions.signature(current) ?: return
             val result = restart.result
             val next =
                 PlaybackStartTransitions.afterRestartResult(
@@ -1693,6 +1779,7 @@ class MaleicacidLiveSession(
 
         private const val ENABLE_CAS_ORCHESTRATION = true
         private const val SESSION_CONTROL_WAIT_MS = 1_500L
+        private const val RECOVERABLE_PLAYBACK_RETRY_DELAY_MS = 300L
         private const val SESSION_MAX_PENDING_DATA_TASKS = 64
         const val ACTION_SET_DUAL_MONO_PRESENTATION = "com.maleicacid.tvinput.tis.action.SET_DUAL_MONO_PRESENTATION"
         const val EXTRA_DUAL_MONO_PRESENTATION = "presentation"

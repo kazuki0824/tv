@@ -32,7 +32,6 @@ import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.common.CaptionTimestamp
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.PesPts90k
-import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -54,6 +53,13 @@ class PlaybackPipeline(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val codecCallbackThread = HandlerThread("maleicacid-codec-$inputId").apply { start() }
     private val codecCallbackHandler = Handler(codecCallbackThread.looper)
+
+    // 映像のnative入力・出力待機をplayback ownerとCodec callback配送の双方から切り離す。
+    private val videoRenderThread = HandlerThread("maleicacid-video-render-$inputId").apply { start() }
+    private val videoRenderHandler = Handler(videoRenderThread.looper)
+
+    // render出力待機中だけ、停止要求から起床対象のMediaSyncを参照する。
+    private val blockedVideoOutputSync = AtomicReference<MediaSync?>(null)
     private var surface: Surface? = null
     private var streamVolume: Float = 1.0f
 
@@ -75,6 +81,7 @@ class PlaybackPipeline(
     private var videoDecoder: VideoDecoderPipeline? = null
     private var audioDecoder: AudioDecoderPipeline? = null
     private var mediaSync: MediaSync? = null
+    private var mediaSyncReleasePending = false
     private var mediaSyncInputSurface: Surface? = null
     private var audioTrack: AudioTrack? = null
     private var audioRoutingListener: android.media.AudioRouting.OnRoutingChangedListener? = null
@@ -96,6 +103,7 @@ class PlaybackPipeline(
     private var nextAudioBufferId = 0
     private var audioOutputBackpressureStartedAtMs: Long? = null
     private val videoAvailableNotified = AtomicBoolean(false)
+    private var videoOutputStallTask: Runnable? = null
     private var oversizedSamplesDropped: Int = 0
     private var malformedSamplesDropped: Int = 0
     private var decoderBackpressureDrops: Int = 0
@@ -104,6 +112,23 @@ class PlaybackPipeline(
     private val resourceCleanup = ResourceCleanup()
     private val dataPathProgress = PlaybackDataPathProgress()
     private var resourceActivityReported = false
+
+    private data class RenderSubmission(
+        val codec: MediaCodec,
+        val index: Int,
+        val completed: java.util.concurrent.CompletableFuture<RuntimeException?>,
+    )
+
+    private data class InputSubmission(
+        val codec: MediaCodec,
+        val index: Int,
+        val sample: MediaSample,
+        val completed: java.util.concurrent.CompletableFuture<RuntimeException?> =
+            java.util.concurrent.CompletableFuture(),
+        // workerが完了通知前に設定し、ownerはFuture完了後にだけ読む。
+        var queued: Boolean = false,
+        var queueDurationNs: Long = 0L,
+    )
 
     private enum class VideoAvailabilityMode {
         MEDIA_SYNC_FINAL_OUTPUT_EXACT,
@@ -117,6 +142,10 @@ class PlaybackPipeline(
         AUDIO_FILTER_NOT_STARTED,
         VIDEO_OUTPUT_RENDER_FAILED,
         VIDEO_CODEC_ERROR,
+        RECOVERABLE_CODEC_ERROR,
+        CODEC_RESOURCES_RECLAIMED,
+        COMPRESSED_INPUT_LOSS,
+        AUDIO_FALLBACK_REQUIRED,
         PLAYBACK_RECOVERY_FAILED,
         CODEC_CONFIG_TIMEOUT,
         FIRST_FRAME_TIMEOUT,
@@ -164,7 +193,6 @@ class PlaybackPipeline(
     data class PlaybackGenerationRestart(
         val originGeneration: Long,
         val result: StartResult,
-        val videoOnly: Boolean = false,
     )
 
     enum class DualMonoPresentation { MAIN, SUB, MAIN_SUB }
@@ -224,6 +252,11 @@ class PlaybackPipeline(
         val armedAtNanoTime: Long,
     )
 
+    private data class PendingVideoOutput(
+        val index: Int,
+        val presentationTimeUs: Long,
+    )
+
     private data class AudioOutput(
         val codec: MediaCodec,
         val index: Int,
@@ -269,6 +302,7 @@ class PlaybackPipeline(
     // Frameworkのcallback lock内では配送だけを行い、ownerやpermitを待たない。
     private val filterCallbackExecutor = java.util.concurrent.Executor { task -> task.run() }
 
+    @Suppress("MagicNumber", "MaxLineLength")
     private fun enqueuePlaybackFilterEvents(
         events: Array<FilterEvent>,
         onCapacity: () -> Unit,
@@ -283,17 +317,46 @@ class PlaybackPipeline(
                     else -> 0L
                 }
             }
+        val requestedSlots = 1L + events.size + (payloadBytes + KIB - 1) / KIB
+        // 単一合法最大eventの会計ヘッダーは本来のpayload予約と同時占有しない。
+        // 複数eventをまとめた過大callbackは丸めずに容量拒否する。
         val slots =
-            (1L + events.size + (payloadBytes + KIB - 1) / KIB)
-                .coerceAtMost(AV_FILTER_BUFFER_BYTES / KIB + 1)
-                .toInt()
+            if (events.size == 1 && payloadBytes == AV_FILTER_BUFFER_BYTES) {
+                (AV_FILTER_BUFFER_BYTES / KIB).toInt()
+            } else {
+                requestedSlots.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            }
+        // 入口ではcallback/ownerを待たず、DEBUG採取時だけ実際のowner待ち時間を測る。
+        val submittedAtNs = if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) System.nanoTime() else 0L
         executor.executeCallback(
             isReleased = released::get,
             onFailure = ::handleSubmissionFailure,
             dataSlots = slots,
-            onCapacity = onCapacity,
+            onCapacity = {
+                Log.w(
+                    LogTags.TIS,
+                    "PLAYBACK_CALLBACK_BUDGET_REJECT sessionId=$sessionId generation=$playbackGeneration " +
+                        "events=${events.size} payloadBytes=$payloadBytes reservedKiB=$slots",
+                )
+                onCapacity()
+            },
             onDiscard = { events.filterIsInstance<MediaEvent>().forEach(::releaseMediaEvent) },
-            action = action,
+            action = {
+                if (submittedAtNs != 0L) {
+                    val recorded =
+                        dataPathProgress.count(PlaybackDataPathProgress.Stage.MEDIA_EVENT, true) +
+                            dataPathProgress.count(PlaybackDataPathProgress.Stage.MEDIA_EVENT, false)
+                    if (recorded % 64L == 0L) {
+                        Log.d(
+                            LogTags.TIS,
+                            "PLAYBACK_CALLBACK_OWNER_LATENCY sessionId=$sessionId generation=$playbackGeneration " +
+                                "events=${events.size} payloadBytes=$payloadBytes reservedKiB=$slots " +
+                                "ownerWaitUs=${(System.nanoTime() - submittedAtNs) / 1_000L}",
+                        )
+                    }
+                }
+                action()
+            },
         )
     }
 
@@ -387,7 +450,6 @@ class PlaybackPipeline(
         selection: TunerController.AvStreamSelection,
     ): StartResult =
         runOnPlaybackExecutorBlocking {
-            codecRecoveryAttempted = false
             startRequestedPlayback(tuner, channel, selection)
         }
 
@@ -412,7 +474,10 @@ class PlaybackPipeline(
             )
         }
 
-    private var codecRecoveryAttempted = false
+    // 既存owner上の資源状態だけを読む。native問い合わせや別workerの完了待ちは行わない。
+    private fun decoderFlowSummary(): String =
+        "mediaSyncStarted=$mediaSyncStarted video={${videoDecoder?.flowSummary()}} " +
+            "audio={${audioDecoder?.flowSummary()}} outstandingAudioOutputs=${outstandingAudioOutputs.size}"
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
@@ -422,56 +487,65 @@ class PlaybackPipeline(
         isAudio: Boolean,
     ) {
         if (generation != playbackGeneration) return
-        val retryDelay =
-            codecRecoveryDelay(
-                error.errorCode == MediaCodec.CodecException.ERROR_RECLAIMED,
-                error.isRecoverable,
-                error.isTransient,
-                codecRecoveryAttempted,
-            )
-        val tuner = activeTuner
-        val channel = activeChannel
-        val selection = activeSelection
+        Log.w(
+            LogTags.TIS,
+            "PLAYBACK_CODEC_ERROR sessionId=$sessionId generation=$generation isAudio=$isAudio " +
+                "code=${error.errorCode} diagnostic=${error.diagnosticInfo} recoverable=${error.isRecoverable} " +
+                "transient=${error.isTransient} " +
+                "progress=${dataPathProgress.summary()}",
+        )
+        val reason =
+            when {
+                error.errorCode == MediaCodec.CodecException.ERROR_RECLAIMED -> {
+                    PlaybackUnavailableReason.CODEC_RESOURCES_RECLAIMED
+                }
 
-        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-        @Suppress("MaxLineLength")
-        fun reportUnrecoverableCodecError() {
-            completePlaybackFailureAction(generation, onVideoUnavailable) {
-                if (isAudio) {
+                error.isRecoverable || error.isTransient -> {
+                    PlaybackUnavailableReason.RECOVERABLE_CODEC_ERROR
+                }
+
+                isAudio -> {
                     handleAudioFailure(
                         PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
                         error.diagnosticInfo,
-                        channel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO,
+                        activeChannel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO,
                     )
-                } else {
-                    stopOnPlaybackExecutor()
-                    onVideoUnavailable(PlaybackUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.diagnosticInfo, generation))
+                    return
+                }
+
+                else -> {
+                    PlaybackUnavailableReason.VIDEO_CODEC_ERROR
                 }
             }
-        }
-        if (retryDelay == null) {
-            reportUnrecoverableCodecError()
-            return
-        }
-        if (tuner == null || channel == null || selection == null) {
-            reportUnrecoverableCodecError()
-            return
-        }
-        codecRecoveryAttempted = true
-        recoverCodecGeneration(
-            originGeneration = generation,
-            stop = {
-                stopOnPlaybackExecutor()
-                playbackGeneration
-            },
-            schedule = { retry -> mainHandler.postDelayed({ enqueuePlaybackAction(retry) }, retryDelay) },
-            isCurrent = { it == playbackGeneration },
-            restart = {
-                val restarted = startOnPlaybackExecutor(tuner, channel, selection)
-                onPlaybackGenerationRestarted(PlaybackGenerationRestart(generation, restarted))
-            },
-            onUnavailable = onVideoUnavailable,
+        failPlayback(generation, reason, error.diagnosticInfo)
+    }
+
+    // 圧縮入力欠落後は旧Codecの参照pictureやMediaSyncの時刻状態を継続しない。
+    // 停止完了だけを元世代へ通知し、再開判断と予約はSessionに委ねる。
+    private fun stopAfterCompressedInputLoss(
+        generation: Long,
+        detail: String,
+    ) {
+        if (generation != playbackGeneration || released.get()) return
+        Log.w(
+            LogTags.TIS,
+            "PLAYBACK_INPUT_LOSS inputId=$inputId sessionId=$sessionId generation=$generation " +
+                "detail=$detail progress=${dataPathProgress.summary()} ${decoderFlowSummary()}",
         )
+        failPlayback(generation, PlaybackUnavailableReason.COMPRESSED_INPUT_LOSS, detail)
+    }
+
+    // 解放が完了しない限り再開可能な通知を出さない。通知には停止前の世代を保持する。
+    private fun failPlayback(
+        generation: Long,
+        reason: PlaybackUnavailableReason,
+        detail: String,
+    ) {
+        if (generation != playbackGeneration) return
+        completePlaybackFailureAction(generation, onVideoUnavailable) {
+            stopOnPlaybackExecutor()
+            onVideoUnavailable(PlaybackUnavailable(reason, detail, generation))
+        }
     }
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
@@ -485,7 +559,8 @@ class PlaybackPipeline(
         channel: TunerController.ResolvedChannel,
         selection: TunerController.AvStreamSelection,
     ): StartResult {
-        stopOnPlaybackExecutor()
+        // 障害後の停止完了通知から来た通常startでは、旧世代を二重に停止しない。
+        if (hasActivePlaybackResources()) stopOnPlaybackExecutor()
         val startGeneration = nextPlaybackGenerationOrFence()
         playbackGeneration = startGeneration
         dataPathProgress.reset()
@@ -543,7 +618,7 @@ class PlaybackPipeline(
                     requireNotNull(mediaSyncInputSurface),
                     startGeneration,
                 ) { reason, detail ->
-                    emitUnavailableForGeneration(startGeneration, reason, detail)
+                    failPlayback(startGeneration, reason, detail)
                 }.also { videoDecoder = it }
             } else {
                 null
@@ -660,7 +735,7 @@ class PlaybackPipeline(
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("MagicNumber", "MaxLineLength", "ReturnCount")
+    @Suppress("MagicNumber", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod", "ComplexCondition")
     private fun switchAudioOnPlaybackExecutor(
         tuner: Tuner,
         selection: TunerController.AvStreamSelection,
@@ -670,6 +745,36 @@ class PlaybackPipeline(
         AudioCodecKind.fromStreamType(audio.streamType) ?: run {
             emitUnavailable(PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM, "未対応 audio stream_type=0x${audio.streamType.toString(16)}")
             return AudioSwitchResult(false, listOf("audio stream_type 未対応"))
+        }
+        val previous = activeSelection
+        val sameVideoClock =
+            previous != null && previous.serviceKey == selection.serviceKey &&
+                previous.pcrPid == selection.pcrPid && previous.video == selection.video
+        val sameAudioFormat =
+            previous?.audio?.streamType == audio.streamType &&
+                previous.audio.codecFacts == audio.codecFacts &&
+                previous.audioChannelConfiguration == selection.audioChannelConfiguration &&
+                previous.audioDualMono == selection.audioDualMono && previous.dualMonoPresentation == selection.dualMonoPresentation
+        if (sameVideoClock && sameAudioFormat && audioDecoder != null) {
+            if (previous?.audio?.elementaryPid == audio.elementaryPid && audioFilter != null) {
+                return AudioSwitchResult(true, listOf("AUDIO_SELECTION_UNCHANGED"))
+            }
+            // 同一クロック・同一構成ならDecoder/AudioTrack/MediaSyncは継続してPID入力だけ替える。
+            val oldFilter = audioFilter
+            audioFilter = null
+            return runCatching {
+                audioDecoder?.discardPendingInput()
+                resourceCleanup.retry()
+                closeFilter(oldFilter)
+                resourceCleanup.requireComplete()
+                createAndStartAvFilter(tuner, audio, isAudio = true).getOrThrow()
+                // 開始成功した実入力と同時に選択を確定する。失敗時は同じ選択から再取得できる。
+                activeSelection = selection
+                AudioSwitchResult(true, listOf("AUDIO_PID_SWITCHED_VIDEO_PRESERVED"))
+            }.getOrElse { error ->
+                logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "音声PID切替失敗: ${error.message}")
+                AudioSwitchResult(false, listOf("AUDIO_PID_SWITCH_FAILED: ${error.message}"))
+            }
         }
         val restarted = startRequestedPlayback(tuner, channel, selection)
         return AudioSwitchResult(
@@ -697,6 +802,11 @@ class PlaybackPipeline(
             val pendingCapacityLoss = AtomicLong(-1L)
             // MediaEventは個別に解放できる。flush実行中は閉じ、成功後だけ次の受付へ進む。
             val inputIdentity = AtomicReference(Any())
+            // 同じ入力世代で重複するOVERFLOW通知は、次の有効sampleまで一度のflushへ集約する。
+            val overflowRecoveryActive = AtomicBoolean(false)
+            (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.onInputAccepted = {
+                overflowRecoveryActive.set(false)
+            }
 
             fun reportCapacityLoss(source: Filter) {
                 val rejectedAt = SystemClock.elapsedRealtime()
@@ -725,7 +835,7 @@ class PlaybackPipeline(
                     object : FilterCallback {
                         // 対象外入力の継続と処理終了を各発生点で明示し、追加の終了状態を持たない。
                         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-                        @Suppress("LoopWithTooManyJumpStatements", "MaxLineLength")
+                        @Suppress("LoopWithTooManyJumpStatements", "MaxLineLength", "LongMethod")
                         override fun onFilterEvent(
                             filter: Filter,
                             events: Array<FilterEvent>,
@@ -746,16 +856,26 @@ class PlaybackPipeline(
                                             val event = events[nextEvent++]
                                             if (event is RestartEvent) {
                                                 if (inputIsCurrent()) {
-                                                    (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                                                    val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
+                                                    if (target?.hasConfiguredCodec() == true) {
+                                                        stopAfterCompressedInputLoss(
+                                                            filterGeneration,
+                                                            "RESTART_EVENT isAudio=$isAudio pid=$pidValue",
+                                                        )
+                                                    } else {
+                                                        target?.discardPendingInput()
+                                                    }
                                                 }
                                                 continue
                                             }
                                             if (event !is MediaEvent) continue
                                             var decoderOwnsEvent = false
+                                            var materializedSample: MediaSample? = null
                                             try {
                                                 if (!inputIsCurrent()) continue
                                                 dataPathProgress.record(PlaybackDataPathProgress.Stage.MEDIA_EVENT, isAudio)
                                                 val sample = sampleFromEvent(event, isAudio) ?: continue
+                                                materializedSample = sample
                                                 if (!inputIsCurrent()) continue
                                                 dataPathProgress.record(PlaybackDataPathProgress.Stage.VALID_SAMPLE, isAudio)
                                                 val target = (if (isAudio) targetAudioDecoder else targetVideoDecoder) ?: continue
@@ -763,7 +883,10 @@ class PlaybackPipeline(
                                                 decoderOwnsEvent = true
                                                 target.queue(sample)
                                             } finally {
-                                                if (!decoderOwnsEvent) releaseMediaEvent(event)
+                                                if (!decoderOwnsEvent) {
+                                                    val pending = materializedSample
+                                                    if (pending != null) releaseMediaSample(pending) else releaseMediaEvent(event)
+                                                }
                                             }
                                         }
                                     } finally {
@@ -792,28 +915,41 @@ class PlaybackPipeline(
                             status: Int,
                         ) {
                             if (!sourceIsCurrent(filter) || status and Filter.STATUS_OVERFLOW == 0) return
+                            if (!overflowRecoveryActive.compareAndSet(false, true)) return
                             enqueuePlaybackAction {
+                                if (!sourceIsCurrent(filter)) {
+                                    overflowRecoveryActive.set(false)
+                                    return@enqueuePlaybackAction
+                                }
                                 Log.d(
                                     LogTags.TIS,
                                     "AV filter 状態 inputId=$inputId pid=$pid isAudio=$isAudio status=$status",
                                 )
-                                if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
-                                    dataPathProgress.record(PlaybackDataPathProgress.Stage.OVERFLOW, isAudio)
-                                    inputIdentity.set(null)
-                                    (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
-                                    val result = filter.flush()
-                                    if (result == Tuner.RESULT_SUCCESS) {
-                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_SUCCEEDED, isAudio)
-                                        inputIdentity.set(Any())
-                                    } else {
-                                        dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_FAILED, isAudio)
-                                        emitUnavailableForGeneration(
-                                            filterGeneration,
-                                            PlaybackUnavailableReason.UNKNOWN,
-                                            "AV filterのflushに失敗しました result=$result " +
-                                                "progress=${dataPathProgress.summary()}",
-                                        )
-                                    }
+                                dataPathProgress.record(PlaybackDataPathProgress.Stage.OVERFLOW, isAudio)
+                                inputIdentity.set(null)
+                                val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
+                                if (target?.hasConfiguredCodec() == true) {
+                                    stopAfterCompressedInputLoss(
+                                        filterGeneration,
+                                        "FILTER_OVERFLOW isAudio=$isAudio pid=$pidValue status=$status",
+                                    )
+                                    return@enqueuePlaybackAction
+                                }
+                                target?.discardPendingInput()
+                                val result = filter.flush()
+                                if (result == Tuner.RESULT_SUCCESS) {
+                                    dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_SUCCEEDED, isAudio)
+                                    inputIdentity.set(Any())
+                                } else {
+                                    // 失敗後は受付を閉じたままにする。次のOVERFLOWでだけ再試行可能にする。
+                                    overflowRecoveryActive.set(false)
+                                    dataPathProgress.record(PlaybackDataPathProgress.Stage.FLUSH_FAILED, isAudio)
+                                    emitUnavailableForGeneration(
+                                        filterGeneration,
+                                        PlaybackUnavailableReason.UNKNOWN,
+                                        "AV filterのflushに失敗しました result=$result " +
+                                            "progress=${dataPathProgress.summary()}",
+                                    )
                                 }
                             }
                         }
@@ -907,7 +1043,7 @@ class PlaybackPipeline(
                     object : FilterCallback {
                         // 対象外入力の継続と処理終了を各発生点で明示し、追加の終了状態を持たない。
                         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-                        @Suppress("LoopWithTooManyJumpStatements", "MaxLineLength")
+                        @Suppress("LoopWithTooManyJumpStatements", "MaxLineLength", "LongMethod")
                         override fun onFilterEvent(
                             filter: Filter,
                             events: Array<FilterEvent>,
@@ -1003,12 +1139,23 @@ class PlaybackPipeline(
             filter
         }
 
+    @Suppress("MagicNumber", "MaxLineLength")
     private fun createMediaSync(
         outputSurface: Surface?,
         generation: Long,
     ): MediaSync? =
         runCatching {
+            if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                Log.d(LogTags.TIS, "PLAYBACK_SYNC_CREATE_BEGIN sessionId=$sessionId generation=$generation")
+            }
             val sync = MediaSync()
+            if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                Log.d(
+                    LogTags.TIS,
+                    "PLAYBACK_SYNC_CREATE_END sessionId=$sessionId generation=$generation " +
+                        "sync=${System.identityHashCode(sync)}",
+                )
+            }
             mediaSync = sync
             nextAudioBufferId = 0
             nextAvailabilityArmSequence = 1L
@@ -1019,7 +1166,19 @@ class PlaybackPipeline(
                         audioBuffer: ByteBuffer,
                         bufferId: Int,
                     ) {
-                        enqueuePlaybackAction { onAudioBufferConsumedOnPlaybackExecutor(sync, generation, bufferId) }
+                        val callbackAtNs = if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) System.nanoTime() else 0L
+                        enqueuePlaybackAction {
+                            onAudioBufferConsumedOnPlaybackExecutor(sync, generation, bufferId)
+                            val completed = dataPathProgress.count(PlaybackDataPathProgress.Stage.MEDIASYNC_AUDIO_CONSUMED, true)
+                            if (callbackAtNs != 0L && completed > 0L && completed % 32L == 0L) {
+                                Log.d(
+                                    LogTags.TIS,
+                                    "PLAYBACK_MEDIASYNC_AUDIO_CONSUMED sessionId=$sessionId generation=$generation " +
+                                        "bufferId=$bufferId ownerWaitUs=${(System.nanoTime() - callbackAtNs) / 1_000L} " +
+                                        "outstanding=${outstandingAudioOutputs.size}",
+                                )
+                            }
+                        }
                     }
                 },
                 codecCallbackHandler,
@@ -1056,6 +1215,7 @@ class PlaybackPipeline(
     private fun armVideoAvailability(
         sync: MediaSync,
         generation: Long,
+        resetAvailability: Boolean = true,
     ) {
         if (sync !== mediaSync || generation != playbackGeneration) return
         val arm =
@@ -1065,7 +1225,7 @@ class PlaybackPipeline(
                 armedAtNanoTime = System.nanoTime(),
             )
         waitingAvailabilityArm = arm
-        videoAvailableNotified.set(false)
+        if (resetAvailability) videoAvailableNotified.set(false)
         val exactArmed =
             MediaSyncFirstOutputBridge.isAvailable() &&
                 MediaSyncFirstOutputBridge.arm(
@@ -1081,6 +1241,11 @@ class PlaybackPipeline(
             } else {
                 VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT
             }
+        if (!exactArmed) {
+            videoOutputStallTask?.let(mainHandler::removeCallbacks)
+            videoOutputStallTask = null
+            Log.w(LogTags.TIS, "MEDIASYNC_COMPAT_APPROXIMATE inputId=$inputId generation=$generation")
+        }
         Log.i(
             LogTags.TIS,
             "video availability mode=$videoAvailabilityMode inputId=$inputId generation=$generation armSequence=${arm.armSequence}",
@@ -1106,29 +1271,29 @@ class PlaybackPipeline(
         }
         waitingAvailabilityArm = null
         notifyVideoAvailable(generation)
+        armVideoOutputStallWatchdog(generation)
+        // one-shot callbackを同じowner/世代で再armし、次の最終queue成功を観測する。
+        armVideoAvailability(sync, generation, resetAvailability = false)
     }
 
-    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("ReturnCount")
+    // CodecからMediaSync入力への進捗だけを示す近似互換経路。最終出力watchdogは開始しない。
+    @Suppress("ComplexCondition", "ReturnCount")
     private fun commitCompatibilityVideoAvailability(
         generation: Long,
-        frameNanoTime: Long,
+        callbackReceivedNanoTime: Long,
     ) {
         if (videoAvailabilityMode != VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT) return
         val arm = waitingAvailabilityArm ?: return
-        val invalidCompatibilityOutputEvent =
-            generation != playbackGeneration || arm.generation != generation || frameNanoTime < arm.armedAtNanoTime ||
-                mediaSyncSurfaceFailed ||
-                surface?.isValid != true
-        if (invalidCompatibilityOutputEvent) {
+        if (generation != playbackGeneration || arm.generation != generation ||
+            callbackReceivedNanoTime < arm.armedAtNanoTime || mediaSyncSurfaceFailed || surface?.isValid != true
+        ) {
             return
         }
         waitingAvailabilityArm = null
         notifyVideoAvailable(generation)
     }
 
-    // 既存の通知一回性確定点だけから成功時の進捗を記録する。
-    // compatibility modeでは入力Surfaceへのframe callbackであり最終表示の確証ではない。
+    // modeごとの根拠を診断し、同じavailability ownerから一度だけ通知する。
     private fun notifyVideoAvailable(generation: Long) {
         if (!videoAvailableNotified.compareAndSet(false, true)) return
         Log.i(
@@ -1145,7 +1310,11 @@ class PlaybackPipeline(
         bufferId: Int,
     ) {
         if (sync !== mediaSync || generation != playbackGeneration) return
+        val wasOutstanding = outstandingAudioOutputs.containsKey(bufferId)
         releaseAudioOutput(bufferId)
+        if (wasOutstanding && !outstandingAudioOutputs.containsKey(bufferId)) {
+            dataPathProgress.record(PlaybackDataPathProgress.Stage.MEDIASYNC_AUDIO_CONSUMED, true)
+        }
         if (outstandingAudioOutputs.isEmpty()) {
             audioOutputBackpressureStartedAtMs = null
         }
@@ -1178,7 +1347,7 @@ class PlaybackPipeline(
                 if (!videoPathExpected) return
                 mediaSyncSurfaceFailed = true
                 waitingAvailabilityArm = null
-                emitUnavailable(PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "MEDIASYNC_ERROR_SURFACE_FAIL extra=$extra")
+                failPlayback(generation, PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "MEDIASYNC_ERROR_SURFACE_FAIL extra=$extra")
             }
 
             MediaSync.MEDIASYNC_ERROR_AUDIOTRACK_FAIL -> {
@@ -1245,32 +1414,15 @@ class PlaybackPipeline(
         detail: String,
         audioOnly: Boolean,
     ) {
-        val originGeneration = playbackGeneration
-        val restartTuner = activeTuner
-        val restartChannel = activeChannel
-        val restartSelection = activeSelection
-        completePlaybackFailureAction(originGeneration, onVideoUnavailable) {
-            if (audioOnly) {
-                stopOnPlaybackExecutor()
-                onVideoUnavailable(PlaybackUnavailable(reason, detail, originGeneration))
-                return@completePlaybackFailureAction
+        val failure =
+            if (!audioOnly && activeSelection?.video != null) {
+                PlaybackUnavailableReason.AUDIO_FALLBACK_REQUIRED
+            } else if (audioOnly) {
+                reason
+            } else {
+                PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED
             }
-            logAudioUnavailable(reason, "$detail; recreating MediaSync generation for video-only fallback")
-            if (restartTuner == null || restartChannel == null || restartSelection?.video == null) {
-                stopOnPlaybackExecutor()
-                onVideoUnavailable(
-                    PlaybackUnavailable(
-                        PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED,
-                        "$detail; 映像のみの再起動contextを取得できません",
-                        originGeneration,
-                    ),
-                )
-                return@completePlaybackFailureAction
-            }
-            val restarted = startOnPlaybackExecutor(restartTuner, restartChannel, restartSelection.copy(audio = null))
-            onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted, videoOnly = true))
-            // 失敗StartResultの外部通知は、結果を受理して世代を更新するSessionが所有する。
-        }
+        failPlayback(playbackGeneration, failure, detail)
     }
 
     private fun onCompressedInputQueued(sample: MediaSample) {
@@ -1289,8 +1441,10 @@ class PlaybackPipeline(
         if (audioPathExpected && !audioInputQueued) return
         if (audioPathExpected && audioTrack == null) return
         runCatching { sync.setPlaybackParams(PlaybackParams().setSpeed(1.0f)) }
-            .onSuccess { mediaSyncStarted = true }
-            .onFailure { error ->
+            .onSuccess {
+                mediaSyncStarted = true
+                videoDecoder?.renderPendingOutputs()
+            }.onFailure { error ->
                 val reason =
                     if (videoPathExpected) {
                         PlaybackUnavailableReason.VIDEO_CODEC_ERROR
@@ -1313,14 +1467,48 @@ class PlaybackPipeline(
         mainHandler.postDelayed({
             enqueuePlaybackAction {
                 if (shouldTriggerFirstFrameTimeoutForTest(generation, playbackGeneration, videoAvailableNotified.get())) {
-                    emitUnavailable(
+                    failPlayback(
+                        generation,
                         PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
-                        "最初のフレーム待機が期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms progress=${dataPathProgress.summary()}",
+                        "初回映像callbackが期限を超過しました ${FIRST_FRAME_TIMEOUT_MS}ms mode=$videoAvailabilityMode " +
+                            "progress=${dataPathProgress.summary()}",
                     )
-                    stopOnPlaybackExecutor()
                 }
             }
         }, FIRST_FRAME_TIMEOUT_MS)
+    }
+
+    // 初回映像の成功だけでは継続再生を保証できない。最後の描画callbackを既存の再生世代で監視する。
+    @Suppress("ComplexCondition")
+    private fun armVideoOutputStallWatchdog(generation: Long) {
+        videoOutputStallTask?.let(mainHandler::removeCallbacks)
+        val timeout =
+            object : Runnable {
+                override fun run() {
+                    enqueuePlaybackAction {
+                        // 古いRunnableの実行開始と新しい描画通知の間にできる競合窓を閉じる。
+                        if (videoOutputStallTask !== this ||
+                            videoAvailabilityMode != VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT ||
+                            generation != playbackGeneration ||
+                            !videoAvailableNotified.get() ||
+                            !videoPathExpected
+                        ) {
+                            return@enqueuePlaybackAction
+                        }
+                        videoOutputStallTask = null
+                        failPlayback(
+                            generation,
+                            PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED,
+                            "映像描画callbackが継続期限を超過しました progress=${dataPathProgress.summary()}",
+                        )
+                    }
+                }
+            }
+        videoOutputStallTask = timeout
+        if (!mainHandler.postDelayed(timeout, VIDEO_OUTPUT_STALL_TIMEOUT_MS)) {
+            videoOutputStallTask = null
+            failPlayback(generation, PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED, "映像出力監視を予約できません")
+        }
     }
 
     private fun logAudioUnavailable(
@@ -1344,6 +1532,20 @@ class PlaybackPipeline(
         }
     }
 
+    private fun recycleLinearBlock(block: MediaCodec.LinearBlock) {
+        if (!resourceCleanup.release("MediaEvent LinearBlock") { block.recycle() }) {
+            handleSubmissionFailure(IllegalStateException("MediaEvent LinearBlockの返却が未完了です"))
+        }
+    }
+
+    private fun releaseMediaSample(sample: MediaSample) {
+        // eventとLinearBlockのFramework/native参照は別々に存在するため、両方を明示返却する。
+        SectionFilterPolicy.completeCleanup(
+            { releaseMediaEvent(sample.event) },
+            { recycleLinearBlock(sample.block) },
+        )
+    }
+
     private fun rejectSecureMediaEvent(isAudio: Boolean) {
         if (isAudio) {
             logAudioUnavailable(
@@ -1359,7 +1561,7 @@ class PlaybackPipeline(
     }
 
     // 入力・資源寿命を保ちながら、既存の入力拒否を発生点で返す。
-    @Suppress("LongMethod", "MaxLineLength", "ReturnCount")
+    @Suppress("LongMethod", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod")
     private fun sampleFromEvent(
         event: MediaEvent,
         isAudio: Boolean,
@@ -1394,37 +1596,45 @@ class PlaybackPipeline(
                 dataPathProgress.record(PlaybackDataPathProgress.Stage.MISSING_LINEAR_BLOCK, isAudio)
                 return null
             }
-        val capacity =
-            runCatching {
-                block
-                    .map()
-                    .duplicate()
-                    .capacity()
-                    .toLong()
-            }.onFailure { Log.w(LogTags.TIS, "MediaEvent LinearBlock の map に失敗しました", it) }
-                .getOrNull() ?: return null
-        if (end > capacity) {
-            malformedSamplesDropped++
-            Log.w(LogTags.TIS, "MediaEvent が LinearBlock 範囲外です offset=$offset length=$length capacity=$capacity")
-            return null
-        }
-        val rawPts = event.pts
-        if (!isAuthoritativePtsValid(rawPts)) {
-            malformedSamplesDropped++
-            val detail = "生成元が確定したMediaEventのPTSが不正です pts90k=$rawPts isAudio=$isAudio"
-            if (isAudio) {
-                Log.w(
-                    LogTags.TIS,
-                    "$detail; playback profile contract violated",
-                )
-            } else {
-                emitUnavailable(PlaybackUnavailableReason.INVALID_MEDIA_TIMESTAMP, detail)
+        var transferred = false
+        try {
+            val capacity =
+                runCatching {
+                    block
+                        .map()
+                        .duplicate()
+                        .capacity()
+                        .toLong()
+                }.onFailure { Log.w(LogTags.TIS, "MediaEvent LinearBlock の map に失敗しました", it) }
+                    .getOrNull() ?: return null
+            if (end > capacity) {
+                malformedSamplesDropped++
+                Log.w(LogTags.TIS, "MediaEvent が LinearBlock 範囲外です offset=$offset length=$length capacity=$capacity")
+                return null
             }
-            return null
+            val rawPts = event.pts
+            if (!isAuthoritativePtsValid(rawPts)) {
+                malformedSamplesDropped++
+                val detail = "生成元が確定したMediaEventのPTSが不正です pts90k=$rawPts isAudio=$isAudio"
+                if (isAudio) {
+                    Log.w(
+                        LogTags.TIS,
+                        "$detail; playback profile contract violated",
+                    )
+                } else {
+                    emitUnavailable(PlaybackUnavailableReason.INVALID_MEDIA_TIMESTAMP, detail)
+                }
+                return null
+            }
+            val track = if (isAudio) PtsTrack.AUDIO else PtsTrack.VIDEO
+            val presentationTimeUs = ptsEpochCoordinator.normalize(track, rawPts)
+            return MediaSample(event, block, offset.toInt(), length.toInt(), presentationTimeUs, isAudio).also {
+                transferred = true
+            }
+        } finally {
+            // sample構築に失敗した場合も、materializeしたLinearBlockのnative参照を残さない。
+            if (!transferred) recycleLinearBlock(block)
         }
-        val track = if (isAudio) PtsTrack.AUDIO else PtsTrack.VIDEO
-        val presentationTimeUs = ptsEpochCoordinator.normalize(track, rawPts)
-        return MediaSample(event, block, offset.toInt(), length.toInt(), presentationTimeUs, isAudio)
     }
 
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
@@ -1436,14 +1646,29 @@ class PlaybackPipeline(
 
         protected var codec: MediaCodec? = null
         private var decoderReleased = false
-        private val configBytes = ByteArrayOutputStream()
+        private val configurationProbe by lazy { CodecHeaderProbe(configurationProbeKind) }
         private val pendingSamples = java.util.ArrayDeque<MediaSample>()
         private val availableInputIndexes = java.util.ArrayDeque<Int>()
+
+        // Codec callbackがowner実行中に到着しても既存の入力index返却を先に消費する。
+        private val inboundCodecInputIndexes = java.util.concurrent.ConcurrentLinkedQueue<Pair<MediaCodec, Int>>()
+
+        // FrameworkのC2Buffer複製は元MediaEventの寿命を継承しない。入力返却まで同じdecoderが保持する。
+        private val queuedSamples = mutableMapOf<Int, MediaSample>()
+        private var inputSubmission: InputSubmission? = null
+        private val inputStopping = AtomicBoolean(false)
         protected abstract val budget: PlaybackBudget
+        protected abstract val configurationProbeKind: CodecHeaderProbe.Kind
         protected abstract val generation: Long
         private var startupDeadline: DecoderStartupDeadline? = null
         private var startupTimeout: Runnable? = null
         private var backpressureStartedAtMs: Long? = null
+        var onInputAccepted: () -> Unit = {}
+
+        open fun flowSummary(): String =
+            "pendingSamples=${pendingSamples.size} availableInputs=${availableInputIndexes.size} " +
+                "inboundInputCallbacks=${inboundCodecInputIndexes.size} queuedInputs=${queuedSamples.size} " +
+                "nativeInputPending=${hasPendingInputSubmission()}"
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
@@ -1459,24 +1684,13 @@ class PlaybackPipeline(
                         val detail =
                             "DECODER_STARTUP_TIMEOUT stage=$expired deadlineMs=${budget.decoderStartupDeadlineMs} " +
                                 "progress=${dataPathProgress.summary()}"
-                        if (this@DecoderPipeline is AudioDecoderPipeline) {
-                            handleAudioFailure(
-                                PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                                detail,
-                                activeChannel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO,
-                            )
-                        } else {
-                            val reason =
-                                if (expired ==
-                                    DecoderStartupDeadline.Stage.CONFIGURATION
-                                ) {
-                                    PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT
-                                } else {
-                                    PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT
-                                }
-                            emitUnavailableForGeneration(generation, reason, detail)
-                            stopOnPlaybackExecutor()
-                        }
+                        val reason =
+                            if (expired == DecoderStartupDeadline.Stage.CONFIGURATION) {
+                                PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT
+                            } else {
+                                PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT
+                            }
+                        failPlayback(generation, reason, detail)
                     }
                 }
             startupTimeout = timeout
@@ -1484,21 +1698,32 @@ class PlaybackPipeline(
         }
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-        @Suppress("TooGenericExceptionCaught")
+        @Suppress("TooGenericExceptionCaught", "ReturnCount")
         fun queue(sample: MediaSample) {
             try {
+                if (!prepareInputAdmission(sample)) return
                 if (sample.size > budget.singleEventLimitBytes) {
                     oversizedSamplesDropped++
-                    releaseMediaEvent(sample.event)
+                    releaseMediaSample(sample)
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
                     onSampleRejected("SAMPLE_TOO_LARGE size=${sample.size} limit=${budget.singleEventLimitBytes}")
+                    if (codec != null) {
+                        stopAfterCompressedInputLoss(
+                            generation,
+                            "SAMPLE_TOO_LARGE isAudio=${sample.isAudio} size=${sample.size}",
+                        )
+                    }
                     return
                 }
                 val queueBudget = if (codec == null) budget.startup else budget.pending
                 if (!withinQueueBudget(sample, queueBudget)) {
                     decoderBackpressureDrops++
                     dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
-                    releaseMediaEvent(sample.event)
+                    releaseMediaSample(sample)
+                    if (codec != null) {
+                        stopAfterCompressedInputLoss(generation, pendingInputDiagnostic(sample, queueBudget))
+                        return
+                    }
                     val nowMs = SystemClock.elapsedRealtime()
                     val startedAtMs = backpressureStartedAtMs ?: nowMs.also { backpressureStartedAtMs = it }
                     val deadlineMs =
@@ -1515,30 +1740,70 @@ class PlaybackPipeline(
                     onSampleRejected(reason)
                     if (backpressureDeadlineReached(startedAtMs, nowMs, deadlineMs)) {
                         onBackpressureDeadline(reason)
-                        close()
                     }
                     return
                 }
                 pendingSamples.addLast(sample)
+                onInputAccepted()
                 queueInternal(sample)
             } catch (e: RuntimeException) {
                 Log.w(LogTags.TIS, "decoder queue/drain に失敗しました", e)
                 onDecoderFailure(e)
-                close()
+            }
+        }
+
+        // 先行入力の完了処理が失敗した場合も、まだ受理していないsampleを返却する。
+        @Suppress("TooGenericExceptionCaught")
+        private fun prepareInputAdmission(sample: MediaSample): Boolean {
+            try {
+                drainIncomingCodecInputIndexes()
+            } catch (error: RuntimeException) {
+                releaseMediaSample(sample)
+                throw error
+            }
+            if (inputStopping.get() || generation != playbackGeneration) {
+                releaseMediaSample(sample)
+                return false
+            }
+            return true
+        }
+
+        private fun pendingInputDiagnostic(
+            sample: MediaSample,
+            queueBudget: QueueBudget,
+        ): String {
+            val pendingSpanUs =
+                timestampSpanUs(pendingSamples.map { it.presentationTimeUs } + sample.presentationTimeUs)
+            return "PENDING_QUEUE_FULL isAudio=${sample.isAudio} pendingSamples=${pendingSamples.size} " +
+                "pendingBytes=${pendingSamples.sumOf { it.size.toLong() }} pendingSpanUs=$pendingSpanUs " +
+                "incomingBytes=${sample.size} incomingPtsUs=${sample.presentationTimeUs} " +
+                "availableInputs=${availableInputIndexes.size} queuedInputs=${queuedSamples.size} budget=$queueBudget"
+        }
+
+        // 単一ownerのみがCodecの入力所有を変更する。callback threadはindexを引き渡すだけ。
+        private fun drainIncomingCodecInputIndexes() {
+            if (inputStopping.get() || generation != playbackGeneration) return
+            consumeInputSubmission(stopping = false)
+            // native呼出し完了前にindexが返っても、借用中のMediaEventを解放しない。
+            while (inputSubmission == null && !inputStopping.get()) {
+                val (callbackCodec, index) = inboundCodecInputIndexes.poll() ?: return
+                if (generation != playbackGeneration || codec !== callbackCodec) continue
+                val isAudio = this is AudioDecoderPipeline
+                dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT_AVAILABLE, isAudio)
+                queuedSamples.remove(index)?.let { sample ->
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT_RETURNED, isAudio)
+                    releaseMediaSample(sample)
+                }
+                availableInputIndexes.addLast(index)
+                drainPendingInput()
             }
         }
 
         private fun queueInternal(sample: MediaSample) {
             if (codec == null) {
-                appendHeaderProbe(sample)
-                val format = formatFromBufferedHeader(configBytes.toByteArray())
-                if (format == null) {
-                    if (configBytes.size() >= budget.headerProbeLimitBytes) {
-                        onCodecConfigTimeout()
-                        clearPending()
-                    }
-                    return
-                }
+                // 構成headerを探す間も、先に確定したstartup件数・byte予算だけで入力を保護する。
+                // 過去のHAL固定event枠を代替する3件制限は設けない。
+                val format = probeHeader(sample) ?: return
                 codec = createBlockModelDecoder(format)
             }
             drainPendingInput()
@@ -1550,27 +1815,30 @@ class PlaybackPipeline(
             sample: MediaSample,
             queueBudget: QueueBudget,
         ): Boolean {
-            if (pendingSamples.size + 1 > queueBudget.maxSamples) return false
-            if (pendingSamples.sumOf { it.size.toLong() } + sample.size > queueBudget.maxBytes) return false
-            val times = pendingSamples.map { it.presentationTimeUs } + sample.presentationTimeUs
-            return timestampSpanUs(times) <= queueBudget.maxDurationUs
+            val submitting = inputSubmission?.sample
+            if (pendingSamples.size + (if (submitting == null) 0 else 1) + 1 > queueBudget.maxSamples) return false
+            val heldBytes = pendingSamples.sumOf { it.size.toLong() } + (submitting?.size ?: 0)
+            // PTSはメディア時刻であり、保持メモリや入力滞留の実時間を示さない。
+            // PTSの離隔だけで拒否すると少数の有効サンプルでも圧縮入力欠落を人工的に作る。
+            return heldBytes + sample.size <= queueBudget.maxBytes
         }
 
-        private fun appendHeaderProbe(sample: MediaSample) {
-            val remaining = budget.headerProbeLimitBytes - configBytes.size()
-            if (remaining <= 0) return
-            val copyLength = minOf(sample.size, remaining)
+        // MPEG-2は8byte、AVC/HEVCはconfig NAL、音声は構成headerだけを保持する。
+        private fun probeHeader(sample: MediaSample): MediaFormat? {
             val mapped = sample.block.map().duplicate()
             mapped.position(sample.offset)
-            mapped.limit(sample.offset + copyLength)
-            val headerBytes = ByteArray(copyLength)
-            mapped.get(headerBytes)
-            configBytes.write(headerBytes)
+            mapped.limit(sample.offset + sample.size)
+            var format: MediaFormat? = null
+            configurationProbe.find(mapped.slice()) { candidate ->
+                format = formatFromBufferedHeader(candidate)
+                format != null
+            }
+            return format
         }
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
         // 構成拒否・decoder未検出・生成失敗をそれぞれの発生点で送出する。
-        @Suppress("TooGenericExceptionCaught", "ThrowsCount")
+        @Suppress("TooGenericExceptionCaught", "ThrowsCount", "MagicNumber", "MaxLineLength")
         private fun createBlockModelDecoder(format: MediaFormat): MediaCodec {
             val decoderName =
                 MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
@@ -1585,16 +1853,13 @@ class PlaybackPipeline(
                 decoder.setCallback(
                     object : MediaCodec.Callback() {
                         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-                        @Suppress("MaxLineLength")
+                        @Suppress("MaxLineLength", "MagicNumber")
                         override fun onInputBufferAvailable(
                             codec: MediaCodec,
                             index: Int,
                         ) {
-                            enqueuePlaybackAction {
-                                if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) return@enqueuePlaybackAction
-                                availableInputIndexes.addLast(index)
-                                drainPendingInput()
-                            }
+                            inboundCodecInputIndexes.offer(codec to index)
+                            enqueuePlaybackAction { finishCodecInput() }
                         }
 
                         override fun onOutputBufferAvailable(
@@ -1602,6 +1867,7 @@ class PlaybackPipeline(
                             index: Int,
                             info: MediaCodec.BufferInfo,
                         ) {
+                            val callbackAtNs = if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) System.nanoTime() else 0L
                             enqueuePlaybackAction {
                                 if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) {
                                     if (!decoderReleased) {
@@ -1611,18 +1877,36 @@ class PlaybackPipeline(
                                     }
                                     return@enqueuePlaybackAction
                                 }
-                                completeCurrentDecoderOutputAction(::onDecoderFailure) {
-                                    if (info.size > 0) {
-                                        dataPathProgress.record(
+                                val beganAtNs = if (callbackAtNs != 0L) System.nanoTime() else 0L
+                                try {
+                                    completeCurrentDecoderOutputAction(::onDecoderFailure) {
+                                        if (info.size > 0) {
+                                            dataPathProgress.record(
+                                                PlaybackDataPathProgress.Stage.CODEC_OUTPUT,
+                                                this@DecoderPipeline is AudioDecoderPipeline,
+                                            )
+                                            startupDeadline?.onFirstOutput()
+                                            startupTimeout?.let(mainHandler::removeCallbacks)
+                                            startupTimeout = null
+                                            backpressureStartedAtMs = null
+                                        }
+                                        onOutput(codec, index, info)
+                                    }
+                                } finally {
+                                    val outputs =
+                                        dataPathProgress.count(
                                             PlaybackDataPathProgress.Stage.CODEC_OUTPUT,
                                             this@DecoderPipeline is AudioDecoderPipeline,
                                         )
-                                        startupDeadline?.onFirstOutput()
-                                        startupTimeout?.let(mainHandler::removeCallbacks)
-                                        startupTimeout = null
-                                        backpressureStartedAtMs = null
+                                    if (beganAtNs != 0L && outputs > 0L && outputs % 32L == 0L) {
+                                        Log.d(
+                                            LogTags.TIS,
+                                            "PLAYBACK_CODEC_OUTPUT_RETURN sessionId=$sessionId generation=$generation " +
+                                                "isAudio=${this@DecoderPipeline is AudioDecoderPipeline} index=$index " +
+                                                "callbackWaitUs=${(beganAtNs - callbackAtNs) / 1_000L} " +
+                                                "ownerUs=${(System.nanoTime() - beganAtNs) / 1_000L} size=${info.size}",
+                                        )
                                     }
-                                    onOutput(codec, index, info)
                                 }
                             }
                         }
@@ -1670,28 +1954,120 @@ class PlaybackPipeline(
             }
         }
 
-        // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-        @Suppress("TooGenericExceptionCaught")
         private fun drainPendingInput() {
-            val decoder = codec ?: return
+            val decoder = codec
+            if (decoder == null || inputStopping.get() || inputSubmission != null) return
             while (pendingSamples.isNotEmpty() && availableInputIndexes.isNotEmpty()) {
                 val inputIndex = availableInputIndexes.removeFirst()
                 val sample = pendingSamples.removeFirst()
-                try {
-                    decoder
-                        .getQueueRequest(inputIndex)
-                        .setLinearBlock(sample.block, sample.offset, sample.size)
-                        .setPresentationTimeUs(sample.presentationTimeUs)
-                        .queue()
-                    backpressureStartedAtMs = null
-                    releaseMediaEvent(sample.event)
-                    dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
-                    onCompressedInputQueued(sample)
-                } catch (error: RuntimeException) {
-                    releaseMediaEvent(sample.event)
-                    throw error
+                val submission = InputSubmission(decoder, inputIndex, sample)
+                inputSubmission = submission
+                if (this is VideoDecoderPipeline) {
+                    if (!videoRenderHandler.post {
+                            queueNativeInput(submission)
+                            enqueuePlaybackAction {
+                                if (generation == playbackGeneration && codec === decoder) finishCodecInput()
+                            }
+                        }
+                    ) {
+                        submission.completed.complete(IllegalStateException("native映像入力workerへ配送できません"))
+                        consumeInputSubmission(stopping = false)
+                    }
+                    return
                 }
+                queueNativeInput(submission)
+                consumeInputSubmission(stopping = false)
             }
+        }
+
+        // Future完了まではworkerだけがsubmissionの結果を書き、decoder状態はownerに残す。
+        @Suppress("TooGenericExceptionCaught")
+        private fun queueNativeInput(submission: InputSubmission) {
+            val failure =
+                try {
+                    if (!inputStopping.get()) {
+                        val startedAtNs = System.nanoTime()
+                        val sample = submission.sample
+                        submission.codec
+                            .getQueueRequest(submission.index)
+                            .setLinearBlock(sample.block, sample.offset, sample.size)
+                            .setPresentationTimeUs(sample.presentationTimeUs)
+                            .queue()
+                        submission.queueDurationNs = System.nanoTime() - startedAtNs
+                        submission.queued = true
+                    }
+                    null
+                } catch (error: RuntimeException) {
+                    error
+                }
+            submission.completed.complete(failure)
+        }
+
+        @Suppress("TooGenericExceptionCaught")
+        private fun finishCodecInput() {
+            if (inputStopping.get() || generation != playbackGeneration) return
+            try {
+                drainIncomingCodecInputIndexes()
+                drainPendingInput()
+            } catch (error: RuntimeException) {
+                onDecoderFailure(error)
+            }
+        }
+
+        @Suppress("MagicNumber", "MaxLineLength")
+        private fun consumeInputSubmission(stopping: Boolean) {
+            val submission = inputSubmission ?: return
+            if (!submission.completed.isDone) return
+            val failure = submission.completed.getNow(null)
+            inputSubmission = null
+            val sample = submission.sample
+            if (submission.queued) {
+                queuedSamples[submission.index] = sample
+                if (!stopping) {
+                    backpressureStartedAtMs = null
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
+                    if (Log.isLoggable(LogTags.TIS, Log.DEBUG) &&
+                        dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio) % 32L == 0L
+                    ) {
+                        Log.d(
+                            LogTags.TIS,
+                            "PLAYBACK_CODEC_INPUT_QUEUE sessionId=$sessionId generation=$generation isAudio=${sample.isAudio} " +
+                                "index=${submission.index} bytes=${sample.size} ptsUs=${sample.presentationTimeUs} " +
+                                "queueUs=${submission.queueDurationNs / 1_000L} " +
+                                "pending=${pendingSamples.size} queued=${queuedSamples.size}",
+                        )
+                    }
+                    onCompressedInputQueued(sample)
+                }
+            } else {
+                releaseMediaSample(sample)
+            }
+            if (failure != null) {
+                if (!stopping) throw failure
+                Log.w(LogTags.TIS, "停止中のCodec入力に失敗しました index=${submission.index}", failure)
+            }
+        }
+
+        protected fun stopInputSubmissions() {
+            inputStopping.set(true)
+        }
+
+        protected fun hasPendingInputSubmission(): Boolean = inputSubmission?.completed?.isDone == false
+
+        @Suppress("ThrowsCount")
+        protected fun awaitInputSubmissionBeforeMediaSyncRelease() {
+            val submission = inputSubmission ?: return
+            try {
+                submission.completed.get(PLAYBACK_CONTROL_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (error: java.util.concurrent.TimeoutException) {
+                throw IllegalStateException("native映像入力が停止期限までに完了しません index=${submission.index}", error)
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw IllegalStateException("native映像入力の回収待機が中断されました", error)
+            } catch (error: java.util.concurrent.ExecutionException) {
+                throw IllegalStateException("native映像入力の回収に失敗しました", error)
+            }
+            consumeInputSubmission(stopping = true)
         }
 
         protected abstract fun codecMime(): String
@@ -1714,16 +2090,21 @@ class PlaybackPipeline(
 
         protected abstract fun onDecoderFailure(error: RuntimeException)
 
-        protected abstract fun onCodecConfigTimeout()
-
         protected abstract fun onBackpressureDeadline(detail: String)
 
         protected open fun onSampleRejected(reason: String) {
             Log.w(LogTags.TIS, "decoder sampleを拒否しました reason=$reason")
         }
 
-        // owner受付の過負荷も既存decoderの継続停滞時計へ接続する。単発拒否で全再生をreleaseしない。
+        // 構成後の拒否は圧縮参照の欠落として扱う。構成前は既存起動期限で制限する。
         fun inputAdmissionRejected(rejectedAtMs: Long) {
+            if (codec != null) {
+                stopAfterCompressedInputLoss(
+                    generation,
+                    "CALLBACK_CAPACITY isAudio=${this is AudioDecoderPipeline} rejectedAtMs=$rejectedAtMs",
+                )
+                return
+            }
             val nowMs = SystemClock.elapsedRealtime()
             val startedAtMs = backpressureStartedAtMs ?: rejectedAtMs.also { backpressureStartedAtMs = it }
             val deadlineMs =
@@ -1736,19 +2117,20 @@ class PlaybackPipeline(
             onSampleRejected(detail)
             if (backpressureDeadlineReached(startedAtMs, nowMs, deadlineMs)) {
                 onBackpressureDeadline(detail)
-                close()
             }
         }
 
+        fun hasConfiguredCodec(): Boolean = codec != null
+
         fun discardPendingInput() {
             clearPending()
-            if (codec == null) configBytes.reset()
+            if (codec == null) configurationProbe.reset()
             backpressureStartedAtMs = null
             // input index、codec、初回出力状態、時刻基準は同じ再生世代に保持する。
         }
 
         private fun clearPending() {
-            while (pendingSamples.isNotEmpty()) releaseMediaEvent(pendingSamples.removeFirst().event)
+            while (pendingSamples.isNotEmpty()) releaseMediaSample(pendingSamples.removeFirst())
         }
 
         override fun close() {
@@ -1757,12 +2139,16 @@ class PlaybackPipeline(
             startupTimeout = null
             clearPending()
             availableInputIndexes.clear()
+            inboundCodecInputIndexes.clear()
             val decoder = codec
             codec = null
             if (decoder != null) {
                 runCatching { decoder.stop() }.onFailure { Log.w(LogTags.TIS, "decoder stop に失敗しました", it) }
                 completeDecoderRelease(resourceCleanup, decoder, decoder::release) {
                     decoderReleased = true
+                    val completedInputs = queuedSamples.values.toList()
+                    queuedSamples.clear()
+                    completedInputs.forEach(::releaseMediaSample)
                     val retired = outstandingAudioOutputs.filterValues { it.codec === decoder }.keys.toList()
                     retired.forEach { bufferId ->
                         outstandingAudioOutputs.remove(bufferId)
@@ -1773,6 +2159,7 @@ class PlaybackPipeline(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     private inner class VideoDecoderPipeline(
         private val kind: VideoCodecKind,
         private val codecFacts: AribCodecFacts,
@@ -1780,7 +2167,87 @@ class PlaybackPipeline(
         override val generation: Long,
         private val errorSink: (PlaybackUnavailableReason, String) -> Unit,
     ) : DecoderPipeline() {
+        // Codecが貸し出した出力indexだけを保持する。payload複製や独自の枠数制限は設けない。
+        private val pendingOutputs = java.util.ArrayDeque<PendingVideoOutput>()
+
+        private val renderSubmissions = mutableListOf<RenderSubmission>()
+        private val renderStopping = AtomicBoolean(false)
+
+        fun stopRenderSubmissions(sync: MediaSync?) {
+            stopInputSubmissions()
+            renderStopping.set(true)
+            // 実行中の呼出しだけを起こす。完了まで再生を維持し、検査直後のnative進入もpauseへ競合させない。
+            if (sync != null && (hasPendingInputSubmission() || renderSubmissions.any { !it.completed.isDone })) {
+                resourceCleanup.releaseOwned("MediaSync flush", sync) { sync.flush() }
+            }
+            awaitRenderSubmissionsBeforeMediaSyncRelease()
+            awaitInputSubmissionBeforeMediaSyncRelease()
+        }
+
+        override fun flowSummary(): String =
+            "${super.flowSummary()} pendingVideoOutputs=${pendingOutputs.size} " +
+                "renderSubmissions=${renderSubmissions.size} " +
+                "nativeRenderPending=${renderSubmissions.count { !it.completed.isDone }}"
+
+        // 完了と失敗の処理はplayback owner上で行い、native render threadでは状態を変更しない。
+        private fun consumeRenderSubmission(
+            submission: RenderSubmission,
+            stopping: Boolean,
+        ) {
+            if (!renderSubmissions.remove(submission)) return
+            val failure = submission.completed.getNow(null) ?: return
+            Log.w(LogTags.TIS, "native映像bufferの返却に失敗しました index=${submission.index}", failure)
+            releaseDecoderOutput(resourceCleanup, submission.codec) {
+                submission.codec.releaseOutputBuffer(submission.index, false)
+            }
+            if (!stopping && generation == playbackGeneration && codec === submission.codec) {
+                onDecoderFailure(failure)
+            }
+        }
+
+        @Suppress("ThrowsCount")
+        fun awaitRenderSubmissionsBeforeMediaSyncRelease() {
+            for (submission in renderSubmissions.toList()) {
+                try {
+                    // playback制御の待機期限には、既存ownerの生存性期限を使用する。
+                    submission.completed.get(PLAYBACK_CONTROL_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+                } catch (error: java.util.concurrent.TimeoutException) {
+                    throw IllegalStateException("native映像出力が停止期限までに返却されません index=${submission.index}", error)
+                } catch (error: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw IllegalStateException("native映像出力の回収待機が中断されました index=${submission.index}", error)
+                } catch (error: java.util.concurrent.ExecutionException) {
+                    throw IllegalStateException("native映像出力の回収に失敗しました index=${submission.index}", error)
+                }
+                consumeRenderSubmission(submission, stopping = true)
+            }
+        }
+
+        fun renderPendingOutputs() {
+            if (!mediaSyncStarted || generation != playbackGeneration) return
+            while (pendingOutputs.isNotEmpty()) {
+                val decoder = codec ?: return
+                val output = pendingOutputs.removeFirst()
+                completeCurrentDecoderOutputAction(::onDecoderFailure) {
+                    renderOutput(decoder, output.index, output.presentationTimeUs)
+                }
+            }
+        }
+
+        override fun close() {
+            stopRenderSubmissions(mediaSync)
+            // 未描画の出力bufferも既存Codecのstop/releaseで回収する。
+            pendingOutputs.clear()
+            super.close()
+        }
+
         override val budget = PlaybackBudget.forVideo(kind)
+        override val configurationProbeKind =
+            when (kind) {
+                VideoCodecKind.MPEG2 -> CodecHeaderProbe.Kind.MPEG2_VIDEO
+                VideoCodecKind.AVC -> CodecHeaderProbe.Kind.AVC
+                VideoCodecKind.HEVC -> CodecHeaderProbe.Kind.HEVC
+            }
 
         override fun codecMime(): String = kind.mime
 
@@ -1788,7 +2255,17 @@ class PlaybackPipeline(
 
         override fun onDecoderPrepared(codec: MediaCodec) {
             codec.setOnFrameRenderedListener(
-                { callbackCodec, _, nanoTime ->
+                { callbackCodec, presentationTimeUs, renderedNanoTime ->
+                    // 中間SurfaceのCCodec通知時刻はPTSの場合がある。armと同じ単調時計で受信を記録する。
+                    val receivedAtNanoTime = System.nanoTime()
+                    if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                        Log.d(
+                            LogTags.TIS,
+                            "PLAYBACK_CODEC_FRAME sessionId=$sessionId generation=$generation " +
+                                "ptsUs=$presentationTimeUs callbackTimeNs=$renderedNanoTime " +
+                                "receivedNs=$receivedAtNanoTime",
+                        )
+                    }
                     enqueuePlaybackAction {
                         if (generation != playbackGeneration ||
                             this@VideoDecoderPipeline.codec !== callbackCodec
@@ -1796,7 +2273,8 @@ class PlaybackPipeline(
                             return@enqueuePlaybackAction
                         }
                         dataPathProgress.record(PlaybackDataPathProgress.Stage.FRAME_RENDERED, false)
-                        commitCompatibilityVideoAvailability(generation, nanoTime)
+                        // stockでは入力進捗を近似根拠にする。最終出力の成功や継続とは扱わない。
+                        commitCompatibilityVideoAvailability(generation, receivedAtNanoTime)
                     }
                 },
                 codecCallbackHandler,
@@ -1836,20 +2314,10 @@ class PlaybackPipeline(
                 },
                 error.message.orEmpty(),
             )
-            stopOnPlaybackExecutor()
-        }
-
-        override fun onCodecConfigTimeout() {
-            errorSink(
-                PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT,
-                "video decoder 構成に必要な ES header が見つかりません progress=${dataPathProgress.summary()}",
-            )
-            stopOnPlaybackExecutor()
         }
 
         override fun onBackpressureDeadline(detail: String) {
             errorSink(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "DECODER_BACKPRESSURE_TIMEOUT $detail")
-            stopOnPlaybackExecutor()
         }
 
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -1865,10 +2333,66 @@ class PlaybackPipeline(
             }
             if (!outputSurface.isValid) {
                 releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, false) }
-                errorSink(PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "video output Surface が無効です")
+                errorSink(PlaybackUnavailableReason.SURFACE_NOT_SET, "video output Surface が無効です")
                 return
             }
-            releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, info.presentationTimeUs * 1_000L) }
+            if (mediaSyncStarted) {
+                renderOutput(codec, index, info.presentationTimeUs)
+            } else {
+                // rate 0のMediaSyncへ同期renderすると、同じowner上の音声準備・再生開始・停止を妨げる。
+                pendingOutputs.addLast(PendingVideoOutput(index, info.presentationTimeUs))
+            }
+        }
+
+        @Suppress("MagicNumber", "TooGenericExceptionCaught")
+        private fun renderOutput(
+            codec: MediaCodec,
+            index: Int,
+            presentationTimeUs: Long,
+        ) {
+            if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                Log.d(
+                    LogTags.TIS,
+                    "PLAYBACK_VIDEO_SUBMIT sessionId=$sessionId generation=$generation " +
+                        "index=$index ptsUs=$presentationTimeUs",
+                )
+            }
+            val sync = mediaSync
+            val submission =
+                RenderSubmission(codec, index, java.util.concurrent.CompletableFuture())
+            renderSubmissions += submission
+            val posted =
+                videoRenderHandler.post {
+                    if (sync != null) blockedVideoOutputSync.set(sync)
+                    val failure =
+                        try {
+                            if (renderStopping.get()) {
+                                codec.releaseOutputBuffer(index, false)
+                            } else {
+                                codec.releaseOutputBuffer(index, presentationTimeUs * 1_000L)
+                            }
+                            null
+                        } catch (error: RuntimeException) {
+                            error
+                        } finally {
+                            if (sync != null) blockedVideoOutputSync.compareAndSet(sync, null)
+                        }
+                    submission.completed.complete(failure)
+                    enqueuePlaybackControl {
+                        consumeRenderSubmission(submission, stopping = false)
+                        if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
+                            Log.d(
+                                LogTags.TIS,
+                                "PLAYBACK_VIDEO_RETURN sessionId=$sessionId generation=$generation " +
+                                    "index=$index ptsUs=$presentationTimeUs",
+                            )
+                        }
+                    }
+                }
+            if (!posted) {
+                renderSubmissions.remove(submission)
+                onDecoderFailure(IllegalStateException("native映像出力workerへ配送できません"))
+            }
         }
     }
 
@@ -1892,6 +2416,8 @@ class PlaybackPipeline(
         private var outputChannels: Int = DEFAULT_AUDIO_CHANNEL_COUNT
         private var outputPcmFormat: OutputPcmFormat? = null
         override val budget = PlaybackBudget.forAudio(kind)
+        override val configurationProbeKind =
+            if (kind == AudioCodecKind.AAC_ADTS) CodecHeaderProbe.Kind.AAC_ADTS else CodecHeaderProbe.Kind.MPEG_AUDIO
 
         fun setVolume(value: Float) {
             volume = value
@@ -1932,13 +2458,6 @@ class PlaybackPipeline(
                     PlaybackUnavailableReason.AUDIO_UNAVAILABLE
                 },
                 error.message.orEmpty(),
-            )
-        }
-
-        override fun onCodecConfigTimeout() {
-            errorSink(
-                PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                "audio decoder 構成に必要な ES header が見つかりません progress=${dataPathProgress.summary()}",
             )
         }
 
@@ -2249,7 +2768,6 @@ class PlaybackPipeline(
     private data class QueueBudget(
         val maxBytes: Long,
         val maxSamples: Int,
-        val maxDurationUs: Long,
     )
 
     private data class AudioOutputClaimDecision(
@@ -2272,9 +2790,7 @@ class PlaybackPipeline(
                 if (total > Long.MAX_VALUE - outputSize) Long.MAX_VALUE else total + outputSize
             }
         val sampleCount = outstandingAudioOutputs.size + 1
-        val timestamps = outstandingAudioOutputs.values.map { it.presentationTimeUs } + presentationTimeUs
-        val durationUs = timestampSpanUs(timestamps)
-        if (byteCount <= queueBudget.maxBytes && sampleCount <= queueBudget.maxSamples && durationUs <= queueBudget.maxDurationUs) {
+        if (byteCount <= queueBudget.maxBytes && sampleCount <= queueBudget.maxSamples) {
             audioOutputBackpressureStartedAtMs = null
             return AudioOutputClaimDecision(accepted = true)
         }
@@ -2282,10 +2798,12 @@ class PlaybackPipeline(
         val nowMs = SystemClock.elapsedRealtime()
         val startedAtMs = audioOutputBackpressureStartedAtMs ?: nowMs.also { audioOutputBackpressureStartedAtMs = it }
         val deadlineReached = backpressureDeadlineReached(startedAtMs, nowMs, deadlineMs)
+        // PTS離隔は拒否理由ではないが、診断情報として失敗時にだけ計算する。
+        val durationUs = timestampSpanUs(outstandingAudioOutputs.values.map { it.presentationTimeUs } + presentationTimeUs)
         return AudioOutputClaimDecision(
             false,
             deadlineReached,
-            "AUDIO_OUTPUT_BACKPRESSURE_TIMEOUT bytes=$byteCount samples=$sampleCount durationUs=$durationUs deadlineMs=$deadlineMs",
+            "AUDIO_OUTPUT_BACKPRESSURE_TIMEOUT bytes=$byteCount samples=$sampleCount ptsSpanUs=$durationUs deadlineMs=$deadlineMs",
         )
     }
 
@@ -2305,7 +2823,6 @@ class PlaybackPipeline(
 
     private data class PlaybackBudget(
         val singleEventLimitBytes: Int,
-        val headerProbeLimitBytes: Int,
         val startup: QueueBudget,
         val pending: QueueBudget,
         val decoderStartupDeadlineMs: Long,
@@ -2319,9 +2836,8 @@ class PlaybackPipeline(
                     VideoCodecKind.MPEG2 -> {
                         PlaybackBudget(
                             6 * MIB,
-                            256 * KIB,
-                            QueueBudget(24L * MIB, 24, 2_000_000L),
-                            QueueBudget(36L * MIB, 48, 3_000_000L),
+                            QueueBudget(24L * MIB, 24),
+                            QueueBudget(36L * MIB, 48),
                             4_000L,
                             2_000L,
                         )
@@ -2330,9 +2846,8 @@ class PlaybackPipeline(
                     VideoCodecKind.AVC -> {
                         PlaybackBudget(
                             12 * MIB,
-                            512 * KIB,
-                            QueueBudget(48L * MIB, 32, 2_500_000L),
-                            QueueBudget(72L * MIB, 64, 3_500_000L),
+                            QueueBudget(48L * MIB, 32),
+                            QueueBudget(72L * MIB, 64),
                             5_000L,
                             2_000L,
                         )
@@ -2341,9 +2856,8 @@ class PlaybackPipeline(
                     VideoCodecKind.HEVC -> {
                         PlaybackBudget(
                             16 * MIB,
-                            768 * KIB,
-                            QueueBudget(64L * MIB, 32, 2_500_000L),
-                            QueueBudget(96L * MIB, 64, 3_500_000L),
+                            QueueBudget(64L * MIB, 32),
+                            QueueBudget(96L * MIB, 64),
                             5_000L,
                             2_000L,
                         )
@@ -2357,9 +2871,8 @@ class PlaybackPipeline(
                     AudioCodecKind.AAC_ADTS -> {
                         PlaybackBudget(
                             1 * MIB,
-                            64 * KIB,
-                            QueueBudget(8L * MIB, 96, 2_000_000L),
-                            QueueBudget(12L * MIB, 192, 3_000_000L),
+                            QueueBudget(8L * MIB, 96),
+                            QueueBudget(12L * MIB, 192),
                             3_000L,
                             1_500L,
                         )
@@ -2368,9 +2881,8 @@ class PlaybackPipeline(
                     AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> {
                         PlaybackBudget(
                             1 * MIB,
-                            64 * KIB,
-                            QueueBudget(8L * MIB, 96, 2_000_000L),
-                            QueueBudget(12L * MIB, 192, 3_000_000L),
+                            QueueBudget(8L * MIB, 96),
+                            QueueBudget(12L * MIB, 192),
                             3_000L,
                             1_500L,
                         )
@@ -2677,6 +3189,8 @@ class PlaybackPipeline(
                 bytes[offset + 3].toInt() and 0xff
             val version =
                 (bytes[offset + 1].toInt() ushr 3) and 0x03
+            val layer = (bytes[offset + 1].toInt() ushr 1) and 0x03
+            if (version == 1 || layer == 0) return null
             val sampleRateIndex =
                 (b2 ushr 2) and 0x03
             val channelMode =
@@ -2868,15 +3382,47 @@ class PlaybackPipeline(
             else -> AvSettings.AUDIO_STREAM_TYPE_UNDEFINED
         }
 
+    private fun wakeBlockedVideoOutputBeforeStop() {
+        if (executor.isOwnerThread()) return
+        val sync = blockedVideoOutputSync.getAndSet(null) ?: return
+        // ネイティブ待機の起床のみ。世代更新と資源解放は従来のownerに残す。
+        if (!codecCallbackHandler.post {
+                runCatching { sync.flush() }.onFailure { error ->
+                    Log.w(LogTags.TIS, "MediaSyncの映像出力待機解除に失敗しました sessionId=$sessionId", error)
+                }
+            }
+        ) {
+            Log.w(LogTags.TIS, "MediaSyncの映像出力待機解除を配送できません sessionId=$sessionId")
+        }
+    }
+
     fun stop() {
+        wakeBlockedVideoOutputBeforeStop()
         runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
     }
+
+    /** CASが準備中であっても、まだ開始していない再生世代を停止扱いにしない。 */
+    fun stopIfActive(): Boolean {
+        wakeBlockedVideoOutputBeforeStop()
+        return runOnPlaybackExecutorBlocking {
+            val active = hasActivePlaybackResources()
+            if (active) stopOnPlaybackExecutor()
+            active
+        }
+    }
+
+    private fun hasActivePlaybackResources(): Boolean =
+        activeTuner != null || activeChannel != null || mediaSync != null ||
+            videoDecoder != null || audioDecoder != null || videoFilter != null ||
+            audioFilter != null || subtitleFilter != null || superimposeFilter != null ||
+            resourceActivityReported || resourceCleanup.hasPending
 
     /** 停止で世代を更新しても、失敗した再生を所有するSessionへ通知する。 */
     internal fun stopAndReportUnavailable(
         reason: PlaybackUnavailableReason,
         detail: String,
     ) {
+        wakeBlockedVideoOutputBeforeStop()
         runOnPlaybackExecutorBlocking {
             val originGeneration = playbackGeneration
             SectionFilterPolicy.completeCleanup(
@@ -2891,12 +3437,21 @@ class PlaybackPipeline(
     // 世代fenceから資源回収・解除までの順序を同じowner内で保持する。
     @Suppress("MaxLineLength", "UsePropertyAccessSyntax", "LongMethod")
     private fun stopOnPlaybackExecutor() {
+        Log.i(
+            LogTags.TIS,
+            "PLAYBACK_STOP_BEGIN inputId=$inputId sessionId=$sessionId generation=$playbackGeneration " +
+                "audioOutputs=${outstandingAudioOutputs.size} progress=${dataPathProgress.summary()}",
+        )
         resourceCleanup.retry()
+        // 前回のMediaSync解放が未完了なら、同じownerにCodec/PCMを保持する。
+        if (mediaSyncReleasePending) resourceCleanup.requireComplete()
         val generationFailure =
             runCatching { nextPlaybackGenerationOrFence() }
                 .onSuccess { playbackGeneration = it }
                 .exceptionOrNull()
         videoAvailableNotified.set(false)
+        videoOutputStallTask?.let(mainHandler::removeCallbacks)
+        videoOutputStallTask = null
         val previousVideoFilter = videoFilter
         val previousAudioFilter = audioFilter
         val previousSubtitleFilter = subtitleFilter
@@ -2905,36 +3460,50 @@ class PlaybackPipeline(
         audioFilter = null
         subtitleFilter = null
         superimposeFilter = null
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=FILTERS")
         closeFilter(previousVideoFilter)
         closeFilter(previousAudioFilter)
         closeFilter(previousSubtitleFilter)
         closeFilter(previousSuperimposeFilter)
         executor.discardDataCallbacks()
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=MEDIASYNC")
+        val sync = mediaSync
+        videoDecoder?.stopRenderSubmissions(sync)
+        if (sync !=
+            null
+        ) {
+            // Codec停止より先に入力待機を解除し、借用中のPCM bufferを返却可能にする。
+            runCatching { sync.setPlaybackParams(PlaybackParams().setSpeed(0.0f)) }
+            resourceCleanup.releaseOwned("MediaSync flush", sync) { sync.flush() }
+            runCatching { sync.setCallback(null, null) }
+            runCatching { sync.setOnErrorListener(null, null) }
+        }
+        mediaSync = null
+        sync?.let { previous ->
+            // Surface切断が失敗してもMediaSync.releaseは必ず試行する。
+            // release成功なら旧Surface接続も終端するので切断のみのretryを破棄する。
+            resourceCleanup.releaseOwned("MediaSync出力切断", previous) { previous.setSurface(null) }
+            mediaSyncReleasePending = true
+            resourceCleanup.release("MediaSync") {
+                previous.release()
+                resourceCleanup.completeOwnedBy(previous)
+                mediaSyncReleasePending = false
+            }
+        }
+        if (mediaSyncReleasePending) resourceCleanup.requireComplete()
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=AUDIO_OUTPUTS")
         releaseOutstandingAudioOutputs()
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=VIDEO_DECODER")
         videoDecoder?.close()
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=AUDIO_DECODER")
         audioDecoder?.close()
         videoDecoder = null
         audioDecoder = null
         waitingAvailabilityArm =
             null
-        val sync = mediaSync
-        mediaSync = null
-        if (sync !=
-            null
-        ) {
-            runCatching { sync.setPlaybackParams(PlaybackParams().setSpeed(0.0f)) }
-            runCatching { sync.setCallback(null, null) }
-            runCatching { sync.setOnErrorListener(null, null) }
-        }
         mediaSyncInputSurface?.let { previous -> resourceCleanup.release("MediaSync入力Surface") { previous.release() } }
         mediaSyncInputSurface = null
-        sync?.let { previous ->
-            resourceCleanup.release("MediaSync") {
-                // release()だけではnative OutputListenerとの循環参照が解消されないため先に切断する。
-                previous.setSurface(null)
-                previous.release()
-            }
-        }
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_PHASE sessionId=$sessionId generation=$playbackGeneration phase=AUDIO_TRACK")
         releaseAudioTrack()
         mediaSyncStarted = false
         mediaSyncSurfaceFailed = false
@@ -2958,6 +3527,7 @@ class PlaybackPipeline(
             requireCleanupComplete = resourceCleanup::requireComplete,
             generationFailure = generationFailure,
         )
+        Log.i(LogTags.TIS, "PLAYBACK_STOP_COMPLETE sessionId=$sessionId generation=$playbackGeneration")
     }
 
     private fun nextPlaybackGenerationOrFence(): Long {
@@ -3007,7 +3577,11 @@ class PlaybackPipeline(
         ) {
             return
         }
-        Log.w(LogTags.TIS, "映像を利用できません inputId=$inputId sessionId=$sessionId reason=$reason detail=$detail generation=$generation")
+        Log.w(
+            LogTags.TIS,
+            "映像を利用できません inputId=$inputId sessionId=$sessionId reason=$reason " +
+                "detail=$detail generation=$generation ${decoderFlowSummary()}",
+        )
         onVideoUnavailable(PlaybackUnavailable(reason, detail, generation))
     }
 
@@ -3019,14 +3593,14 @@ class PlaybackPipeline(
     fun release() {
         if (executor.isShutdown) return
         released.set(true)
+        wakeBlockedVideoOutputBeforeStop()
         runOnPlaybackExecutorBlocking(cleanup = true) {
-            try {
-                stopOnPlaybackExecutor()
-            } finally {
-                resourceCleanup.requireComplete()
-                executor.shutdownNow()
-                codecCallbackThread.quitSafely()
-            }
+            // 解放失敗時は既存ownerとrender workerを維持し、未解放義務を再試行できるようにする。
+            stopOnPlaybackExecutor()
+            resourceCleanup.requireComplete()
+            executor.shutdownNow()
+            codecCallbackThread.quitSafely()
+            videoRenderThread.quitSafely()
         }
     }
 
@@ -3127,43 +3701,6 @@ class PlaybackPipeline(
                 )
             }
         }
-
-        // 独立した既存入力を明示し、引数数だけを理由に別の状態保持型を導入しない。
-        @Suppress("LongParameterList")
-        internal fun recoverCodecGeneration(
-            originGeneration: Long,
-            stop: () -> Long,
-            schedule: (() -> Unit) -> Boolean,
-            isCurrent: (Long) -> Boolean,
-            restart: () -> Unit,
-            onUnavailable: (PlaybackUnavailable) -> Unit,
-        ) {
-            completePlaybackFailureAction(originGeneration, onUnavailable) {
-                val stoppedGeneration = stop()
-                check(
-                    schedule {
-                        if (isCurrent(stoppedGeneration)) {
-                            completePlaybackFailureAction(originGeneration, onUnavailable, restart)
-                        }
-                    },
-                ) { "decoderの再生成を予約できません" }
-            }
-        }
-
-        // 設計で固定したcodec別のメモリ予算・待機時間を、この表で直接照合する。
-        @Suppress("MagicNumber")
-        internal fun codecRecoveryDelay(
-            reclaimed: Boolean,
-            recoverable: Boolean,
-            transient: Boolean,
-            attempted: Boolean,
-        ): Long? =
-            when {
-                reclaimed || attempted -> null
-                transient -> 100L
-                recoverable -> 0L
-                else -> null
-            }
 
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
         @Suppress("TooGenericExceptionCaught")
@@ -3332,5 +3869,6 @@ class PlaybackPipeline(
         private const val PTS_MODULUS = 1L shl 33
         private const val PTS_HALF = 1L shl 32
         private const val PTS_MASK = PTS_MODULUS - 1L
+        private const val VIDEO_OUTPUT_STALL_TIMEOUT_MS = 6_000L
     }
 }
