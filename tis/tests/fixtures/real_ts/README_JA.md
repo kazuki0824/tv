@@ -15,6 +15,19 @@ section参照値は`expected.json`の`section_reference`ごとに、同ファイ
 
 TSDuckは期待値の確認用であり、通常の結合試験実行時には不要である。解析用の`.deb`や生成した一時出力をcommitする必要はない。
 
+## AVC AU・PTS試験への共通入力
+
+同じ\`test.ts\`にはAVC PID \`0x281\`も含まれる。#116の既存試験を通常の\`#[ignore]\`設定のまま、#123のCIから次のコマンドで明示実行する。リポジトリrootから実行し、試験本体とAU/PTS判定は#116側を正とする。
+
+\`\`\`bash
+AVC_CAPTURE_PATH="$PWD/tis/tests/fixtures/real_ts/test.ts" \
+cargo test --manifest-path tuner_hal2/host_ci/Cargo.toml --locked \
+  -p maleicacid-tuner-hal2-demux-host-ci --lib \
+  captured_transport_frames_have_individual_timestamps -- --ignored --nocapture
+\`\`\`
+
+この試験はPSI/SI結合試験と独立してCIの成功を要求する。実AU数の固定値を新しく二重定義せず、既存Rust試験の判定を使用する。結果と計数は\`avc-au-pts.log\`に記録する。
+
 ## 部分受信サービスの独立照合
 
 元TSのPID 0x0010、NIT actualのtransport descriptor loopを走査すると、Partial Reception Descriptor (tag 0xFB) のpayloadは `05 98`、列挙SIDは1432だけである。`expected.json`の各serviceの`partial_reception`はこの元byte列から固定した値であり、製品parserの出力から更新しない。現行TIS policyでは、この部分受信サービスも登録可能とする。
