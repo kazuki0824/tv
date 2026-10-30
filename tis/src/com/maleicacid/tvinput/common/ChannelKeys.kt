@@ -221,23 +221,6 @@ sealed class StreamSelector {
 }
 
 @JvmInline
-value class PesPts90k(
-    val value: Long,
-) {
-    init {
-        require(value >= 0L) { "PES PTS は 0 以上でなければなりません: $value" }
-    }
-
-    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-    @Suppress("MagicNumber")
-    fun toCaptionPtsMillis(): CaptionPtsMillis = CaptionPtsMillis(value / 90L)
-
-    companion object {
-        fun fromOrNull(value: Long?): PesPts90k? = value?.takeIf { it >= 0L }?.let(::PesPts90k)
-    }
-}
-
-@JvmInline
 value class CaptionPtsMillis(
     val value: Long,
 ) {
