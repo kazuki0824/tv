@@ -37,6 +37,14 @@ HAL実行器は1試験につき1プロセスとし、出力をその試験専用
 
 初期化の途中失敗でも、取得済みの実行器、ファイル、HALフィルター、JNI解析器を各所有者で解放する。主失敗と解放失敗の両方を試験結果へ残す。読めないfixture、欠けた実行器／JNI libraryを`assume`やskipで回避しない。
 
+### 同一実TSによるAVC AU・PTSホスト回帰
+
+同じ\`tests/fixtures/real_ts/test.ts\`は、#116が所有する\`tuner_hal2/demux/src/av/video_timestamp.rs::captured_transport_frames_have_individual_timestamps\`の入力にも使用する。この試験は製品の\`PesAssembler\`／\`VideoTimestampAssociation\`を呼び、AVC PID \`0x281\`のAU分割と個別PTSの対応を確認する。解析ロジック・試験本体・期待するAUおよびPTS間隔は#116側の既存実装を正とし、#123側に同等のparserや期待値判定を複製しない。
+
+#123が所有するのは、GitHub-hosted runnerから既存の\`#[ignore]\`付きRust試験を明示実行する接続だけである。CIでfixtureのSHA-256と長さを独立期待値へ照合し、絶対パスを\`AVC_CAPTURE_PATH\`として指定する。\`cargo test\`の\`-- --ignored --nocapture\`で対象試験を1件実行し、結果が1件成功・0件失敗・0件ignoredで、実AU計数が出力された場合だけCI成功とする。通常のRust単体試験における\`#[ignore]\`は変更しない。ログは同じRobolectric host workflowのartifactに保存する。
+
+本節のAVC試験は前述のSI/EPG結合試験とは独立した追加検査であり、SI/EPGを1件のRobolectric試験で全判定する契約を変更しない。どちらもhostでの検証であり、Tuner SDK、実FMQ、Binder、実機Codec/MediaSync、最終Surface表示、VTSを検証済みとは扱わない。
+
 ## AOSP 標準経路
 
 TIS は `TvInputService` としてシステムTVアプリから呼ばれ、Tuner HAL には Tuner SDK API 経由でアクセスする。HAL binder を直接呼ばない。

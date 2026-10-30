@@ -20,6 +20,8 @@ file末尾では`TsPacketCompletionBuffer::drain_for_boundary()`を使用し、�
 
 試験本体、期待値、受信順序、失敗判定は`../tis/DESIGN_JA.md`の「実TSによるホスト結合試験」を参照する。この接続設計は既存の製品共通部品の責務・状態・公開契約を変更しない。
 
+同じfixtureを用いるAVC AU/PTSのhost回帰は、既存\`demux/src/av/video_timestamp.rs::captured_transport_frames_have_individual_timestamps\`を製品parserの正規試験として使用し、TIS側の同workflowから明示実行する。CI接続と入力同一性検査は\`../tis/DESIGN_JA.md\`の「同一実TSによるAVC AU・PTSホスト回帰」を参照する。AVC解析本体、試験の期待値、\`#[ignore]\`属性は変更せず、SI section用実行器へAVC責務を追加しない。
+
 ## VTS device agentの実装責務境界
 
 `maleicacid_tuner_hal2_vts_agent`はhost側VTS profile CLIからだけ使用するtest-onlyのdevice-side bridgeとする。通常productのTuner HAL runtime責務へ組み込まず、公開`android.hardware.tv.tuner.ITuner/default`へ接続して一時的な`IFrontend` / `IDemux` / `IFilter`を所有する。起動時はfrontend callback登録後にdemuxを開いて`setFrontendDataSource()`を完了し、最初のsection要求でTS `SECTION` filterをopen/configure/startしてから1回だけtuneし、`DEMOD_LOCK`確認後にFMQから完成済みsection payloadを取得してhostへ返す。以後のsection要求は同じtune generationを維持する。

@@ -52,6 +52,12 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 
 - 旧captionTimestampForTestの削除で呼出し元がなくなったPesPts90kと専用の変換・生成関数を削除する。QodanaのUnusedSymbol 3件へ対応し、検査の抑制や型のためだけの呼出しは追加しない。
 - 現在の字幕時刻は既存PtsEpochCoordinatorによる正規化とCaptionPtsMillisを使用しており、実行経路・時刻計算・表示条件は変更しない。テストはCIで確認する。
+# 2026-10-30 PR #123 実TS AVC AU・PTS回帰をhost CIへ接続
+
+- #116で追加した\`video_timestamp.rs::captured_transport_frames_have_individual_timestamps\`の試験本体・期待値・\`#[ignore]\`は変えず、#123が所有する既存の実TS fixtureを\`AVC_CAPTURE_PATH\`に指定し、Robolectric host workflowで明示実行する。
+- SHA-256・ファイル長とpacket境界の同一性、試験1件の成功・ignored0件・実AU計数を検証する。Cargo失敗は\`pipefail\`で伝達し、試験ログは既存artifactへ保存する。
+- HAL→TISのPSI/SI結合試験、他のRobolectric試験、既存の製品・試験責務境界は変更しない。新規HAL/AVC parser・本番API・試験用状態ownerは追加しない。
+- CI実行結果は該当HEADのActionsで確認する。実Codec/MediaSync/最終描画、Soong/atest、CTS/VTS、チューナー実機はこのhost追加だけでは検証されない。
 
 # 2026-10-30 レビュー5708139001：本番入口と試験fixtureを整理
 
