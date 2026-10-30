@@ -1,7 +1,7 @@
 use super::event::{AvMediaEventDescriptor, AvMediaEventMetadata};
 use super::release_txn::{
-    AvDataIdState, AvEventLocalHandleLeaseState, AvHandleReleaseInput,
-    AvHandleReleaseKind, AvHandleReleaseOutcome, AvHandleReleaseTxn,
+    AvDataIdState, AvEventLocalHandleLeaseState, AvHandleReleaseInput, AvHandleReleaseKind,
+    AvHandleReleaseOutcome, AvHandleReleaseTxn,
 };
 use super::slot::AvDataId;
 use std::collections::BTreeMap;
