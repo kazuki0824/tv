@@ -52,10 +52,6 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 
 - 旧captionTimestampForTestの削除で呼出し元がなくなったPesPts90kと専用の変換・生成関数を削除する。QodanaのUnusedSymbol 3件へ対応し、検査の抑制や型のためだけの呼出しは追加しない。
 - 現在の字幕時刻は既存PtsEpochCoordinatorによる正規化とCaptionPtsMillisを使用しており、実行経路・時刻計算・表示条件は変更しない。テストはCIで確認する。
-## CIレビュー追補
-
-- 旧PES時刻テストの削除後に残った未使用型を削除し、QodanaのUnusedSymbol 3件を解消する。字幕時刻の実経路は変更しない。
-
 # 2026-10-30 レビュー5708139001：本番入口と試験fixtureを整理
 
 - 本番で使うpending-state読取り、SI status分類、Setup・scan受付、字幕・rating・再生の純粋判定を正規入口へ統一し、委譲だけのForTest APIを削除する。
@@ -1711,3 +1707,7 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 ## r50ba2
 - `ChannelKeys.kt` を package 外の `../` source path ではなく Soong module dependency 経由で `rec` tests から参照できるよう、`maleicacid_tvinput_channel_keys_sources` filegroup を追加した。
 - No TIS Kotlin implementation, resources, manifest, permissions, or product integration files were changed.
+
+## CIレビュー追補
+
+- 旧PES時刻テストの削除後に残った未使用型を削除し、QodanaのUnusedSymbol 3件を解消する。字幕時刻の実経路は変更しない。
