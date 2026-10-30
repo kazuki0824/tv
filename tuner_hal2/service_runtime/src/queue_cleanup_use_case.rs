@@ -490,10 +490,6 @@ fn execute_filter_cleanup_protocol(
                 FilterRuntimeOperationStep::QueuedPayloadClear,
                 FilterRuntimeOperationSkipReason::QueueClearFailed,
             );
-            report.skipped(
-                FilterRuntimeOperationStep::AvBackingFlush,
-                FilterRuntimeOperationSkipReason::QueueClearFailed,
-            );
             report.finish(FilterRuntimeOperationOutcome::Isolated {
                 failed_step: FilterRuntimeOperationStep::QueueClear,
             });
@@ -520,14 +516,6 @@ fn execute_filter_cleanup_protocol(
         );
     }
 
-    if demux.flush_filter_av_backing_for_queue_cleanup(&plan) {
-        report.succeeded(FilterRuntimeOperationStep::AvBackingFlush);
-    } else {
-        report.skipped(
-            FilterRuntimeOperationStep::AvBackingFlush,
-            FilterRuntimeOperationSkipReason::AvBackingNotPresent,
-        );
-    }
     demux.invalidate_filter_pcr_for_queue_cleanup(&plan);
     report.succeeded(FilterRuntimeOperationStep::PcrAnchorInvalidate);
 
