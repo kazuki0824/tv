@@ -338,7 +338,6 @@ fn finish_filter_callback_delivery_failure(
     }
 }
 
-
 fn take_callback_event_batch(
     first: FilterEventDeliverySnapshot,
     pending: &mut std::iter::Peekable<impl Iterator<Item = FilterEventDeliverySnapshot>>,
@@ -589,7 +588,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn delayed_events_batch_without_crossing_start_id_or_status() {
         let snapshots = vec![
@@ -607,27 +605,37 @@ mod tests {
         while let Some(first) = pending.next() {
             batches.push(take_callback_event_batch(first, &mut pending));
         }
-        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [1, 2, 1, 1]);
-        assert!(matches!(batches[0][0].event, FilterEventDelivery::StartId(8)));
+        assert_eq!(
+            batches.iter().map(Vec::len).collect::<Vec<_>>(),
+            [1, 2, 1, 1]
+        );
+        assert!(matches!(
+            batches[0][0].event,
+            FilterEventDelivery::StartId(8)
+        ));
         assert!(matches!(
             batches[2][0].event,
             FilterEventDelivery::Status(FilterStatusEvent::DataReady)
         ));
-        let converted = batches.remove(1).into_iter().map(event_from_snapshot)
-            .collect::<Result<Vec<_>, _>>().unwrap();
+        let converted = batches
+            .remove(1)
+            .into_iter()
+            .map(event_from_snapshot)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         assert_eq!(converted.len(), 2);
-        assert!(converted.iter().all(|event| matches!(event, AidlFilterCallbackDelivery::Event(_))));
+        assert!(converted
+            .iter()
+            .all(|event| matches!(event, AidlFilterCallbackDelivery::Event(_))));
     }
 
     #[test]
     fn regular_event_batch_respects_filter_and_aidl_generation() {
         let first = snapshot(FilterEventDelivery::Section { data_length: 10 });
         let second = snapshot(FilterEventDelivery::Section { data_length: 20 });
-        let mut different_filter =
-            snapshot(FilterEventDelivery::Section { data_length: 30 });
+        let mut different_filter = snapshot(FilterEventDelivery::Section { data_length: 30 });
         different_filter.filter_id = 4;
-        let mut different_generation =
-            snapshot(FilterEventDelivery::Section { data_length: 40 });
+        let mut different_generation = snapshot(FilterEventDelivery::Section { data_length: 40 });
         different_generation.generation = AidlObjectGeneration(3);
         let mut pending = vec![first, second, different_filter, different_generation]
             .into_iter()
