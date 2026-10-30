@@ -345,9 +345,9 @@ atest \
 
 ### AVC AU・PTS実TS回帰のCI接続
 
-同じhost workflowから、#116の\`tuner_hal2/demux/src/av/video_timestamp.rs\`にある\`captured_transport_frames_have_individual_timestamps\`を、\`AVC_CAPTURE_PATH="$PWD/tis/tests/fixtures/real_ts/test.ts"\`と\`cargo test --manifest-path tuner_hal2/host_ci/Cargo.toml --locked -p maleicacid-tuner-hal2-demux-host-ci --lib captured_transport_frames_have_individual_timestamps -- --ignored --nocapture\`で明示実行する。fixtureの長さ・SHA-256は\`expected.json\`と照合し、実行件数1件・成功1件・失敗0件・ignored0件・AU計数の存在を確認する。テストの規範値は#116に保持し、#123に別のAVC parserや試験専用の製品APIを追加しない。
+同じhost workflowから、#116の`tuner_hal2/demux/src/av/video_timestamp.rs`にある`captured_transport_frames_have_individual_timestamps`を、`AVC_CAPTURE_PATH="$PWD/tis/tests/fixtures/real_ts/test.ts"`と`cargo test --manifest-path tuner_hal2/host_ci/Cargo.toml --locked -p maleicacid-tuner-hal2-demux-host-ci --lib captured_transport_frames_have_individual_timestamps -- --ignored --nocapture`で明示実行する。fixtureの長さ・SHA-256は`expected.json`と照合し、実行件数1件・成功1件・失敗0件・ignored0件・AU計数の存在を確認する。テストの規範値は#116に保持し、#123に別のAVC parserや試験専用の製品APIを追加しない。
 
-\`set -euo pipefail\`でCargo試験失敗をCI失敗へ伝え、診断ログ\`tis/host_ci/robolectric/build/real-ts-diagnostics/avc-au-pts.log\`を既存の\`if: always()\` artifactへ保存する。PSI/SI結合試験の1件実行と既存Robolectric試験の検証も維持する。ローカルではリポジトリrootから同じ\`AVC_CAPTURE_PATH\`指定で実行できる。ホスト成功をSoong・device atest・CTS/VTS・実機表示成功へ読み替えない。
+`set -euo pipefail`でCargo試験失敗をCI失敗へ伝え、診断ログ`tis/host_ci/robolectric/build/real-ts-diagnostics/avc-au-pts.log`を既存の`if: always()` artifactへ保存する。PSI/SI結合試験の1件実行と既存Robolectric試験の検証も維持する。ローカルではリポジトリrootから同じ`AVC_CAPTURE_PATH`指定で実行できる。ホスト成功をSoong・device atest・CTS/VTS・実機表示成功へ読み替えない。
 
 ### 仕様カバレッジ
 
