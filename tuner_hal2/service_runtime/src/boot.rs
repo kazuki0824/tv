@@ -292,8 +292,16 @@ pub enum FilterEventDelivery {
     StartId(i32),
     Status(maleicacid_tuner_hal2_demux::FilterStatusEvent),
     Media(AvMediaEventDescriptor),
-    Section { data_length: usize },
-    Pes { stream_id: i32, data_length: usize },
+    Section {
+        data_length: usize,
+        table_id: i32,
+        version: i32,
+        section_num: i32,
+    },
+    Pes {
+        stream_id: i32,
+        data_length: usize,
+    },
     RecordIndex(maleicacid_tuner_hal2_demux::TsRecordEventData),
 }
 
@@ -1042,10 +1050,20 @@ impl TunerServiceRuntime {
                     if *raw {
                         continue;
                     }
+                    let header = maleicacid_tuner_hal2_demux::parse_section_header(bytes, 12)
+                        .ok_or_else(|| {
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "accepted Section event has invalid header",
+                            )
+                        })?;
                     (
                         *filter_id,
                         FilterEventDelivery::Section {
                             data_length: bytes.len(),
+                            table_id: i32::from(header.table_id),
+                            version: i32::from(header.version.unwrap_or(0)),
+                            section_num: i32::from(header.section_number.unwrap_or(0)),
                         },
                     )
                 }
@@ -1302,6 +1320,62 @@ mod raw_filter_event_projection_tests {
                 snapshot.event,
                 FilterEventDelivery::Section { .. } | FilterEventDelivery::Pes { .. }
             )
+        }));
+    }
+
+    #[test]
+    fn section_event_projects_unsigned_table_id_version_and_number() {
+        let (mut runtime, demux_id, filter_id) = configured_raw_filter(
+            FilterOpenType::TsSection,
+            0x123,
+            FilterConfigKind::TsSection {
+                check_crc: false,
+                repeat: true,
+                raw: false,
+                length_field_bits: 12,
+                condition: SectionCondition {
+                    kind: SectionConditionKind::SectionBits,
+                    filter: Vec::new(),
+                    mask: Vec::new(),
+                    mode: Vec::new(),
+                    table_id: None,
+                    version: None,
+                },
+            },
+        );
+        // 0xc8は符号付きbyteへ変換せず、table_id=200として渡す。
+        let section = [
+            0xc8,
+            0xb0,
+            0x09,
+            0x12,
+            0x34,
+            0xc0 | (7 << 1) | 1,
+            5,
+            9,
+            0,
+            0,
+            0,
+            0,
+        ];
+        let mut payload = vec![0];
+        payload.extend_from_slice(&section);
+        let (_report, snapshots) = push_and_project(
+            &mut runtime,
+            demux_id,
+            &packet_with_payload(0x123, true, &payload),
+        );
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.filter_id == filter_id
+                && matches!(
+                    snapshot.event,
+                    FilterEventDelivery::Section {
+                        data_length: 12,
+                        table_id: 200,
+                        version: 7,
+                        section_num: 5,
+                    }
+                )
         }));
     }
 
