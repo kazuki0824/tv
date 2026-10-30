@@ -119,12 +119,6 @@ class SectionIngestController(
             "sdtActualDropped=$sdtActualDroppedCount sdtOtherDropped=$sdtOtherDroppedCount"
     }
 
-    // HAL Filter buffer満杯の通知は、TIS側の受付拒否件数と混同しない。
-    @Synchronized
-    fun recordFilterOverflow() {
-        filterOverflowCount++
-    }
-
     private val counters = linkedMapOf<Triple<TsPid, Int, Int>, MutableCounter>()
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
