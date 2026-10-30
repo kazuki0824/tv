@@ -196,9 +196,9 @@ class RealTsHalSiIntegrationTest {
         return outcome == ChannelScanController.SiCollectionOutcome.COMPLETE
     }
 
-    private fun filters(tuner: TunerController): Map<TsPid, List<Filter>> {
-        return ReflectionHelpers.getField(tuner, "sectionFilters")
-    }
+    // 既存ownerの読み取り専用観測。長い型名を一式で示す。
+    @Suppress("MaxLineLength")
+    private fun filters(tuner: TunerController): Map<TsPid, List<Filter>> = ReflectionHelpers.getField(tuner, "sectionFilters")
 
     private fun handles(tuner: TunerController): Map<TsPid, TunerController.SectionFilterHandle> =
         ReflectionHelpers.getField(tuner, "sectionFilterHandles")

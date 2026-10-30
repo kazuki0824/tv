@@ -189,13 +189,6 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 
 - 旧captionTimestampForTestの削除で呼出し元がなくなったPesPts90kと専用の変換・生成関数を削除する。QodanaのUnusedSymbol 3件へ対応し、検査の抑制や型のためだけの呼出しは追加しない。
 - 現在の字幕時刻は既存PtsEpochCoordinatorによる正規化とCaptionPtsMillisを使用しており、実行経路・時刻計算・表示条件は変更しない。テストはCIで確認する。
-# 2026-10-30 PR #123 実TS AVC AU・PTS回帰をhost CIへ接続
-
-- #116で追加した`video_timestamp.rs::captured_transport_frames_have_individual_timestamps`の試験本体・期待値・`#[ignore]`は変えず、#123が所有する既存の実TS fixtureを`AVC_CAPTURE_PATH`に指定し、Robolectric host workflowで明示実行する。
-- SHA-256・ファイル長とpacket境界の同一性、試験1件の成功・ignored0件・実AU計数を検証する。Cargo失敗は`pipefail`で伝達し、試験ログは既存artifactへ保存する。
-- HAL→TISのPSI/SI結合試験、他のRobolectric試験、既存の製品・試験責務境界は変更しない。新規HAL/AVC parser・本番API・試験用状態ownerは追加しない。
-- CI実行結果は該当HEADのActionsで確認する。実Codec/MediaSync/最終描画、Soong/atest、CTS/VTS、チューナー実機はこのhost追加だけでは検証されない。
-
 # 2026-10-30 レビュー5708139001：本番入口と試験fixtureを整理
 
 - 本番で使うpending-state読取り、SI status分類、Setup・scan受付、字幕・rating・再生の純粋判定を正規入口へ統一し、委譲だけのForTest APIを削除する。
@@ -273,6 +266,17 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 
 - callback内の既存bitmask式へ戻し、委譲だけのsectionFilterStatusIsOverflowと単独試験を削除する。実Filter callback・複合status・旧Filter/世代の隔離は既存TunerFrontendLeaseTransitionTestを正本とし、新しいhelper・状態・試験基盤を追加しない。
 - host試験の期待件数を413から412へ更新する。挙動を変えず、試験はCIで実行する。
+
+# 2026-10-30 PR #123 実TS AVC AU・PTS回帰をhost CIへ接続
+
+- #116で追加した`video_timestamp.rs::captured_transport_frames_have_individual_timestamps`の試験本体・期待値・`#[ignore]`は変えず、#123が所有する既存の実TS fixtureを`AVC_CAPTURE_PATH`に指定し、Robolectric host workflowで明示実行する。
+- SHA-256・ファイル長とpacket境界の同一性、試験1件の成功・ignored0件・実AU計数を検証する。Cargo失敗は`pipefail`で伝達し、試験ログは既存artifactへ保存する。
+- HAL→TISのPSI/SI結合試験、他のRobolectric試験、既存の製品・試験責務境界は変更しない。新規HAL/AVC parser・本番API・試験用状態ownerは追加しない。
+- CI実行結果は該当HEADのActionsで確認する。実Codec/MediaSync/最終描画、Soong/atest、CTS/VTS、チューナー実機はこのhost追加だけでは検証されない。
+
+# 2026-10-30 固定TSのSection受付回帰
+
+- 既存16件上限と実HAL/SI JNIを使い、並行burst、喪失、再送完成、Filter交換、候補切替を検査する。容量変更・製品の試験専用入口は追加しない。
 
 # 2026-10-29 現在番組選択の整列責務の記述を訂正
 
