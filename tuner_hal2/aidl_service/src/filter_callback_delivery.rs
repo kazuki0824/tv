@@ -37,15 +37,6 @@ enum AidlFilterCallbackDelivery {
     Status(DemuxFilterStatus),
 }
 
-impl AidlFilterCallbackDelivery {
-    const fn operation_name(&self) -> &'static str {
-        match self {
-            Self::Event(_) => "IFilterCallback.onFilterEvent",
-            Self::Status(_) => "IFilterCallback.onFilterStatus",
-        }
-    }
-}
-
 impl AidlFilterEventDispatcher {
     pub fn new(context: &SharedAidlServiceContext) -> Result<Self, HalError> {
         let worker_context = Arc::downgrade(context);
@@ -347,6 +338,43 @@ fn finish_filter_callback_delivery_failure(
     }
 }
 
+
+fn take_callback_event_batch(
+    first: FilterEventDeliverySnapshot,
+    pending: &mut std::iter::Peekable<impl Iterator<Item = FilterEventDeliverySnapshot>>,
+) -> Vec<FilterEventDeliverySnapshot> {
+    let batchable = matches!(
+        &first.event,
+        FilterEventDelivery::Media(_)
+            | FilterEventDelivery::Section { .. }
+            | FilterEventDelivery::Pes { .. }
+            | FilterEventDelivery::RecordIndex(_)
+    );
+    let object_id = first.object_id;
+    let generation = first.generation;
+    let filter_id = first.filter_id;
+    let mut batch = vec![first];
+    if batchable {
+        while pending.peek().is_some_and(|next| {
+            next.object_id == object_id
+                && next.generation == generation
+                && next.filter_id == filter_id
+                && matches!(
+                    &next.event,
+                    FilterEventDelivery::Media(_)
+                        | FilterEventDelivery::Section { .. }
+                        | FilterEventDelivery::Pes { .. }
+                        | FilterEventDelivery::RecordIndex(_)
+                )
+        }) {
+            if let Some(next) = pending.next() {
+                batch.push(next);
+            }
+        }
+    }
+    batch
+}
+
 impl FilterEventDispatcher for AidlFilterEventDispatcher {
     fn wake(&self) -> Result<(), HalError> {
         self.delay_worker
@@ -364,11 +392,9 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
     ) -> Result<(), HalError> {
         let mut failures = FirstErrorCollector::new();
         let mut start_id_blocked = BTreeSet::new();
-        for snapshot in snapshots {
+        let mut pending = snapshots.into_iter().peekable();
+        while let Some(snapshot) = pending.next() {
             let delivery_key = (snapshot.object_id.0, snapshot.generation.0);
-            if start_id_blocked.contains(&delivery_key) {
-                continue;
-            }
             let pending_start_id = match &snapshot.event {
                 FilterEventDelivery::StartId(start_id) => Some(*start_id),
                 _ => None,
@@ -379,6 +405,11 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                 snapshot.object_id,
                 snapshot.generation,
             );
+            // startIdとstatusは単独配送。通常eventは同一Filter/世代の連続分だけ集約する。
+            let batch = take_callback_event_batch(snapshot, &mut pending);
+            if start_id_blocked.contains(&delivery_key) {
+                continue;
+            }
             let context = match self.context.upgrade() {
                 Some(context) => context,
                 None => {
@@ -426,26 +457,37 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     continue;
                 }
             };
-            let delivery = match event_from_snapshot(snapshot) {
-                Ok(delivery) => delivery,
-                Err(primary) => {
-                    failures.push_result(finish_filter_callback_delivery_failure(
-                        &context,
-                        runtime,
-                        handle,
-                        CallbackDeliveryFailurePhase::EventConversion,
-                        primary,
-                    ));
-                    if pending_start_id.is_some() {
-                        start_id_blocked.insert(delivery_key);
+            let mut callback_events = Vec::new();
+            let mut callback_status = None;
+            for snapshot in batch {
+                match event_from_snapshot(snapshot) {
+                    Ok(AidlFilterCallbackDelivery::Event(event)) => callback_events.push(event),
+                    Ok(AidlFilterCallbackDelivery::Status(status)) => {
+                        callback_status = Some(status);
                     }
-                    continue;
+                    Err(primary) => {
+                        failures.push_result(finish_filter_callback_delivery_failure(
+                            &context,
+                            runtime,
+                            handle,
+                            CallbackDeliveryFailurePhase::EventConversion,
+                            primary,
+                        ));
+                        if pending_start_id.is_some() {
+                            start_id_blocked.insert(delivery_key);
+                        }
+                    }
                 }
+            }
+            let operation = if callback_status.is_some() {
+                "IFilterCallback.onFilterStatus"
+            } else {
+                "IFilterCallback.onFilterEvent"
             };
-            let operation = delivery.operation_name();
-            let delivery_result = match delivery {
-                AidlFilterCallbackDelivery::Event(event) => callback.onFilterEvent(&[event]),
-                AidlFilterCallbackDelivery::Status(status) => callback.onFilterStatus(status),
+            let delivery_result = match callback_status {
+                Some(status) => callback.onFilterStatus(status),
+                None if !callback_events.is_empty() => callback.onFilterEvent(&callback_events),
+                None => continue,
             };
             if let Err(error) = delivery_result {
                 let primary =
@@ -545,6 +587,56 @@ mod tests {
             filter_id: 3,
             event,
         }
+    }
+
+
+    #[test]
+    fn delayed_events_batch_without_crossing_start_id_or_status() {
+        let snapshots = vec![
+            snapshot(FilterEventDelivery::StartId(8)),
+            snapshot(FilterEventDelivery::Section { data_length: 30 }),
+            snapshot(FilterEventDelivery::Pes {
+                stream_id: 0xe0,
+                data_length: 70,
+            }),
+            snapshot(FilterEventDelivery::Status(FilterStatusEvent::DataReady)),
+            snapshot(FilterEventDelivery::Section { data_length: 50 }),
+        ];
+        let mut pending = snapshots.into_iter().peekable();
+        let mut batches = Vec::new();
+        while let Some(first) = pending.next() {
+            batches.push(take_callback_event_batch(first, &mut pending));
+        }
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [1, 2, 1, 1]);
+        assert!(matches!(batches[0][0].event, FilterEventDelivery::StartId(8)));
+        assert!(matches!(
+            batches[2][0].event,
+            FilterEventDelivery::Status(FilterStatusEvent::DataReady)
+        ));
+        let converted = batches.remove(1).into_iter().map(event_from_snapshot)
+            .collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(converted.len(), 2);
+        assert!(converted.iter().all(|event| matches!(event, AidlFilterCallbackDelivery::Event(_))));
+    }
+
+    #[test]
+    fn regular_event_batch_respects_filter_and_aidl_generation() {
+        let first = snapshot(FilterEventDelivery::Section { data_length: 10 });
+        let second = snapshot(FilterEventDelivery::Section { data_length: 20 });
+        let mut different_filter =
+            snapshot(FilterEventDelivery::Section { data_length: 30 });
+        different_filter.filter_id = 4;
+        let mut different_generation =
+            snapshot(FilterEventDelivery::Section { data_length: 40 });
+        different_generation.generation = AidlObjectGeneration(3);
+        let mut pending = vec![first, second, different_filter, different_generation]
+            .into_iter()
+            .peekable();
+        let mut batches = Vec::new();
+        while let Some(first) = pending.next() {
+            batches.push(take_callback_event_batch(first, &mut pending));
+        }
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [2, 1, 1]);
     }
 
     #[test]
