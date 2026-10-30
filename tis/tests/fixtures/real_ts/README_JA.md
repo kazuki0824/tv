@@ -31,3 +31,9 @@ cargo test --manifest-path tuner_hal2/host_ci/Cargo.toml --locked \
 ## 部分受信サービスの独立照合
 
 元TSのPID 0x0010、NIT actualのtransport descriptor loopを走査すると、Partial Reception Descriptor (tag 0xFB) のpayloadは `05 98`、列挙SIDは1432だけである。`expected.json`の各serviceの`partial_reception`はこの元byte列から固定した値であり、製品parserの出力から更新しない。現行TIS policyでは、この部分受信サービスも登録可能とする。
+
+## Section burstの回帰範囲
+
+`realTsBurstLossAndRetransmissionStayWithinCandidate`は同じSHA-256のTSを実HAL実行器へ入力し、固定したsection参照値を照合してから既存SDK Filter Shadowのread/callbackへ接続する。製品Controller/SectionIngestController/実SI JNI/SiCollectionRequirements/collectionOutcomeを実行する。16件のEIT先行入力とowner control占有に続けてPID別callbackを並行実行し、ピーク16件、拒否件数、未完成→再送後完成、同候補の喪失保持、Filter交換と候補切替での旧入力拒否を検査する。
+
+`section-burst.txt`へ入力hash、section数、Filter PID数、ピーク保留、拒否数、占有開始からdrainまでの時間、再送処理時間を保存する。再送は各入力の完了を待つ決定的試験であり、放送の実到着率・RF受信・実機処理性能を再現する負荷試験ではない。この成功だけで16件の必要十分性、元の15,409件の再現、全環境でのSI収集成功を宣言しない。入力率、各control操作の占有時間、機種/buildと候補別診断を揃えた実機測定は未実施条件として残す。
