@@ -1,3 +1,12 @@
+# 2026-10-30 全件監査の既存契約内修正
+
+- Filter/DVR生成commitと固定LNB給電解放の結果をロック内で確定し、失敗時の後片付け・lease復元前にロックを解放する。同じruntime lockへの自己再入を除去し、既存rollback順序を維持する。
+- tune送信前取消しは既存complete_prepared_submit_cleanupで終了結果を伝播し、失敗を正常停止へ丸めない。
+- Androidのdevice/service_runtime rust_testへ実ソースが参照するlog/control依存を補う。host Cargo成功をSoong成功とみなさない。
+- AV解放分類の未読filter_state引数と、常に成功するDemux binding検証helperを除去する。呼出元の実在・lifecycle検査は維持する。
+- 公開設計書のclose待機に残った旧期限記述を、現行の「Frontend closeの回収完了」へ参照統一する。新しい期限・owner・回収処理は追加しない。
+- 全呼出し元と差分を静的照合。テストと品質検査はCIへ委ねる。Soong/atest・実機検証は未実施。
+
 # 2026-10-30 DVR確定後診断の結果処理を明示（#210）
 
 - main由来のDVR callback診断fallbackで、コメントだけの空ifを除去し、型付きの成功結果を照合して記録失敗時は診断処理を明示的に終了する。

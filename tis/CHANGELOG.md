@@ -1,3 +1,9 @@
+# 2026-10-30 全件監査の完了通知・UI競合修正
+
+- Boot EPG jobの世代登録と早期完了の受渡しを既存RunContextの同じ短いmonitorで直列化する。完了通知の取逃しを除去し、既存の一回完了・停止fenceを維持する。
+- SetupActivityはUI実行時にChannelScanManagerの現行state identityを照合し、旧scan通知による新scanの表示・取消ボタンの上書きを拒否する。既存Robolectric fixtureへ旧世代通知の回帰を追加する。
+- 新しいworker・queue・ownerは追加しない。テストはCIへ委ね、Android実機検証は未実施。
+
 # 2026-10-30 scanのkey集合試験を本番の公開入力へ接続
 
 - テストからしか呼ばれないvalidProgramKeysForUpdateを本番から削除する。Rustの削除保護identity集合とauthoritative flagは、実際のProgram公開が使うEpgUpdateWindow変換を直接試験する。
