@@ -170,9 +170,11 @@ class RealTsHalSiIntegrationTest {
                     "sha256=${expected.getString(
                         "sha256",
                     )} sections=${sections.size} filters=${sections.map { it.pid }.distinct().size}\n" +
-                        "peakPending=16 rejected=${sections.size} filterOverflow=0 " +
-                        "blockedAndDrainNs=$blockedNanos replayNs=$replayNanos\n" +
-                        "beforeReplayComplete=false afterReplayComplete=true nextCandidateLoss=0 nextCandidateComplete=true\n",
+                        "assertedExpectations: peakPending=16 rejected=${sections.size} filterOverflow=0\n" +
+                        "observedHostWallTime: blockedAndDrainNs=$blockedNanos replayNs=$replayNanos\n" +
+                        "assertedExpectations: beforeReplayComplete=false afterReplayComplete=true " +
+                        "nextCandidateLoss=0 nextCandidateComplete=true\n" +
+                        "scope=syntheticOwnerSaturationAndManualReplay; realScanDeadlineAndAutonomousRecovery=notTested\n",
                 )
             } finally {
                 tuner.release()
