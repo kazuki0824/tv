@@ -70,7 +70,8 @@ class TunerSectionSourceDiagnosticTest {
             }
             try {
                 check(entered.await(5, TimeUnit.SECONDS))
-                repeat(16) { fixture.executor.executeData {} }
+                // このPR単独ではShadowの32 Filter広告に対し上限256。#193では16へ戻る。
+                repeat(256) { fixture.executor.executeData {} }
                 // close前に読み出し済みで、配送だけが後着するcallbackを再現する。
                 fixture.deliver(fixture.stale)
                 check(fixture.ingest.inputDeliveryLossCount == 0)
