@@ -2299,9 +2299,11 @@ mod tests {
         let queue = WorkerRuntime::start_reaper_queue(
             1,
             "test-reaper-panic",
-            Arc::new(|_: u32, _: WorkerRuntimeReaperPending<u32, u32>, _: WorkerContext| {
-                panic!("回収中断を注入");
-            }),
+            Arc::new(
+                |_: u32, _: WorkerRuntimeReaperPending<u32, u32>, _: WorkerContext| {
+                    panic!("回収中断を注入");
+                },
+            ),
         )
         .unwrap();
         queue.enqueue_reserved(1, [(1, 1)]).unwrap();
@@ -2315,8 +2317,14 @@ mod tests {
             Err(HalError::WorkerReaperPanicked)
         );
         waiter.join().unwrap();
-        assert_eq!(queue.pending.state.lock().unwrap().entries.get(&1), Some(&1));
-        assert!(matches!(queue.reserve_pending([(2, 2)]), Err(HalError::WorkerReaperPanicked)));
+        assert_eq!(
+            queue.pending.state.lock().unwrap().entries.get(&1),
+            Some(&1)
+        );
+        assert!(matches!(
+            queue.reserve_pending([(2, 2)]),
+            Err(HalError::WorkerReaperPanicked)
+        ));
     }
 
     #[test]

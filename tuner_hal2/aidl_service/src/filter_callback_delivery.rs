@@ -18,11 +18,10 @@ use maleicacid_tuner_hal2_demux::{
     RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC,
 };
 use maleicacid_tuner_hal2_service_runtime::{
-    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
+    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, ClassifiedWorkerTerminalResult,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
     FilterEventDelivery, FilterEventDeliverySnapshot, FilterEventDispatcher, TunerServiceRuntime,
-    ClassifiedWorkerTerminalResult, WorkerContext, WorkerFailureClassifier, WorkerRuntime,
-    WorkerTerminalResult,
+    WorkerContext, WorkerFailureClassifier, WorkerRuntime, WorkerTerminalResult,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -56,7 +55,9 @@ impl AidlFilterEventDispatcher {
                 {
                     log::error!("Filter遅延配送が終了しました: 分類={category:?} エラー={error:?}");
                     if let Some(context) = observer_context.upgrade() {
-                        TunerServiceRuntime::mark_shared_service_critical(context.runtime().as_ref());
+                        TunerServiceRuntime::mark_shared_service_critical(
+                            context.runtime().as_ref(),
+                        );
                     }
                 }
             },
