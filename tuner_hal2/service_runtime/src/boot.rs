@@ -1380,6 +1380,49 @@ mod raw_filter_event_projection_tests {
     }
 
     #[test]
+    fn short_section_event_keeps_table_id_and_zero_undefined_fields() {
+        let (mut runtime, demux_id, filter_id) = configured_raw_filter(
+            FilterOpenType::TsSection,
+            0x123,
+            FilterConfigKind::TsSection {
+                check_crc: false,
+                repeat: true,
+                raw: false,
+                length_field_bits: 12,
+                condition: SectionCondition {
+                    kind: SectionConditionKind::SectionBits,
+                    filter: Vec::new(),
+                    mask: Vec::new(),
+                    mode: Vec::new(),
+                    table_id: None,
+                    version: None,
+                },
+            },
+        );
+        // TDTはsyntax_indicator=0のためversion/section_numberを持たない。
+        let section = [0x70, 0x30, 0x05, 0, 0, 0, 0, 0];
+        let mut payload = vec![0];
+        payload.extend_from_slice(&section);
+        let (_report, snapshots) = push_and_project(
+            &mut runtime,
+            demux_id,
+            &packet_with_payload(0x123, true, &payload),
+        );
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.filter_id == filter_id
+                && matches!(
+                    snapshot.event,
+                    FilterEventDelivery::Section {
+                        data_length: 8,
+                        table_id: 0x70,
+                        version: 0,
+                        section_num: 0,
+                    }
+                )
+        }));
+    }
+
+    #[test]
     fn raw_section_fmq_commit_projects_data_ready_without_typed_event() {
         let pid = 0x0123;
         let (mut runtime, demux_id, filter_id) = configured_raw_filter(
