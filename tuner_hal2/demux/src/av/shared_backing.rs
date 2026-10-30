@@ -451,7 +451,6 @@ impl AvSharedBacking {
     pub fn release_is_complete(&self) -> bool {
         self.event_local_allocations.is_empty()
     }
-
 }
 
 const PROT_READ: i32 = 0x1;
