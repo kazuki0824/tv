@@ -1,3 +1,8 @@
+# 2026-10-30 scanのkey集合試験を本番の公開入力へ接続
+
+- テストからしか呼ばれないvalidProgramKeysForUpdateを本番から削除する。Rustの削除保護identity集合とauthoritative flagは、実際のProgram公開が使うEpgUpdateWindow変換を直接試験する。
+- 変換処理・状態・台帳を新設せず、既存の変換を一意に保つ。試験件数を維持し、実行はCIへ委ねる。
+
 # 2026-10-30 テスト専用入口整理後の未使用PTS型を除去
 
 - 旧captionTimestampForTestの削除で呼出し元がなくなったPesPts90kと専用の変換・生成関数を削除する。QodanaのUnusedSymbol 3件へ対応し、検査の抑制や型のためだけの呼出しは追加しない。

@@ -1218,9 +1218,6 @@ class ChannelScanController(
                     null
                 }
             }
-
-        internal fun validProgramKeysForUpdate(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
-            update.validProgramStableIdentities.toSet()
     }
 }
 

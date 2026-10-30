@@ -2067,7 +2067,9 @@ class TisR51FixedPlanAcceptanceTest {
                 validProgramStableIdentities = listOf(undefinedTimeIdentity),
                 deletionAuthoritative = true,
             )
-        check(ChannelScanController.validProgramKeysForUpdate(update) == setOf(undefinedTimeIdentity))
+        val publicationWindow = ProgramPublishCoordinator.EpgUpdateWindow(update)
+        check(publicationWindow.validProgramKeys == setOf(undefinedTimeIdentity))
+        check(publicationWindow.deletionAuthoritative)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
