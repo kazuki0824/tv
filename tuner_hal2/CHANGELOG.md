@@ -1,3 +1,9 @@
+# 2026-10-30 DVR確定後診断の結果処理を明示（#210）
+
+- main由来のDVR callback診断fallbackで、コメントだけの空ifを除去し、型付きの成功結果を照合して記録失敗時は診断処理を明示的に終了する。
+- 記録失敗を既存storeのcounterが計上する契約を維持し、公開commitの取消し、二重計上、新たな状態・worker・台帳を追加しない。
+- 既存の汚染試験領域へ、実storeの記録失敗が型付き失敗を返し、失敗counterを一度だけ増やす回帰試験を追加する。試験はCIで確認し、Android製品build・実機確認は未実施。
+
 # 2026-10-22 PX4 worker異常終了時のSTOP失敗（#116）
 
 - 異常終了cleanupでもSTOP成功後だけlive pumpをjoinする。STOP失敗時は元エラーと停止エラーを返し、未終了pumpとsessionを既存worker slot / cleanup ownerへ保持して隔離する。終端回収や失敗結果への変換で物理資源を落とさず、同じfrontendの置換を拒否する。

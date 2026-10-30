@@ -53,6 +53,24 @@ mod poison_tests {
     }
 
     #[test]
+    fn dvr_post_commit_record_failure_is_counted_once_by_existing_store() {
+        let post = SharedDvrPostCommitNotificationDiagnostics::new(2);
+        poison(&post.records);
+        let record = DvrPostCommitNotificationDiagnosticRecord::new(
+            DvrPostCommitNotificationPhase::InitialStatusDelivery,
+            DvrPostCommitNotificationFailureKind::CallbackRegistryAccounting,
+            AidlObjectId(1),
+            AidlObjectGeneration(1),
+            HalError::callback_failed("DVR callback", "模擬配送失敗"),
+        );
+        assert!(matches!(
+            post.record(record),
+            Err(HalError::LockPoisoned(p)) if p.lock == RuntimeLockKind::DvrPostCommitDiagnostics
+        ));
+        assert_eq!(post.record_failure_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn shared_diagnostic_poison_preserves_store_identity_on_snapshot_and_clear() {
         let post = SharedDvrPostCommitNotificationDiagnostics::new(2);
         let notifier = SharedDvrStatusNotifierCleanupDiagnostics::new(2);
