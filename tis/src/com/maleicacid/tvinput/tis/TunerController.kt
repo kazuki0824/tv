@@ -539,7 +539,11 @@ class TunerController(
                 Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)
                 return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())
             }
-        return tuneResolvedChannel(resolved, eitPfActualOnly = true, afterOldSectionFiltersClosed = afterOldSectionFiltersClosed)
+        return tuneResolvedChannel(
+            resolved,
+            eitPfActualOnly = true,
+            afterOldSectionFiltersClosed = afterOldSectionFiltersClosed,
+        )
     }
 
     internal data class BsFrontendSelectionResult(
