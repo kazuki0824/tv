@@ -218,7 +218,12 @@ fn event_from_snapshot(
                 },
             )))
         }
-        FilterEventDelivery::Section { data_length } => {
+        FilterEventDelivery::Section {
+            data_length,
+            table_id,
+            version,
+            section_num,
+        } => {
             let data_length = i64::try_from(data_length).map_err(|_| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
@@ -227,6 +232,9 @@ fn event_from_snapshot(
             })?;
             Ok(AidlFilterCallbackDelivery::Event(
                 DemuxFilterEvent::Section(DemuxFilterSectionEvent {
+                    tableId: table_id,
+                    version,
+                    sectionNum: section_num,
                     dataLength: data_length,
                     ..Default::default()
                 }),
@@ -592,13 +600,23 @@ mod tests {
     fn delayed_events_batch_without_crossing_start_id_or_status() {
         let snapshots = vec![
             snapshot(FilterEventDelivery::StartId(8)),
-            snapshot(FilterEventDelivery::Section { data_length: 30 }),
+            snapshot(FilterEventDelivery::Section {
+                data_length: 30,
+                table_id: 0x42,
+                version: 1,
+                section_num: 0,
+            }),
             snapshot(FilterEventDelivery::Pes {
                 stream_id: 0xe0,
                 data_length: 70,
             }),
             snapshot(FilterEventDelivery::Status(FilterStatusEvent::DataReady)),
-            snapshot(FilterEventDelivery::Section { data_length: 50 }),
+            snapshot(FilterEventDelivery::Section {
+                data_length: 50,
+                table_id: 0x42,
+                version: 1,
+                section_num: 0,
+            }),
         ];
         let mut pending = snapshots.into_iter().peekable();
         let mut batches = Vec::new();
@@ -631,11 +649,31 @@ mod tests {
 
     #[test]
     fn regular_event_batch_respects_filter_and_aidl_generation() {
-        let first = snapshot(FilterEventDelivery::Section { data_length: 10 });
-        let second = snapshot(FilterEventDelivery::Section { data_length: 20 });
-        let mut different_filter = snapshot(FilterEventDelivery::Section { data_length: 30 });
+        let first = snapshot(FilterEventDelivery::Section {
+            data_length: 10,
+            table_id: 0x42,
+            version: 1,
+            section_num: 0,
+        });
+        let second = snapshot(FilterEventDelivery::Section {
+            data_length: 20,
+            table_id: 0x42,
+            version: 1,
+            section_num: 0,
+        });
+        let mut different_filter = snapshot(FilterEventDelivery::Section {
+            data_length: 30,
+            table_id: 0x42,
+            version: 1,
+            section_num: 0,
+        });
         different_filter.filter_id = 4;
-        let mut different_generation = snapshot(FilterEventDelivery::Section { data_length: 40 });
+        let mut different_generation = snapshot(FilterEventDelivery::Section {
+            data_length: 40,
+            table_id: 0x42,
+            version: 1,
+            section_num: 0,
+        });
         different_generation.generation = AidlObjectGeneration(3);
         let mut pending = vec![first, second, different_filter, different_generation]
             .into_iter()
@@ -689,13 +727,20 @@ mod tests {
             }))
         ));
 
-        let section =
-            event_from_snapshot(snapshot(FilterEventDelivery::Section { data_length: 64 }))
-                .unwrap();
+        let section = event_from_snapshot(snapshot(FilterEventDelivery::Section {
+            data_length: 64,
+            table_id: 200,
+            version: 17,
+            section_num: 3,
+        }))
+        .unwrap();
         assert!(matches!(
             section,
             AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Section(DemuxFilterSectionEvent {
                 dataLength: 64,
+                tableId: 200,
+                version: 17,
+                sectionNum: 3,
                 ..
             }))
         ));

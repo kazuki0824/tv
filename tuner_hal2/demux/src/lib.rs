@@ -71,7 +71,7 @@ pub use parser::record_index::{
     RECORD_SC_TYPE_SC_AVC, RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC, VVC_SC_AUD, VVC_SC_CRA,
     VVC_SC_GDR, VVC_SC_IDR_N_LP, VVC_SC_IDR_W_RADL, VVC_SC_SPS, VVC_SC_VPS,
 };
-pub use parser::sections::normalize_length_field_bits;
+pub use parser::sections::{normalize_length_field_bits, parse_section_header, SectionHeader};
 pub use parser::ts_core::MAX_PES_BUFFER_BYTES;
 pub use runtime::{
     CommittedDvrQueueCleanup, CommittedFilterQueueCleanup, DemuxRuntime, DemuxRuntimeError,
