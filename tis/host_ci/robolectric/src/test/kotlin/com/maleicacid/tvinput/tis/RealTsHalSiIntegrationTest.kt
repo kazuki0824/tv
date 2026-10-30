@@ -196,7 +196,9 @@ class RealTsHalSiIntegrationTest {
         return outcome == ChannelScanController.SiCollectionOutcome.COMPLETE
     }
 
-    private fun filters(tuner: TunerController): Map<TsPid, List<Filter>> = ReflectionHelpers.getField(tuner, "sectionFilters")
+    private fun filters(tuner: TunerController): Map<TsPid, List<Filter>> {
+        return ReflectionHelpers.getField(tuner, "sectionFilters")
+    }
 
     private fun handles(tuner: TunerController): Map<TsPid, TunerController.SectionFilterHandle> =
         ReflectionHelpers.getField(tuner, "sectionFilterHandles")

@@ -52,14 +52,6 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 
 - 旧captionTimestampForTestの削除で呼出し元がなくなったPesPts90kと専用の変換・生成関数を削除する。QodanaのUnusedSymbol 3件へ対応し、検査の抑制や型のためだけの呼出しは追加しない。
 - 現在の字幕時刻は既存PtsEpochCoordinatorによる正規化とCaptionPtsMillisを使用しており、実行経路・時刻計算・表示条件は変更しない。テストはCIで確認する。
-## 固定TSのSection受付回帰
-
-- #116の既存16件上限を変更せず、固定TSの実HAL section出力を複数SDK Filterから配送する回帰を追加。owner占有、喪失件数、実SI JNIの完成判定、再送、Filter交換、候補切替を既存診断・収集判定へ接続する。試験専用入口を製品へ追加しない。
-
-## CIレビュー追補
-
-- 旧PES時刻テストの削除後に残った未使用型を削除し、QodanaのUnusedSymbol 3件を解消する。字幕時刻の実経路は変更しない。
-
 # 2026-10-30 PR #123 実TS AVC AU・PTS回帰をhost CIへ接続
 
 - #116で追加した`video_timestamp.rs::captured_transport_frames_have_individual_timestamps`の試験本体・期待値・`#[ignore]`は変えず、#123が所有する既存の実TS fixtureを`AVC_CAPTURE_PATH`に指定し、Robolectric host workflowで明示実行する。
@@ -1722,3 +1714,7 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 ## r50ba2
 - `ChannelKeys.kt` を package 外の `../` source path ではなく Soong module dependency 経由で `rec` tests から参照できるよう、`maleicacid_tvinput_channel_keys_sources` filegroup を追加した。
 - No TIS Kotlin implementation, resources, manifest, permissions, or product integration files were changed.
+
+## CIレビュー追補
+
+- 旧PES時刻テストの削除後に残った未使用型を削除し、QodanaのUnusedSymbol 3件を解消する。字幕時刻の実経路は変更しない。
