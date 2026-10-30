@@ -3813,13 +3813,8 @@ impl TunerServiceRuntime {
         let exists = match entry.object_kind {
             AidlObjectKind::Demux => {
                 let demux_id = DemuxRuntimeId(id);
-                let exists = self.registry.demux(demux_id).is_some()
-                    && self.registry.demux_runtime(demux_id).is_some();
-                if exists {
-                    self.registry
-                        .validate_demux_frontend_binding_change(demux_id, None)?;
-                }
-                exists
+                self.registry.demux(demux_id).is_some()
+                    && self.registry.demux_runtime(demux_id).is_some()
             }
             AidlObjectKind::Filter => self
                 .registry

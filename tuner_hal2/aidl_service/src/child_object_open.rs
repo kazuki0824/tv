@@ -292,13 +292,15 @@ fn finish_filter_child_open(
             primary,
         );
     }
-    if let Err(primary) = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
-        runtime.as_ref(),
-        "service runtimeのロックが汚染されています",
-    )
-    .map_err(status_from_hal_error)?
-    .commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
-    {
+    let commit_result = {
+        let mut guard = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+            runtime.as_ref(),
+            "service runtimeのロックが汚染されています",
+        )
+        .map_err(status_from_hal_error)?;
+        guard.commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
+    };
+    if let Err(primary) = commit_result {
         return finish_filter_child_object_construction_failure(
             context,
             runtime,
@@ -367,13 +369,15 @@ fn finish_dvr_child_open(
             primary,
         );
     }
-    if let Err(primary) = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
-        runtime.as_ref(),
-        "service runtimeのロックが汚染されています",
-    )
-    .map_err(status_from_hal_error)?
-    .commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
-    {
+    let commit_result = {
+        let mut guard = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+            runtime.as_ref(),
+            "service runtimeのロックが汚染されています",
+        )
+        .map_err(status_from_hal_error)?;
+        guard.commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
+    };
+    if let Err(primary) = commit_result {
         return finish_dvr_child_object_construction_failure(
             context,
             runtime,

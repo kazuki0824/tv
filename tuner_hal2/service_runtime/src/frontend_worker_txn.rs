@@ -3526,8 +3526,7 @@ fn run_frontend_backend_tune_submit_worker(
     tune_notifier: FrontendTuneNotifier,
 ) -> Result<(), HalError> {
     if ctx.cancel_requested() {
-        let _ = ticket.complete();
-        return Ok(());
+        return complete_prepared_submit_cleanup(ticket);
     }
     let terminal_deadline = frontend_terminal_deadline_at(Instant::now(), backend)?;
     let session = match ticket.submit() {

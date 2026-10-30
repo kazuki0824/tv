@@ -1340,7 +1340,7 @@ impl DemuxRuntime {
         };
         let data_id = AvDataId(av_data_id);
         if let Some(backing) = self.filter_av_backings.get_mut(&filter_id) {
-            return Ok(backing.apply_release(descriptor, data_id, filter_state));
+            return Ok(backing.apply_release(descriptor, data_id));
         }
         if filter_state == AvFilterReleaseState::OpenAv {
             return Err(DemuxRuntimeError::av_backing_failure(filter_id));
@@ -1351,7 +1351,6 @@ impl DemuxRuntime {
                 AvHandleReleaseDescriptor::File(_) => AvHandleReleaseKind::UnknownFile,
             },
             data_id,
-            filter_state,
             data_id_state: AvDataIdState::Unknown,
         });
         Ok(fallback_outcome)

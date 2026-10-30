@@ -1,6 +1,6 @@
 use super::event::{AvMediaEventDescriptor, AvMediaEventMetadata};
 use super::release_txn::{
-    AvDataIdState, AvEventLocalHandleLeaseState, AvFilterReleaseState, AvHandleReleaseInput,
+    AvDataIdState, AvEventLocalHandleLeaseState, AvHandleReleaseInput,
     AvHandleReleaseKind, AvHandleReleaseOutcome, AvHandleReleaseTxn,
 };
 use super::slot::AvDataId;
@@ -383,7 +383,6 @@ impl AvSharedBacking {
         &self,
         descriptor: AvHandleReleaseDescriptor,
         data_id: AvDataId,
-        filter_state: AvFilterReleaseState,
     ) -> AvHandleReleaseOutcome {
         let handle_kind = match descriptor {
             AvHandleReleaseDescriptor::Empty => AvHandleReleaseKind::Empty,
@@ -405,7 +404,6 @@ impl AvSharedBacking {
         AvHandleReleaseTxn::classify(AvHandleReleaseInput {
             handle_kind,
             data_id,
-            filter_state,
             data_id_state: self.data_id_state(data_id),
         })
     }
@@ -414,9 +412,8 @@ impl AvSharedBacking {
         &mut self,
         descriptor: AvHandleReleaseDescriptor,
         data_id: AvDataId,
-        filter_state: AvFilterReleaseState,
     ) -> AvHandleReleaseOutcome {
-        let outcome = self.classify_release(descriptor, data_id, filter_state);
+        let outcome = self.classify_release(descriptor, data_id);
         match outcome {
             AvHandleReleaseOutcome::EventLocalHandleReleased { data_id } => {
                 let Some(allocation) = self.event_local_allocations.get_mut(&data_id) else {
@@ -448,7 +445,7 @@ impl AvSharedBacking {
         descriptor: AvHandleReleaseDescriptor,
         data_id: AvDataId,
     ) -> AvHandleReleaseOutcome {
-        self.apply_release(descriptor, data_id, AvFilterReleaseState::Closed)
+        self.apply_release(descriptor, data_id)
     }
 
     pub fn release_is_complete(&self) -> bool {

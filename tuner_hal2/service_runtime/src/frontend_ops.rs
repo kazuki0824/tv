@@ -629,13 +629,14 @@ impl FrontendTuneScanTxn {
             };
 
             let completed = prepared.execute(&permit);
-            match TunerServiceRuntime::lock_shared(
-                runtime.as_ref(),
-                "固定給電解放の完了処理中にservice runtimeのロックが汚染されました",
-            )?
-            .lnb_control_txn()
-            .finish(completed)
-            {
+            let finish_result = {
+                let mut guard = TunerServiceRuntime::lock_shared(
+                    runtime.as_ref(),
+                    "固定給電解放の完了処理中にservice runtimeのロックが汚染されました",
+                )?;
+                guard.lnb_control_txn().finish(completed)
+            };
+            match finish_result {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     let mut guard = TunerServiceRuntime::lock_shared(

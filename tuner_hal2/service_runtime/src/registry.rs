@@ -1037,14 +1037,6 @@ impl RuntimeRegistry {
         Ok(Some(FrontendDemuxStartGuard { active }))
     }
 
-    pub(crate) fn validate_demux_frontend_binding_change(
-        &self,
-        _demux_id: DemuxRuntimeId,
-        _next_frontend_id: Option<FrontendRuntimeId>,
-    ) -> Result<(), HalError> {
-        Ok(())
-    }
-
     pub(crate) fn prepare_demux_frontend_binding_change(
         &mut self,
         demux_id: DemuxRuntimeId,

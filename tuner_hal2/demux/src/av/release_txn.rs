@@ -33,7 +33,6 @@ pub enum AvHandleReleaseKind {
 pub struct AvHandleReleaseInput {
     pub handle_kind: AvHandleReleaseKind,
     pub data_id: AvDataId,
-    pub filter_state: AvFilterReleaseState,
     pub data_id_state: AvDataIdState,
 }
 
@@ -120,7 +119,6 @@ mod tests {
         AvHandleReleaseInput {
             handle_kind,
             data_id: AvDataId(data_id),
-            filter_state: AvFilterReleaseState::OpenAv,
             data_id_state: AvDataIdState::ActiveEventLocal,
         }
     }
