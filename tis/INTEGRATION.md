@@ -12,6 +12,19 @@ JNI内部TRACEを詳細調査する場合は`arib_si_engine_rs/src/jni_logging.r
 
 製品build・起動後に、選局から通常視聴・停止・再選局までフィルタなしlogcatを採取し、`jni::wrapper::objects..`等のJNI VERBOSEが消え、`MaleicacidTIS`のDEBUG・停止phase診断が残ることを確認する。性能比較は受信局、vCPU、ログ収集・Perfettoの有無を一致させ、Codec入力返却・出力、画面最終フレーム、CPU時間を比較する。ログ抑制のみで音声入力飽和やCodec停滞の解消を確約しない。
 
+## Section受付容量の負荷検証（未完了）
+
+現行16件の受付上限の位置付けは`DESIGN_JA.md`のController executor契約を正とする。固定TSの回帰証跡は[PR #123](https://github.com/kazuki0824/tv/pull/123)の`realTsBurstLossAndRetransmissionStayWithinCandidate`と同PRのfixture READMEを参照する。既存HAL section処理・SDK callback・SI JNI・候補別喪失snapshot・SI完成判定を実行し、owner占有時の複数Filter入力、喪失保持、再送回復、Filter交換・候補切替を確認する。試験成功は当該固定条件の機能回帰であり、実機の入力率に対する16件の十分性を表さない。
+
+実機の容量判断には次の証跡を同一試行で揃える。未取得の間は容量の必要十分性を確認済みとしない。
+
+- 日時、製品build/HEAD、機種、scan候補・実Filter数、入力TSのhashまたは放送局/RF条件、ログ採取条件。
+- 既存ownerの保留ピーク、Section処理時間、control操作別占有時間。時間単位と観測区間を明記し、hostの意図的待機時間を実機値へ読み替えない。
+- 各候補開始/終了の`inputDeliveryLoss`・`filterOverflow` snapshotと差分、required SIの不足集合、収集終端結果、同一候補の再送後完成結果。
+- Filter交換・次候補への旧callback混入がないこと、およびロスがある候補をロスなしとして報告しないこと。
+
+PR #192旧本文の15,409件は一次ログ・集計条件を確認できておらず、容量判断の証拠から除外する。16件維持または必要最小修正の判断は上記の実測後に行う。広告Filter数に比例した拡張、独自worker/queue、別の完成判定を未検証の数値から追加しない。
+
 ## product package
 
 product makefile で次を継承する。
