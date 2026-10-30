@@ -472,3 +472,8 @@ Frontend停止phaseの観測は既存`FrontendWorkerContext`とslotに従属し�
 TS AVCのAU framingとHRD時刻対応は`demux/src/av/video_timestamp.rs::VideoTimestampAssociation`とその従属`avc_timing.rs::AvcTiming`を`FilterRuntime`が所有する。構文のbit readerはrecord indexと同じ`demux/src/parser/bitstream.rs`を使用する。snapshot、stream type変更、queue cleanup、packet gap、origin境界は既存filter ownerのAV reset入口へ接続する。TIS、AIDL façade、別workerへ解析状態を置かない。公開意味は正本のpresentation timestamp契約を参照する。
 
 Frontend closeの待機は`frontend_worker_txn::close_frontend_workers_and_live_data_with_sink`が既存reaperの待機とworker joinを接続する。期限の意味は`../TUNER_HAL_DESIGN_JA.md`の「Frontend closeの回収完了」に従う。
+
+
+### Filter flushの実処理と診断
+
+queue_cleanup_use_caseはpipeline、FMQ、未配送event、payload状態、PCR anchor、producer drain、source generationの実処理だけを診断stepとして記録する。配送済みAV allocationの所有は変更せず、AvSharedBackingへ空のflushを呼ばない。実処理を伴わないAvBackingFlush成功stepとAvBackingNotPresent skipは持たない。公開flushの資源寿命はTUNER_HAL_DESIGN_JA.mdのAV契約を維持し、未配送eventの破棄と配送済みtokenの明示解放を分離する。

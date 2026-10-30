@@ -148,7 +148,6 @@ pub enum FilterRuntimeOperationStep {
     PipelineRollback,
     MirrorQueueClear,
     QueuedPayloadClear,
-    AvBackingFlush,
     PcrAnchorInvalidate,
     ProducerDrainCommit,
     SourceGenerationRefresh,
@@ -160,7 +159,6 @@ pub enum FilterRuntimeOperationSkipReason {
     QueueNotPresent,
     QueueClearFailed,
     FilterMissingForOptionalFlush,
-    AvBackingNotPresent,
     AlreadyStoppedOrConfigured,
     OpenStateNoop,
     StopPreservesQueue,
@@ -2677,18 +2675,6 @@ impl DemuxRuntime {
         }
     }
 
-    pub fn flush_filter_av_backing_for_queue_cleanup(
-        &mut self,
-        plan: &FilterQueueCleanupPlan,
-    ) -> bool {
-        if let Some(backing) = self.filter_av_backings.get_mut(&plan.filter_id) {
-            backing.preserve_delivered_allocations_on_flush();
-            true
-        } else {
-            false
-        }
-    }
-
     pub fn invalidate_filter_pcr_for_queue_cleanup(&mut self, plan: &FilterQueueCleanupPlan) {
         self.invalidate_pcr_clock_anchor(plan.filter_id);
     }
@@ -2746,7 +2732,6 @@ impl DemuxRuntime {
         self.clear_filter_fmq_for_queue_cleanup(&plan)?;
         self.discard_filter_pending_events_for_queue_cleanup(&mut plan)?;
         let _ = self.clear_filter_payload_state_for_queue_cleanup(&plan);
-        let _ = self.flush_filter_av_backing_for_queue_cleanup(&plan);
         self.invalidate_filter_pcr_for_queue_cleanup(&plan);
         let committed = self.commit_filter_producer_drain_for_queue_cleanup(plan)?;
         self.refresh_filter_source_generation_for_queue_cleanup(committed)

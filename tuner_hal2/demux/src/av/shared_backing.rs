@@ -452,10 +452,6 @@ impl AvSharedBacking {
         self.event_local_allocations.is_empty()
     }
 
-    pub fn preserve_delivered_allocations_on_flush(&mut self) {
-        // flush対象は未配送eventとparserの一過性状態だけである。
-        // 公開済みdataIdの領域はreleaseAvHandle()まで維持する。
-    }
 }
 
 const PROT_READ: i32 = 0x1;
@@ -662,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn event_local_payload_survives_flush_and_releases_after_close_without_shared_export() {
+    fn event_local_payload_releases_after_close_without_shared_export() {
         use std::os::unix::fs::FileExt;
 
         let mut backing = AvSharedBacking::new();
@@ -676,7 +672,6 @@ mod tests {
         };
         let file = event.event_local_file.as_ref().unwrap();
         let handle = AvHandleReleaseDescriptor::File(AvFileIdentity::from_file(file).unwrap());
-        backing.preserve_delivered_allocations_on_flush();
         assert!(!backing.release_is_complete());
         let mut observed = [0; 17];
         file.read_exact_at(&mut observed, 0).unwrap();
