@@ -486,7 +486,8 @@ class PlaybackFailureCallbacksTest {
 
     @Test fun requestedStartAndAudioSwitchReturnCleanupFailureToTheirCaller() {
         for (switchAudio in listOf(false, true)) {
-            val fixture = Fixture(false, false)
+            // Surfaceを必要としないaudio-only経路で、音声切替のcleanup失敗伝達を検査する。
+            val fixture = Fixture(false, audioOnly = switchAudio)
             val generation: Long
             val diagnostics: List<String>
             if (switchAudio) {

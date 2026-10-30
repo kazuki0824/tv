@@ -97,6 +97,23 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun audioOnlySurfaceChangesPreserveFailedGenerationAndPendingRetry() {
+        RetryFixture(audioOnly = true, surfaceReady = false).use { fixture ->
+            fixture.failAndSchedule(7L, PlaybackPipeline.PlaybackUnavailableReason.RECOVERABLE_CODEC_ERROR)
+            val failed = fixture.state()
+            fixture.changeAudioOnlySurface(attach = true)
+            assertEquals(failed, fixture.state())
+            assertTrue(fixture.hasReservation())
+            fixture.changeAudioOnlySurface(attach = false)
+            assertEquals(failed, fixture.state())
+            assertTrue(fixture.hasReservation())
+            fixture.runReservation()
+            assertFalse(fixture.hasReservation())
+            assertEquals(PlaybackStartState.Idle, fixture.state())
+        }
+    }
+
+    @Test
     fun videoRecoveryRequiresValidSurfaceBothWhenScheduledAndWhenRun() {
         RetryFixture(surfaceReady = false).use { fixture ->
             fixture.failAndSchedule(7L)
@@ -199,6 +216,67 @@ class PlaybackFilterAdmissionTest {
 
         fun hasReservation(): Boolean =
             executor.callControl(5_000L) { ReflectionHelpers.getField<Any?>(session, "playbackRetryTask") != null }
+
+        // 同じ予約のSurface接続・切断を既存Session境界へ注入するfixtureを保つ。
+        @Suppress("LongMethod")
+        fun changeAudioOnlySurface(attach: Boolean) {
+            val unsafeType = Class.forName("sun.misc.Unsafe")
+            val unsafe = unsafeType.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
+            val controller =
+                unsafeType
+                    .getMethod("allocateInstance", Class::class.java)
+                    .invoke(unsafe, TunerController::class.java) as TunerController
+            val pipeline = PlaybackPipeline("surface-retry-fixture", null)
+            try {
+                ReflectionHelpers.setField(controller, "playbackPipeline", pipeline)
+                ReflectionHelpers.setField(session, "tunerController", controller)
+                val programs =
+                    com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot(
+                        discoveryProfile = 0,
+                        ingestSequence = 0L,
+                        events = emptyList(),
+                        updateWindows = emptyList(),
+                        semanticFactsByServiceKey = emptyMap(),
+                        descriptorDiagnostics = emptyList(),
+                        parserDiagnostics = emptyList(),
+                    )
+                val service =
+                    com.maleicacid.tvinput.aribsi
+                        .AribService(signature.serviceKey, "audio-only", serviceType = 2)
+                executor.callControl(5_000L) {
+                    ReflectionHelpers.setField(session, "currentService", signature.serviceKey)
+                    ReflectionHelpers.setField(
+                        session,
+                        "latestLiveSnapshot",
+                        com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot(
+                            0L,
+                            programs,
+                            0L,
+                            listOf(service),
+                            emptyList(),
+                            emptyMap(),
+                            emptyList(),
+                            emptyMap(),
+                            emptyList(),
+                            emptyList(),
+                        ),
+                    )
+                    val reserved = ReflectionHelpers.getField<Runnable>(session, "playbackRetryTask")
+                    assertTrue(
+                        ReflectionHelpers.callInstanceMethod<Boolean>(
+                            session,
+                            "onSetSurfaceOnSessionExecutor",
+                            ReflectionHelpers.ClassParameter.from(Surface::class.java, surface.takeIf { attach }),
+                        ),
+                    )
+                    assertTrue(reserved === ReflectionHelpers.getField<Runnable?>(session, "playbackRetryTask"))
+                    // 再開条件のSIは未取得へ戻し、実予約消費→通常開始受付のIdle境界を確認する。
+                    ReflectionHelpers.setField(session, "latestLiveSnapshot", null)
+                }
+            } finally {
+                pipeline.release()
+            }
+        }
 
         fun detachSurface() {
             executor.callControl(5_000L) { ReflectionHelpers.setField(session, "surface", null) }
@@ -1321,6 +1399,32 @@ class PlaybackFilterAdmissionTest {
                 assertTrue(fixture.selectAudio(session, newTrack), stage)
                 assertEquals(next, ReflectionHelpers.getField<Any>(fixture.pipeline, "activeSelection"), stage)
             }
+        }
+    }
+
+    @Test
+    fun audioRestartWithMissingSurfacePreservesVideoAndPlaybackGeneration() {
+        Fixture().use { fixture ->
+            fixture.decoder(false)
+            fixture.decoder(true)
+            val video = fixture.avFilter(false)
+            val audio = fixture.avFilter(true)
+            val selection = fixture.audioSelection()
+            // PID-onlyではなく、音声形式変更による全再生世代の再生成を検査する。
+            val nextAudio =
+                requireNotNull(selection.audio).copy(
+                    elementaryPid = TsPid(0x111),
+                    streamType = 0x03,
+                )
+            val next = selection.copy(audio = nextAudio)
+            val result = fixture.pipeline.switchAudio(fixture.tuner, next)
+            assertFalse(result.switchedAudio)
+            assertEquals(-1L, result.generation)
+            assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertEquals(selection, ReflectionHelpers.getField<Any>(fixture.pipeline, "activeSelection"))
+            assertEquals(0, Shadow.extract<NativeFilter>(video).closes)
+            assertEquals(0, Shadow.extract<NativeFilter>(audio).closes)
+            assertTrue(fixture.unavailable.isEmpty())
         }
     }
 

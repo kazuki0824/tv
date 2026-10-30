@@ -1,3 +1,7 @@
+# 2026-10-30 音声のみのSurface受付条件を整形（#212）
+
+- 再生状態と再試行予約の判定を維持したまま複数行へ整形し、detekt MaxLineLengthを解消する。CIで検証する。
+
 # 2026-10-30 Frontend選局とscan回収の試験を分離（#209）
 
 - scan owner／one-shot close／setup受付の6試験をTunerScanCleanupTestへ移し、元クラスに12試験を維持する。既存Shadowと生成helperを共有し、製品状態やworkerは追加しない。
@@ -40,6 +44,12 @@
 - 同期再生開始の実行時例外も既存stopOnPlaybackExecutorへ接続する。回収失敗はResourceCleanupへ保持し、元例外のsuppressedとStartResultの診断へ追記する。Sessionによる同期失敗通知は維持する。
 - 同一世代のSDT Filter再生成、postDelayed=false後の部分生成資源回収・二次回収失敗保持の回帰試験を追加し、Robolectric CIへ新試験クラスを登録する。
 - 設計と診断コメントを更新した。追加のowner・worker・queue・再試行機構は設けない。テスト実行はCIに委ね、Android製品build・実機試験は未実施。
+# 2026-10-30 音声のみの再試行予約とSurface着脱（#212）
+
+- Surface通知時の再試行取消を映像付きサービスへ限定し、音声のみの失敗世代・既存予約を保持する。予約中のSurface通知ではSI再評価を重ねない。
+- 既存Session予約fixtureでFailed状態のSurface接続・切断、同じ予約の保持、予約消費とIdle受付境界を検査する回帰を追加し、Robolectric期待件数を48へ更新する。SI未取得のfixtureであり、実Codec再開の証明ではない。
+- 設計書を更新した。テスト実行はCIに委ね、Android製品build・実機試験は未実施。
+
 # 2026-10-30 音声のみの再生障害後のSurface非依存再試行を修正（#207）
 
 - 再試行予約と300ms後の実行では、失敗したAV署名に映像PIDがある場合だけ有効Surfaceを要求する。音声のみの回復可能なCodec障害はSurface未設定でも再試行し、映像のSurface失効時の拒否と既存世代・取消しfenceは維持する。
@@ -57,6 +67,20 @@
 - DESIGNの「cursor返却順に依存しない」という記述を、TvProviderへ指定したsort orderで返された行から、サービス照合を通過した先頭行を選ぶ契約へ訂正した。Kotlin側で再整列しないことを明記した。
 - CurrentProgramRatingResolverのquery、候補読取り、サービス照合、先頭候補選択を読み合わせ、実装との整合を確認した。実装・SQLの選択順・試験は変更しない。
 - 文書のみの修正のため、build・ホスト試験・atest/VTS・実機試験は実施していない。
+
+# 2026-10-28 Surface着脱時の音声保持と音声トラック切替の開始前検査（#212）
+
+- 音声のみの再生中はSurface着脱を理由に再生状態・MediaSync音声資源を破棄しない。
+- 映像を伴う音声トラック切替は、#207の音声PID-only切替を維持し、全再生成が必要な場合だけPipelineのSurface有効性を検査して旧世代を維持する。Session側でPID-onlyまで拒否していた過度のgateを除去した。
+- Session・Pipeline・ホスト試験・Robolectric試験と設計を更新。音声PID-onlyを不当に拒否するRobolectricデグレ、host fixtureの未初期化`releaseOnce`、整形違反を修正した。hostのcleanup失敗試験はSurface不要なaudio-only経路で維持し、Robolectricの追加1件に合わせてCIの期待値を修正した。Soong、atest、VTS、実機でのSurface再接続・競合は未検証。
+
+# 2026-10-28 映像再生開始のSurface前提条件
+
+- Sessionの選択済みAVに映像がある場合、Surface未設定・無効の間は開始要求を発行せず、再生状態を変更せず待つ。SI更新等の再評価による不要な開始・失敗確定を防ぐ。音声のみの選択には同条件を課さず、Pipeline側の資源検査は維持する。
+- DESIGNへ開始待ちと既存再評価経路の契約を追記した。独立した予約、状態、再試行履歴は追加しない。
+- 実Sessionを呼ぶホスト回帰試験を2件追加し、Idle／Stoppedでの反復評価が開始へ進まないことと、音声のみのStartedがSurfaceなしでも継続することを検証。CI期待件数を401から403へ更新した。
+- 本番・試験Kotlinのコンパイル、対象HEADのSI JNIを使用したホスト403件、変更Kotlinのktlint 1.8.0・detekt 1.23.8、差分検査が成功。#116の修正前コードではSurface待ち試験が不要な開始・失敗確定へ到達して失敗し、音声のみの試験は成功することを確認した。
+- Android/Soong、atest/VTS、実機でのSurface再接続・無効化競合と黒画面解消の確認は未実施。ホスト試験は実機の映像出力成功を証明しない。
 
 # 2026-10-28 現在番組選択の診断状態に関する設計記述を整理（#210）
 

@@ -687,6 +687,8 @@ eventの宣言descriptor loop長がsection残量を超える場合も、CRCを�
 
 ### LiveSession / PlaybackPipeline / Scan の直列化
 
+Sessionの通常再生開始は、選択済みAVに映像がある場合、有効なSurfaceを必須とする。Surface未設定または無効なら`Starting`への遷移・Controllerへの開始要求を行わず、既存再生状態と失敗履歴を保持して待つ。SI更新、CAS準備、視聴制限解除などの再評価でも同じ入口を通す。有効なSurfaceの設定時は既存の再評価経路から開始でき、別の予約・再試行履歴は持たない。音声のみの選択にはSurfaceを要求しない。音声のみの再生中はSurface着脱だけで再生状態・音声資源を停止せず、映像付きの音声トラック切替では、映像世代を維持する音声PID-only切替を妨げず、全再生成が必要な場合だけPipelineの実Surfaceを確認して新しい再生世代を発行しない。失敗した選択変更はSessionが元の選択へ戻す。Pipeline側のSurface検査は、Sessionでの確認後に資源が無効化され得るため維持する。Sessionの開始可否と、Pipelineが実際に使用する資源の有効性確認を同じ保証とは扱わない。
+
 ライブ選局開始直後は`AribSiEngine.reset()`後の新generationでSI sectionがまだ一件も確定していない期間を通常の`TUNING`状態として扱う。`ServicePolicyDecision.state`を`PENDING / READY / UNSUPPORTED / INVALID`のtyped stateとして正本化し、診断文字列`reasons`を制御分岐へ使用しない。再生状態が`Idle`で直前のSI判断も`PENDING`である初回待ちに限り、対象service未観測かつ`PENDING`の間は再生不能へ変換して`VIDEO_UNAVAILABLE_REASON_UNKNOWN`を通知してはならない。確立済みSIが矛盾PMT等で`READY`から`PENDING`へ失効した場合は初回待ちへ戻さず、既存CAS transactionでmetadataとECM/EMMを退役し、再生停止・字幕終了・利用不能通知を行う。section ingest後に同じlive generationで再評価し、`UNSUPPORTED` / `INVALID`またはCAS/playbackのterminal failureが確定した場合だけunavailableへ遷移する。
 
 ### 再生障害後の再開判断と予約
@@ -955,3 +957,7 @@ boot/background同期の未読AtomicLongと最終skip理由の複製、current-p
 ### スキャン開始拒否
 
 setupの開始要求がactiveTaskにより拒否された場合は、呼出元へ同期的に拒否を通知する。UIは終了待ちを表示し、既存setup generationを消去しない。受付結果はその呼出しの判定時に確定し、既存taskによる拒否と今回の世代枯渇による失敗を同期callbackへ渡す。世代枯渇の場合だけ今回生成した`ScanState.Failed`を表示し、前回scanのterminal状態を今回の拒否理由として再解釈しない。待機後の再試行で世代枯渇が解消するとは案内しない。cleanup後の未受付要求を自動再生せず、次の明示操作で開始する。
+
+### 音声のみの再生のSurface通知と再試行予約
+
+音声のみのサービスではSurface着脱を理由にSessionの既存再試行予約を取り消さず、失敗世代・選局世代の照合を維持する。予約中はSurface通知だけを契機とするSI再評価を重ねず、予約の消費後に通常の開始入口で最新条件を評価する。映像を持つサービスはSurface変更時に従来どおり予約を取り消す。

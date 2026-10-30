@@ -273,10 +273,17 @@ class MaleicacidLiveSession(
             }.getOrDefault(false)
 
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
-        cancelPlaybackRetry()
         this.surface = surface
         tunerController.setSurface(surface)
         tracePlaybackGate(if (surface == null) "SURFACE_DETACHED" else "SURFACE_ATTACHED")
+        // 音声のみの再生は映像Surfaceの着脱に依存しない。
+        if (PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)) {
+            if (playbackState !is PlaybackStartState.Started && playbackRetryTask == null) {
+                refreshDynamicSiAndCasFilters()
+            }
+            return true
+        }
+        cancelPlaybackRetry()
         if (surface?.isValid != true) {
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
@@ -695,6 +702,11 @@ class MaleicacidLiveSession(
                     )
                 }
             notifyVideoUnavailable(mapUnavailableReason(failure))
+            return false
+        }
+        // SI更新などの再評価で、Surface待ちを失敗試行や新しい再生世代へ変換しない。
+        if (selection.video != null && surface?.isValid != true) {
+            tracePlaybackGate("START_WAITING_SURFACE")
             return false
         }
         val signature = playbackSignatureFor(service, selection)
