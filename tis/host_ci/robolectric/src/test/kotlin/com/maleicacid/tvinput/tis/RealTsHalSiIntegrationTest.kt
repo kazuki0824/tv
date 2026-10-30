@@ -138,11 +138,13 @@ class RealTsHalSiIntegrationTest {
                 val replayNanos = System.nanoTime() - replayStarted
                 val staleFilter = filters(tuner).getValue(TsPid(17)).first()
                 val staleHandle = handles(tuner).getValue(TsPid(17))
+                val beforeReplacement = ingest.diagnostics()
                 tuner.closeSectionFilter(TsPid(17))
                 check(tuner.openSectionFilter(TsPid(17)).isOpen)
                 val sdt = sections.first { it.pid == 17 }
                 deliverStale(tuner, staleFilter, staleHandle, sdt)
                 awaitIdle(owner)
+                assertEquals(beforeReplacement, ingest.diagnostics())
                 assertEquals(sections.size, ingest.inputDeliveryLossCount)
                 // 候補境界は実scanと同じ旧Filter停止後resetを使用する。
                 check(
