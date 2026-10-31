@@ -246,7 +246,10 @@ fn sei_number(bytes: &mut &[u8]) -> Option<usize> {
     }
 }
 
-pub(crate) fn start_codes(bytes: &[u8], mut index: usize) -> impl Iterator<Item = (usize, usize)> + '_ {
+pub(crate) fn start_codes(
+    bytes: &[u8],
+    mut index: usize,
+) -> impl Iterator<Item = (usize, usize)> + '_ {
     std::iter::from_fn(move || {
         while index + 3 < bytes.len() {
             if bytes[index..].starts_with(&[0, 0, 1]) {
