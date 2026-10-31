@@ -281,7 +281,8 @@ class TisReviewBoundaryTest {
     }
 
     @Test fun dualMonoUiTracksSelectPresentationsWithoutInventingAudioEs() {
-        val base = TunerController.TisTrack(
+        val base =
+            TunerController.TisTrack(
             id = "audio:274:16",
             type = TvTrackInfo.TYPE_AUDIO,
             pid = TsPid(274),
@@ -292,7 +293,8 @@ class TisReviewBoundaryTest {
         )
         val unchanged = TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) { null }
         check(unchanged == listOf(base))
-        val descriptor = AribComponentEntry(
+        val descriptor =
+            AribComponentEntry(
             esPid = base.pid,
             componentTag = base.componentTag,
             language = "jpn",
@@ -301,17 +303,19 @@ class TisReviewBoundaryTest {
         )
         val advertised = TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) { descriptor }
         check(advertised.map { it.id } == listOf("audio:274:16:main", "audio:274:16:sub", "audio:274:16:main_sub"))
-        check(advertised.map { it.audioPresentation } == listOf(
-            PlaybackPipeline.DualMonoPresentation.MAIN,
-            PlaybackPipeline.DualMonoPresentation.SUB,
-            PlaybackPipeline.DualMonoPresentation.MAIN_SUB,
-        ))
+        val expectedPresentations =
+            listOf(
+                PlaybackPipeline.DualMonoPresentation.MAIN,
+                PlaybackPipeline.DualMonoPresentation.SUB,
+                PlaybackPipeline.DualMonoPresentation.MAIN_SUB,
+            )
+        check(advertised.map { it.audioPresentation } == expectedPresentations)
         check(advertised.map { it.pid }.distinct() == listOf(base.pid))
         check(advertised.all { TunerSelectionPolicy.physicalAudioTrackId(it) == base.id })
         check(advertised[1].language == "eng")
-        check(TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) {
-            descriptor.copy(dualMono = false)
-        } == listOf(base))
+        val nonDualMono =
+            TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) { descriptor.copy(dualMono = false) }
+        check(nonDualMono == listOf(base))
     }
 
     @Test fun videoTrackGeometryRequiresExactPositiveDimensions() {
