@@ -2303,6 +2303,7 @@ class TunerController(
 
         private const val EXHAUSTED_TUNE_GENERATION = -1L
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
+
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 
         @Suppress("MagicNumber", "MaxLineLength")
