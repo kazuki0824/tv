@@ -842,11 +842,12 @@ class MaleicacidLiveSession(
             if (tunerController.setDualMonoPresentation(presentation)) {
                 dualMonoPresentation = presentation
                 latestService?.let { service ->
-                    displayTracksFor(service).firstOrNull { track ->
-                        track.type == TvTrackInfo.TYPE_AUDIO &&
-                            TunerSelectionPolicy.physicalAudioTrackId(track) == preferredAudioTrackId &&
-                            track.audioPresentation == presentation
-                    }?.let { notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id) }
+                    displayTracksFor(service)
+                        .firstOrNull { track ->
+                            track.type == TvTrackInfo.TYPE_AUDIO &&
+                                TunerSelectionPolicy.physicalAudioTrackId(track) == preferredAudioTrackId &&
+                                track.audioPresentation == presentation
+                        }?.let { notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id) }
                 }
             }
         }
@@ -877,9 +878,10 @@ class MaleicacidLiveSession(
         val tracks = displayTracksFor(service, defaultComponentGroupTags)
         return when (type) {
             TvTrackInfo.TYPE_AUDIO -> {
-                val requested = trackId?.let { wanted ->
-                    tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO && it.id == wanted }
-                } ?: return false
+                val requested =
+                    trackId?.let { wanted ->
+                        tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO && it.id == wanted }
+                    } ?: return false
                 if (playbackState !is PlaybackStartState.Started) return false
                 val physicalTrackId = TunerSelectionPolicy.physicalAudioTrackId(requested)
                 val presentation = requested.audioPresentation ?: PlaybackPipeline.DualMonoPresentation.MAIN
