@@ -97,14 +97,7 @@ fn release_undelivered_media(
     let mut runtime = TunerServiceRuntime::lock_shared(runtime, "未配送AVの返却")?;
     let mut failures = FirstErrorCollector::new();
     for snapshot in batch {
-        if let FilterEventDelivery::Media(event) = &snapshot.event {
-            failures.push_result(runtime.release_filter_av_handle_for_any_lifecycle(
-                snapshot.object_id,
-                snapshot.generation,
-                maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor::Empty,
-                event.data_id.0,
-            ));
-        }
+        failures.push_result(runtime.discard_undelivered_filter_media(snapshot.clone()));
     }
     failures.into_result()
 }

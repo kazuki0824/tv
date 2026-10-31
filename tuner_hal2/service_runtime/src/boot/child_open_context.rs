@@ -648,6 +648,42 @@ impl TunerServiceRuntime {
             ));
         }
         let filter_id = self.filter_id_for_av_handle_release_lifecycle(object_id, generation)?;
+        self.release_filter_av_allocation(filter_id, descriptor, av_data_id)
+    }
+
+    pub fn discard_undelivered_filter_media(
+        &mut self,
+        snapshot: crate::FilterEventDeliverySnapshot,
+    ) -> Result<(), HalError> {
+        let crate::FilterEventDelivery::Media(event) = snapshot.event else {
+            return Ok(());
+        };
+        let entry = self.object_table.entry(snapshot.object_id).ok_or_else(|| {
+            HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "未配送AVのobjectがありません")
+        })?;
+        if entry.generation != snapshot.generation
+            || entry.object_kind != maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter
+            || entry.ledger_id.0 != i64::from(snapshot.filter_id)
+        {
+            return Err(HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "未配送AVの所有者が一致しません"));
+        }
+        // 最終参照終了後の登録解除が先行した場合、割当ての回収は既に完了している。
+        if entry.last_reference_ended && self.registry.filter(FilterRuntimeId(snapshot.filter_id)).is_none() {
+            return Ok(());
+        }
+        self.release_filter_av_allocation(
+            snapshot.filter_id,
+            maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor::Empty,
+            event.data_id.0,
+        )
+    }
+
+    fn release_filter_av_allocation(
+        &mut self,
+        filter_id: i32,
+        descriptor: maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor,
+        av_data_id: i64,
+    ) -> Result<(), HalError> {
         if self.registry.filter(FilterRuntimeId(filter_id)).is_some() {
             return self.transact_release_filter_av_handle(filter_id, descriptor, av_data_id);
         }
