@@ -379,7 +379,10 @@ class TvProviderWriter private constructor(
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 候補の処理と入れ子の資源寿命を同じ手順内で確認できる構造を保つ。
     @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "NestedBlockDepth")
-    internal fun upsertPreparedPrograms(publication: PreparedProgramPublication): UpsertResult {
+    internal fun upsertPreparedPrograms(
+        publication: PreparedProgramPublication,
+        skipUnchangedRows: Boolean = false,
+    ): UpsertResult {
         var inserted = 0
         var updated = 0
         var deleted = 0
@@ -456,7 +459,9 @@ class TvProviderWriter private constructor(
                                     entry.endTimeMillis > guardStart && entry.startTimeMillis < guardEnd
                                 }.maxByOrNull { it.programId }
                         // Provider通知後も実際の保存値が同じなら再書込みせず、自己通知の連鎖を止める。
-                        if (existingEntry?.values?.let { programValuesMatch(values, it) } == true) return@mapNotNull null
+                        if (skipUnchangedRows && existingEntry?.values?.let { programValuesMatch(values, it) } == true) {
+                            return@mapNotNull null
+                        }
                         PendingWrite(values, existingEntry?.programId)
                     }
                 if (failures.size == failureCountBeforeService) {

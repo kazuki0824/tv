@@ -1,6 +1,6 @@
 ## Provider自己通知後の同値書込み抑制
 
-既存のProgram索引queryで保存列も読み、同値行をbatch更新から除外する。通知失効後の再評価で自己通知が続かないようにする。追加queryや状態台帳は設けない。
+live更新では既存のProgram索引queryで保存列も読み、同値行をbatch更新から除外する。BOOT等の明示的な書込みcommitは維持する。通知失効後の再評価で自己通知が続かないようにする。追加queryや状態台帳は設けない。
 
 # 2026-10-31 同一versionCodeのAPK置換でもProgram cleanupを実行
 

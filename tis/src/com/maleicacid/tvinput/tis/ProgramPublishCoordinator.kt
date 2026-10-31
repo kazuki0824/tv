@@ -203,7 +203,11 @@ class ProgramPublishCoordinator(
                 committedServiceKeys = eligibleTargetServiceKeys,
             )
         }
-        val result = tvProviderWriter.upsertPreparedPrograms(publication)
+        val result =
+            tvProviderWriter.upsertPreparedPrograms(
+                publication,
+                skipUnchangedRows = mode == ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+            )
         val failedServiceKeys = result.failures.mapNotNull { it.serviceKey }.toSet()
         val failedWindows =
             if (result.failures.any { it.serviceKey == null }) {
