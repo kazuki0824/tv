@@ -114,13 +114,11 @@ impl VideoTimestampAssociation {
                         context.is_pes_private_data,
                     )
                 };
-                let timestamp = self
-                    .timing
-                    .timestamp(
-                        &self.bytes[start..end],
-                        metadata.pts_90khz,
-                        metadata.dts_90khz,
-                    )?;
+                let timestamp = self.timing.timestamp(
+                    &self.bytes[start..end],
+                    metadata.pts_90khz,
+                    metadata.dts_90khz,
+                )?;
                 let mut payload = Vec::new();
                 payload
                     .try_reserve_exact(end - start)
