@@ -1082,7 +1082,7 @@ class MaleicacidLiveSession(
                                 } else {
                                     projected.language
                                 },
-                            description = listOfNotNull(projected.description, presentationLabel).joinToString(" / ").ifBlank { null },
+                            description = listOfNotNull(projected.description, presentationLabel).joinToString(" / ").takeIf { it.isNotBlank() },
                         )
                 }
         val videoMetadataByTrackId =
