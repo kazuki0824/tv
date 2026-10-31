@@ -246,8 +246,7 @@ fn sei_number(bytes: &mut &[u8]) -> Option<usize> {
     }
 }
 
-pub(crate) fn start_codes(bytes: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
-    let mut index = 0usize;
+pub(crate) fn start_codes(bytes: &[u8], mut index: usize) -> impl Iterator<Item = (usize, usize)> + '_ {
     std::iter::from_fn(move || {
         while index + 3 < bytes.len() {
             if bytes[index..].starts_with(&[0, 0, 1]) {
@@ -266,7 +265,7 @@ pub(crate) fn start_codes(bytes: &[u8]) -> impl Iterator<Item = (usize, usize)> 
 }
 
 fn nals(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut codes = start_codes(bytes).peekable();
+    let mut codes = start_codes(bytes, 0).peekable();
     std::iter::from_fn(move || {
         let (_, body) = codes.next()?;
         let end = codes.peek().map_or(bytes.len(), |(start, _)| *start);
@@ -458,7 +457,7 @@ pub(crate) mod tests {
             bytes.extend_from_slice(&[12, 0, 0, 3, 1, 0x80]);
         }
         bytes.extend_from_slice(&[0, 0, 1]);
-        assert!(start_codes(&bytes).eq(expected));
+        assert!(start_codes(&bytes, 0).eq(expected));
         let mut units = nals(&bytes);
         for _ in 0..16383 {
             assert_eq!(units.next(), Some([12, 0, 0, 3, 1, 0x80].as_slice()));
