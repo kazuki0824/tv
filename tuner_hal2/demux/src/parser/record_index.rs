@@ -496,7 +496,7 @@ fn parse_avc_sc_index(nal: &[u8]) -> Option<RecordStartCodeInfo> {
     if !(1..=5).contains(&nal_type) {
         return None;
     }
-    let rbsp = nal_to_rbsp(&nal[1..]);
+    let rbsp = nal_to_rbsp(&nal[1..]).ok()?;
     let mut reader = BitReader::new(&rbsp);
     let first_mb = reader.read_ue()? as i32;
     let slice_type = (reader.read_ue()? % 5) as u8;

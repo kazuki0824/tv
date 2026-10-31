@@ -120,8 +120,7 @@ impl VideoTimestampAssociation {
                         &self.bytes[start..end],
                         metadata.pts_90khz,
                         metadata.dts_90khz,
-                    )
-                    .ok_or(VideoTimestampFailure::MissingAnchor)?;
+                    )?;
                 let mut payload = Vec::new();
                 payload
                     .try_reserve_exact(end - start)
