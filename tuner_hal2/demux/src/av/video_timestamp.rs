@@ -25,6 +25,10 @@ struct PesAnchor {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct VideoTimestampAssociation {
     bytes: Vec<u8>,
+    scan_offset: usize,
+    pending_aud: Option<usize>,
+    #[cfg(test)]
+    scanned_input_bytes: usize,
     anchors: Vec<PesAnchor>,
     origin: Option<TsInputOrigin>,
     timing: AvcTiming,
@@ -83,16 +87,19 @@ impl VideoTimestampAssociation {
             ),
         });
         self.bytes.extend_from_slice(&packet.payload);
+        #[cfg(test)]
+        {
+            self.scanned_input_bytes += self.bytes.len() - self.scan_offset;
+        }
         let mut frames = Vec::new();
         let mut consumed = 0;
         {
-            let mut boundaries = start_codes(&self.bytes)
+            let boundaries = start_codes(&self.bytes, self.scan_offset)
                 .filter(|(_, header)| self.bytes[*header] & 31 == 9)
-                .map(|(start, _)| start)
-                .peekable();
-            while let Some(start) = boundaries.next() {
-                let Some(&end) = boundaries.peek() else {
-                    break;
+                .map(|(start, _)| start);
+            for end in boundaries {
+                let Some(start) = self.pending_aud.replace(end) else {
+                    continue;
                 };
                 // PESの明示時刻はそのPES内で開始する最初のAUへ一度だけ対応させる。
                 let anchor_count = self
@@ -140,8 +147,13 @@ impl VideoTimestampAssociation {
                 consumed = end;
             }
         }
+        // 未確定の3 byte開始prefixだけを次回も調べる。4 byte prefixの先行0は
+        // start_codesが同じbuffer内の直前byteを参照して位置へ含める。
+        self.scan_offset = self.bytes.len().saturating_sub(3);
         if consumed != 0 {
             self.bytes.drain(..consumed);
+            self.scan_offset = self.scan_offset.saturating_sub(consumed);
+            self.pending_aud = self.pending_aud.map(|offset| offset - consumed);
             for anchor in &mut self.anchors {
                 anchor.offset = anchor.offset.saturating_sub(consumed);
             }
@@ -167,6 +179,43 @@ mod tests {
             data_alignment_indicator: false,
             raw_bytes: Vec::new(),
             payload,
+        }
+    }
+
+    #[test]
+    fn fragmented_large_aus_scan_each_input_byte_a_bounded_number_of_times() {
+        use crate::av::avc_timing::tests::au;
+        for filler_size in [4096, 65536, 2 * 1024 * 1024] {
+            let mut first = au(true, true, 60, 0, 1001, 30000);
+            first.extend_from_slice(&[0, 0, 0, 1, 12]);
+            first.extend(std::iter::repeat(0xff).take(filler_size));
+            first.push(0x80);
+            let second = au(false, false, 2, 0, 1001, 30000);
+            let mut input = first.clone();
+            input.extend_from_slice(&second);
+            input.extend_from_slice(&[0, 0, 0, 1, 9, 0x10]);
+            for chunk_size in [1, 16, 184, 4096] {
+                // 1 byte分割は短いAUで全prefix境界を検査する。
+                if chunk_size == 1 && filler_size != 4096 {
+                    continue;
+                }
+                let mut video = VideoTimestampAssociation::default();
+                let origin = TsInputOrigin::frontend(1);
+                let mut frames = Vec::new();
+                let mut packets = 0;
+                for (index, chunk) in input.chunks(chunk_size).enumerate() {
+                    frames.extend(video.extract_avc(packet(chunk.to_vec(), (index == 0).then_some(90000)), origin).unwrap());
+                    packets += 1;
+                }
+                assert_eq!(frames.len(), 2);
+                assert_eq!(frames[0].payload, first);
+                assert_eq!(frames[0].metadata.pts_90khz, Some(90000));
+                assert_eq!(frames[1].payload, second);
+                assert_eq!(frames[1].metadata.pts_90khz, Some(96006));
+                assert!(video.scanned_input_bytes <= input.len() + 3 * packets);
+                assert_eq!(video.bytes, [0, 0, 0, 1, 9, 0x10]);
+                assert_eq!(video.pending_aud, Some(0));
+            }
         }
     }
 
@@ -286,7 +335,7 @@ mod tests {
         assert!(frames.iter().any(|frame| !frame.metadata.is_pts_present));
         for frame in &frames {
             assert_eq!(
-                start_codes(&frame.payload)
+                start_codes(&frame.payload, 0)
                     .filter(|(_, h)| frame.payload[*h] & 31 == 9)
                     .count(),
                 1

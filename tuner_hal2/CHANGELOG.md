@@ -1,5 +1,7 @@
 # 2026-10-31 AV payloadの独立1 MiB制限を除去
 
+- AVCの未完AUをPESごとに先頭から再走査せず、同じVideoTimestampAssociationに次回走査位置と未完AUD位置を保持する。drain時に両位置を補正し、既存resetで破棄する。AU長・PES分割長を独立に変え、payload/PTSと走査入力長の線形上限をCI回帰で確認する。
+
 - AVC時刻解析ではfiller等の未使用NALをRBSPへコピーせず、必要なRBSPとSPS/PPS保持の予約失敗を既存AllocationFailedへ返す。SEIはactive SPS確定後に順次解析し、RBSP配列を保管しない。共有RBSP変換の失敗時、任意のrecord slice索引は生成しない。大きなfiller/SEIを含む時刻対応の回帰を追加し、CIへ委ねる。
 
 - AVCの開始コード・NAL・AUD境界を割当不要のiteratorで走査し、境界配列の通常割当を除去する。多数NALの境界保持、異常入力のfail-closedと再anchor復旧の回帰を追加する。検証はCIへ委ねる。
