@@ -30,6 +30,8 @@ object DirectBootGuard {
     private const val KEY_BOOT_REASON = "bootReason"
     private const val KEY_LAST_SKIPPED_REASON = "lastSkippedReason"
 
+    // Editor chain は末尾の apply() で確定する。行を跨ぐ呼出しに対する誤検知だけを抑制する。
+    @Suppress("AndroidLintCommitPrefEdits")
     fun onLockedBootCompleted(
         context: Context,
         nowMillis: Long,
@@ -43,8 +45,6 @@ object DirectBootGuard {
             .putString(KEY_BOOT_REASON, bootReason)
             .putString(KEY_LAST_SKIPPED_REASON, "LOCKED_BOOT_DEFERRED")
             .apply()
-        BootEpgSyncDiagnostics.lockedBootDeferredCount.incrementAndGet()
-        BootEpgSyncDiagnostics.lastSkippedReason = "LOCKED_BOOT_DEFERRED"
         Log.i(LogTags.TIS, "Direct Boot 中の boot EPG 同期を延期しました reason=$bootReason")
     }
 
@@ -60,25 +60,26 @@ object DirectBootGuard {
         val userManager = context.getSystemService(UserManager::class.java)
         if (userManager == null || !userManager.isUserUnlocked) {
             markSkipped(context, "USER_LOCKED")
-            BootEpgSyncDiagnostics.pendingDrainSkippedLockedCount.incrementAndGet()
             return DrainDecision.SKIP_LOCKED
         }
         if (!isTvProviderReady(context)) {
             markSkipped(context, "TV_PROVIDER_UNAVAILABLE")
-            BootEpgSyncDiagnostics.pendingDrainSkippedTvProviderUnavailableCount.incrementAndGet()
             return DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE
         }
-        BootEpgSyncDiagnostics.pendingDrainStartedCount.incrementAndGet()
         Log.i(LogTags.TIS, "Direct Boot pending boot EPG 同期を開始します source=$source now=$nowMillis")
         return DrainDecision.START_BOOT_EPG_SYNC
     }
 
+    // 同じ式で apply() を呼び、pending の変更を確定する。
+    @Suppress("AndroidLintCommitPrefEdits")
     fun clearPending(context: Context) {
         prefs(context).edit().putBoolean(KEY_PENDING, false).apply()
     }
 
     fun isPending(context: Context): Boolean = prefs(context).getBoolean(KEY_PENDING, false)
 
+    // Editor chain の末尾で apply() を呼ぶ。
+    @Suppress("AndroidLintCommitPrefEdits")
     fun deferPending(
         context: Context,
         reason: String,
@@ -88,10 +89,11 @@ object DirectBootGuard {
             .putBoolean(KEY_PENDING, true)
             .putString(KEY_LAST_SKIPPED_REASON, reason)
             .apply()
-        BootEpgSyncDiagnostics.lastSkippedReason = reason
         Log.i(LogTags.TIS, "boot EPG 同期を延期しました reason=$reason")
     }
 
+    // Editor chain の末尾で apply() を呼ぶ。
+    @Suppress("AndroidLintCommitPrefEdits")
     fun markBootEpgSyncRequested(
         context: Context,
         reason: String,
@@ -105,10 +107,9 @@ object DirectBootGuard {
 
     fun markTunerUnavailable(context: Context) {
         markSkipped(context, "TUNER_UNAVAILABLE")
-        BootEpgSyncDiagnostics.pendingDrainSkippedNoTunerCount.incrementAndGet()
     }
 
-    fun pendingStateForTest(context: Context): DirectBootPendingState {
+    fun pendingState(context: Context): DirectBootPendingState {
         val prefs = prefs(context)
         return DirectBootPendingState(
             pending = prefs.getBoolean(KEY_PENDING, false),
@@ -118,12 +119,13 @@ object DirectBootGuard {
         )
     }
 
+    // 同じ式で apply() を呼び、診断理由を確定する。
+    @Suppress("AndroidLintCommitPrefEdits")
     private fun markSkipped(
         context: Context,
         reason: String,
     ) {
         prefs(context).edit().putString(KEY_LAST_SKIPPED_REASON, reason).apply()
-        BootEpgSyncDiagnostics.lastSkippedReason = reason
         Log.w(LogTags.TIS, "boot EPG 同期 drain を延期します reason=$reason")
     }
 

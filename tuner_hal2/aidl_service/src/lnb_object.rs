@@ -1,6 +1,6 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ILnbCallback::ILnbCallback;
 use binder::{Interface, Result as BinderResult, Strong};
-use maleicacid_tuner_hal2_binder_adapter::AidlMethodCall;
+use maleicacid_tuner_hal2_domain_request::AidlMethodCall;
 
 use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKind};
 use crate::object_runtime::{

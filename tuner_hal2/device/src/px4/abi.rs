@@ -66,11 +66,12 @@ pub const ERRNO_EINVAL: i32 = 22;
 pub const ERRNO_ENOTTY: i32 = 25;
 pub const ERRNO_ENOSYS: i32 = 38;
 pub const ERRNO_EOPNOTSUPP: i32 = 95;
+pub const ERRNO_EALREADY: i32 = 114;
 
 pub const PTX_ISDB_T_SYSTEM: u32 = 0x0000_0010;
 pub const PTX_ISDB_S_SYSTEM: u32 = 0x0000_0020;
 
-// px4_drv encodes these as _IOW(int) but consumes ioctl arg itself as the scalar value.
+// px4_drvでは_IOW(int)として符号化するが、ioctlの引数そのものをスカラー値として受け取る。
 nix::ioctl_write_int!(ptx_enable_lnb_power_scalar, PTX_IOCTL_TYPE_BASIC, 0x05);
 nix::ioctl_write_int!(ptx_set_system_mode_scalar, PTX_IOCTL_TYPE_BASIC, 0x0b);
 

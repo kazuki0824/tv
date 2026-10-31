@@ -42,12 +42,12 @@ pub struct DtvPropertyBuffer {
 
 impl DtvPropertyBuffer {
     pub fn read_len_unaligned(&self) -> u32 {
-        // 安全性: DtvPropertyBufferは#[repr(C, packed)]である。packed fieldの読取にはread_unalignedを使い、pointerは有効参照から導出する。
+        // SAFETY: DtvPropertyBufferは#[repr(C, packed)]である。packed fieldの読取にはread_unalignedを使い、pointerは有効参照から導出する。
         unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.len)) }
     }
 
     pub fn read_data_unaligned(&self) -> [u8; 32] {
-        // 安全性: read_len_unaligned() と同じpacked field規則に従う。
+        // SAFETY: read_len_unaligned() と同じpacked field規則に従う。
         unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.data)) }
     }
 }
@@ -79,19 +79,19 @@ impl DtvProperty {
     }
 
     pub fn read_data_unaligned(&self) -> u32 {
-        // 安全性: DtvPropertyはpackedである。union storageをu32として読む処理はLinux DVB dtv_property ABI data fieldに合わせる。
+        // SAFETY: DtvPropertyはpackedである。union storageをu32として読む処理はLinux DVB dtv_property ABI data fieldに合わせる。
         unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.u) as *const u32) }
     }
 
     pub fn read_buffer_unaligned(&self) -> DtvPropertyBuffer {
-        // 安全性: DtvPropertyはpackedであり、buffer variant bytesをcopyして取り出す。
+        // SAFETY: DtvPropertyはpackedであり、buffer variant bytesをcopyして取り出す。
         unsafe {
             core::ptr::read_unaligned(core::ptr::addr_of!(self.u) as *const DtvPropertyBuffer)
         }
     }
 
     pub fn read_result_unaligned(&self) -> i32 {
-        // 安全性: DtvPropertyはpackedであり、fieldをunaligned copyで取り出す。
+        // SAFETY: DtvPropertyはpackedであり、fieldをunaligned copyで取り出す。
         unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.result)) }
     }
 }
@@ -202,48 +202,56 @@ mod dtv_property_abi_tests {
     fn offset_of_dtv_property_cmd() -> usize {
         let value = MaybeUninit::<DtvProperty>::uninit();
         let base = value.as_ptr();
+        // SAFETY: baseは当該型に整列した領域を指す。フィールドのアドレスだけを計算し、未初期化値を読まない。
         unsafe { core::ptr::addr_of!((*base).cmd) as usize - base as usize }
     }
 
     fn offset_of_dtv_property_reserved() -> usize {
         let value = MaybeUninit::<DtvProperty>::uninit();
         let base = value.as_ptr();
+        // SAFETY: baseは当該型に整列した領域を指す。フィールドのアドレスだけを計算し、未初期化値を読まない。
         unsafe { core::ptr::addr_of!((*base).reserved) as usize - base as usize }
     }
 
     fn offset_of_dtv_property_u() -> usize {
         let value = MaybeUninit::<DtvProperty>::uninit();
         let base = value.as_ptr();
+        // SAFETY: baseは当該型に整列した領域を指す。フィールドのアドレスだけを計算し、未初期化値を読まない。
         unsafe { core::ptr::addr_of!((*base).u) as usize - base as usize }
     }
 
     fn offset_of_dtv_property_result() -> usize {
         let value = MaybeUninit::<DtvProperty>::uninit();
         let base = value.as_ptr();
+        // SAFETY: baseは当該型に整列した領域を指す。フィールドのアドレスだけを計算し、未初期化値を読まない。
         unsafe { core::ptr::addr_of!((*base).result) as usize - base as usize }
     }
 
     fn offset_of_dtv_property_buffer_data() -> usize {
         let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
         let base = value.as_ptr();
+        // SAFETY: baseは当該型に整列した領域を指す。フィールドのアドレスだけを計算し、未初期化値を読まない。
         unsafe { core::ptr::addr_of!((*base).data) as usize - base as usize }
     }
 
     fn offset_of_dtv_property_buffer_len() -> usize {
         let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
         let base = value.as_ptr();
+        // SAFETY: baseは当該型に整列した領域を指す。フィールドのアドレスだけを計算し、未初期化値を読まない。
         unsafe { core::ptr::addr_of!((*base).len) as usize - base as usize }
     }
 
     fn offset_of_dtv_property_buffer_reserved1() -> usize {
         let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
         let base = value.as_ptr();
+        // SAFETY: baseは当該型に整列した領域を指す。フィールドのアドレスだけを計算し、未初期化値を読まない。
         unsafe { core::ptr::addr_of!((*base).reserved1) as usize - base as usize }
     }
 
     fn offset_of_dtv_property_buffer_reserved2() -> usize {
         let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
         let base = value.as_ptr();
+        // SAFETY: baseは当該型に整列した領域を指す。フィールドのアドレスだけを計算し、未初期化値を読まない。
         unsafe { core::ptr::addr_of!((*base).reserved2) as usize - base as usize }
     }
 
@@ -264,6 +272,7 @@ mod dtv_property_abi_tests {
             DtvProperty::with_data(DTV_TUNE, 0),
         ];
         let base = props.as_ptr() as usize;
+        // SAFETY: propsは2要素の配列であり、1要素先のポインターは同じ割当領域内にある。
         let second = unsafe { props.as_ptr().add(1) } as usize;
         assert_eq!(second - base, 76);
     }

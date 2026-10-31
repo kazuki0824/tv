@@ -13,9 +13,59 @@ use super::{
     ObjectQueryRequest, ObjectQueryResponse, ParcelFileDescriptor, Strong, TunerNativeHandle,
     TunerQueueDesc,
 };
-use maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_demux::{AvFileIdentity, AvHandleReleaseDescriptor};
+use maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest;
+
+fn project_shared_av_handle(
+    export: maleicacid_tuner_hal2_demux::AvSharedHandleExport,
+) -> BinderResult<(TunerNativeHandle, i64)> {
+    let size_bytes = i64::try_from(export.size_bytes).map_err(|_| {
+        status_from_hal_error(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "AV shared backing size does not fit i64",
+        ))
+    })?;
+    Ok((
+        TunerNativeHandle {
+            fds: export
+                .file
+                .into_iter()
+                .map(ParcelFileDescriptor::new)
+                .collect(),
+            // JNIは整数要素をCodec2 global INFO indexとして解釈する。
+            // 本製品は有効なindexを発行しないため空にする。
+            ints: vec![],
+        },
+        size_bytes,
+    ))
+}
+
+fn classify_av_release_handle(
+    av_memory: &TunerNativeHandle,
+) -> Result<AvHandleReleaseDescriptor, HalError> {
+    match (av_memory.fds.as_slice(), av_memory.ints.as_slice()) {
+        ([], []) => Ok(AvHandleReleaseDescriptor::Empty),
+        ([file], []) => {
+            let metadata = std::fs::metadata(format!("/proc/self/fd/{}", file.as_raw_fd()))
+                .map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "AV release handle identity could not be classified safely",
+                    )
+                })?;
+            Ok(AvHandleReleaseDescriptor::File(AvFileIdentity::new(
+                metadata.dev(),
+                metadata.ino(),
+                metadata.size(),
+            )))
+        }
+        _ => Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "AV handle shape is neither empty nor a single exported allocation handle",
+        )),
+    }
+}
 
 impl FilterAidlObject {
     pub(crate) fn set_data_source_nullable_for_aidl(
@@ -102,7 +152,7 @@ impl IFilter for FilterAidlObject {
             &self.runtime(),
             self.handle(),
             AidlMethodCall::FilterConfigure(
-                maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::ConfigureFilterByCurrentOpenType,
+                maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest::ConfigureFilterByCurrentOpenType,
             ),
             |runtime, handle, dispatch_proof| {
                 runtime.configure_filter_runtime_for_object_with_current_open_type(
@@ -262,16 +312,8 @@ impl IFilter for FilterAidlObject {
                 )
             },
         )?;
-        let size_bytes = i64::try_from(export.size_bytes).map_err(|_| {
-            status_from_hal_error(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "AV shared backing size does not fit i64",
-            ))
-        })?;
-        *av_memory = TunerNativeHandle {
-            fds: vec![ParcelFileDescriptor::new(export.file)],
-            ints: vec![0],
-        };
+        let (handle, size_bytes) = project_shared_av_handle(export)?;
+        *av_memory = handle;
         Ok(size_bytes)
     }
 
@@ -306,27 +348,7 @@ impl IFilter for FilterAidlObject {
             &self.runtime(),
             self.handle(),
             av_data_id,
-            || match (av_memory.fds.as_slice(), av_memory.ints.as_slice()) {
-                ([], []) => Ok(AvHandleReleaseDescriptor::Empty),
-                ([file], [0]) => {
-                    let metadata = std::fs::metadata(format!("/proc/self/fd/{}", file.as_raw_fd()))
-                        .map_err(|_| {
-                            HalError::internal(
-                                HalInternalKind::InvariantViolation,
-                                "AV release handle identity could not be classified safely",
-                            )
-                        })?;
-                    Ok(AvHandleReleaseDescriptor::File(AvFileIdentity::new(
-                        metadata.dev(),
-                        metadata.ino(),
-                        metadata.size(),
-                    )))
-                }
-                _ => Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::NumericRange,
-                    "AV handle shape is neither empty nor a single exported allocation handle",
-                )),
-            },
+            || classify_av_release_handle(av_memory),
         )
     }
 
@@ -357,5 +379,75 @@ impl IFilter for FilterAidlObject {
                 .map_err(status_from_hal_error)?;
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maleicacid_tuner_hal2_demux::AvSharedHandleExport;
+
+    #[test]
+    fn uninitialized_shared_handle_projects_empty_without_codec2_index() {
+        let (handle, size) = project_shared_av_handle(AvSharedHandleExport {
+            file: None,
+            size_bytes: 0,
+        })
+        .unwrap();
+        assert_eq!(size, 0);
+        assert!(handle.fds.is_empty());
+        assert!(handle.ints.is_empty());
+        assert_eq!(
+            classify_av_release_handle(&handle).unwrap(),
+            AvHandleReleaseDescriptor::Empty
+        );
+    }
+
+    #[test]
+    fn shared_av_handle_projection_and_release_use_single_fd_without_codec2_index() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let metadata = file.metadata().unwrap();
+        let (handle, size) = project_shared_av_handle(AvSharedHandleExport {
+            file: Some(file),
+            size_bytes: 188,
+        })
+        .unwrap();
+        assert_eq!(size, 188);
+        assert_eq!(handle.fds.len(), 1);
+        assert!(handle.ints.is_empty());
+        assert_eq!(
+            classify_av_release_handle(&handle).unwrap(),
+            AvHandleReleaseDescriptor::File(AvFileIdentity::new(
+                metadata.dev(),
+                metadata.ino(),
+                metadata.size(),
+            )),
+        );
+    }
+
+    #[test]
+    fn shared_av_handle_release_rejects_legacy_codec2_index_and_extra_fds() {
+        let (mut handle, _) = project_shared_av_handle(AvSharedHandleExport {
+            file: Some(std::fs::File::open("/dev/null").unwrap()),
+            size_bytes: 188,
+        })
+        .unwrap();
+        handle.ints.push(0);
+        assert!(matches!(
+            classify_av_release_handle(&handle),
+            Err(HalError::InvalidArgument { .. })
+        ));
+        handle.ints.clear();
+        handle.fds.push(ParcelFileDescriptor::new(
+            std::fs::File::open("/dev/null").unwrap(),
+        ));
+        assert!(matches!(
+            classify_av_release_handle(&handle),
+            Err(HalError::InvalidArgument { .. })
+        ));
+        assert_eq!(
+            classify_av_release_handle(&TunerNativeHandle::default()).unwrap(),
+            AvHandleReleaseDescriptor::Empty,
+        );
     }
 }

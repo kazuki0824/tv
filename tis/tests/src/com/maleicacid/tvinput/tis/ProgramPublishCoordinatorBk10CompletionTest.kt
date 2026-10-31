@@ -5,6 +5,7 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
 import android.media.tv.TvContract
+import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
@@ -245,7 +246,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
                 serviceKey = key,
                 windowStartMs = program.startTimeMillis,
                 windowEndMs = program.startTimeMillis + program.durationMillis,
-                validProgramKeys = setOf(TvProviderWriter.programKeyForTest(program)),
+                validProgramKeys = setOf(ProviderDataBridge.buildProgramKey(program)),
                 deletionAuthoritative = false,
             )
 
@@ -342,15 +343,16 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val after = System.currentTimeMillis()
 
         val notBefore = coordinator.retryNotBeforeMillisForTest().single()
-        check(notBefore >= before + ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST)
-        check(notBefore <= after + ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST)
+        check(notBefore >= before + 60_000L)
+        check(notBefore <= after + 60_000L)
         check(coordinator.retryFailureClassesForTest() == setOf(ProgramPublishCoordinator.FailureClass.OBSOLETE_DELETE_FAILED))
     }
 
     @Test fun dirtyWindowQueueHasOneBoundedLruLimit() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        val coordinator = ProgramPublishCoordinator(writer)
+        var now = 0L
+        val coordinator = ProgramPublishCoordinator(writer) { now }
         writer.upsertChannels(
             listOf(
                 ChannelRecord(
@@ -367,7 +369,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         )
 
         val windows =
-            (0 until (ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST + 1)).map { i ->
+            (0 until (512 + 1)).map { i ->
                 ProgramPublishCoordinator.EpgUpdateWindow(
                     serviceKey = key,
                     windowStartMs = program.startTimeMillis + i * 60_000L,
@@ -382,10 +384,25 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             updateWindows = windows,
             allowedServiceKeys = null,
         )
-        check(coordinator.retryWindowCountForTest() == ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST) {
+        check(coordinator.retryWindowCountForTest() == 512) {
             "再試行区間は単一の有界LRUに収める必要があります"
         }
-        check(coordinator.droppedRetryWindowCountForTest(key) == 1)
+        store.deletedWindows.clear()
+        store.failDelete = false
+        now += 60_000L
+        val current =
+            windows.first().copy(
+                windowEndMs = windows.last().windowEndMs,
+            )
+        coordinator.publishWithUpdates(
+            mode = ChannelScanController.PublishMode.SETUP_SCAN,
+            allPrograms = emptyList(),
+            updateWindows = listOf(current),
+            allowedServiceKeys = null,
+        )
+        val expected = (listOf(current) + windows.drop(1)).map { it.windowStartMs to it.windowEndMs }.toSet()
+        check(store.deletedWindows.toSet() == expected) { "退避済みの最古区間を再試行してはなりません" }
+        check(coordinator.retryWindowCountForTest() == 0)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -409,7 +426,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             )
         coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(old), setOf(key))
         check(store.deleteCalls == 1 && coordinator.retryWindowCountForTest() == 1)
-        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
+        now += 60_000L
         repeat(2) {
             val held = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), emptyList(), setOf(key))
             check(!held.hasCommittedTarget && store.deleteCalls == 1)
@@ -439,7 +456,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         writer.upsertChannels(
             listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())),
         )
-        val currentKey = TvProviderWriter.programKeyForTest(program)
+        val currentKey = ProviderDataBridge.buildProgramKey(program)
         val old =
             ProgramPublishCoordinator.EpgUpdateWindow(
                 key,
@@ -451,7 +468,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val failed = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(old), setOf(key))
         check(failed.failures.any { it.operation == "program-delete-obsolete" })
         check(store.deleteCalls == 1 && coordinator.retryWindowCountForTest() == 1)
-        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
+        now += 60_000L
         store.failDelete = false
         val partial =
             coordinator.publishWithUpdates(
@@ -511,7 +528,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             coordinator.publishWithUpdates(
                 ChannelScanController.PublishMode.BOOT_EPG_SYNC,
                 listOf(program),
-                listOf(window.copy(validProgramKeys = setOf(TvProviderWriter.programKeyForTest(program)))),
+                listOf(window.copy(validProgramKeys = setOf(ProviderDataBridge.buildProgramKey(program)))),
                 setOf(key),
             )
         check(valid.hasCommittedTarget && store.insertedPrograms == 1)
@@ -535,7 +552,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         fun publish(window: ProgramPublishCoordinator.EpgUpdateWindow) =
             coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(window), setOf(key))
         check(publish(old).failures.isNotEmpty())
-        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
+        now += 60_000L
         store.failDelete = false
         for ((start, end) in listOf(300L to 400L, 150L to 250L)) {
             val before = store.deletedWindows.size
@@ -565,7 +582,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
                 key,
                 program.startTimeMillis,
                 program.startTimeMillis + program.durationMillis,
-                setOf(TvProviderWriter.programKeyForTest(program)),
+                setOf(ProviderDataBridge.buildProgramKey(program)),
                 true,
             )
 
@@ -578,14 +595,36 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             )
         check(publish().hasCommittedTarget)
         val before = store.deleteCalls
+        val changedProgram = program.copy(description = "provider失敗確認")
+
+        fun publishChanged() =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                listOf(changedProgram),
+                listOf(window),
+                setOf(key),
+            )
         store.failChannelQuery = true
-        check(publish().failures.isNotEmpty() && coordinator.retryWindowCountForTest() == 1)
+        check(publishChanged().failures.isNotEmpty() && coordinator.retryWindowCountForTest() == 1)
+        coordinator.invalidateProviderState()
+        check(coordinator.retryWindowCountForTest() == 1)
         store.failChannelQuery = false
-        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
-        val recovered = publish()
+        now += 60_000L
+        val recovered = publishChanged()
         check(recovered.hasCommittedTarget && recovered.skippedUnchanged == 0)
         check(store.deleteCalls == before + 1 && coordinator.retryWindowCountForTest() == 0)
-        check(publish().skippedUnchanged > 0 && store.deleteCalls == before + 1)
+        check(publishChanged().skippedUnchanged > 0 && store.deleteCalls == before + 1)
+        val updated = store.updatedPrograms
+        coordinator.invalidateProviderState()
+        check(publishChanged().hasCommittedTarget)
+        check(store.updatedPrograms == updated)
+        check(publishChanged().skippedUnchanged > 0)
+        val inserted = store.insertedPrograms
+        store.removePublishedPrograms()
+        coordinator.invalidateProviderState()
+        check(publishChanged().hasCommittedTarget)
+        check(store.insertedPrograms == inserted + 1)
+        check(publishChanged().skippedUnchanged > 0)
     }
 
     private class FakeStore(
@@ -598,6 +637,9 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         private var nextProgramId = 100L
         private val channels = linkedMapOf<Long, ContentValues>()
         private val programs = linkedMapOf<Long, ContentValues>()
+
+        fun removePublishedPrograms() = programs.clear()
+
         var insertedPrograms = 0
         var updatedPrograms = 0
         var deleteCalls = 0
@@ -606,11 +648,52 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         var failChannelQuery = false
         var serviceIndexQueries = 0
 
-        override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
+        override fun readCanonicalGenres(
+            channelId: Long,
+            programIds: Set<Long>,
+        ): Result<Map<Long, String?>> =
+            Result.success(
+                programs
+                    .filter { (id, values) ->
+                        id in programIds && values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId
+                    }.mapValues { it.value.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) },
+            )
+
+        override fun indexInitialBrowsablePendingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+            Result.success(
+                channels.entries
+                    .mapNotNull { (id, values) ->
+                        if (values.getAsLong(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_FLAG1) != 1L) {
+                            null
+                        } else {
+                            val key =
+                                ServiceKey(
+                                    values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                                )
+                            if (key in keys) key to id else null
+                        }
+                    }.toMap(),
+            )
+
+        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
             if (failChannelQuery) {
                 Result.failure(IllegalStateException("channel問い合わせ失敗"))
             } else {
-                Result.success(channels.keys.firstOrNull())
+                Result.success(
+                    buildMap {
+                        channels.forEach { (id, values) ->
+                            val key =
+                                ServiceKey(
+                                    values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID),
+                                    values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID),
+                                )
+                            if (key in keys && !containsKey(key)) put(key, id)
+                        }
+                    },
+                )
             }
 
         override fun insertChannel(values: ContentValues): Result<Long?> {
@@ -636,37 +719,49 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             return Result.success(programIndex())
         }
 
-        override fun indexExistingProgramsForWindow(
+        override fun indexExistingProgramEntriesForWindow(
             channelId: Long,
             windowStartMs: Long,
             windowEndMs: Long,
-        ): Result<Map<String, Long>> {
+        ): Result<Map<String, List<TvProviderWriter.ExistingProgramIndexEntry>>> {
             if (failWindowIndexOnce) {
                 failWindowIndexOnce = false
-                return Result.failure(IllegalStateException("null cursor"))
+                return Result.failure(IllegalStateException("null cursor確認"))
             }
-            return Result.success(programIndex())
+            return Result.success(
+                programs.entries
+                    .mapNotNull { (id, values) ->
+                        if (values.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
+                        val start = values.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                        val end = values.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                        if (end <= windowStartMs || start >= windowEndMs) return@mapNotNull null
+                        val key =
+                            TvProviderWriter.parseProgramKey(
+                                values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
+                            ) ?: return@mapNotNull null
+                        key to TvProviderWriter.ExistingProgramIndexEntry(id, start, end, ContentValues(values))
+                    }.groupBy({ it.first }, { it.second }),
+            )
         }
 
-        override fun insertProgram(values: ContentValues): Result<Long?> {
-            if (failInsertOnce) {
+        override fun upsertProgramsBatch(
+            requests: List<TvProviderWriter.ProgramUpsertRequest>,
+        ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> {
+            if (failInsertOnce && requests.any { it.existingProgramId == null }) {
                 failInsertOnce = false
                 return Result.failure(IllegalStateException("挿入失敗"))
             }
-            val id = nextProgramId++
-            programs[id] = ContentValues(values)
-            insertedPrograms++
-            return Result.success(id)
-        }
-
-        override fun updateProgram(
-            programId: Long,
-            values: ContentValues,
-        ): Result<Int> {
-            programs[programId]?.putAll(values)
-            val updated = if (programs.containsKey(programId)) 1 else 0
-            updatedPrograms += updated
-            return Result.success(updated)
+            return testUpsertProgramsBatch(
+                programs,
+                requests,
+                allocateId = { nextProgramId++ },
+            ).onSuccess { outcomes ->
+                requests.zip(outcomes).forEach { (request, outcome) ->
+                    if (outcome.programId != null) {
+                        if (request.existingProgramId == null) insertedPrograms++ else updatedPrograms++
+                    }
+                }
+            }
         }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

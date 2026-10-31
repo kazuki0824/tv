@@ -10,7 +10,9 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 };
 use binder::ParcelFileDescriptor;
 use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
-use maleicacid_tuner_hal2_common::{FirstErrorCollector, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{
+    FirstErrorCollector, HalError, HalErrorDetail, HalInternalKind,
+};
 use maleicacid_tuner_hal2_demux::{
     FilterStatusEvent, TsRecordEventData, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC,
     RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC,
@@ -35,15 +37,6 @@ enum AidlFilterCallbackDelivery {
     Status(DemuxFilterStatus),
 }
 
-impl AidlFilterCallbackDelivery {
-    const fn operation_name(&self) -> &'static str {
-        match self {
-            Self::Event(_) => "IFilterCallback.onFilterEvent",
-            Self::Status(_) => "IFilterCallback.onFilterStatus",
-        }
-    }
-}
-
 impl AidlFilterEventDispatcher {
     pub fn new(context: &SharedAidlServiceContext) -> Result<Self, HalError> {
         let worker_context = Arc::downgrade(context);
@@ -54,11 +47,12 @@ impl AidlFilterEventDispatcher {
             move |control| run_filter_delay_delivery(worker_context, control),
             || {},
         )
-        .map_err(|error| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("filter delay delivery worker spawn failed: {error}"),
-            )
+        .map_err(|error| HalError::Io {
+            backend: "filter遅延配送",
+            operation: "スレッド生成",
+            path: None,
+            errno: error.raw_os_error(),
+            detail: HalErrorDetail::new(error.to_string()),
         })?;
         Ok(Self {
             context: Arc::downgrade(context),
@@ -77,7 +71,7 @@ impl AidlFilterEventDispatcher {
 impl Drop for AidlFilterEventDispatcher {
     fn drop(&mut self) {
         if let Some(worker) = self.delay_worker.as_ref() {
-            worker.request_stop_and_wake();
+            worker.request_stop();
         }
     }
 }
@@ -93,6 +87,24 @@ pub(crate) fn dispatch_filter_event_snapshots(
     AidlFilterEventDispatcher::without_worker(context).dispatch(&runtime, snapshots)
 }
 
+fn release_undelivered_media(
+    runtime: &Arc<Mutex<TunerServiceRuntime>>,
+    batch: &[FilterEventDeliverySnapshot],
+) -> Result<(), HalError> {
+    if !batch
+        .iter()
+        .any(|snapshot| matches!(snapshot.event, FilterEventDelivery::Media(_)))
+    {
+        return Ok(());
+    }
+    let mut runtime = TunerServiceRuntime::lock_shared(runtime, "未配送AVの返却")?;
+    let mut failures = FirstErrorCollector::new();
+    for snapshot in batch {
+        failures.push_result(runtime.discard_undelivered_filter_media(snapshot.clone()));
+    }
+    failures.into_result()
+}
+
 fn run_filter_delay_delivery(
     weak_context: Weak<AidlServiceContext>,
     control: WorkerContext,
@@ -106,12 +118,11 @@ fn run_filter_delay_delivery(
         };
         let runtime = context.runtime();
         let (snapshots, deadline) = {
-            let mut guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
+            let mut guard =
+                maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+                    runtime.as_ref(),
                     "service runtime lock poisoned while polling delayed filter events",
-                )
-            })?;
+                )?;
             guard.poll_filter_delay_delivery()?
         };
         if !snapshots.is_empty() {
@@ -123,7 +134,7 @@ fn run_filter_delay_delivery(
         if control.stop_requested() {
             return Ok(());
         }
-        control.wait_until(deadline)?;
+        control.wait_until(deadline);
     }
 }
 
@@ -203,7 +214,9 @@ fn event_from_snapshot(
                             )
                         },
                     )?)],
-                    ints: vec![0],
+                    // JNIはintsの存在をCodec2 global INFO indexとして解釈する。
+                    // 対応する有効なindexを発行しないため、int配列は空にする。
+                    ints: vec![],
                 },
                 None => Default::default(),
             };
@@ -223,7 +236,12 @@ fn event_from_snapshot(
                 },
             )))
         }
-        FilterEventDelivery::Section { data_length } => {
+        FilterEventDelivery::Section {
+            data_length,
+            table_id,
+            version,
+            section_num,
+        } => {
             let data_length = i64::try_from(data_length).map_err(|_| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
@@ -232,6 +250,9 @@ fn event_from_snapshot(
             })?;
             Ok(AidlFilterCallbackDelivery::Event(
                 DemuxFilterEvent::Section(DemuxFilterSectionEvent {
+                    tableId: table_id,
+                    version,
+                    sectionNum: section_num,
                     dataLength: data_length,
                     ..Default::default()
                 }),
@@ -308,7 +329,7 @@ fn finish_filter_callback_delivery_failure(
     phase: CallbackDeliveryFailurePhase,
     primary: HalError,
 ) -> Result<(), HalError> {
-    match runtime.lock() {
+    match TunerServiceRuntime::lock_shared(runtime, "filter callback失敗") {
         Ok(mut runtime) => runtime.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::filter(
                 handle.object_id(),
@@ -317,7 +338,12 @@ fn finish_filter_callback_delivery_failure(
                 primary,
             ),
         ),
-        Err(_) => {
+        Err(lock_error) => {
+            let primary = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                "filter callback失敗時のruntimeロック",
+                primary,
+                lock_error,
+            );
             let record = FilterCallbackDeliveryDiagnosticRecord::new(
                 filter_callback_diagnostic_phase(phase),
                 handle.object_id(),
@@ -338,6 +364,42 @@ fn finish_filter_callback_delivery_failure(
     }
 }
 
+fn take_callback_event_batch(
+    first: FilterEventDeliverySnapshot,
+    pending: &mut std::iter::Peekable<impl Iterator<Item = FilterEventDeliverySnapshot>>,
+) -> Vec<FilterEventDeliverySnapshot> {
+    let batchable = matches!(
+        &first.event,
+        FilterEventDelivery::Media(_)
+            | FilterEventDelivery::Section { .. }
+            | FilterEventDelivery::Pes { .. }
+            | FilterEventDelivery::RecordIndex(_)
+    );
+    let object_id = first.object_id;
+    let generation = first.generation;
+    let filter_id = first.filter_id;
+    let mut batch = vec![first];
+    if batchable {
+        while pending.peek().is_some_and(|next| {
+            next.object_id == object_id
+                && next.generation == generation
+                && next.filter_id == filter_id
+                && matches!(
+                    &next.event,
+                    FilterEventDelivery::Media(_)
+                        | FilterEventDelivery::Section { .. }
+                        | FilterEventDelivery::Pes { .. }
+                        | FilterEventDelivery::RecordIndex(_)
+                )
+        }) {
+            if let Some(next) = pending.next() {
+                batch.push(next);
+            }
+        }
+    }
+    batch
+}
+
 impl FilterEventDispatcher for AidlFilterEventDispatcher {
     fn wake(&self) -> Result<(), HalError> {
         self.delay_worker
@@ -355,11 +417,9 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
     ) -> Result<(), HalError> {
         let mut failures = FirstErrorCollector::new();
         let mut start_id_blocked = BTreeSet::new();
-        for snapshot in snapshots {
+        let mut pending = snapshots.into_iter().peekable();
+        while let Some(snapshot) = pending.next() {
             let delivery_key = (snapshot.object_id.0, snapshot.generation.0);
-            if start_id_blocked.contains(&delivery_key) {
-                continue;
-            }
             let pending_start_id = match &snapshot.event {
                 FilterEventDelivery::StartId(start_id) => Some(*start_id),
                 _ => None,
@@ -370,6 +430,12 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                 snapshot.object_id,
                 snapshot.generation,
             );
+            // startIdとstatusは単独配送。通常eventは同一Filter/世代の連続分だけ集約する。
+            let batch = take_callback_event_batch(snapshot, &mut pending);
+            if start_id_blocked.contains(&delivery_key) {
+                failures.push_result(release_undelivered_media(runtime, &batch));
+                continue;
+            }
             let context = match self.context.upgrade() {
                 Some(context) => context,
                 None => {
@@ -380,6 +446,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     if pending_start_id.is_some() {
                         start_id_blocked.insert(delivery_key);
                     }
+                    failures.push_result(release_undelivered_media(runtime, &batch));
                     continue;
                 }
             };
@@ -400,6 +467,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     if pending_start_id.is_some() {
                         start_id_blocked.insert(delivery_key);
                     }
+                    failures.push_result(release_undelivered_media(runtime, &batch));
                     continue;
                 }
                 Err(error) => {
@@ -414,29 +482,42 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     if pending_start_id.is_some() {
                         start_id_blocked.insert(delivery_key);
                     }
+                    failures.push_result(release_undelivered_media(runtime, &batch));
                     continue;
                 }
             };
-            let delivery = match event_from_snapshot(snapshot) {
-                Ok(delivery) => delivery,
-                Err(primary) => {
-                    failures.push_result(finish_filter_callback_delivery_failure(
-                        &context,
-                        runtime,
-                        handle,
-                        CallbackDeliveryFailurePhase::EventConversion,
-                        primary,
-                    ));
-                    if pending_start_id.is_some() {
-                        start_id_blocked.insert(delivery_key);
+            let mut callback_events = Vec::new();
+            let mut callback_status = None;
+            for snapshot in batch {
+                match event_from_snapshot(snapshot.clone()) {
+                    Ok(AidlFilterCallbackDelivery::Event(event)) => callback_events.push(event),
+                    Ok(AidlFilterCallbackDelivery::Status(status)) => {
+                        callback_status = Some(status);
                     }
-                    continue;
+                    Err(primary) => {
+                        failures.push_result(release_undelivered_media(runtime, &[snapshot]));
+                        failures.push_result(finish_filter_callback_delivery_failure(
+                            &context,
+                            runtime,
+                            handle,
+                            CallbackDeliveryFailurePhase::EventConversion,
+                            primary,
+                        ));
+                        if pending_start_id.is_some() {
+                            start_id_blocked.insert(delivery_key);
+                        }
+                    }
                 }
+            }
+            let operation = if callback_status.is_some() {
+                "IFilterCallback.onFilterStatus"
+            } else {
+                "IFilterCallback.onFilterEvent"
             };
-            let operation = delivery.operation_name();
-            let delivery_result = match delivery {
-                AidlFilterCallbackDelivery::Event(event) => callback.onFilterEvent(&[event]),
-                AidlFilterCallbackDelivery::Status(status) => callback.onFilterStatus(status),
+            let delivery_result = match callback_status {
+                Some(status) => callback.onFilterStatus(status),
+                None if !callback_events.is_empty() => callback.onFilterEvent(&callback_events),
+                None => continue,
             };
             if let Err(error) = delivery_result {
                 let primary =
@@ -454,14 +535,11 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                 continue;
             }
             if let Some(start_id) = pending_start_id {
-                let commit_result = runtime
-                    .lock()
-                    .map_err(|_| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "service runtime lock poisoned while committing filter startId delivery",
-                        )
-                    })
+                let commit_result =
+                    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+                        runtime.as_ref(),
+                        "filter startId配送の確定中にservice runtimeのロックが汚染されました",
+                    )
                     .and_then(|mut runtime| {
                         runtime.commit_filter_start_id_delivery(
                             handle.object_id(),
@@ -490,9 +568,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId};
-    use maleicacid_tuner_hal2_demux::{
-        AvDataId, AvMediaEventDescriptor, AvMediaEventMetadata, AvSlotId,
-    };
+    use maleicacid_tuner_hal2_demux::{AvDataId, AvMediaEventDescriptor, AvMediaEventMetadata};
 
     #[test]
     fn post_delivery_commit_failure_survives_runtime_poison_in_fallback_diagnostics() {
@@ -544,11 +620,119 @@ mod tests {
     }
 
     #[test]
+    fn delayed_events_batch_without_crossing_start_id_or_status() {
+        let snapshots = vec![
+            snapshot(FilterEventDelivery::StartId(8)),
+            snapshot(FilterEventDelivery::Section {
+                data_length: 30,
+                table_id: 0x42,
+                version: 1,
+                section_num: 0,
+            }),
+            snapshot(FilterEventDelivery::Pes {
+                stream_id: 0xe0,
+                data_length: 70,
+            }),
+            snapshot(FilterEventDelivery::Status(FilterStatusEvent::DataReady)),
+            snapshot(FilterEventDelivery::Section {
+                data_length: 50,
+                table_id: 0x42,
+                version: 1,
+                section_num: 0,
+            }),
+        ];
+        let mut pending = snapshots.into_iter().peekable();
+        let mut batches = Vec::new();
+        while let Some(first) = pending.next() {
+            batches.push(take_callback_event_batch(first, &mut pending));
+        }
+        assert_eq!(
+            batches.iter().map(Vec::len).collect::<Vec<_>>(),
+            [1, 2, 1, 1]
+        );
+        assert!(matches!(
+            batches[0][0].event,
+            FilterEventDelivery::StartId(8)
+        ));
+        assert!(matches!(
+            batches[2][0].event,
+            FilterEventDelivery::Status(FilterStatusEvent::DataReady)
+        ));
+        let converted = batches
+            .remove(1)
+            .into_iter()
+            .map(event_from_snapshot)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(converted.len(), 2);
+        assert!(converted
+            .iter()
+            .all(|event| matches!(event, AidlFilterCallbackDelivery::Event(_))));
+    }
+
+    #[test]
+    fn regular_event_batch_respects_filter_and_aidl_generation() {
+        let first = snapshot(FilterEventDelivery::Section {
+            data_length: 10,
+            table_id: 0x42,
+            version: 1,
+            section_num: 0,
+        });
+        let second = snapshot(FilterEventDelivery::Section {
+            data_length: 20,
+            table_id: 0x42,
+            version: 1,
+            section_num: 0,
+        });
+        let mut different_filter = snapshot(FilterEventDelivery::Section {
+            data_length: 30,
+            table_id: 0x42,
+            version: 1,
+            section_num: 0,
+        });
+        different_filter.filter_id = 4;
+        let mut different_generation = snapshot(FilterEventDelivery::Section {
+            data_length: 40,
+            table_id: 0x42,
+            version: 1,
+            section_num: 0,
+        });
+        different_generation.generation = AidlObjectGeneration(3);
+        let mut pending = vec![first, second, different_filter, different_generation]
+            .into_iter()
+            .peekable();
+        let mut batches = Vec::new();
+        while let Some(first) = pending.next() {
+            batches.push(take_callback_event_batch(first, &mut pending));
+        }
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [2, 1, 1]);
+    }
+
+    #[test]
+    fn event_local_av_handle_does_not_supply_invalid_codec2_global_info_index() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let event = AvMediaEventDescriptor {
+            data_id: AvDataId(7),
+
+            offset: 0,
+            data_length: 188,
+            metadata: AvMediaEventMetadata::default(),
+            event_local_file: Some(file),
+        };
+        let result = event_from_snapshot(snapshot(FilterEventDelivery::Media(event))).unwrap();
+        let AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(media)) = result else {
+            panic!("AV snapshot must become a media event");
+        };
+        assert_eq!(media.avMemory.fds.len(), 1);
+        assert!(media.avMemory.ints.is_empty());
+    }
+
+    #[test]
     fn media_section_and_pes_snapshots_keep_delivery_lengths() {
         let media = event_from_snapshot(snapshot(FilterEventDelivery::Media(
             AvMediaEventDescriptor {
                 data_id: AvDataId(7),
-                slot_id: AvSlotId(0),
+
                 offset: 12,
                 data_length: 188,
                 metadata: AvMediaEventMetadata::default(),
@@ -566,13 +750,20 @@ mod tests {
             }))
         ));
 
-        let section =
-            event_from_snapshot(snapshot(FilterEventDelivery::Section { data_length: 64 }))
-                .unwrap();
+        let section = event_from_snapshot(snapshot(FilterEventDelivery::Section {
+            data_length: 64,
+            table_id: 200,
+            version: 17,
+            section_num: 3,
+        }))
+        .unwrap();
         assert!(matches!(
             section,
             AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Section(DemuxFilterSectionEvent {
                 dataLength: 64,
+                tableId: 200,
+                version: 17,
+                sectionNum: 3,
                 ..
             }))
         ));
@@ -607,7 +798,7 @@ mod tests {
         match event_from_snapshot(snapshot(FilterEventDelivery::Media(
             AvMediaEventDescriptor {
                 data_id: AvDataId(7),
-                slot_id: AvSlotId(0),
+
                 offset: 12,
                 data_length: 188,
                 metadata,

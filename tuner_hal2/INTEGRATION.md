@@ -19,14 +19,7 @@
 $(call inherit-product, vendor/maleicacid/tv/tuner_hal2/config/product_integration.mk)
 ```
 
-`config/product_integration.mk` は次だけを `PRODUCT_PACKAGES` に追加する。
-
-```make
-PRODUCT_PACKAGES += \
-    android.hardware.tv.tuner-service.maleicacid2 \
-    maleicacid_tuner_hal2_ueventd_rc \
-    fs_config_files
-```
+`config/product_integration.mk` を製品統合の正本とし、`PRODUCT_PACKAGES` / `PRODUCT_COPY_FILES` の一覧は同ファイルを参照する。本節へ同じモジュール一覧を複製しない。Framework再起動時のTRM再登録に必要な `maleicacid_mediatuner_trm_lifecycle_rc` のsystem側配置と検証手順は後段の「mediatunerとTRMのFramework再起動時の登録寿命」を参照する。
 
 旧 `tuner_hal` の `maleicacid.tv.tuner_hal-service` は追加しない。
 
@@ -40,6 +33,8 @@ include vendor/maleicacid/tv/tuner_hal2/config/BoardConfigVendorSePolicy.mk
 
 `BoardConfigVendorSePolicy.mk` は `vendor/maleicacid/tv/tuner_hal2/sepolicy` を既定Tuner HAL用のvendor sepolicyとして追加し、`config/config.fs` を `TARGET_FS_CONFIG_GEN` へ追加する。
 
+AV media filterから`MediaEvent.getLinearBlock()`を通じて`MediaCodec.queueLinearBlock()`へ渡すDMA-BUF FDは、Tuner HALの`hal_tv_tuner_default`ドメインが発行し、AOSP Codec2 software serviceの`mediaswcodec`が受け取る。Android 15のBinder FD変換は受け取る側に送信元domainへの`fd use`権限を要求する。`tuner_hal2/sepolicy/tuner_hal2.te`では`allow mediaswcodec hal_tv_tuner_default:fd use;`に限定して許可し、Codec2への任意のdevice node操作権限やHALからの新規fd公開能力を追加しない。未許可では`avc: denied { use } ... tclass=fd`と`translate fd failed`から`MediaCodec.native_queueLinearBlock`失敗へ進むため、製品イメージでポリシーが反映され、実再生で拒否が解消することを確認する。`/dev/dma_heap/system`のdevice node権限は本設定では変更しない。
+
 ## 3. ueventd import
 
 製品側の vendor ueventd rc から次を import する。
@@ -48,7 +43,7 @@ include vendor/maleicacid/tv/tuner_hal2/config/BoardConfigVendorSePolicy.mk
 import /vendor/etc/ueventd.tuner_hal2.rc
 ```
 
-`ueventd.tuner_hal2.rc` はDVB / px4 / dma_heapのdevice node permissionを設定する。px4系のflat device nodeは末尾`*`だけのprefix pattern（例: `/dev/px4video*`）で記述する。`/dev/px4video[0-9]*`のように文字クラスの後ろへ末尾`*`を置く形は、ueventdのprefix最適化で`[0-9]`を文字通り扱って実device nodeへ一致しないため使用しない。
+`ueventd.tuner_hal2.rc` はDVB / px4のdevice node permissionだけを設定する。`/dev/dma_heap/system`はplatformのueventd / sepolicyが所有する共有device nodeであり、Tuner HAL統合からpermissionを上書きしない。px4系のflat device nodeは末尾に数字を要求するpattern（例: `/dev/px4video*[0-9]`）で記述する。AOSP Android 15のREADMEは末尾に唯一の`*`がある場合もfnmatchを使うと記すが、同版`init/devices.cpp`は末尾`*`だけならprefix一致へ最適化する。そこで`*`を末尾以外へ置き、実装上もfnmatchの文字クラス評価へ接続する。driverが生成する数値suffix nodeに一致し、suffixなしや末尾が非数値のnodeへpermission対象を広げない。globはsuffix全体の数字限定を表す正規表現ではないため、SELinuxの`[0-9]+` label制約と区別する。
 
 ## 3.1 px4_drv readback ABI のproduct前提
 
@@ -88,6 +83,24 @@ service list に tv_tuner_resource_mgr が存在する
 android.hardware.tv.tuner.ITuner/default が登録されている
 ```
 
+### mediatunerとTRMのFramework再起動時の登録寿命
+
+LineageOS 22.1 `frameworks/av/services/tuner/TunerService.cpp` は`TunerService`の生成時に`updateTunerResources()`を実行し、HALの`getFrontendIds()/getFrontendInfo()`から得た情報を`tv_tuner_resource_mgr`へ登録する。TRMは`system_server`が所有するため、`stop && start`等でTRMだけが再生成され、`mediatuner`が存続するとFrontend登録が空のままになる。
+
+Framework側の`media.tuner`を制御する`init/mediatuner-trm-lifecycle.rc`は、既存vendor HALの`init_rc`ではなく、`prebuilt_etc`(`maleicacid_mediatuner_trm_lifecycle_rc`)の`filename_from_src: true`で元の`.rc`名を保持して`/system/etc/init/mediatuner-trm-lifecycle.rc`へ配置する。製品側`config/product_integration.mk`から同moduleを含める。Android initは`/system/etc/init`からsystem側actionとして読み込むため、vendor init subcontextのproperty trigger制約に依存せずsystem所有の`init.svc.zygote`を監視できる。対象Frameworkサービスとその制御actionの配置先をsystemで一致させ、vendor HALの起動定義・VINTF・実行主体は変更しない。
+
+LineageOS 22.1標準の`init.zygote*.rc`は`onrestart restart --only-if-running media.tuner`を持つが、明示的な`stop`では`onrestart`を実行しない。製品rcは`init.svc.zygote=stopped`で`media.tuner`を停止する。この時点では再起動しない。旧TRMのBinderがservice managerに残っている間に`mediatuner`を生成すると、`AServiceManager_waitForService("tv_tuner_resource_mgr")`が旧Binderを返し、新TRMへの一回限りの登録を失い得るためである。
+
+非lazy構成では、`TunerResourceManagerService.onStart()`が新しいBinderを公開した後に設定する標準property `tuner.server.enable=true`で`media.tuner`を再起動する。initの`PropertySet()`は同じ値の再設定でもproperty通知を行うため、2回目以降のFramework起動にも適用される。標準rcの`enable media.tuner`だけでは、明示的に停止したserviceの起動が保証されない。`restart`は停止済みなら起動し、停止処理中の旧processが残る場合も終了後の再起動を予約するため、標準`enable` actionとの順序に依存しない。新しい準備property、待機時間、polling、独立した再試行状態は追加しない。
+
+通常起動でも同じTRM通知を使う。`ro.tuner.lazyhal=true`ではTRMはこの通知を出さず、未使用のlazy serviceを強制起動しない。lazy構成での起動は標準Binder要求経路を使用する。zygote自動再起動時の標準`onrestart`は変更せず、その経路全体の登録競合解消は本rcの保証対象に含めない。`tuner.server.enable`を新しいTRMの公開前に製品側で設定してはならない。
+
+新processは`TunerService`の既存`updateTunerResources()`から`setFrontendInfoList()`を呼ぶ。実登録の成否はHAL情報とTRM側の受付にも依存する。HALのregistry・capability・Backend処理・Framework資源割当契約は変更しない。静的CIはrcの停止／再起動条件とproduct配置を照合する補助検査であり、Binderやinitの実動作試験ではない。
+
+製品buildでは`m maleicacid_mediatuner_trm_lifecycle_rc android.hardware.tv.tuner-service.maleicacid2`でSoongの実モジュール生成を検証し、配置先が`/system/etc/init/mediatuner-trm-lifecycle.rc`であることと、旧`/vendor/etc/init/mediatuner-trm-lifecycle.rc`が生成されないことを確認する。旧版のvendor rcが残る差し替え配置を用いず、更新後のsystem/vendor両imageを使う。
+
+実機受入れでは`adb shell ls -lZ /system/etc/init/mediatuner-trm-lifecycle.rc`で配置を確認し、通常起動後と`stop && start`前後の`pidof mediatuner`、`getprop init.svc.media.tuner`、`dumpsys tv_tuner_resource_mgr`を照合する。起動中のFrontendResourcesが再生成後に登録され、`Tuner.tune()`がFrontend取得段階を通過することを確認する。これは実機確認が必要であり、rc文字列の検査やVTS profile CIの成功をTRM復旧の実動作証拠とは扱わない。通常起動、反復する`stop && start`、zygote自動再起動、lazy構成の未使用時と最初の利用時を分けて確認する。Codec2 FD利用許可は別の試験とする。
+
 ## 4.1 CAS descrambler依存
 
 `libmaleicacid_tuner_hal2_descrambler` は `libmaleicacid_cas_key_client` を静的リンクする。共通product入口からCAS pluginと標準MediaCasServiceも製品へ組み込み、CAS側のvendor sepolicyを共通BoardConfig入口から取り込む。Tuner HALだけを単独で配置した構成ではproduction tokenの鍵解決は成立しない。
@@ -119,7 +132,7 @@ fs-configとSELinuxはvendor image上の配置と通常の実行時アクセス�
 
 VTS / product config の公開契約、capability、`VtsEnvironmentProfile`の入力、状態、`VTS-STATE-BOUND` / `VTS-STATE-REJECTED`の意味は `../TUNER_HAL_DESIGN_JA.md` の`製品スコープ / AOSP capability / VTS profile 境界`、`CapabilitySnapshot`、`ProductProfile`、`VTS環境に関する設計保留`を正とする。本節は、それらをproduct buildと実機VTSへ接続する配置・生成・検証経路だけを所有し、profile入力の規範値、HAL capability、公開API戻り値、VTS状態を再定義しない。
 
-本製品は monitor event feature を製品能力として採用せず、静的VTS/product configでも同featureを要求・広告する構成にしない。monitor event の公開API戻り値とcapability契約は `../TUNER_HAL_DESIGN_JA.md` を正とし、本書では重複定義しない。本書のproduct integration設定を、未定義の将来profileでmonitor eventを有効化するための切替点として扱ってはならない。
+VTS/product configは `../TUNER_HAL_DESIGN_JA.md` の現行capabilityをそのまま試験構成へ反映し、同正本が広告しないfeatureを統合設定だけで有効化しない。monitor eventを含む個別featureの採否・公開API結果は同設計正本を参照し、本書へ現行能力表を複製しない。
 
 ### 6.1 単一VtsEnvironmentProfileファイルと依存方向
 
@@ -243,7 +256,7 @@ VTS用静的XMLは手編集正本にせず、単一`VtsEnvironmentProfile`ファ
 5. 選択したAOSP Tuner VTS schemaで生成XMLを検証する。
 6. `../TUNER_HAL_DESIGN_JA.md` のfilename解決契約に従い、選択したVTS loaderとvariant入力からinstall先を一意に解決する。
 
-r52のdescrambling profileを導入する際は、手順2で同正本の「r52のCAS試験profile境界」を照合し、必要な試験側修正を含むartifactのsource/tag/commitを固定する。現行のprofile生成器がr52のCAS試験経路を実装済みであるとは扱わない。ClearKeyへの置換やXMLの手編集だけで不一致を補完しない。
+`開発規則.md` のrelease scopeでdescrambling profileを有効化する際は、手順2で `TUNER_HAL_DESIGN_JA.md` の「CAS試験profile境界」を照合し、必要な試験側修正を含むartifactのsource/tag/commitを固定する。profile生成器の実装済み範囲は実装・検査結果から確認し、release名だけで成立済みと扱わない。ClearKeyへの置換やXMLの手編集だけで不一致を補完しない。
 
 いずれかが失敗した場合は、推測値、既定PID、既定周波数、sample XML値、別profileへのfallbackで補完せず、VTS config artifactを成立させない。生成済みXMLを直接修正してvalidatorを迂回してはならない。
 
@@ -251,9 +264,29 @@ r52のdescrambling profileを導入する際は、手順2で同正本の「r52�
 
 build-time compiler / validatorは、静的なHAL product contractとAOSP VTS契約の整合を検証する。起動時probeで初めて確定するfrontendの実在性、公開frontend ID、hardware info、実信号のLOCKED到達、PID上の実データ到来はbuild-timeに捏造しない。
 
-実機がある場合、`resolve-device`はprofileの未解決な受信候補とTS内識別値を具体化するためにpublic Tuner AIDLを使用する。具体値の解決後、VTS実行前には同じくpublic Tuner AIDLだけを使用するdevice preflightを行い、生成済みVTS構成が要求するfrontend種別、公開`FrontendInfo` / `DemuxCapabilities`、解決済み信号のLOCKED到達、対象PIDのdata pathが実機上で成立することを確認する。具体的な合否項目と実行手順は`タスク完了判定の実施方法.md`を正とし、本書では試験手順を二重定義しない。
+実機がある場合、`resolve-device`はprofileの未解決な受信候補とTS内識別値を具体化するためにpublic Tuner AIDLを使用する。具体値の解決後、VTS実行前には同じくpublic Tuner AIDLだけを使用するdevice preflightを行い、生成済みVTS構成が要求するfrontend種別、公開`FrontendInfo` / `DemuxCapabilities`、解決済み信号のLOCKED到達、対象PIDのdata pathが実機上で成立することを確認する。
 
-`resolve-device`とpreflightはHAL内部registry、private diagnostic、driver-private stateをVTS成功条件の正本にしない。解決済みprofileに対するpreflight不成立時は別frontend、別周波数、別PIDへ自動fallbackして同じprofileの解決結果を変更せず、そのprofileによるVTS実行を開始しない。preflight結果またはVTS実行結果をHAL runtime capabilityへフィードバックして次回起動時の公開能力を変更してはならない。
+実機反復は次の順序で行う。
+
+```text
+profile init / resolve-region
+  ↓
+必要な通常Android build / flash
+  ↓
+resolve-device
+  ↓
+compile / validate
+  ↓
+build graph反映またはinstall-device
+  ↓
+device preflight
+  ↓
+AOSP Tuner VTS
+```
+
+device preflightでは、同じ解決済みprofileと生成XMLを対象に、public Tuner AIDLからfrontend種別と公開capabilityがXML要求に一致すること、解決済みfrequency / selectorでLOCKEDへ到達すること、profileが要求するsection / PES / record / playback等の対象PID data pathが成立することを確認する。preflightでprofile値やXMLを修正せず、不成立ならそのprofileによるVTSを開始しない。別候補を採用する場合は`resolve-device`へ戻り、同じprofileを更新して再compileする。
+
+`resolve-device`とpreflightはHAL内部registry、private diagnostic、driver-private stateをVTS成功条件の正本にしない。解決済みprofileに対するpreflight不成立時は別frontend、別周波数、別PIDへ自動fallbackして同じprofileの解決結果を変更せず、そのprofileによるVTS実行を開始しない。preflight結果またはVTS実行結果をHAL runtime capabilityへフィードバックして次回起動時の公開能力を変更してはならない。実行結果・使用profile・生成物・反映方法の証跡化は`../タスク完了判定の実施方法.md`を正とする。
 
 #### VTS device agentの配置と実行
 
@@ -289,7 +322,7 @@ variantを使用する場合、variant propertyの値と生成XML filenameは同
 - 解決済みfilenameへのvendor image installがbuild graphに接続され、生成物が`tuner_hal2`のproduct integrationだけへ属する。
 - adb root/remount可能な試験端末では、同じ解決済みfilenameへcompile成果物を`install-device`で一時配置し、再build/reflashなしでVTS反復確認へ進める。root/remount不可またはvariant property不一致ならbuild graph経路を使用する。
 - VTS設定は`tuner_hal2`の試験設定にだけ使用され、HAL capability、frontend registry、backend probe結果または公開API成功範囲を書き換えない。
-- device preflightとTuner VTS実行手順が`タスク完了判定の実施方法.md`から一意に実行できる。
+- device preflightとTuner VTS実行手順が本節から一意に実行でき、実施証跡は`../タスク完了判定の実施方法.md`の形式で記録できる。
 
 これらが未接続の状態では、profileの値を手作業で複数箇所へ転記してVTS構成を成立させたことにしない。
 
@@ -360,7 +393,7 @@ git -C frameworks/av apply \
   "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tuner_hal2/platform_patches/lineage-22.1/android_frameworks_av_tuner_filter_null_data_source.patch"
 ```
 
-`frameworks/base` 用修正は `FilterClient::setDataSource(nullptr)` を参照外しせず内部 Tuner Filter へ伝える。`frameworks/av` 用修正は内部 `ITunerFilter.setDataSource()` の引数を null 許容として宣言し、`TunerFilter::setDataSource(nullptr)` を `INVALID_ARGUMENT` にせず Hardware HAL の `IFilter.setDataSource(nullptr)` へ伝える。これにより Java API の null 入力から Hardware HAL まで demux 入力元への復帰要求を保持する。
+`frameworks/base` / `frameworks/av` 用修正は、Java側からHardware HALまで `setDataSource(nullptr)` を欠落・置換せず透過するためのplatform統合差分とする。null入力の公開意味、受理条件、戻り値、source relation変更は `../TUNER_HAL_DESIGN_JA.md` の `IFilter.setDataSource()` / `SourceBoundaryTxn` 契約を正とし、本節では再定義しない。
 
 Descrambler の null source Filter は LineageOS 22.1 の既存 `frameworks/base` / `frameworks/av` が既に保持して HAL へ伝えるため、追加のフレームワーク修正を行わない。
 
@@ -381,3 +414,36 @@ m android.hardware.tv.tuner-update-api
 `tuner_hal2` は current V3 Rust binding を `android.hardware.tv.tuner-V3-rust` として参照し、VINTF fragment も Tuner version 3 を宣言する。採用 build configuration では `RELEASE_AIDL_USE_UNFROZEN=true` を実効値とする。`false` の構成では最新 unfrozen API を製品契約として使用できないため、この V3 統合の完了 build として扱わない。
 
 この統合は LineageOS 22.1 / Android 15 checkout を前提とする。LineageOS 21.0 / Android 14 checkout は本節の V3 current、FCM、Rust 生成物の契約を満たさないため、この統合の入力として使用しない。
+
+
+## 機器診断の取得
+
+サービス起動後、Binder標準の診断取得コマンドを使用する。
+
+```bash
+adb shell dumpsys android.hardware.tv.tuner.ITuner/default
+```
+
+出力項目、各領域が保持する情報、世代付き診断、領域別取得失敗と部分取得成功の意味は `../TUNER_HAL_DESIGN_JA.md` の「診断可観測性の固定」を正とする。本書は `dumpsys` からその診断snapshotを実機取得できることの確認手順だけを所有する。
+
+機器障害、受信読み取り障害、FMQ配送障害、コールバック障害等の正本設計が要求するケースについて、このコマンドで対応するtyped診断または取得失敗が観測できることを実機確認する。Soongの`maleicacid_tuner_hal2_aidl_service_test`はBinder取得入口と診断snapshot接続を検査するが、ホストCIの成功だけでAndroid上のBinder接続・実機取得を確認済みとは扱わない。
+
+
+## 実AVCキャプチャのAU境界・PTS回帰（未実施の受入条件）
+
+`demux/src/av/video_timestamp.rs` の `captured_transport_frames_have_individual_timestamps` は `#[ignore]` であり、通常のhost CIの成功件数へ含めない。2026-10-30のレビュー5708139001対応時点では、対象HEADで入力fixtureを固定して実行したCI証跡は未取得である。この項目は未実施として残し、AVC実キャプチャ適合・製品受入の完了を表明しない。
+
+再現入力は188-byte TS、AVC PID `0x281`、SPS/VUI・HRD・picture timing SEIを含み、隣接AUの時刻差が90 kHz単位で`6006`となる当該放送captureを用いる。任意の`test.m2ts`や別codecの録画を同じfixtureとみなさない。実行者は入力をTS形式で固定し、元ファイルと使用TSのSHA-256、抽出手順、PID、対象Git SHAを記録する。
+
+LineageOSのtarget初期化を行う場合はルート`AGENTS.md`の手順に従う。host CIと同じRust toolchain・host workspaceで、次を明示実行する。
+
+```bash
+sha256sum /absolute/path/capture.ts
+AVC_CAPTURE_PATH=/absolute/path/capture.ts cargo +1.81.0 test \
+  --manifest-path tuner_hal2/host_ci/Cargo.toml -p maleicacid-tuner-hal2-demux-host-ci \
+  captured_transport_frames_have_individual_timestamps -- --ignored --nocapture
+```
+
+実行ログで対象の試験名と**1件実行**を確認する。0件実行を成功証跡にしない。
+
+期待値は80超の完成AU、各payloadのAUDが1件、明示PTSを持たないAUの存在、全隣接AUの33-bit wrapを考慮したPTS差`6006`である。実行ログの対象名・実行件数・pass/fail、frames/failures出力を保存し、使用fixtureと対応付ける。これは実キャプチャによるproducer単体回帰であり、実機MediaSync/Codecのnative待機・最終描画、およびscan停止後のHAL worker→Framework/TRM→Frontend再取得を証明する試験ではない。これらは各実機統合手順に沿った別の未取得証跡として扱う。

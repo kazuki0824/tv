@@ -24,7 +24,7 @@ object TisInputIdResolver {
         }
         val matches =
             manager.tvInputList.filter { info ->
-                isOwnInputInfoForTest(
+                isOwnInputInfo(
                     infoId = info.id,
                     servicePackageName = info.serviceInfo.packageName,
                     serviceName = info.serviceInfo.name,
@@ -49,7 +49,7 @@ object TisInputIdResolver {
         return resolveOwnInputId(context) == id
     }
 
-    fun isOwnInputInfoForTest(
+    fun isOwnInputInfo(
         infoId: String?,
         servicePackageName: String?,
         serviceName: String?,

@@ -1,3 +1,800 @@
+## Provider通知の集約とProgram更新の所有元照合
+
+通知を単一dirty状態へ集約し、Session data受付の飽和による解放を防止する。Program更新索引は自package行だけを候補とし、他packageの同一key行を更新しない。既存ownerと一括queryを使い、worker・queue・所有台帳を追加しない。
+
+## Provider自己通知後の同値書込み抑制
+
+live更新では既存のProgram索引queryで保存列も読み、同値行をbatch更新から除外する。BOOT等の明示的な書込みcommitは維持する。通知失効後の再評価で自己通知が続かないようにする。追加queryや状態台帳は設けない。
+
+# 2026-10-31 同一versionCodeのAPK置換でもProgram cleanupを実行
+
+- 既存software identityへbase APKのSHA-256を含め、同一device fingerprint/versionCodeで実装が置換された場合も旧Programを破棄する。読取りは既存cleanup workerでstream処理し、失敗時は準備済みにしない。
+- 同一path・同一package versionでartifactを置換する反例と読取り失敗のRobolectric回帰を追加。schema移行・第二の保存形式・新workerは追加しない。検証はCIへ委ねる。
+
+# 2026-10-31 Provider変更後のlive公開署名を失効
+
+- Channels/Programsの変更通知を既存Session ownerで受け、入力・公開署名を失効させる。再試行区間は保持し、次の通常再評価で同一SIも再投影する。
+- 既存のlive失敗回帰へ、署名失効後もretry義務が残ることと、外部削除後の同一入力再登録を追加。通知自体から再公開せず自己通知loopを作らない。検証はCIへ委ねる。
+
+# 2026-10-31 明示音声選択の確定済み引数を簡素化
+
+- 音声有効化を確定した直後のselectAvStreamsへfalseを直接渡し、後続PRで検出された定数条件警告を除去する。状態更新・失敗時復元・選択動作は維持する。
+- 検証はCIへ委ねる。
+
+# 2026-10-31 選局世代と初期化の失敗境界を修正
+
+- SDKが遅延実行時にlistenerを再参照する前に、登録時の世代・Tuner identityを既存controller owner上で照合する。
+- 異種Frontend切替で初めてcloseが失敗する場合もSI初期化callbackへ進まないよう、既存callbackをclose成功後へ移す。
+- 実SDKの遅延listener参照と初回close失敗の回帰を追加。テストはCIに委ねる。
+
+# 2026-10-31 callback拒否試験の完了同期を修正
+
+- data taskの実行をlatchで観測してからcontrol barrierを投入し、permit返却後に次のcallback試験へ進む。control優先度をdata完了の代用にしない。
+- テスト実行はCIに委ねる。実機検証は未実施。
+
+# 2026-10-31 監査で判明した記述不整合の修正
+
+- TvProvider投影文書の重複記述を既存delivery system対応表へ統一し、部分受信とISDB-C非対応の記載矛盾を解消した。
+- 採用済み契約の変更なし。静的照合のみで、実行テストはCIに委ねる。
+
+# 2026-10-30 全件監査の完了通知・UI競合修正
+
+- Boot EPG jobの世代登録と早期完了の受渡しを既存RunContextの同じ短いmonitorで直列化する。完了通知の取逃しを除去し、既存の一回完了・停止fenceを維持する。
+- SetupActivityはUI実行時にChannelScanManagerの現行state identityを照合し、旧scan通知による新scanの表示・取消ボタンの上書きを拒否する。既存Robolectric fixtureへ旧世代通知の回帰を追加する。
+- 新しいworker・queue・ownerは追加しない。テストはCIへ委ね、Android実機検証は未実施。
+
+# 2026-10-30 scanのkey集合試験を本番の公開入力へ接続
+
+- テストからしか呼ばれないvalidProgramKeysForUpdateを本番から削除する。Rustの削除保護identity集合とauthoritative flagは、実際のProgram公開が使うEpgUpdateWindow変換を直接試験する。
+- 変換処理・状態・台帳を新設せず、既存の変換を一意に保つ。試験件数を維持し、実行はCIへ委ねる。
+
+# 2026-10-30 テスト専用入口整理後の未使用PTS型を除去
+
+- 旧captionTimestampForTestの削除で呼出し元がなくなったPesPts90kと専用の変換・生成関数を削除する。QodanaのUnusedSymbol 3件へ対応し、検査の抑制や型のためだけの呼出しは追加しない。
+- 現在の字幕時刻は既存PtsEpochCoordinatorによる正規化とCaptionPtsMillisを使用しており、実行経路・時刻計算・表示条件は変更しない。テストはCIで確認する。
+
+# 2026-10-30 レビュー5708139001：本番入口と試験fixtureを整理
+
+- 本番で使うpending-state読取り、SI status分類、Setup・scan受付、字幕・rating・再生の純粋判定を正規入口へ統一し、委譲だけのForTest APIを削除する。
+- Program公開のretry観測、署名試験の入力構築、PTS列fixtureと世代観測はtests/srcへ隔離する。未使用の偽ChannelStoreを構築する本番署名経路を削除し、試験は実publicationInputSignatureを検査する。
+- scan終了条件を実収集ループと共有し、最短待機・安定待機・EIT必須条件を実判定で確認する。独立した古い分類表を削除する。
+- 実callback経路を検証しない旧first-frame／字幕時刻／callback理由の複製述語と3試験を削除する。現在経路の検証はRobolectricのFilter入力・最終出力・字幕scheduler試験を使用する。
+- 同じserviceの再生署名をSurface遷移で優先し、SI未取得中も音声のみの失敗世代と予約を保持する実Session回帰を追加する。新しい予約ownerや状態台帳は追加しない。
+- テストはCIで実施する。実機native待機・最終描画・TRM再取得は未検証であり、host成功を製品受入完了とは扱わない。
+
+# 2026-10-30 音声のみのSurface受付条件を整形（#212）
+
+- 再生状態と再試行予約の判定を維持したまま複数行へ整形し、detekt MaxLineLengthを解消する。CIで検証する。
+
+# 2026-10-30 Frontend選局とscan回収の試験を分離（#209）
+
+- scan owner／one-shot close／setup受付の6試験をTunerScanCleanupTestへ移し、元クラスに12試験を維持する。既存Shadowと生成helperを共有し、製品状態やworkerは追加しない。
+- CIの対象と件数を12＋6へ更新する。親の診断試験にも本PRのTRM Shadowを継承し、競合で失われないよう親の診断・停止所有者の文書を維持する。試験はCIで確認する。
+
+# 2026-10-30 Decoder入力障害後の解放をPipeline停止へ統一（#207）
+
+- 入力障害・過負荷期限の通知後に重ねて呼ぶDecoder.closeを4箇所除去し、MediaSync解放失敗中のCodec・投入済みsample保持を迂回しない。
+- 音声／映像の実Filter→Codec入力失敗から資源保持と後続停止の一度だけの回収を検査する2試験をCIに追加する。
+- 呼出元のないonCodecConfigTimeout宣言と2実装を削除する。構成期限は既存startup deadlineに集約済み。
+- 新しいowner・worker・queue・復旧状態は追加しない。テストはCIで検証する。実機の待機原因と回帰の証跡は未取得。
+
+# 2026-10-30 親のFilterハンドル境界へ配送拒否試験を追従（#206）
+
+- 既存の旧Filter／現行Filter対照試験に、それぞれのハンドルを渡す。
+
+# 2026-10-30 旧Filter診断の隔離とhost試験の解放回数を修正（#116）
+
+- CIで検出した試験の入れ子型SectionFilterHandleのimport不足を補った。開始と音声切替の各fixtureで、開始失敗と二次cleanup失敗の両診断を別々に返すこと、失敗中の資源保持、次のstopによる一度だけの回収を検査する。
+
+- 不正長・過大長・読取例外をowner上の現行Filter照合で除外し、受付拒否は既存ハンドルの閉鎖状態・世代で照合する。診断worker・queue・台帳は増設しない。
+- 置換／再選局の旧Filterと現行Filterの対照4試験をCIへ追加する。既存SDT試験もハンドル境界へ追従する。
+- start例外後の追加停止処理に合わせ、host試験の解放失敗回数をstart・audio切替とも3とする。資源保持と次回停止での回収確認は維持する。
+- テストはCIで検証する。Android製品build・実機試験は未実施。
+
+# 2026-10-30 開始例外回収のCI試験期待値を追従（#116）
+
+- CIで検出したSDT fixtureの長い条件式を改行し、ホスト試験は開始例外後の追加回収で進む現世代を照合する。MediaSync解放失敗中は既存Decoder owner保持も認め、回収完了後の解放を必須とする試験へ訂正した。製品の回収・失敗伝播は変更しない。実行はCIに委ねる。
+# 2026-10-30 Frontend回帰試験数の継承（#209）
+
+- #116の同一世代SDT Filter回帰を継承し、本PRで追加されたCIのFrontend試験数gateを17から18へ更新する。実行はCIに委ねる。
+# 2026-10-30 現在番組選択の回帰試験を標準整形（#210）
+
+- CurrentProgramRatingResolverTestの複数行式をktlint 1.8.0で整形した。試験の入力・期待値と製品実装は変更しない。
+- テスト実行はCIに委ねる。整形修正は#212へ継承する。
+
+# 2026-10-30 Section読取診断と再生開始例外の回収（#116）
+
+- SDT読取診断を、既存controller上の世代・Filter実体照合と正常長確認の後へ移した。有限data受付で拒否された入力は配送喪失へ記録し、読取数に含めない。同一世代のFilter置換後着を除外する。
+- 同期再生開始の実行時例外も既存stopOnPlaybackExecutorへ接続する。回収失敗はResourceCleanupへ保持し、元例外のsuppressedとStartResultの診断へ追記する。Sessionによる同期失敗通知は維持する。
+- 同一世代のSDT Filter再生成、postDelayed=false後の部分生成資源回収・二次回収失敗保持の回帰試験を追加し、Robolectric CIへ新試験クラスを登録する。
+- 設計と診断コメントを更新した。追加のowner・worker・queue・再試行機構は設けない。テスト実行はCIに委ね、Android製品build・実機試験は未実施。
+# 2026-10-30 音声のみの再試行予約とSurface着脱（#212）
+
+- Surface通知時の再試行取消を映像付きサービスへ限定し、音声のみの失敗世代・既存予約を保持する。予約中のSurface通知ではSI再評価を重ねない。
+- 既存Session予約fixtureでFailed状態のSurface接続・切断、同じ予約の保持、予約消費とIdle受付境界を検査する回帰を追加し、Robolectric期待件数を48へ更新する。SI未取得のfixtureであり、実Codec再開の証明ではない。
+- 設計書を更新した。テスト実行はCIに委ね、Android製品build・実機試験は未実施。
+
+# 2026-10-30 音声のみの再生障害後のSurface非依存再試行を修正（#207）
+
+- 再試行予約と300ms後の実行では、失敗したAV署名に映像PIDがある場合だけ有効Surfaceを要求する。音声のみの回復可能なCodec障害はSurface未設定でも再試行し、映像のSurface失効時の拒否と既存世代・取消しfenceは維持する。
+- Session所有の既存予約・executorだけを使い、新しいowner、再試行履歴、worker、queueを設けない。
+- Android 15 Robolectricの実Session再試行fixtureへ、Surfaceなしaudio-onlyの別世代反復再試行と、映像の予約・実行それぞれにおけるSurface拒否を追加。受付試験のCI期待値を44件から46件へ更新する。実Codec・実機復旧はこの試験では証明しない。
+
+# 2026-10-30 現在番組選択の不要な全候補List生成を削除（#210）
+
+- CurrentProgramRatingResolverは指定sortOrderのcursorを順に読み、サービス照合に成功した最初の候補を選択して直ちに閉じる。未使用になったoverlapCount診断のための全候補List生成を廃止する。
+- 後続の不正行を読まない先頭候補、候補が空の場合のunrated fallback、query失敗伝播をAndroid 15 Robolectricで検査する。TvProviderの選択順序、EIT優先、content rating/unblock identityの規範は変更しない。
+- 独立したstate、helper owner、worker、容量予算は追加しない。Android製品build・実機TvProviderでの照合は未実施。
+
+# 2026-10-29 現在番組選択の整列責務の記述を訂正
+
+- DESIGNの「cursor返却順に依存しない」という記述を、TvProviderへ指定したsort orderで返された行から、サービス照合を通過した先頭行を選ぶ契約へ訂正した。Kotlin側で再整列しないことを明記した。
+- CurrentProgramRatingResolverのquery、候補読取り、サービス照合、先頭候補選択を読み合わせ、実装との整合を確認した。実装・SQLの選択順・試験は変更しない。
+- 文書のみの修正のため、build・ホスト試験・atest/VTS・実機試験は実施していない。
+
+# 2026-10-28 Surface着脱時の音声保持と音声トラック切替の開始前検査（#212）
+
+- 音声のみの再生中はSurface着脱を理由に再生状態・MediaSync音声資源を破棄しない。
+- 映像を伴う音声トラック切替は、#207の音声PID-only切替を維持し、全再生成が必要な場合だけPipelineのSurface有効性を検査して旧世代を維持する。Session側でPID-onlyまで拒否していた過度のgateを除去した。
+- Session・Pipeline・ホスト試験・Robolectric試験と設計を更新。音声PID-onlyを不当に拒否するRobolectricデグレ、host fixtureの未初期化`releaseOnce`、整形違反を修正した。hostのcleanup失敗試験はSurface不要なaudio-only経路で維持し、Robolectricの追加1件に合わせてCIの期待値を修正した。Soong、atest、VTS、実機でのSurface再接続・競合は未検証。
+
+# 2026-10-28 映像再生開始のSurface前提条件
+
+- Sessionの選択済みAVに映像がある場合、Surface未設定・無効の間は開始要求を発行せず、再生状態を変更せず待つ。SI更新等の再評価による不要な開始・失敗確定を防ぐ。音声のみの選択には同条件を課さず、Pipeline側の資源検査は維持する。
+- DESIGNへ開始待ちと既存再評価経路の契約を追記した。独立した予約、状態、再試行履歴は追加しない。
+- 実Sessionを呼ぶホスト回帰試験を2件追加し、Idle／Stoppedでの反復評価が開始へ進まないことと、音声のみのStartedがSurfaceなしでも継続することを検証。CI期待件数を401から403へ更新した。
+- 本番・試験Kotlinのコンパイル、対象HEADのSI JNIを使用したホスト403件、変更Kotlinのktlint 1.8.0・detekt 1.23.8、差分検査が成功。#116の修正前コードではSurface待ち試験が不要な開始・失敗確定へ到達して失敗し、音声のみの試験は成功することを確認した。
+- Android/Soong、atest/VTS、実機でのSurface再接続・無効化競合と黒画面解消の確認は未実施。ホスト試験は実機の映像出力成功を証明しない。
+
+# 2026-10-28 現在番組選択の診断状態に関する設計記述を整理（#210）
+
+- 削除済みの`CurrentProgramResolutionDiagnostic`と保持項目に関する旧記述を除去し、未読診断snapshotを保持しない現行方針へ統一した。ARIB `event_id`の`COLUMN_EVENT_ID`およびJSON v1 `programKey.eventId`への投影契約は維持する。
+- 検証：現行resolverとTIS/SIの設計契約を照合し、旧診断型への現行規範参照が残っていないことと`git diff --check`を確認した。文書のみの変更であり、実行テストの追加・再実行は行っていない。
+
+# 2026-10-25 入力予算判定の冗長分岐を簡素化（#207）
+
+- Qodanaの`RedundantIf`指摘に対応し、`withinQueueBudget()`のbyte上限比較を直接返す。冗長分岐の導入は#207の`3bb499c3`（PTS span判定の撤去時）で、`54f6e12`で投入中sampleを含む現行比較式へ変更された。件数・byte予算、投入中sampleの会計、境界値を含む受付結果は変更しない。動作を変えない簡素化のため専用試験を追加しない。
+- 検証：既存`PlaybackFilterAdmissionTest`44件成功、failure/error/skipは0。ktlint・detekt・`git diff --check`成功。Qodanaの再判定はpush後のCIで確認する。
+
+# 2026-10-25 再開予約をSessionへ集約（#207）
+
+- PipelineのCodec再試行履歴・再開予約・音声縮退の直接再開を削除。入力欠落、recoverable/transient Codec障害、構成・初回出力期限、映像出力障害は旧世代の停止・解放後に元generation付きで通知する。解放失敗は`PLAYBACK_RECOVERY_FAILED`として通知し、再試行可能な障害に混ぜない。ERROR_RECLAIMED・無効Surfaceはtimer再開対象にしない。
+- Sessionの予約を一件に統一し、実行・取消時に消費する。既存300ms後にtune・署名・失敗世代・Failed・release・Surface・信号を照合し、通常開始入口とControllerから最新SI/CAS/視聴制限/trackを再評価する。SI更新による待機迂回を防ぐ。音声縮退はSessionが音声を無効化して同じ入口から再開する。Pipelineの開始は既存資源判定を共有し、停止済み世代を重複停止しない。出力先・PCM変更の同期再構成は障害後の再試行と区別して維持する。
+- 廃止するPipelineの回数制限・予約helperに依存する通常ホスト試験3件とRobolectric試験1件を削除。残る停止・元世代通知の試験を新契約に合わせ、試験だけの代替製品機構は設けない。CI件数gateはホスト412→409、受付45→44。入力バッチ試験はnative完了との競合を同期し、Surface障害試験は実停止に対応する既存MediaSync shadowを使用する。
+- Robolectric CI指定10クラス87件成功（受付44件・MediaSync解放14件を含む）、failure/error/skipは0。`testDebugUnitTest -Pkotlin.incremental=false`で実行。ローカル増分cache破損後は増分コンパイルを無効化した。前段の二度目の再試行資格の失敗は成功へ転じた。予約の2試験は状態境界・実予約処理の検証であり、onTune/onRelease全経路や実Codecの再開成功を証明しない。
+- 通常ホスト構成で本番・全ホスト試験Kotlinをコンパイルし、`PlaybackStartGateTest`、`PlaybackResourceCleanupTest`、`PlaybackFailureCallbacksTest`をJUnit実行。49件中43件成功、6件はSI JNIライブラリ不在による実行環境エラー。SIを使うscan/tune試験の成功やホストCI全体の成功とは扱わない。Android製品build・atest/VTS・実機での回復・300msの負荷妥当性は未確認。
+
+| 条件 | 対象・処理経路 | 確認コマンド | 出力要約・未分類ヒット | 判定 |
+|---|---|---|---|---|
+| 既知NG: 同じ選局の後の障害で資格を失う | `MaleicacidLiveSession.kt`の予約消費→通常開始入口、`PlaybackFilterAdmissionTest.kt` | Gradle CI指定10クラスの`testDebugUnitTest` | 87件成功。`laterRecoverableFailureInSameTuneCanBecomeEligibleAgain`成功。未分類なし | ホスト範囲OK |
+| 停止・解放失敗の区別と元世代通知 | `PlaybackPipeline.kt`の`failPlayback`→停止→通知、`PlaybackFailureCallbacksTest.kt` | 上記3クラスのJUnitCore | 音声失敗・再構成・解放失敗の試験成功。別のSI依存6件はJNI不在に分類 | 対象経路OK、全体未確認 |
+| 旧履歴・予約・縮退結果fieldの参照残り | 本番、host、tests | `rg -n 'codecRecoveryAttempted|retriedPlaybackSignature|recoverCodecGeneration|codecRecoveryDelay|videoOnly' tis --glob '!**/build/**' --glob '!**/.gradle/**'` | 変更履歴を除く定義・参照0件。全Kotlin型照合成功。未分類なし | OK |
+| 製品の再開・最終描画 | `INTEGRATION.md`の集約後再開確認 | 未実行 | 製品build/実機なし | 未確認 |
+
+# 2026-10-25 再試行方針の仕様確定と修正前の回帰試験（#207）
+
+- 再試行判断・予約をSessionへ集約する設計を確定。Pipelineは障害分類と停止・解放、Controllerは現在選局・CAS照合を担当する。停止完了後300msの既存Session待機値を引き継ぎ、通算一回制限を廃止する。300msの実機負荷妥当性は未実証。持続障害では間隔を置いた再試行が続く。保持予算の数値は変更しない。
+- 再開時は通常の開始入口で最新の視聴条件を確認する。停止完了通知は失敗元generationへ関連付け、予約はtune・署名・失敗世代・Failed状態・releaseを照合して実行する。未解放資源があれば再開しない。製品実装の反映は後続工程であり、このコミットで完了したとは扱わない。
+- 既存Robolectric受付試験に2件追加。同じ選局で別の再生世代が失敗しても再試行を受理する動作と、停止・解放・別選局の状態境界後に予約が状態を上書きしない動作を実Sessionの予約処理で検査する。fixtureは端末初期化を省き、状態境界を設定する。onTune/onRelease全経路、実Codec再開、最終描画の実証ではない。削除予定の再試行履歴フィールドの値や存在は検査しない。
+- ローカル実行: `ANDROID_HOME=/tmp/tv42-sdk /tmp/tv42-tools/gradle-8.9/bin/gradle -p tis/host_ci/robolectric testDebugUnitTest --tests '*PlaybackFilterAdmissionTest' --tests '*PlaybackMediaSyncReleaseTest' --offline`。受付45件中44件成功・1件失敗、解放14件成功、error/skipは0。失敗は `laterRecoverableFailureInSameTuneCanBecomeEligibleAgain` の二度目の再試行受付で、Idleを期待するところFailedのまま。既存一回制限による修正前の失敗を固定し、Ignoreや失敗許容で隠さない。CIの受付件数gateを43から45へ更新したため、本段階のCIは当該未修正動作で失敗する。
+- 変更Kotlinのktlint・detektと`git diff --check`は成功。Android製品build・atest/VTS・実機再生は未実施。停止・選局との両立は上記状態境界試験と既存寿命管理の静的確認の範囲であり、集約後実装の全経路検証は後続工程に残る。
+
+# 2026-10-24 映像native入力を既存映像workerへ分離（#207）
+
+- `DecoderPipeline`の映像`QueueRequest.queue()`を既存の映像出力Handlerへ配送し、音声返却・制御を担う共通playback ownerをnative入力待機から解放する。追加worker、payloadコピー、別入力queue、容量増加はない。投入中は1呼出しとし、未投入の残りは既存pendingSamplesで保持する。投入中sampleも既存の件数・byte予算へ含める。
+- native呼出し結果をFutureでownerへ渡し、入力進捗・再生開始・例外通知・MediaEvent解放をownerに保持する。早着入力index callbackはnative完了後に処理し、成功した入力はindex返却またはCodec解放まで保持する。配送拒否・native失敗・停止による未実行入力の取消しは一度だけ返却する。先行入力の失敗を次sample受理前に取り込む場合も、その未受理sampleを返却する。
+- 停止時は新しい入力投入を止め、MediaSync flush後にnative入力・出力の完了を待ち、その後でpause・解放する。停止期限超過時は入力・Codec・MediaSyncを保持し、停止再試行へ残す。停止後の古いCodec callbackと完了通知は再生を進めない。設計書の入力owner・実行worker・停止順序を更新した。
+- 工程2の回帰2件に加え、早着index返却、native入力失敗、入力待機中の停止、worker実行前の入力取消し、停止期限超過後の後着callbackと停止再試行の5件を追加した。Robolectric CIの受付試験数gateを38件から43件へ更新する。既存fixtureのdrainは配送済みnative入力の完了も待ち、継続再生試験が未投入indexを再返却しないよう同期する。
+- 検証：Gradle 8.9 / Robolectric 4.16.1 / SDK 35でCI指定10クラス86件が成功（入力43件、停止14件を含む）。工程2の失敗2件は成功へ転じた。停止期限超過後の後着callback試験も、世代・停止状態の検査追加前の失敗と追加後の成功を確認した。変更Kotlinのktlint 1.8.0、detekt 1.23.8、`git diff --check`は成功。
+- Android製品build、atest/VTS、実機MXワンセグ1での改善は未検証。実機の全容量拒否・黒画面を解消済みとは扱わない。製品統合文書へ入力停滞の再評価条件を追記した。
+
+# 2026-10-24 42系の映像native入力待機を固定する修正前回帰試験（#207）
+
+- `PlaybackFilterAdmissionTest`のCodec native入力shadowへ待機を注入し、本番Filter→decoder→`QueueRequest.queue()`の入力経路を通す。映像native入力が戻らない間にも制御処理と消費済み音声のCodec返却が進むことを別々に要求する2試験を追加した。音声はMediaSync callbackからownerへの引渡し境界を起点とし、native MediaSync自体や実機の表示待機は再現しない。
+- 同じ音声所有fixtureで映像native入力が待たない場合の返却成功を対照試験として追加した。待機の到達と解除はラッチで同期し、失敗時も解除してownerを回収する。15秒はfixture終了保証用であり、製品の待機期限・容量・所有規則は変更しない。Robolectric CIの試験数gateを35件から38件へ更新した。
+- 根拠はa8d6778の42系MXワンセグ1で、停止前snapshotのplayback ownerが`native_queueLinearBlock`内で待ち、PerfettoのCodec入力待機が約3.191秒、音声consumeのowner待機が約2.936秒だったこと。映像出力workerだけの分離では入力native呼出しによる共通ownerの停止を防げない。容量拒否全体の唯一の原因や永久deadlockと断定しない。
+- 検証：Gradle 8.9 / Robolectric 4.16.1 / SDK 35で本番・試験Kotlinをコンパイルし、38件中既存35件と対照1件が成功、新規待機回帰2件だけが制御処理・音声出力返却のassertionで失敗した。試験準備時のCodec一覧キャッシュは新fixture内で破棄して音声Codecを登録する。ktlint 1.8.0、detekt 1.23.8、`git diff --check`は成功。CIも修正前回帰2件の失敗を期待する段階である。
+- 今回は修正前回帰を先に追加する段階で、本番実装の修正、Android製品build、atest/VTS、実機での改善確認は行わない。
+
+# 2026-10-23 停止時の後着映像投入とJNI内部TRACE抑止（#207）
+
+- `VideoDecoderPipeline.stopRenderSubmissions`でatomic停止フラグを立て、予約済みの未実行出力は既存workerで非描画返却する。実行中出力をflushで起こして全完了を待ってからMediaSyncをpause/flush・切断・releaseする。フラグ検査を通過済みの呼出しとの競合でも、完了前にpauseしない。既存の停止期限・失敗時の参照保持・再試行・PCM/Codec解放順は維持し、新workerやqueue、容量上限は追加しない。
+- 工程2の停止回帰2件に非描画返却件数を追加し、停止判定通過後のnative投入がflushより遅れる競合を追加した。Robolectric CIの試験数gateも11件から14件へ更新した。Android 15実SDKへの本番コンパイルとRobolectric 4.16.1 / SDK 35で停止関連14件が成功。修正前の追加2件は停止期限超過で失敗していた。
+- 工程2で追加した`log.tag.jni::wrapper::objects..=D`の存在検査を撤回した。Android標準Rust loggerは書込み前に23バイトへタグを短縮し、LineageOSのproperty名検査は連続・末尾ドットを拒否するため、この設定要求は実現不能だった。短縮前の完全module名やprefixのpropertyでも一致しない。
+- SI JNIの標準logger初期化・targetフィルタへ抑止を移し、既存のjnienv propertyと無効な設定要求のCIブロックを除去した。JNI TRACEだけを抑止する実動作試験・Soong/host依存・Rust側設計/履歴は`arib_si_engine_rs`に収録する。`tis/DESIGN_JA.md`の停止順序と`INTEGRATION.md`のログ採取・詳細診断方法を更新した。
+- 再生入力・世代・起動・音声切替の`PlaybackFilterAdmissionTest` 35件、Kotlin変更のktlint・detekt、XML/製品統合CI検査は成功。Android製品build、atest/VTS、実機のログ抑止・停止完了・再選局は未検証で、次の製品buildで確認する。音声キュー飽和の初発原因を解消したとは扱わず、同条件のlogcat/Perfettoで再評価する。
+
+# 2026-10-23 40系の停止競合・JNI設定漏れの修正前回帰試験（#207）
+
+- `PlaybackMediaSyncReleaseTest`へ、実行中のnative描画と未実行の2件を残したowner内停止、およびnative worker開始前にflushが先行する停止の2試験を追加した。実際の`PlaybackPipeline.stop()`を呼び、停止完了と停止後の描画再投入なしを要求する。
+- 新fixtureは[LineageOS 22.1 MediaSync::flush / onFrameAvailableFromInput](https://github.com/LineageOS/android_frameworks_av/blob/lineage-22.1/media/libstagefright/MediaSync.cpp)の現在の待機だけを解除する振る舞いを模擬する。既存fixtureの一度開くと永久に開いたままのラッチでは検出できなかった後着描画の再待機を検査する。15秒はfixture自身の終了保証用で、製品の5秒待機より先に模擬nativeを成功させないための試験用期限である。製品の期限・資源上限は変更しない。
+- 既存TIS host CIの製品設定検査へ`jni::wrapper::objects..`の書込み元VERBOSE抑止を追加した。40系ZIPのlogcatは同タグ845,112行、別添tuner-fixed-40.logでは0行だったため、表示側のフィルタだけでは抑止成功と判定しない。
+- 40系はtv `1a6beb6`とtools #18のビルドであり、停止直後のCodec `queueBuffer`は38.050584秒、そのうち約38.01秒はsleep。native入力の待機とownerの`awaitRenderSubmissionsBeforeMediaSyncRelease`が重なる。上流の音声192件飽和とは別の停止競合として扱う。
+- 音声は07:59:21.502の入力診断でpending=0、25.719で129、30.798で188、30.971で192件の拒否となった。その間も音声consumeは進行しており、完全停止だけでは説明しない。2 vCPUの約19.778秒区間は約95.82%稼働し、JNI/logcat、HAL、表示処理等が共存する。これらの寄与の一意な分離は未証明で、容量増加や音声経路の推測修正を加えない。
+- 検証：本番KotlinをAndroid 15実SDKでコンパイルし、Robolectric 4.16.1 / SDK 35の`JUnitCore com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest`で13件中既存11件成功、追加2件のみ停止期限超過（index=0 / 1）で失敗した。既存host CIのXML・製品設定検査を抽出実行するとobjectsタグ不足で失敗。追加試験のktlint・detektと`git diff --check`は成功した。
+- 今回は失敗する試験を先にPushする段階であり、本番実装・製品設定は未修正。停止回帰2件とJNI設定検査は失敗を期待する。実機解消、Android製品build、atest/VTSは未検証。修正後の成功確認は後続の実装修正段階で行う。
+
+# 2026-10-23 映像出力所有順の説明とイベント領域の設計用語（#207）
+
+- PlaybackPipelineのnative render完了・失敗処理、待機期限、資源切断前の終了待ち、失敗時owner保持の4コメントと、診断スクリプトのmediatuner所有の説明を日本語へ変更した。処理・期限・所有順は変更しない。
+- SI保持の文書更新を継承し、AV入力保持の説明に残った共有slotという語を現在のイベント専用DMA-BUF領域へ合わせた。queue成功時の早期解放を認めず、Codec入力index返却またはdecoder解放まで保持する既存契約は維持する。
+
+# 2026-10-23 SI保持上限の設計記述の追従（#116）
+
+- SI全体を有限寿命・累積入力上限で破棄する旧記述を削除し、実保持量を増やす入力の拒否、既存の無関係な事実・時計の保持、対象表の矛盾根拠失効へ合わせた。拒否入力を新しい登録・Program削除権限の根拠にしない条件は維持する。
+- TISの新しい状態・受付経路は追加しない。Rustの矛盾検出と保持量判定は同モジュールのDESIGN/CHANGELOGを正とする。
+# 反復SI入力後の再生継続回帰
+
+- 実JNIにPAT/SDT/NIT/PMTを投入した既存live fixtureで、9,000回の同一PAT反復後もREADYを保ち、その判断を実controllerのCAS/filter更新へ渡してpipeline世代・PMT filterが維持されることを検証する。
+- 既存の矛盾PMTによる停止試験を維持し、SI/CASゲートを緩和せず反復入力だけでは停止しないことを区別する。host CIの期待試験数を1件増やした。
+- Rustの期限境界試験と組み合わせて全消去の回帰を検出する。実機の長時間視聴、Codec/MediaSync停滞、BS ECM/EMM失敗の原因解消は未検証。
+
+# ライブSI継続保持のJNI試験追従
+
+- 不正SIの反復でcollection全体が失効するという旧期待を置換し、実JNI経由で9,000回の不正入力後もサービス・番組・公開世代が保持されることを検証する。
+- live監視の内部寿命の参照先をRust SI設計正本へ変更した。Rustの全消去廃止・EIT表単位の受信断と保持量制御は同モジュールのCHANGELOGを正とする。
+- Codec/MediaSync停滞とBS ECM/EMM失敗の原因修正・実機検証は未完了。
+
+# 2026-10-22 39.1のCAS失敗診断とProgram cleanup待機診断
+
+- ECM/EMMのMediaCasStateExceptionについて、公開APIの数値errorCodeとdiagnosticInfoを既存の診断messageへ保持し、messageが空でもplatform側の失敗種別を識別できるようにした。元のcause、CAS状態分類、配送・再試行契約は維持する。
+- Program cleanupの非同期開始・実行中はPENDINGと記録し、workerの完了結果だけからCOMPLETED/FAILEDを記録する。Boot EPGとbackground maintenanceの未準備分岐を揃え、非同期開始を実失敗と誤表示しない。
+- Framework CAS adapterを通すECM/EMM status保持のホスト試験を追加し、ホストCIの期待件数を401へ更新した。実機のCAS失敗原因・初回スキャンは未検証。
+
+# 2026-10-22 39.1の再生停滞診断
+
+- 入力欠落と再生不能の通常ログに、既存decoder owner上のpending入力、Codec空き入力、未処理入力callback、投入済み入力、保留映像出力、native render未完了数、MediaSync開始状態、未返却音声出力を記録する。native呼出しやrender完了待ちは追加しない。
+- native renderを停止させたRobolectric回帰試験から診断を読み、停滞中もplayback ownerが応答し未完了renderを識別できることを検査する。
+- 39.1の64件到達を原因そのものとは断定せず、容量・期限・復旧回数を変更しない。Codec/MediaSync内部の実機待機位置とCAS失敗のplatform statusは追加採取が必要であり、この変更だけで症状解消を確認したとは扱わない。
+
+## 2026-10-21 Codec入力通知のFilterバッチ中先行消費（#207）
+
+- Filter一括callback中にCodecのinput-index callbackが到着した場合も、次のイベントの保持予算判定前に同じownerで入力返却とpending drainを実行する。callback threadはindex引渡しのみを行い、Decoder状態とgeneration判定は既存ownerに維持する。
+- 現行MPEG-2の48件pending上限や16MiB callback permitを無条件増加させず、不要な人工的破棄を減らす。
+- 変更前に49イベントの途中入力通知で48件目以降の人工破棄を確認するRobolectric回帰を追加。実機の低速Codec、永続的な出力停止、メモリ使用量は別途検証する。
+
+## 2026-10-21 R1 native映像出力中も再生ownerを進行させる（#207）
+
+- Native MediaCodec.releaseOutputBuffer(renderTimestampNs)の待機を既存playback ownerとCodec callback HandlerThreadから独立させ、セッション単位の直列HandlerThreadへ配送する。MediaCodecの貸与済み出力indexの寿命が自然な並列上限であり、固定数の追加render pool/出力payloadコピーは設けない。
+- render結果は既存ownerで回収し、停止時はMediaSyncをflushしてからnative実行の完了を確認する。期限超過時は停止失敗として所有権を保持し、解放成功を捏造しない。releaseが失敗した場合もshutdownせず回収を再試行できるようにする。
+- Android 15 Robolectricで、native描画待機中もcontrol ownerが進行し、停止時のMediaSync/Codecの解放順序を維持することを検査。実Codecと実Surfaceの持続描画は端末検証待ち。
+
+## 2026-10-21 startup前3件制限の撤廃とR3〜R5の回帰 (#207)
+
+- decoder構成前の保持イベントは、Codec別に既存設計で確定するstartup件数・byte予算だけで有界化する。HALの廃止済み8-slot前提から残った3件制限を撤廃し、合法入力を構成ヘッダー未発見だけで人工的に欠落させない。
+- 最大16MiB単一AVイベントのcallback受付と複数イベント超過時の拒否を区別し、既存16MiB共有permitを維持する。R4のCodec復旧では既停止generationを二重停止せず、R5のCAS未確定時は再生資源がない状態で世代を進めない。
+- Robolectricでstartup予算内の12件保持と起動期限での解放、16MiB/過大callback、復旧の一回停止、CAS反復stopを検証する。実機の処理速度と長時間再生成功は別途検証する。
+
+## 2026-10-19 36系JNI TRACEの限定抑制（#207）
+
+- 36系のPerfetto・native stackで、SI DTOのJNI object構築中に`jni::wrapper::jnienv`のVERBOSEログが大量発生し、2 vCPUでTISとlogdの負荷が顕著だったことを確認。
+- Android既定`liblog_rust.dylib.so`のloggerを置き換えたり、`JNI_OnLoad`から全Rust moduleの最大log levelを変更したりせず、product system_ext property `log.tag.jni::wrapper::jnienv=D`で該当タグのVERBOSEだけを通常時に抑止する。必要時は`adb shell setprop log.tag.jni::wrapper::jnienv V`で再有効化し、終了後Dへ復元できる。Java TIS DEBUGと他タグのログは維持する。
+- 構成値と診断切替を`tis/INTEGRATION.md`へ記載。製品build・実機でのproperty反映・同条件でのfps/CPU比較は未実施。ログ生成抑制がCodecバッファ停滞の解消を示すものではない。
+
+## 2026-10-19 35.1入力飽和の再評価と原因計測（#207）
+
+- T1: 16MiBのcallback payload共有permitは未処理入口の有限受付枠として維持。HALの保持bytesやCodec内部メモリを実測・代替するものではない。容量拒否では予約KiB・イベント数・payload bytesを診断に残し、拒否が生じる事象そのものを区別できるようにした。
+- T2: `QueueBudget`でPTS span（2〜3.5秒）を資源保持量の制限として使うのを除去。35.1の音声は約12KiB／71イベントで、bytes・件数は上限内なのに3秒のPTS離隔だけで圧縮入力が欠落した。PTSは実経過時間ではないため、件数とbytesのみを入力・音声output受付の有限上限とし、PTS spanは拒否時の診断値へ残す。
+- T3: callback受付超過・Codec入力受付上限等により**実際に圧縮sampleを解放した場合**はCodec参照pictureをそのまま継続利用せず、従来の1回の世代再生成へ接続する方針を維持。PTSだけで発生した人工的な欠落を無くし、再試行workerや新しい復旧状態は追加しない。設計書の「一度sampleを破棄しても継続」との矛盾を解消。
+- T4: 既存playback ownerでcallback→owner到達、Codec queue、入力index返却、出力callback、MediaSync音声consumeの進捗と所要時間をDEBUG採取できるようにした。世代別の入力index再通知・返却・音声consumeは既存`PlaybackDataPathProgress`に追記し、DEBUGの所要時間ログは32/64件ごとの採取とする。新worker、producer queue、時間判定へのfeedbackは導入しない。
+- T5: Android 15 Robolectric fixtureで有界キューに対するPTS幅3秒超の少量音声入力、および4秒相当のMPEG-2入力120回・Codec出力／描画callback・入力index返却を検証する回帰を追加。診断counter reset試験も追従した。
+- **検証範囲:** 実装・設計・テストの変更をPRへ反映したが、Android製品build、Robolectricの実行、実端末のCodec処理能力・黒画面解消はこの変更だけでは確認できていない。実Codecで入力を消費できない場合はbytes/件数上限に達して失敗し得るため、診断traceと速度比較による原因切分けが残る。toolsの診断PR #17と恒久修正PR #18/19の統合は行わない。
+
+## 2026-10-18 導入履歴に基づく修正の配置是正
+
+- main由来の未使用状態・恒等sessionId関数と音声stream_typeの本番・試験共通化を独立修正として所有する。boot/background診断とsessionId試験関数は69e9a72、番組評価診断とdirty-window破棄counterおよび音声対応表の複製はmainへ取り込み済みの#54（30d45cd）に由来する。
+- #142（5d072e4）で導入され#116へ統合されたdual-mono恒等試験関数の削除は#116へ移動し、後続PRはその修正を継承する。診断削除・Provider試験・音声対応表の共通化のコードと試験期待値は配置変更前と同一。
+- 既存ログ、Direct Boot永続状態、番組評価の選択と失敗返却、再生動作は維持する。新owner・worker・復旧経路は追加しない。製品build・atest・実機は未実施。
+
+## 2026-10-18 導入元に戻したdual-mono試験の是正
+
+- #142で導入され#116へ統合された、真偽値をそのまま返すisDualMonoSemanticForTestと恒等呼出しを削除。実際のAudioTrack dual-mono mode対応を検査する既存試験は維持する。製品の再生動作は変更しない。
+
+## 2026-10-18 統合手順からPR編集履歴を除去
+
+- Tuner閉鎖失敗後のSDK/TRM後始末の手順から、patchを追加・撤回した編集履歴だけを削除。標準APIの順序、追加Framework API不要、実機受入条件と未立証範囲は維持する。
+
+## 2026-10-18 Framework診断差分revertの是正
+
+- 部分revertに混入したtoolsの作業branchへの参照文と「ビルド前の準備」の見出しを取り消す。Framework診断patchとビルド手順の追加差分を消し、新しい統合規定をtvへ加えない。採取手順とTIS自身の診断は維持する。
+
+## 2026-10-18 再生入力欠落とMediaSync停止失敗のレビュー是正
+
+- 構成前でもdecoderの保留入力受理時にOVERFLOW集約を解除し、次の欠落でprobe・保留入力を再回収する。Codec投入進捗による解除を置換する。
+- MediaSync release未完了の間は既存ownerにPCM・Codec・入力Surface・AudioTrackを保持する。既存ResourceCleanupの再試行成功後だけ停止の後段へ進み、重複した解放登録を避ける。
+- RestartEventの一般則を構成前の局所回収／構成後の全世代再生成と統一する。既存回復機構は変更しない。
+- 連続OVERFLOWの既存期待値を修正し、欠落を跨ぐMPEG-2 header誤結合、flush/release継続失敗→成功後のCodec解放の回帰を追加。flush失敗/release成功でもCodec回収まで検査し、CI件数を29+7へ更新する。
+- 修正前は新規・更新試験3件が失敗し、修正後はKotlin 1.9.22の製品compileとAndroid 15 Robolectric再生36件が成功。ローカルはキャッシュ済み依存による直接compile/JUnit実行でありGradle実行ではない。Android製品build・atest・VTS・実機症状解消は未実施。
+
+## 2026-10-18 Framework診断差分の配置をrevert
+
+- `0c0116d`で追加したFramework診断patchと、その手動適用・build手順を取り消す。製品ビルド側PR #17がpatch本体と適用を所有し、TIS統合手順は参照だけにする。
+- 同commitのMPEG Audio予約値修正・音声PID設計是正・TIS診断・採取scriptは取り消さない。既存Exact-mode patchも今回のrevert対象ではない。
+- 製品コード・試験の差分なし。Framework patchの内容一致、tools側の適用・再実行・欠落時の失敗をhostで確認。Android build・atest・VTS・実機確認は未実施。
+
+## 2026-10-18 診断追加に伴うhost compile回帰の是正
+
+- 既存host Log stubへAndroid APIと同じDEBUG値・isLoggableシグネチャを追加。hostでは診断を無効にし、製品のpropertyによるDEBUG制御には変更を加えない。新owner・worker・property模擬機構は追加しない。
+- 直前の「Kotlin compile成功」はRobolectricのcompileであり、独立したhost stub構成のcompile成功を意味しなかった。同構成での未定義参照によるCI失敗を認め、検証範囲を訂正する。
+
+## 2026-10-18 MPEG Audio予約値検証と実機診断採取
+
+- #207レビュー2件: 音声PIDのみの切替条件を一箇所へ集約し、PTS/MediaSync全世代再生成の一般則から例外を参照する。実装の局所Filter交換と設計を一致させた。
+- 既存`EsHeaderParser.mpegAudioFormat`で予約version/layerを拒否する。CodecHeaderProbe→MediaFormatの回帰で`FF EB 90 64`・`FF F9 90 64`の拒否と、後続の分割された`FF FB 90 64`の正常構成を確認する。新しいparser・判断表は追加しない。
+- TISのDEBUG診断へMediaSync生成区間と世代、Codec映像出力の要求/返却、callbackのPTS/受信時刻を追加。availability・資源寿命・回復動作は変更しない。
+- Framework用MediaSync診断patchを追加。DEBUG有効時だけnative instance、buffer ID、入力frame、media時刻/表示予定時刻、出力queue結果/次frame番号を記録し、Exact listenerや新しいAPI・保持状態は追加しない。tv checkoutだけではFrameworkへ適用されない。
+- Perfetto設定、ホスト採取/snapshot script、INTEGRATIONのビルド/採取/照合手順を追加。native stack、SurfaceFlinger layers/FrameTimeline、外部撮影を組み合わせる。Java stackやqueue成功を最終present成功と扱わず、採取失敗・trace loss・上流画素内容の未確定を明記する。
+- 新回帰は修正前に予約versionの誤受理で失敗し、修正後はRobolectric playback 28件＋MediaSync 6件が省略なしで成功。Robolectric構成のKotlin compile、変更範囲ktlint 1.8.0/detekt 1.23.8、Bash構文確認は成功。模擬adbによる採取成功/失敗・property復元・native採取成功/失敗の4ケースを確認した。
+- MediaSync原本blob `a3f55da7116afd0b976aec1b23c6917e0578db50`へのpatch適用、既存Exact patchとの両順序適用と結果一致を確認。native Soong build、端末でのPerfetto data source/ログ対応、実native stack採取、実波症状解消は未検証。模擬adbやpatch適用確認をこれらの代替証明としない。
+
+## 2026-10-18 起動前の映像待機とCompatibility時刻比較
+
+- #207: rate 0のMediaSyncへ同期renderして同じowner上の音声準備・開始・停止を塞がないよう、開始前の映像出力はCodecの貸与bufferのまま保持し、既存startup gateで再生開始後に渡す。独自の枠数・期限延長・workerは追加しない。
+- Compatibility判定はcallback入口の単調時計の受信時刻とarm時刻を比較する。中間SurfaceのCCodec通知に渡るPTS(ns)と`System.nanoTime()`を比較する誤りを除去した。旧世代・無効Surface・Surface error・Exact modeの拒否条件は維持する。
+- 修正前に、PTS/armの比較2件と、pause中の映像出力が開始・停止を塞ぐ2件のRobolectric試験が失敗することを確認。native Codec/MediaSync境界は模擬であり実機再現の証明ではない。
+- 修正後検証: `gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest --tests '*PlaybackFilterAdmissionTest' --tests '*PlaybackMediaSyncReleaseTest'`で27+6件成功。`LifecycleControlDeadlineTest`はKotlin 1.9.22で本体executor/ResourceCleanupと既存Log stubをコンパイルし、JUnitCoreで20件成功。変更Kotlinのktlint 1.8.0・detekt 1.23.8も成功。Soong/atest/実機は未実施。
+- 既存control待機超過の原因例外へownerスレッドのJava stackを添付する。未開始taskの取消しを先に確定し、開始済み操作の結果未確定・元ownerでのcleanupという契約は変更しない。
+- 34.1の各黒画面、旧映像の再表示、最後の停止不能をすべて同じ原因と確定したものではない。特に最後の世代は映像Codec生成ログがなく、今回の起動前映像待機だけでは説明できない。実機の症状解消は未確認。
+
+## 2026-10-18 再生失敗と停止位置の診断
+
+- #207: Sessionが受理した再生不能理由・詳細・世代、圧縮入力欠落の発生箇所、停止前の既存AV進捗と停止段階をログへ残す。pending queue拒否では既存の件数・bytes・PTS幅・Codec入力所有数を記録する。
+- 34.1（fe7ad3c）の黒画面・旧映像再表示の原因確定用。期限・容量・復旧回数・資源寿命は変更せず、症状の修正完了とは扱わない。実機検証は未実施。
+
+## Frontend close失敗後の再試行前提を是正
+
+- #209: closeFrontendもFrameworkの不可逆な解放境界として元失敗を保持する。HALが回収済みになれば同じJava APIを再試行できるという誤った前提を除去。
+- native模擬実装を実Frameworkの参照破棄に合わせ、失敗後の再試行拒否と正常close後の次scanを検証する。実機での0件→中止→再開→登録→視聴は未検証。
+
+## 圧縮入力欠落後のCodec参照状態の退役
+
+- #207: 構成済みCodecに対するAV OVERFLOW、RestartEvent、owner受付拒否、sample拒否を既存の全再生generation終了・再生成へ接続。Filter.flushだけで旧Codecを継続せず、Codec errorと共通の一回の自動復旧制限を使う。構成前の局所flushは維持する。
+- HAL同時8eventという廃止済み前提をstartup保持の説明から除去した。TISにAU parser、PTS補間、別の復旧owner/queueは追加しない。
+- 構成済みCodecのoverflowが旧decoder/filterを退役し、再開対象がない場合に元世代へ失敗通知するRobolectric回帰試験へ更新。Android実機・zapping・色の解消は未確認。
+
+## 2026-10-17 MediaSync停止順序とCodec入力寿命
+
+- Android 15のCodec投入用C2Bufferが元MediaEventの解放通知を共有しないため、元event/blockを入力index返却またはdecoder解放成功まで保持し、HAL共有slotの早期再利用を防ぐ。
+- NHK停止後の再選局でCodec停止が待機超過したログを受け、MediaSyncのflush・解放をPCM返却とCodec停止より先へ移動。既存ownerとcleanupを使用する。
+- 停止順序とflush／解放失敗をRobolectricで検査する。実機の映像破損・AAC入力不足・停止回復は別途確認が必要。
+
+# setup開始拒否と前回scanの失敗理由の分離
+
+- beginScanの呼出しごとの受付結果から今回の失敗だけを拒否callbackへ渡す。実行中・cleanup保留による拒否では、前回のScanState.Failedを今回の拒否理由へ転用しない。boot/backgroundの拒否診断も同じ受付結果を使う。
+- 既存Managerと実ControllerのFailed終端→公開Frontend cleanup失敗→owner保持→setup拒否表示→公開API再試行による解放をAndroid15 Robolectricで検査する。既存の世代枯渇表示の回帰も維持する。
+
+# setup開始拒否時の世代枯渇表示
+
+- 開始拒否時は既存ScanState.Failedの理由を表示し、SCAN_GENERATION_EXHAUSTEDを前scanの終了待ちへ上書きしない。新しい拒否状態・schedulerは追加せず、setup generationを維持する。
+- Robolectricで実startIfIdleとActivityの拒否表示を接続し、active scanの待機表示とInt.MAX_VALUE/activeTask=nullの恒久失敗表示を検査する。
+
+
+# 標準APIによるFrontend pre-closeと再試行
+
+- releaseと異種Frontend切替でcloseFrontend()成功後にだけSDK close()へ進む。一時的なFrontend失敗ではowner/SDKの開状態を維持して同じ入口から再試行する。
+- 他資源のcleanup失敗中もSDK closeを保留する。Frontend回収後のDemux/client/native失敗はone-shot未完義務として区別し、再closeのno-opを成功にしない。
+- 必要性を実証していなかった独自Framework cleanup patchとreflection入口を撤回し、標準APIだけの経路へ戻した。
+- Android15実SDK closeFrontendとnative/TRM Shadow境界で一時失敗・継続失敗・再試行成功・後続scanを検査する。実機HAL隔離/回収と実scanは別途検証を要する。
+# ExactからCompatibilityへの降格時の継続監視取消し
+
+- private callbackの再arm不成立時に既存Exact watchdogを取り消し、実行時もcurrent modeを照合する。同じowner/世代上で処理し、Compatibilityの正常なCodec進捗を最終出力timeoutとして停止しない。
+- Android15 Robolectricで初回Exact成功から再arm不成立・Compatibility降格・7秒間のCodec callback継続を検査する。初回Exact eventはfixtureで配送し、再armのprivate API不在はstock SDKの実経路を通す。実機検証の代替にはしない。
+
+# 任意MediaSync patch未適用時の近似Compatibility復元
+
+- private callback不在/登録失敗時はcurrent Codecの公開描画callbackを近似available根拠として使用し、最終output成功と区別して診断する。
+- generation、Codec identity、arm時刻、Surface有効性とMediaSync Surface errorを検査し、ExactではCodec callbackだけで通知しない。
+- Compatibilityは厳密な最終出力watchdogを開始しない。初回callback欠落と最終出力の観測不能を区別する。
+- Robolectricへstock本番arm・一度のavailable・旧callback・確認済みSurface異常・Exactの分離を追加した。
+
+# 音声PID切替失敗後の同一選択による復旧
+
+- 新Filter開始成功後に選択を確定し、失敗時は旧選択と既存cleanup義務を保持する。
+- Sessionの無条件noopを除去し、実Filter不在なら同一track再選択から音声入力を再取得する。映像とMediaSyncの世代は維持する。
+- close/open/configure/start失敗とSession選択・実Filter・再選択復旧をAndroid15 Robolectricで検査する。
+
+# SDK/TRM未完回収とsetup開始拒否の可視化
+
+- one-shot例外だけでActiveScanTaskを除去せず、Framework client/native後始末も完了するまでControllerとexecutorを保持する。公開closeFrontendによるFrontend/TRM lease回収を評価し、残るclient/native義務と区別する。
+- LineageOS 22.1へ解放専用retryCloseForCleanupのpatchを追加。成功したclient unregisterは再投入せず、元Tunerを通常利用へ戻さない。TISは追加hidden入口がない構成を解放未確定として扱う。
+- setup開始拒否を同期callbackでUIへ通知し、終了待ちを表示して以前のsetup generationを維持する。独立schedulerや自動再開始は追加しない。
+- 既存Robolectric/hostの期待をowner保持へ変更し、SDK一回性・Frontend cleanup・拒否通知を検査する。platform patchの適用確認と実機Soong・TRM再取得・VTS・実波は別の検証条件とする。
+
+# Tuner closeと他資源の複合解放失敗の分離
+
+- Controller内の再試行可能な解放失敗が残る間は、Tunerのone-shot close失敗だけに分類せず、既存資源ownerとcontroller executorを保持する。SDK close自体は再実行しない。
+- 既存ResourceCleanupを利用するplaybackを含め、他資源の解放完了後だけone-shot失敗を通知してscan受付を解放する。独立reaper・追加queueは設けない。
+- Android 15 Robolectric試験へ、実ControllerのSection Filter closeとSDK Tuner closeの同時失敗、継続失敗時のowner保持、後続回収と受付解放、SDK close一回性を追加した。
+- 設計書のexecutor停止条件とscan退役条件を同じ契約へ追従した。Android実機Soong・atest・VTS・実放送検証は未実施。
+
+# scan中断のFramework Tuner one-shot close失敗とstop/start復帰診断
+
+- Android 15のTuner.closeは途中で例外を出してもmClosed=trueとなり、再closeしてもnative retryしない。TunerControllerはこの失敗だけをTunerOneShotCloseFailureに型付けする。
+- ChannelScanManagerは他の解放対象が完了した場合に限り、この復帰不能SDK instanceをActiveScanTaskから退役させる。失敗を成功へ変換せずログに記録し、HAL workerの後片付けは既存HAL reaperが所有する。
+- 新scanのtune同期拒否、generation、候補、terminal outcomeを記録。新TISプロセスでstop/start後に即時終了しても根拠結果が残る。
+- ScanPlanPolicyTestにone-shot失敗後のmanager受付開放試験、Robolectricにone-shot typed診断を追加（既存ケースを更新）。
+- 実機HAL workerの物理終了およびstop/start後の新scan成功は本変更だけでは検証できない。原因の異なるPX4 EAGAINやsignal lock不成立は結果コード・実波の追跡が必要。
+
+# 最終出力可用性と音声選択の局所切替
+
+- Codec→MediaSync入力callbackによるavailable確定と継続watchdog更新を除去し、既存の最終出力one-shotを再armして継続を観測する。未パッチOSは観測不能を診断し初回期限で失敗する。
+- 同一音声再選択をnoopとし、同じvideo/PCR/audio構成でのPID変更は音声Filterだけを切り替える。PCM/codec構成変更では既存のMediaSync全世代再生成を維持する。
+- Sessionの再選択判定と成功signatureを追従し、旧Filter入力の拒否、同一構成/PID切替の映像owner保持、Codec入力callbackによる誤available/watchdog更新防止をRobolectricで検査する。
+- 設計と統合文書を追従。Android Soong・実機VTS・実デコーダ・実波の検証は未実施。
+
+# ライブ再生のcodec別最小ヘッダprobeへの移行（PR #207）
+
+- ES履歴を256/512/768 KiB保持して繰返し解析する方式を廃止。MPEG-2 Videoはsequence headerに必要な8 byte、MPEG audioは4 byte、AVC/HEVCはconfig用のSPS/PPS/VPS NAL（1件16 KiB以内）、AAC ADTSは構成に必要な1 frame（13-bit frame長以内）だけを有限保持する。
+- MediaEventの境界をまたぐstart code/NALを逐次検出し、構成に不要な映像音声ES本文を保持しない。GOP/AU再構成、独自PTS補完、追加ESキューは設けず、元LinearBlockの直接queue契約を維持する。
+- 構成前の未queue MediaEventは同時3件以下に抑え、HAL 8-slot受付の進行性を確保。ヘッダ未検出時の失敗期限は既存のdecoder startup deadlineを正本とする。
+- MPEG-2先頭1 MiB超のヘッダ探索、AVC/HEVCのパラメータセット跨ぎ、MPEG audio、ADTSのフレーム境界と超過異常のhost回帰6件を追加。RobolectricのMPEG-2 decoder fixtureも修正した。
+- Android Soong、現HEADのhost/Robolectric/Quality CI、実波連続再生は未実施・未確認。HEVC/AVC/AACの実codec適合は実機検証まで未確定。
+
+# Section Filter拒否時の現行性再確認
+
+- 容量不足でcontroller data投入を拒否されたSectionは、既存control executorへ非同期で現行性判定を委譲する。閉鎖済みFilterの同一tune generationを新たな喪失として計上せず、現行Filterの拒否だけを既存のinputDeliveryLossに記録する。新しいqueue、worker、状態所有者は設けない。
+- Android 15 Robolectricに、同一generationでのFilter閉鎖後の遅延拒否と現行Filter拒否の対比を追加。実機検証は未実施。
+
+# TIS Section Filter overflowの現行性検証とscan候補別の配送喪失診断
+
+- FrameworkのSection Filter `STATUS_OVERFLOW`を、既存`SectionIngestController`へController受付拒否とは独立した診断件数として記録する。callbackは同期controller待機を行わずcontrolへ投入し、Filter実体・tune generation・現行状態の照合後だけ計数する。
+- scanの選局開始前に両カウンターの同一snapshotを保持し、候補ごとの増分を出す。再送でSI収集がCOMPLETEになっても候補内の喪失を消さず、過去候補の累積値だけで新候補の喪失を報告しない。
+- Android 15 Robolectricの既存Filter fixtureで現行、別Filter、close後、旧generation、DATA_READY、複合statusのcallbackを検査し、ホスト試験でCOMPLETE時の喪失保持と候補境界を検査する。新owner・追加queue・受付容量変更はない。
+- Android Soong、device atest、実機VTS、実波scanでのSection喪失低減の確認は実施していない。結果は対象HEADのCIで判定する。
+
+# TIS設計文書の観測履歴分離
+
+- 旧fixed20実波観測では配送損失19,530件中PID 0x12が12,942件であり、SDT-actual受信後破棄も観測した。現行のEIT入力限定とPAT受理時だけのPMT再評価は設計正本に残し、過去観測数とPR #197への変更経緯だけを設計書から削除した。
+- 本変更は実装・公開契約・試験数を変えない。実機Soong、VTS、実波は未実施。
+
+# PR #116 MediaSync停止回帰試験のKotlin quality対応
+
+- `PlaybackMediaSyncReleaseTest`の失敗注入をDetekt `UseCheckOrError`に従い`error()`へ整え、Robolectric shadowのsetter引数をktlint 1.8.0の複数引数関数宣言の改行規則へ合わせた。
+- 実行契約・TIS本番停止処理を変更しない。直前HEADのRobolectric／TISホスト試験は成功したがKotlin quality CI（detekt/ktlint）が失敗していたため、本コミットで該当箇所を是正する。新HEADの結果は再確認する。
+
+# PR #116 未パッチLineageOSでのMediaSync出力Surface切断
+
+- 再生停止時、旧MediaSyncへ接続した出力Surfaceを`MediaSync.setSurface(null)`で明示的に切断してから`MediaSync.release()`する。解放の責務・実行ownerは既存PlaybackPipelineのままとし、native MediaSync OutputListenerによる参照循環が接続解除を妨げる経路に対処する。
+- 既存ResourceCleanupの単一解放義務で切断・解放を実行する。切断に失敗した場合は旧MediaSyncの解放を成功扱いせず同じownerのcleanupを再試行し、新しい再生を開始しない。
+- Robolectric SDK 35の`PlaybackMediaSyncReleaseTest`に、停止後の同一Surface再利用および切断失敗後の未解放義務保持・再試行を追加。独自platform patchを前提としない。
+- 今回の変更では実際の未パッチLineageOSのCodec初回映像出力、TISクラッシュ後の異常終了復旧、Framework JNIのWeakGlobal欠陥は修正・実証していない。テスト/CI結果は対象HEADでの実行後に判定する。
+
+# PR #116 初回映像availability確定時の成功診断と実Codec callback回帰
+
+- 初回映像を利用可能とする既存の一回限りの確定点（`videoAvailableNotified.compareAndSet`成功時）から、`VIDEO_AVAILABILITY_COMMITTED`を1回だけInfoログへ出力する。現在generation、Exact/Compatibilityの区別、映像・音声別のAVデータ経路snapshotを含め、失効世代・重複callbackでは出力しない。未パッチOSのCompatibility frame callbackを最終display present成功とみなさない。
+- 既存RobolectricのAndroid 15 `MediaCodec.Callback`配送とblock model入力を使い、映像Filter受信→Codec入力→非空出力→frame rendered→availability確定時のsnapshot、重複・旧世代callback拒否を試験する。Codec native queue/releaseだけをshadowで置換し、productionにtest用APIは追加しない。
+- 音声Codec出力だけがある場合の`AUDIO.CODEC_OUTPUT=1` / `VIDEO.CODEC_OUTPUT=0`、旧世代音声Codec出力の非計上、`FIRST_FRAME_TIMEOUT`と`DECODER_STARTUP_TIMEOUT stage=FIRST_OUTPUT`の診断snapshot、および実`PlaybackPipeline.start()`による新世代でのcounter resetを追加試験する。
+- Robolectric試験の固定件数を12→16件へ追従。コミット`480b1dba`の[CI](https://github.com/kazuki0824/tv/actions/runs/38492993564)で16件成功、ktlint整形違反は後続コミットで修正した。最新HEADの全CIは確認を要する。
+- 所有者、状態機械、MediaSync/MediaCodecの意味、TIS/HAL公開契約、資源寿命、再生制御を変更しない。実機Codec・MediaSync最終出力・物理display成功とMXワンセグ1／NHK総合1再生は未検証。Rebase・Resolveはしていない。
+
+# PR #116 block model MediaCodec callback の結合回帰試験
+
+- 既存RobolectricのAndroid 15 Filter fixtureにMediaCodec用shadowを接続し、本番VideoDecoderPipelineが登録する実MediaCodec.Callbackを発火する試験を追加する。Video MediaEventの受理からInputBufferAvailable→block model QueueRequest.queue→OutputBufferAvailable→Video onOutput→FrameRenderedListenerへ進む診断値を確認する。
+- 別試験ではInputBufferAvailableとQueueRequest投入が成功しても映像OutputBufferAvailableが来なければ、既存first-frame期限からVIDEO.CODEC_OUTPUT=0・VIDEO.FRAME_RENDERED=0を含む失敗通知が出ることを検査する。
+- MediaCodecのnative queue/releaseだけをRobolectric shadowに置き換える。製品runtimeの公開API、Codec判定契約、再生状態機械、資源寿命、callback generationは変更しない。実機codec挙動とLineageOS 22.1の最終描画結果は引き続き実機で検証する。
+- 後続の音声出力・世代失効・Decoder起動期限の試験を加え、Robolectricの`PlaybackFilterAdmissionTest`は16件とも成功した（[run 38492993564](https://github.com/kazuki0824/tv/actions/runs/38492993564)）。同runではktlint整形違反があり、後続コミットで整形を是正した。最終HEADでの全CI確認は別途必要。
+
+# PR #116 再生診断レビュー指摘の是正
+
+- 再生progressを同一owner内の映像・音声別counterへ分離し、音声Decoderだけに非空出力がある状況を映像出力成功と誤認しないようにした。再生制御、MediaCodec callback、resource lifetimeの契約は変更しない。
+- MediaEvent受信と有効sample計数を各input identityの現行性確認後へ移動し、OVERFLOW/flush・再選局で失効した旧入力の現行進捗誤計上を防止した。
+- Filter.flush失敗を音声・映像別のFLUSH_FAILEDとして記録し、失敗通知へ同時点のprogress snapshotを含める。
+- progress値型の音声/映像別・reset試験に加え、既存Robolectricの実Filter callback経路で旧入力失効、正常入力受理、OVERFLOW、flush失敗通知、復帰の診断値を検証する。後続のCodec callback・期限・世代reset統合試験は上段に記載する。Soong/実機は未実施。
+- レビューの4件へスレッドで個別返信。Rebase・Resolveは実施しない。
+
+# PR #116 黒画面解析の再生進捗診断
+
+- 既存playback executor上の`PlaybackDataPathProgress`にMediaEvent受理、正常sample、Decoder入力・出力、描画callback、OVERFLOW、flush成否、LinearBlock欠落・入力拒否を計数する診断専用counterを追加し、playback世代の開始時に初期化する。first-frameとDecoder起動期限の失敗detailへsnapshotを接続し、再生可否判定やAV資源寿命には用いない。
+- 進捗counterの更新、初期未到達値、世代resetを回帰試験で固定。既存sample解析のComplexMethodを増やさず、診断のための分岐により発生したKotlin整形とDetektの指摘を修正した。
+- 診断用fieldを追加した後、従来のUnsafe.allocateInstanceで本番constructorを省くPlaybackFailureCallbacksTest fixtureが未初期化fieldを参照して3試験を失敗させていたため、fixtureで同fieldを明示初期化する。testを除外せず、本番ロジックへnull fallbackを入れない。
+- テストクラス追加に伴いTISホストCIの固定期待値を49クラス（実行45クラス）・398試験へ更新する。追加時の旧固定値48/44/397に起因する失敗を除去し、後続CIで398件の成功を確認した。
+- MediaSync最終出力patchを当てないAndroid 15/LineageOS 22.1を前提とし、実機でMXワンセグ1とNHK総合1の映像表示・持続再生・再選局を確認する必要がある。黒画面の根本原因確定、Soong/device atest/VTS、実機での映像回復は未達。
+
+# 非待機playback配送の容量拒否と実行失敗の分離
+
+- 64 callback固定の受付を、既存AV Filter容量に基づくpayload/event帳簿の有限予約へ変更する。同じSemaphoreのweighted acquire/releaseを使用し、owner再入とshutdown破棄でも全予約を返す。
+- 容量拒否はAVの既存decoder backpressure期限、字幕の既存continuity lost/flushへ接続する。損失通知は各Filterにつき既存controlへ一つだけ保留し、stale generation/Filterの入力はcurrent損失へ読み替えない。非overflow statusはdata枠を消費しない。真の投入/実行失敗のterminal cleanupは維持する。
+- 実SDK Filter callback lock、MediaEvent解放、Android時計を使う回帰をRobolectricへ追加し、65件video/audio/字幕/status burst、単発拒否後の再開、継続拒否の期限、字幕の局所回収、stale入力、実行失敗を検査する。weighted permit寿命は既存host試験で確認する。
+- 新owner・scheduler・retry loop・SI意味parserは追加しない。build/testは既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
+# 非待機section配送の有限burst受理
+
+- 1件固定のdata枠を、既存64KiB Filter容量と最大section長から導く16 slotへ変更する。残る拒否は既存ingest診断へ保持し、収集完了時も入力喪失を隠さない。callback待機・第二worker・SI意味解析/coalescingは追加しない。
+- 本番Filter callback/read/実JNIへの複数section配送、飽和診断、世代失効の回帰を既存host fixtureへ追加する。検証は既存CIへ委任し、実機VTS・実波は未実施。
+
+# 確立済みlive SI失効後の旧再生停止
+
+- 初回SI待ちの早期returnを、既存Idle状態かつ直前もPENDINGの場合へ限定する。READYからPENDINGへの失効は既存CAS解除・再生停止・字幕終了・利用不能通知へ戻す。新owner・状態機械・migrationは追加しない。
+- 初回bootstrapと失効回帰で実JNI fixtureを共用し、CRC付き同一版矛盾PMT後のStopped、pipeline世代失効、CAS plugin退役、ECM/EMM空集合とPMT継続、利用不能通知を検査する。build・試験は既存CIへ委任し、実機VTS・実波は未実施。
+
+# Lifecycle同期control破棄時の終了通知
+
+- callControlの通常control/cleanup control両経路へ既存QueuedTaskの破棄callbackを接続し、未開始FutureをcancelBeforeStartで完了する。開始phase CASと開始済み結果未確定の契約を維持し、terminal cleanup後の取消しをtimeoutとして報告しない。
+- 既存host試験へ、owner停止中にterminal cleanupと同期callerを投入し、shutdown後に通常/cleanup双方のcallerがtimeout前にCancellationExceptionで終了する回帰を追加する。別owner・worker・本番待機機構・migrationは追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
+# Program cleanup中の要求保留の用語統一
+
+- cleanup未完了中の「開始を拒否」を、受理済みlive/setup/EPG要求の「処理開始を保留」へ訂正する。要求継続の既存契約を参照し、要求自体の拒否や旧Program利用と混同しない。実装変更・migration・新ownerは追加しない。
+- 文書のみを更新し、Soong/device atest/実機VTS/実波は未実施。
+
+# 優先controller releaseによる未実行Futureの終了通知
+
+- 通常controlとcleanup controlのFutureへ既存QueuedTaskの破棄callbackを接続し、shutdownNowで未実行taskを破棄した場合はcancel完了を通知する。優先releaseが受理済み通常controlを追い越しても同期callerを待機中のまま残さない。
+- 既存host境界試験へ本番currentGeneration/releaseの競合と、通常/cleanup両Futureの破棄完了を追加する。解放用fixtureは試験内で共用し、設計とCI検出件数を更新する。別worker・owner・待機loopを本番へ追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
+# controller releaseの枯渇後cleanup入口
+
+- TunerController.releaseを既存PrioritySerialExecutorのenqueueCleanupへ接続し、通常task sequence枯渇後も同じownerで解放・失敗後の再試行を実行する。通常taskの拒否、成功後だけのshutdownは維持する。
+- cleanup classの既存定数を共通queueへ集約し、既存Future投入へcleanup選択を追加する。本番release入口の枯渇・cleanup失敗・再試行・完了を既存host境界試験へ追加し、TIS設計とCI検出件数を更新する。別executor・資源owner・retry loopは追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
+# 字幕時計確定時のpresentation horizon再検査
+
+- clock未確定中に受理した字幕も、時計確定・再arm時と新規入力の容量判定前に既存60秒horizonを再検査する。超過Displayと従属Clearを診断付きで除去し、既存queueの容量を戻す。
+- 既存capacity試験へnullから停止clockへ遷移する64件の反例、通常字幕の再受理、Clearだけが上限を超えるpairの除去と60秒境界の保持を追加する。TIS設計と既存host CIの試験件数を更新する。owner・queue・scheduler・budget・本番test APIを追加しない。
+- build・試験は既存CIへ委任し、Soong/device atest/実機VTS/実波は未実施。
+
+# BS探索のSDK scan登録解放とAndroid 15境界試験
+
+- 停止通知後も残るTuner SDKのscan callback登録をcancelScanningで解除し、同じTuner/frontend lease上の次RF探索を可能にする。STOPPEDの受信結果とstream IDsは保持し、停止済み状態に限りnativeのINVALID_STATEを受理する。未停止operationと他の失敗では既存ownerとcleanup再試行を維持する。
+- TIS設計と停止済みcleanupの単体期待値をSDK登録寿命へ合わせる。Android 15の実scan/cancelScanning/onScanStoppedと本番operationを接続するRobolectric試験を追加し、constructorのnative/TRM接続とnative呼出しだけを試験境界で代替する。未解放登録による次RF拒否と、SUCCESS/INVALID_STATE後の次RF到達を検査する。
+- 既存Robolectric CIへ試験を接続し、host-only source setとKotlin build ownership検査へ登録する。SDK非公開型の試験runtime依存を明示し、失敗時の完全な例外出力と境界試験2件の実行report確認を接続する。新しい本番owner・wrapper・状態・scheduler・migrationは追加しない。buildと試験はCIで確認し、Soong/device atest/実機VTS/実波は未実施。
+
+# PR #175 一括照会契約への統一と未使用結果fieldの除去
+
+- ChannelStoreを既存のindexExistingChannelIds契約へ揃え、呼出元のない単一key Provider照会とtest用fallbackを削除。fixtureも一括indexを直接供給する。
+- ProgramUpsertOutcomeの未使用updatedを削除し、既存requestによるinsert/update計数とprogramId=nullの失敗契約を維持する。adapter・互換helper・validatorは追加しない。
+- 検証は既存CIへ委任し、Soong/device atest/VTS/実波は未実施。
+
+# 2026-10-09 Program normalize未使用APIの削除
+
+- 本番呼出元のないProgram normalizeのKotlin facade・native宣言・JNI export・Rust公開関数を削除し、設計のAPI一覧も揃えた。
+- 既存の境界試験は本番Program builder・key抽出・共通validationへ接続し、Program更新時のcleanup・再収集とkey抽出に必要な内部helperを維持した。互換migrationや代替ownerは追加しない。
+- ローカルは差分・参照・整形を確認し、buildと試験は既存CIで検証する。Soong/device atest/VTS/実波は未実施。
+
+# Program cleanup完了通知の例外境界統一
+
+- ready済みの同期通知とworker完了通知を同じ狭いnotifyCompletionへ集約し、通知先の例外を診断へ残す。cleanup成功状態と後続通知は維持する。
+- 既存worker失敗・retry試験へ非同期通知例外とready済み通知例外・次の通知継続を追加。設計追従、テストはCIへ委任。
+- worker・state machine・scheduler・migrationは追加しない。実機VTSは未実施。
+
+# 2026-10-09 PR186レビュー履歴の整理
+
+- playback登録解除、caption/renderer cleanup保持、Program cleanup要求継続の履歴を古いreleaseより前へ統合した。PMT・cleanup FIFO・音声callback・保留tuneの追加試験を含む通常host検出数は376件。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
+# cleanup要求継続と遅延音声callbackの保護
+
+- Program cleanup完了を既存session control・setup scan・boot jobへ通知し、最初の利用要求を失わない。失敗時は旧Program使用を拒否する。単一worker、既存latest tune/ActiveScanTask/pending jobを再利用し、schedulerやmigrationは追加しない。
+- MediaSync consume入口はsync/世代照合をmap変更の前に行う。同一sync内の音声IDは再利用せず、最大値で明示失敗にする。新sync作成時だけIDを再開する。
+- 遅い実Providerの失敗通知とsetup受付、単一onTune要求の完了後再開/失敗時拒否、最大IDと旧sync callbackによる現在outputの無変更をCI回帰試験へ接続した。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
+# PMT初期待ちとProgram IPC境界のレビュー対応
+
+- live SIがPENDINGでも現行世代のPMT Filter取得を進め、playback/Program/CAS確定は既存READY契約まで待機する。実PAT/SDT/NITから本番refresh・Filter開始・PMT受信・READYを通すhost試験を追加した。
+- Program batchを64件およびParcel実測bytesで分割する。Android公開IPC推奨値の半分を予算とし、単一operation超過は全batchの書き込み前に失敗させる。provider-dataの切捨てやKotlin側の第二schemaは追加しない。異なる予算・24KB×64行・単一超過のRobolectric試験をCIへ接続した。
+- 未実装のservice全体Program index取得は空集合成功ではなく失敗とし、空EITをwriter公開入口で誤commitしないことを既存試験へ追加した。
+- 未使用の同期選局恒等helperとbooleanだけの試験を削除し、本番候補loop・tune拒否・TUNE_REJECTED終端と後続候補停止の回帰試験へ置き換えた。
+- Controller/Lifecycle executorのqueue・owner識別・permit受理/完了/破棄をPrioritySerialExecutorへ共通化した。既存owner/thread数と各executorの期限・再投入・callback解放方針を維持する。
+- ホストJUnit検出数をPMT試験1件分更新し、最上位PR186で373件とする。ローカルでは整形・lint・差分を確認し、テスト実行はCIへ委ねる。Soong/VTS/実機検証は未実施。
+
+# callback実行失敗と複数MediaEventの解放保持
+
+- TvProviderの単一/一覧チャンネル照会のnull cursor診断を日本語へ統一した。失敗を空結果の成功に置き換えない。
+- LifecycleSerialExecutorで開始済みcallbackのRuntimeExceptionを既存onFailureへ渡し、失敗通知・release fence・同一ownerのterminal cleanupへ接続した。開始済み入力へonDiscardを重ねない。
+- AV callback配列の途中例外では現在の未移譲eventと残余eventを既存releaseMediaEventへ渡す。処理済み/decoder所有eventは再解放せず、解放失敗は既存ResourceCleanupが保持する。
+- 恒久設計を投入・実行失敗と配列残余回収へ追従した。既存executor試験を実行開始後の失敗まで拡張し、実AV callback入口への3イベント入力と残余解放retryの試験・ホスト境界fixtureを追加した。CIの検出期待値はPR185で360、PR186で372に更新した。
+- ローカルでは整形・lint・差分を確認し、テスト実行はCIへ委ねる。Soong/VTS/実機検証は未実施。
+
+- Move upgrade Program cleanup I/O to its single owner worker; keep live/setup/EPG admission closed until success and retry on the next request after failure. Test blocked ContentResolver, 10,000 rows, partial delete and retry without migration.
+
+- Update host test discovery guards for the additional caption cleanup test class and two tests.
+
+- Keep caption cleanup retry authority until cleanup succeeds; fence terminal presentation without allocating a new epoch.
+- Preserve the native renderer handle until its release call succeeds, and localize Program cleanup query failures.
+
+# playback cleanup完了後の登録解除
+
+- requireCleanupComplete成功後にglobal playback登録を解除し、その後generation failureを再throwする。cleanup未完了とgeneration枯渇の組合せでは登録を保持してscan admissionを防ぎ、cleanup retry成功後に解除する試験を追加した。
+
+# MediaEvent解放失敗時の入力停止
+
+- ResourceCleanupの解放結果をBooleanで返し、MediaEventの初回失敗を既存playback terminal cleanupへ接続した。released fenceで新規AV処理を止め、同じownerでFilterをcloseして配送解除する。
+- 既存複数event試験を連続release失敗・Filter close失敗・100回の配送非受理と保持数不変・成功後の再試行完了へ拡張した。host境界のFilter callback解除順をAOSPに合わせた。
+- 解放義務を捨てず、親codec完了契約を維持する。別owner・scheduler・migrationは追加しない。設計追従、テストはCIへ委任。実機VTS・実波は未実施。
+
+# 2026-10-09 PR185レビュー履歴の整理
+
+- stale/current output解放、codec親子cleanup、AV配列の残余回収の履歴を古いreleaseより前へ統合した。既存実装・試験を維持し、検証はCIへ委ねる。Soong/VTS/実機確認は未実施。
+
+- Localize playback runtime diagnostics while preserving reason codes and cleanup ordering.
+
+- #185: playback recoveryのruntime例外境界へ理由付き局所抑制を配置し、親PR自身のdetekt gateを満たす。current output境界の既存抑制は維持。
+
+## レビュー対応: MediaCodec親子cleanupの確定
+
+- codec release成功時に同codec配下のoutput解放義務とaudio参照を完了し、閉鎖済みcodecへのretryを残さない。
+- pending actionに既存codec ownerを紐付け、retry中に親成功で完了した子actionも再実行しない。
+- output失敗→parent成功→retry、parentも初回失敗する順序の反例を固定する。
+
+## レビュー対応: current decoder output失敗の通知
+
+- current outputのruntime例外を既存onDecoderFailure/errorSinkへ渡し、data workerからの未捕捉終了を防ぐ。
+- cleanup所有を保持したままSessionへtyped failureを通知しdata taskが完了する回帰試験を追加。stale出力は通知せず所有保持を継続。
+
+# MediaCodec出力buffer全release経路の回収所有権
+
+- stale callbackに加え、current videoの空buffer・Surface拒否・時刻指定render、current audioの空buffer・LinearBlock欠落・range拒否・backpressure拒否も共通の既存ResourceCleanupへ接続した。失敗時はclosureがcodec/indexを保持し、current処理では解放完了扱いせず既存失敗通知へ伝播する。audio outstanding集合の解放成功まで保持する経路は維持した。
+
+# stale decoder outputの回収所有権保持
+
+- generation/codec identity不一致の遅延callbackも既存ResourceCleanupへ接続し、release失敗を保持してstop/release時にretryする。audio outstanding集合へ登録前のbufferも回収対象にし、新しいcleanup ownerは追加しない。
+
+# serial executorの到達しないcontrol分類の削除
+
+- 両executorの未使用ControlTask markerとexecute振分けを削除し、controlは既存の明示入口、executeはdataに限定した。
+- controllerのFuture専用classを既存FutureTaskへ簡素化。Lifecycleの開始前取消し・開始後結果不明、共通queue・owner・permitは維持する。
+- 設計を追従し、既存回帰試験はCIへ委任。新しいowner・framework・migrationは追加しない。実機VTSは未実施。
+
+# cleanup優先classのFIFO保持
+
+- cleanup commandへ通常taskとは独立したchecked sequenceを同じexecutor内で付け、通常identity枯渇時もA/B/Cの投入順を保持する。最大値では明示失敗とし、wrap/reuseはしない。
+- ownerをブロックして複数cleanupをenqueueした後の実行順を既存host fixtureへ追加した。別executor・scheduler・台帳は追加しない。テストはCIへ委ね、Soong/VTS/実機確認は未実施。
+
+# 同一PTS置換の従属Clear回収
+
+- 置換対象DisplayのframeTokenに従属するClearも容量計算と成功時commitの除去対象に含める。拒否時は既存queueを保持し、別tokenのClearは変更しない。
+- 既存字幕2試験へduration付き同一PTSのbudget＋1回の受理とtoken・件数・bytesの確認を追加する。試験実行はCIへ委ねる。
+
+# 受理済み字幕置換と未実行event解放の登録保持
+
+- 同一PTS字幕は容量検査とtoken確保の成功後に旧Displayを削除し、境界数とbytesの検査結果を実際のqueueへ反映する。
+- Filter close後の未実行event回収を停止処理内へ移し、解放失敗中はglobal再生登録と既存cleanup ownerを保持する。
+- 既存host試験に受理済み置換のbudget+1回連続投入と、解放失敗・再試行時のglobal登録を追加した。検証はCIで実施する。
+
+# Filter callback容量拒否と字幕置換の所有保持
+
+- LifecycleSerialExecutorのdata投入を待機なしの有限受理/拒否にし、Framework callback lockと優先closeの循環待ちを除去した。
+- playbackのAV/PES callbackは即時入口から同じownerへ渡す。拒否・失効・未実行破棄のMediaEventを解放し、失敗は既存ResourceCleanupへ保持する。Filter close後の未実行event回収と解放完了をexecutor停止の前提にした。別queue・cleanup ownerは追加しない。
+- 同一PTS字幕の置換後容量を無変更で検査し、token確保後だけqueueへcommitする。拒否時に既存Display/Clearを保持する。
+- 実Android 15 Filter lockの64枠飽和、callback資源破棄と解放retry、字幕bytes/境界数拒否をCI回帰試験へ接続する。Soong/VTS/実機試験は未実施。
+
+- accepted tune初期化失敗を既存session release fenceとResourceCleanupへ接続し、旧playbackを停止する。解放失敗と通知失敗は主原因へ保持し、同じownerによる再試行を残す。
+
+- #183: current callback投入失敗は原因を保持してterminal fence・診断・同一owner解放へ接続。通常identity枯渇後もcleanup専用controlで再試行し、shutdown競合だけを無視する。
+
+# lifecycle worker交換とcontrol再入dataのdrain
+
+- beforeExecuteで現worker identityへ更新する。全owner taskのfinishからdeferred dataをdrainし、control→data再入もdata側tailへ配送する。control完了時は空きpermitをtryAcquireし、満杯なら既存data完了に回収を委ねてownerを待機させない。交換workerとcontrol→dataの反例試験を追加した。
+
+# shutdown時のdeferred dataとpermit回収
+
+- discard callbackを通常finishから分離し、shutdown時は再enqueueしない。既存deferred queueを同じmonitorで排他回収し、実行中dataとqueued dataのpermitを一度ずつ返す。別thread shutdownとowner再入の競合試験を追加した。
+
+# PR #119 channel挿入直後のrollback ID引渡し
+
+- 未初期化native ownerを使用する例外注入試験をhost専用ソースへ置き、Android/SoongとRobolectric共用ソースにsun.misc.Unsafe依存を持ち込まない。
+
+- 挿入成功時に既存scanのrollback集合へIDを直接渡し、upsert途中と後続Program snapshot取得の例外でも新規行を既存finalizationで削除可能にした。別owner・scheduler・migrationは追加しない。回帰試験は既存CIへ委ね、Soong/VTS/実機は未実施。
+
+# 同一publicationの既存Program重複key拒否
+
+- existing/new分岐前に全program keyを検査し、重複時はservice batch全体を書き込まない。既存rowありの重複入力試験を追加した。新しいownerやcacheは追加しない。
+
+- レビュー再確認により、現行製品の必要条件を立証できないchannel型移行transactionを撤去した。通常rescanは既存IDとユーザー可視性を保持し、immutable列をupdateから除外する。
+
+## レビュー対応: immutable型を保つupsertの必須semantics
+
+- 型を捨てるdefault updateを未対応failureへ変更し、storeごとに型比較と再作成を明示する。
+- test storeも既存型の保持・型不一致時のhidden再作成を実装し、未対応defaultは書込みを開始しない。
+
+## レビュー対応: 必須pending問い合わせのfail-closed
+
+- 未対応ChannelStoreのpending問い合わせdefaultを失敗へ変更し、既存pending rowなしと混同しない。
+- 必要なtest storeだけ明示query実装とし、default未実装では書込みなしで失敗する反例を固定する。
+
+# 既存channelのone-seg方式移行
+
+- 型変更時だけProvider batchで新規row作成と旧row削除を行い、通常updateでimmutable COLUMN_TYPEを変更しない。one-segはhidden/non-pendingへ再投影する。upgradeと再作成失敗の反例試験を追加した。
+
+# scan開始時の取消し保持
+
+- initial/maintenance scan入口の不要なcancelled=false代入を除去し、別threadで受付済みのcancelを上書きしない。task生成時の初期化と既存fence/loop/publication gateを維持する。
+- 既存取消し・公開gate試験の実行はCIへ委ねる。新しい状態・lock・試験fixtureは追加しない。
+
+- Keep the JVM-only blocking-provider cancellation fixture in the host test target; update class discovery guards without changing test coverage.
+
+- scan取消し受付をProvider公開lockから分離し、最終commit前の受付確定とUIの有限returnを維持。公開中・最終commit中の競合試験を追加。
+
+- Localize the background channel maintenance diagnostic prefix.
+
+## レビュー対応: scan terminalの単一正本
+
+- 終端確定をpublication fenceへ接続し、確定後cancelを拒否する。Managerは正常returnのtyped terminalだけを写像する。
+- commit後の遅延cancelがCOMPLETEDを変更しない反例を固定する。
+
+# Program単一行の正常境界とIPC予算の整合
+
+- 推奨IPCサイズと同値の不要local変数を除去し、Qodana UnnecessaryVariableを解消する。予算・分割・拒否条件は変更しない。
+- AOSP公開推奨IPCサイズをrequest全体の予算として使用し、追加の半分制限を削除した。件数64とParcel実測の分割、全件事前計測、巨大単一行の明示拒否は維持する。
+- 既存Robolectric試験へ32 KiB provider-dataと標準列の受理を追加し、設計を追従させた。Rust schema・切詰め・retry・ownerは追加しない。
+- テストはCIへ委任。実機Binder・VTS・実波は未実施。
+
+## レビュー対応: Program bulk/batch正規契約
+
+- 旧単数Program insert/update/genre読戻しAPIとoverrideを削除し、未対応bulk/batch storeをfail-closedにする。
+- test storeも64操作単位でstage/commitし、batch途中失敗で先行操作が残らない反例を固定する。
+
+- レビュー対応: authoritative windowのobsolete Program削除未実装をfailureへ変更。必要test storeだけwindow削除を明示実装。
+
+## レビュー対応: 未解決service_type
+
+- 未解決と解決済み非対応を分離し、SDT/NIT収集中のlive policyをPENDINGのまま再評価へ残す。
+- null service_typeと未取得SDT/NIT、解決後READY、解決済み非対応UNSUPPORTEDを回帰試験で固定する。
+
+## レビュー対応: scan cancelの公開境界
+
+- cancel確定とTvProvider公開を既存scan ownerのpublication lockへ直列化し、最終snapshot retry中の取消しもCANCELLEDで終了する。
+- retry中・publish gate直前の取消しを副作用なしの回帰試験で固定する。
+
+# controller worker交換後のowner判定
+
+- beforeExecuteで現在実行するworker identityへ更新する。未捕捉例外による交換後も単一thread ownerとcontroller/data再入を維持する試験を追加した。thread数やexecutorは増やさない。
+
+- Localize TunerController runtime failure details without changing scan outcomes.
+
+# Program batch後の不要なindex更新の削除
+
+- 読み手のない既存Program index更新と、そのためだけのPendingWrite 3 field・mutable map/list変換を削除した。service単位query、個別event guard、重複key拒否、batch結果/genre readback契約は維持する。
+- 既存Program公開回帰試験はCIで確認する。新しい補助処理・migration・owner・試験は追加しない。
+
+# PR #176 非対応SMDのterminal分類
+
+- 確定したUNSUPPORTED_BROADCAST_SYSTEMを既存typed policyのUNSUPPORTEDへ写像する。未取得SMDはPENDINGを維持し、既存試験で両者を区別する。新しい状態・owner・診断文字列分岐は追加しない。検証は既存CIへ委ね、Soong/VTS/実機は未実施。
+
+# controller data入口とshutdown試験の整理
+
+- 本番未使用のsubmitDataを削除し、既存backpressure試験をexecuteDataと試験内latchへ接続した。
+- shutdown前の飽和拒否と未実行task破棄後のSemaphore枠返却を別々に直接観測する。
+- production owner・permit管理・公開契約は追加しない。テスト実行はCIへ委任し、実機VTS・実波は未実施。
+
+# Filter callbackとcontroller closeの循環待ち解消
+
+- SectionEventはcallback入口でdrainし、parser更新は既存controllerへ非同期・有限・待機なしで投入する。飽和は診断付き拒否とし、世代・Filter identity fenceと順序を維持する。
+- Android 15の実Filter callback lockと優先closeを競合させるホスト試験をCIへ追加する。試験実行はCIに委ね、Soong/VTS/実機適合は未確認。
+
+# setup可視化batchの件数不一致をtransaction内で拒否
+
+- 初期可視化の各updateへexpected count 1を指定し、対象行消失をProvider transactionのcommit前に失敗させる。既存pending行のhidden状態とmarkerを保持し、今回insertした行だけを既存rollback入口で削除する。
+- 実ContentProviderOperationとSQLite transactionを使うRobolectric試験を追加し、中間・末尾行の消失、既存行と新規行の混在、正常commitを検査する。製品の新しいowner・retry・migrationは追加しない。
+- Kotlin build ownership検査へRobolectric専用試験のsource setを登録し、通常host・製品sourceへ混入させずに型照合・実行・品質検査を行う。
+
+# stacked PR直線化時のレビュー残件
+
+- #186レビュー本文で指摘された既存channel一覧queryの未実装defaultを、空集合成功ではなくUnsupportedOperationExceptionのResult.failureへ変更した。writer公開入口で未実装失敗と明示実装の取得結果を既存試験へ追加した。productionの所有input別query、boot/backgroundの失敗伝播、試験数は維持。Soong/device atest/VTS/実機確認は未実施。
+- #183の字幕投入失敗境界は、診断通知が失敗しても同じownerでcloseを実行し、双方失敗時には未完解放の例外を記録する順序を維持する。useへの変換は一次例外を変えるため、理由付き局所抑制でQodanaに意図を明示した。処理・所有権・試験数は不変。Soong/device atest/VTS/実機確認は未実施。
+
+- Qodanaの追加4件は取消しCASおよびsurface/track選択のrelease判定を短絡評価へ同値変換して対処し、失効時の後続処理拒否と評価順を保持した。
+
+- #166の既存試験で使用するreflection helperを試験class内へ復元し、controller専用試験との重複は再導入しない。
+- #183のlive初期判定はservice観測有無に依存させず、typed PENDINGを待機として保持する。PMT/PCR未完成とterminal stateの反例を境界試験へ追加した。
+- 未使用のLifecycleSerialExecutor.submitControlを削除し、試験は既存executeControl/callControlへ接続した。
+- queued→runningのCASとSI更新時のrelease再確認を維持し、取消し競合・投入後解放の理由を付けてRedundantIfを対象式だけ抑制した。
+- #161からの両系統を各PRの差分を保持して直線化し、setup/one-segの変更をlive owner以降にも継承した。
+
+
+# setup scanの新規channel可視性transaction
+
+- 実機でscan後52 channelがTvProviderへ存在する一方、大半が`browsable=0`のためstock Live TVの一覧に出ない事象を、setup終了時の初期可視性commit欠落として修正した。
+- 通常channel新規rowは`COLUMN_INTERNAL_PROVIDER_FLAG1=1`かつhiddenでstagingし、setup terminalが`COMPLETED`のときだけ、そのscanで正常に再確認したpending rowを`browsable=1, flag1=0`へcommitする。one-segは`TYPE_1SEG`、flag1=0、browsable=0を維持する。
+- 既存確定rowのbrowsableは再scanで変更しない。process終了等でfinalizeされなかったpending rowは次の正常setupで同serviceを再確認した場合に回収する。
+- setup失敗/cancel/resource-lost/tune-rejectedでは今回新規insertしたrowだけをrollbackする。可視化commit失敗も`INTERNAL_FAILURE`として扱い、今回新規insert分をrollbackする。
+- `ACCESS_ALL_EPG_DATA`はplatform署名priv-appへ付与するが、実装上の利用を自package channelの初期可視性確定へ限定し、既存queryは所有row URI制約を維持する。
+- 通常/one-segのcommit差、既存hidden保持、失敗rollback、commit failure rollback、process再起動後pending回収の回帰試験を追加した。
+
+# 不要な例示設定の削除
+
 # 不要な例示設定の削除
 
 - 正式な製品組込み設定を継承するだけだった未参照の例示makefileを削除した。

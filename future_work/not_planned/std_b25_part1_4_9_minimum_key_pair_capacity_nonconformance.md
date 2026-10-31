@@ -12,7 +12,7 @@
 
 ## 適合を宣言しない方針
 
-STD-B25 Part 1 §4.9 の受信機システム最小鍵組容量は、本製品全体として恒久的に適合対象外とする。
+STD-B25 Part 1 §4.9 に対する現行product-level適合判断は `開発規則.md` を唯一の正本とする。本書は、その判断の背景となる規格要求と実装能力差、将来の再評価材料だけを記録する。
 
 したがって、本製品について次を宣言してはならない。
 
@@ -26,7 +26,7 @@ STD-B25 Part 1 §4.9 の受信機システム最小鍵組容量は、本製品�
 
 Android Tuner AIDL の `DemuxCapabilities` には STD-B25 の同時鍵組数を公開する標準fieldがなく、`IDescrambler` の公開契約と §4.9 の受信機システム容量要求は同一契約ではない。
 
-このため、本件を解消するために frozen AIDL へ vendor 独自fieldを追加したり、実際には存在しない鍵容量を capability として捏造したりしてはならない。Tuner HAL は実際の `StdB25DecodeCapability` と共有 `DescramblerCapacityPool` に基づき、実鍵組数・実PID数・pool共有単位を超える要求を `UNAVAILABLE` として拒否する現行契約を維持する。
+このため、本件を解消するために frozen AIDL へ vendor 独自fieldを追加したり、実際には存在しない鍵容量を capability として捏造したりしてはならない。Tuner HALの現行能力値、資源受付、拒否結果は `TUNER_HAL_DESIGN_JA.md` を正とし、本書では再掲しない。
 
 AOSP/VTS契約を満たすために本件のARIB非適合を隠蔽してはならず、逆に本件のARIB非適合を理由としてAOSP公開契約を変更してはならない。
 
