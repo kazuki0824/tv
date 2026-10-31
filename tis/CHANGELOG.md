@@ -21,6 +21,11 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 - 音声有効化を確定した直後のselectAvStreamsへfalseを直接渡し、後続PRで検出された定数条件警告を除去する。状態更新・失敗時復元・選択動作は維持する。
 - 検証はCIへ委ねる。
 
+# 2026-10-31 実TS結合試験の完了同期を修正
+
+- queueとactiveCountの別観測を廃止し、data末尾のmarker実行と、その後のcontrol完了で入力処理・permit返却を待つ。満杯時は既存拒否結果を受けて試験期限内でmarker受付を待つ。
+- 製品executorや受付容量は変更しない。実TS試験の実行はCIへ委ねる。実機の到着率・容量妥当性を証明する変更ではない。
+
 # 2026-10-31 選局世代と初期化の失敗境界を修正
 
 - SDKが遅延実行時にlistenerを再参照する前に、登録時の世代・Tuner identityを既存controller owner上で照合する。
@@ -1708,3 +1713,19 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 ## r50ba2
 - `ChannelKeys.kt` を package 外の `../` source path ではなく Soong module dependency 経由で `rec` tests から参照できるよう、`maleicacid_tvinput_channel_keys_sources` filegroup を追加した。
 - No TIS Kotlin implementation, resources, manifest, permissions, or product integration files were changed.
+
+## CIレビュー追補
+
+- 旧PES時刻テストの削除後に残った未使用型を削除し、QodanaのUnusedSymbol 3件を解消する。字幕時刻の実経路は変更しない。
+
+# 2026-10-30 PR #123 実TS AVC AU・PTS回帰をhost CIへ接続
+
+- #116で追加した`video_timestamp.rs::captured_transport_frames_have_individual_timestamps`の試験本体・期待値・`#[ignore]`は変えず、#123が所有する既存の実TS fixtureを`AVC_CAPTURE_PATH`に指定し、Robolectric host workflowで明示実行する。
+- SHA-256・ファイル長とpacket境界の同一性、試験1件の成功・ignored0件・実AU計数を検証する。Cargo失敗は`pipefail`で伝達し、試験ログは既存artifactへ保存する。
+- HAL→TISのPSI/SI結合試験、他のRobolectric試験、既存の製品・試験責務境界は変更しない。新規HAL/AVC parser・本番API・試験用状態ownerは追加しない。
+- CI実行結果は該当HEADのActionsで確認する。実Codec/MediaSync/最終描画、Soong/atest、CTS/VTS、チューナー実機はこのhost追加だけでは検証されない。
+
+
+# 2026-10-30 固定TSのSection受付回帰
+
+- 既存16件上限と実HAL/SI JNIを使い、並行burst、喪失、再送完成、Filter交換、候補切替を検査する。容量変更・製品の試験専用入口は追加しない。

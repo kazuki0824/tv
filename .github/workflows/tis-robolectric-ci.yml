@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - "tis/**"
+      - "tuner_hal2/**"
+      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-robolectric-ci.yml"
   push:
     branches: [main]
     paths:
       - "tis/**"
+      - "tuner_hal2/**"
+      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-robolectric-ci.yml"
 
 permissions:
@@ -38,6 +42,49 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Rust 1.81.0を使用
+        uses: dtolnay/rust-toolchain@1.81.0
+
+      - name: HAL実TS実行器と製品SI解析JNIをビルド
+        run: |
+          cargo build --manifest-path tuner_hal2/host_ci/Cargo.toml --locked -p maleicacid-tuner-hal2-demux-host-ci --bin real_ts_sections
+          cargo build --manifest-path arib_si_engine_rs/host_ci/Cargo.toml --locked --lib
+
+      - name: 実TS AVC AU・PTS試験を明示実行
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tis/host_ci/robolectric/build/real-ts-diagnostics
+          python3 - <<'PYFIXTURE'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          directory = Path("tis/tests/fixtures/real_ts")
+          expected = json.loads((directory / "expected.json").read_text())
+          capture = directory / expected["fixture"]
+          assert capture.stat().st_size == expected["size_bytes"], "実TSのbyte数が不一致です"
+          assert hashlib.sha256(capture.read_bytes()).hexdigest() == expected["sha256"], "実TSのSHA-256が不一致です"
+          assert expected["complete_packets"] == expected["size_bytes"] // expected["packet_size"]
+          assert expected["trailing_bytes"] == expected["size_bytes"] % expected["packet_size"]
+          PYFIXTURE
+          AVC_CAPTURE_PATH="$PWD/tis/tests/fixtures/real_ts/test.ts" \
+            cargo test --manifest-path tuner_hal2/host_ci/Cargo.toml --locked \
+              -p maleicacid-tuner-hal2-demux-host-ci --lib \
+              captured_transport_frames_have_individual_timestamps -- --ignored --nocapture \
+              2>&1 | tee tis/host_ci/robolectric/build/real-ts-diagnostics/avc-au-pts.log
+          python3 - <<'PYRESULT'
+          import re
+          from pathlib import Path
+
+          output = Path("tis/host_ci/robolectric/build/real-ts-diagnostics/avc-au-pts.log").read_text()
+          assert output.count("captured_transport_frames_have_individual_timestamps") == 1, "対象試験の実行件数が不正です"
+          assert re.search(r"test result: ok\. 1 passed; 0 failed; 0 ignored;", output), "試験1件の成功を確認できません"
+          observed = re.search(r"frames=(\d+) failures=(\d+)", output)
+          assert observed and int(observed.group(1)) > 80, "実AUの出力計数を確認できません"
+          print(f"AVC AU/PTS実TS試験: {observed.group(1)} AU、解析拒否 {observed.group(2)} 件")
+          PYRESULT
+
       - name: Android依存Kotlin契約をRobolectricで実行
         run: |
           gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest \
@@ -55,7 +102,8 @@ jobs:
             --tests com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest \
             --tests com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest \
             --tests com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest \
-            --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest
+            --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest \
+            --tests com.maleicacid.tvinput.tis.RealTsHalSiIntegrationTest
 
       - name: 実SDK scan境界試験の実行結果を確認
         run: |
@@ -113,3 +161,32 @@ jobs:
           for case in caption.findall("testcase"):
               print(f"Android 15字幕入力continuity試験: {case.get('name')} success")
           PYRESULT
+
+      - name: 実TS試験と既存3クラスの実行結果を確認
+        run: |
+          python3 - <<'PYRESULT'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path("tis/host_ci/robolectric/build/test-results/testDebugUnitTest")
+          classes = ["DirectBootGuardR51FixTest", "RecordingDisabledR51Test",
+                     "TvProviderWriterDescriptorSchemaTest", "RealTsHalSiIntegrationTest"]
+          for name in classes:
+              suite = ET.parse(root / f"TEST-com.maleicacid.tvinput.tis.{name}.xml").getroot()
+              cases = suite.findall("testcase")
+              assert cases, f"{name}: 試験0件"
+              assert all(not any(case.find(tag) is not None for tag in
+                             ("skipped", "failure", "error")) for case in cases), name
+              if name == "RealTsHalSiIntegrationTest":
+                  assert {case.get("name") for case in cases} == {"realTsProducesServiceAndProgramFacts", "realTsBurstLossAndRetransmissionStayWithinCandidate"}, name
+              print(f"{name}: {len(cases)} passed")
+          PYRESULT
+
+      - name: 試験結果とHAL診断を保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tis-robolectric-results
+          path: |
+            tis/host_ci/robolectric/build/test-results/
+            tis/host_ci/robolectric/build/reports/tests/
+            tis/host_ci/robolectric/build/real-ts-diagnostics/

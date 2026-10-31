@@ -74,4 +74,14 @@ tasks.withType<Test>().configureEach {
             .asFile
             .absolutePath,
     )
+
+    systemProperty("realTs.fixtureDirectory", file("../../tests/fixtures/real_ts").absolutePath)
+    systemProperty("realTs.executable", file("../../../tuner_hal2/host_ci/target/debug/real_ts_sections").absolutePath)
+    val diagnostics =
+        layout.buildDirectory
+            .dir("real-ts-diagnostics")
+            .get()
+            .asFile
+    systemProperty("realTs.diagnosticsDirectory", diagnostics.absolutePath)
+    systemProperty("java.library.path", file("../../../arib_si_engine_rs/host_ci/target/debug").absolutePath)
 }
