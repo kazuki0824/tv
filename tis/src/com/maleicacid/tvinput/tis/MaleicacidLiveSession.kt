@@ -876,9 +876,21 @@ class MaleicacidLiveSession(
                     trackId?.let { wanted ->
                         tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO && it.id == wanted }
                     } ?: return false
-                if (playbackState !is PlaybackStartState.Started) return false
                 val physicalTrackId = TunerSelectionPolicy.physicalAudioTrackId(requested)
                 val presentation = requested.audioPresentation ?: PlaybackPipeline.DualMonoPresentation.MAIN
+                // 再生準備前は既存Sessionの選択意図だけを更新する。
+                // 開始処理中は入力構成が確定済みなので、適用したと偽って受理しない。
+                if (playbackState is PlaybackStartState.Idle ||
+                    playbackState is PlaybackStartState.Stopped ||
+                    playbackState is PlaybackStartState.Failed
+                ) {
+                    preferredAudioTrackId = physicalTrackId
+                    dualMonoPresentation = presentation
+                    audioFallbackDisabled = false
+                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
+                    return true
+                }
+                if (playbackState !is PlaybackStartState.Started) return false
                 if (physicalTrackId == preferredAudioTrackId && requested.audioPresentation != null) {
                     if (!tunerController.setDualMonoPresentation(presentation)) return false
                     dualMonoPresentation = presentation
