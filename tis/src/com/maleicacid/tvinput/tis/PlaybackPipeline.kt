@@ -2421,9 +2421,10 @@ class PlaybackPipeline(
         @Suppress("ReturnCount")
         fun setDualMonoPresentation(presentation: DualMonoPresentation): Boolean {
             if (!isDualMonoStream) return false
+            val track = audioTrack
+            if (track != null && !track.setDualMonoMode(audioTrackDualMonoMode(presentation))) return false
             dualMonoPresentation = presentation
-            val track = audioTrack ?: return true
-            return track.setDualMonoMode(audioTrackDualMonoMode(presentation))
+            return true
         }
 
         override fun codecMime(): String = kind.mime

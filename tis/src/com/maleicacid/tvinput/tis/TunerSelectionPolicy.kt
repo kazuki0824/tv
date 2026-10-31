@@ -149,6 +149,40 @@ object TunerSelectionPolicy {
         compareBy<AribElementaryStream> { it.componentTag ?: Int.MAX_VALUE }
             .thenBy { it.elementaryPid.value }
 
+    /**
+     * 有効なcurrent EITがdual-monoと示す場合だけ、同一音声ESの選択可能な出力modeをTIFへ投影する。
+     * 仮想trackは別PIDや別decoderを意味せず、物理ESへの選択とAudioTrack modeを分ける。
+     */
+    fun withDualMonoPresentations(
+        tracks: List<TunerController.TisTrack>,
+        currentAudioComponent: (Int?) -> AribComponentEntry?,
+    ): List<TunerController.TisTrack> =
+        tracks.flatMap { track ->
+            if (track.type != TvTrackInfo.TYPE_AUDIO) return@flatMap listOf(track)
+            val component = currentAudioComponent(track.componentTag)
+            if (component?.parseStatus != SiParseStatus.OK || component.dualMono != true) {
+                return@flatMap listOf(track)
+            }
+            listOf(
+                track.copy(
+                    id = "${track.id}:main",
+                    audioPresentation = PlaybackPipeline.DualMonoPresentation.MAIN,
+                ),
+                track.copy(
+                    id = "${track.id}:sub",
+                    language = component.secondLanguage?.takeIf { it.isNotBlank() } ?: track.language,
+                    audioPresentation = PlaybackPipeline.DualMonoPresentation.SUB,
+                ),
+                track.copy(
+                    id = "${track.id}:main_sub",
+                    audioPresentation = PlaybackPipeline.DualMonoPresentation.MAIN_SUB,
+                ),
+            )
+        }
+
+    fun physicalAudioTrackId(track: TunerController.TisTrack): String =
+        if (track.audioPresentation == null) track.id else track.id.substringBeforeLast(':')
+
     fun isSelectableTrack(
         type: Int,
         trackId: String?,

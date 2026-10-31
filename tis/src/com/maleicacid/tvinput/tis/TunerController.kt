@@ -116,6 +116,7 @@ class TunerController(
         val captionServiceKind: String? = null,
         val captionLanguageId: Int? = null,
         val automaticPresentationOnReception: Boolean? = null,
+        val audioPresentation: PlaybackPipeline.DualMonoPresentation? = null,
     )
 
     private data class SectionFilterArtifact(
