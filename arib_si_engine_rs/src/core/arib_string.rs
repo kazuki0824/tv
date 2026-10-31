@@ -107,14 +107,33 @@ enum GraphicSet {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GraphicSlot {
+    G0,
+    G1,
+    G2,
+    G3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InvocationState {
     g0: GraphicSet,
     g1: GraphicSet,
     g2: GraphicSet,
     g3: GraphicSet,
-    gl: GraphicSet,
-    gr: GraphicSet,
+    gl: GraphicSlot,
+    gr: GraphicSlot,
     middle_size: bool,
+}
+
+impl InvocationState {
+    fn graphic_set(self, slot: GraphicSlot) -> GraphicSet {
+        match slot {
+            GraphicSlot::G0 => self.g0,
+            GraphicSlot::G1 => self.g1,
+            GraphicSlot::G2 => self.g2,
+            GraphicSlot::G3 => self.g3,
+        }
+    }
 }
 
 impl Default for InvocationState {
@@ -126,8 +145,8 @@ impl Default for InvocationState {
             g1: GraphicSet::Alnum,
             g2: GraphicSet::Hiragana,
             g3: GraphicSet::Katakana,
-            gl: GraphicSet::Kanji,
-            gr: GraphicSet::Hiragana,
+            gl: GraphicSlot::G0,
+            gr: GraphicSlot::G2,
             middle_size: false,
         }
     }
@@ -283,8 +302,8 @@ fn decode_arib_string_with_policy(
         match byte {
             0x00 => {}
             0x0d => out.push('\n'),      // APR
-            0x0e => state.gl = state.g1, // LS1
-            0x0f => state.gl = state.g0, // LS0
+            0x0e => state.gl = GraphicSlot::G1, // LS1
+            0x0f => state.gl = GraphicSlot::G0, // LS0
             0x19 | 0x1d => {
                 let set = if byte == 0x19 { state.g2 } else { state.g3 };
                 if state.middle_size && set != GraphicSet::Alnum {
@@ -429,7 +448,7 @@ fn decode_arib_string_with_policy(
                     break;
                 }
             },
-            0x21..=0x7e if state.middle_size && state.gl != GraphicSet::Alnum => {
+            0x21..=0x7e if state.middle_size && state.graphic_set(state.gl) != GraphicSet::Alnum => {
                 if error_policy == ErrorPolicy::Strict {
                     return Err(AribStringDecodeError::MiddleSizeGraphic);
                 }
@@ -442,11 +461,11 @@ fn decode_arib_string_with_policy(
                     true,
                 );
                 out.push('�');
-                if is_two_byte_graphic(state.gl) && bytes.get(index + 1).is_some() {
+                if is_two_byte_graphic(state.graphic_set(state.gl)) && bytes.get(index + 1).is_some() {
                     index += 1;
                 }
             }
-            0x21..=0x7e => match state.gl {
+            0x21..=0x7e => match state.graphic_set(state.gl) {
                 GraphicSet::Alnum => out.push(byte as char),
                 GraphicSet::Hiragana => out.push_str(map_hiragana(byte)),
                 GraphicSet::Katakana => out.push_str(map_katakana(byte)),
@@ -479,13 +498,13 @@ fn decode_arib_string_with_policy(
                         diagnostic.record_entry(bytes, index, "GL/Kanji", "不正な2バイト目", true);
                         out.push('�');
                     } else {
-                        let mapped = map_two_byte_graphic(state.gl, byte, next);
+                        let mapped = map_two_byte_graphic(state.graphic_set(state.gl), byte, next);
                         out.push_str(mapped);
                         index += 1;
                     }
                 }
             },
-            0xa1..=0xfe if state.middle_size && state.gr != GraphicSet::Alnum => {
+            0xa1..=0xfe if state.middle_size && state.graphic_set(state.gr) != GraphicSet::Alnum => {
                 if error_policy == ErrorPolicy::Strict {
                     return Err(AribStringDecodeError::MiddleSizeGraphic);
                 }
@@ -498,13 +517,13 @@ fn decode_arib_string_with_policy(
                     true,
                 );
                 out.push('�');
-                if is_two_byte_graphic(state.gr) && bytes.get(index + 1).is_some() {
+                if is_two_byte_graphic(state.graphic_set(state.gr)) && bytes.get(index + 1).is_some() {
                     index += 1;
                 }
             }
             0xa1..=0xfe => {
                 let normalized = byte & 0x7f;
-                match state.gr {
+                match state.graphic_set(state.gr) {
                     GraphicSet::Alnum => out.push(normalized as char),
                     GraphicSet::Hiragana => out.push_str(map_hiragana(normalized)),
                     GraphicSet::Katakana => out.push_str(map_katakana(normalized)),
@@ -545,7 +564,7 @@ fn decode_arib_string_with_policy(
                             );
                             out.push('�');
                         } else {
-                            let mapped = map_two_byte_graphic(state.gr, normalized, next & 0x7f);
+                            let mapped = map_two_byte_graphic(state.graphic_set(state.gr), normalized, next & 0x7f);
                             out.push_str(mapped);
                             index += 1;
                         }
@@ -587,23 +606,23 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
     }
     let consumed = match bytes[1] {
         b'n' => {
-            state.gl = state.g2;
+            state.gl = GraphicSlot::G2;
             2
         } // LS2
         b'o' => {
-            state.gl = state.g3;
+            state.gl = GraphicSlot::G3;
             2
         } // LS3
         b'~' => {
-            state.gr = state.g1;
+            state.gr = GraphicSlot::G1;
             2
         } // LS1R
         b'}' => {
-            state.gr = state.g2;
+            state.gr = GraphicSlot::G2;
             2
         } // LS2R
         b'|' => {
-            state.gr = state.g3;
+            state.gr = GraphicSlot::G3;
             2
         } // LS3R
         _ => {
@@ -617,22 +636,18 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
             match (bytes[1], bytes[2]) {
                 (b'(', b'B' | b'J') => {
                     state.g0 = GraphicSet::Alnum;
-                    state.gl = state.g0;
                     3
                 }
                 (b'(', b'1' | b'8') => {
                     state.g0 = GraphicSet::Katakana;
-                    state.gl = state.g0;
                     3
                 }
                 (b'(', b'I') => {
                     state.g0 = GraphicSet::JisX0201Katakana;
-                    state.gl = state.g0;
                     3
                 }
                 (b'(', b'0' | b'7') => {
                     state.g0 = GraphicSet::Hiragana;
-                    state.gl = state.g0;
                     3
                 }
                 (b')', b'B' | b'J') => {
@@ -685,12 +700,10 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
                 }
                 (b'$', final_byte @ (b'B' | b'@' | b';')) => {
                     state.g0 = two_byte_graphic_set(final_byte)?;
-                    state.gl = state.g0;
                     3
                 }
                 (b'$', b'(') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
                     state.g0 = two_byte_graphic_set(bytes[3])?;
-                    state.gl = state.g0;
                     4
                 }
                 (b'$', b')') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
@@ -784,6 +797,20 @@ fn map_kanji(first: u8, second: u8) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn designation_preserves_invoked_slot_and_updates_its_graphic_set() {
+        for (bytes, expected) in [
+            (&[0x0e, 0x1b, 0x28, 0x31, 0x22][..], "\""),
+            (&[0x0e, 0x1b, 0x29, 0x31, 0x22][..], "ア"),
+            (&[0x1b, 0x7e, 0x1b, 0x29, 0x31, 0xa2][..], "ア"),
+            (&[0x1b, 0x7e, 0x1b, 0x28, 0x31, 0xa2][..], "\""),
+            (&[0x1b, 0x6e, 0x1b, 0x2a, 0x31, 0x22][..], "ア"),
+            (&[0x1b, 0x6f, 0x1b, 0x2b, 0x30, 0x22][..], "あ"),
+        ] {
+            assert_eq!(super::decode_arib_string(bytes).unwrap(), expected);
+        }
+    }
+
     use super::{
         decode_arib_string, decode_arib_string_lossy, AribStringDecodeError,
         ARIB_STRING_DECODER_SCOPE,

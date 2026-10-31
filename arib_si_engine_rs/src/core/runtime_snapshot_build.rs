@@ -652,8 +652,8 @@ fn audio_component(value: &crate::descriptors::AudioComponentDescriptor) -> Audi
         parse_status: SiParseStatusDto::Ok,
         channel_count: audio_channel_count(value.stream_content, value.component_type),
         sample_rate_hz: audio_sample_rate_hz(value.sampling_rate),
-        audio_description: Some(accessibility == 0x01),
-        hard_of_hearing: Some(accessibility == 0x02),
+        audio_description: (accessibility != 0x03).then_some(accessibility == 0x01),
+        hard_of_hearing: (accessibility != 0x03).then_some(accessibility == 0x02),
         dual_mono: Some(value.stream_content == 0x02 && value.component_type & 0x1f == 0x02),
     }
 }
@@ -863,5 +863,37 @@ pub fn event(value: &EitEvent, stable_identity: Option<String>) -> EventDto {
                 }),
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn audio_accessibility_reserved_value_remains_unknown() {
+        for (bits, description, hearing) in [
+            (0, Some(false), Some(false)),
+            (1, Some(true), Some(false)),
+            (2, Some(false), Some(true)),
+            (3, None, None),
+        ] {
+            let value = crate::descriptors::AudioComponentDescriptor {
+                stream_content: 2,
+                component_type: (bits << 5) | 3,
+                component_tag: 0x10,
+                stream_type: 0x0f,
+                simulcast_group_tag: 0,
+                es_multi_lingual_flag: false,
+                main_component_flag: true,
+                quality_indicator: 0,
+                sampling_rate: 7,
+                language_code: "jpn".to_string(),
+                language_code_2: None,
+                text: String::new(),
+            };
+            let result = super::audio_component(&value);
+            assert_eq!(result.audio_description, description);
+            assert_eq!(result.hard_of_hearing, hearing);
+            assert_eq!(result.component_type, Some(i32::from(value.component_type)));
+        }
     }
 }
