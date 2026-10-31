@@ -474,7 +474,14 @@ class TunerController(
     ): Boolean =
         onTuneEventCallback == null ||
             runCatching {
-                tunerInstance.setOnTuneEventListener(controllerControlExecutor) { event ->
+                // SDKのRunnableは実行時に現在のlistenerを参照するため、その実行前に登録世代を照合する。
+                val generationExecutor =
+                    java.util.concurrent.Executor { task ->
+                        sectionExecutor.executeControl {
+                            if (tunerInstance === tuner && !released && generation == tuneGeneration) task.run()
+                        }
+                    }
+                tunerInstance.setOnTuneEventListener(generationExecutor) { event ->
                     if (tunerInstance === tuner && !released) handleTuneEventOnController(generation, event)
                 }
             }.onFailure { error ->
@@ -985,8 +992,6 @@ class TunerController(
             return TuneOutcome(false, Tuner.RESULT_UNKNOWN_ERROR, channel, tuneGeneration, "Tuner.close失敗後は資源解放未確定のため再選局不可")
         }
         resetBeforeTune()
-        // 旧Filter失効後・新Filter生成前に、同じownerでscan parserと候補別診断を初期化する。
-        afterOldSectionFiltersClosed?.invoke()
         val tunerInstance =
             availableTuner()
                 ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
@@ -999,6 +1004,8 @@ class TunerController(
         if (closeFailure != null) {
             return TuneOutcome(false, Tuner.RESULT_UNKNOWN_ERROR, channel, tuneGeneration, "frontend解放失敗: ${closeFailure.message}")
         }
+        // 旧Filter失効と必要なFrontend解放の成功後、新Filter生成前に初期化する。
+        afterOldSectionFiltersClosed?.invoke()
         val nextGeneration =
             runCatching { nextTuneGenerationOrFence() }.getOrElse { error ->
                 return TuneOutcome(

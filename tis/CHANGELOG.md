@@ -1,3 +1,9 @@
+# 2026-10-31 選局世代と初期化の失敗境界を修正
+
+- SDKが遅延実行時にlistenerを再参照する前に、登録時の世代・Tuner identityを既存controller owner上で照合する。
+- 異種Frontend切替で初めてcloseが失敗する場合もSI初期化callbackへ進まないよう、既存callbackをclose成功後へ移す。
+- 実SDKの遅延listener参照と初回close失敗の回帰を追加。テストはCIに委ねる。
+
 # 2026-10-31 callback拒否試験の完了同期を修正
 
 - data taskの実行をlatchで観測してからcontrol barrierを投入し、permit返却後に次のcallback試験へ進む。control優先度をdata完了の代用にしない。

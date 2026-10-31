@@ -60,6 +60,61 @@ import java.util.concurrent.locks.ReentrantLock
 )
 class TunerFrontendLeaseTransitionTest {
     @Test
+    fun firstTypeChangeCloseFailureDoesNotResetSi() {
+        val controller = controller()
+        try {
+            controller.tuneForScan(satellite())
+            checkNotNull(NativeTuner.current).failNextFullClose = true
+            var resets = 0
+            val outcome = controller.tuneForScan(terrestrial(), afterOldSectionFiltersClosed = { resets++ })
+            check(!outcome.success)
+            check(resets == 0)
+        } finally {
+            runCatching { controller.release() }
+        }
+    }
+
+    @Test
+    fun oldSdkRunnableCannotResolveTheReplacementListener() {
+        val controller = controller()
+        try {
+            controller.setOnTuneEventCallback { _, _ -> }
+            val tuner = ReflectionHelpers.getField<Tuner>(controller, "tuner")
+            val executor = ReflectionHelpers.getField<ControllerSerialExecutor>(controller, "sectionExecutor")
+            val received = AtomicInteger()
+            executor.submitControl {
+                ReflectionHelpers.setField(controller, "tuneGeneration", 1L)
+                check(
+                    ReflectionHelpers.callInstanceMethod<Boolean>(
+                        controller,
+                        "armTuneEventListener",
+                        ReflectionHelpers.ClassParameter.from(Tuner::class.java, tuner),
+                        ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, 1L),
+                    ),
+                )
+                // 実SDKが生成するRunnableをqueueへ積み、その実行前にlistenerを交換する。
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    tuner,
+                    "onFrontendEvent",
+                    ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 0),
+                )
+                ReflectionHelpers.setField(controller, "tuneGeneration", 2L)
+                tuner.setOnTuneEventListener(Executor { it.run() }) { received.incrementAndGet() }
+            }.get(1, TimeUnit.SECONDS)
+            executor.submitControl { }.get(1, TimeUnit.SECONDS)
+            check(received.get() == 0)
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                tuner,
+                "onFrontendEvent",
+                ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 0),
+            )
+            check(received.get() == 1)
+        } finally {
+            controller.release()
+        }
+    }
+
+    @Test
     fun tuneReusesSameTypeAndReturnsSatelliteLeaseBeforeTerrestrialRequest() {
         val controller = controller()
         val sdk = checkNotNull(NativeTuner.current)
