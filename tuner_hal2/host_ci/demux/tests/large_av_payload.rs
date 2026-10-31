@@ -83,7 +83,11 @@ fn encoded_large_access_unit_reaches_media_event() {
                         .unwrap()
                         .read_exact_at(&mut payload, 0)
                         .unwrap();
-                    std::fs::write(std::env::var("LARGE_AV_ES").unwrap(), payload).unwrap();
+                    let output = std::env::var("LARGE_AV_ES").unwrap();
+                    let pts = descriptor.metadata.pts_90khz.unwrap();
+                    println!("delivered AU bytes={} pts90k={pts}", payload.len());
+                    std::fs::write(format!("{output}.pts"), pts.to_string()).unwrap();
+                    std::fs::write(output, payload).unwrap();
                     large += 1;
                 }
             }
