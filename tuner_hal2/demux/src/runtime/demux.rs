@@ -4213,7 +4213,12 @@ impl DemuxRuntime {
     pub(crate) fn quarantine(&mut self) {
         self.state = DemuxRuntimeState::Quarantined;
         self.invalidate_all_pcr_clock_anchors();
-        for filter_id in self.filter_producer_gates.keys().copied().collect::<Vec<_>>() {
+        for filter_id in self
+            .filter_producer_gates
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+        {
             if self.close_filter_producer_gate(filter_id).is_err() {
                 self.state = DemuxRuntimeState::Quarantined;
             }
@@ -4301,7 +4306,8 @@ impl DemuxRuntime {
         let Some(gate) = self.filter_producer_gates.get(&filter_id) else {
             return Ok(());
         };
-        let pending = gate.close()
+        let pending = gate
+            .close()
             .map_err(|error| DemuxRuntimeError::queue_runtime_error(filter_id, error))?;
         self.discard_undelivered_filter_events(filter_id, pending)
     }
@@ -5302,8 +5308,14 @@ impl DemuxRuntime {
                         filter_id,
                         DemuxRuntimeError::filter_missing(filter_id),
                     ));
-                    if let Err(cleanup) = self.discard_undelivered_filter_events(filter_id, vec![event]) {
-                        diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(pid, filter_id, cleanup));
+                    if let Err(cleanup) =
+                        self.discard_undelivered_filter_events(filter_id, vec![event])
+                    {
+                        diagnostics.push(
+                            PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                                pid, filter_id, cleanup,
+                            ),
+                        );
                     }
                     continue;
                 }
@@ -5332,8 +5344,14 @@ impl DemuxRuntime {
                         filter_id,
                         DemuxRuntimeError::queue_runtime_error(filter_id, error),
                     ));
-                    if let Err(cleanup) = self.discard_undelivered_filter_events(filter_id, vec![event]) {
-                        diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(pid, filter_id, cleanup));
+                    if let Err(cleanup) =
+                        self.discard_undelivered_filter_events(filter_id, vec![event])
+                    {
+                        diagnostics.push(
+                            PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                                pid, filter_id, cleanup,
+                            ),
+                        );
                     }
                     continue;
                 }
@@ -5367,10 +5385,17 @@ impl DemuxRuntime {
                 diagnostics.push(PipelineDiagnostic::FilterQueueWakeDeferred { pid, filter_id });
             }
             let unqueued_event = if callback_event {
-                if let Err((error, event)) = permit.enqueue_event(event) {
+                if let Err(rejected) = permit.enqueue_event(event) {
+                    let (error, event) = *rejected;
                     drop(permit);
-                    if let Err(cleanup) = self.discard_undelivered_filter_events(filter_id, vec![event]) {
-                        diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(pid, filter_id, cleanup));
+                    if let Err(cleanup) =
+                        self.discard_undelivered_filter_events(filter_id, vec![event])
+                    {
+                        diagnostics.push(
+                            PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                                pid, filter_id, cleanup,
+                            ),
+                        );
                     }
                     self.quarantine_filter_runtime(filter_id);
                     diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
@@ -5517,26 +5542,55 @@ mod undelivered_av_tests {
     #[test]
     fn overflow_discards_rejected_pending_and_subsequent_av_allocations() {
         let mut demux = DemuxRuntime::new(1, 1);
-        demux.register_filter(DemuxRuntime::open_filter_runtime(19, 1, PipelineOpenKind::Av, None)).unwrap();
-        demux.configure_filter_runtime(19, FilterPipelineConfig {
-            tpid: Some(401), raw: false, record_index: None,
-        }).unwrap();
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                19,
+                1,
+                PipelineOpenKind::Av,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                19,
+                FilterPipelineConfig {
+                    tpid: Some(401),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
         demux.start_filter_runtime(19).unwrap();
-        demux.filter_producer_gates.insert(19, FilterProducerDrainGate::new(1).unwrap());
+        demux
+            .filter_producer_gates
+            .insert(19, FilterProducerDrainGate::new(1).unwrap());
         let mut events = Vec::new();
         for _ in 0..3 {
-            let AvPayloadDeliveryOutcome::Delivered(descriptor) = demux.allocate_filter_av_payload_for_test(19, 188).unwrap() else {
+            let AvPayloadDeliveryOutcome::Delivered(descriptor) =
+                demux.allocate_filter_av_payload_for_test(19, 188).unwrap()
+            else {
                 panic!("試験用AV割当てに失敗しました");
             };
-            events.push(PipelineGeneratedEvent::AvMedia { filter_id: 19, descriptor });
+            events.push(PipelineGeneratedEvent::AvMedia {
+                filter_id: 19,
+                descriptor,
+            });
         }
         let diagnostics = demux.commit_generated_filter_events(
-            &[], &mut events,
-            crate::packet_pipeline::PacketPid::from_config_pid(ConfigInputPid::validate_tpid(401).unwrap()),
-            TsInputOrigin::Frontend { frontend_generation: 1 },
+            &[],
+            &mut events,
+            crate::packet_pipeline::PacketPid::from_config_pid(
+                ConfigInputPid::validate_tpid(401).unwrap(),
+            ),
+            TsInputOrigin::Frontend {
+                frontend_generation: 1,
+            },
         );
         assert!(!diagnostics.is_empty());
         assert!(events.is_empty());
-        assert_eq!(demux.filter_av_active_allocation_count_for_test(19), Some(0));
+        assert_eq!(
+            demux.filter_av_active_allocation_count_for_test(19),
+            Some(0)
+        );
     }
 }

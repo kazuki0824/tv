@@ -1236,23 +1236,62 @@ mod raw_filter_event_projection_tests {
                 }),
             );
             let mut backing = AvSharedBacking::new();
-            let allocation = backing.allocate_payload_bytes(
-                &[1, 2, 3], maleicacid_tuner_hal2_demux::AvMediaEventMetadata::default(),
-            ).unwrap();
-            assert!(matches!(allocation, maleicacid_tuner_hal2_demux::AvPayloadDeliveryOutcome::Delivered(_)));
-            runtime.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)).unwrap()
+            let allocation = backing
+                .allocate_payload_bytes(
+                    &[1, 2, 3],
+                    maleicacid_tuner_hal2_demux::AvMediaEventMetadata::default(),
+                )
+                .unwrap();
+            assert!(matches!(
+                allocation,
+                maleicacid_tuner_hal2_demux::AvPayloadDeliveryOutcome::Delivered(_)
+            ));
+            runtime
+                .registry
+                .demux_runtime_mut(DemuxRuntimeId(demux_id))
+                .unwrap()
                 .restore_filter_av_backing_after_failed_remove(filter_id, backing);
             let object_id = AidlObjectId(20_000 + i64::from(filter_id));
             if last_reference {
-                runtime.finalize_filter_av_release_state_after_last_reference(
-                    object_id, AidlObjectGeneration(1),
-                ).unwrap();
-                assert!(runtime.object_table.entry(object_id).unwrap().last_reference_ended);
+                runtime
+                    .finalize_filter_av_release_state_after_last_reference(
+                        object_id,
+                        AidlObjectGeneration(1),
+                    )
+                    .unwrap();
+                assert!(
+                    runtime
+                        .object_table
+                        .entry(object_id)
+                        .unwrap()
+                        .last_reference_ended
+                );
             }
             // 最終参照の通知とは別の試行で登録解除しても、保持義務の判断を失わない。
-            runtime.transact_unregister_filter_runtime(filter_id).unwrap();
-            assert_eq!(runtime.release_only_filter_av_backings.contains_key(&filter_id), !last_reference);
-            assert_eq!(runtime.release_only_filter_types.contains_key(&filter_id), !last_reference);
+            runtime
+                .transact_unregister_filter_runtime(filter_id)
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .release_only_filter_av_backings
+                    .contains_key(&filter_id),
+                !last_reference
+            );
+            assert_eq!(
+                runtime.release_only_filter_types.contains_key(&filter_id),
+                !last_reference
+            );
+            // 登録解除が先行し、lifecycleの終端化前に最終参照が終了しても回収する。
+            runtime
+                .finalize_filter_av_release_state_after_last_reference(
+                    object_id,
+                    AidlObjectGeneration(1),
+                )
+                .unwrap();
+            assert!(!runtime
+                .release_only_filter_av_backings
+                .contains_key(&filter_id));
+            assert!(!runtime.release_only_filter_types.contains_key(&filter_id));
         }
     }
 

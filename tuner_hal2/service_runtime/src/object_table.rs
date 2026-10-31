@@ -607,7 +607,8 @@ impl RuntimeObjectTable {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<(), RuntimeObjectTableError> {
-        self.entry_mut_checked_any(object_id, generation)?.last_reference_ended = true;
+        self.entry_mut_checked_any(object_id, generation)?
+            .last_reference_ended = true;
         Ok(())
     }
 

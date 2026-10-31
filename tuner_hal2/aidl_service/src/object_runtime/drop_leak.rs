@@ -114,9 +114,12 @@ pub(crate) fn drop_leak_object_from_drop(
         let result = TunerServiceRuntime::lock_shared(&runtime_handle, "最終AV参照終了")
             .map_err(status_from_hal_error)
             .and_then(|mut runtime| {
-                runtime.finalize_filter_av_release_state_after_last_reference(
-                    handle.object_id(), handle.generation(),
-                ).map_err(status_from_hal_error)
+                runtime
+                    .finalize_filter_av_release_state_after_last_reference(
+                        handle.object_id(),
+                        handle.generation(),
+                    )
+                    .map_err(status_from_hal_error)
             });
         if let Err(status) = result {
             context.record_drop_leak_error(handle, &status);

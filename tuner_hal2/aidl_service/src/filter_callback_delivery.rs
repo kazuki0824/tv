@@ -91,7 +91,10 @@ fn release_undelivered_media(
     runtime: &Arc<Mutex<TunerServiceRuntime>>,
     batch: &[FilterEventDeliverySnapshot],
 ) -> Result<(), HalError> {
-    if !batch.iter().any(|snapshot| matches!(snapshot.event, FilterEventDelivery::Media(_))) {
+    if !batch
+        .iter()
+        .any(|snapshot| matches!(snapshot.event, FilterEventDelivery::Media(_)))
+    {
         return Ok(());
     }
     let mut runtime = TunerServiceRuntime::lock_shared(runtime, "未配送AVの返却")?;

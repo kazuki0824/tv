@@ -1197,7 +1197,7 @@ impl FilterProducerPermit {
     pub(crate) fn enqueue_event(
         &mut self,
         event: PipelineGeneratedEvent,
-    ) -> Result<(), (QueueRuntimeError, PipelineGeneratedEvent)> {
+    ) -> Result<(), Box<(QueueRuntimeError, PipelineGeneratedEvent)>> {
         let admission = (|| {
             self.inner.check_cleanup()?;
             if !self.active {
@@ -1219,7 +1219,7 @@ impl FilterProducerPermit {
                 data.pending_events.push_back(event);
                 Ok(())
             }
-            Err(error) => Err((error, event)),
+            Err(error) => Err(Box::new((error, event))),
         }
     }
 

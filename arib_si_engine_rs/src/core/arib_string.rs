@@ -301,7 +301,7 @@ fn decode_arib_string_with_policy(
         let byte = bytes[index];
         match byte {
             0x00 => {}
-            0x0d => out.push('\n'),      // APR
+            0x0d => out.push('\n'),             // APR
             0x0e => state.gl = GraphicSlot::G1, // LS1
             0x0f => state.gl = GraphicSlot::G0, // LS0
             0x19 | 0x1d => {
@@ -448,7 +448,9 @@ fn decode_arib_string_with_policy(
                     break;
                 }
             },
-            0x21..=0x7e if state.middle_size && state.graphic_set(state.gl) != GraphicSet::Alnum => {
+            0x21..=0x7e
+                if state.middle_size && state.graphic_set(state.gl) != GraphicSet::Alnum =>
+            {
                 if error_policy == ErrorPolicy::Strict {
                     return Err(AribStringDecodeError::MiddleSizeGraphic);
                 }
@@ -461,7 +463,9 @@ fn decode_arib_string_with_policy(
                     true,
                 );
                 out.push('�');
-                if is_two_byte_graphic(state.graphic_set(state.gl)) && bytes.get(index + 1).is_some() {
+                if is_two_byte_graphic(state.graphic_set(state.gl))
+                    && bytes.get(index + 1).is_some()
+                {
                     index += 1;
                 }
             }
@@ -504,7 +508,9 @@ fn decode_arib_string_with_policy(
                     }
                 }
             },
-            0xa1..=0xfe if state.middle_size && state.graphic_set(state.gr) != GraphicSet::Alnum => {
+            0xa1..=0xfe
+                if state.middle_size && state.graphic_set(state.gr) != GraphicSet::Alnum =>
+            {
                 if error_policy == ErrorPolicy::Strict {
                     return Err(AribStringDecodeError::MiddleSizeGraphic);
                 }
@@ -517,7 +523,9 @@ fn decode_arib_string_with_policy(
                     true,
                 );
                 out.push('�');
-                if is_two_byte_graphic(state.graphic_set(state.gr)) && bytes.get(index + 1).is_some() {
+                if is_two_byte_graphic(state.graphic_set(state.gr))
+                    && bytes.get(index + 1).is_some()
+                {
                     index += 1;
                 }
             }
@@ -564,7 +572,11 @@ fn decode_arib_string_with_policy(
                             );
                             out.push('�');
                         } else {
-                            let mapped = map_two_byte_graphic(state.graphic_set(state.gr), normalized, next & 0x7f);
+                            let mapped = map_two_byte_graphic(
+                                state.graphic_set(state.gr),
+                                normalized,
+                                next & 0x7f,
+                            );
                             out.push_str(mapped);
                             index += 1;
                         }

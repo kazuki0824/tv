@@ -82,25 +82,26 @@ class TunerFrontendLeaseTransitionTest {
             val tuner = ReflectionHelpers.getField<Tuner>(controller, "tuner")
             val executor = ReflectionHelpers.getField<ControllerSerialExecutor>(controller, "sectionExecutor")
             val received = AtomicInteger()
-            executor.submitControl {
-                ReflectionHelpers.setField(controller, "tuneGeneration", 1L)
-                check(
-                    ReflectionHelpers.callInstanceMethod<Boolean>(
-                        controller,
-                        "armTuneEventListener",
-                        ReflectionHelpers.ClassParameter.from(Tuner::class.java, tuner),
-                        ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, 1L),
-                    ),
-                )
-                // 実SDKが生成するRunnableをqueueへ積み、その実行前にlistenerを交換する。
-                ReflectionHelpers.callInstanceMethod<Unit>(
-                    tuner,
-                    "onFrontendEvent",
-                    ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 0),
-                )
-                ReflectionHelpers.setField(controller, "tuneGeneration", 2L)
-                tuner.setOnTuneEventListener(Executor { it.run() }) { received.incrementAndGet() }
-            }.get(1, TimeUnit.SECONDS)
+            executor
+                .submitControl {
+                    ReflectionHelpers.setField(controller, "tuneGeneration", 1L)
+                    check(
+                        ReflectionHelpers.callInstanceMethod<Boolean>(
+                            controller,
+                            "armTuneEventListener",
+                            ReflectionHelpers.ClassParameter.from(Tuner::class.java, tuner),
+                            ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, 1L),
+                        ),
+                    )
+                    // 実SDKが生成するRunnableをqueueへ積み、その実行前にlistenerを交換する。
+                    ReflectionHelpers.callInstanceMethod<Unit>(
+                        tuner,
+                        "onFrontendEvent",
+                        ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 0),
+                    )
+                    ReflectionHelpers.setField(controller, "tuneGeneration", 2L)
+                    tuner.setOnTuneEventListener(Executor { it.run() }) { received.incrementAndGet() }
+                }.get(1, TimeUnit.SECONDS)
             executor.submitControl { }.get(1, TimeUnit.SECONDS)
             check(received.get() == 0)
             ReflectionHelpers.callInstanceMethod<Unit>(

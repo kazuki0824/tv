@@ -256,11 +256,15 @@ impl TunerServiceRuntime {
             .filter_snapshot(id)
             .map(|snapshot| snapshot.open_type)
             .map_err(Self::map_filter_runtime_error)?;
-        let last_reference_ended = self.object_table.active_entry_for_runtime(
-            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
-            maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(id)),
-        ).is_some_and(|entry| entry.last_reference_ended);
-        let release_only_backing = demux_runtime.take_filter_av_backing_for_release_only(id)
+        let last_reference_ended = self
+            .object_table
+            .active_entry_for_runtime(
+                maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
+                maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(id)),
+            )
+            .is_some_and(|entry| entry.last_reference_ended);
+        let release_only_backing = demux_runtime
+            .take_filter_av_backing_for_release_only(id)
             .map_err(Self::map_filter_runtime_error)?;
         if demux_runtime
             .remove_filter_from_typed_request(
@@ -659,16 +663,27 @@ impl TunerServiceRuntime {
             return Ok(());
         };
         let entry = self.object_table.entry(snapshot.object_id).ok_or_else(|| {
-            HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "未配送AVのobjectがありません")
+            HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "未配送AVのobjectがありません",
+            )
         })?;
         if entry.generation != snapshot.generation
             || entry.object_kind != maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter
             || entry.ledger_id.0 != i64::from(snapshot.filter_id)
         {
-            return Err(HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "未配送AVの所有者が一致しません"));
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "未配送AVの所有者が一致しません",
+            ));
         }
         // 最終参照終了後の登録解除が先行した場合、割当ての回収は既に完了している。
-        if entry.last_reference_ended && self.registry.filter(FilterRuntimeId(snapshot.filter_id)).is_none() {
+        if entry.last_reference_ended
+            && self
+                .registry
+                .filter(FilterRuntimeId(snapshot.filter_id))
+                .is_none()
+        {
             return Ok(());
         }
         self.release_filter_av_allocation(
@@ -734,10 +749,6 @@ impl TunerServiceRuntime {
         self.object_table
             .mark_last_reference_ended(object_id, generation)
             .map_err(object_table_error_to_hal)?;
-        if !terminal {
-            // 非同期closeへ移管されても正本objectに最終参照終了を残す。
-            return Ok(());
-        }
         let filter_id = i32::try_from(ledger_id.0).map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -745,6 +756,10 @@ impl TunerServiceRuntime {
             )
         })?;
         if self.registry.filter(FilterRuntimeId(filter_id)).is_some() {
+            if !terminal {
+                // 登録解除前なら正本objectに記録した終了通知を後続cleanupへ渡す。
+                return Ok(());
+            }
             return Err(HalError::cleanup_failed(
                 "最終filter AV解放状態の後片付け",
                 "終了処理後もfilter runtimeが登録されています",
