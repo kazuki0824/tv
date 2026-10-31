@@ -91,6 +91,7 @@ fn encoded_large_access_unit_reaches_media_event() {
         .start_filter_runtime_from_typed_request(FilterRuntimeOperationRequest::new(2))
         .unwrap();
     let mut large = 0;
+    let mut completed = 0;
     for bytes in bytes.chunks_exact(188) {
         let packet = ValidatedTsPacket::validate(bytes).unwrap();
         let report = demux.push_validated_ts_packet_from_typed_request(
@@ -98,6 +99,7 @@ fn encoded_large_access_unit_reaches_media_event() {
         );
         for event in report.generated_events {
             if let PipelineGeneratedEvent::AvMedia { descriptor, .. } = event {
+                completed += 1;
                 if descriptor.data_length > 1024 * 1024 {
                     assert_eq!(descriptor.offset, 0);
                     assert!(descriptor.metadata.pts_90khz.is_some());
@@ -117,6 +119,9 @@ fn encoded_large_access_unit_reaches_media_event() {
             }
         }
     }
+    // 60 frameの末尾は次PES/次AUDが未到着のため2 frameを保留する。
+    // 中途の大きなPESで、併設TsPesの破棄が先行AVを失効させてはならない。
+    assert_eq!(completed, 58);
     assert!(
         large > 0,
         "1 MiB超の符号化AUが実producerとallocatorを通ること"
