@@ -1441,6 +1441,7 @@ mod tests {
         runtime
             .object_table_mut()
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Demux,
                 object_id: AidlObjectId(1),
                 generation: AidlObjectGeneration(1),
@@ -1466,6 +1467,7 @@ mod tests {
         runtime
             .object_table_mut()
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Demux,
                 object_id: AidlObjectId(2),
                 generation: AidlObjectGeneration(1),
@@ -1508,6 +1510,7 @@ mod tests {
         runtime
             .object_table_mut()
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Filter,
                 object_id: AidlObjectId(object_id),
                 generation: AidlObjectGeneration(1),
@@ -1594,6 +1597,7 @@ mod tests {
         runtime
             .object_table_mut()
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Demux,
                 object_id: demux_object_id,
                 generation: AidlObjectGeneration(1),
@@ -1606,6 +1610,7 @@ mod tests {
         runtime
             .object_table_mut()
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Filter,
                 object_id: filter_object_id,
                 generation: AidlObjectGeneration(1),
@@ -1805,6 +1810,7 @@ mod tests {
         runtime
             .object_table_mut()
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Demux,
                 object_id: AidlObjectId(3),
                 generation: AidlObjectGeneration(1),

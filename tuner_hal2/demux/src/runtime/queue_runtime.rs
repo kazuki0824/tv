@@ -1122,13 +1122,13 @@ impl FilterProducerDrainGate {
         }
     }
 
-    pub(crate) fn close(&self) -> Result<(), QueueRuntimeError> {
+    pub(crate) fn close(&self) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
         self.inner.check_cleanup()?;
         let mut data = self.inner.lock_data()?;
         data.state = GateState::Closed;
-        data.pending_events.clear();
+        let pending = data.pending_events.drain(..).collect();
         self.inner.drained.notify_all();
-        Ok(())
+        Ok(pending)
     }
 }
 
@@ -1197,22 +1197,30 @@ impl FilterProducerPermit {
     pub(crate) fn enqueue_event(
         &mut self,
         event: PipelineGeneratedEvent,
-    ) -> Result<(), QueueRuntimeError> {
-        self.inner.check_cleanup()?;
-        if !self.active {
-            return Err(gate_error("filter producer permitは既に消費されています"));
+    ) -> Result<(), (QueueRuntimeError, PipelineGeneratedEvent)> {
+        let admission = (|| {
+            self.inner.check_cleanup()?;
+            if !self.active {
+                return Err(gate_error("filter producer permitは既に消費されています"));
+            }
+            let data = self.inner.lock_data()?;
+            if data.state == GateState::Closed
+                || data.filter_delivery_generation != self.delivery_generation
+            {
+                return Err(gate_error("filter producer permitは失効しています"));
+            }
+            if data.pending_events.len() >= data.pending_event_capacity {
+                return Err(gate_error("filter producerの保留イベントキューが満杯です"));
+            }
+            Ok(data)
+        })();
+        match admission {
+            Ok(mut data) => {
+                data.pending_events.push_back(event);
+                Ok(())
+            }
+            Err(error) => Err((error, event)),
         }
-        let mut data = self.inner.lock_data()?;
-        if data.state == GateState::Closed
-            || data.filter_delivery_generation != self.delivery_generation
-        {
-            return Err(gate_error("filter producer permitは失効しています"));
-        }
-        if data.pending_events.len() >= data.pending_event_capacity {
-            return Err(gate_error("filter producerの保留イベントキューが満杯です"));
-        }
-        data.pending_events.push_back(event);
-        Ok(())
     }
 
     fn release(&mut self) -> Result<GateState, QueueRuntimeError> {

@@ -1615,6 +1615,7 @@ mod tests {
 
         let mut table = crate::object_table::RuntimeObjectTable::default();
         let first = RuntimeObjectEntry {
+            last_reference_ended: false,
             object_kind: AidlObjectKind::Frontend,
             object_id: AidlObjectId(10),
             generation: AidlObjectGeneration(1),
@@ -1624,6 +1625,7 @@ mod tests {
             lifecycle: RuntimeObjectLifecycle::Live,
         };
         let second = RuntimeObjectEntry {
+            last_reference_ended: false,
             object_kind: AidlObjectKind::Demux,
             ..first.clone()
         };
@@ -1651,6 +1653,7 @@ mod tests {
         let mut table = crate::object_table::RuntimeObjectTable::default();
         table
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Demux,
                 object_id: AidlObjectId(100),
                 generation: AidlObjectGeneration(1),
@@ -1662,6 +1665,7 @@ mod tests {
             .expect("first wrapper insert succeeds");
         let err = table
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Demux,
                 object_id: AidlObjectId(101),
                 generation: AidlObjectGeneration(2),
@@ -1692,6 +1696,7 @@ mod tests {
         let mut table = crate::object_table::RuntimeObjectTable::default();
         table
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Filter,
                 object_id: AidlObjectId(20),
                 generation: AidlObjectGeneration(4),
@@ -1724,6 +1729,7 @@ mod tests {
         let mut table = crate::object_table::RuntimeObjectTable::default();
         table
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Filter,
                 object_id: AidlObjectId(44),
                 generation: AidlObjectGeneration(3),
@@ -1769,6 +1775,7 @@ mod tests {
         let mut table = crate::object_table::RuntimeObjectTable::default();
         let err = table
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Filter,
                 object_id: AidlObjectId(70),
                 generation: AidlObjectGeneration(1),
@@ -1801,6 +1808,7 @@ mod tests {
         let mut table = crate::object_table::RuntimeObjectTable::default();
         table
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Demux,
                 object_id: AidlObjectId(80),
                 generation: AidlObjectGeneration(1),
@@ -1812,6 +1820,7 @@ mod tests {
             .expect("parent insert succeeds");
         table
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Filter,
                 object_id: AidlObjectId(81),
                 generation: AidlObjectGeneration(2),
@@ -1870,6 +1879,7 @@ mod tests {
         let mut table = crate::object_table::RuntimeObjectTable::default();
         table
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Lnb,
                 object_id: AidlObjectId(55),
                 generation: AidlObjectGeneration(7),

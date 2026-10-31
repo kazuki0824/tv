@@ -109,26 +109,20 @@ pub(crate) fn drop_leak_object_from_drop(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) {
-    if let Err(status) = drop_leak_object(context, handle) {
-        context.record_drop_leak_error(handle, &status);
-        return;
-    }
-    if handle.object_kind() != AidlObjectKind::Filter {
-        return;
-    }
-    let runtime_handle = context.runtime();
-    let final_release_state_cleanup =
-        TunerServiceRuntime::lock_shared(&runtime_handle, "最終AV後片付け")
+    if handle.object_kind() == AidlObjectKind::Filter {
+        let runtime_handle = context.runtime();
+        let result = TunerServiceRuntime::lock_shared(&runtime_handle, "最終AV参照終了")
             .map_err(status_from_hal_error)
             .and_then(|mut runtime| {
-                runtime
-                    .finalize_filter_av_release_state_after_last_reference(
-                        handle.object_id(),
-                        handle.generation(),
-                    )
-                    .map_err(status_from_hal_error)
+                runtime.finalize_filter_av_release_state_after_last_reference(
+                    handle.object_id(), handle.generation(),
+                ).map_err(status_from_hal_error)
             });
-    if let Err(status) = final_release_state_cleanup {
+        if let Err(status) = result {
+            context.record_drop_leak_error(handle, &status);
+        }
+    }
+    if let Err(status) = drop_leak_object(context, handle) {
         context.record_drop_leak_error(handle, &status);
     }
 }

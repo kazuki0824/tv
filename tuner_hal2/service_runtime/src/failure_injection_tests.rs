@@ -194,6 +194,7 @@ fn close_cleanup_failed_marking_keeps_mark_failure_as_cleanup_detail() {
 fn public_close_runtime_unregister_missing_target_is_cleanup_failure() {
     let mut runtime = TunerServiceRuntime::new();
     let entry = RuntimeObjectEntry {
+        last_reference_ended: false,
         object_kind: AidlObjectKind::Demux,
         object_id: AidlObjectId(93_002),
         generation: AidlObjectGeneration(1),

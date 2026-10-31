@@ -154,6 +154,7 @@ impl From<&RuntimeObjectEntry> for RuntimeObjectDiagnosticSnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeObjectEntry {
+    pub(crate) last_reference_ended: bool,
     pub(crate) object_kind: AidlObjectKind,
     pub(crate) object_id: AidlObjectId,
     pub(crate) generation: AidlObjectGeneration,
@@ -601,6 +602,15 @@ impl RuntimeObjectTable {
         Ok(changed)
     }
 
+    pub(crate) fn mark_last_reference_ended(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<(), RuntimeObjectTableError> {
+        self.entry_mut_checked_any(object_id, generation)?.last_reference_ended = true;
+        Ok(())
+    }
+
     pub fn entry(&self, object_id: AidlObjectId) -> Option<&RuntimeObjectEntry> {
         self.entries.get(&object_id)
     }
@@ -856,6 +866,7 @@ mod qg_object_lifecycle_tests {
         owner: RuntimeOwnerRelation,
     ) -> RuntimeObjectEntry {
         RuntimeObjectEntry {
+            last_reference_ended: false,
             object_kind,
             object_id: AidlObjectId(object_id),
             generation: AidlObjectGeneration(1),

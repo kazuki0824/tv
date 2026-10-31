@@ -224,6 +224,7 @@ mod closeable_lifecycle_tests {
         runtime
             .object_table_mut()
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Filter,
                 object_id: AidlObjectId(501),
                 generation: AidlObjectGeneration(1),
@@ -303,6 +304,7 @@ mod closeable_lifecycle_tests {
         prepared
             .object_table_mut()
             .insert_prepared(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Filter,
                 object_id: AidlObjectId(501),
                 generation: AidlObjectGeneration(1),

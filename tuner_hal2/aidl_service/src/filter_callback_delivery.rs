@@ -87,6 +87,28 @@ pub(crate) fn dispatch_filter_event_snapshots(
     AidlFilterEventDispatcher::without_worker(context).dispatch(&runtime, snapshots)
 }
 
+fn release_undelivered_media(
+    runtime: &Arc<Mutex<TunerServiceRuntime>>,
+    batch: &[FilterEventDeliverySnapshot],
+) -> Result<(), HalError> {
+    if !batch.iter().any(|snapshot| matches!(snapshot.event, FilterEventDelivery::Media(_))) {
+        return Ok(());
+    }
+    let mut runtime = TunerServiceRuntime::lock_shared(runtime, "未配送AVの返却")?;
+    let mut failures = FirstErrorCollector::new();
+    for snapshot in batch {
+        if let FilterEventDelivery::Media(event) = &snapshot.event {
+            failures.push_result(runtime.release_filter_av_handle_for_any_lifecycle(
+                snapshot.object_id,
+                snapshot.generation,
+                maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor::Empty,
+                event.data_id.0,
+            ));
+        }
+    }
+    failures.into_result()
+}
+
 fn run_filter_delay_delivery(
     weak_context: Weak<AidlServiceContext>,
     control: WorkerContext,
@@ -415,6 +437,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
             // startIdとstatusは単独配送。通常eventは同一Filter/世代の連続分だけ集約する。
             let batch = take_callback_event_batch(snapshot, &mut pending);
             if start_id_blocked.contains(&delivery_key) {
+                failures.push_result(release_undelivered_media(runtime, &batch));
                 continue;
             }
             let context = match self.context.upgrade() {
@@ -427,6 +450,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     if pending_start_id.is_some() {
                         start_id_blocked.insert(delivery_key);
                     }
+                    failures.push_result(release_undelivered_media(runtime, &batch));
                     continue;
                 }
             };
@@ -447,6 +471,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     if pending_start_id.is_some() {
                         start_id_blocked.insert(delivery_key);
                     }
+                    failures.push_result(release_undelivered_media(runtime, &batch));
                     continue;
                 }
                 Err(error) => {
@@ -461,18 +486,20 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     if pending_start_id.is_some() {
                         start_id_blocked.insert(delivery_key);
                     }
+                    failures.push_result(release_undelivered_media(runtime, &batch));
                     continue;
                 }
             };
             let mut callback_events = Vec::new();
             let mut callback_status = None;
             for snapshot in batch {
-                match event_from_snapshot(snapshot) {
+                match event_from_snapshot(snapshot.clone()) {
                     Ok(AidlFilterCallbackDelivery::Event(event)) => callback_events.push(event),
                     Ok(AidlFilterCallbackDelivery::Status(status)) => {
                         callback_status = Some(status);
                     }
                     Err(primary) => {
+                        failures.push_result(release_undelivered_media(runtime, &[snapshot]));
                         failures.push_result(finish_filter_callback_delivery_failure(
                             &context,
                             runtime,

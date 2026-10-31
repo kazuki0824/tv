@@ -256,7 +256,12 @@ impl TunerServiceRuntime {
             .filter_snapshot(id)
             .map(|snapshot| snapshot.open_type)
             .map_err(Self::map_filter_runtime_error)?;
-        let release_only_backing = demux_runtime.take_filter_av_backing_for_release_only(id);
+        let last_reference_ended = self.object_table.active_entry_for_runtime(
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
+            maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(id)),
+        ).is_some_and(|entry| entry.last_reference_ended);
+        let release_only_backing = demux_runtime.take_filter_av_backing_for_release_only(id)
+            .map_err(Self::map_filter_runtime_error)?;
         if demux_runtime
             .remove_filter_from_typed_request(
                 maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(id),
@@ -277,7 +282,7 @@ impl TunerServiceRuntime {
         let removed = self.registry.unregister_filter(FilterRuntimeId(id));
         if removed.is_some() {
             if let Some(backing) = release_only_backing {
-                if !backing.release_is_complete() {
+                if !last_reference_ended && !backing.release_is_complete() {
                     self.release_only_filter_av_backings.insert(id, backing);
                     self.release_only_filter_types.insert(id, open_type);
                 }
@@ -688,13 +693,16 @@ impl TunerServiceRuntime {
                 "最終AV解放状態の後片付け前にfilter AIDL objectの識別情報が変化しました",
             ));
         }
-        if !entry.lifecycle.is_terminal() {
-            return Err(HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "最終AV解放状態を後片付けする前にfilterを終了状態にする必要があります",
-            ));
+        let terminal = entry.lifecycle.is_terminal();
+        let ledger_id = entry.ledger_id;
+        self.object_table
+            .mark_last_reference_ended(object_id, generation)
+            .map_err(object_table_error_to_hal)?;
+        if !terminal {
+            // 非同期closeへ移管されても正本objectに最終参照終了を残す。
+            return Ok(());
         }
-        let filter_id = i32::try_from(entry.ledger_id.0).map_err(|_| {
+        let filter_id = i32::try_from(ledger_id.0).map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "最終AV後片付け中にfilter runtime IDがi32の範囲外です",

@@ -1224,6 +1224,38 @@ mod raw_filter_event_projection_tests {
         packet
     }
 
+    #[test]
+    fn final_reference_record_survives_until_runtime_cleanup() {
+        for last_reference in [false, true] {
+            let (mut runtime, demux_id, filter_id) = configured_raw_filter(
+                FilterOpenType::TsAudio,
+                0x101,
+                FilterConfigKind::TsAv(maleicacid_tuner_hal2_demux::AvSettings {
+                    is_passthrough: false,
+                    is_secure_memory: false,
+                }),
+            );
+            let mut backing = AvSharedBacking::new();
+            let allocation = backing.allocate_payload_bytes(
+                &[1, 2, 3], maleicacid_tuner_hal2_demux::AvMediaEventMetadata::default(),
+            ).unwrap();
+            assert!(matches!(allocation, maleicacid_tuner_hal2_demux::AvPayloadDeliveryOutcome::Delivered(_)));
+            runtime.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)).unwrap()
+                .restore_filter_av_backing_after_failed_remove(filter_id, backing);
+            let object_id = AidlObjectId(20_000 + i64::from(filter_id));
+            if last_reference {
+                runtime.finalize_filter_av_release_state_after_last_reference(
+                    object_id, AidlObjectGeneration(1),
+                ).unwrap();
+                assert!(runtime.object_table.entry(object_id).unwrap().last_reference_ended);
+            }
+            // 最終参照の通知とは別の試行で登録解除しても、保持義務の判断を失わない。
+            runtime.transact_unregister_filter_runtime(filter_id).unwrap();
+            assert_eq!(runtime.release_only_filter_av_backings.contains_key(&filter_id), !last_reference);
+            assert_eq!(runtime.release_only_filter_types.contains_key(&filter_id), !last_reference);
+        }
+    }
+
     fn configured_raw_filter(
         open_type: FilterOpenType,
         pid: i32,
@@ -1264,6 +1296,7 @@ mod raw_filter_event_projection_tests {
         runtime
             .object_table
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Demux,
                 object_id: demux_object_id,
                 generation: AidlObjectGeneration(1),
@@ -1276,6 +1309,7 @@ mod raw_filter_event_projection_tests {
         runtime
             .object_table
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Filter,
                 object_id: AidlObjectId(20_000 + i64::from(filter.id.0)),
                 generation: AidlObjectGeneration(1),
@@ -2211,6 +2245,7 @@ impl TunerServiceRuntime {
         let generation = self.allocate_aidl_generation()?;
         let object_id = self.allocate_aidl_object_id()?;
         let entry = RuntimeObjectEntry {
+            last_reference_ended: false,
             object_kind,
             object_id,
             generation,
@@ -3754,6 +3789,7 @@ impl TunerServiceRuntime {
         owner: RuntimeOwnerRelation,
     ) -> Result<crate::object_table::RuntimeObjectEntry, RuntimeObjectTableError> {
         let entry = RuntimeObjectEntry {
+            last_reference_ended: false,
             object_kind,
             object_id,
             generation,
