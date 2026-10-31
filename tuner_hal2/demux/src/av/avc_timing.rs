@@ -1,5 +1,5 @@
-use crate::parser::bitstream::{nal_to_rbsp, BitReader};
 use super::video_timestamp::VideoTimestampFailure;
+use crate::parser::bitstream::{nal_to_rbsp, BitReader};
 
 const PTS_MODULUS: i128 = 1_i128 << 33;
 
@@ -50,7 +50,9 @@ impl AvcTiming {
     ) -> Result<AvcTimestamp, VideoTimestampFailure> {
         let mut active = None;
         for nal in nals(payload) {
-            let (&header, body) = nal.split_first().ok_or(VideoTimestampFailure::MissingAnchor)?;
+            let (&header, body) = nal
+                .split_first()
+                .ok_or(VideoTimestampFailure::MissingAnchor)?;
             if header & 0x80 != 0 {
                 return Err(VideoTimestampFailure::MissingAnchor);
             }
@@ -68,15 +70,16 @@ impl AvcTiming {
             } else {
                 body
             };
-            let rbsp = nal_to_rbsp(syntax)
-                .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
+            let rbsp = nal_to_rbsp(syntax).map_err(|_| VideoTimestampFailure::AllocationFailed)?;
             let mut bits = BitReader::new(&rbsp);
             match header & 31 {
                 7 => {
-                    let (id, sps) = parse_sps(&mut bits).ok_or(VideoTimestampFailure::MissingAnchor)?;
+                    let (id, sps) =
+                        parse_sps(&mut bits).ok_or(VideoTimestampFailure::MissingAnchor)?;
                     let id = id as usize;
                     if self.sps.len() <= id {
-                        self.sps.try_reserve(id + 1 - self.sps.len())
+                        self.sps
+                            .try_reserve(id + 1 - self.sps.len())
                             .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
                         self.sps.resize(id + 1, None);
                     }
@@ -90,7 +93,8 @@ impl AvcTiming {
                     }
                     let pps = pps as usize;
                     if self.pps.len() <= pps {
-                        self.pps.try_reserve(pps + 1 - self.pps.len())
+                        self.pps
+                            .try_reserve(pps + 1 - self.pps.len())
                             .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
                         self.pps.resize(pps + 1, None);
                     }
@@ -102,7 +106,12 @@ impl AvcTiming {
                         return Err(VideoTimestampFailure::MissingAnchor);
                     }
                     let pps = bits.read_ue().ok_or(VideoTimestampFailure::MissingAnchor)?;
-                    let sps_id = self.pps.get(pps as usize).copied().flatten().ok_or(VideoTimestampFailure::MissingAnchor)?;
+                    let sps_id = self
+                        .pps
+                        .get(pps as usize)
+                        .copied()
+                        .flatten()
+                        .ok_or(VideoTimestampFailure::MissingAnchor)?;
                     if active.is_some_and(|old| old != sps_id) {
                         return Err(VideoTimestampFailure::MissingAnchor);
                     }
@@ -112,30 +121,43 @@ impl AvcTiming {
             }
         }
         let sps_id = active.ok_or(VideoTimestampFailure::MissingAnchor)?;
-        let sps = self.sps.get(sps_id as usize).copied().flatten().ok_or(VideoTimestampFailure::MissingAnchor)?;
+        let sps = self
+            .sps
+            .get(sps_id as usize)
+            .copied()
+            .flatten()
+            .ok_or(VideoTimestampFailure::MissingAnchor)?;
         let hrd = sps.nal_hrd.or(sps.vcl_hrd);
         let mut buffering_period = false;
         let mut delays = None;
         // active SPS確定後にSEIを読む。NAL数に比例するRBSP保管配列は持たない。
         for nal in nals(payload).filter(|nal| nal.first().is_some_and(|header| header & 31 == 6)) {
-            let rbsp = nal_to_rbsp(&nal[1..])
-                .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
+            let rbsp =
+                nal_to_rbsp(&nal[1..]).map_err(|_| VideoTimestampFailure::AllocationFailed)?;
             let mut rest = rbsp.as_slice();
             while !rest.is_empty() && rest != [0x80] {
                 let kind = sei_number(&mut rest).ok_or(VideoTimestampFailure::MissingAnchor)?;
                 let len = sei_number(&mut rest).ok_or(VideoTimestampFailure::MissingAnchor)?;
-                let body = rest.get(..len).ok_or(VideoTimestampFailure::MissingAnchor)?;
-                rest = rest.get(len..).ok_or(VideoTimestampFailure::MissingAnchor)?;
+                let body = rest
+                    .get(..len)
+                    .ok_or(VideoTimestampFailure::MissingAnchor)?;
+                rest = rest
+                    .get(len..)
+                    .ok_or(VideoTimestampFailure::MissingAnchor)?;
                 let mut bits = BitReader::new(body);
                 match kind {
                     0 => {
-                        if buffering_period || bits.read_ue().ok_or(VideoTimestampFailure::MissingAnchor)? != sps_id {
+                        if buffering_period
+                            || bits.read_ue().ok_or(VideoTimestampFailure::MissingAnchor)? != sps_id
+                        {
                             return Err(VideoTimestampFailure::MissingAnchor);
                         }
                         for hrd in [sps.nal_hrd, sps.vcl_hrd].into_iter().flatten() {
                             for _ in 0..hrd.count {
-                                bits.read_bits(hrd.initial_bits).ok_or(VideoTimestampFailure::MissingAnchor)?;
-                                bits.read_bits(hrd.initial_bits).ok_or(VideoTimestampFailure::MissingAnchor)?;
+                                bits.read_bits(hrd.initial_bits)
+                                    .ok_or(VideoTimestampFailure::MissingAnchor)?;
+                                bits.read_bits(hrd.initial_bits)
+                                    .ok_or(VideoTimestampFailure::MissingAnchor)?;
                             }
                         }
                         buffering_period = true;
@@ -146,8 +168,10 @@ impl AvcTiming {
                                 return Err(VideoTimestampFailure::MissingAnchor);
                             }
                             delays = Some((
-                                bits.read_bits(hrd.cpb_bits).ok_or(VideoTimestampFailure::MissingAnchor)?,
-                                bits.read_bits(hrd.dpb_bits).ok_or(VideoTimestampFailure::MissingAnchor)?,
+                                bits.read_bits(hrd.cpb_bits)
+                                    .ok_or(VideoTimestampFailure::MissingAnchor)?,
+                                bits.read_bits(hrd.dpb_bits)
+                                    .ok_or(VideoTimestampFailure::MissingAnchor)?,
                             ));
                         }
                     }
@@ -158,7 +182,9 @@ impl AvcTiming {
         // HRDを持たないstreamは明示PTSを持つAUだけを配送する。
         let Some((cpb, dpb)) = delays else {
             self.anchor = None;
-            return pts.map(|pts| AvcTimestamp { pts }).ok_or(VideoTimestampFailure::MissingAnchor);
+            return pts
+                .map(|pts| AvcTimestamp { pts })
+                .ok_or(VideoTimestampFailure::MissingAnchor);
         };
         let hrd = hrd.ok_or(VideoTimestampFailure::MissingAnchor)?;
         if sps.tick == 0 || sps.scale == 0 {
@@ -171,7 +197,10 @@ impl AvcTiming {
             Some(anchor) => {
                 let modulus = 1_u64 << hrd.cpb_bits;
                 let delta = (u64::from(cpb) + modulus - u64::from(anchor.previous_delay)) % modulus;
-                anchor.unwrapped_delay.checked_add(delta).ok_or(VideoTimestampFailure::MissingAnchor)?
+                anchor
+                    .unwrapped_delay
+                    .checked_add(delta)
+                    .ok_or(VideoTimestampFailure::MissingAnchor)?
             }
             None => u64::from(cpb),
         };
@@ -623,7 +652,10 @@ pub(crate) mod tests {
         let mut first = au(true, true, 60, 0, 1001, 30000);
         let filler = vec![0xff; 2 * 1024 * 1024];
         nal(&mut first, 12, &[filler.as_slice(), &[0x80]].concat());
-        assert_eq!(timing.timestamp(&first, Some(90000), None).unwrap().pts, 90000);
+        assert_eq!(
+            timing.timestamp(&first, Some(90000), None).unwrap().pts,
+            90000
+        );
 
         let mut second = au(false, false, 2, 0, 1001, 30000);
         // user_data_unregisteredのUUIDとpayloadをpicture timingと同じAUへ置く。
@@ -635,7 +667,13 @@ pub(crate) mod tests {
         sei.push(0x80);
         nal(&mut second, 6, &sei);
         assert_eq!(timing.timestamp(&second, None, None).unwrap().pts, 96006);
-        assert_eq!(timing.timestamp(&au(false, false, 4, 0, 1001, 30000), None, None).unwrap().pts, 102012);
+        assert_eq!(
+            timing
+                .timestamp(&au(false, false, 4, 0, 1001, 30000), None, None)
+                .unwrap()
+                .pts,
+            102012
+        );
     }
 
     #[test]
