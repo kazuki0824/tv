@@ -598,6 +598,7 @@ pub enum HalError {
         kind: WorkerCleanupFailureKind,
     },
     WorkerReaperUnavailable,
+    WorkerReaperPanicked,
     WorkerLockPoisoned {
         owner: &'static str,
         lock: WorkerLockKind,
@@ -815,6 +816,9 @@ impl fmt::Display for HalError {
                     f,
                     "FMQ配送に失敗しました: 種別={kind:?} オブジェクトID={object_id:?}"
                 )
+            }
+            HalError::WorkerReaperPanicked => {
+                write!(f, "ワーカー回収laneがpanicしました。未完義務を保持して回収器を隔離します")
             }
             HalError::WorkerReaperUnavailable => {
                 write!(f, "ワーカー回収機構は受信待ち行列ロックの汚染後のため利用できません")

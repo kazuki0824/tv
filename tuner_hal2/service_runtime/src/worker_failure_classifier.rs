@@ -79,6 +79,7 @@ impl WorkerFailureClassifier {
 
     fn classify_runtime_failure(error: &HalError) -> WorkerFailureCategory {
         match error.primary_error() {
+            HalError::WorkerReaperPanicked => WorkerFailureCategory::Join,
             HalError::IoctlFailed { .. } | HalError::Io { .. } => {
                 WorkerFailureCategory::BackendControl
             }
@@ -119,6 +120,7 @@ mod tests {
             errno: 5,
         };
         let cases = [
+            (HalError::WorkerReaperPanicked, WorkerFailureCategory::Join),
             (backend, WorkerFailureCategory::BackendControl),
             (
                 HalError::callback_failed("onEvent", "failure"),

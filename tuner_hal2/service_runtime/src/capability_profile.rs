@@ -95,6 +95,7 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         | HalError::QueueEpochLockPoisoned { .. }
         | HalError::LockPoisoned(_)
         | HalError::WorkerLockPoisoned { .. }
+        | HalError::WorkerReaperPanicked
         | HalError::WorkerReaperUnavailable
         | HalError::FilterGateLockPoisoned { .. }
         | HalError::ServiceRuntimeLockPoisoned { .. }
