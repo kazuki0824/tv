@@ -475,4 +475,4 @@ Frontend closeの待機は`frontend_worker_txn::close_frontend_workers_and_live_
 
 ### AV組立領域の割当入口
 
-AVのPES組立は既存`PesAssembler::push_av`、汎用PES filterは`PesAssembler::push`を使用する。PacketPipelineが配送対象の用途から同じassemblerの入口を選び、別のparser ownerを作らない。AVCの開始コード・NAL・AUD境界は`avc_timing.rs`の共有iteratorで走査し、境界配列を割り当てない。AVCの保持・完成payloadコピーは既存`VideoTimestampAssociation`、配送領域は`AvSharedBacking`が所有する。割当失敗は`PesDropReason::AllocationFailed`または`VideoTimestampFailure::AllocationFailed`から既存reportの`OVERFLOW`へ接続する。受付・破棄・資源予約の意味は`../TUNER_HAL_DESIGN_JA.md`のAV割り当てを正とする。
+AVのPES組立は既存`PesAssembler::push_av`、汎用PES filterは`PesAssembler::push`を使用する。PacketPipelineが配送対象の用途から同じassemblerの入口を選び、別のparser ownerを作らない。AVCの開始コード・NAL・AUD境界は`avc_timing.rs`の共有iteratorで走査し、境界配列を割り当てない。`AvcTiming`は未使用NALのRBSP変換を省き、SEIをactive SPS確定後に順次処理する。共有`nal_to_rbsp`とSPS/PPS保持の予約失敗は既存`VideoTimestampFailure::AllocationFailed`へ渡す。AVCの保持・完成payloadコピーは既存`VideoTimestampAssociation`、配送領域は`AvSharedBacking`が所有する。割当失敗は`PesDropReason::AllocationFailed`または`VideoTimestampFailure::AllocationFailed`から既存reportの`OVERFLOW`へ接続する。受付・破棄・資源予約の意味は`../TUNER_HAL_DESIGN_JA.md`のAV割り当てを正とする。

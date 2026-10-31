@@ -1,5 +1,7 @@
 # 2026-10-31 AV payloadの独立1 MiB制限を除去
 
+- AVC時刻解析ではfiller等の未使用NALをRBSPへコピーせず、必要なRBSPとSPS/PPS保持の予約失敗を既存AllocationFailedへ返す。SEIはactive SPS確定後に順次解析し、RBSP配列を保管しない。共有RBSP変換の失敗時、任意のrecord slice索引は生成しない。大きなfiller/SEIを含む時刻対応の回帰を追加し、CIへ委ねる。
+
 - AVCの開始コード・NAL・AUD境界を割当不要のiteratorで走査し、境界配列の通常割当を除去する。多数NALの境界保持、異常入力のfail-closedと再anchor復旧の回帰を追加する。検証はCIへ委ねる。
 
 - PES組立破棄の診断にFilter IDを保持し、同じPIDの汎用PES filterの局所上限でAV時刻対応を失効させない。結合試験で両Filterを同時使用する。
