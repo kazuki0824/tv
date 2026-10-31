@@ -21,6 +21,13 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 - 音声有効化を確定した直後のselectAvStreamsへfalseを直接渡し、後続PRで検出された定数条件警告を除去する。状態更新・失敗時復元・選択動作は維持する。
 - 検証はCIへ委ねる。
 
+# 2026-10-31 LiveTv字幕・多重音声のtrack通知を修正（#192後続）
+
+- PMTから判明したvideo/audio trackをCAS確立や再生開始に先行してTIFへ通知する。字幕trackは管理PESから有効なlanguage_tag 0/1を取得してから既存のnotifyTracksChangedへ追加する。
+- current EITでdual monoが確定した音声ESだけに、同じPIDの主／副／主副の論理選択肢を広告する。音声PIDを増やさず既存AudioTrackのmode切替へ接続し、選択成功をLiveTvへ通知する。副言語は放送factがある場合だけ利用する。
+- 同じESのmode変更は再生再起動せずに適用し、AudioTrack側の変更失敗時には内部mode stateを変更しない。字幕の明示的な選択成功も通知する。
+- host回帰を追加し、JUnit固定検査を1件増加させる。実機NHK受信の通知・選択結果は未検証であり、テスト実行はCIへ委ねる。
+
 # 2026-10-31 選局世代と初期化の失敗境界を修正
 
 - SDKが遅延実行時にlistenerを再参照する前に、登録時の世代・Tuner identityを既存controller owner上で照合する。

@@ -10,6 +10,8 @@ import android.content.pm.ResolveInfo
 import android.content.pm.ServiceInfo
 import android.media.tv.TvInputInfo
 import android.media.tv.TvInputManager
+import android.media.tv.TvTrackInfo
+import com.maleicacid.tvinput.aribsi.AribComponentEntry
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.BroadcastSystem
@@ -276,6 +278,40 @@ class TisReviewBoundaryTest {
         check(controller.superimposeTrackFor(streams)?.captionLanguageId == 2)
         languages.clear()
         check(controller.tracksFor(streams).isEmpty() && controller.superimposeTrackFor(streams) == null)
+    }
+
+    @Test fun dualMonoUiTracksSelectPresentationsWithoutInventingAudioEs() {
+        val base = TunerController.TisTrack(
+            id = "audio:274:16",
+            type = TvTrackInfo.TYPE_AUDIO,
+            pid = TsPid(274),
+            streamType = 0x0f,
+            componentTag = 0x10,
+            componentType = null,
+            language = "jpn",
+        )
+        val unchanged = TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) { null }
+        check(unchanged == listOf(base))
+        val descriptor = AribComponentEntry(
+            esPid = base.pid,
+            componentTag = base.componentTag,
+            language = "jpn",
+            secondLanguage = "eng",
+            dualMono = true,
+        )
+        val advertised = TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) { descriptor }
+        check(advertised.map { it.id } == listOf("audio:274:16:main", "audio:274:16:sub", "audio:274:16:main_sub"))
+        check(advertised.map { it.audioPresentation } == listOf(
+            PlaybackPipeline.DualMonoPresentation.MAIN,
+            PlaybackPipeline.DualMonoPresentation.SUB,
+            PlaybackPipeline.DualMonoPresentation.MAIN_SUB,
+        ))
+        check(advertised.map { it.pid }.distinct() == listOf(base.pid))
+        check(advertised.all { TunerSelectionPolicy.physicalAudioTrackId(it) == base.id })
+        check(advertised[1].language == "eng")
+        check(TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) {
+            descriptor.copy(dualMono = false)
+        } == listOf(base))
     }
 
     @Test fun videoTrackGeometryRequiresExactPositiveDimensions() {
