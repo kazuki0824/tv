@@ -197,4 +197,199 @@ class ProgramCleanupProviderTest {
         }
         check(scanFailures.isEmpty()) { "scan ownerの非同期例外: ${scanFailures.joinToString { it.stackTraceToString() }}" }
     }
+
+    // 実Session observerとowner占有を通し、通知数がtask数へ増幅しないことを検査する。
+    @Suppress("LongMethod")
+    @Test
+    fun providerBurstMarksOneDirtyStateWithoutReleasingSession() {
+        val unsafe =
+            sun.misc.Unsafe::class.java
+                .getDeclaredField("theUnsafe")
+                .apply { isAccessible = true }
+                .get(null) as sun.misc.Unsafe
+        val session = unsafe.allocateInstance(MaleicacidLiveSession::class.java) as MaleicacidLiveSession
+
+        fun set(
+            name: String,
+            value: Any,
+        ) {
+            MaleicacidLiveSession::class.java
+                .getDeclaredField(name)
+                .apply { isAccessible = true }
+                .set(session, value)
+        }
+        val executor = LifecycleSerialExecutor("provider-burst-test", 64)
+        val released = AtomicBoolean(false)
+        val dirty = AtomicBoolean(false)
+        set("sessionExecutor", executor)
+        set("releaseOnce", released)
+        set("programProviderDirty", dirty)
+        val context = object : ContextWrapper(null) {}
+        val coordinator = ProgramPublishCoordinator(TvProviderWriter(context, "test"))
+        set("programPublishCoordinator", coordinator)
+        @Suppress("UNCHECKED_CAST")
+        val signatures =
+            ProgramPublishCoordinator::class.java
+                .getDeclaredField("lastInputSignatureByMode")
+                .apply { isAccessible = true }
+                .get(coordinator) as MutableMap<ChannelScanController.PublishMode, String>
+        signatures[ChannelScanController.PublishMode.LIVE_TUNE_REFRESH] = "old"
+        val observer =
+            Class
+                .forName("com.maleicacid.tvinput.tis.MaleicacidLiveSession\$programProviderObserver\$1")
+                .getDeclaredConstructor(MaleicacidLiveSession::class.java)
+                .apply { isAccessible = true }
+                .newInstance(session) as android.database.ContentObserver
+        val entered = CountDownLatch(1)
+        val unblock = CountDownLatch(1)
+        executor.executeControl {
+            entered.countDown()
+            check(unblock.await(5, TimeUnit.SECONDS))
+        }
+        try {
+            check(entered.await(5, TimeUnit.SECONDS))
+            repeat(128) { observer.onChange(false) }
+            check(!released.get() && dirty.get() && signatures.isNotEmpty())
+            unblock.countDown()
+            executor.callControl(5_000L) {
+                val snapshot =
+                    com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot(
+                        0,
+                        0L,
+                        emptyList(),
+                        emptyList(),
+                        emptyMap(),
+                        emptyList(),
+                        emptyList(),
+                    )
+                MaleicacidLiveSession::class.java
+                    .getDeclaredMethod(
+                        "publishLivePrograms",
+                        List::class.java,
+                        snapshot.javaClass,
+                    ).apply { isAccessible = true }
+                    .invoke(session, emptyList<Any>(), snapshot)
+                check(signatures.isEmpty() && !dirty.get() && !released.get())
+            }
+        } finally {
+            unblock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    // 同一keyの別package行を含む実ContentResolver索引からupdate/insertまで検査する。
+    @Suppress("LongMethod")
+    @Test
+    fun foreignProgramWithSameKeyIsNeverUpdated() {
+        val key =
+            com.maleicacid.tvinput.common
+                .ServiceKey(4, 16625, 101)
+        val program =
+            com.maleicacid.tvinput.db.ProgramRecord(
+                key,
+                10,
+                """{"kind":"arib-event-v1","originalNetworkId":4,"transportStreamId":16625,"serviceId":101,"eventId":10}""",
+                1_700_000_000_000L,
+                1_800_000L,
+                "News",
+                "desc",
+                casFactsCanonicalJson = testCasFacts(false),
+            )
+        val payload =
+            (
+                com.maleicacid.tvinput.aribsi.ProviderDataBridge
+                    .buildProgramProviderData(program)
+                    as com.maleicacid.tvinput.aribsi.ProviderDataBridge.Success
+            ).bytes
+        var includeOwn = true
+        val operations = mutableListOf<TvProviderWriter.ProgramUpsertRequest>()
+        val provider =
+            Proxy.newProxyInstance(
+                ContentInterface::class.java.classLoader,
+                arrayOf(ContentInterface::class.java),
+            ) { _, method, args ->
+                when (method.name) {
+                    "query" -> {
+                        @Suppress("UNCHECKED_CAST")
+                        val projection = args[1] as Array<String>
+                        MatrixCursor(projection).apply {
+                            val ids = if (includeOwn) listOf(1L, 100L) else listOf(100L)
+                            ids.forEach { id ->
+                                addRow(
+                                    projection
+                                        .map { column ->
+                                            when (column) {
+                                                "_id" -> id
+                                                "package_name" -> if (id == 1L) "own.package" else "other.package"
+                                                "internal_provider_data" -> payload
+                                                "start_time_utc_millis" -> program.startTimeMillis
+                                                "end_time_utc_millis" -> program.startTimeMillis + program.durationMillis
+                                                else -> null
+                                            }
+                                        }.toTypedArray(),
+                                )
+                            }
+                        }
+                    }
+
+                    else -> {
+                        error("Unexpected provider call ${method.name}")
+                    }
+                }
+            } as ContentInterface
+        val unsafe =
+            sun.misc.Unsafe::class.java
+                .getDeclaredField("theUnsafe")
+                .apply { isAccessible = true }
+                .get(null) as sun.misc.Unsafe
+        val resolver = unsafe.allocateInstance(Class.forName("android.content.ContentResolver\$1")) as ContentResolver
+        ContentResolver::class.java
+            .getDeclaredField("mWrapped")
+            .apply { isAccessible = true }
+            .set(resolver, provider)
+        val context =
+            object : ContextWrapper(null) {
+                override fun getContentResolver() = resolver
+
+                override fun getPackageName() = "own.package"
+            }
+        val androidWriter = TvProviderWriter(context, "test")
+        val store =
+            TvProviderWriter::class.java
+                .getDeclaredField("channelStore")
+                .apply { isAccessible = true }
+                .get(androidWriter) as TvProviderWriter.ChannelStore
+        val writer =
+            TvProviderWriter(
+                "test",
+                object : TvProviderWriter.ChannelStore by store {
+                    override fun upsertProgramsBatch(
+                        requests: List<TvProviderWriter.ProgramUpsertRequest>,
+                    ): Result<List<TvProviderWriter.ProgramUpsertOutcome>> {
+                        operations += requests
+                        return Result.success(requests.map { TvProviderWriter.ProgramUpsertOutcome(it.existingProgramId ?: 2L) })
+                    }
+
+                    override fun readCanonicalGenres(
+                        channelId: Long,
+                        programIds: Set<Long>,
+                    ): Result<Map<Long, String?>> = Result.success(emptyMap())
+                },
+                testOnly = true,
+            )
+        val values = writer.programValues(1L, program, true, payload)
+        val publication =
+            TvProviderWriter.PreparedProgramPublication(
+                listOf(TvProviderWriter.PreparedServicePrograms(key, 1L, listOf(program to values), emptyList())),
+                emptyList(),
+            )
+        val first = writer.upsertPreparedPrograms(publication)
+        check(first.failures.isEmpty() && first.updated == 1)
+        check(operations.single().existingProgramId == 1L)
+        operations.clear()
+        includeOwn = false
+        val second = writer.upsertPreparedPrograms(publication)
+        check(second.failures.isEmpty() && second.inserted == 1)
+        check(operations.single().existingProgramId == null)
+    }
 }

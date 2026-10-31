@@ -55,11 +55,14 @@ class MaleicacidLiveSession(
     private val releaseOnce = AtomicBoolean(false)
     private var releaseCleanup: ResourceCleanup? = null
     private var parentalReceiverRegistered = false
+
+    // 完全登録の印ではなく、部分成功も含めたunregister義務。登録失敗はaccepted tune失敗で回収する。
     private var programObserverRegistered = false
+    private val programProviderDirty = AtomicBoolean(false)
     private val programProviderObserver =
         object : android.database.ContentObserver(null) {
             override fun onChange(selfChange: Boolean) {
-                enqueueSessionAction { programPublishCoordinator.invalidateProviderState() }
+                programProviderDirty.set(true)
             }
         }
 
@@ -1631,6 +1634,7 @@ class MaleicacidLiveSession(
         records: List<ProgramRecord>,
         snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot,
     ) {
+        if (programProviderDirty.getAndSet(false)) programPublishCoordinator.invalidateProviderState()
         val key = currentService ?: return
         if (!currentServicePolicy().registrationReady) return
         val result =

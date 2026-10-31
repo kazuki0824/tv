@@ -1243,6 +1243,7 @@ class TvProviderWriter private constructor(
                             TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
                             TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS,
                             TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS,
+                            TvContract.Programs.COLUMN_PACKAGE_NAME,
                         ) + SIGNATURE_COLUMNS
                     ).distinct().toTypedArray()
                 val uri = TvContract.buildProgramsUriForChannel(channelId, windowStartMs, windowEndMs)
@@ -1256,7 +1257,9 @@ class TvProviderWriter private constructor(
                     ) ?: error("TvProvider program index queryがnull cursorを返しました")
                 val out = linkedMapOf<String, MutableList<ExistingProgramIndexEntry>>()
                 cursor.use { rows ->
+                    val ownerIndex = rows.getColumnIndexOrThrow(TvContract.Programs.COLUMN_PACKAGE_NAME)
                     while (rows.moveToNext()) {
+                        if (rows.getString(ownerIndex) != context.packageName) continue
                         val key =
                             parseProgramKey(
                                 providerDataBytes(rows, PROGRAM_PROVIDER_DATA_COLUMN_INDEX),

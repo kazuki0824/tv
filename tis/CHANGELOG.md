@@ -1,3 +1,7 @@
+## Provider通知の集約とProgram更新の所有元照合
+
+通知を単一dirty状態へ集約し、Session data受付の飽和による解放を防止する。Program更新索引は自package行だけを候補とし、他packageの同一key行を更新しない。既存ownerと一括queryを使い、worker・queue・所有台帳を追加しない。
+
 ## Provider自己通知後の同値書込み抑制
 
 live更新では既存のProgram索引queryで保存列も読み、同値行をbatch更新から除外する。BOOT等の明示的な書込みcommitは維持する。通知失効後の再評価で自己通知が続かないようにする。追加queryや状態台帳は設けない。
