@@ -566,11 +566,12 @@ pub struct WorkerRuntime<T = ()> {
 
 impl<T> WorkerRuntime<T> {
     pub fn wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        let handle = self.handle.as_ref().ok_or(
-            maleicacid_tuner_hal2_common::HalError::NotInitialized {
-                resource: "ワーカーハンドル",
-            },
-        )?;
+        let handle =
+            self.handle
+                .as_ref()
+                .ok_or(maleicacid_tuner_hal2_common::HalError::NotInitialized {
+                    resource: "ワーカーハンドル",
+                })?;
         if handle.context.wake.notify() {
             Ok(())
         } else {
