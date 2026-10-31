@@ -254,13 +254,13 @@ class ProgramCleanupProviderTest {
             executor.callControl(5_000L) {
                 val snapshot =
                     com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot(
-                        0,
-                        0L,
-                        emptyList(),
-                        emptyList(),
-                        emptyMap(),
-                        emptyList(),
-                        emptyList(),
+                        discoveryProfile = 0,
+                        ingestSequence = 0L,
+                        events = emptyList(),
+                        updateWindows = emptyList(),
+                        semanticFactsByServiceKey = emptyMap(),
+                        descriptorDiagnostics = emptyList(),
+                        parserDiagnostics = emptyList(),
                     )
                 MaleicacidLiveSession::class.java
                     .getDeclaredMethod(
