@@ -420,12 +420,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
         let worker = self.delay_worker.as_ref().ok_or(HalError::NotInitialized {
             resource: "Filter delay worker",
         })?;
-        if worker.is_finished() {
-            return Err(HalError::cleanup_failed(
-                "Filter遅延配送",
-                "終了済みワーカーへ配送を要求できません",
-            ));
-        }
+        // 起床と終了確定の同期はWorkerRuntimeが所有し、ここでは二重判定しない。
         worker.wake()
     }
 
