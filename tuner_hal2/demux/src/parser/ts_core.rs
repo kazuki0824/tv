@@ -289,6 +289,7 @@ pub enum PesDropReason {
     ContinuationWithoutStart,
     MalformedPes,
     OversizedPes,
+    AllocationFailed,
     FlushDiscard,
 }
 
@@ -312,6 +313,25 @@ impl PesAssembler {
         pid: PacketPid,
         payload_unit_start: bool,
         payload: &[u8],
+    ) -> Vec<PesPacket> {
+        self.push_with_limit(pid, payload_unit_start, payload, Some(MAX_PES_BUFFER_BYTES))
+    }
+
+    pub(crate) fn push_av(
+        &mut self,
+        pid: PacketPid,
+        payload_unit_start: bool,
+        payload: &[u8],
+    ) -> Vec<PesPacket> {
+        self.push_with_limit(pid, payload_unit_start, payload, None)
+    }
+
+    fn push_with_limit(
+        &mut self,
+        pid: PacketPid,
+        payload_unit_start: bool,
+        payload: &[u8],
+        max_bytes: Option<usize>,
     ) -> Vec<PesPacket> {
         let mut out = Vec::new();
         if payload_unit_start {
@@ -353,10 +373,18 @@ impl PesAssembler {
                     }
                     self.pid = Some(pid);
                     self.buf = header;
+                    if self.buf.try_reserve(payload.len() - copied).is_err() {
+                        self.reset_with_drop(PesDropReason::AllocationFailed);
+                        return out;
+                    }
                     self.buf.extend_from_slice(&payload[copied..]);
                 }
             }
         } else {
+            if self.buf.try_reserve(payload.len()).is_err() {
+                self.reset_with_drop(PesDropReason::AllocationFailed);
+                return out;
+            }
             self.buf.extend_from_slice(payload);
         }
         if self.expected_len.is_none() {
@@ -376,7 +404,7 @@ impl PesAssembler {
                 }
             }
         }
-        if self.buf.len() > MAX_PES_BUFFER_BYTES {
+        if max_bytes.is_some_and(|limit| self.buf.len() > limit) {
             self.reset_with_drop(PesDropReason::OversizedPes);
             return out;
         }
@@ -446,11 +474,13 @@ impl PesAssembler {
         if let Some(expected_len) = summary.expected_len {
             raw_bytes.truncate(expected_len);
         }
-        let payload = if raw_bytes.starts_with(&[0x00, 0x00, 0x01]) {
-            raw_bytes[summary.payload_offset.min(raw_bytes.len())..].to_vec()
-        } else {
-            raw_bytes.clone()
-        };
+        let payload_bytes = &raw_bytes[summary.payload_offset.min(raw_bytes.len())..];
+        let mut payload = Vec::new();
+        if payload.try_reserve_exact(payload_bytes.len()).is_err() {
+            self.reset_with_drop(PesDropReason::AllocationFailed);
+            return None;
+        }
+        payload.extend_from_slice(payload_bytes);
         self.expected_len = None;
         self.unbounded_summary = None;
         self.pid = None;

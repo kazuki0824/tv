@@ -479,3 +479,7 @@ Filter遅延配送の終端observerはaidl_service/src/filter_callback_delivery.
 ### Filter flushの実処理と診断
 
 queue_cleanup_use_caseはpipeline、FMQ、未配送event、payload状態、PCR anchor、producer drain、source generationの実処理だけを診断stepとして記録する。配送済みAV allocationの所有は変更せず、AvSharedBackingへ空のflushを呼ばない。実処理を伴わないAvBackingFlush成功stepとAvBackingNotPresent skipは持たない。公開flushの資源寿命はTUNER_HAL_DESIGN_JA.mdのAV契約を維持し、未配送eventの破棄と配送済みtokenの明示解放を分離する。
+
+### AV組立領域の割当入口
+
+AVのPES組立は既存`PesAssembler::push_av`、汎用PES filterは`PesAssembler::push`を使用する。PacketPipelineが配送対象の用途から同じassemblerの入口を選び、別のparser ownerを作らない。AVCの保持・完成payloadコピーは既存`VideoTimestampAssociation`、配送領域は`AvSharedBacking`が所有する。割当失敗は`PesDropReason::AllocationFailed`または`VideoTimestampFailure::AllocationFailed`から既存reportの`OVERFLOW`へ接続する。受付・破棄・資源予約の意味は`../TUNER_HAL_DESIGN_JA.md`のAV割り当てを正とする。

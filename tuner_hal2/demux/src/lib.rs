@@ -45,7 +45,7 @@ pub use av::{
     AvDataId, AvDataIdAllocator, AvFileIdentity, AvFlowDiagnosticSnapshot,
     AvHandleReleaseDescriptor, AvHandleReleaseOutcome, AvMediaEventDescriptor,
     AvMediaEventMetadata, AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedBackingError,
-    AvSharedHandleExport, DEFAULT_AV_MAX_EVENT_BYTES,
+    AvSharedHandleExport,
 };
 pub use config::{
     AvSettings, AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterConfigKind, FilterDelayHint,
