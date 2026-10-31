@@ -2,8 +2,9 @@
 use maleicacid_tuner_hal2_demux::{
     AvSettings, AvStreamKind, AvStreamTypeConfig, DemuxRuntime, FilterAvStreamTypeRuntimeRequest,
     FilterConfig, FilterConfigKind, FilterOpenType, FilterRuntimeConfigureRequest,
-    FilterRuntimeOperationRequest, FilterRuntimeRegistrationRequest, OpenFilterRequest, PesSettings,
-    PipelineGeneratedEvent, TsInputOrigin, ValidatedPacketIngressRequest, ValidatedTsPacket,
+    FilterRuntimeOperationRequest, FilterRuntimeRegistrationRequest, OpenFilterRequest,
+    PesSettings, PipelineGeneratedEvent, TsInputOrigin, ValidatedPacketIngressRequest,
+    ValidatedTsPacket,
 };
 use std::os::fd::IntoRawFd;
 use std::os::unix::fs::FileExt;
@@ -72,7 +73,11 @@ fn encoded_large_access_unit_reaches_media_event() {
         callback_present: true,
     };
     demux
-        .register_filter_from_typed_request(FilterRuntimeRegistrationRequest::new(2, &pes_request, 64))
+        .register_filter_from_typed_request(FilterRuntimeRegistrationRequest::new(
+            2,
+            &pes_request,
+            64,
+        ))
         .unwrap();
     let (_, result) =
         demux.configure_filter_runtime_with_typed_request(FilterRuntimeConfigureRequest::new(
