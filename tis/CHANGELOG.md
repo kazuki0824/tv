@@ -21,6 +21,11 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 - 音声有効化を確定した直後のselectAvStreamsへfalseを直接渡し、後続PRで検出された定数条件警告を除去する。状態更新・失敗時復元・選択動作は維持する。
 - 検証はCIへ委ねる。
 
+# 2026-10-31 実TS結合試験の完了同期を修正
+
+- queueとactiveCountの別観測を廃止し、data末尾のmarker実行と、その後のcontrol完了で入力処理・permit返却を待つ。満杯時は既存拒否結果を受けて試験期限内でmarker受付を待つ。
+- 製品executorや受付容量は変更しない。実TS試験の実行はCIへ委ねる。実機の到着率・容量妥当性を証明する変更ではない。
+
 # 2026-10-31 選局世代と初期化の失敗境界を修正
 
 - SDKが遅延実行時にlistenerを再参照する前に、登録時の世代・Tuner identityを既存controller owner上で照合する。
