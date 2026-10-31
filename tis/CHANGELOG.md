@@ -1,3 +1,8 @@
+# 2026-10-31 callback拒否試験の完了同期を修正
+
+- data taskの実行をlatchで観測してからcontrol barrierを投入し、permit返却後に次のcallback試験へ進む。control優先度をdata完了の代用にしない。
+- テスト実行はCIに委ねる。実機検証は未実施。
+
 # 2026-10-31 監査で判明した記述不整合の修正
 
 - TvProvider投影文書の重複記述を既存delivery system対応表へ統一し、部分受信とISDB-C非対応の記載矛盾を解消した。

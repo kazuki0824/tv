@@ -15,8 +15,11 @@ fn io_authority_revalidates_generation_after_waiting_for_the_physical_gate() {
         let request_state = Arc::clone(&state);
         let request_gate = Arc::clone(&io_gate);
         let request_applied = Arc::clone(&applied);
+        let (observed_tx, observed_rx) = loom::sync::mpsc::channel();
+        let held_gate = io_gate.lock().unwrap();
         let request = loom::thread::spawn(move || {
             let observed_generation = request_state.lock().unwrap().generation;
+            observed_tx.send(()).unwrap();
             let _io = request_gate.lock().unwrap();
             let current_generation = request_state.lock().unwrap().generation;
             if current_generation == observed_generation {
@@ -24,17 +27,11 @@ fn io_authority_revalidates_generation_after_waiting_for_the_physical_gate() {
             }
         });
 
-        let change_state = Arc::clone(&state);
-        let change_gate = Arc::clone(&io_gate);
-        let change = loom::thread::spawn(move || {
-            let _io = change_gate.lock().unwrap();
-            change_state.lock().unwrap().generation += 1;
-        });
-
+        observed_rx.recv().unwrap();
+        state.lock().unwrap().generation += 1;
+        drop(held_gate);
         request.join().unwrap();
-        change.join().unwrap();
-
-        assert!(applied.load(Ordering::SeqCst) <= 1);
+        assert_eq!(applied.load(Ordering::SeqCst), 0);
         assert_eq!(state.lock().unwrap().generation, 2);
     });
 }

@@ -188,8 +188,9 @@ mod tests {
 
     #[test]
     fn adapter_reports_running_then_completion() {
-        let mut owner = ThreadResultOwner::start("running", || {
-            std::thread::sleep(Duration::from_millis(20));
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let mut owner = ThreadResultOwner::start("running", move || {
+            resume_rx.recv().unwrap();
             Ok(())
         })
         .unwrap();
@@ -197,6 +198,7 @@ mod tests {
             owner.collect_if_finished(),
             ThreadResultPoll::Running
         ));
+        resume_tx.send(()).unwrap();
         assert!(owner
             .wait_until_finished(Some(Instant::now() + Duration::from_secs(1)))
             .unwrap());

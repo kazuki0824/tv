@@ -73,20 +73,21 @@ fn producer_admission_never_crosses_an_observed_draining_phase() {
         let producer_state = Arc::clone(&state);
         let producer = loom::thread::spawn(move || {
             let mut state = producer_state.lock().unwrap();
-            if state.phase == Phase::Open {
+            let observed_phase = state.phase;
+            let admitted = if state.phase == Phase::Open {
                 state.permits += 1;
                 true
             } else {
                 false
-            }
+            };
+            (observed_phase, admitted)
         });
 
-        let admitted = producer.join().unwrap();
+        let (observed_phase, admitted) = producer.join().unwrap();
         drain.join().unwrap();
 
         let state = state.lock().unwrap();
-        if state.phase == Phase::Draining {
-            assert_eq!(state.permits, usize::from(admitted));
-        }
+        assert_eq!(admitted, observed_phase == Phase::Open);
+        assert_eq!(state.permits, usize::from(admitted));
     });
 }

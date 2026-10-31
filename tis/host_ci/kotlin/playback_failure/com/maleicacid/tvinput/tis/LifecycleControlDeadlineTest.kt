@@ -205,6 +205,7 @@ class LifecycleControlDeadlineTest {
     @Test
     fun rejectedCallbackDisposesInputAndRetainsFailedReleaseForOwnerRetry() {
         val executor = LifecycleSerialExecutor("拒否資源試験", maxPendingDataTasks = 1)
+        val dataRan = CountDownLatch(1)
         val started = CountDownLatch(1)
         val unblock = CountDownLatch(1)
         val released = AtomicBoolean(false)
@@ -216,7 +217,7 @@ class LifecycleControlDeadlineTest {
                 unblock.await()
             }
             check(started.await(1, TimeUnit.SECONDS))
-            executor.executeData {}
+            executor.executeData { dataRan.countDown() }
             executor.executeCallback(
                 isReleased = released::get,
                 onFailure = { released.set(true) },
@@ -230,6 +231,8 @@ class LifecycleControlDeadlineTest {
             )
             check(released.get() && attempts == 1 && cleanup.hasPending)
             unblock.countDown()
+            check(dataRan.await(1, TimeUnit.SECONDS))
+            // data本体の実行後にcontrolを投入し、permit返却を含むtask終了を待つ。
             executor.callControl(1_000) {
                 cleanup.retry()
                 cleanup.requireComplete()
