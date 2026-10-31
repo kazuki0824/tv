@@ -342,7 +342,7 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 | TS | `TEMI` | `UNAVAILABLE` | なし | 本製品はTEMI処理能力を採用せず、object / queue / workerを生成しない |
 | MMTP / IP / TLV / ALP | AIDL上の任意の既知subtype | `UNAVAILABLE` | なし | TS-only `ProductProfile`の固定能力外。main-type objectを生成しない |
 
-上表の成功行でも、`bufferSize`、callback、個数枠、FMQ / AV / PES予算その他の既存child-open条件を満たさない場合は既存契約の原因別errorへ写像する。成功行を理由に資源不足を成功へ丸めない。TS `UNDEFINED` は `linkCaps` のmain-type接続試験を成立させるための公開subtypeであり、SECTION/PES/TS/AV/PCR/RECORDのいずれかへ暗黙昇格させない。
+上表の成功行でも、`bufferSize`、callback、個数枠、FMQ / PES予算その他の既存child-open条件を満たさない場合は既存契約の原因別errorへ写像する。成功行を理由に資源不足を成功へ丸めない。TS `UNDEFINED` は `linkCaps` のmain-type接続試験を成立させるための公開subtypeであり、SECTION/PES/TS/AV/PCR/RECORDのいずれかへ暗黙昇格させない。
 
 #### `DemuxFilterAvSettings.isSecureMemory` / `isPassthrough`
 
