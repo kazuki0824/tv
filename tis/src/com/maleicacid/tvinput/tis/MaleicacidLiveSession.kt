@@ -857,7 +857,7 @@ class MaleicacidLiveSession(
                         service.streams,
                         preferredAudioTrackId,
                         selectedSubtitleTrackId,
-                        audioExplicitlyDisabled = audioFallbackDisabled,
+                        audioExplicitlyDisabled = false,
                         subtitleExplicitlyDisabled = subtitleExplicitlyDisabled,
                         defaultComponentGroupTags = defaultComponentGroupTags,
                         dualMonoPresentation = dualMonoPresentation,
