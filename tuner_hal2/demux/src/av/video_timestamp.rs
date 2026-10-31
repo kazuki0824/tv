@@ -83,63 +83,65 @@ impl VideoTimestampAssociation {
             ),
         });
         self.bytes.extend_from_slice(&packet.payload);
-        let boundaries: Vec<usize> = start_codes(&self.bytes)
-            .into_iter()
-            .filter(|(_, header)| self.bytes[*header] & 31 == 9)
-            .map(|(start, _)| start)
-            .collect();
         let mut frames = Vec::new();
         let mut consumed = 0;
-        for pair in boundaries.windows(2) {
-            let start = pair[0];
-            let end = pair[1];
-            // PESの明示時刻はそのPES内で開始する最初のAUへ一度だけ対応させる。
-            let anchor_count = self
-                .anchors
-                .iter()
-                .take_while(|anchor| anchor.offset <= start)
-                .count();
-            let metadata = if anchor_count != 0 {
-                let anchor = self.anchors[anchor_count - 1].metadata;
-                self.anchors.drain(..anchor_count);
-                self.context = Some(anchor);
-                anchor
-            } else {
-                let context = self.context.ok_or(VideoTimestampFailure::MissingAnchor)?;
-                AvMediaEventMetadata::from_pes(
-                    context.stream_id,
-                    None,
-                    None,
-                    context.is_pes_private_data,
-                )
-            };
-            let timestamp = self
-                .timing
-                .timestamp(
-                    &self.bytes[start..end],
-                    metadata.pts_90khz,
-                    metadata.dts_90khz,
-                )
-                .ok_or(VideoTimestampFailure::MissingAnchor)?;
-            let mut payload = Vec::new();
-            payload
-                .try_reserve_exact(end - start)
-                .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
-            payload.extend_from_slice(&self.bytes[start..end]);
-            frames
-                .try_reserve(1)
-                .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
-            frames.push(VideoMediaFrame {
-                payload,
-                metadata: AvMediaEventMetadata::from_pes_with_authoritative_pts(
-                    metadata.stream_id,
-                    metadata.pts_90khz,
-                    timestamp.pts,
-                    metadata.dts_90khz,
-                    metadata.is_pes_private_data,
-                ),
-            });
-            consumed = end;
+        {
+            let mut boundaries = start_codes(&self.bytes)
+                .filter(|(_, header)| self.bytes[*header] & 31 == 9)
+                .map(|(start, _)| start)
+                .peekable();
+            while let Some(start) = boundaries.next() {
+                let Some(&end) = boundaries.peek() else {
+                    break;
+                };
+                // PESの明示時刻はそのPES内で開始する最初のAUへ一度だけ対応させる。
+                let anchor_count = self
+                    .anchors
+                    .iter()
+                    .take_while(|anchor| anchor.offset <= start)
+                    .count();
+                let metadata = if anchor_count != 0 {
+                    let anchor = self.anchors[anchor_count - 1].metadata;
+                    self.anchors.drain(..anchor_count);
+                    self.context = Some(anchor);
+                    anchor
+                } else {
+                    let context = self.context.ok_or(VideoTimestampFailure::MissingAnchor)?;
+                    AvMediaEventMetadata::from_pes(
+                        context.stream_id,
+                        None,
+                        None,
+                        context.is_pes_private_data,
+                    )
+                };
+                let timestamp = self
+                    .timing
+                    .timestamp(
+                        &self.bytes[start..end],
+                        metadata.pts_90khz,
+                        metadata.dts_90khz,
+                    )
+                    .ok_or(VideoTimestampFailure::MissingAnchor)?;
+                let mut payload = Vec::new();
+                payload
+                    .try_reserve_exact(end - start)
+                    .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
+                payload.extend_from_slice(&self.bytes[start..end]);
+                frames
+                    .try_reserve(1)
+                    .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
+                frames.push(VideoMediaFrame {
+                    payload,
+                    metadata: AvMediaEventMetadata::from_pes_with_authoritative_pts(
+                        metadata.stream_id,
+                        metadata.pts_90khz,
+                        timestamp.pts,
+                        metadata.dts_90khz,
+                        metadata.is_pes_private_data,
+                    ),
+                });
+                consumed = end;
+            }
         }
         if consumed != 0 {
             self.bytes.drain(..consumed);
@@ -169,6 +171,44 @@ mod tests {
             raw_bytes: Vec::new(),
             payload,
         }
+    }
+
+    #[test]
+    fn many_nals_preserve_au_and_malformed_input_resets_timing() {
+        use crate::av::avc_timing::tests::au;
+        let mut first = au(true, true, 60, 0, 1001, 30000);
+        for _ in 0..16384 {
+            first.extend_from_slice(&[0, 0, 1, 12, 0xff, 0x80]);
+        }
+        let second = au(false, false, 2, 0, 1001, 30000);
+        let origin = TsInputOrigin::frontend(1);
+        let mut video = VideoTimestampAssociation::default();
+        let mut payload = first.clone();
+        payload.extend_from_slice(&second);
+        let frames = video.extract_avc(packet(payload, Some(90000)), origin).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].payload, first);
+        assert_eq!(frames[0].metadata.pts_90khz, Some(90000));
+
+        let mut malformed = first.clone();
+        malformed.extend_from_slice(&[0, 0, 1, 0x8c, 0x80]);
+        malformed.extend_from_slice(&second);
+        assert_eq!(
+            video.extract_avc(packet(malformed, Some(180000)), origin),
+            Err(VideoTimestampFailure::MissingAnchor)
+        );
+        let mut unanchored = second.clone();
+        unanchored.extend_from_slice(&second);
+        assert_eq!(
+            video.extract_avc(packet(unanchored, None), origin),
+            Err(VideoTimestampFailure::MissingAnchor)
+        );
+        let mut recovery = first.clone();
+        recovery.extend_from_slice(&second);
+        let frames = video.extract_avc(packet(recovery, Some(270000)), origin).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].payload, first);
+        assert_eq!(frames[0].metadata.pts_90khz, Some(270000));
     }
 
     #[test]
@@ -246,7 +286,6 @@ mod tests {
         for frame in &frames {
             assert_eq!(
                 start_codes(&frame.payload)
-                    .into_iter()
                     .filter(|(_, h)| frame.payload[*h] & 31 == 9)
                     .count(),
                 1

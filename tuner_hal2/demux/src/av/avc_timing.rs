@@ -197,39 +197,32 @@ fn sei_number(bytes: &mut &[u8]) -> Option<usize> {
     }
 }
 
-pub(crate) fn start_codes(bytes: &[u8]) -> Vec<(usize, usize)> {
-    let mut codes = Vec::new();
+pub(crate) fn start_codes(bytes: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
     let mut index = 0usize;
-    while index + 3 < bytes.len() {
-        if bytes[index..].starts_with(&[0, 0, 1]) {
-            codes.push((
-                if index > 0 && bytes[index - 1] == 0 {
+    std::iter::from_fn(move || {
+        while index + 3 < bytes.len() {
+            if bytes[index..].starts_with(&[0, 0, 1]) {
+                let start = if index > 0 && bytes[index - 1] == 0 {
                     index - 1
                 } else {
                     index
-                },
-                index + 3,
-            ));
-            index += 3;
-        } else {
+                };
+                index += 3;
+                return Some((start, index));
+            }
             index += 1;
         }
-    }
-    codes
+        None
+    })
 }
 
-fn nals(bytes: &[u8]) -> Vec<&[u8]> {
-    let codes = start_codes(bytes);
-    codes
-        .iter()
-        .enumerate()
-        .map(|(index, (_, body))| {
-            let end = codes
-                .get(index + 1)
-                .map_or(bytes.len(), |(start, _)| *start);
-            &bytes[*body..end]
-        })
-        .collect()
+fn nals(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut codes = start_codes(bytes).peekable();
+    std::iter::from_fn(move || {
+        let (_, body) = codes.next()?;
+        let end = codes.peek().map_or(bytes.len(), |(start, _)| *start);
+        Some(&bytes[body..end])
+    })
 }
 
 fn parse_hrd(bits: &mut BitReader<'_>) -> Option<Hrd> {
@@ -399,6 +392,27 @@ fn parse_sps(bits: &mut BitReader<'_>) -> Option<(u32, Sps)> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn many_start_codes_preserve_prefixes_and_escaped_payload() {
+        let mut bytes = Vec::new();
+        let mut expected = Vec::new();
+        for index in 0..16384 {
+            let start = bytes.len();
+            let prefix: &[u8] = if index % 2 == 0 { &[0, 0, 1] } else { &[0, 0, 0, 1] };
+            bytes.extend_from_slice(prefix);
+            expected.push((start, bytes.len()));
+            bytes.extend_from_slice(&[12, 0, 0, 3, 1, 0x80]);
+        }
+        bytes.extend_from_slice(&[0, 0, 1]);
+        assert!(start_codes(&bytes).eq(expected));
+        let mut units = nals(&bytes);
+        for _ in 0..16383 {
+            assert_eq!(units.next(), Some([12, 0, 0, 3, 1, 0x80].as_slice()));
+        }
+        assert_eq!(units.next(), Some([12, 0, 0, 3, 1, 0x80, 0, 0, 1].as_slice()));
+        assert_eq!(units.next(), None);
+    }
 
     struct Bits(Vec<bool>);
     impl Bits {
