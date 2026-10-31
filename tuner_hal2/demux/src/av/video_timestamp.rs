@@ -204,7 +204,14 @@ mod tests {
                 let mut frames = Vec::new();
                 let mut packets = 0;
                 for (index, chunk) in input.chunks(chunk_size).enumerate() {
-                    frames.extend(video.extract_avc(packet(chunk.to_vec(), (index == 0).then_some(90000)), origin).unwrap());
+                    frames.extend(
+                        video
+                            .extract_avc(
+                                packet(chunk.to_vec(), (index == 0).then_some(90000)),
+                                origin,
+                            )
+                            .unwrap(),
+                    );
                     packets += 1;
                 }
                 assert_eq!(frames.len(), 2);
