@@ -1372,6 +1372,8 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    // 同じSessionの公開・選択・失敗時保持を順に検査し、通知履歴を別fixtureへ分断しない。
+    @Suppress("LongMethod")
     @Test
     fun advertisedDualMonoSelectionCommitsOnlyAfterAudioTrackAccepts() {
         Fixture().use { fixture ->
