@@ -1,3 +1,13 @@
+# 2026-10-31 同一versionCodeのAPK置換でもProgram cleanupを実行
+
+- 既存software identityへbase APKのSHA-256を含め、同一device fingerprint/versionCodeで実装が置換された場合も旧Programを破棄する。読取りは既存cleanup workerでstream処理し、失敗時は準備済みにしない。
+- 同一path・同一package versionでartifactを置換する反例と読取り失敗のRobolectric回帰を追加。schema移行・第二の保存形式・新workerは追加しない。検証はCIへ委ねる。
+
+# 2026-10-31 Provider変更後のlive公開署名を失効
+
+- Channels/Programsの変更通知を既存Session ownerで受け、入力・公開署名を失効させる。再試行区間は保持し、次の通常再評価で同一SIも再投影する。
+- 既存のlive失敗回帰へ、署名失効後もretry義務が残ることと、外部削除後の同一入力再登録を追加。通知自体から再公開せず自己通知loopを作らない。検証はCIへ委ねる。
+
 # 2026-10-31 明示音声選択の確定済み引数を簡素化
 
 - 音声有効化を確定した直後のselectAvStreamsへfalseを直接渡し、後続PRで検出された定数条件警告を除去する。状態更新・失敗時復元・選択動作は維持する。

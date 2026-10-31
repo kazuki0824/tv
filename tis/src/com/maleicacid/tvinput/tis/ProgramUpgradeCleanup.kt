@@ -137,7 +137,12 @@ object ProgramUpgradeCleanup {
     private fun currentSoftwareIdentity(context: Context): String? =
         runCatching {
             val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            "${Build.FINGERPRINT}|${packageInfo.longVersionCode}"
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            java.security.DigestInputStream(java.io.FileInputStream(context.applicationInfo.sourceDir), digest).use {
+                it.copyTo(java.io.OutputStream.nullOutputStream())
+            }
+            val artifactIdentity = digest.digest().joinToString("") { "%02x".format(it) }
+            "${Build.FINGERPRINT}|${packageInfo.longVersionCode}|$artifactIdentity"
         }.onFailure {
             Log.w(LogTags.TIS, "Program upgrade cleanup software identityを取得できません", it)
         }.getOrNull()

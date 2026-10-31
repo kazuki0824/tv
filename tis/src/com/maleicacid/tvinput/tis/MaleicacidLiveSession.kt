@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.tv.TvContentRating
+import android.media.tv.TvContract
 import android.media.tv.TvInputManager
 import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
@@ -54,6 +55,13 @@ class MaleicacidLiveSession(
     private val releaseOnce = AtomicBoolean(false)
     private var releaseCleanup: ResourceCleanup? = null
     private var parentalReceiverRegistered = false
+    private var programObserverRegistered = false
+    private val programProviderObserver =
+        object : android.database.ContentObserver(null) {
+            override fun onChange(selfChange: Boolean) {
+                enqueueSessionAction { programPublishCoordinator.invalidateProviderState() }
+            }
+        }
 
     private val sessionExecutor =
         LifecycleSerialExecutor(
@@ -433,6 +441,11 @@ class MaleicacidLiveSession(
     @Suppress("ReturnCount")
     private fun onTuneOnSessionExecutor(channelUri: Uri?): Boolean {
         if (channelUri == null) return false
+        if (!programObserverRegistered) {
+            appContext.contentResolver.registerContentObserver(TvContract.Channels.CONTENT_URI, true, programProviderObserver)
+            programObserverRegistered = true
+            appContext.contentResolver.registerContentObserver(TvContract.Programs.CONTENT_URI, true, programProviderObserver)
+        }
         lastPlaybackGateDiagnostic = null
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
         aribSiEngine.reset()
@@ -1738,6 +1751,12 @@ class MaleicacidLiveSession(
             cleanup.release("caption") { captionController.close() }
             cleanup.release("superimpose") { superimposeController.close() }
             cleanup.release("parental receiver") { unregisterParentalControlReceiver() }
+            cleanup.release("program observer") {
+                if (programObserverRegistered) {
+                    appContext.contentResolver.unregisterContentObserver(programProviderObserver)
+                    programObserverRegistered = false
+                }
+            }
             // TunerControllerがCASも閉じ、内部の失敗資源だけを保持する。
             cleanup.release("tuner/CAS") { tunerController.release() }
             cleanup.release("SI engine") { aribSiEngine.close() }

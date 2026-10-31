@@ -800,7 +800,7 @@ Channel provider-data の新規書き込み・読み取り正形式は JSON v1 �
 
 `TvProvider.Programs` はSI/EITから再生成できる番組表キャッシュであり、product/TISのrelease間でprovider-data互換性を維持する永続データではない。`../開発規則.md`の更新不変条件に従い、旧product buildが書いたProgram行を現行buildへmigration、normalize、旧schema decodeして引き継がない。
 
-TISはdevice-protected storageに、最後にProgram cleanupを完了したsoftware identityとして `Build.FINGERPRINT` とTIS packageの `longVersionCode` の組を保存する。起動時に現在値と一致しない場合、boot EPG sync、background maintenance、live sessionでの既存Program参照、Program upsert/delete、現在番組解決より前に、current TIS inputに属するchannelのうち `TvContract.Programs.COLUMN_PACKAGE_NAME == context.packageName` のProgram行を全て削除する。削除が全件成功した後だけcurrent software identityをcommitする。
+TISはdevice-protected storageに、最後にProgram cleanupを完了したsoftware identityとして `Build.FINGERPRINT`、TIS packageの `longVersionCode`、PackageManagerが示すbase APK（ApplicationInfo.sourceDir）のSHA-256の組を保存する。起動時に現在値と一致しない場合、boot EPG sync、background maintenance、live sessionでの既存Program参照、Program upsert/delete、現在番組解決より前に、current TIS inputに属するchannelのうち `TvContract.Programs.COLUMN_PACKAGE_NAME == context.packageName` のProgram行を全て削除する。削除が全件成功した後だけcurrent software identityをcommitする。
 
 cleanupのProvider・SharedPreferences・package照会はProgramUpgradeCleanupが所有する単一workerだけで実行する。ensureはメインスレッドでもI/Oやworker完了を待たず、process内の完了状態を返す。同時要求は一つの実行へ集約し、未完了中は受理済みlive/setup/EPG要求の処理開始を保留する。要求自体の拒否を意味せず、継続の扱いは「Program cleanup中の要求継続」に従う。旧Program参照・EPG/Program処理には進めない。成功後だけprocess内の完了状態を公開する。失敗時は次の利用要求で同じownerが再試行し、定期retryや重複queueを作らない。
 
@@ -961,3 +961,9 @@ setupの開始要求がactiveTaskにより拒否された場合は、呼出元�
 ### 音声のみの再生のSurface通知と再試行予約
 
 音声のみのサービスではSurface着脱を理由にSessionの既存再試行予約を取り消さず、失敗世代・選局世代の照合を維持する。予約中はSurface通知だけを契機とするSI再評価を重ねず、予約の消費後に通常の開始入口で最新条件を評価する。映像を持つサービスはSurface変更時に従来どおり予約を取り消す。
+
+### Live Program公開署名のProvider変更による失効
+
+live Sessionは最初の選局からreleaseまでChannels/ProgramsのContentObserverを登録し、Provider通知を既存Session ownerへ渡す。通知時にはProgramPublishCoordinatorの入力署名と公開署名だけを失効させ、dirty windowの再試行義務は保持する。次の通常SI再評価で同じ入力も再照会・再投影する。変更がなければ従来の早期省略を維持する。自分の書込み通知も失効対象とするが、通知から即時再公開やSI resetを開始しない。新しいworker・周期poll・Provider内容の第二台帳は持たない。
+
+software identityのAPK digestは既存cleanup workerでstream読取りし、同じversionCodeでAPKが置換されても旧Programを引き継がない。読取り失敗時はidentity不明としてcleanup未完了にする。schema migration、別の保存形式、別workerは追加しない。base APK以外のproduct native componentの更新は、従来どおり同一product buildとBuild.FINGERPRINTの契約に従う。

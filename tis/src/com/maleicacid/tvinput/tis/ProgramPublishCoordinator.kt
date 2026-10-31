@@ -73,9 +73,14 @@ class ProgramPublishCoordinator(
     private val dirtyWindows = linkedMapOf<DirtyWindowKey, DirtyWindow>()
 
     fun reset() {
+        invalidateProviderState()
+        dirtyWindows.clear()
+    }
+
+    // Provider変更は成功署名だけを失効させ、失敗済み区間の再試行義務は残す。
+    fun invalidateProviderState() {
         lastProgramSignatureByMode.clear()
         lastInputSignatureByMode.clear()
-        dirtyWindows.clear()
     }
 
     fun publish(

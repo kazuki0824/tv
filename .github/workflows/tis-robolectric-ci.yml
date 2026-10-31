@@ -49,6 +49,7 @@ jobs:
             --tests com.maleicacid.tvinput.tis.TunerScanCleanupTest \
             --tests com.maleicacid.tvinput.tis.TunerSectionSourceDiagnosticTest \
             --tests com.maleicacid.tvinput.tis.ProgramBatchIpcBudgetTest \
+            --tests com.maleicacid.tvinput.tis.ProgramUpgradeIdentityTest \
             --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest \
             --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest \
             --tests com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest \
@@ -77,6 +78,9 @@ jobs:
           assert startup.get("tests") == "2", startup.attrib
           assert startup.get("failures") == "0" and startup.get("errors") == "0", startup.attrib
           assert startup.get("skipped", "0") == "0", startup.attrib
+          identity = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.ProgramUpgradeIdentityTest.xml")).getroot()
+          assert identity.get("tests") == "1" and identity.get("failures") == "0" and identity.get("errors") == "0", identity.attrib
+          assert identity.get("skipped", "0") == "0", identity.attrib
           playback_report = report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest.xml")
           playback = ET.parse(playback_report).getroot()
           assert playback.get("tests") == "51", playback.attrib

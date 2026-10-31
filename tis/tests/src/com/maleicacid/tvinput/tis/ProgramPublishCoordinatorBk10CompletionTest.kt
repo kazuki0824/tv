@@ -606,12 +606,20 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             )
         store.failChannelQuery = true
         check(publishChanged().failures.isNotEmpty() && coordinator.retryWindowCountForTest() == 1)
+        coordinator.invalidateProviderState()
+        check(coordinator.retryWindowCountForTest() == 1)
         store.failChannelQuery = false
         now += 60_000L
         val recovered = publishChanged()
         check(recovered.hasCommittedTarget && recovered.skippedUnchanged == 0)
         check(store.deleteCalls == before + 1 && coordinator.retryWindowCountForTest() == 0)
         check(publishChanged().skippedUnchanged > 0 && store.deleteCalls == before + 1)
+        val inserted = store.insertedPrograms
+        store.removePublishedPrograms()
+        coordinator.invalidateProviderState()
+        check(publishChanged().hasCommittedTarget)
+        check(store.insertedPrograms == inserted + 1)
+        check(publishChanged().skippedUnchanged > 0)
     }
 
     private class FakeStore(
@@ -624,6 +632,9 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         private var nextProgramId = 100L
         private val channels = linkedMapOf<Long, ContentValues>()
         private val programs = linkedMapOf<Long, ContentValues>()
+
+        fun removePublishedPrograms() = programs.clear()
+
         var insertedPrograms = 0
         var updatedPrograms = 0
         var deleteCalls = 0
