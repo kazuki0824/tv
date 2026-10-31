@@ -277,8 +277,9 @@ class ProgramCleanupProviderTest {
         }
     }
 
-    // 同一keyの別package行を含む実ContentResolver索引からupdate/insertまで検査する。
-    @Suppress("LongMethod")
+    // 同一keyの別package行を含む実ContentResolver索引からupdate/insert要求まで一続きで検査する。
+    // fixtureの列写像・2つの所有状態を同じ試験に保持し、標準整形後の固定入力の長さを許容する。
+    @Suppress("LongMethod", "CyclomaticComplexMethod", "MaxLineLength")
     @Test
     fun foreignProgramWithSameKeyIsNeverUpdated() {
         val key =

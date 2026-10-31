@@ -1259,11 +1259,13 @@ class TvProviderWriter private constructor(
                 cursor.use { rows ->
                     val ownerIndex = rows.getColumnIndexOrThrow(TvContract.Programs.COLUMN_PACKAGE_NAME)
                     while (rows.moveToNext()) {
-                        if (rows.getString(ownerIndex) != context.packageName) continue
                         val key =
-                            parseProgramKey(
-                                providerDataBytes(rows, PROGRAM_PROVIDER_DATA_COLUMN_INDEX),
-                            ) ?: continue
+                            if (rows.getString(ownerIndex) == context.packageName) {
+                                parseProgramKey(providerDataBytes(rows, PROGRAM_PROVIDER_DATA_COLUMN_INDEX))
+                            } else {
+                                null
+                            }
+                        if (key == null) continue
                         val hasDefinedTiming =
                             !rows.isNull(PROGRAM_START_TIME_COLUMN_INDEX) &&
                                 !rows.isNull(PROGRAM_END_TIME_COLUMN_INDEX)
