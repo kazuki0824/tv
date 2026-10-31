@@ -81,6 +81,11 @@
 
 - 親PRのProvider observer登録を保持したまま、選局前のSession状態初期化をprivate helperへまとめる。Controller ownerでのSI reset callbackと呼出し順序を維持し、抑制・owner・状態を追加しない。既存host回帰と品質検査はCIへ委ねる。
 
+# 2026-10-31 大きなAVイベントの受付回帰を追加
+
+- 既存Robolectric fixtureで1 MiB超のpayloadがSDK callbackからCodec入力境界へ到達する回帰を追加。HAL結合CIでは実producerが出力した符号化ESを同じ試験へ渡す。通常CIの合成byte列は受付長の回帰のみで、規格適合の証拠にはしない。
+- CIの試験件数を更新。実機decoder/DMA-BUF/VTSは未確認。
+
 ## Provider通知の集約とProgram更新の所有元照合
 
 通知を単一dirty状態へ集約し、Session data受付の飽和による解放を防止する。Program更新索引は自package行だけを候補とし、他packageの同一key行を更新しない。既存ownerと一括queryを使い、worker・queue・所有台帳を追加しない。

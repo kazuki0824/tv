@@ -651,7 +651,7 @@ pub enum PipelineDiagnostic {
         pid: PacketPid,
         filter_id: i32,
     },
-    AvPayloadOversized {
+    AvAssemblyAllocationFailed {
         pid: PacketPid,
         filter_id: i32,
     },
@@ -687,7 +687,7 @@ impl PipelineDiagnostic {
             | Self::AvSharedBackingMissing { pid, .. }
             | Self::AvAuthoritativeTimestampUnavailable { pid, .. }
             | Self::AvPayloadEmpty { pid, .. }
-            | Self::AvPayloadOversized { pid, .. }
+            | Self::AvAssemblyAllocationFailed { pid, .. }
             | Self::AvDataIdExhausted { pid, .. }
             | Self::TeiAssemblySuppressed { pid }
             | Self::DuplicatePacketAssemblySuppressed { pid }
@@ -791,8 +791,8 @@ impl PipelineDiagnostic {
         Self::AvPayloadEmpty { pid, filter_id }
     }
 
-    pub fn av_payload_oversized(pid: PacketPid, filter_id: i32) -> Self {
-        Self::AvPayloadOversized { pid, filter_id }
+    pub fn av_assembly_allocation_failed(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvAssemblyAllocationFailed { pid, filter_id }
     }
 
     pub fn av_data_id_exhausted(pid: PacketPid, filter_id: i32) -> Self {
@@ -1364,6 +1364,9 @@ impl PacketPipeline {
                     pid,
                     view.payload_unit_start,
                     payload,
+                    report.delivery_actions.iter().any(|action| {
+                        matches!(action, PipelineDeliveryAction::AvPayload { filter_id: id } if *id == filter_id)
+                    }),
                 );
                 if let Some((reason, _generation)) = self
                     .pes_assemblers
@@ -1377,6 +1380,12 @@ impl PacketPipeline {
                     report
                         .diagnostics
                         .push(PipelineDiagnostic::PesAssemblerDrop { pid, reason });
+                    if reason == PesDropReason::AllocationFailed {
+                        report.generated_events.push(PipelineGeneratedEvent::FilterStatus {
+                            filter_id,
+                            status: crate::runtime::FilterStatusEvent::Overflow,
+                        });
+                    }
                 }
                 for packet in packets {
                     report
@@ -1588,11 +1597,14 @@ impl PacketPipeline {
         pid: PacketPid,
         payload_unit_start: bool,
         payload: &[u8],
+        av: bool,
     ) -> Vec<crate::ts_core::PesPacket> {
-        self.pes_assemblers
-            .entry((origin, pid, filter_id))
-            .or_default()
-            .push(pid, payload_unit_start, payload)
+        let state = self.pes_assemblers.entry((origin, pid, filter_id)).or_default();
+        if av {
+            state.inner.push_av(pid, payload_unit_start, payload)
+        } else {
+            state.push(pid, payload_unit_start, payload)
+        }
     }
 
     pub(crate) fn drop_generations_for_pid_origin(
