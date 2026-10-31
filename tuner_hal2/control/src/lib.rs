@@ -283,8 +283,10 @@ impl<T, E> WorkerHandle<T, E> {
         let completion_for_thread = std::sync::Arc::clone(&completion);
         let join = std::thread::Builder::new().name(name).spawn(move || {
             thread_context.wake.bind_current_thread();
-            let outcome =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(thread_context)));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(thread_context.clone())
+            }));
+            thread_context.wake.close();
             match outcome {
                 Ok(outcome) => match result_for_thread.lock() {
                     Ok(mut slot) => *slot = Some(outcome),
@@ -388,26 +390,6 @@ impl<T, E> WorkerHandle<T, E> {
         self.context.wake.notify();
     }
 
-    // 起床受付と終端確定は既存completion mutexを共用する。
-    // 終端確定後の通知を成功として受け付けず、別の状態ownerは設けない。
-    fn wake_if_running(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        let (completed, _) = &*self.completion;
-        let completed = completed.lock().map_err(|_| {
-            maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
-                owner: "ワーカー起床",
-                lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
-            }
-        })?;
-        if *completed {
-            return Err(maleicacid_tuner_hal2_common::HalError::cleanup_failed(
-                "ワーカー起床",
-                "終了確定済みワーカーは起床できません",
-            ));
-        }
-        self.context.wake.notify();
-        Ok(())
-    }
-
     pub fn wait_until_finished(
         &self,
         deadline: Option<std::time::Instant>,
@@ -483,27 +465,47 @@ impl<T, E> Drop for WorkerHandle<T, E> {
 /// 起床要求はatomic値、待機対象は当該workerのthreadに限定する。
 #[derive(Clone, Debug)]
 struct WorkerWake {
-    pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     thread: std::sync::Arc<std::sync::OnceLock<std::thread::Thread>>,
 }
 
 impl WorkerWake {
+    const PENDING: u8 = 1;
+    const CLOSED: u8 = 2;
+
     fn bind_current_thread(&self) {
         self.thread.get_or_init(std::thread::current);
     }
 
-    fn notify(&self) {
-        self.pending
-            .store(true, std::sync::atomic::Ordering::Release);
+    fn notify(&self) -> bool {
+        if self
+            .state
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |state| (state & Self::CLOSED == 0).then_some(state | Self::PENDING),
+            )
+            .is_err()
+        {
+            return false;
+        }
         if let Some(thread) = self.thread.get() {
             thread.unpark();
         }
+        true
+    }
+
+    fn close(&self) {
+        self.state
+            .fetch_or(Self::CLOSED, std::sync::atomic::Ordering::AcqRel);
     }
 
     fn wait_until(&self, deadline: Option<std::time::Instant>) {
-        while !self
-            .pending
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        while self
+            .state
+            .fetch_and(!Self::PENDING, std::sync::atomic::Ordering::AcqRel)
+            & (Self::PENDING | Self::CLOSED)
+            == 0
         {
             match deadline {
                 Some(deadline) => {
@@ -532,7 +534,7 @@ impl WorkerContext {
         Self {
             stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: WorkerWake {
-                pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
                 thread: std::sync::Arc::new(std::sync::OnceLock::new()),
             },
         }
@@ -564,12 +566,19 @@ pub struct WorkerRuntime<T = ()> {
 
 impl<T> WorkerRuntime<T> {
     pub fn wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        self.handle
-            .as_ref()
-            .ok_or(maleicacid_tuner_hal2_common::HalError::NotInitialized {
+        let handle = self.handle.as_ref().ok_or(
+            maleicacid_tuner_hal2_common::HalError::NotInitialized {
                 resource: "ワーカーハンドル",
-            })?
-            .wake_if_running()
+            },
+        )?;
+        if handle.context.wake.notify() {
+            Ok(())
+        } else {
+            Err(maleicacid_tuner_hal2_common::HalError::cleanup_failed(
+                "ワーカー起床",
+                "終了済みワーカーへ起床を要求できません",
+            ))
+        }
     }
     pub const fn owner_id(&self) -> i64 {
         self.owner_id
@@ -941,6 +950,7 @@ impl WorkerRuntime<()> {
                     Ok(Err(error)) => WorkerTerminalResult::RuntimeFailure(error),
                     Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
                 };
+                context.wake.close();
                 terminal_observer(&terminal);
                 Ok::<_, ()>(terminal)
             },
@@ -2353,6 +2363,8 @@ mod tests {
         use std::time::Duration;
         for panic in [false, true] {
             let (tx, rx) = mpsc::channel();
+            let (finish_tx, finish_rx) = mpsc::channel();
+            let (observer_tx, observer_rx) = mpsc::channel();
             let error = HalError::cleanup_failed("試験", "失敗を注入");
             let injected = error.clone();
             let worker = WorkerRuntime::spawn_observed(
@@ -2360,12 +2372,16 @@ mod tests {
                 0,
                 1,
                 move |_| -> Result<(), HalError> {
+                    finish_rx.recv_timeout(Duration::from_secs(3)).unwrap();
                     if panic {
                         panic!("異常終了を注入");
                     }
                     Err(injected)
                 },
-                move |terminal| tx.send(terminal.clone()).unwrap(),
+                move |terminal| {
+                    tx.send(terminal.clone()).unwrap();
+                    observer_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                },
             )
             .unwrap();
             let expected = if panic {
@@ -2373,8 +2389,15 @@ mod tests {
             } else {
                 WorkerTerminalResult::RuntimeFailure(error)
             };
+            // 終端確定より前の受付は成功する。確定後はobserverの完了前でも拒否する。
+            worker.wake().unwrap();
+            finish_tx.send(()).unwrap();
             assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), expected);
+            assert!(!worker.is_finished());
+            let rejected = worker.wake().is_err();
+            observer_tx.send(()).unwrap();
             assert_eq!(worker.join(), expected);
+            assert!(rejected);
         }
     }
 

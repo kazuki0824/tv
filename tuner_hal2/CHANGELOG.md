@@ -1,3 +1,8 @@
+# 2026-10-31 worker終端とwake受付の競合を修正
+
+- 既存WorkerWakeのatomic通知状態へ閉鎖bitを統合し、終端observerより前に受付を閉じる。追加されたcompletion mutexでの通知判定を置き換え、CODE_CONVENTIONの非汚染通知契約を維持する。
+- runtime failure・panicでobserver待機中にもwakeを拒否し、終端前の受付は成功する回帰を既存試験へ追加。テストはCIのみ、実機検証は未実施。
+
 # 2026-10-31 AV破棄と最終参照終了の回収を修正
 
 - producer gateの受付失敗でevent所有権を返し、閉鎖時の保留eventもdemuxの既存未配送解放へ渡す。close時のbacking移管前にも保留eventを返却する。
