@@ -252,10 +252,22 @@ class RealTsHalSiIntegrationTest {
 
     private fun awaitIdle(owner: ControllerSerialExecutor) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (owner.queue.isNotEmpty() || owner.activeCount != 0) {
-            check(System.nanoTime() < deadline) { "controllerが停止しません" }
-            Thread.sleep(1)
+        val reached = java.util.concurrent.CountDownLatch(1)
+        // dataと同じ優先度の末尾へ入れ、dequeueと実行開始の間も完了と誤認しない。
+        while (true) {
+            try {
+                owner.executeData { reached.countDown() }
+                break
+            } catch (_: DataCapacityExceededException) {
+                check(System.nanoTime() < deadline) { "controllerのdata受付が回復しません" }
+                Thread.sleep(1)
+            }
         }
+        check(reached.await((deadline - System.nanoTime()).coerceAtLeast(0), TimeUnit.NANOSECONDS)) {
+            "controllerのdata処理が完了しません"
+        }
+        // marker自身のpermit返却も完了させてから、次の容量試験へ進む。
+        owner.submitControl { }.get(5, TimeUnit.SECONDS)
     }
 
     private fun runHal(
