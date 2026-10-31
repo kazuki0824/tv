@@ -1708,3 +1708,7 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 ## r50ba2
 - `ChannelKeys.kt` を package 外の `../` source path ではなく Soong module dependency 経由で `rec` tests から参照できるよう、`maleicacid_tvinput_channel_keys_sources` filegroup を追加した。
 - No TIS Kotlin implementation, resources, manifest, permissions, or product integration files were changed.
+
+## CIレビュー追補
+
+- 旧PES時刻テストの削除後に残った未使用型を削除し、QodanaのUnusedSymbol 3件を解消する。字幕時刻の実経路は変更しない。
