@@ -326,13 +326,20 @@ class PlaybackFilterAdmissionTest {
         // 結合CIではHALが配送した符号化AUを使用し、通常CIでは受付長だけを検査する。
         val source = System.getenv("LARGE_AV_ES")
         val bytes = source?.let { java.io.File(it).readBytes() } ?: ByteArray(1024 * 1024 + 1)
-        val pts90k = source?.let { java.io.File("$it.pts").readText().toLong() } ?: 90_000L
+        val pts90k =
+            source?.let {
+                java.io
+                    .File("$it.pts")
+                    .readText()
+                    .toLong()
+            } ?: 90_000L
         assertTrue(bytes.size > 1024 * 1024)
         Fixture().use { fixture ->
             fixture.decoder()
             val codec = fixture.attachCodec()
             fixture.executor.callControl(5_000L) {
-                ReflectionHelpers.getField<PlaybackPipeline.PtsEpochCoordinator>(fixture.pipeline, "ptsEpochCoordinator")
+                ReflectionHelpers
+                    .getField<PlaybackPipeline.PtsEpochCoordinator>(fixture.pipeline, "ptsEpochCoordinator")
                     .normalize(PlaybackPipeline.PtsTrack.AUDIO, 0L)
             }
             val sample = mediaEvent(bytes.size.toLong(), pts90k)
