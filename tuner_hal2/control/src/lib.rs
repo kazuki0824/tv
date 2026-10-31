@@ -1110,7 +1110,7 @@ where
             };
         }
         let group_id = reservation.group_id;
-        // Pending capacity is an admission limit, not an eager OS thread count.
+        // 保留容量は受付上限であり、OSスレッドの先行生成数ではない。
         let demanded = self.pending.pending_group_count();
         let provision = demanded.and_then(|count| self.ensure_lanes(count));
         if let Err(spawn_error) = provision {
@@ -2257,7 +2257,7 @@ mod tests {
         );
         let queue =
             super::WorkerRuntime::start_reaper_queue(4, "test-reaper-lazy", runner).unwrap();
-        // Capacity 4 is an admission bound, not a reason to create four idle OS threads.
+        // 容量4は受付上限であり、待機中のOSスレッドを4本生成する根拠にはしない。
         assert_eq!(queue.lane_count(), 1);
         for key in 0..4 {
             queue.enqueue_reserved(key, [(key, key)]).unwrap();

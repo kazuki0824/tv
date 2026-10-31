@@ -1407,7 +1407,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-13 | `linkCaps` main type matrix | 広告したmain type pairはVTS生成のUNDEFINED subtype接続も成功 |
 | T-AOSP-14 | `linkCaps`非宣言main type接続 | `UNAVAILABLE` |
 | T-AOSP-15 | TS main type `UNDEFINED` subtype source filter | linkCapsでTS→TSを広告する場合は接続成功 |
-| T-AOSP-16 | `getAvSharedHandle()` 成功 | fd付きNativeHandleとsize取得 |
+| T-AOSP-16 | `getAvSharedHandle()` 成功 | 「AV shared handle の `NativeHandle` 形式」に従う未初期化共有ハンドルとsize取得 |
 | T-AOSP-17 | イベントFD返却と未初期化共有handleの取得 | AOSPのevent-local経路と返却契約 |
 | T-AOSP-18 | `releaseAvHandle(empty, 0)` | fdなし通知経路 |
 | T-AOSP-19 | `releaseAvHandle(empty, activeAvDataId)` | MediaEvent slot release |

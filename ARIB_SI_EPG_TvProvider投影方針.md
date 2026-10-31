@@ -204,7 +204,7 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
   TvProvider標準列への投影結果、TISのcurrent product policy、runtime診断をprovider-data schemaへ逆流させない。publish fingerprintやprocess-local cache等の書込み抑止・runtime診断方式は `tis/DESIGN_JA.md` を正とする。
 
 Channels.COLUMN_TYPE:
-  channel insert時に正規化済みdelivery systemから `TYPE_ISDB_T` / `TYPE_ISDB_S` / 対応宣言済みの場合だけ `TYPE_ISDB_C` を設定する。
+  channel insert時の種別は、本書のdelivery system対応表に従う。部分受信の放送factも同表に従って適用する。
   周波数帯、backend、driver、service_typeから推測せず、作成後に更新しない。
 ```
 
@@ -227,7 +227,7 @@ Channels.COLUMN_TYPE:
 12. `series_name` は `COLUMN_TITLE` / `COLUMN_EPISODE_TITLE` / `LONG_DESCRIPTION` へ機械的に出ず、JSON v1 internal_provider_data の series 構造に残る。
 13. 診断情報は標準列へ出ず、JSON v1 internal_provider_data の 診断情報 構造に残る。
 14. EIT timingの未定義値・不正値・stable identity・後続eventとの相関可否は `arib_si_engine_rs/DESIGN_JA.md` を正とする。本書では、同正本が投影可能とした具体時刻だけをUTC epoch millisとして標準列へ反映し、投影不能timingから架空の開始・終了時刻や既存Program削除根拠を作らない。
-15. ISDB-T、BS、CS110のchannel insertで`COLUMN_TYPE`がそれぞれ`TYPE_ISDB_T`、`TYPE_ISDB_S`、`TYPE_ISDB_S`となり、CATV帯という理由だけで`TYPE_ISDB_C`へ変わらない。delivery system不明時はchannel登録しない。
+15. channel insertの`COLUMN_TYPE`が本書のdelivery system対応表と一致し、ISDB-Tの部分受信サービスだけが`TYPE_1SEG`となる。CATV帯という理由だけで`TYPE_ISDB_C`へ変わらず、ISDB-Cとdelivery system不明時はchannel登録しない。
 ```
 
 ## 8. 今後の固定方法

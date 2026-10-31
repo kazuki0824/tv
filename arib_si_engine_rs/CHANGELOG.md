@@ -1,3 +1,8 @@
+# 2026-10-31 監査で判明した記述不整合の修正
+
+- 保存JSONの検証正本を既存Rust serde/validationへ統一し、削除済みJSON Schema要求を除去。EIT更新・削除区間の算出責務を既存TIS policyへ参照統一した。
+- 採用済み契約の変更なし。静的照合のみで、実行テストはCIに委ねる。
+
 # 2026-10-28 現在番組選択の診断状態に関する設計参照を整理（#210）
 
 - TISが削除済みの`CurrentProgramResolutionDiagnostic`を保持するという旧記述を除去し、状態保持方針の正本をTIS設計書へ集約した。現在番組選択の診断情報をprovider-data・identity・canonical bytes・publish fingerprintへ混ぜない契約と、診断用schema/JNI入口を設けない契約は維持する。

@@ -150,7 +150,7 @@ MPEG-2 PSI / ARIB SIのlong-form section headerにある`section_length`は12 bi
 
 PAT/PMT/SDT/NIT/BAT/EIT の version 更新では collector 全体を捨てない。table 単位、section 単位、サービス 単位で差分更新する。
 
-EIT は同じ表の新版全sectionが完成して消えた event を削除候補として表現する。ただし上位へstable identityとして提供できるのは `DEFINED` または `UNDEFINED_TIME` のeventに限り、`BOTH_TIMING_UNDEFINED` はvalid event identity setへ含めない。完成版のstable event setが空で以前の有効区間がある場合は、サービスキー、更新区間、空のvalid event identity setをJNI/TISへ返す。初回から空で有効区間がない場合は、時刻を捏造せず完成instance状態を返す。どのsnapshotをTvProvider削除へ使用できるかは `../tis/DESIGN_JA.md` のpublication policyを正とする。
+EIT は同じ表の新版全sectionが完成して消えた event を削除候補として表現する。ただし上位へstable identityとして提供できるのは `DEFINED` または `UNDEFINED_TIME` のeventに限り、`BOTH_TIMING_UNDEFINED` はvalid event identity setへ含めない。完成版のstable event setが空の場合も、サービスキー、空のvalid event identity setと完成instance状態をJNI/TISへ返す。更新・削除区間はTISの`EpgPublicationPolicy`が放送factから算出し、Rust側で時刻や公開区間を捏造しない。どのsnapshotをTvProvider削除へ使用できるかは `../tis/DESIGN_JA.md` のpublication policyを正とする。
 
 EIT event fixed フィールド、start_time BCD、duration BCD、descriptor_loop_length が不正な event を含む section は、既存 event 削除用の authoritative valid-event-set として扱わない。不正 event は Programs から消すのではなく、既存正常 event を保持したまま診断情報に記録する。
 
@@ -292,9 +292,9 @@ pub struct ProgramKeyV1 {
 
 ### JSON 表現規則
 
-JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`eventGroups`、`linkage`、`shortEvents`、`extendedTexts`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
+JSON は正規表現ではなく、Rust `serde` / Rust validation / Kotlin JSON parser によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`eventGroups`、`linkage`、`shortEvents`、`extendedTexts`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
 
-保存用JSON Schemaはcanonical出力を検証し、`shortEvents`と`extendedTexts`を必須配列とする。現行Program保存形式では両配列を必ず出力し、欠落を空配列として補完しない。旧releaseのProgram provider-dataは更新時に破棄するため、旧入力のSchema不適合を正規化成功へ変換する互換処理を設けない。必須識別子や未知nested値も補完しない。
+Rust serde型とvalidationはcanonical出力を検証し、`shortEvents`と`extendedTexts`を必須配列とする。現行Program保存形式では両配列を必ず出力し、欠落を空配列として補完しない。旧releaseのProgram provider-dataは更新時に破棄するため、旧入力のSchema不適合を正規化成功へ変換する互換処理を設けない。必須識別子や未知nested値も補完しない。
 
 未知のtop-level keyを読み込んだ場合は、無言で破棄せず`diagnostics.rawProviderDataExtensions[]`へ正規化する。version 1のnested DTOはclosedとし、未知nested keyはschema不一致として拒否する。これによりbuilder requestはstrict DTOへ1回だけdeserializeでき、`Value`走査による第二validatorを持たない。nested構造を拡張する場合はschema versionを更新する。`JSONObject` の手書き構築や文字列連結によるcanonical JSON生成を禁止する。
 
@@ -336,9 +336,9 @@ pub struct DescriptorDiagnosticV1 {
 }
 ```
 
-`SectionScopeV1` は PID、table_id、table_id_extension、version、section_number、ONID、TSID、service_id、event_id を持てる構造とする。unknown numeric を `-1` へ潰さず、`Option`、`null`、または key omission とする。version 1のnested DTO閉鎖規則を適用し、Rust serde型とJSON Schemaの両方で未知keyを拒否する（`deny_unknown_fields` / `additionalProperties: false`）。未知scope keyをtop-level extensionへ移動したり黙って破棄したりしない。将来scopeを拡張する場合はschema versionを更新する。
+`SectionScopeV1` は PID、table_id、table_id_extension、version、section_number、ONID、TSID、service_id、event_id を持てる構造とする。unknown numeric を `-1` へ潰さず、`Option`、`null`、または key omission とする。version 1のnested DTO閉鎖規則を適用し、Rust serde型で未知keyを拒否する（`deny_unknown_fields`）。未知scope keyをtop-level extensionへ移動したり黙って破棄したりしない。将来scopeを拡張する場合はschema versionを更新する。
 
-`DescriptorScopeV1` は tag、name、offset、declared_length、actual_remaining_length、parse_status、raw_prefix_hex を持つ。`raw_prefix_hex` は最大64 bytes相当までとする。JSON Schema では tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex を必須最小フィールドとする。name は未知 descriptor で決定できないため任意フィールドとし、parseStatus は診断分類の根拠であるため必須フィールドとする。
+`DescriptorScopeV1` は tag、name、offset、declared_length、actual_remaining_length、parse_status、raw_prefix_hex を持つ。`raw_prefix_hex` は最大64 bytes相当までとする。Rust serde型では tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex を必須最小フィールドとする。name は未知 descriptor で決定できないため任意フィールドとし、parseStatus は診断分類の根拠であるため必須フィールドとする。
 
 ### canonical JSON
 
