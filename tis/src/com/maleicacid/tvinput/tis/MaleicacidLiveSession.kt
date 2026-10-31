@@ -968,7 +968,7 @@ class MaleicacidLiveSession(
                     selectedSubtitleTrackId = subtitle.id
                     subtitleExplicitlyDisabled = false
                     captionController.selectTrack(subtitle)
-                    notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, subtitle.id)
+                    if (captionEnabled) notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, subtitle.id)
                     maybeStartPlayback(service)
                     true
                 }
@@ -1040,7 +1040,6 @@ class MaleicacidLiveSession(
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength")
     private fun displayTracksFor(
         service: AribService,
         defaultComponentGroupTags: Set<Int>? = currentDefaultComponentGroupTags(service.serviceKey),
@@ -1049,6 +1048,7 @@ class MaleicacidLiveSession(
             tunerController.tracksFor(service.streams, defaultComponentGroupTags),
         ) { componentTag -> currentAudioComponent(service.serviceKey, componentTag) }
 
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength")
     private fun updateTracks(service: AribService) {
         val defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey)
         val tracks =

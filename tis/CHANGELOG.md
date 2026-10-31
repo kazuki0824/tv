@@ -25,7 +25,7 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 
 - PMTから判明したvideo/audio trackをCAS確立や再生開始に先行してTIFへ通知する。字幕trackは管理PESから有効なlanguage_tag 0/1を取得してから既存のnotifyTracksChangedへ追加する。
 - current EITでdual monoが確定した音声ESだけに、同じPIDの主／副／主副の論理選択肢を広告する。音声PIDを増やさず既存AudioTrackのmode切替へ接続し、選択成功をLiveTvへ通知する。副言語は放送factがある場合だけ利用する。
-- 同じESのmode変更は再生再起動せずに適用し、AudioTrack側の変更失敗時には内部mode stateを変更しない。字幕の明示的な選択成功も通知する。
+- 同じESのmode変更は再生再起動せずに適用し、AudioTrack側の変更失敗時には内部mode stateを変更しない。字幕選択の通知は既存のcaptionEnabled条件を維持する。
 - host回帰を追加し、JUnit固定検査を1件増加させる。実機NHK受信の通知・選択結果は未検証であり、テスト実行はCIへ委ねる。
 
 # 2026-10-31 選局世代と初期化の失敗境界を修正
