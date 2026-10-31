@@ -1167,7 +1167,8 @@ class MaleicacidLiveSession(
                 } ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO }
             selectedAudio?.let {
                 preferredAudioTrackId = TunerSelectionPolicy.physicalAudioTrackId(it)
-                dualMonoPresentation = it.audioPresentation ?: PlaybackPipeline.DualMonoPresentation.MAIN
+                // EITから論理選択肢が消えても、物理PIDの通知だけで実音声modeを変更したことにしない。
+                it.audioPresentation?.let { presentation -> dualMonoPresentation = presentation }
                 notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id)
             }
             updateSubtitleSelection(tracks)

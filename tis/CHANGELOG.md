@@ -16,6 +16,12 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 - Channels/Programsの変更通知を既存Session ownerで受け、入力・公開署名を失効させる。再試行区間は保持し、次の通常再評価で同一SIも再投影する。
 - 既存のlive失敗回帰へ、署名失効後もretry義務が残ることと、外部削除後の同一入力再登録を追加。通知自体から再公開せず自己通知loopを作らない。検証はCIへ委ねる。
 
+# 2026-10-31 dual-mono選択と再利用判定の正本を同期
+
+- AudioTrack mode適用成功後に既存activeSelectionのpresentationも確定し、別PIDへの切替が古いmodeでdecoder再利用を判定しないようにする。
+- EITから論理音声trackが消えた場合、物理PIDの広告だけを理由にSessionのmodeをMAINへ戻さず、実適用済みの選択意図を維持する。
+- 既存Session回帰へ正本同期とEIT消失・復帰時の通知／実mode照合を追加。テストはCIへ委ねる。
+
 # 2026-10-31 Session音声選択の通知と失敗保持を回帰へ追加
 
 - 既存Session/Playback fixtureで、dual-mono track公開、開始前の選択意図保持、開始中の拒否、開始後のAudioTrack mode適用と失敗時の状態・通知維持を確認する。

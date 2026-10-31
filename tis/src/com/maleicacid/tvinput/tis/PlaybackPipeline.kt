@@ -425,7 +425,9 @@ class PlaybackPipeline(
 
     fun setDualMonoPresentation(presentation: DualMonoPresentation): Boolean =
         runOnPlaybackExecutorBlocking {
-            audioDecoder?.setDualMonoPresentation(presentation) ?: false
+            val applied = audioDecoder?.setDualMonoPresentation(presentation) == true
+            if (applied) activeSelection = activeSelection?.copy(dualMonoPresentation = presentation)
+            applied
         }
 
     private fun setVolumeOnPlaybackExecutor(volume: Float) {

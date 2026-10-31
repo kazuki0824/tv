@@ -1500,6 +1500,66 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(mode, nativeTrack.modes.last())
                 assertEquals("$physical:$suffix", selected.last())
             }
+            assertTrue(fixture.selectAudio(session, "$physical:sub"))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(
+                PlaybackPipeline.DualMonoPresentation.SUB,
+                ReflectionHelpers.getField<TunerController.AvStreamSelection>(fixture.pipeline, "activeSelection").dualMonoPresentation,
+            )
+            val otherAudio = selection.audio!!.copy(elementaryPid = TsPid(0x111), componentTag = 0x11)
+            val otherService = service.copy(streams = service.streams + otherAudio)
+            val otherEvent =
+                event.copy(
+                    descriptors =
+                        event.descriptors.copy(
+                            components =
+                                event.descriptors.components.copy(
+                                    audio =
+                                        event.descriptors.components.audio +
+                                            event.descriptors.components.audio
+                                                .single()
+                                                .copy(esPid = otherAudio.elementaryPid, componentTag = 0x11),
+                                ),
+                        ),
+                )
+            ReflectionHelpers.setField(
+                session,
+                "latestLiveSnapshot",
+                snapshot.copy(services = listOf(otherService), programs = snapshot.programs.copy(events = listOf(otherEvent))),
+            )
+            val active = ReflectionHelpers.getField<TunerController.AvStreamSelection>(fixture.pipeline, "activeSelection")
+            ReflectionHelpers.setField(fixture.pipeline, "activeSelection", active.copy(audioDualMono = true))
+            val beforePidSwitch = selected.size
+            // 異なるmodeの別PIDは再構成が必要。Surface不在時に旧MAINを根拠として成功させない。
+            assertFalse(fixture.selectAudio(session, "${TunerSelectionPolicy.trackIdForAudio(otherAudio)}:main"))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(beforePidSwitch, selected.size)
+            assertEquals(AudioTrack.DUAL_MONO_MODE_RR, nativeTrack.modes.last())
+            // EIT消失時は物理trackだけを通知し、実modeと既存の選択意図を維持する。
+            ReflectionHelpers.setField(session, "latestLiveSnapshot", snapshot.copy(services = listOf(service)))
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                session,
+                "updateTracks",
+                ReflectionHelpers.ClassParameter.from(com.maleicacid.tvinput.aribsi.AribService::class.java, service),
+            )
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(physical, selected.last())
+            assertEquals(PlaybackPipeline.DualMonoPresentation.SUB, ReflectionHelpers.getField<Any>(session, "dualMonoPresentation"))
+            assertEquals(AudioTrack.DUAL_MONO_MODE_RR, nativeTrack.modes.last())
+            ReflectionHelpers.setField(
+                session,
+                "latestLiveSnapshot",
+                snapshot.copy(services = listOf(service), programs = snapshot.programs.copy(events = listOf(event))),
+            )
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                session,
+                "updateTracks",
+                ReflectionHelpers.ClassParameter.from(com.maleicacid.tvinput.aribsi.AribService::class.java, service),
+            )
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("$physical:sub", selected.last())
+            assertTrue(fixture.selectAudio(session, "$physical:main"))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
             val notifications = selected.size
             nativeTrack.accept = false
             assertFalse(fixture.selectAudio(session, "$physical:sub"))
