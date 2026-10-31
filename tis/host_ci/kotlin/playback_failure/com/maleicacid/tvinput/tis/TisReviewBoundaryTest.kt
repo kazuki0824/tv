@@ -283,24 +283,24 @@ class TisReviewBoundaryTest {
     @Test fun dualMonoUiTracksSelectPresentationsWithoutInventingAudioEs() {
         val base =
             TunerController.TisTrack(
-            id = "audio:274:16",
-            type = TvTrackInfo.TYPE_AUDIO,
-            pid = TsPid(274),
-            streamType = 0x0f,
-            componentTag = 0x10,
-            componentType = null,
-            language = "jpn",
-        )
+                id = "audio:274:16",
+                type = TvTrackInfo.TYPE_AUDIO,
+                pid = TsPid(274),
+                streamType = 0x0f,
+                componentTag = 0x10,
+                componentType = null,
+                language = "jpn",
+            )
         val unchanged = TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) { null }
         check(unchanged == listOf(base))
         val descriptor =
             AribComponentEntry(
-            esPid = base.pid,
-            componentTag = base.componentTag,
-            language = "jpn",
-            secondLanguage = "eng",
-            dualMono = true,
-        )
+                esPid = base.pid,
+                componentTag = base.componentTag,
+                language = "jpn",
+                secondLanguage = "eng",
+                dualMono = true,
+            )
         val advertised = TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) { descriptor }
         check(advertised.map { it.id } == listOf("audio:274:16:main", "audio:274:16:sub", "audio:274:16:main_sub"))
         val expectedPresentations =
