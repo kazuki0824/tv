@@ -1,3 +1,9 @@
+# 2026-10-31 VTS profile終了失敗の伝播を修正
+
+- device agentのclosed応答後も終了statusを確認し、cleanup失敗・timeout・応答異常をProfileErrorへ伝播する。元の処理失敗とcleanup失敗を併せて保持する。
+- 終了status・timeout・二重失敗のhost回帰を追加。Rust agentの呼出し順序をソース位置で代用していた検査を除去し、既存のproduct packaging検査だけを残す。agentの実機順序検証をhost試験で証明済みとはしない。
+- テストはCIへ委ね、実agent・Soong・実機検証は未実施。
+
 # 2026-10-31 並行性試験の同期と検証条件を修正
 
 - worker試験2件のsleep依存をchannel同期へ変更し、親thread停止中の正常完了を誤失敗にしない。
