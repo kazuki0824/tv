@@ -1268,7 +1268,10 @@ class TvProviderWriter private constructor(
                                 programId = rows.getLong(PROGRAM_ID_COLUMN_INDEX),
                                 startTimeMillis = rows.getLong(PROGRAM_START_TIME_COLUMN_INDEX),
                                 endTimeMillis = rows.getLong(PROGRAM_END_TIME_COLUMN_INDEX),
-                                values = ContentValues().also { android.database.DatabaseUtils.cursorRowToContentValues(rows, it) },
+                                values =
+                                    ContentValues().also { values ->
+                                        android.database.DatabaseUtils.cursorRowToContentValues(rows, values)
+                                    },
                             )
                     }
                 }
