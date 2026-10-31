@@ -388,6 +388,26 @@ impl<T, E> WorkerHandle<T, E> {
         self.context.wake.notify();
     }
 
+    // 起床受付と終端確定は既存completion mutexを共用する。
+    // 終端確定後の通知を成功として受け付けず、別の状態ownerは設けない。
+    fn wake_if_running(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        let (completed, _) = &*self.completion;
+        let completed = completed.lock().map_err(|_| {
+            maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
+                owner: "ワーカー起床",
+                lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
+            }
+        })?;
+        if *completed {
+            return Err(maleicacid_tuner_hal2_common::HalError::cleanup_failed(
+                "ワーカー起床",
+                "終了確定済みワーカーは起床できません",
+            ));
+        }
+        self.context.wake.notify();
+        Ok(())
+    }
+
     pub fn wait_until_finished(
         &self,
         deadline: Option<std::time::Instant>,
@@ -549,8 +569,7 @@ impl<T> WorkerRuntime<T> {
             .ok_or(maleicacid_tuner_hal2_common::HalError::NotInitialized {
                 resource: "ワーカーハンドル",
             })?
-            .wake();
-        Ok(())
+            .wake_if_running()
     }
     pub const fn owner_id(&self) -> i64 {
         self.owner_id
@@ -2357,6 +2376,30 @@ mod tests {
             assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), expected);
             assert_eq!(worker.join(), expected);
         }
+    }
+
+    #[test]
+    fn observed_worker_rejects_wake_after_terminal_commit() {
+        use maleicacid_tuner_hal2_common::HalError;
+        let worker = WorkerRuntime::spawn_observed(
+            "test-finished-wake".into(),
+            0,
+            1,
+            |_| Ok::<(), HalError>(()),
+            |_| {},
+        )
+        .unwrap();
+        worker
+            .handle
+            .as_ref()
+            .unwrap()
+            .wait_until_finished(None)
+            .unwrap();
+        assert!(matches!(
+            worker.wake(),
+            Err(HalError::CleanupFailed { .. })
+        ));
+        assert_eq!(worker.join(), WorkerTerminalResult::Normal(()));
     }
 
     #[test]
