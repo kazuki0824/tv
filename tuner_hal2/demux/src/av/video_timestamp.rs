@@ -185,7 +185,9 @@ mod tests {
         let mut video = VideoTimestampAssociation::default();
         let mut payload = first.clone();
         payload.extend_from_slice(&second);
-        let frames = video.extract_avc(packet(payload, Some(90000)), origin).unwrap();
+        let frames = video
+            .extract_avc(packet(payload, Some(90000)), origin)
+            .unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].payload, first);
         assert_eq!(frames[0].metadata.pts_90khz, Some(90000));
@@ -205,7 +207,9 @@ mod tests {
         );
         let mut recovery = first.clone();
         recovery.extend_from_slice(&second);
-        let frames = video.extract_avc(packet(recovery, Some(270000)), origin).unwrap();
+        let frames = video
+            .extract_avc(packet(recovery, Some(270000)), origin)
+            .unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].payload, first);
         assert_eq!(frames[0].metadata.pts_90khz, Some(270000));

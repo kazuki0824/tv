@@ -399,7 +399,11 @@ pub(crate) mod tests {
         let mut expected = Vec::new();
         for index in 0..16384 {
             let start = bytes.len();
-            let prefix: &[u8] = if index % 2 == 0 { &[0, 0, 1] } else { &[0, 0, 0, 1] };
+            let prefix: &[u8] = if index % 2 == 0 {
+                &[0, 0, 1]
+            } else {
+                &[0, 0, 0, 1]
+            };
             bytes.extend_from_slice(prefix);
             expected.push((start, bytes.len()));
             bytes.extend_from_slice(&[12, 0, 0, 3, 1, 0x80]);
@@ -410,7 +414,10 @@ pub(crate) mod tests {
         for _ in 0..16383 {
             assert_eq!(units.next(), Some([12, 0, 0, 3, 1, 0x80].as_slice()));
         }
-        assert_eq!(units.next(), Some([12, 0, 0, 3, 1, 0x80, 0, 0, 1].as_slice()));
+        assert_eq!(
+            units.next(),
+            Some([12, 0, 0, 3, 1, 0x80, 0, 0, 1].as_slice())
+        );
         assert_eq!(units.next(), None);
     }
 
