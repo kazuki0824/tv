@@ -452,34 +452,7 @@ class MaleicacidLiveSession(
     @Suppress("ReturnCount")
     private fun onTuneOnSessionExecutor(channelUri: Uri?): Boolean {
         if (channelUri == null) return false
-        lastPlaybackGateDiagnostic = null
-        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
-        playbackState = PlaybackStartState.Idle
-        cancelPlaybackRetry()
-        currentService = null
-        currentRatingProfile = AribRatingMapper.BroadcastProfile.UNRESOLVED
-        currentGeneration = 0L
-        beginCaptionPresentationGeneration(-1L, false)
-        currentChannelUri = channelUri
-        latestLiveSnapshot = null
-        latestVideoMetadataByProgramKey.clear()
-        videoTrackFormat = null
-        clearTemporaryUnblocks()
-        lastParentalAccessState = ParentalAccessState.UNKNOWN
-        lastBlockedContent = null
-        programPublishCoordinator.reset()
-        registerProgramProviderObserver()
-        preferredAudioTrackId = null
-        audioFallbackDisabled = false
-        dualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN
-        frontendSignalUnavailable = false
-        selectedSubtitleTrackId = null
-        subtitleExplicitlyDisabled = false
-        captionController.setEnabled(captionEnabled)
-        captionController.selectTrack(null)
-        superimposeController.setEnabled(true)
-        superimposeController.selectTrack(null)
-        currentTrackSignature = emptySet()
+        prepareSessionForTune(channelUri)
         val outcome =
             tunerController.tuneForLive(channelUri) {
                 aribSiEngine.reset()
@@ -509,6 +482,37 @@ class MaleicacidLiveSession(
         }
         refreshDynamicSiAndCasFilters()
         return true
+    }
+
+    private fun prepareSessionForTune(channelUri: Uri) {
+        lastPlaybackGateDiagnostic = null
+        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
+        playbackState = PlaybackStartState.Idle
+        cancelPlaybackRetry()
+        currentService = null
+        currentRatingProfile = AribRatingMapper.BroadcastProfile.UNRESOLVED
+        currentGeneration = 0L
+        beginCaptionPresentationGeneration(-1L, false)
+        currentChannelUri = channelUri
+        latestLiveSnapshot = null
+        latestVideoMetadataByProgramKey.clear()
+        videoTrackFormat = null
+        clearTemporaryUnblocks()
+        lastParentalAccessState = ParentalAccessState.UNKNOWN
+        lastBlockedContent = null
+        programPublishCoordinator.reset()
+        registerProgramProviderObserver()
+        preferredAudioTrackId = null
+        audioFallbackDisabled = false
+        dualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN
+        frontendSignalUnavailable = false
+        selectedSubtitleTrackId = null
+        subtitleExplicitlyDisabled = false
+        captionController.setEnabled(captionEnabled)
+        captionController.selectTrack(null)
+        superimposeController.setEnabled(true)
+        superimposeController.selectTrack(null)
+        currentTrackSignature = emptySet()
     }
 
     private fun mapUnavailableReason(unavailable: PlaybackPipeline.PlaybackUnavailable): Int =

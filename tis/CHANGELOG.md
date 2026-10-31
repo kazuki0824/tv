@@ -1,3 +1,7 @@
+# 2026-10-31 rebase後のライブ選局準備を同じSession内で整理
+
+- 親PRのProvider observer登録を保持したまま、選局前のSession状態初期化をprivate helperへまとめる。Controller ownerでのSI reset callbackと呼出し順序を維持し、抑制・owner・状態を追加しない。既存host回帰と品質検査はCIへ委ねる。
+
 ## Provider通知の集約とProgram更新の所有元照合
 
 通知を単一dirty状態へ集約し、Session data受付の飽和による解放を防止する。Program更新索引は自package行だけを候補とし、他packageの同一key行を更新しない。既存ownerと一括queryを使い、worker・queue・所有台帳を追加しない。
