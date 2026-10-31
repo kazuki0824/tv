@@ -3136,10 +3136,25 @@ mod tests {
     }
 }
 
-// ホストにはDMAヒープがない。既存packet_pathホスト試験と同様、確保を未対応として返す。
+// ホスト試験ではmemfdで割当て寿命を検証する。DMAヒープ・実機共有の証明にはしない。
 // Androidの単体試験は実際のネイティブ実装をリンクする。
 #[cfg(all(test, not(target_os = "android")))]
 #[no_mangle]
-extern "C" fn tuner_dmabuf_heap_alloc_system(_len: usize) -> i32 {
-    -38
+extern "C" fn tuner_dmabuf_heap_alloc_system(len: usize) -> i32 {
+    use std::os::fd::{FromRawFd, IntoRawFd};
+
+    extern "C" {
+        fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> i32;
+    }
+    // 終端付き固定名を渡し、成功したfdの所有権は直後にFileへ移す。
+    let fd = unsafe { memfd_create(b"tuner_service_runtime_av_test\0".as_ptr().cast(), 0) };
+    if fd < 0 {
+        return fd;
+    }
+    // fdは直前のmemfd_createが生成した未移譲の所有fdである。
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    if file.set_len(len as u64).is_err() {
+        return -1;
+    }
+    file.into_raw_fd()
 }

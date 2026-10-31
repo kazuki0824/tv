@@ -3,7 +3,7 @@
 - producer gateの受付失敗でevent所有権を返し、閉鎖時の保留eventもdemuxの既存未配送解放へ渡す。close時のbacking移管前にも保留eventを返却する。
 - callbackのstartId抑止、artifact取得失敗、変換失敗では未配送data IDを所有者を照合する内部解放入口から既存allocation解放へ返却する。隔離後も内部の未配送回収を許可し、公開release APIの隔離拒否は維持する。Binder呼出しを試みたeventは未配送と断定せず、既存client寿命契約を維持する。
 - 最終Filter参照の消滅をclose前に既存object entryへ記録し、非同期回収後の登録解除でもReleaseOnly領域を残さない。明示closeでclient参照が残る場合の保持は維持する。
-- キュー容量超過時の拒否・保留・後続AV割当て回収と、最終参照通知と別の試行で登録解除する回帰を追加。全呼出し元を静的照合し、テストはCIへ委ねる。Soong/atest・実機検証は未実施。
+- キュー容量超過時の拒否・保留・後続AV割当て回収と、最終参照通知と登録解除が両順序で交差する回帰を追加。service_runtimeのhost試験ではmemfdで割当て寿命を検証し、実DMAヒープの検証とは区別する。全呼出し元を静的照合し、テストはCIへ委ねる。Soong/atest・実機検証は未実施。
 
 # 2026-10-31 VTS profile終了失敗の伝播を修正
 
