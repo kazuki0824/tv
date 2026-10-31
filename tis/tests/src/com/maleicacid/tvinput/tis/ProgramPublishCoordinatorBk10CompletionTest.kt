@@ -614,6 +614,11 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(recovered.hasCommittedTarget && recovered.skippedUnchanged == 0)
         check(store.deleteCalls == before + 1 && coordinator.retryWindowCountForTest() == 0)
         check(publishChanged().skippedUnchanged > 0 && store.deleteCalls == before + 1)
+        val updated = store.updatedPrograms
+        coordinator.invalidateProviderState()
+        check(publishChanged().hasCommittedTarget)
+        check(store.updatedPrograms == updated)
+        check(publishChanged().skippedUnchanged > 0)
         val inserted = store.insertedPrograms
         store.removePublishedPrograms()
         coordinator.invalidateProviderState()
@@ -734,7 +739,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
                             TvProviderWriter.parseProgramKey(
                                 values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
                             ) ?: return@mapNotNull null
-                        key to TvProviderWriter.ExistingProgramIndexEntry(id, start, end)
+                        key to TvProviderWriter.ExistingProgramIndexEntry(id, start, end, ContentValues(values))
                     }.groupBy({ it.first }, { it.second }),
             )
         }

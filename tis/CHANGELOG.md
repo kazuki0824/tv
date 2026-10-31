@@ -1,3 +1,7 @@
+## Provider自己通知後の同値書込み抑制
+
+既存のProgram索引queryで保存列も読み、同値行をbatch更新から除外する。通知失効後の再評価で自己通知が続かないようにする。追加queryや状態台帳は設けない。
+
 # 2026-10-31 同一versionCodeのAPK置換でもProgram cleanupを実行
 
 - 既存software identityへbase APKのSHA-256を含め、同一device fingerprint/versionCodeで実装が置換された場合も旧Programを破棄する。読取りは既存cleanup workerでstream処理し、失敗時は準備済みにしない。

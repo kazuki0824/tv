@@ -62,6 +62,7 @@ class TvProviderWriter private constructor(
         val programId: Long,
         val startTimeMillis: Long,
         val endTimeMillis: Long,
+        val values: ContentValues? = null,
     )
 
     data class ProgramUpsertRequest(
@@ -448,14 +449,15 @@ class TvProviderWriter private constructor(
                         val guardEnd =
                             runCatching { Math.addExact(programEnd, EVENT_ID_REUSE_GUARD_MS) }
                                 .getOrDefault(Long.MAX_VALUE)
-                        val existingId =
+                        val existingEntry =
                             existingPrograms[key]
                                 .orEmpty()
                                 .filter { entry ->
                                     entry.endTimeMillis > guardStart && entry.startTimeMillis < guardEnd
                                 }.maxByOrNull { it.programId }
-                                ?.programId
-                        PendingWrite(values, existingId)
+                        // Provider通知後も実際の保存値が同じなら再書込みせず、自己通知の連鎖を止める。
+                        if (existingEntry?.values?.let { programValuesMatch(values, it) } == true) return@mapNotNull null
+                        PendingWrite(values, existingEntry?.programId)
                     }
                 if (failures.size == failureCountBeforeService) {
                     val batchStartedAtNs = System.nanoTime()
@@ -976,6 +978,19 @@ class TvProviderWriter private constructor(
             return digest.lowercaseHex()
         }
 
+        internal fun programValuesMatch(
+            expected: ContentValues,
+            actual: ContentValues,
+        ): Boolean =
+            expected.keySet().all { column ->
+                val value = expected.get(column)
+                if (value is ByteArray) {
+                    actual.getAsByteArray(column)?.contentEquals(value) == true
+                } else {
+                    expected.getAsString(column) == actual.getAsString(column)
+                }
+            }
+
         internal fun signatureForContentValues(values: ContentValues): String =
             MessageDigest.getInstance("SHA-256").apply { appendRow(values) }.lowercaseHex()
     }
@@ -1217,12 +1232,14 @@ class TvProviderWriter private constructor(
         ): Result<Map<String, List<ExistingProgramIndexEntry>>> =
             runCatching {
                 val projection =
-                    arrayOf(
-                        TvContract.Programs._ID,
-                        TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
-                        TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS,
-                        TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS,
-                    )
+                    (
+                        listOf(
+                            TvContract.Programs._ID,
+                            TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
+                            TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS,
+                            TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS,
+                        ) + SIGNATURE_COLUMNS
+                    ).distinct().toTypedArray()
                 val uri = TvContract.buildProgramsUriForChannel(channelId, windowStartMs, windowEndMs)
                 val cursor =
                     context.contentResolver.query(
@@ -1251,6 +1268,7 @@ class TvProviderWriter private constructor(
                                 programId = rows.getLong(PROGRAM_ID_COLUMN_INDEX),
                                 startTimeMillis = rows.getLong(PROGRAM_START_TIME_COLUMN_INDEX),
                                 endTimeMillis = rows.getLong(PROGRAM_END_TIME_COLUMN_INDEX),
+                                values = ContentValues().also { android.database.DatabaseUtils.cursorRowToContentValues(rows, it) },
                             )
                     }
                 }
