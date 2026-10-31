@@ -2,7 +2,7 @@
 use maleicacid_tuner_hal2_demux::{
     AvSettings, AvStreamKind, AvStreamTypeConfig, DemuxRuntime, FilterAvStreamTypeRuntimeRequest,
     FilterConfig, FilterConfigKind, FilterOpenType, FilterRuntimeConfigureRequest,
-    FilterRuntimeOperationRequest, FilterRuntimeRegistrationRequest, OpenFilterRequest,
+    FilterRuntimeOperationRequest, FilterRuntimeRegistrationRequest, OpenFilterRequest, PesSettings,
     PipelineGeneratedEvent, TsInputOrigin, ValidatedPacketIngressRequest, ValidatedTsPacket,
 };
 use std::os::fd::IntoRawFd;
@@ -65,6 +65,30 @@ fn encoded_large_access_unit_reaches_media_event() {
         .unwrap();
     demux
         .start_filter_runtime_from_typed_request(FilterRuntimeOperationRequest::new(1))
+        .unwrap();
+    let pes_request = OpenFilterRequest {
+        open_type: FilterOpenType::TsPes,
+        buffer_size: 4096,
+        callback_present: true,
+    };
+    demux
+        .register_filter_from_typed_request(FilterRuntimeRegistrationRequest::new(2, &pes_request, 64))
+        .unwrap();
+    let (_, result) =
+        demux.configure_filter_runtime_with_typed_request(FilterRuntimeConfigureRequest::new(
+            2,
+            FilterConfig {
+                open_type: FilterOpenType::TsPes,
+                tpid: 0x281,
+                kind: FilterConfigKind::TsPes(PesSettings {
+                    stream_id: 0xffff,
+                    raw: false,
+                }),
+            },
+        ));
+    result.unwrap();
+    demux
+        .start_filter_runtime_from_typed_request(FilterRuntimeOperationRequest::new(2))
         .unwrap();
     let mut large = 0;
     for bytes in bytes.chunks_exact(188) {

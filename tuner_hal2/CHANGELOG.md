@@ -1,5 +1,6 @@
 # 2026-10-31 AV payloadの独立1 MiB制限を除去
 
+- PES組立破棄の診断にFilter IDを保持し、同じPIDの汎用PES filterの局所上限でAV時刻対応を失効させない。結合試験で両Filterを同時使用する。
 - AVのPES/AU組立・完成payloadコピーを失敗可能な割当へ接続し、割当失敗をOVERFLOWと型付き診断へ伝える。汎用PES filterの固定上限は維持する。
 - event-local DMA-BUFの単一payload上限と、その設定を渡すconstructor・registry fieldを除去する。
 - AVの固定PES byte予約と能力検証を除去し、4つの汎用PES filterだけを固定PES予算へ計上する。関連規範・実装入口と資源台帳の回帰を更新する。

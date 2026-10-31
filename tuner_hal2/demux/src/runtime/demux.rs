@@ -4642,10 +4642,6 @@ impl DemuxRuntime {
                         pid: diagnostic_pid,
                         ..
                     }
-                    | PipelineDiagnostic::PesAssemblerDrop {
-                        pid: diagnostic_pid,
-                        ..
-                    }
                     | PipelineDiagnostic::SourceFilterValidationFailure {
                         pid: diagnostic_pid,
                         ..
@@ -4656,13 +4652,17 @@ impl DemuxRuntime {
                     } if *diagnostic_pid == pid
             )
         });
-        if !timeline_gap {
-            return;
-        }
-        for filter in self.filters.values_mut() {
-            if filter
-                .pipeline_view()
-                .accepts_packet_pid_from_origin(pid, origin)
+        for (filter_id, filter) in &mut self.filters {
+            // 同じPIDでも汎用PES filterの局所失敗でAVの時刻対応を失効させない。
+            let assembly_gap = diagnostics.iter().any(|diagnostic| {
+                matches!(diagnostic, PipelineDiagnostic::PesAssemblerDrop {
+                    pid: diagnostic_pid, filter_id: diagnostic_filter, ..
+                } if *diagnostic_pid == pid && diagnostic_filter == filter_id)
+            });
+            if (timeline_gap || assembly_gap)
+                && filter
+                    .pipeline_view()
+                    .accepts_packet_pid_from_origin(pid, origin)
             {
                 filter.reset_av_timestamp_association_for_origin(origin);
             }

@@ -600,6 +600,7 @@ pub enum PipelineDiagnostic {
     },
     PesAssemblerDrop {
         pid: PacketPid,
+        filter_id: i32,
         reason: PesDropReason,
     },
     ResidualBytesDrop,
@@ -1379,7 +1380,11 @@ impl PacketPipeline {
                         .push(PipelineDropReason::PesAssemblerOverflow);
                     report
                         .diagnostics
-                        .push(PipelineDiagnostic::PesAssemblerDrop { pid, reason });
+                        .push(PipelineDiagnostic::PesAssemblerDrop {
+                            pid,
+                            filter_id,
+                            reason,
+                        });
                     if reason == PesDropReason::AllocationFailed {
                         report
                             .generated_events
