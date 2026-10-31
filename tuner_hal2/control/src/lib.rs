@@ -2395,10 +2395,7 @@ mod tests {
             .unwrap()
             .wait_until_finished(None)
             .unwrap();
-        assert!(matches!(
-            worker.wake(),
-            Err(HalError::CleanupFailed { .. })
-        ));
+        assert!(matches!(worker.wake(), Err(HalError::CleanupFailed { .. })));
         assert_eq!(worker.join(), WorkerTerminalResult::Normal(()));
     }
 
