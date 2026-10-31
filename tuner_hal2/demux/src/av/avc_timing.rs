@@ -1,5 +1,5 @@
 use crate::parser::bitstream::{nal_to_rbsp, BitReader};
-use std::collections::BTreeMap;
+use super::video_timestamp::VideoTimestampFailure;
 
 const PTS_MODULUS: i128 = 1_i128 << 33;
 
@@ -31,8 +31,8 @@ struct Anchor {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AvcTiming {
-    sps: BTreeMap<u32, Sps>,
-    pps: BTreeMap<u32, u32>,
+    sps: Vec<Option<Sps>>,
+    pps: Vec<Option<u32>>,
     anchor: Option<Anchor>,
 }
 
@@ -47,13 +47,19 @@ impl AvcTiming {
         payload: &[u8],
         pts: Option<u64>,
         dts: Option<u64>,
-    ) -> Option<AvcTimestamp> {
+    ) -> Result<AvcTimestamp, VideoTimestampFailure> {
         let mut active = None;
-        let mut sei = Vec::new();
         for nal in nals(payload) {
-            let (&header, body) = nal.split_first()?;
+            let (&header, body) = nal.split_first().ok_or(VideoTimestampFailure::MissingAnchor)?;
             if header & 0x80 != 0 {
-                return None;
+                return Err(VideoTimestampFailure::MissingAnchor);
+            }
+            let kind = header & 31;
+            if matches!(kind, 6 | 9..=12) {
+                continue;
+            }
+            if !matches!(kind, 1 | 5 | 7 | 8) {
+                return Err(VideoTimestampFailure::MissingAnchor);
             }
             // sliceでは先頭3個のue(v)だけを読む。各最大63 bitとemulation prevention分を
             // 含む64 byteに限定し、圧縮picture本体をRBSPへ複製しない。
@@ -62,60 +68,74 @@ impl AvcTiming {
             } else {
                 body
             };
-            let rbsp = nal_to_rbsp(syntax);
+            let rbsp = nal_to_rbsp(syntax)
+                .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
             let mut bits = BitReader::new(&rbsp);
             match header & 31 {
                 7 => {
-                    let (id, sps) = parse_sps(&mut bits)?;
-                    self.sps.insert(id, sps);
+                    let (id, sps) = parse_sps(&mut bits).ok_or(VideoTimestampFailure::MissingAnchor)?;
+                    let id = id as usize;
+                    if self.sps.len() <= id {
+                        self.sps.try_reserve(id + 1 - self.sps.len())
+                            .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
+                        self.sps.resize(id + 1, None);
+                    }
+                    self.sps[id] = Some(sps);
                 }
                 8 => {
-                    let pps = bits.read_ue()?;
-                    let sps = bits.read_ue()?;
+                    let pps = bits.read_ue().ok_or(VideoTimestampFailure::MissingAnchor)?;
+                    let sps = bits.read_ue().ok_or(VideoTimestampFailure::MissingAnchor)?;
                     if pps > 255 || sps > 31 {
-                        return None;
+                        return Err(VideoTimestampFailure::MissingAnchor);
                     }
-                    self.pps.insert(pps, sps);
+                    let pps = pps as usize;
+                    if self.pps.len() <= pps {
+                        self.pps.try_reserve(pps + 1 - self.pps.len())
+                            .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
+                        self.pps.resize(pps + 1, None);
+                    }
+                    self.pps[pps] = Some(sps);
                 }
                 1 | 5 => {
-                    bits.read_ue()?;
-                    if bits.read_ue()? > 9 {
-                        return None;
+                    bits.read_ue().ok_or(VideoTimestampFailure::MissingAnchor)?;
+                    if bits.read_ue().ok_or(VideoTimestampFailure::MissingAnchor)? > 9 {
+                        return Err(VideoTimestampFailure::MissingAnchor);
                     }
-                    let pps = bits.read_ue()?;
-                    let sps_id = *self.pps.get(&pps)?;
+                    let pps = bits.read_ue().ok_or(VideoTimestampFailure::MissingAnchor)?;
+                    let sps_id = self.pps.get(pps as usize).copied().flatten().ok_or(VideoTimestampFailure::MissingAnchor)?;
                     if active.is_some_and(|old| old != sps_id) {
-                        return None;
+                        return Err(VideoTimestampFailure::MissingAnchor);
                     }
                     active = Some(sps_id);
                 }
-                6 => sei.push(rbsp),
-                9..=12 => {}
-                _ => return None,
+                _ => return Err(VideoTimestampFailure::MissingAnchor),
             }
         }
-        let sps_id = active?;
-        let sps = *self.sps.get(&sps_id)?;
+        let sps_id = active.ok_or(VideoTimestampFailure::MissingAnchor)?;
+        let sps = self.sps.get(sps_id as usize).copied().flatten().ok_or(VideoTimestampFailure::MissingAnchor)?;
         let hrd = sps.nal_hrd.or(sps.vcl_hrd);
         let mut buffering_period = false;
         let mut delays = None;
-        for rbsp in sei {
+        // active SPS確定後にSEIを読む。NAL数に比例するRBSP保管配列は持たない。
+        for nal in nals(payload).filter(|nal| nal.first().is_some_and(|header| header & 31 == 6)) {
+            let rbsp = nal_to_rbsp(&nal[1..])
+                .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
             let mut rest = rbsp.as_slice();
             while !rest.is_empty() && rest != [0x80] {
-                let kind = sei_number(&mut rest)?;
-                let len = sei_number(&mut rest)?;
-                let body = rest.get(..len)?;
-                rest = rest.get(len..)?;
+                let kind = sei_number(&mut rest).ok_or(VideoTimestampFailure::MissingAnchor)?;
+                let len = sei_number(&mut rest).ok_or(VideoTimestampFailure::MissingAnchor)?;
+                let body = rest.get(..len).ok_or(VideoTimestampFailure::MissingAnchor)?;
+                rest = rest.get(len..).ok_or(VideoTimestampFailure::MissingAnchor)?;
                 let mut bits = BitReader::new(body);
                 match kind {
                     0 => {
-                        if buffering_period || bits.read_ue()? != sps_id {
-                            return None;
+                        if buffering_period || bits.read_ue().ok_or(VideoTimestampFailure::MissingAnchor)? != sps_id {
+                            return Err(VideoTimestampFailure::MissingAnchor);
                         }
                         for hrd in [sps.nal_hrd, sps.vcl_hrd].into_iter().flatten() {
                             for _ in 0..hrd.count {
-                                bits.read_bits(hrd.initial_bits)?;
-                                bits.read_bits(hrd.initial_bits)?;
+                                bits.read_bits(hrd.initial_bits).ok_or(VideoTimestampFailure::MissingAnchor)?;
+                                bits.read_bits(hrd.initial_bits).ok_or(VideoTimestampFailure::MissingAnchor)?;
                             }
                         }
                         buffering_period = true;
@@ -123,11 +143,11 @@ impl AvcTiming {
                     1 => {
                         if let Some(hrd) = hrd {
                             if delays.is_some() {
-                                return None;
+                                return Err(VideoTimestampFailure::MissingAnchor);
                             }
                             delays = Some((
-                                bits.read_bits(hrd.cpb_bits)?,
-                                bits.read_bits(hrd.dpb_bits)?,
+                                bits.read_bits(hrd.cpb_bits).ok_or(VideoTimestampFailure::MissingAnchor)?,
+                                bits.read_bits(hrd.dpb_bits).ok_or(VideoTimestampFailure::MissingAnchor)?,
                             ));
                         }
                     }
@@ -138,11 +158,11 @@ impl AvcTiming {
         // HRDを持たないstreamは明示PTSを持つAUだけを配送する。
         let Some((cpb, dpb)) = delays else {
             self.anchor = None;
-            return pts.map(|pts| AvcTimestamp { pts });
+            return pts.map(|pts| AvcTimestamp { pts }).ok_or(VideoTimestampFailure::MissingAnchor);
         };
-        let hrd = hrd?;
+        let hrd = hrd.ok_or(VideoTimestampFailure::MissingAnchor)?;
         if sps.tick == 0 || sps.scale == 0 {
-            return None;
+            return Err(VideoTimestampFailure::MissingAnchor);
         }
         let tick = i128::from(sps.tick) * 90_000;
         let scale = i128::from(sps.scale);
@@ -151,7 +171,7 @@ impl AvcTiming {
             Some(anchor) => {
                 let modulus = 1_u64 << hrd.cpb_bits;
                 let delta = (u64::from(cpb) + modulus - u64::from(anchor.previous_delay)) % modulus;
-                anchor.unwrapped_delay.checked_add(delta)?
+                anchor.unwrapped_delay.checked_add(delta).ok_or(VideoTimestampFailure::MissingAnchor)?
             }
             None => u64::from(cpb),
         };
@@ -160,15 +180,15 @@ impl AvcTiming {
             let decode = output - i128::from(dpb) * tick;
             if let Some(dts) = dts {
                 if (decode.div_euclid(scale)).rem_euclid(PTS_MODULUS) != i128::from(dts) {
-                    return None;
+                    return Err(VideoTimestampFailure::MissingAnchor);
                 }
             }
             (decode, output, decode - i128::from(elapsed) * tick)
         } else {
             if sps.low_delay {
-                return None;
+                return Err(VideoTimestampFailure::MissingAnchor);
             }
-            let anchor = old?;
+            let anchor = old.ok_or(VideoTimestampFailure::MissingAnchor)?;
             let decode = anchor.base + i128::from(elapsed) * tick;
             (decode, decode + i128::from(dpb) * tick, anchor.base)
         };
@@ -179,7 +199,7 @@ impl AvcTiming {
             previous_delay: if buffering_period { 0 } else { cpb },
             unwrapped_delay: if buffering_period { 0 } else { elapsed },
         });
-        Some(AvcTimestamp {
+        Ok(AvcTimestamp {
             pts: output.div_euclid(scale).rem_euclid(PTS_MODULUS) as u64,
         })
     }
@@ -598,16 +618,37 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn large_filler_and_sei_keep_hrd_timestamp_association() {
+        let mut timing = AvcTiming::default();
+        let mut first = au(true, true, 60, 0, 1001, 30000);
+        let filler = vec![0xff; 2 * 1024 * 1024];
+        nal(&mut first, 12, &[filler.as_slice(), &[0x80]].concat());
+        assert_eq!(timing.timestamp(&first, Some(90000), None).unwrap().pts, 90000);
+
+        let mut second = au(false, false, 2, 0, 1001, 30000);
+        // user_data_unregisteredのUUIDとpayloadをpicture timingと同じAUへ置く。
+        let mut sei = vec![5];
+        let size = 1024 * 1024 + 16;
+        sei.extend(std::iter::repeat(255).take(size / 255));
+        sei.push((size % 255) as u8);
+        sei.extend(std::iter::repeat(0x55).take(size));
+        sei.push(0x80);
+        nal(&mut second, 6, &sei);
+        assert_eq!(timing.timestamp(&second, None, None).unwrap().pts, 96006);
+        assert_eq!(timing.timestamp(&au(false, false, 4, 0, 1001, 30000), None, None).unwrap().pts, 102012);
+    }
+
+    #[test]
     fn missing_configuration_anchor_or_invalid_timing_cannot_create_pts() {
         let mut timing = AvcTiming::default();
         assert!(timing
             .timestamp(&au(false, false, 2, 0, 1, 60000), Some(42), None)
-            .is_none());
+            .is_err());
         assert!(timing
             .timestamp(&au(true, true, 2, 0, 1, 60000), None, None)
-            .is_none());
+            .is_err());
         assert!(timing
             .timestamp(&au(true, true, 2, 0, 0, 60000), Some(42), None)
-            .is_none());
+            .is_err());
     }
 }
