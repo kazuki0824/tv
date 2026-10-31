@@ -1,5 +1,7 @@
 # 2026-10-31 AV payloadの独立1 MiB制限を除去
 
+- AVCの開始コード・NAL・AUD境界を割当不要のiteratorで走査し、境界配列の通常割当を除去する。多数NALの境界保持、異常入力のfail-closedと再anchor復旧の回帰を追加する。検証はCIへ委ねる。
+
 - PES組立破棄の診断にFilter IDを保持し、同じPIDの汎用PES filterの局所上限でAV時刻対応を失効させない。結合試験で両Filterを同時使用する。
 - AVのPES/AU組立・完成payloadコピーを失敗可能な割当へ接続し、割当失敗をOVERFLOWと型付き診断へ伝える。汎用PES filterの固定上限は維持する。
 - event-local DMA-BUFの単一payload上限と、その設定を渡すconstructor・registry fieldを除去する。
