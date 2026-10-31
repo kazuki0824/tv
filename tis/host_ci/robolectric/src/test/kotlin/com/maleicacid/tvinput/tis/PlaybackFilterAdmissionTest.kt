@@ -324,14 +324,14 @@ class PlaybackFilterAdmissionTest {
     @Test
     fun largeVideoPayloadReachesCodecInput() {
         // 結合CIではHALが配送した符号化AUを使用し、通常CIでは受付長だけを検査する。
-        val bytes =
-            System.getenv("LARGE_AV_ES")?.let { java.io.File(it).readBytes() }
-                ?: ByteArray(1024 * 1024 + 1)
+        val source = System.getenv("LARGE_AV_ES")
+        val bytes = source?.let { java.io.File(it).readBytes() } ?: ByteArray(1024 * 1024 + 1)
+        val pts90k = source?.let { java.io.File("$it.pts").readText().toLong() } ?: 90_000L
         assertTrue(bytes.size > 1024 * 1024)
         Fixture().use { fixture ->
             fixture.decoder()
             val codec = fixture.attachCodec()
-            val sample = mediaEvent(bytes.size.toLong(), 90_000L)
+            val sample = mediaEvent(bytes.size.toLong(), pts90k)
             val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
             Shadow.extract<NativeLinearBlock>(block).data = bytes
             Shadow.extract<NativeMediaEvent>(sample).block = block
@@ -340,6 +340,10 @@ class PlaybackFilterAdmissionTest {
             assertTrue(Shadow.extract<NativeCodec>(codec).inputQueued.await(5, TimeUnit.SECONDS))
             fixture.drain()
             assertEquals(1, Shadow.extract<NativeMediaEvent>(sample).blockReads)
+            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            assertEquals(bytes.size, nativeCodec.lastInputSize)
+            assertEquals(pts90k * 1_000_000L / 90_000L, nativeCodec.lastInputPtsUs)
+            assertTrue(nativeCodec.lastInputBlock === block)
             assertEquals(bytes.size, block.map().remaining())
         }
     }
@@ -2462,6 +2466,9 @@ class PlaybackFilterAdmissionTest {
     @Implements(MediaCodec::class)
     class NativeCodec : ShadowMediaCodec() {
         val inputQueued = CountDownLatch(1)
+        var lastInputSize = 0
+        var lastInputPtsUs = 0L
+        var lastInputBlock: MediaCodec.LinearBlock? = null
         val outputReleased = CountDownLatch(1)
         var onInputQueue: () -> Unit = {}
         var onOutputRelease: () -> Unit = {}
@@ -2480,6 +2487,10 @@ class PlaybackFilterAdmissionTest {
             values: ArrayList<Any>,
         ) {
             assertEquals(1, bufferInfos.size)
+            val info = bufferInfos.single() as MediaCodec.BufferInfo
+            lastInputSize = info.size
+            lastInputPtsUs = info.presentationTimeUs
+            lastInputBlock = block
             inputQueued.countDown()
             onInputQueue()
         }

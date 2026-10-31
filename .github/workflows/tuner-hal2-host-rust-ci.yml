@@ -178,7 +178,7 @@ jobs:
           ffmpeg -v error -xerror -i "$LARGE_AV_TS" -f null -
       - name: Run the production producer and event allocator
         working-directory: tuner_hal2/host_ci
-        run: cargo test -p maleicacid-tuner-hal2-demux-host-ci --test large_av_payload --locked -- --ignored
+        run: cargo test -p maleicacid-tuner-hal2-demux-host-ci --test large_av_payload --locked -- --ignored --nocapture
       - name: Decode the exact delivered access unit
         run: ffmpeg -v error -xerror -i "$LARGE_AV_ES" -f null -
       - uses: actions/setup-java@v4
@@ -197,4 +197,5 @@ jobs:
           path: |
             /tmp/large-av.ts
             /tmp/large-av.h264
+            /tmp/large-av.h264.pts
             tis/host_ci/robolectric/build/test-results/testDebugUnitTest/
