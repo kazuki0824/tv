@@ -535,6 +535,9 @@ class MaleicacidLiveSession(
         val service = transaction.services.firstOrNull { it.serviceKey == serviceKey }
         val pmtPids = transaction.pmtPidsFor(serviceKey)
         val decision = currentServicePolicy()
+        // 登録可能と判定したPMT trackは、CA descriptor解決・CAS確立・AV再生開始を待たずに通知する。
+        // 不完全／不適格なserviceは広告せず、字幕言語は管理PES受信後だけ追加する。
+        if (decision.registrationReady) service?.let(::updateTracks)
         if (playbackState == PlaybackStartState.Idle && previouslyPending && initialLiveSiPending(decision)) {
             // SDT-actualの受理と、同じPIDのSDT-other/BATの受信を混同しない。
             val sdtDelivery = if ("SDT" in decision.reasons) " ${sectionIngestController.sdtDeliveryDiagnostic()}" else ""
@@ -626,7 +629,6 @@ class MaleicacidLiveSession(
             return
         }
         if (service != null) {
-            updateTracks(service)
             maybeStartPlayback(service)
         } else {
             tracePlaybackGate("SERVICE_NOT_RESOLVED state=${decision.state} reasons=${decision.reasons}")
@@ -833,6 +835,14 @@ class MaleicacidLiveSession(
                 }
             if (tunerController.setDualMonoPresentation(presentation)) {
                 dualMonoPresentation = presentation
+                latestService?.let { service ->
+                    displayTracksFor(service)
+                        .firstOrNull { track ->
+                            track.type == TvTrackInfo.TYPE_AUDIO &&
+                                TunerSelectionPolicy.physicalAudioTrackId(track) == preferredAudioTrackId &&
+                                track.audioPresentation == presentation
+                        }?.let { notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id) }
+                }
             }
         }
     }
@@ -859,17 +869,41 @@ class MaleicacidLiveSession(
     ): Boolean {
         val service = latestService ?: return false
         val defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey)
-        val tracks = tunerController.tracksFor(service.streams, defaultComponentGroupTags)
+        val tracks = displayTracksFor(service, defaultComponentGroupTags)
         return when (type) {
             TvTrackInfo.TYPE_AUDIO -> {
-                if (trackId == null || tracks.none { it.type == TvTrackInfo.TYPE_AUDIO && it.id == trackId }) return false
+                val requested =
+                    trackId?.let { wanted ->
+                        tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO && it.id == wanted }
+                    } ?: return false
+                val physicalTrackId = TunerSelectionPolicy.physicalAudioTrackId(requested)
+                val presentation = requested.audioPresentation ?: PlaybackPipeline.DualMonoPresentation.MAIN
+                // 再生準備前は既存Sessionの選択意図だけを更新する。
+                // 開始処理中は入力構成が確定済みなので、適用したと偽って受理しない。
+                if (playbackState is PlaybackStartState.Idle ||
+                    playbackState is PlaybackStartState.Stopped ||
+                    playbackState is PlaybackStartState.Failed
+                ) {
+                    preferredAudioTrackId = physicalTrackId
+                    dualMonoPresentation = presentation
+                    audioFallbackDisabled = false
+                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
+                    return true
+                }
+                if (playbackState !is PlaybackStartState.Started) return false
+                if (physicalTrackId == preferredAudioTrackId && requested.audioPresentation != null) {
+                    if (!tunerController.setDualMonoPresentation(presentation)) return false
+                    dualMonoPresentation = presentation
+                    audioFallbackDisabled = false
+                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
+                    return true
+                }
                 val previousAudioTrackId = preferredAudioTrackId
                 val previousAudioFallbackDisabled = audioFallbackDisabled
                 val previousDualMonoPresentation = dualMonoPresentation
-                if (playbackState !is PlaybackStartState.Started) return false
-                preferredAudioTrackId = trackId
+                preferredAudioTrackId = physicalTrackId
                 audioFallbackDisabled = false
-                if (trackId != previousAudioTrackId) dualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN
+                dualMonoPresentation = presentation
                 val initialSelection =
                     tunerController.selectAvStreams(
                         service.serviceKey,
@@ -914,7 +948,7 @@ class MaleicacidLiveSession(
                             updatePlaybackStartState(current.copy(signature = signature))
                         }
                     }
-                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
+                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
                     true
                 } else {
                     preferredAudioTrackId = previousAudioTrackId
@@ -1020,11 +1054,19 @@ class MaleicacidLiveSession(
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    private fun displayTracksFor(
+        service: AribService,
+        defaultComponentGroupTags: Set<Int>? = currentDefaultComponentGroupTags(service.serviceKey),
+    ): List<TunerController.TisTrack> =
+        TunerSelectionPolicy.withDualMonoPresentations(
+            tunerController.tracksFor(service.streams, defaultComponentGroupTags),
+        ) { componentTag -> currentAudioComponent(service.serviceKey, componentTag) }
+
     @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength")
     private fun updateTracks(service: AribService) {
         val defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey)
         val tracks =
-            tunerController.tracksFor(service.streams, defaultComponentGroupTags).filterNot { track ->
+            displayTracksFor(service, defaultComponentGroupTags).filterNot { track ->
                 PlaybackPolicy.isAudioOnlyService(service.serviceType) && track.type == TvTrackInfo.TYPE_SUBTITLE
             }
         val audioMetadataByTrackId =
@@ -1032,7 +1074,27 @@ class MaleicacidLiveSession(
                 .filter { it.type == TvTrackInfo.TYPE_AUDIO }
                 .associate { track ->
                     val component = currentAudioComponent(service.serviceKey, track.componentTag)
-                    track.id to AudioTrackMetadataPolicy.project(track.streamType, track.language, component)
+                    val projected = AudioTrackMetadataPolicy.project(track.streamType, track.language, component)
+                    val presentationLabel =
+                        when (track.audioPresentation) {
+                            PlaybackPipeline.DualMonoPresentation.MAIN -> "主音声"
+                            PlaybackPipeline.DualMonoPresentation.SUB -> "副音声"
+                            PlaybackPipeline.DualMonoPresentation.MAIN_SUB -> "主音声＋副音声"
+                            null -> null
+                        }
+                    track.id to
+                        projected.copy(
+                            language =
+                                if (track.audioPresentation == PlaybackPipeline.DualMonoPresentation.SUB) {
+                                    component?.secondLanguage?.takeIf { it.isNotBlank() } ?: projected.language
+                                } else {
+                                    projected.language
+                                },
+                            description =
+                                listOfNotNull(projected.description, presentationLabel)
+                                    .joinToString(" / ")
+                                    .takeIf { it.isNotBlank() },
+                        )
                 }
         val videoMetadataByTrackId =
             tracks
@@ -1096,10 +1158,17 @@ class MaleicacidLiveSession(
             // 明示的な選択操作はonSelectTrackで別途通知する。
             tracks.firstOrNull { it.type == TvTrackInfo.TYPE_VIDEO }?.let { notifyTrackSelected(TvTrackInfo.TYPE_VIDEO, it.id) }
             val selectedAudio =
-                preferredAudioTrackId?.let { wanted -> tracks.firstOrNull { it.id == wanted && it.type == TvTrackInfo.TYPE_AUDIO } }
-                    ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO }
+                preferredAudioTrackId?.let { wanted ->
+                    tracks.firstOrNull { track ->
+                        track.type == TvTrackInfo.TYPE_AUDIO &&
+                            TunerSelectionPolicy.physicalAudioTrackId(track) == wanted &&
+                            (track.audioPresentation == null || track.audioPresentation == dualMonoPresentation)
+                    }
+                } ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO }
             selectedAudio?.let {
-                preferredAudioTrackId = it.id
+                preferredAudioTrackId = TunerSelectionPolicy.physicalAudioTrackId(it)
+                // EITから論理選択肢が消えても、物理PIDの通知だけで実音声modeを変更したことにしない。
+                it.audioPresentation?.let { presentation -> dualMonoPresentation = presentation }
                 notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id)
             }
             updateSubtitleSelection(tracks)

@@ -16,10 +16,28 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 - Channels/Programsの変更通知を既存Session ownerで受け、入力・公開署名を失効させる。再試行区間は保持し、次の通常再評価で同一SIも再投影する。
 - 既存のlive失敗回帰へ、署名失効後もretry義務が残ることと、外部削除後の同一入力再登録を追加。通知自体から再公開せず自己通知loopを作らない。検証はCIへ委ねる。
 
+# 2026-10-31 dual-mono選択と再利用判定の正本を同期
+
+- AudioTrack mode適用成功後に既存activeSelectionのpresentationも確定し、別PIDへの切替が古いmodeでdecoder再利用を判定しないようにする。
+- EITから論理音声trackが消えた場合、物理PIDの広告だけを理由にSessionのmodeをMAINへ戻さず、実適用済みの選択意図を維持する。
+- 既存Session回帰へ正本同期とEIT消失・復帰時の通知／実mode照合を追加。テストはCIへ委ねる。
+
+# 2026-10-31 Session音声選択の通知と失敗保持を回帰へ追加
+
+- 既存Session/Playback fixtureで、dual-mono track公開、開始前の選択意図保持、開始中の拒否、開始後のAudioTrack mode適用と失敗時の状態・通知維持を確認する。
+- 本番の新規入口・owner・queueは追加せず、Android通知と音声出力の境界を既存host試験で観測する。実機LiveTvでの表示・音声出力は別の受入事項。実行はCIへ委ねる。
+
 # 2026-10-31 明示音声選択の確定済み引数を簡素化
 
 - 音声有効化を確定した直後のselectAvStreamsへfalseを直接渡し、後続PRで検出された定数条件警告を除去する。状態更新・失敗時復元・選択動作は維持する。
 - 検証はCIへ委ねる。
+
+# 2026-10-31 LiveTv字幕・多重音声のtrack通知を修正（#192後続）
+
+- PMTから判明したvideo/audio trackをCAS確立や再生開始に先行してTIFへ通知する。字幕trackは管理PESから有効なlanguage_tag 0/1を取得してから既存のnotifyTracksChangedへ追加する。
+- current EITでdual monoが確定した音声ESだけに、同じPIDの主／副／主副の論理選択肢を広告する。音声PIDを増やさず既存AudioTrackのmode切替へ接続し、選択成功をLiveTvへ通知する。副言語は放送factがある場合だけ利用する。
+- 同じESのmode変更は再生再起動せずに適用し、AudioTrack側の変更失敗時には内部mode stateを変更しない。字幕選択の通知は既存のcaptionEnabled条件を維持する。
+- host回帰を追加し、JUnit固定検査を1件増加させる。実機NHK受信の通知・選択結果は未検証であり、テスト実行はCIへ委ねる。
 
 # 2026-10-31 選局世代と初期化の失敗境界を修正
 
