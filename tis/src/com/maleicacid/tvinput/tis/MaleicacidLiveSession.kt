@@ -437,15 +437,18 @@ class MaleicacidLiveSession(
         )
     }
 
+    private fun registerProgramProviderObserver() {
+        if (programObserverRegistered) return
+        val resolver = appContext.contentResolver
+        resolver.registerContentObserver(TvContract.Channels.CONTENT_URI, true, programProviderObserver)
+        programObserverRegistered = true
+        resolver.registerContentObserver(TvContract.Programs.CONTENT_URI, true, programProviderObserver)
+    }
+
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
     private fun onTuneOnSessionExecutor(channelUri: Uri?): Boolean {
         if (channelUri == null) return false
-        if (!programObserverRegistered) {
-            appContext.contentResolver.registerContentObserver(TvContract.Channels.CONTENT_URI, true, programProviderObserver)
-            programObserverRegistered = true
-            appContext.contentResolver.registerContentObserver(TvContract.Programs.CONTENT_URI, true, programProviderObserver)
-        }
         lastPlaybackGateDiagnostic = null
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
         aribSiEngine.reset()
@@ -464,6 +467,7 @@ class MaleicacidLiveSession(
         lastParentalAccessState = ParentalAccessState.UNKNOWN
         lastBlockedContent = null
         programPublishCoordinator.reset()
+        registerProgramProviderObserver()
         preferredAudioTrackId = null
         audioFallbackDisabled = false
         dualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN
