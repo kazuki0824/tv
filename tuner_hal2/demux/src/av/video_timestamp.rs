@@ -122,10 +122,12 @@ impl VideoTimestampAssociation {
                 )
                 .ok_or(VideoTimestampFailure::MissingAnchor)?;
             let mut payload = Vec::new();
-            payload.try_reserve_exact(end - start)
+            payload
+                .try_reserve_exact(end - start)
                 .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
             payload.extend_from_slice(&self.bytes[start..end]);
-            frames.try_reserve(1)
+            frames
+                .try_reserve(1)
                 .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
             frames.push(VideoMediaFrame {
                 payload,

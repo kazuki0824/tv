@@ -8,9 +8,7 @@ use crate::capability_selection::{
 };
 use crate::playback_consume_txn::required_playback_processing_bytes;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
-use maleicacid_tuner_hal2_demux::{
-    DvrKind, FilterOpenType, MAX_PES_BUFFER_BYTES,
-};
+use maleicacid_tuner_hal2_demux::{DvrKind, FilterOpenType, MAX_PES_BUFFER_BYTES};
 
 const MIB: usize = 1024 * 1024;
 const DEMUX_FILTER_MAIN_TYPE_TS: i32 = 1;
@@ -182,18 +180,8 @@ impl CapabilitySnapshot {
                     .with(PesBytes, requested.pes_max_bytes_per_filter),
                 Some((DemuxBase, 1)),
             ),
-            (
-                AudioAv,
-                requested.num_audio_filter,
-                object,
-                None,
-            ),
-            (
-                VideoAv,
-                requested.num_video_filter,
-                object,
-                None,
-            ),
+            (AudioAv, requested.num_audio_filter, object, None),
+            (VideoAv, requested.num_video_filter, object, None),
             (
                 PlaybackDvr,
                 requested.num_playback,
@@ -355,8 +343,6 @@ impl CapabilitySnapshot {
         if snapshot.pes_runtime_budget_bytes == 0 {
             snapshot.pes_max_bytes_per_filter = 0;
         }
-        if snapshot.num_audio_filter == 0 && snapshot.num_video_filter == 0 {
-            }
         Ok(snapshot)
     }
 
@@ -960,12 +946,22 @@ mod tests {
             ..CapabilitySnapshot::product_default()
         };
         let mut ledger = CapacityLedger::default();
-        ledger.reserve_filter(snapshot, 1, FilterOpenType::TsPes, 4096).unwrap();
-        ledger.reserve_filter(snapshot, 2, FilterOpenType::TsAudio, 4096).unwrap();
-        ledger.reserve_filter(snapshot, 3, FilterOpenType::TsVideo, 4096).unwrap();
-        assert!(ledger.reserve_filter(snapshot, 4, FilterOpenType::TsPes, 4096).is_err());
+        ledger
+            .reserve_filter(snapshot, 1, FilterOpenType::TsPes, 4096)
+            .unwrap();
+        ledger
+            .reserve_filter(snapshot, 2, FilterOpenType::TsAudio, 4096)
+            .unwrap();
+        ledger
+            .reserve_filter(snapshot, 3, FilterOpenType::TsVideo, 4096)
+            .unwrap();
+        assert!(ledger
+            .reserve_filter(snapshot, 4, FilterOpenType::TsPes, 4096)
+            .is_err());
         ledger.release_filter(1).unwrap();
-        ledger.reserve_filter(snapshot, 4, FilterOpenType::TsPes, 4096).unwrap();
+        ledger
+            .reserve_filter(snapshot, 4, FilterOpenType::TsPes, 4096)
+            .unwrap();
         for id in [2, 3, 4] {
             ledger.release_filter(id).unwrap();
         }
