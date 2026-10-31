@@ -1,5 +1,6 @@
-pub(crate) fn nal_to_rbsp(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
+pub(crate) fn nal_to_rbsp(bytes: &[u8]) -> Result<Vec<u8>, std::collections::TryReserveError> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(bytes.len())?;
     let mut zero_run = 0usize;
     for &byte in bytes {
         if zero_run >= 2 && byte == 0x03 {
@@ -13,7 +14,7 @@ pub(crate) fn nal_to_rbsp(bytes: &[u8]) -> Vec<u8> {
             zero_run = 0;
         }
     }
-    out
+    Ok(out)
 }
 
 pub(crate) struct BitReader<'a> {

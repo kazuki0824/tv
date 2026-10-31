@@ -10,7 +10,6 @@ use crate::av::{
     AvDataId, AvDataIdAllocator, AvDataIdState, AvFilterReleaseState, AvFlowDiagnosticSnapshot,
     AvHandleReleaseDescriptor, AvHandleReleaseInput, AvHandleReleaseKind, AvHandleReleaseOutcome,
     AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedHandleExport,
-    DEFAULT_AV_MAX_EVENT_BYTES,
 };
 use crate::config::{
     AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterDelayReadiness, FilterOpenType,
@@ -603,9 +602,6 @@ fn av_payload_delivery_outcome_diagnostic(
         AvPayloadDeliveryOutcome::PayloadEmpty => {
             Some(crate::packet_pipeline::PipelineDiagnostic::av_payload_empty(pid, filter_id))
         }
-        AvPayloadDeliveryOutcome::PayloadOversized => {
-            Some(crate::packet_pipeline::PipelineDiagnostic::av_payload_oversized(pid, filter_id))
-        }
         AvPayloadDeliveryOutcome::DataIdExhausted => {
             Some(crate::packet_pipeline::PipelineDiagnostic::av_data_id_exhausted(pid, filter_id))
         }
@@ -973,7 +969,6 @@ pub struct DemuxRuntime {
     dvr_queue_runtimes: BTreeMap<i32, QueueRuntime>,
     filter_av_backings: BTreeMap<i32, AvSharedBacking>,
     av_data_id_allocator: Arc<AvDataIdAllocator>,
-    av_max_event_bytes: usize,
     pcr_clock_anchor_store: PcrClockAnchorStore,
     av_sync_registry: AvSyncRegistry,
     rollback_snapshots: BTreeMap<u64, DemuxRuntimeSnapshot>,
@@ -1145,20 +1140,6 @@ impl DemuxRuntime {
         generation: u64,
         av_data_id_allocator: Arc<AvDataIdAllocator>,
     ) -> Self {
-        Self::new_with_av_runtime_limits(
-            demux_id,
-            generation,
-            av_data_id_allocator,
-            DEFAULT_AV_MAX_EVENT_BYTES,
-        )
-    }
-
-    pub fn new_with_av_runtime_limits(
-        demux_id: i32,
-        generation: u64,
-        av_data_id_allocator: Arc<AvDataIdAllocator>,
-        av_max_event_bytes: usize,
-    ) -> Self {
         Self {
             demux_id,
             state: DemuxRuntimeState::Open,
@@ -1173,7 +1154,6 @@ impl DemuxRuntime {
             dvr_queue_runtimes: BTreeMap::new(),
             filter_av_backings: BTreeMap::new(),
             av_data_id_allocator,
-            av_max_event_bytes,
             pcr_clock_anchor_store: PcrClockAnchorStore::default(),
             av_sync_registry: AvSyncRegistry::default(),
             rollback_snapshots: BTreeMap::new(),
@@ -1535,10 +1515,7 @@ impl DemuxRuntime {
         if has_av_backing {
             self.filter_av_backings.insert(
                 filter_id,
-                AvSharedBacking::with_runtime_limits(
-                    self.av_max_event_bytes,
-                    Arc::clone(&self.av_data_id_allocator),
-                ),
+                AvSharedBacking::with_data_id_allocator(Arc::clone(&self.av_data_id_allocator)),
             );
         }
         #[cfg(test)]
@@ -4475,6 +4452,22 @@ impl DemuxRuntime {
             };
             let payloads = match filter.prepare_av_media_payloads(packet, origin) {
                 Ok(payloads) => payloads,
+                Err(super::filter::AvTimestampFailure::Video(
+                    crate::av::VideoTimestampFailure::AllocationFailed,
+                )) => {
+                    report
+                        .generated_events
+                        .push(PipelineGeneratedEvent::FilterStatus {
+                            filter_id,
+                            status: FilterStatusEvent::Overflow,
+                        });
+                    report
+                        .diagnostics
+                        .push(PipelineDiagnostic::av_assembly_allocation_failed(
+                            pid, filter_id,
+                        ));
+                    continue;
+                }
                 Err(_) => {
                     report.diagnostics.push(
                         crate::packet_pipeline::PipelineDiagnostic::av_authoritative_timestamp_unavailable(
@@ -4498,14 +4491,6 @@ impl DemuxRuntime {
                             });
                     }
                     Some(Ok(outcome)) => {
-                        if matches!(&outcome, AvPayloadDeliveryOutcome::PayloadOversized) {
-                            report
-                                .generated_events
-                                .push(PipelineGeneratedEvent::FilterStatus {
-                                    filter_id,
-                                    status: FilterStatusEvent::Overflow,
-                                });
-                        }
                         if let Some(diagnostic) =
                             av_payload_delivery_outcome_diagnostic(outcome, pid, filter_id)
                         {
@@ -4657,10 +4642,6 @@ impl DemuxRuntime {
                         pid: diagnostic_pid,
                         ..
                     }
-                    | PipelineDiagnostic::PesAssemblerDrop {
-                        pid: diagnostic_pid,
-                        ..
-                    }
                     | PipelineDiagnostic::SourceFilterValidationFailure {
                         pid: diagnostic_pid,
                         ..
@@ -4671,13 +4652,17 @@ impl DemuxRuntime {
                     } if *diagnostic_pid == pid
             )
         });
-        if !timeline_gap {
-            return;
-        }
-        for filter in self.filters.values_mut() {
-            if filter
-                .pipeline_view()
-                .accepts_packet_pid_from_origin(pid, origin)
+        for (filter_id, filter) in &mut self.filters {
+            // 同じPIDでも汎用PES filterの局所失敗でAVの時刻対応を失効させない。
+            let assembly_gap = diagnostics.iter().any(|diagnostic| {
+                matches!(diagnostic, PipelineDiagnostic::PesAssemblerDrop {
+                    pid: diagnostic_pid, filter_id: diagnostic_filter, ..
+                } if *diagnostic_pid == pid && diagnostic_filter == filter_id)
+            });
+            if (timeline_gap || assembly_gap)
+                && filter
+                    .pipeline_view()
+                    .accepts_packet_pid_from_origin(pid, origin)
             {
                 filter.reset_av_timestamp_association_for_origin(origin);
             }

@@ -1,3 +1,17 @@
+# 2026-10-31 AV payloadの独立1 MiB制限を除去
+
+- AVCの未完AUをPESごとに先頭から再走査せず、同じVideoTimestampAssociationに次回走査位置と未完AUD位置を保持する。drain時に両位置を補正し、既存resetで破棄する。AU長・PES分割長を独立に変え、payload/PTSと走査入力長の線形上限をCI回帰で確認する。
+
+- AVC時刻解析ではfiller等の未使用NALをRBSPへコピーせず、必要なRBSPとSPS/PPS保持の予約失敗を既存AllocationFailedへ返す。SEIはactive SPS確定後に順次解析し、RBSP配列を保管しない。共有RBSP変換の失敗時、任意のrecord slice索引は生成しない。大きなfiller/SEIを含む時刻対応の回帰を追加し、CIへ委ねる。
+
+- AVCの開始コード・NAL・AUD境界を割当不要のiteratorで走査し、境界配列の通常割当を除去する。多数NALの境界保持、異常入力のfail-closedと再anchor復旧の回帰を追加する。検証はCIへ委ねる。
+
+- PES組立破棄の診断にFilter IDを保持し、同じPIDの汎用PES filterの局所上限でAV時刻対応を失効させない。結合試験で両Filterを同時使用する。
+- AVのPES/AU組立・完成payloadコピーを失敗可能な割当へ接続し、割当失敗をOVERFLOWと型付き診断へ伝える。汎用PES filterの固定上限は維持する。
+- event-local DMA-BUFの単一payload上限と、その設定を渡すconstructor・registry fieldを除去する。
+- AVの固定PES byte予約と能力検証を除去し、4つの汎用PES filterだけを固定PES予算へ計上する。関連規範・実装入口と資源台帳の回帰を更新する。
+- CIに符号化AVC TS→実producer→host file割当→配送ESのdecode→TIS SDK callback/Codec入力境界の結合試験を追加する。host file・Robolectricは実DMAヒープ/実decoderの代替証明ではない。CI結果、現行ARIB日本語原文との差分、Soong/atest/VTS・実機確認は未確認。
+
 # 2026-10-31 AV破棄と最終参照終了の回収を修正
 
 - producer gateの受付失敗でevent所有権を返し、閉鎖時の保留eventもdemuxの既存未配送解放へ渡す。close時のbacking移管前にも保留eventを返却する。

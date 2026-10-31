@@ -342,7 +342,7 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 | TS | `TEMI` | `UNAVAILABLE` | なし | 本製品はTEMI処理能力を採用せず、object / queue / workerを生成しない |
 | MMTP / IP / TLV / ALP | AIDL上の任意の既知subtype | `UNAVAILABLE` | なし | TS-only `ProductProfile`の固定能力外。main-type objectを生成しない |
 
-上表の成功行でも、`bufferSize`、callback、個数枠、FMQ / AV / PES予算その他の既存child-open条件を満たさない場合は既存契約の原因別errorへ写像する。成功行を理由に資源不足を成功へ丸めない。TS `UNDEFINED` は `linkCaps` のmain-type接続試験を成立させるための公開subtypeであり、SECTION/PES/TS/AV/PCR/RECORDのいずれかへ暗黙昇格させない。
+上表の成功行でも、`bufferSize`、callback、個数枠、FMQ / PES予算その他の既存child-open条件を満たさない場合は既存契約の原因別errorへ写像する。成功行を理由に資源不足を成功へ丸めない。TS `UNDEFINED` は `linkCaps` のmain-type接続試験を成立させるための公開subtypeであり、SECTION/PES/TS/AV/PCR/RECORDのいずれかへ暗黙昇格させない。
 
 #### `DemuxFilterAvSettings.isSecureMemory` / `isPassthrough`
 
@@ -1677,7 +1677,7 @@ ARIB依存の規範主張は、**現行日本語版の版番号**と、**今回�
 
 ### AV割り当て
 
-AV配送には固定slot、同時保持件数上限、Filter別・サービス全体の独自live byte予算を設けない。未解放allocationの実サイズ合計と件数は診断に使い、受付拒否には使わない。メモリー・FDの確保失敗は実際のallocator結果で扱う。AOSPがHAL独自の予算を要求しているとは扱わない。将来独自制限を追加する場合は、防ぐ資源競合と正常再生に必要な容量の根拠を示す設計変更とする。
+AV配送には固定slot、同時保持件数上限、Filter別・サービス全体の独自live byte予算を設けない。未解放allocationの実サイズ合計と件数は診断に使い、受付拒否には使わない。メモリー・FDの確保失敗は実際のallocator結果で扱う。AV payloadの単一長にも独自の1 MiB上限を設けない。AV filterのopen時に汎用PES filterの固定byte予算を予約しない。組立用Rust領域は失敗を返せる確保処理を使い、OSによるプロセス強制終了まで回復できるとは保証しない。AOSPがHAL独自の予算を要求しているとは扱わない。将来独自制限を追加する場合は、防ぐ資源競合と正常再生に必要な容量の根拠を示す設計変更とする。
 
 | 項目 | 動作 |
 |---|---|
@@ -1775,7 +1775,7 @@ LNB の logical close と cleanup authority は `ObjectCloseTxn` および LNB �
 
 presentation timestampと当該media outputのassociation責務は`MediaEvent`を公開するproducer側境界で完了させ、TISへPES再解析、codec別AU parser、AU再構成、独自clockを要求しない。backendがauthoritative timing metadataを直接出す場合はその値を透過する。producer-side media extractorを使う場合は、対応codecの連続ES上でframe header構文、frame length、時刻算出parameterを検証する。PES境界はframe境界と一致する前提にせず、開始済みframeは規格上限内のbytesを同一`FilterRuntime`へ最大1件だけ保持して完成させる。audioの`MediaEvent`は完成した1 AUを正確な`dataLength`で配送し、`pts`、`streamId`、PTS/DTS presence/valueは同じAUの開始PESまたは構造検証済みtimelineから構成する。明示PTSはH.222.0どおり当該PES内で開始する最初のaudio access unitをanchorとし、PES先頭が前AUのcontinuationならそのAUを完成後に従前の時刻で配送し、当該PES内で開始するfirst AUは別eventとして明示PTSへreanchorする。PTS-sparse AUの時刻は同一timing parameterのexact sample countとbitstream headerのactual sample rateから確定する。filter開始またはstream boundary直後の未anchor状態で`data_alignment_indicator=false`なら、先行AUの最大残り長未満だけを探索し、対応codecの完全headerと宣言frame lengthを構造検証する。次境界未確認の候補をauthoritative anchorへ即時commitせず、先行AU最大1 frame、当該PESで開始するfirst AU最大1 frame、次header最大7 byteの合計16389 byte以内だけ同一ownerへ保留する。後続PES上で同一signatureの次境界まで確認できた一意候補だけをcommitし、候補の複数成立または上限超過はfail-closedとする。syncword一致だけの探索、上限なし走査、第二queueは追加しない。`data_alignment_indicator=true`ならpayload先頭以外へ探索しない。未anchor、未対応／不正header、未通知parameter変更、overflow、TEI、continuity gap、scramble/drop、flush、source/generation変更では対応付けを停止してanchor、未完了frame、cold-start保留bytesを破棄し、PCR / wallclock / nominal値へfallbackしない。合法なPES間partial frameだけを破棄理由にしない。この有限codec extractorを、入力構文を検証しないgeneric timestamp interpolationへ拡張しない。producer側境界でもauthoritative associationを成立させられないbackend/profileまたはeventは、live media-filter成功配送として扱わない。公開Tuner AIDL/VINTFの`isPtsPresent` / `pts`の意味は変更せず、VTS profileも既存capability整合規則に従う。
 
-製品既定profileのTS videoでは、ARIB STD-B32 3.11-E1 Fascicle 1のMPEG-2 Video、Attachment 2のAVC television、Attachment 4のHEVCにおけるPES構成規定と、Attachment 3の小解像度AVCを区別する。前者の1 PESに1 frame（許されるfield pairを含む）という規定を小解像度AVCへ一般化せず、video PESにPTSがあることだけから、PES全体または同PES内の全AUへそのPTSを割り当てない。MPEG-2 VideoとHEVCの現行配送は製品対象の1 PES / 1 frame構成および明示PTSに依存する。AVCは連続Annex B ESのAUD境界でAUを確定し、完成したAUだけを個別eventへ渡す。PES間で分断された開始コード・AUを保持し、次のAUDを確認するまで末尾AUを完成としない。未完了AUの保持量には既存の単一PES/AV payload上限を適用し、新たな同時event件数・総保持byte予算は設けない。
+製品既定profileのTS videoでは、ARIB STD-B32 3.11-E1 Fascicle 1のMPEG-2 Video、Attachment 2のAVC television、Attachment 4のHEVCにおけるPES構成規定と、Attachment 3の小解像度AVCを区別する。前者の1 PESに1 frame（許されるfield pairを含む）という規定を小解像度AVCへ一般化せず、video PESにPTSがあることだけから、PES全体または同PES内の全AUへそのPTSを割り当てない。MPEG-2 VideoとHEVCの現行配送は製品対象の1 PES / 1 frame構成および明示PTSに依存する。AVCは連続Annex B ESのAUD境界でAUを確定し、完成したAUだけを個別eventへ渡す。PES間で分断された開始コード・AUを保持し、次のAUDを確認するまで末尾AUを完成としない。AVのPES組立・未完了AUの保持・完成AUのコピーは実割当の成否で扱い、汎用PES filter専用の`MAX_PES_BUFFER_BYTES`を適用しない。確保失敗では当該Filterの組立状態を破棄し、`OVERFLOW`と型付き診断を通知する。同じPIDの別Filterにおける局所的なPES組立失敗で、正常なAV Filterの時刻対応を失効させない。新たな同時event件数・総保持byte予算は設けない。
 
 AVCではPPS→SPS参照を確認し、PES内で最初に開始するAUだけを当該PESの明示PTS/DTSへ対応させる。後続AUはactive SPSのVUI timingとNAL/VCL HRD、当該AUのpicture timing SEIのcpb_removal_delay / dpb_output_delayを検証できる場合に限り時刻を確定する。H.264 (08/2021) C.1.2、D.2.2、E.2.1に従い、buffering periodを含むAU自身は直前periodの基準を参照し、そのAUの処理後に基準を更新する。delay counterと33-bit PTSのwrapを区別し、clock tickの有理数分子を保持してAUごとの丸め誤差を累積させない。fixed_frame_rate_flagやnominal fpsだけによる時刻生成はしない。low_delay_hrdによって実際のremoval timeが入力到着に依存する場合は、未明示AUの時刻をこの式だけで確定しない。構成不明、時刻根拠不足、不正構文、stream type変更、flush、gap、source/generation変更で旧対応付けを破棄する。小解像度AVCでのframe skipも定間隔と読み替えない。
 

@@ -22,7 +22,6 @@ use maleicacid_tuner_hal2_common::{
 };
 use maleicacid_tuner_hal2_demux::{
     AvDataIdAllocator, DemuxRuntime, DvrKind, FilterOpenType, FilterRuntimeState,
-    DEFAULT_AV_MAX_EVENT_BYTES,
 };
 use maleicacid_tuner_hal2_demux::{
     PacketDescramblePolicyFailure, PacketPid, PipelineDiagnostic, PipelineReport,
@@ -867,7 +866,6 @@ pub struct RuntimeRegistry {
     descrambler_runtimes: BTreeMap<DescramblerRuntimeId, DescramblerRuntime>,
     descrambler_key_table: DescramblerKeyTable,
     av_data_id_allocator: Arc<AvDataIdAllocator>,
-    av_max_event_bytes: usize,
     #[cfg(test)]
     next_demux_id: i32,
     next_lnb_id: i32,
@@ -893,7 +891,6 @@ impl Default for RuntimeRegistry {
             descrambler_runtimes: BTreeMap::new(),
             descrambler_key_table: DescramblerKeyTable::default(),
             av_data_id_allocator: Arc::new(AvDataIdAllocator::default()),
-            av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
             #[cfg(test)]
             next_demux_id: 1,
             next_lnb_id: 1,
@@ -905,13 +902,6 @@ impl Default for RuntimeRegistry {
 }
 
 impl RuntimeRegistry {
-    pub(crate) fn with_av_runtime_limits(av_max_event_bytes: usize) -> Self {
-        Self {
-            av_max_event_bytes,
-            ..Self::default()
-        }
-    }
-
     pub fn register_frontend(
         &mut self,
         entry: FrontendRegistryEntry,
@@ -985,11 +975,10 @@ impl RuntimeRegistry {
         }
         self.demux_runtimes.insert(
             entry.id,
-            DemuxRuntime::new_with_av_runtime_limits(
+            DemuxRuntime::new_with_av_data_id_allocator(
                 entry.id.0,
                 1,
                 Arc::clone(&self.av_data_id_allocator),
-                self.av_max_event_bytes,
             ),
         );
         self.demuxes.insert(entry.id, entry);

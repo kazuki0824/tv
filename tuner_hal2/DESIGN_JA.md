@@ -472,3 +472,7 @@ Frontend停止phaseの観測は既存`FrontendWorkerContext`とslotに従属し�
 TS AVCのAU framingとHRD時刻対応は`demux/src/av/video_timestamp.rs::VideoTimestampAssociation`とその従属`avc_timing.rs::AvcTiming`を`FilterRuntime`が所有する。構文のbit readerはrecord indexと同じ`demux/src/parser/bitstream.rs`を使用する。snapshot、stream type変更、queue cleanup、packet gap、origin境界は既存filter ownerのAV reset入口へ接続する。TIS、AIDL façade、別workerへ解析状態を置かない。公開意味は正本のpresentation timestamp契約を参照する。
 
 Frontend closeの待機は`frontend_worker_txn::close_frontend_workers_and_live_data_with_sink`が既存reaperの待機とworker joinを接続する。期限の意味は`../TUNER_HAL_DESIGN_JA.md`の「Frontend closeの回収完了」に従う。
+
+### AV組立領域の割当入口
+
+AVのPES組立は既存`PesAssembler::push_av`、汎用PES filterは`PesAssembler::push`を使用する。PacketPipelineが配送対象の用途から同じassemblerの入口を選び、別のparser ownerを作らない。AVCの開始コード・NAL・AUD境界は`avc_timing.rs`の共有iteratorで走査し、境界配列を割り当てない。`VideoTimestampAssociation`内の走査位置・未完AUD位置でPES追記分と未確定prefixだけを調べ、drainで位置を補正し、既存AV resetで失効させる。`AvcTiming`は未使用NALのRBSP変換を省き、SEIをactive SPS確定後に順次処理する。共有`nal_to_rbsp`とSPS/PPS保持の予約失敗は既存`VideoTimestampFailure::AllocationFailed`へ渡す。AVCの保持・完成payloadコピーは既存`VideoTimestampAssociation`、配送領域は`AvSharedBacking`が所有する。割当失敗は`PesDropReason::AllocationFailed`または`VideoTimestampFailure::AllocationFailed`から既存reportの`OVERFLOW`へ接続する。受付・破棄・資源予約の意味は`../TUNER_HAL_DESIGN_JA.md`のAV割り当てを正とする。

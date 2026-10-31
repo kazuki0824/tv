@@ -289,6 +289,7 @@ pub enum PesDropReason {
     ContinuationWithoutStart,
     MalformedPes,
     OversizedPes,
+    AllocationFailed,
     FlushDiscard,
 }
 
@@ -312,6 +313,25 @@ impl PesAssembler {
         pid: PacketPid,
         payload_unit_start: bool,
         payload: &[u8],
+    ) -> Vec<PesPacket> {
+        self.push_with_limit(pid, payload_unit_start, payload, Some(MAX_PES_BUFFER_BYTES))
+    }
+
+    pub(crate) fn push_av(
+        &mut self,
+        pid: PacketPid,
+        payload_unit_start: bool,
+        payload: &[u8],
+    ) -> Vec<PesPacket> {
+        self.push_with_limit(pid, payload_unit_start, payload, None)
+    }
+
+    fn push_with_limit(
+        &mut self,
+        pid: PacketPid,
+        payload_unit_start: bool,
+        payload: &[u8],
+        max_bytes: Option<usize>,
     ) -> Vec<PesPacket> {
         let mut out = Vec::new();
         if payload_unit_start {
@@ -353,10 +373,18 @@ impl PesAssembler {
                     }
                     self.pid = Some(pid);
                     self.buf = header;
+                    if self.buf.try_reserve(payload.len() - copied).is_err() {
+                        self.reset_with_drop(PesDropReason::AllocationFailed);
+                        return out;
+                    }
                     self.buf.extend_from_slice(&payload[copied..]);
                 }
             }
         } else {
+            if self.buf.try_reserve(payload.len()).is_err() {
+                self.reset_with_drop(PesDropReason::AllocationFailed);
+                return out;
+            }
             self.buf.extend_from_slice(payload);
         }
         if self.expected_len.is_none() {
@@ -376,7 +404,7 @@ impl PesAssembler {
                 }
             }
         }
-        if self.buf.len() > MAX_PES_BUFFER_BYTES {
+        if max_bytes.is_some_and(|limit| self.buf.len() > limit) {
             self.reset_with_drop(PesDropReason::OversizedPes);
             return out;
         }
@@ -421,6 +449,9 @@ impl PesAssembler {
             self.last_drop_reason = Some(reason);
         }
         self.reset_state_only();
+        if reason == PesDropReason::AllocationFailed {
+            self.buf = Vec::new();
+        }
     }
 
     pub fn take_drop_diagnostic(&mut self) -> Option<(PesDropReason, u64)> {
@@ -446,11 +477,13 @@ impl PesAssembler {
         if let Some(expected_len) = summary.expected_len {
             raw_bytes.truncate(expected_len);
         }
-        let payload = if raw_bytes.starts_with(&[0x00, 0x00, 0x01]) {
-            raw_bytes[summary.payload_offset.min(raw_bytes.len())..].to_vec()
-        } else {
-            raw_bytes.clone()
-        };
+        let payload_bytes = &raw_bytes[summary.payload_offset.min(raw_bytes.len())..];
+        let mut payload = Vec::new();
+        if payload.try_reserve_exact(payload_bytes.len()).is_err() {
+            self.reset_with_drop(PesDropReason::AllocationFailed);
+            return None;
+        }
+        payload.extend_from_slice(payload_bytes);
         self.expected_len = None;
         self.unbounded_summary = None;
         self.pid = None;
@@ -935,6 +968,22 @@ mod pes_boundary_tests {
 #[cfg(test)]
 mod pes_oversized_tests {
     use super::{packet_pid_for_test, PesAssembler, PesDropReason, MAX_PES_BUFFER_BYTES};
+
+    #[test]
+    fn av_assembly_is_not_limited_by_the_ts_pes_budget() {
+        let pid = packet_pid_for_test(0x0100);
+        let mut assembler = PesAssembler::default();
+        let mut pes = vec![0, 0, 1, 0xe0, 0, 0, 0x80, 0, 0];
+        pes.resize(MAX_PES_BUFFER_BYTES + 100, 0xaa);
+        assert!(assembler.push_av(pid, true, &pes).is_empty());
+        let next = [0, 0, 1, 0xe0, 0, 4, 0x80, 0, 0, 0xde];
+        let packets = assembler.push_av(pid, true, &next);
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0].raw_bytes, pes);
+        assert_eq!(packets[0].payload, pes[9..]);
+        assert_eq!(packets[1].payload, [0xde]);
+        assert_eq!(assembler.take_drop_diagnostic(), None);
+    }
 
     #[test]
     fn unbounded_pes_over_limit_is_dropped_and_next_pusi_recovers() {
