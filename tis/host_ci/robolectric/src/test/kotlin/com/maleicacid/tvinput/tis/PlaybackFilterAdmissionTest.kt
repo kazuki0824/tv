@@ -331,6 +331,10 @@ class PlaybackFilterAdmissionTest {
         Fixture().use { fixture ->
             fixture.decoder()
             val codec = fixture.attachCodec()
+            fixture.executor.callControl(5_000L) {
+                ReflectionHelpers.getField<PlaybackPipeline.PtsEpochCoordinator>(fixture.pipeline, "ptsEpochCoordinator")
+                    .normalize(PlaybackPipeline.PtsTrack.AUDIO, 0L)
+            }
             val sample = mediaEvent(bytes.size.toLong(), pts90k)
             val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
             Shadow.extract<NativeLinearBlock>(block).data = bytes
@@ -342,7 +346,7 @@ class PlaybackFilterAdmissionTest {
             assertEquals(1, Shadow.extract<NativeMediaEvent>(sample).blockReads)
             val nativeCodec = Shadow.extract<NativeCodec>(codec)
             assertEquals(bytes.size, nativeCodec.lastInputSize)
-            assertEquals(pts90k * 1_000_000L / 90_000L, nativeCodec.lastInputPtsUs)
+            assertEquals(((1L shl 32) + pts90k) * 1_000_000L / 90_000L, nativeCodec.lastInputPtsUs)
             assertTrue(nativeCodec.lastInputBlock === block)
             assertEquals(bytes.size, block.map().remaining())
         }
