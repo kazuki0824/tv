@@ -1513,9 +1513,7 @@ impl DemuxRuntime {
         if has_av_backing {
             self.filter_av_backings.insert(
                 filter_id,
-                AvSharedBacking::with_data_id_allocator(
-                    Arc::clone(&self.av_data_id_allocator),
-                ),
+                AvSharedBacking::with_data_id_allocator(Arc::clone(&self.av_data_id_allocator)),
             );
         }
         #[cfg(test)]
@@ -4442,13 +4440,17 @@ impl DemuxRuntime {
                 Err(super::filter::AvTimestampFailure::Video(
                     crate::av::VideoTimestampFailure::AllocationFailed,
                 )) => {
-                    report.generated_events.push(PipelineGeneratedEvent::FilterStatus {
-                        filter_id,
-                        status: FilterStatusEvent::Overflow,
-                    });
-                    report.diagnostics.push(PipelineDiagnostic::av_assembly_allocation_failed(
-                        pid, filter_id,
-                    ));
+                    report
+                        .generated_events
+                        .push(PipelineGeneratedEvent::FilterStatus {
+                            filter_id,
+                            status: FilterStatusEvent::Overflow,
+                        });
+                    report
+                        .diagnostics
+                        .push(PipelineDiagnostic::av_assembly_allocation_failed(
+                            pid, filter_id,
+                        ));
                     continue;
                 }
                 Err(_) => {

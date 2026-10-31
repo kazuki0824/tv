@@ -449,6 +449,9 @@ impl PesAssembler {
             self.last_drop_reason = Some(reason);
         }
         self.reset_state_only();
+        if reason == PesDropReason::AllocationFailed {
+            self.buf = Vec::new();
+        }
     }
 
     pub fn take_drop_diagnostic(&mut self) -> Option<(PesDropReason, u64)> {
@@ -965,6 +968,22 @@ mod pes_boundary_tests {
 #[cfg(test)]
 mod pes_oversized_tests {
     use super::{packet_pid_for_test, PesAssembler, PesDropReason, MAX_PES_BUFFER_BYTES};
+
+    #[test]
+    fn av_assembly_is_not_limited_by_the_ts_pes_budget() {
+        let pid = packet_pid_for_test(0x0100);
+        let mut assembler = PesAssembler::default();
+        let mut pes = vec![0, 0, 1, 0xe0, 0, 0, 0x80, 0, 0];
+        pes.resize(MAX_PES_BUFFER_BYTES + 100, 0xaa);
+        assert!(assembler.push_av(pid, true, &pes).is_empty());
+        let next = [0, 0, 1, 0xe0, 0, 4, 0x80, 0, 0, 0xde];
+        let packets = assembler.push_av(pid, true, &next);
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0].raw_bytes, pes);
+        assert_eq!(packets[0].payload, pes[9..]);
+        assert_eq!(packets[1].payload, [0xde]);
+        assert_eq!(assembler.take_drop_diagnostic(), None);
+    }
 
     #[test]
     fn unbounded_pes_over_limit_is_dropped_and_next_pusi_recovers() {
