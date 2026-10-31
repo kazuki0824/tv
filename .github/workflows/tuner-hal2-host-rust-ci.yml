@@ -156,3 +156,45 @@ jobs:
           persist-credentials: false
       - name: Run production demux Record FMQ integration test
         run: cargo test -p maleicacid-tuner-hal2-demux-host-ci --test record_filter_fmq --locked
+
+  large-av-payload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LARGE_AV_TS: /tmp/large-av.ts
+      LARGE_AV_ES: /tmp/large-av.h264
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Generate and decode an AVC High Level 5.2 transport fixture
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          ffmpeg -hide_banner -y -f lavfi -i "color=black:s=3840x2160:r=60000/1001,noise=alls=100:allf=u:enable='eq(n,0)'" \
+            -frames:v 60 -c:v libx264 -preset fast -crf 30 -profile:v high -level:v 5.2 \
+            -maxrate 60M -bufsize 80M -x264-params 'aud=1:repeat-headers=1:nal-hrd=vbr:vbv-init=0.9:keyint=30:min-keyint=30:scenecut=0:bframes=0' \
+            -mpegts_start_pid 641 -f mpegts "$LARGE_AV_TS"
+          ffmpeg -v error -xerror -i "$LARGE_AV_TS" -f null -
+      - name: Run the production producer and event allocator
+        working-directory: tuner_hal2/host_ci
+        run: cargo test -p maleicacid-tuner-hal2-demux-host-ci --test large_av_payload --locked -- --ignored
+      - name: Decode the exact delivered access unit
+        run: ffmpeg -v error -xerror -i "$LARGE_AV_ES" -f null -
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Feed the delivered payload through the TIS SDK callback to Codec input
+        run: gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest.largeVideoPayloadReachesCodecInput
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: large-av-payload
+          path: |
+            /tmp/large-av.ts
+            /tmp/large-av.h264
+            tis/host_ci/robolectric/build/test-results/testDebugUnitTest/

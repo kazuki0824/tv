@@ -12,13 +12,10 @@ use std::ptr;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
-pub const DEFAULT_AV_MAX_EVENT_BYTES: usize = 1024 * 1024;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AvPayloadDeliveryOutcome {
     Delivered(AvMediaEventDescriptor),
     PayloadEmpty,
-    PayloadOversized,
     DataIdExhausted,
 }
 
@@ -143,7 +140,6 @@ struct AvFlowDiagnosticCounters {
 #[derive(Debug)]
 pub struct AvSharedBacking {
     data_id_allocator: Arc<AvDataIdAllocator>,
-    max_event_bytes: usize,
     event_local_allocations: BTreeMap<AvDataId, EventLocalAllocation>,
     event_local_bytes: usize,
     diagnostics: AvFlowDiagnosticCounters,
@@ -155,16 +151,8 @@ impl AvSharedBacking {
     }
 
     pub fn with_data_id_allocator(data_id_allocator: Arc<AvDataIdAllocator>) -> Self {
-        Self::with_runtime_limits(DEFAULT_AV_MAX_EVENT_BYTES, data_id_allocator)
-    }
-
-    pub fn with_runtime_limits(
-        max_event_bytes: usize,
-        data_id_allocator: Arc<AvDataIdAllocator>,
-    ) -> Self {
         Self {
             data_id_allocator,
-            max_event_bytes,
             event_local_allocations: BTreeMap::new(),
             event_local_bytes: 0,
             diagnostics: AvFlowDiagnosticCounters::default(),
@@ -273,9 +261,6 @@ impl AvSharedBacking {
     ) -> Result<AvPayloadDeliveryOutcome, AvSharedBackingError> {
         if payload.is_empty() {
             return Ok(AvPayloadDeliveryOutcome::PayloadEmpty);
-        }
-        if payload.len() > self.max_event_bytes {
-            return Ok(AvPayloadDeliveryOutcome::PayloadOversized);
         }
         let next_live_bytes = self
             .event_local_bytes
@@ -533,7 +518,7 @@ mod tests {
     #[test]
     fn retained_payloads_can_exceed_the_former_service_byte_budget() {
         let mut backing = AvSharedBacking::new();
-        let payload = vec![0x5c; DEFAULT_AV_MAX_EVENT_BYTES];
+        let payload = vec![0x5c; 1024 * 1024];
         for _ in 0..17 {
             assert!(matches!(
                 backing

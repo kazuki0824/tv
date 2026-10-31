@@ -9,7 +9,7 @@ use crate::capability_selection::{
 use crate::playback_consume_txn::required_playback_processing_bytes;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_demux::{
-    DvrKind, FilterOpenType, DEFAULT_AV_MAX_EVENT_BYTES, MAX_PES_BUFFER_BYTES,
+    DvrKind, FilterOpenType, MAX_PES_BUFFER_BYTES,
 };
 
 const MIB: usize = 1024 * 1024;
@@ -46,7 +46,6 @@ pub struct CapabilitySnapshot {
     pub pes_max_bytes_per_filter: usize,
     pub pes_runtime_budget_bytes: usize,
     pub playback_processing_budget_bytes: usize,
-    pub av_max_event_bytes: usize,
     pub cleanup_reaper_capacity: usize,
     pub cleanup_retry_schedule_ms: [u64; 4],
     pub cleanup_terminal_deadline_ms: u64,
@@ -81,11 +80,9 @@ impl CapabilitySnapshot {
             filter_pending_event_capacity_per_filter: 64,
             fmq_runtime_budget_bytes: 288 * MIB,
             pes_max_bytes_per_filter: MAX_PES_BUFFER_BYTES,
-            // TsPesだけでなくTsAudio/TsVideoもper-filter PesAssemblerを持つため、
-            // 4 PES + 1 AUDIO + 1 VIDEOの全6本を同時に閉じる。
-            pes_runtime_budget_bytes: 6 * MIB,
+            // 固定PES予算はTsPes専用。AV payloadは実割当の成否で扱う。
+            pes_runtime_budget_bytes: 4 * MIB,
             playback_processing_budget_bytes: 64 * MIB,
-            av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
             cleanup_reaper_capacity: 176,
             cleanup_retry_schedule_ms: [0, 10, 100, 1_000],
             cleanup_terminal_deadline_ms: 30_000,
@@ -188,13 +185,13 @@ impl CapabilitySnapshot {
             (
                 AudioAv,
                 requested.num_audio_filter,
-                object.with(PesBytes, requested.pes_max_bytes_per_filter),
+                object,
                 None,
             ),
             (
                 VideoAv,
                 requested.num_video_filter,
-                object.with(PesBytes, requested.pes_max_bytes_per_filter),
+                object,
                 None,
             ),
             (
@@ -359,8 +356,7 @@ impl CapabilitySnapshot {
             snapshot.pes_max_bytes_per_filter = 0;
         }
         if snapshot.num_audio_filter == 0 && snapshot.num_video_filter == 0 {
-            snapshot.av_max_event_bytes = 0;
-        }
+            }
         Ok(snapshot)
     }
 
@@ -505,48 +501,12 @@ impl CapabilitySnapshot {
                 "pending filter event capability closure is not finite",
             ));
         }
-        let av_filter_count = usize::try_from(
-            self.num_audio_filter
-                .checked_add(self.num_video_filter)
-                .ok_or_else(|| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "AV filter capability count overflow",
-                    )
-                })?,
-        )
-        .map_err(|_| {
+        let pes_assembler_filter_count = usize::try_from(self.num_pes_filter).map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "AV filter capability count must not be negative",
+                "PES assembler filter capability count is invalid",
             )
         })?;
-        if av_filter_count == 0 {
-            if self.av_max_event_bytes != 0 {
-                return Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "suppressed AV capability must not reserve or advertise AV byte budgets",
-                ));
-            }
-        } else {
-            if self.av_max_event_bytes == 0 || self.av_max_event_bytes > MAX_PES_BUFFER_BYTES {
-                return Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "advertised AV capability exceeds its finite PES assembly closure",
-                ));
-            }
-        }
-        let pes_assembler_filter_count = self
-            .num_pes_filter
-            .checked_add(self.num_audio_filter)
-            .and_then(|count| count.checked_add(self.num_video_filter))
-            .and_then(|count| usize::try_from(count).ok())
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "PES assembler filter capability count is invalid",
-                )
-            })?;
         if pes_assembler_filter_count == 0 {
             if self.pes_max_bytes_per_filter != 0 || self.pes_runtime_budget_bytes != 0 {
                 return Err(HalError::internal(
@@ -569,7 +529,7 @@ impl CapabilitySnapshot {
             {
                 return Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "PES runtime budget does not close all advertised PES/AV assembler leases",
+                    "PES runtime budget does not close all advertised PES assembler leases",
                 ));
             }
         }
@@ -686,10 +646,7 @@ impl CapacityLedger {
         } else {
             0
         };
-        let pes = if matches!(
-            open_type,
-            FilterOpenType::TsPes | FilterOpenType::TsAudio | FilterOpenType::TsVideo
-        ) {
+        let pes = if open_type == FilterOpenType::TsPes {
             snapshot.pes_max_bytes_per_filter
         } else {
             0
@@ -887,7 +844,6 @@ mod tests {
         snapshot.num_pes_filter = 0;
         snapshot.num_audio_filter = 0;
         snapshot.num_video_filter = 0;
-        snapshot.av_max_event_bytes = 0;
         assert!(snapshot.validate_dependency_closures().is_err());
 
         snapshot.pes_max_bytes_per_filter = 0;
@@ -909,7 +865,6 @@ mod tests {
         snapshot.num_pcr_filter = 0;
         snapshot.pes_max_bytes_per_filter = 0;
         snapshot.pes_runtime_budget_bytes = 0;
-        snapshot.av_max_event_bytes = 0;
         snapshot.num_record = 0;
         snapshot.num_playback = 0;
         snapshot.public_demuxes = [None; 8];
@@ -999,23 +954,21 @@ mod tests {
     }
 
     #[test]
-    fn av_filters_claim_their_pes_assembly_budget() {
+    fn av_filters_do_not_claim_the_ts_pes_budget() {
         let snapshot = CapabilitySnapshot {
             pes_runtime_budget_bytes: MAX_PES_BUFFER_BYTES,
             ..CapabilitySnapshot::product_default()
         };
         let mut ledger = CapacityLedger::default();
-        ledger
-            .reserve_filter(snapshot, 1, FilterOpenType::TsAudio, 4096)
-            .unwrap();
-        assert!(ledger
-            .reserve_filter(snapshot, 2, FilterOpenType::TsVideo, 4096)
-            .is_err());
+        ledger.reserve_filter(snapshot, 1, FilterOpenType::TsPes, 4096).unwrap();
+        ledger.reserve_filter(snapshot, 2, FilterOpenType::TsAudio, 4096).unwrap();
+        ledger.reserve_filter(snapshot, 3, FilterOpenType::TsVideo, 4096).unwrap();
+        assert!(ledger.reserve_filter(snapshot, 4, FilterOpenType::TsPes, 4096).is_err());
         ledger.release_filter(1).unwrap();
-        ledger
-            .reserve_filter(snapshot, 2, FilterOpenType::TsVideo, 4096)
-            .unwrap();
-        ledger.release_filter(2).unwrap();
+        ledger.reserve_filter(snapshot, 4, FilterOpenType::TsPes, 4096).unwrap();
+        for id in [2, 3, 4] {
+            ledger.release_filter(id).unwrap();
+        }
     }
 
     #[test]
@@ -1023,7 +976,6 @@ mod tests {
         let snapshot = CapabilitySnapshot {
             num_audio_filter: 0,
             num_video_filter: 1,
-            av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
             ..CapabilitySnapshot::product_default()
         };
         let mut ledger = CapacityLedger::default();
@@ -1043,9 +995,9 @@ mod tests {
         assert_eq!(snapshot.num_audio_filter, 1);
         assert_eq!(snapshot.num_video_filter, 1);
         assert_eq!(snapshot.num_pes_filter, 4);
-        assert!(snapshot.pes_runtime_budget_bytes >= snapshot.pes_max_bytes_per_filter * 6);
+        assert!(snapshot.pes_runtime_budget_bytes >= snapshot.pes_max_bytes_per_filter * 4);
         snapshot
             .validate_dependency_closures()
-            .expect("product AV capabilities must retain a closed finite byte budget");
+            .expect("product capabilities must close their actual resource claims");
     }
 }

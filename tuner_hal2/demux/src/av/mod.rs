@@ -19,6 +19,5 @@ pub(crate) use release_txn::{
 pub use shared_backing::{
     AvDataIdAllocator, AvFileIdentity, AvFlowDiagnosticSnapshot, AvHandleReleaseDescriptor,
     AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedBackingError, AvSharedHandleExport,
-    DEFAULT_AV_MAX_EVENT_BYTES,
 };
 pub use slot::AvDataId;

@@ -10,7 +10,6 @@ use crate::av::{
     AvDataId, AvDataIdAllocator, AvDataIdState, AvFilterReleaseState, AvFlowDiagnosticSnapshot,
     AvHandleReleaseDescriptor, AvHandleReleaseInput, AvHandleReleaseKind, AvHandleReleaseOutcome,
     AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedHandleExport,
-    DEFAULT_AV_MAX_EVENT_BYTES,
 };
 use crate::config::{
     AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterDelayReadiness, FilterOpenType,
@@ -603,9 +602,6 @@ fn av_payload_delivery_outcome_diagnostic(
         AvPayloadDeliveryOutcome::PayloadEmpty => {
             Some(crate::packet_pipeline::PipelineDiagnostic::av_payload_empty(pid, filter_id))
         }
-        AvPayloadDeliveryOutcome::PayloadOversized => {
-            Some(crate::packet_pipeline::PipelineDiagnostic::av_payload_oversized(pid, filter_id))
-        }
         AvPayloadDeliveryOutcome::DataIdExhausted => {
             Some(crate::packet_pipeline::PipelineDiagnostic::av_data_id_exhausted(pid, filter_id))
         }
@@ -973,7 +969,6 @@ pub struct DemuxRuntime {
     dvr_queue_runtimes: BTreeMap<i32, QueueRuntime>,
     filter_av_backings: BTreeMap<i32, AvSharedBacking>,
     av_data_id_allocator: Arc<AvDataIdAllocator>,
-    av_max_event_bytes: usize,
     pcr_clock_anchor_store: PcrClockAnchorStore,
     av_sync_registry: AvSyncRegistry,
     rollback_snapshots: BTreeMap<u64, DemuxRuntimeSnapshot>,
@@ -1145,20 +1140,6 @@ impl DemuxRuntime {
         generation: u64,
         av_data_id_allocator: Arc<AvDataIdAllocator>,
     ) -> Self {
-        Self::new_with_av_runtime_limits(
-            demux_id,
-            generation,
-            av_data_id_allocator,
-            DEFAULT_AV_MAX_EVENT_BYTES,
-        )
-    }
-
-    pub fn new_with_av_runtime_limits(
-        demux_id: i32,
-        generation: u64,
-        av_data_id_allocator: Arc<AvDataIdAllocator>,
-        av_max_event_bytes: usize,
-    ) -> Self {
         Self {
             demux_id,
             state: DemuxRuntimeState::Open,
@@ -1173,7 +1154,6 @@ impl DemuxRuntime {
             dvr_queue_runtimes: BTreeMap::new(),
             filter_av_backings: BTreeMap::new(),
             av_data_id_allocator,
-            av_max_event_bytes,
             pcr_clock_anchor_store: PcrClockAnchorStore::default(),
             av_sync_registry: AvSyncRegistry::default(),
             rollback_snapshots: BTreeMap::new(),
@@ -1535,8 +1515,7 @@ impl DemuxRuntime {
         if has_av_backing {
             self.filter_av_backings.insert(
                 filter_id,
-                AvSharedBacking::with_runtime_limits(
-                    self.av_max_event_bytes,
+                AvSharedBacking::with_data_id_allocator(
                     Arc::clone(&self.av_data_id_allocator),
                 ),
             );
@@ -4475,6 +4454,18 @@ impl DemuxRuntime {
             };
             let payloads = match filter.prepare_av_media_payloads(packet, origin) {
                 Ok(payloads) => payloads,
+                Err(super::filter::AvTimestampFailure::Video(
+                    crate::av::VideoTimestampFailure::AllocationFailed,
+                )) => {
+                    report.generated_events.push(PipelineGeneratedEvent::FilterStatus {
+                        filter_id,
+                        status: FilterStatusEvent::Overflow,
+                    });
+                    report.diagnostics.push(PipelineDiagnostic::av_assembly_allocation_failed(
+                        pid, filter_id,
+                    ));
+                    continue;
+                }
                 Err(_) => {
                     report.diagnostics.push(
                         crate::packet_pipeline::PipelineDiagnostic::av_authoritative_timestamp_unavailable(
@@ -4498,14 +4489,6 @@ impl DemuxRuntime {
                             });
                     }
                     Some(Ok(outcome)) => {
-                        if matches!(&outcome, AvPayloadDeliveryOutcome::PayloadOversized) {
-                            report
-                                .generated_events
-                                .push(PipelineGeneratedEvent::FilterStatus {
-                                    filter_id,
-                                    status: FilterStatusEvent::Overflow,
-                                });
-                        }
                         if let Some(diagnostic) =
                             av_payload_delivery_outcome_diagnostic(outcome, pid, filter_id)
                         {

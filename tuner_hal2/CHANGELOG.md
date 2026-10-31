@@ -1,3 +1,10 @@
+# 2026-10-31 AV payloadの独立1 MiB制限を除去
+
+- AVのPES/AU組立・完成payloadコピーを失敗可能な割当へ接続し、割当失敗をOVERFLOWと型付き診断へ伝える。汎用PES filterの固定上限は維持する。
+- event-local DMA-BUFの単一payload上限と、その設定を渡すconstructor・registry fieldを除去する。
+- AVの固定PES byte予約と能力検証を除去し、4つの汎用PES filterだけを固定PES予算へ計上する。関連規範・実装入口と資源台帳の回帰を更新する。
+- CIに符号化AVC TS→実producer→host file割当→配送ESのdecode→TIS SDK callback/Codec入力境界の結合試験を追加する。host file・Robolectricは実DMAヒープ/実decoderの代替証明ではない。CI結果、現行ARIB日本語原文との差分、Soong/atest/VTS・実機確認は未確認。
+
 # 2026-10-31 AV破棄と最終参照終了の回収を修正
 
 - producer gateの受付失敗でevent所有権を返し、閉鎖時の保留eventもdemuxの既存未配送解放へ渡す。close時のbacking移管前にも保留eventを返却する。

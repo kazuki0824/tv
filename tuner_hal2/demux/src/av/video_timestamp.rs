@@ -1,12 +1,12 @@
 use super::avc_timing::{start_codes, AvcTiming};
 use super::AvMediaEventMetadata;
-use crate::ts_core::{PesPacket, MAX_PES_BUFFER_BYTES};
+use crate::ts_core::PesPacket;
 use crate::TsInputOrigin;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VideoTimestampFailure {
     MissingAnchor,
-    UnsupportedOrMalformedFrames,
+    AllocationFailed,
     OriginChange,
 }
 
@@ -66,15 +66,13 @@ impl VideoTimestampAssociation {
         if packet.payload.is_empty() {
             return Ok(Vec::new());
         }
-        // 現行PES/AV単一payload上限と同じ境界を使用し、別の保持予算を導入しない。
-        let total = self
-            .bytes
-            .len()
-            .checked_add(packet.payload.len())
-            .ok_or(VideoTimestampFailure::UnsupportedOrMalformedFrames)?;
-        if total > MAX_PES_BUFFER_BYTES * 2 {
-            return Err(VideoTimestampFailure::UnsupportedOrMalformedFrames);
-        }
+        // AVには汎用PES filterの固定予算を適用せず、実割当失敗を上位へ返す。
+        self.bytes
+            .try_reserve(packet.payload.len())
+            .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
+        self.anchors
+            .try_reserve(1)
+            .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
         self.anchors.push(PesAnchor {
             offset: self.bytes.len(),
             metadata: AvMediaEventMetadata::from_pes(
@@ -95,9 +93,6 @@ impl VideoTimestampAssociation {
         for pair in boundaries.windows(2) {
             let start = pair[0];
             let end = pair[1];
-            if end - start > MAX_PES_BUFFER_BYTES {
-                return Err(VideoTimestampFailure::UnsupportedOrMalformedFrames);
-            }
             // PESの明示時刻はそのPES内で開始する最初のAUへ一度だけ対応させる。
             let anchor_count = self
                 .anchors
@@ -126,8 +121,14 @@ impl VideoTimestampAssociation {
                     metadata.dts_90khz,
                 )
                 .ok_or(VideoTimestampFailure::MissingAnchor)?;
+            let mut payload = Vec::new();
+            payload.try_reserve_exact(end - start)
+                .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
+            payload.extend_from_slice(&self.bytes[start..end]);
+            frames.try_reserve(1)
+                .map_err(|_| VideoTimestampFailure::AllocationFailed)?;
             frames.push(VideoMediaFrame {
-                payload: self.bytes[start..end].to_vec(),
+                payload,
                 metadata: AvMediaEventMetadata::from_pes_with_authoritative_pts(
                     metadata.stream_id,
                     metadata.pts_90khz,
@@ -143,9 +144,6 @@ impl VideoTimestampAssociation {
             for anchor in &mut self.anchors {
                 anchor.offset = anchor.offset.saturating_sub(consumed);
             }
-        }
-        if self.bytes.len() > MAX_PES_BUFFER_BYTES {
-            return Err(VideoTimestampFailure::UnsupportedOrMalformedFrames);
         }
         Ok(frames)
     }

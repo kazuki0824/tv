@@ -322,6 +322,28 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun largeVideoPayloadReachesCodecInput() {
+        // 結合CIではHALが配送した符号化AUを使用し、通常CIでは受付長だけを検査する。
+        val bytes = System.getenv("LARGE_AV_ES")?.let { java.io.File(it).readBytes() }
+            ?: ByteArray(1024 * 1024 + 1)
+        assertTrue(bytes.size > 1024 * 1024)
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val codec = fixture.attachCodec()
+            val sample = mediaEvent(bytes.size.toLong(), 90_000L)
+            val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+            Shadow.extract<NativeLinearBlock>(block).data = bytes
+            Shadow.extract<NativeMediaEvent>(sample).block = block
+            deliver(fixture.avFilter(false), sample)
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(Shadow.extract<NativeCodec>(codec).inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(sample).blockReads)
+            assertEquals(bytes.size, block.map().remaining())
+        }
+    }
+
+    @Test
     fun secondOverflowMustInvalidatePartialHeader() {
         Fixture().use { fixture ->
             fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.MPEG2)
