@@ -1381,10 +1381,12 @@ impl PacketPipeline {
                         .diagnostics
                         .push(PipelineDiagnostic::PesAssemblerDrop { pid, reason });
                     if reason == PesDropReason::AllocationFailed {
-                        report.generated_events.push(PipelineGeneratedEvent::FilterStatus {
-                            filter_id,
-                            status: crate::runtime::FilterStatusEvent::Overflow,
-                        });
+                        report
+                            .generated_events
+                            .push(PipelineGeneratedEvent::FilterStatus {
+                                filter_id,
+                                status: crate::runtime::FilterStatusEvent::Overflow,
+                            });
                     }
                 }
                 for packet in packets {
@@ -1599,7 +1601,10 @@ impl PacketPipeline {
         payload: &[u8],
         av: bool,
     ) -> Vec<crate::ts_core::PesPacket> {
-        let state = self.pes_assemblers.entry((origin, pid, filter_id)).or_default();
+        let state = self
+            .pes_assemblers
+            .entry((origin, pid, filter_id))
+            .or_default();
         if av {
             state.inner.push_av(pid, payload_unit_start, payload)
         } else {

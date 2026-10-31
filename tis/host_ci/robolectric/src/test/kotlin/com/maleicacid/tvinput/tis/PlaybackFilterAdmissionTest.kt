@@ -324,8 +324,9 @@ class PlaybackFilterAdmissionTest {
     @Test
     fun largeVideoPayloadReachesCodecInput() {
         // 結合CIではHALが配送した符号化AUを使用し、通常CIでは受付長だけを検査する。
-        val bytes = System.getenv("LARGE_AV_ES")?.let { java.io.File(it).readBytes() }
-            ?: ByteArray(1024 * 1024 + 1)
+        val bytes =
+            System.getenv("LARGE_AV_ES")?.let { java.io.File(it).readBytes() }
+                ?: ByteArray(1024 * 1024 + 1)
         assertTrue(bytes.size > 1024 * 1024)
         Fixture().use { fixture ->
             fixture.decoder()
