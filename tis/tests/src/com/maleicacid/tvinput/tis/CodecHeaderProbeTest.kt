@@ -26,9 +26,12 @@ class CodecHeaderProbeTest {
         val probe = CodecHeaderProbe(CodecHeaderProbe.Kind.MPEG2_VIDEO)
         val prefix = byteArrayOf(0, 0, 1, 0xb3.toByte(), 0x5a, 0x04, 0x38, 0x30)
         val junk = ByteArray(1_000_000) { 0x55.toByte() }
-        val found = capture(probe, junk, prefix.copyOfRange(0, 3), prefix.copyOfRange(3, 8))
-        check(found.size == 1)
-        check(found.single().contentEquals(prefix))
+        for (boundary in 1 until prefix.size) {
+            probe.reset()
+            val found = capture(probe, junk, prefix.copyOfRange(0, boundary), prefix.copyOfRange(boundary, prefix.size))
+            check(found.size == 1)
+            check(found.single().contentEquals(prefix))
+        }
     }
 
     @Test
@@ -64,9 +67,13 @@ class CodecHeaderProbeTest {
     fun mpegAudioHeaderCanCrossInputBoundary() {
         val probe = CodecHeaderProbe(CodecHeaderProbe.Kind.MPEG_AUDIO)
         val expected = byteArrayOf(0xff.toByte(), 0xfb.toByte(), 0x90.toByte(), 0x64)
-        val found = capture(probe, byteArrayOf(0x33, 0xff.toByte()), expected.copyOfRange(1, 4))
-        check(found.size == 1)
-        check(found.single().contentEquals(expected))
+        val junk = ByteArray(1_700_000) { 0x55 }
+        for (boundary in 1 until expected.size) {
+            probe.reset()
+            val found = capture(probe, junk, expected.copyOfRange(0, boundary), expected.copyOfRange(boundary, expected.size))
+            check(found.size == 1)
+            check(found.single().contentEquals(expected))
+        }
     }
 
     @Test

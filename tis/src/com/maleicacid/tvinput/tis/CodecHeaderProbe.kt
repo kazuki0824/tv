@@ -65,15 +65,20 @@ internal class CodecHeaderProbe(
         if (recentCount != recent.size) return null
         return when (kind) {
             Kind.MPEG2_VIDEO -> {
-                recent.copyOf().takeIf {
-                    it[0] == 0.toByte() && it[1] == 0.toByte() &&
-                        it[2] == 1.toByte() && it[3] == 0xb3.toByte()
+                if (recent[0] == 0.toByte() && recent[1] == 0.toByte() &&
+                    recent[2] == 1.toByte() && recent[3] == 0xb3.toByte()
+                ) {
+                    recent.copyOf()
+                } else {
+                    null
                 }
             }
 
             Kind.MPEG_AUDIO -> {
-                recent.copyOf().takeIf {
-                    it[0] == 0xff.toByte() && it[1].toInt() and 0xe0 == 0xe0
+                if (recent[0] == 0xff.toByte() && recent[1].toInt() and 0xe0 == 0xe0) {
+                    recent.copyOf()
+                } else {
+                    null
                 }
             }
 

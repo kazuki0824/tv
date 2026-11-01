@@ -1,3 +1,9 @@
+# 2026-11-01 MPEG固定ヘッダ探索の不一致時コピーを除去
+
+- 既存CodecHeaderProbeの開始コード／同期条件をコピーより先に検査し、一致候補だけ固定長配列として渡す。既存owner・境界保持・accept契約は変更しない。
+- MPEG音声の長大非一致入力と分割境界の回帰を拡張し、host専用の実割当計測で入力長と候補数を独立に変更する。製品計測状態は追加しない。host期待値を51クラス発見・47クラス実行・416件へ更新。
+- テストはCIで実行する。実機のGC・起動時間、Soong/atestは未測定。
+
 # 2026-10-31 rebase後のライブ選局準備を同じSession内で整理
 
 - 親PRのProvider observer登録を保持したまま、選局前のSession状態初期化をprivate helperへまとめる。Controller ownerでのSI reset callbackと呼出し順序を維持し、抑制・owner・状態を追加しない。既存host回帰と品質検査はCIへ委ねる。
