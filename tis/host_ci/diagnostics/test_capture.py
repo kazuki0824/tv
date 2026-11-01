@@ -32,7 +32,10 @@ elif args[:3] == ['shell', 'uiautomator', 'events']:
 elif args[:3] == ['shell', 'pm', 'path']: print('package:/system_ext/priv-app/Test/Test.apk')
 elif args[:2] == ['shell', 'sha256sum'] or (len(args) == 2 and args[1].startswith('for path')):
     print('a' * 64 + '  /system/test')
-elif args[:2] == ['shell', 'pidof']: print('123')
+elif args[:2] == ['shell', 'pidof']:
+    names = ['com.maleicacid.tvinput', 'com.android.tv', 'mediatuner', 'system_server',
+             'media.swcodec', 'audioserver', 'surfaceflinger', 'android.hardware.tv.tuner-service.maleicacid2']
+    print(123 + names.index(args[2]))
 elif args[:2] == ['shell', 'debuggerd']:
     time.sleep(.1)
     print('backtrace complete')

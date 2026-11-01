@@ -1,5 +1,7 @@
 # 2026-11-01 診断結果の回収と失敗判定を修正
 
+- 模擬adbはprocessごとに異なるPIDを返し、並列snapshotが同じ出力ファイルを競合更新する試験fixtureの不備を修正。実スクリプトの失敗判定は緩和しない。
+
 - 終了・失敗・中断時にlogcat/イベント監視を終了してwaitし、snapshotの完了を待ってから排他的な保存先へアーカイブを作る。採取状態・イベント有無・渡すファイルを表示し、採取失敗とアーカイブ失敗を分ける。
 - snapshotは終了値と出力の両方を検査し、不在・権限・timeout・空出力・エラーを区別する。サービス一覧、media.resource_managerとcodec processを使い、media.codec常在を仮定しない。
 - 端末APK・platformファイルのハッシュを保存する。ホストHEADを端末revisionと扱わず、build manifest/差分/成果物/symbolsとの照合が必要と表示する。INTEGRATIONへ操作と証拠の意味を追記。
