@@ -5,6 +5,8 @@ package com.maleicacid.tvinput.tis
 
 import android.content.Context
 import android.graphics.SurfaceTexture
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -66,6 +68,7 @@ import kotlin.test.assertTrue
         PlaybackFilterAdmissionTest.NativeMediaEvent::class,
         PlaybackFilterAdmissionTest.NativeLinearBlock::class,
         PlaybackFilterAdmissionTest.NativeCodec::class,
+        PlaybackFilterAdmissionTest.DualMonoAudioTrack::class,
     ],
 )
 // 同じproduction ownerとAndroid境界fixtureを共有する。
@@ -1369,6 +1372,216 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    // 同じSessionの公開・選択・失敗時保持を順に検査し、通知履歴を別fixtureへ分断しない。
+    @Suppress("LongMethod")
+    @Test
+    fun advertisedDualMonoSelectionCommitsOnlyAfterAudioTrackAccepts() {
+        Fixture().use { fixture ->
+            fixture.decoder(audio = true)
+            val selection =
+                fixture.audioSelection().let { original ->
+                    original.copy(audio = original.audio!!.copy(componentTag = 0x10))
+                }
+            val session = fixture.audioSession(selection, selection)
+            val snapshot = ReflectionHelpers.getField<com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot>(session, "latestLiveSnapshot")
+            val service = snapshot.services.single().copy(streams = listOfNotNull(selection.video, selection.audio))
+            val event =
+                com.maleicacid.tvinput.aribsi.AribEvent(
+                    selection.serviceKey,
+                    null,
+                    1,
+                    startTimeMillis = System.currentTimeMillis() - 1_000L,
+                    durationMillis = 60_000L,
+                    title = "dual mono",
+                    description = "",
+                    descriptors =
+                        com.maleicacid.tvinput.aribsi.AribEventDescriptors(
+                            components =
+                                com.maleicacid.tvinput.aribsi.AribComponents(
+                                    audio =
+                                        listOf(
+                                            com.maleicacid.tvinput.aribsi.AribComponentEntry(
+                                                esPid = selection.audio!!.elementaryPid,
+                                                componentTag = 0x10,
+                                                language = "jpn",
+                                                secondLanguage = "eng",
+                                                dualMono = true,
+                                            ),
+                                        ),
+                                ),
+                        ),
+                )
+            ReflectionHelpers.setField(
+                session,
+                "latestLiveSnapshot",
+                snapshot.copy(services = listOf(service), programs = snapshot.programs.copy(events = listOf(event))),
+            )
+            val published = mutableListOf<List<TvTrackInfo>>()
+            val selected = mutableListOf<String?>()
+            val callbackType = Class.forName("android.media.tv.ITvInputSessionCallback")
+            val callback =
+                java.lang.reflect.Proxy.newProxyInstance(callbackType.classLoader, arrayOf(callbackType)) { _, method, args ->
+                    when (method.name) {
+                        "onTracksChanged" -> {
+                            val tracks = args!![0] as List<*>
+                            published += tracks.filterIsInstance<TvTrackInfo>()
+                        }
+
+                        "onTrackSelected" -> {
+                            if (args!![0] == TvTrackInfo.TYPE_AUDIO) selected += args[1] as String?
+                        }
+                    }
+                    null
+                }
+            ReflectionHelpers.setField(session, "mSessionCallback", callback)
+            ReflectionHelpers.setField(session, "mHandler", Handler(Looper.getMainLooper()))
+            val started = ReflectionHelpers.getField<PlaybackStartState.Started>(session, "playbackState")
+            val physical = TunerSelectionPolicy.trackIdForAudio(selection.audio!!)
+            for (state in listOf(PlaybackStartState.Idle, PlaybackStartState.Stopped, PlaybackStartState.Failed(started.signature, 7L))) {
+                ReflectionHelpers.setField(session, "playbackState", state)
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    session,
+                    "updateTracks",
+                    ReflectionHelpers.ClassParameter.from(com.maleicacid.tvinput.aribsi.AribService::class.java, service),
+                )
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                assertEquals(
+                    listOf("$physical:main", "$physical:sub", "$physical:main_sub"),
+                    published
+                        .last()
+                        .filter {
+                            it.type ==
+                                TvTrackInfo.TYPE_AUDIO
+                        }.map { it.id },
+                )
+                assertFalse(fixture.selectAudio(session, "audio:999:16:sub"))
+                assertTrue(fixture.selectAudio(session, "$physical:sub"))
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                assertEquals("$physical:sub", selected.last())
+                assertEquals(physical, ReflectionHelpers.getField<String>(session, "preferredAudioTrackId"))
+                assertEquals(PlaybackPipeline.DualMonoPresentation.SUB, ReflectionHelpers.getField<Any>(session, "dualMonoPresentation"))
+            }
+            val beforeStart = selected.size
+            for (state in listOf(
+                PlaybackStartState.Starting(started.signature),
+                PlaybackStartState.WaitingFirstOutput(started.signature, 7L),
+            )) {
+                ReflectionHelpers.setField(session, "playbackState", state)
+                assertFalse(fixture.selectAudio(session, "$physical:main"))
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                assertEquals(beforeStart, selected.size)
+                assertEquals(PlaybackPipeline.DualMonoPresentation.SUB, ReflectionHelpers.getField<Any>(session, "dualMonoPresentation"))
+            }
+            ReflectionHelpers.setField(session, "playbackState", started)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+            ReflectionHelpers.setField(decoder, "isDualMonoStream", true)
+            val track =
+                AudioTrack
+                    .Builder()
+                    .setAudioFormat(
+                        AudioFormat
+                            .Builder()
+                            .setSampleRate(
+                                48_000,
+                            ).setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                            .build(),
+                    ).setBufferSizeInBytes(4_096)
+                    .build()
+            ReflectionHelpers.setField(fixture.pipeline, "audioTrack", track)
+            val nativeTrack = Shadow.extract<DualMonoAudioTrack>(track)
+            for ((suffix, mode) in listOf(
+                "sub" to AudioTrack.DUAL_MONO_MODE_RR,
+                "main_sub" to AudioTrack.DUAL_MONO_MODE_LR,
+                "main" to AudioTrack.DUAL_MONO_MODE_LL,
+            )) {
+                assertTrue(fixture.selectAudio(session, "$physical:$suffix"))
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                assertEquals(mode, nativeTrack.modes.last())
+                assertEquals("$physical:$suffix", selected.last())
+            }
+            assertTrue(fixture.selectAudio(session, "$physical:sub"))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(
+                PlaybackPipeline.DualMonoPresentation.SUB,
+                ReflectionHelpers.getField<TunerController.AvStreamSelection>(fixture.pipeline, "activeSelection").dualMonoPresentation,
+            )
+            val otherAudio = selection.audio!!.copy(elementaryPid = TsPid(0x111), componentTag = 0x11)
+            val otherService = service.copy(streams = service.streams + otherAudio)
+            val otherEvent =
+                event.copy(
+                    descriptors =
+                        event.descriptors.copy(
+                            components =
+                                event.descriptors.components.copy(
+                                    audio =
+                                        event.descriptors.components.audio +
+                                            event.descriptors.components.audio
+                                                .single()
+                                                .copy(esPid = otherAudio.elementaryPid, componentTag = 0x11),
+                                ),
+                        ),
+                )
+            ReflectionHelpers.setField(
+                session,
+                "latestLiveSnapshot",
+                snapshot.copy(services = listOf(otherService), programs = snapshot.programs.copy(events = listOf(otherEvent))),
+            )
+            val active = ReflectionHelpers.getField<TunerController.AvStreamSelection>(fixture.pipeline, "activeSelection")
+            ReflectionHelpers.setField(fixture.pipeline, "activeSelection", active.copy(audioDualMono = true))
+            val beforePidSwitch = selected.size
+            // 異なるmodeの別PIDは再構成が必要。Surface不在時に旧MAINを根拠として成功させない。
+            assertFalse(fixture.selectAudio(session, "${TunerSelectionPolicy.trackIdForAudio(otherAudio)}:main"))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(beforePidSwitch, selected.size)
+            assertEquals(AudioTrack.DUAL_MONO_MODE_RR, nativeTrack.modes.last())
+            // EIT消失時は物理trackだけを通知し、実modeと既存の選択意図を維持する。
+            ReflectionHelpers.setField(session, "latestLiveSnapshot", snapshot.copy(services = listOf(service)))
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                session,
+                "updateTracks",
+                ReflectionHelpers.ClassParameter.from(com.maleicacid.tvinput.aribsi.AribService::class.java, service),
+            )
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(physical, selected.last())
+            assertEquals(PlaybackPipeline.DualMonoPresentation.SUB, ReflectionHelpers.getField<Any>(session, "dualMonoPresentation"))
+            assertEquals(AudioTrack.DUAL_MONO_MODE_RR, nativeTrack.modes.last())
+            ReflectionHelpers.setField(
+                session,
+                "latestLiveSnapshot",
+                snapshot.copy(services = listOf(service), programs = snapshot.programs.copy(events = listOf(event))),
+            )
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                session,
+                "updateTracks",
+                ReflectionHelpers.ClassParameter.from(com.maleicacid.tvinput.aribsi.AribService::class.java, service),
+            )
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("$physical:sub", selected.last())
+            assertTrue(fixture.selectAudio(session, "$physical:main"))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            val notifications = selected.size
+            nativeTrack.accept = false
+            assertFalse(fixture.selectAudio(session, "$physical:sub"))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(notifications, selected.size)
+            assertEquals(PlaybackPipeline.DualMonoPresentation.MAIN, ReflectionHelpers.getField<Any>(session, "dualMonoPresentation"))
+            assertEquals(PlaybackPipeline.DualMonoPresentation.MAIN, ReflectionHelpers.getField<Any>(decoder, "dualMonoPresentation"))
+        }
+    }
+
+    @Implements(AudioTrack::class)
+    class DualMonoAudioTrack : org.robolectric.shadows.ShadowAudioTrack() {
+        val modes = mutableListOf<Int>()
+        var accept = true
+
+        @Implementation
+        fun setDualMonoMode(mode: Int): Boolean {
+            modes += mode
+            return accept
+        }
+    }
+
     @Test
     fun failedAudioPidSwitchCanRecoverSameSelectionWithoutReplacingVideo() {
         for (stage in listOf("close", "open", "configure", "start")) {
@@ -1899,6 +2112,13 @@ class PlaybackFilterAdmissionTest {
             ReflectionHelpers.setField(controller, "playbackPipeline", pipeline)
             ReflectionHelpers.setField(session, "tunerController", controller)
             ReflectionHelpers.setField(session, "currentService", selection.serviceKey)
+            ReflectionHelpers.setField(session, "currentTrackSignature", emptySet<String>())
+            ReflectionHelpers.setField(session, "latestVideoMetadataByProgramKey", linkedMapOf<String, PlaybackPipeline.VideoFormatInfo>())
+            ReflectionHelpers.setField(
+                controller,
+                "captionLanguagesByPid",
+                java.util.concurrent.ConcurrentHashMap<TsPid, List<com.maleicacid.tvinput.aribsi.NativeAribCaptionFactParser.Language>>(),
+            )
             ReflectionHelpers.setField(session, "dualMonoPresentation", PlaybackPipeline.DualMonoPresentation.MAIN)
             ReflectionHelpers.setField(session, "preferredAudioTrackId", TunerSelectionPolicy.trackIdForAudio(selection.audio!!))
             val programs =

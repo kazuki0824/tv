@@ -425,7 +425,9 @@ class PlaybackPipeline(
 
     fun setDualMonoPresentation(presentation: DualMonoPresentation): Boolean =
         runOnPlaybackExecutorBlocking {
-            audioDecoder?.setDualMonoPresentation(presentation) ?: false
+            val applied = audioDecoder?.setDualMonoPresentation(presentation) == true
+            if (applied) activeSelection = activeSelection?.copy(dualMonoPresentation = presentation)
+            applied
         }
 
     private fun setVolumeOnPlaybackExecutor(volume: Float) {
@@ -2421,9 +2423,10 @@ class PlaybackPipeline(
         @Suppress("ReturnCount")
         fun setDualMonoPresentation(presentation: DualMonoPresentation): Boolean {
             if (!isDualMonoStream) return false
+            val track = audioTrack
+            if (track != null && !track.setDualMonoMode(audioTrackDualMonoMode(presentation))) return false
             dualMonoPresentation = presentation
-            val track = audioTrack ?: return true
-            return track.setDualMonoMode(audioTrackDualMonoMode(presentation))
+            return true
         }
 
         override fun codecMime(): String = kind.mime
