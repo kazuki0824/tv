@@ -241,6 +241,12 @@ snapshotは症状marker、uptime、thread一覧、TIS・Live TV・mediatuner・s
 
 停止不能や旧映像などトーストが出ない症状は、別端末から手動で`bash tis/diagnostics/snapshot_playback.sh "$PWD/playback-capture" stuck`のように採る。旧映像は外部カメラでも撮影し、切替前後のチャンネル名と症状markerの操作を同じ撮影に含める。TvViewのsecure Surfaceはscreenrecordに映らない場合がある。診断propertyはscript終了時に元へ戻す。ホスト異常終了時は`log.tag.MaleicacidTIS`と`log.tag.MediaSync`を採取前の値へ戻し、必要なら`device-trace-session.txt`のkeyを使って`adb shell perfetto --attach=<key> --stop`で残存sessionを停止する。端末traceは`device-trace-path.txt`の場所にも残る。
 
+採取の終了・中断・失敗後はlogcatとイベント監視を終了・回収し、起動済みsnapshotの書込み完了を待ってから出力ディレクトリ全体をtar.gzへ保存する。保存先、`status.tsv`、トリガーの有無、渡すファイルの絶対パスを表示する。既存出力ディレクトリは拒否し、アーカイブは排他的に作る別ディレクトリへ保存する。採取失敗でも資料のアーカイブは試行するが、採取の非0終了を成功へ変換しない。アーカイブ作成失敗では元資料と`.partial`を残し、渡すファイルの成功表示を出さない。
+
+snapshotの`*.status`と`dumpsys-status.tsv`は対象・コマンド終了値・出力分類を持つ。終了値0でも、空出力、サービス不在、権限拒否、エラー出力を失敗へ分類する。Codec2端末では`media.codec`の常在を仮定せず、実サービス一覧と`media.resource_manager`、codec processのbacktraceを採る。後者はトースト後の状態であり、停止前の入力停滞を復元した証拠にはしない。
+
+端末のfingerprint、TISのbase/split APKのpathとSHA-256、framework.jar・libstagefright・media JNIの実在ファイルのSHA-256を保存する。`host-tv-revision.txt`は採取ホストのrevisionだけを示す。`device-provenance.tsv`のsource-revisionは未照合とし、同じbuildのmanifest（revision固定）、未commit差分、APK/ライブラリ、symbolsのハッシュと一致するまでソースrevisionを断定しない。これらのbuild証跡は端末のハッシュから逆算できないため、製品build時に保持して採取資料と一緒に渡す。
+
 ### 証拠の対応と採取成立条件
 
 | 境界 | 対応付ける記録 | 判定できる範囲 |

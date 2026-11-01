@@ -11,6 +11,80 @@ command -v timeout >/dev/null
 mkdir -- "$out"
 out=$(cd -- "$out" && pwd)
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+log_pid=
+event_pid=
+snapshot_pid=
+trace_started=0
+properties_saved=0
+status=1
+old_tis=
+old_sync=
+key="tis-playback-$(date +%s)-$$"
+remote="/data/misc/perfetto-traces/$key.perfetto-trace"
+printf '%s\n' "$remote" > "$out/device-trace-path.txt"
+printf '%s\n' "$key" > "$out/device-trace-session.txt"
+cleanup() {
+    local exit_status=$? result archive_dir archive
+    trap - EXIT INT TERM
+    set +e
+    (( exit_status == 0 )) || status=$exit_status
+    if (( trace_started )); then
+        timeout 30s adb shell perfetto --attach="$key" --stop >> "$out/perfetto.txt" 2>&1
+        result=$?
+        printf 'trace-stop\t%s\n' "$result" >> "$out/status.tsv"
+        (( result == 0 )) || status=1
+        timeout 60s adb pull "$remote" "$out/playback.perfetto-trace" >> "$out/perfetto.txt" 2>&1
+        result=$?
+        printf 'trace-pull\t%s\n' "$result" >> "$out/status.tsv"
+        (( result == 0 )) || status=1
+    fi
+    # 書込み中の子を残してアーカイブを成功扱いしない。
+    for pid in "$event_pid" "$log_pid"; do
+        if [[ -n $pid ]]; then
+            kill "$pid" 2>/dev/null
+            wait "$pid"
+        fi
+    done
+    if [[ -n $snapshot_pid ]]; then
+        wait "$snapshot_pid"
+        result=$?
+        printf 'snapshot\t%s\n' "$result" >> "$out/status.tsv"
+        (( result == 0 )) || status=1
+    fi
+    if (( properties_saved )); then
+        timeout 20s adb shell "setprop log.tag.MaleicacidTIS '$old_tis'"
+        result=$?
+        printf 'restore-tis-log\t%s\n' "$result" >> "$out/status.tsv"
+        (( result == 0 )) || status=1
+        timeout 20s adb shell "setprop log.tag.MediaSync '$old_sync'"
+        result=$?
+        printf 'restore-sync-log\t%s\n' "$result" >> "$out/status.tsv"
+        (( result == 0 )) || status=1
+    fi
+    printf 'capture\t%s\n' "$status" >> "$out/status.tsv"
+    echo "保存先: $out"
+    cat "$out/status.tsv"
+    if [[ -f $out/trigger-event.txt ]]; then cat "$out/trigger-event.txt"; else echo '対象イベント: 未捕捉'; fi
+    # 排他的に作った場所だけに書き、失敗時は.partialのまま保持する。
+    archive_dir=$(mktemp -d "${out}.archive.XXXXXX")
+    if [[ -n $archive_dir ]]; then
+        archive="$archive_dir/$(basename -- "$out").tar.gz"
+        if tar -czf "$archive.partial" -C "$(dirname -- "$out")" -- "$(basename -- "$out")" &&
+            mv -- "$archive.partial" "$archive"; then
+            echo "archive: 0; 渡すファイル: $archive"
+        else
+            echo "archive: 1; アーカイブ作成失敗。取得済み資料: $out" >&2
+            exit 1
+        fi
+    else
+        echo "archive: 1; アーカイブ保存先を作成できません。取得済み資料: $out" >&2
+        exit 1
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 adb shell perfetto --query --long > "$out/perfetto-sources.txt" 2>&1
 for source in android.surfaceflinger.layers android.surfaceflinger.frametimeline; do
     grep -Fq "$source" "$out/perfetto-sources.txt" || { echo "必要なdata sourceがありません: $source" >&2; exit 1; }
@@ -18,27 +92,24 @@ done
 old_tis=$(adb shell getprop log.tag.MaleicacidTIS | tr -d '\r')
 old_sync=$(adb shell getprop log.tag.MediaSync | tr -d '\r')
 [[ $old_tis =~ ^[A-Za-z0-9]*$ && $old_sync =~ ^[A-Za-z0-9]*$ ]] || exit 1
-log_pid=
-event_pid=
-trace_started=0
-key="tis-playback-$(date +%s)-$$"
-remote="/data/misc/perfetto-traces/$key.perfetto-trace"
-printf '%s\n' "$remote" > "$out/device-trace-path.txt"
-printf '%s\n' "$key" > "$out/device-trace-session.txt"
-cleanup() {
-    if (( trace_started )); then
-        adb shell perfetto --attach="$key" --stop >> "$out/perfetto.txt" 2>&1 || true
-    fi
-    [[ -z $event_pid ]] || kill "$event_pid" 2>/dev/null || true
-    [[ -z $log_pid ]] || kill "$log_pid" 2>/dev/null || true
-    adb shell "setprop log.tag.MaleicacidTIS '$old_tis'" || true
-    adb shell "setprop log.tag.MediaSync '$old_sync'" || true
-}
-trap cleanup EXIT
-trap 'exit 130' INT TERM
+properties_saved=1
 adb shell getprop ro.build.fingerprint > "$out/build-fingerprint.txt"
 git -C "$script_dir/../.." rev-parse HEAD > "$out/host-tv-revision.txt"
 adb shell dumpsys package com.maleicacid.tvinput > "$out/package.txt"
+# ホストHEADと端末成果物の由来を混同しない。対応manifestとsymbolsは同じbuildから別途保持する。
+printf 'source-revision\tunverified; match device hashes to build artifacts/manifest/symbols\n' > "$out/device-provenance.tsv"
+adb shell pm path com.maleicacid.tvinput | tr -d '\r' > "$out/apk-paths.txt"
+[[ -s $out/apk-paths.txt ]] || exit 1
+while IFS= read -r entry; do
+    path=${entry#package:}
+    [[ $entry == package:* && $path =~ ^/[A-Za-z0-9_./+=@:-]+$ ]] || exit 1
+    adb shell sha256sum "$path" >> "$out/device-apk-sha256.txt"
+done < "$out/apk-paths.txt"
+grep -Eq '^[0-9a-f]{64}[[:space:]]' "$out/device-apk-sha256.txt" || exit 1
+adb shell 'for path in /system/lib*/libstagefright.so /system/lib*/libmedia_jni.so /system/framework/framework.jar; do
+    if [ -f "$path" ]; then sha256sum "$path" || exit 1; fi
+done' > "$out/device-platform-sha256.txt"
+grep -Eq '^[0-9a-f]{64}[[:space:]]' "$out/device-platform-sha256.txt" || exit 1
 adb shell setprop log.tag.MaleicacidTIS DEBUG
 adb shell setprop log.tag.MediaSync DEBUG
 adb logcat -b all -v threadtime -v monotonic > "$out/logcat.txt" 2> "$out/logcat.stderr" &
@@ -90,7 +161,8 @@ fi
 adb pull "$remote" "$out/playback.perfetto-trace" || status=1
 [[ -s "$out/playback.perfetto-trace" ]] || status=1
 wait "$snapshot_pid" || status=1
+snapshot_pid=
 kill -0 "$log_pid" 2>/dev/null || { echo 'logcatが採取中に終了しました。' >&2; status=1; }
-printf 'capture\t%s\n' "$status" > "$out/status.tsv"
+
 echo '採取終了。イベントとtraceの前後区間、data lossを確認してください。'
 exit "$status"
