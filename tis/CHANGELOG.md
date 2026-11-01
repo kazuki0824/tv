@@ -1,3 +1,7 @@
+# 2026-10-31 rebase後のライブ選局準備を同じSession内で整理
+
+- 親PRのProvider observer登録を保持したまま、選局前のSession状態初期化をprivate helperへまとめる。Controller ownerでのSI reset callbackと呼出し順序を維持し、抑制・owner・状態を追加しない。既存host回帰と品質検査はCIへ委ねる。
+
 ## Provider通知の集約とProgram更新の所有元照合
 
 通知を単一dirty状態へ集約し、Session data受付の飽和による解放を防止する。Program更新索引は自package行だけを候補とし、他packageの同一key行を更新しない。既存ownerと一括queryを使い、worker・queue・所有台帳を追加しない。
@@ -36,6 +40,11 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 
 - TvProvider投影文書の重複記述を既存delivery system対応表へ統一し、部分受信とISDB-C非対応の記載矛盾を解消した。
 - 採用済み契約の変更なし。静的照合のみで、実行テストはCIに委ねる。
+
+# 2026-10-30 ライブSI resetを旧Filter失効後へ移動
+
+- Sessionの先行resetを既存Controllerの旧Filter解放後callbackへ移し、旧Sectionの新SIへの混入を防ぐ。scanと同じ順序をライブへ適用する設計変更。
+- 不可逆close失敗でreset callbackを実行しない回帰を既存SDK fixtureへ追加。共通切替経路のscan回帰と併せてCIで確認する。実機の39.1事象の原因確定・解消を主張しない。
 
 # 2026-10-30 全件監査の完了通知・UI競合修正
 

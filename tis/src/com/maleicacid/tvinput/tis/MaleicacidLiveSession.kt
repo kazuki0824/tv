@@ -452,10 +452,41 @@ class MaleicacidLiveSession(
     @Suppress("ReturnCount")
     private fun onTuneOnSessionExecutor(channelUri: Uri?): Boolean {
         if (channelUri == null) return false
+        prepareSessionForTune(channelUri)
+        val outcome =
+            tunerController.tuneForLive(channelUri) {
+                aribSiEngine.reset()
+                sectionIngestController.resetForTune()
+            }
+        if (!outcome.success || outcome.channel == null) {
+            tracePlaybackGate("TUNE_FAILED result=${outcome.resultCode} detail=${outcome.message}")
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+            return false
+        }
+        currentService = outcome.channel.serviceKey
+        aribSiEngine.setDiscoveryProfile(
+            when {
+                outcome.channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> SiDiscoveryProfile.ISDB_T
+                outcome.channel.satelliteBand == "110CS" -> SiDiscoveryProfile.CS110
+                else -> SiDiscoveryProfile.BS
+            },
+        )
+        currentRatingProfile = AribRatingMapper.profileForDeliverySystem(outcome.channel.deliverySystem)
+        currentGeneration = outcome.generation
+        tracePlaybackGate(
+            "TUNE_ACCEPTED delivery=${outcome.channel.deliverySystem} " +
+                "serviceType=${outcome.channel.serviceType}",
+        )
+        if (PlaybackPolicy.isAudioOnlyService(outcome.channel.serviceType)) {
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
+        }
+        refreshDynamicSiAndCasFilters()
+        return true
+    }
+
+    private fun prepareSessionForTune(channelUri: Uri) {
         lastPlaybackGateDiagnostic = null
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
-        aribSiEngine.reset()
-        sectionIngestController.resetForTune()
         playbackState = PlaybackStartState.Idle
         cancelPlaybackRetry()
         currentService = null
@@ -482,31 +513,6 @@ class MaleicacidLiveSession(
         superimposeController.setEnabled(true)
         superimposeController.selectTrack(null)
         currentTrackSignature = emptySet()
-        val outcome = tunerController.tuneForLive(channelUri)
-        if (!outcome.success || outcome.channel == null) {
-            tracePlaybackGate("TUNE_FAILED result=${outcome.resultCode} detail=${outcome.message}")
-            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
-            return false
-        }
-        currentService = outcome.channel.serviceKey
-        aribSiEngine.setDiscoveryProfile(
-            when {
-                outcome.channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> SiDiscoveryProfile.ISDB_T
-                outcome.channel.satelliteBand == "110CS" -> SiDiscoveryProfile.CS110
-                else -> SiDiscoveryProfile.BS
-            },
-        )
-        currentRatingProfile = AribRatingMapper.profileForDeliverySystem(outcome.channel.deliverySystem)
-        currentGeneration = outcome.generation
-        tracePlaybackGate(
-            "TUNE_ACCEPTED delivery=${outcome.channel.deliverySystem} " +
-                "serviceType=${outcome.channel.serviceType}",
-        )
-        if (PlaybackPolicy.isAudioOnlyService(outcome.channel.serviceType)) {
-            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
-        }
-        refreshDynamicSiAndCasFilters()
-        return true
     }
 
     private fun mapUnavailableReason(unavailable: PlaybackPipeline.PlaybackUnavailable): Int =

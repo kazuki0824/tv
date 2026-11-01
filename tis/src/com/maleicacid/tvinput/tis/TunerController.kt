@@ -514,10 +514,16 @@ class TunerController(
         playbackPipeline.setVolume(volume)
     }
 
-    fun tuneForLive(channelUri: Uri): TuneOutcome = callOnController { tuneForLiveOnController(channelUri) }
+    fun tuneForLive(
+        channelUri: Uri,
+        afterOldSectionFiltersClosed: (() -> Unit)? = null,
+    ): TuneOutcome = callOnController { tuneForLiveOnController(channelUri, afterOldSectionFiltersClosed) }
 
     @Suppress("ReturnCount")
-    private fun tuneForLiveOnController(channelUri: Uri): TuneOutcome {
+    private fun tuneForLiveOnController(
+        channelUri: Uri,
+        afterOldSectionFiltersClosed: (() -> Unit)?,
+    ): TuneOutcome {
         if (tunerCloseFailure != null) {
             return TuneOutcome(
                 false,
@@ -533,7 +539,11 @@ class TunerController(
                 Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)
                 return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())
             }
-        return tuneResolvedChannel(resolved, eitPfActualOnly = true)
+        return tuneResolvedChannel(
+            resolved,
+            eitPfActualOnly = true,
+            afterOldSectionFiltersClosed = afterOldSectionFiltersClosed,
+        )
     }
 
     internal data class BsFrontendSelectionResult(
