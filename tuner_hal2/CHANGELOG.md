@@ -34,6 +34,12 @@
 - 既存spawn_with_contextの終端観測を公開factoryから再利用し、別worker・監視loop・資源台帳を追加しない。
 - 実reaper runnerのpanic、期限なし待機の失敗返却、予約保持、新規受付拒否、通常エラーとpanicの区別をCI回帰へ追加。テスト実行はCI、実機検証は未実施。
 
+# 2026-10-30 AV flushの空処理と診断stepを除去
+
+- 空のpreserve_delivered_allocations_on_flushと呼出し中継を削除し、実処理を持たないAvBackingFlush診断stepを廃止する。診断step契約の整理として独立変更にする。
+- 実際のDemux flushを通して配送済みallocation維持・明示解放を確認する既存回帰を維持する。backing単体試験はclose後解放の検査として名称を合わせ、空処理を呼んでflushを検証したとは扱わない。
+- 新しいowner・状態・予算を追加しない。試験実行はCI、Soong/atest・実機検証は未実施。
+
 # 2026-10-30 全件監査の既存契約内修正
 
 - Filter/DVR生成commitと固定LNB給電解放の結果をロック内で確定し、失敗時の後片付け・lease復元前にロックを解放する。同じruntime lockへの自己再入を除去し、既存rollback順序を維持する。
