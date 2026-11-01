@@ -45,5 +45,6 @@ for service in tv_input media.codec media.audio_flinger SurfaceFlinger android.h
     printf '%s\t%s\n' "$service" "$result" >> "$out/dumpsys-status.tsv"
     (( result == 0 )) || status=1
 done
-echo "保存先: $out。status非0・権限拒否・対象不在は採取成功と扱いません。"
+echo "保存先: $out。native-<pid>.status と dumpsys-status.tsv は各コマンドの終了値です。"
+echo "対象不在、権限拒否、終了値が非0の採取がある場合、このスクリプトも非0で終了します。"
 exit "$status"
