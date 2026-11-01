@@ -230,20 +230,16 @@ LinuxホストのBash、adb、GNU timeoutと、`adb root`が使えるuserdebug�
 adb root
 adb wait-for-device
 # vendor/maleicacid/tvをカレントディレクトリにする。
-bash tis/diagnostics/capture_playback.sh "$PWD/playback-capture" 120
+bash tis/diagnostics/capture_playback.sh "$PWD/playback-capture"
 ```
 
-`perfetto.txt`の記録開始を確認してからMXワンセグ1とNHK総合1を交互に選局し、黒画面になるまで待つ。別ターミナルから、症状発生直後・次の選局操作より前に次を実行する。
+採取開始後にリモコン操作などでアクセシビリティイベントを発生させ、「アクセシビリティイベントを受信しました」と表示されてからMXワンセグ1とNHK総合1を交互に選局する。表示されなければ監視成立とは扱わない。`uiautomator events`の`TYPE_NOTIFICATION_STATE_CHANGED`からLive TV（`com.android.tv`）の `android.widget.Toast` を監視し、英語「The video is unexpectedly unavailable」または日本語「動画を再生できなくなりました」のイベントを受けたら、同じ症状区間のsnapshotを自動採取する。検出イベントは`trigger-event.txt`に保存する。文字列は現在の英語・日本語リソースに対応する。別言語や別アプリによる表示、イベントが配信されない端末では検出できないため、対象端末でイベント到達を確認する。自動化のために使うUiAutomationは他のaccessibility serviceと競合し得る。
 
-```bash
-bash tis/diagnostics/snapshot_playback.sh "$PWD/playback-capture" black
-# 停止不能も発生した場合は別名で追加採取する。
-bash tis/diagnostics/snapshot_playback.sh "$PWD/playback-capture" stuck
-```
+Perfettoは64MiBのリングバッファを使い、トースト前の古いtraceを上書きしながら待機する。検出後5秒で停止してtraceを保存するため、保持できる症状前の長さは書込み量によって変わる。固定秒数で採取を終了しない。定期書出し周期は1,000,000,000ミリ秒（約11.6日）で、それを超える採取では端末traceファイルへの書出しも起きる。`logcat.txt`はホストに連続保存されるため長時間では空き容量を確認する。`trigger-event.txt`の有無と時刻、traceの生成から症状前後までの区間、data lossを確認し、必要な範囲が欠けていれば採取成立と扱わない。端末やadbの切断、監視・traceの早期終了、権限不足などでも失敗する。Ctrl-Cで中断すると未捕捉として終了する。
 
-snapshotは症状marker、uptime、thread一覧、TIS・Live TV・mediatuner・system_server・software codec・audioserver・SurfaceFlinger・Tuner HALのnative backtraceを採る。`debuggerd -b`は対象を終了させないが、一時停止による観測影響がある。native採取を先に並行開始し、その後にdumpsysを保存する。各外部採取commandの20秒上限はホスト収集を打ち切るためだけのもので、製品の停止期限ではない。対象不在、権限拒否、非0終了、timeoutは個別ファイルに残し、採取済みと読み替えない。必要なら再現を分けて旧映像の撮影と停止時stack採取を行う。
+snapshotは症状marker、uptime、thread一覧、TIS・Live TV・mediatuner・system_server・software codec・audioserver・SurfaceFlinger・Tuner HALのnative backtraceを採る。`debuggerd -b`は対象を終了させないが、一時停止による観測影響がある。native採取を先に並行開始し、その後にdumpsysを保存する。各外部採取commandの20秒上限はホスト収集を打ち切るためだけのもので、製品の停止期限ではない。対象不在、権限拒否、非0終了、timeoutは個別ファイルに残し、採取済みと読み替えない。
 
-旧映像が一瞬出る現象は外部カメラでも撮影し、切替前後のチャンネル名と症状markerの操作を同じ撮影に含める。TvViewのsecure Surfaceはscreenrecordに映らない場合があるため、screenrecord成功を映像採取成功としない。採取時間はホスト引数で最大600秒まで指定できる。診断propertyはscript終了時に元へ戻す。ホスト異常終了時は`log.tag.MaleicacidTIS`と`log.tag.MediaSync`を採取前の値へ戻す。端末traceは`device-trace-path.txt`の場所にも残る。
+停止不能や旧映像などトーストが出ない症状は、別端末から手動で`bash tis/diagnostics/snapshot_playback.sh "$PWD/playback-capture" stuck`のように採る。旧映像は外部カメラでも撮影し、切替前後のチャンネル名と症状markerの操作を同じ撮影に含める。TvViewのsecure Surfaceはscreenrecordに映らない場合がある。診断propertyはscript終了時に元へ戻す。ホスト異常終了時は`log.tag.MaleicacidTIS`と`log.tag.MediaSync`を採取前の値へ戻し、必要なら`device-trace-session.txt`のkeyを使って`adb shell perfetto --attach=<key> --stop`で残存sessionを停止する。端末traceは`device-trace-path.txt`の場所にも残る。
 
 ### 証拠の対応と採取成立条件
 
