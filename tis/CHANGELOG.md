@@ -8,7 +8,7 @@
 # 2026-11-01 Surface返却時の誤った再生不能通知を削除
 
 - 映像Surfaceの切断・無効化では既存の再生停止・字幕停止を行い、UNKNOWNを通知しない。実障害の通知、音声のみの継続、再接続時の開始入口は維持する。
-- 既存Robolectric fixtureからSession→Controller→Pipelineを通し、停止・decoder解放とFramework通知なしを確認する回帰を追加。実行はCIへ委ねる。実機画面遷移・Soong/CTSは未確認。
+- 既存Robolectric fixtureからSession→Controller→Pipelineを通し、停止・decoder解放とFramework通知なしを確認する回帰を追加。対象53件はRobolectric CIで成功し、固定件数の期待値も53へ更新。実機画面遷移・Soong/CTSは未確認。
 
 # 2026-11-01 再生不能トーストを契機に診断を採取
 
