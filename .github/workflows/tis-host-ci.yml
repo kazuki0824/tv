@@ -28,6 +28,16 @@ env:
   KOTLIN_VERSION: 1.9.22
 
 jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 診断スクリプトの終了と失敗分類を検証
+        run: python3 -m unittest discover -s tis/host_ci/diagnostics -v
+
   caption-check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
