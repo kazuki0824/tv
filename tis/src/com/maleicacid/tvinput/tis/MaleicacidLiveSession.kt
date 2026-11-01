@@ -310,7 +310,7 @@ class MaleicacidLiveSession(
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
-            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+            // 表示先の返却は再生障害ではない。実障害の通知は既存の失敗経路に委ねる。
         } else {
             playbackState = PlaybackStartState.Idle
             refreshDynamicSiAndCasFilters()

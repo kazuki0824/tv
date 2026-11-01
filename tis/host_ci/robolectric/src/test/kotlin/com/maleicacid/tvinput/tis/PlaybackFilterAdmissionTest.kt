@@ -1372,6 +1372,26 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    @Test
+    fun detachingVideoSurfaceStopsWithoutUnavailableNotification() {
+        Fixture().use { fixture ->
+            fixture.decoder()
+            val selection = fixture.audioSelection()
+            val session = fixture.audioSession(selection, selection)
+            assertTrue(
+                ReflectionHelpers.callInstanceMethod<Boolean>(
+                    session,
+                    "onSetSurfaceOnSessionExecutor",
+                    ReflectionHelpers.ClassParameter.from(Surface::class.java, null),
+                ),
+            )
+            assertEquals(PlaybackStartState.Stopped, ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState"))
+            val notifications = ReflectionHelpers.getField<List<Runnable>>(session, "mPendingActions")
+            assertTrue(notifications.isEmpty())
+            assertEquals(null, ReflectionHelpers.getField<Any?>(fixture.pipeline, "videoDecoder"))
+        }
+    }
+
     // 同じSessionの公開・選択・失敗時保持を順に検査し、通知履歴を別fixtureへ分断しない。
     @Suppress("LongMethod")
     @Test
