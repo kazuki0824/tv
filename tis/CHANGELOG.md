@@ -52,6 +52,10 @@
 - 既存のnative入力待機回帰で、投入中1件・未完了・件数超過/byte非超過・generationの診断を追加検査。模擬adbはプロセス別PIDを返して並行backtraceの出力先を分離する。アーカイブ内部の完了済みbacktrace、圧縮失敗時の資料保持、Trace Processor失敗時の非0も検査する。CIの整形指摘も修正。
 - 検証はCIで実行する。platform Soong/native実行、実端末での負荷と症状再現、source/symbol照合は未確認。
 
+# 2026-11-01 親のSurface切断回帰とAV受付回帰の併存
+
+- 親PRのSurface切断試験と本PRの大きなAV受付試験を両方保持し、Robolectricの固定期待件数を54へ更新。テストはCIで実行する。
+
 # 2026-11-01 診断結果の回収と失敗判定を修正
 
 - 模擬adbはprocessごとに異なるPIDを返し、並列snapshotが同じ出力ファイルを競合更新する試験fixtureの不備を修正。実スクリプトの失敗判定は緩和しない。
