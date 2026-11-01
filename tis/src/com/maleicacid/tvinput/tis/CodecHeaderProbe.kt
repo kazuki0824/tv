@@ -65,7 +65,8 @@ internal class CodecHeaderProbe(
         if (recentCount != recent.size) return null
         return when (kind) {
             Kind.MPEG2_VIDEO -> {
-                if (recent[0] == 0.toByte() && recent[1] == 0.toByte() &&
+                val leadingZeros = recent[0] == 0.toByte() && recent[1] == 0.toByte()
+                if (leadingZeros &&
                     recent[2] == 1.toByte() && recent[3] == 0xb3.toByte()
                 ) {
                     recent.copyOf()

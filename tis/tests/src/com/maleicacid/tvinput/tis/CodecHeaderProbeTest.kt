@@ -70,7 +70,13 @@ class CodecHeaderProbeTest {
         val junk = ByteArray(1_700_000) { 0x55 }
         for (boundary in 1 until expected.size) {
             probe.reset()
-            val found = capture(probe, junk, expected.copyOfRange(0, boundary), expected.copyOfRange(boundary, expected.size))
+            val found =
+                capture(
+                    probe,
+                    junk,
+                    expected.copyOfRange(0, boundary),
+                    expected.copyOfRange(boundary, expected.size),
+                )
             check(found.size == 1)
             check(found.single().contentEquals(expected))
         }
