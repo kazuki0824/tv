@@ -111,6 +111,7 @@ class PlaybackPipeline(
     private val resourceCleanup = ResourceCleanup()
     private val dataPathProgress = PlaybackDataPathProgress()
     // DEBUG診断専用。再生制御・資源会計には使用しない。
+
     private val audioFilterCallbackSequence = AtomicLong(0L)
     private val lastAudioFilterCallbackNs = AtomicLong(0L)
     private var resourceActivityReported = false
@@ -332,15 +333,8 @@ class PlaybackPipeline(
         // 入口ではcallback/ownerを待たず、DEBUG採取時だけ実際のowner待ち時間を測る。
         val submittedAtNs = if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) System.nanoTime() else 0L
         val audioCallbackSequence = if (isAudio && submittedAtNs != 0L) audioFilterCallbackSequence.incrementAndGet() else 0L
-        val audioCallbackAtMs = if (audioCallbackSequence != 0L) SystemClock.elapsedRealtime() else 0L
         val previousAudioCallbackNs =
             if (audioCallbackSequence != 0L) lastAudioFilterCallbackNs.getAndSet(submittedAtNs) else 0L
-        val audioCallbackGapUs =
-            if (previousAudioCallbackNs > 0L && submittedAtNs >= previousAudioCallbackNs) {
-                (submittedAtNs - previousAudioCallbackNs) / 1_000L
-            } else {
-                -1L
-            }
         executor.executeCallback(
             isReleased = released::get,
             onFailure = ::handleSubmissionFailure,
@@ -357,19 +351,14 @@ class PlaybackPipeline(
             action = {
                 if (submittedAtNs != 0L) {
                     val ownerWaitUs = (System.nanoTime() - submittedAtNs) / 1_000L
-                    if (isAudio && (
-                            audioCallbackSequence == 1L ||
-                                audioCallbackSequence % AUDIO_DIAGNOSTIC_SAMPLE_INTERVAL == 0L ||
-                                audioCallbackGapUs >= AUDIO_DIAGNOSTIC_SLOW_US ||
-                                ownerWaitUs >= AUDIO_DIAGNOSTIC_SLOW_US
-                        )
-                    ) {
-                        Log.d(
-                            LogTags.TIS,
-                            "PLAYBACK_AUDIO_FILTER_TIMING sessionId=$sessionId generation=$playbackGeneration " +
-                                "sequence=$audioCallbackSequence callbackAtElapsedMs=$audioCallbackAtMs " +
-                                "callbackGapUs=$audioCallbackGapUs ownerWaitUs=$ownerWaitUs " +
-                                "events=${events.size} payloadBytes=$payloadBytes",
+                    if (audioCallbackSequence != 0L) {
+                        logAudioFilterTiming(
+                            audioCallbackSequence,
+                            submittedAtNs,
+                            previousAudioCallbackNs,
+                            ownerWaitUs,
+                            events.size,
+                            payloadBytes,
                         )
                     }
                     val recorded =
@@ -386,6 +375,33 @@ class PlaybackPipeline(
                 }
                 action()
             },
+        )
+    }
+
+    // 実測時刻だけを記録し、音声の受付順・再生制御には干渉しない。
+    @Suppress("MaxLineLength")
+    private fun logAudioFilterTiming(
+        sequence: Long,
+        submittedAtNs: Long,
+        previousSubmittedAtNs: Long,
+        ownerWaitUs: Long,
+        events: Int,
+        payloadBytes: Long,
+    ) {
+        val callbackGapUs =
+            if (previousSubmittedAtNs > 0L && submittedAtNs >= previousSubmittedAtNs) {
+                (submittedAtNs - previousSubmittedAtNs) / NANOS_PER_MICROSECOND
+            } else {
+                -1L
+            }
+        val sampled = sequence == 1L || sequence % AUDIO_DIAGNOSTIC_SAMPLE_INTERVAL == 0L
+        val slow = callbackGapUs >= AUDIO_DIAGNOSTIC_SLOW_US || ownerWaitUs >= AUDIO_DIAGNOSTIC_SLOW_US
+        if (!sampled && !slow) return
+        Log.d(
+            LogTags.TIS,
+            "PLAYBACK_AUDIO_FILTER_TIMING sessionId=$sessionId generation=$playbackGeneration " +
+                "sequence=$sequence callbackGapUs=$callbackGapUs ownerWaitUs=$ownerWaitUs " +
+                "events=$events payloadBytes=$payloadBytes",
         )
     }
 
@@ -2604,7 +2620,7 @@ class PlaybackPipeline(
                         LogTags.TIS,
                         "PLAYBACK_MEDIASYNC_AUDIO_QUEUE sessionId=$sessionId generation=$generation " +
                             "bufferId=$bufferId bytes=${info.size} ptsUs=${info.presentationTimeUs} " +
-                            "queueUs=${(System.nanoTime() - audioQueueAtNs) / 1_000L} " +
+                            "queueUs=${(System.nanoTime() - audioQueueAtNs) / NANOS_PER_MICROSECOND} " +
                             "outstanding=${outstandingAudioOutputs.size}",
                     )
                 }
@@ -3835,8 +3851,11 @@ class PlaybackPipeline(
         private const val DATA_IDENTIFIER_SUPERIMPOSE = 0x81
         private const val CAPTION_PRIVATE_STREAM_ID = 0xff
         // 診断の間引きと異常値の表示閾値であり、データ受付・再生の予算ではない。
+
+        private const val NANOS_PER_MICROSECOND = 1_000L
         private const val AUDIO_DIAGNOSTIC_SAMPLE_INTERVAL = 32L
         private const val AUDIO_DIAGNOSTIC_SLOW_US = 100_000L
+
         private const val DEFAULT_AUDIO_SAMPLE_RATE = 48_000
         private const val DEFAULT_AUDIO_CHANNEL_COUNT = 2
         private const val FIRST_FRAME_TIMEOUT_MS = 10_000L
