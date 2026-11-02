@@ -84,9 +84,32 @@ class CaptureTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout)
         self.assertIn('capture\t0', (out / 'status.tsv').read_text())
         self.assertIn('backtrace complete', (out / 'unavailable/native-123.txt').read_text())
+        archive_path = next(self.root.glob('ok.archive.*/*.tar.gz'))
+        with tarfile.open(archive_path) as archive:
+            self.assertIn(b'backtrace complete', archive.extractfile('ok/unavailable/native-123.txt').read())
         again = subprocess.run(['bash', str(ROOT / 'diagnostics/capture_playback.sh'), str(out)],
                                env=self.env, capture_output=True, timeout=5)
         self.assertNotEqual(0, again.returncode)
+
+    def test_archive_failure_keeps_capture_without_success_path(self):
+        tar = self.bin / 'tar'
+        tar.write_text('#!/bin/sh\nexit 2\n')
+        tar.chmod(0o755)
+        out = self.root / 'archive-failed'
+        result = subprocess.run(['bash', str(ROOT / 'diagnostics/capture_playback.sh'), str(out)],
+                                env=dict(self.env, CAPTURE_CASE='ok'), text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn('archive: 1', result.stdout)
+        self.assertNotIn('渡すファイル:', result.stdout)
+        self.assertTrue((out / 'logcat.txt').exists())
+        self.assertEqual([], list(self.root.glob('archive-failed.archive.*/*.tar.gz')))
+
+    def test_trace_processor_failure_is_not_success(self):
+        (self.bin / 'trace_processor_shell').write_text('#!/bin/sh\nexit 42\n')
+        result, out = self.capture('processor-failed')
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn('evidence-coverage\t1', (out / 'status.tsv').read_text())
 
     def test_zero_exit_error_output_is_not_success(self):
         for mode, expected in [('missing', 'not-found'), ('denied', 'permission-denied'),

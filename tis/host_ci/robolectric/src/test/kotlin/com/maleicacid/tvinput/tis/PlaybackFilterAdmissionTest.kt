@@ -1964,7 +1964,10 @@ class PlaybackFilterAdmissionTest {
         val sample = ReflectionHelpers.getField<Any>(submission, "sample")
         val budgetType = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "QueueBudget" }
         val budget =
-            budgetType.declaredConstructors.single().apply { isAccessible = true }.newInstance(Long.MAX_VALUE, 1)
+            budgetType.declaredConstructors
+                .single()
+                .apply { isAccessible = true }
+                .newInstance(Long.MAX_VALUE, 1)
         return decoder.javaClass.superclass
             .getDeclaredMethod("pendingInputDiagnostic", sample.javaClass, budgetType)
             .apply { isAccessible = true }
