@@ -40,6 +40,7 @@ import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
+import org.robolectric.annotation.RealObject
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.MediaCodecInfoBuilder
 import org.robolectric.shadows.ShadowLog
@@ -2520,6 +2521,8 @@ class PlaybackFilterAdmissionTest {
 
     @Implements(Tuner::class)
     class NativeTuner {
+        @RealObject private lateinit var actual: Tuner
+
         var failNextOpenAt: String? = null
 
         @Implementation(methodName = "__constructor__")
@@ -2528,7 +2531,17 @@ class PlaybackFilterAdmissionTest {
             context: Context,
             sessionId: String?,
             useCase: Int,
-        ) = Unit
+        ) {
+            // Framework側のJava callback lockはShadow constructorで初期化されない。
+            ReflectionHelpers.setField(actual, "mOnTuneEventLock", Any())
+        }
+
+        // この試験はFilter callbackとSession retryが対象。実SDK close失敗は別試験で注入する。
+        @Implementation
+        fun closeFrontend() = Unit
+
+        @Implementation
+        fun close() = Unit
 
         @Implementation
         fun openFilter(
