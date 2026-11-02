@@ -627,30 +627,6 @@ class TisReviewBoundaryTest {
         }
     }
 
-    @Test fun audioOnlyPipelineSurfaceDetachDoesNotNotifyFailure() {
-        val pipeline = allocate(PlaybackPipeline::class.java)
-        val selection =
-            TunerController.AvStreamSelection(
-                ServiceKey(4, 1, 1),
-                TsPid(0x101),
-                null,
-                AribElementaryStream(TsPid(0x101), 0x03, null, null, null),
-            )
-        set(pipeline, "activeSelection", selection)
-        val setter =
-            pipeline.javaClass
-                .getDeclaredMethod("setSurfaceOnPlaybackExecutor", android.view.Surface::class.java)
-                .apply { isAccessible = true }
-        // 未初期化callbackに触れれば失敗する。音声のみの着脱では通知・停止してはならない。
-        setter.invoke(pipeline, null)
-        val retainedSelection =
-            pipeline.javaClass
-                .getDeclaredField("activeSelection")
-                .apply { isAccessible = true }
-                .get(pipeline)
-        check(retainedSelection === selection)
-    }
-
     @Test fun holdingParentalPermissionDoesNotCommitVideoAvailability() {
         val session = allocate(MaleicacidLiveSession::class.java)
         val field =

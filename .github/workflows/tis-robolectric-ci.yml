@@ -77,7 +77,7 @@ jobs:
           assert source.get("failures") == "0" and source.get("errors") == "0", source.attrib
           assert source.get("skipped", "0") == "0", source.attrib
           startup = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest.xml")).getroot()
-          assert startup.get("tests") == "2", startup.attrib
+          assert startup.get("tests") == "3", startup.attrib
           assert startup.get("failures") == "0" and startup.get("errors") == "0", startup.attrib
           assert startup.get("skipped", "0") == "0", startup.attrib
           identity = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.ProgramUpgradeIdentityTest.xml")).getroot()

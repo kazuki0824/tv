@@ -39,6 +39,30 @@ import kotlin.test.assertTrue
 // 同じ開始transactionの正常回収と二次失敗を一つのfixtureで検査する。
 @Suppress("MagicNumber")
 class PlaybackStartupCleanupTest {
+    // 正規初期化したPlaybackPipelineで音声専用Surface切断が誤通知しないことを確認する。
+    @Test
+    fun audioOnlyPipelineSurfaceDetachDoesNotNotifyFailure() {
+        val pipeline = PlaybackPipeline("audio-only-surface", null)
+        val unavailable = mutableListOf<PlaybackPipeline.PlaybackUnavailable>()
+        try {
+            pipeline.setCallbacks({}, unavailable::add)
+            val selection =
+                TunerController.AvStreamSelection(
+                    ServiceKey(4, 1, 1),
+                    TsPid(0x101),
+                    null,
+                    AribElementaryStream(TsPid(0x101), 0x03, null, null, null),
+                )
+            ReflectionHelpers.setField(pipeline, "activeSelection", selection)
+            pipeline.setSurface(null)
+            ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor").callControl(5_000L) { Unit }
+            assertTrue(unavailable.isEmpty())
+            assertTrue(ReflectionHelpers.getField<Any>(pipeline, "activeSelection") === selection)
+        } finally {
+            pipeline.release()
+        }
+    }
+
     @Test
     fun rejectedStartupDeadlineReclaimsPartiallyStartedResources() {
         assertRejectedStartupCleanup(false)
