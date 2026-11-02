@@ -304,6 +304,11 @@ class PlaybackFilterAdmissionTest {
             Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(301L))
             session.onRelease()
             check(released.get())
+            val cleanup = ReflectionHelpers.getField<ResourceCleanup?>(session, "releaseCleanup")
+            if (!executor.isShutdown) {
+                checkNotNull(cleanup).requireComplete()
+                error("正規生成SessionがonRelease後もexecutorを保持しています")
+            }
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
             surface.release()
             texture.release()
