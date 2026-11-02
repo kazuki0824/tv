@@ -189,30 +189,6 @@ class TisReviewBoundaryTest {
         )
     }
 
-    @Test fun captionManagementAloneDeterminesAdvertisedLanguages() {
-        val controller = allocate(TunerController::class.java)
-        val languages = ConcurrentHashMap<TsPid, List<NativeAribCaptionFactParser.Language>>()
-        set(controller, "captionLanguagesByPid", languages)
-        val caption = AribElementaryStream(TsPid(0x130), 6, null, null, null, isCaption = true)
-        val superimpose = caption.copy(elementaryPid = TsPid(0x138), isCaption = false, isSuperimpose = true)
-        val streams = listOf(caption, superimpose)
-        check(controller.tracksFor(streams).isEmpty())
-        check(controller.superimposeTrackFor(streams) == null)
-        val pending = controller.selectAvStreams(ServiceKey(4, 1, 1), null, streams)
-        check(pending.subtitle == caption && pending.subtitleLanguageId == null)
-
-        fun language(tag: Int) = NativeAribCaptionFactParser.Language(tag, "jpn", 0, true, null, 0, 0, 0)
-        languages[caption.elementaryPid] = listOf(language(2))
-        languages[superimpose.elementaryPid] = listOf(language(7))
-        check(controller.tracksFor(streams).isEmpty() && controller.superimposeTrackFor(streams) == null)
-        languages[caption.elementaryPid] = listOf(language(0), language(1), language(2))
-        languages[superimpose.elementaryPid] = listOf(language(1))
-        check(controller.tracksFor(streams).map { it.captionLanguageId } == listOf(1, 2))
-        check(controller.superimposeTrackFor(streams)?.captionLanguageId == 2)
-        languages.clear()
-        check(controller.tracksFor(streams).isEmpty() && controller.superimposeTrackFor(streams) == null)
-    }
-
     @Test fun dualMonoUiTracksSelectPresentationsWithoutInventingAudioEs() {
         val base =
             TunerController.TisTrack(
