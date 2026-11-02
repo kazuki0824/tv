@@ -78,6 +78,27 @@ import kotlin.test.assertTrue
 @Suppress("TooManyFunctions", "LargeClass")
 class PlaybackFilterAdmissionTest {
     @Test
+    fun holdingParentalPermissionDoesNotCommitVideoAvailability() {
+        RetryFixture().use { fixture ->
+            val session = fixture.session
+            val field =
+                MaleicacidLiveSession::class.java
+                    .getDeclaredField("lastParentalAccessState")
+                    .apply { isAccessible = true }
+            val allowed = field.type.enumConstants.single { it.toString() == "ALLOWED" }
+            field.set(session, allowed)
+            ReflectionHelpers.setField(session, "playbackState", PlaybackStartState.Idle)
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                session,
+                "holdPreviousParentalAccessState",
+                ReflectionHelpers.ClassParameter.from(String::class.java, "provider query failed after recovery"),
+            )
+            assertEquals(allowed, field.get(session))
+            assertEquals(PlaybackStartState.Idle, ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState"))
+        }
+    }
+
+    @Test
     fun laterRecoverableFailureInSameTuneCanBecomeEligibleAgain() {
         RetryFixture().use { fixture ->
             fixture.failAndSchedule(7L)

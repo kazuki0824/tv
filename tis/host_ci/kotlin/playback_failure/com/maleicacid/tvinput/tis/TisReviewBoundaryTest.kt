@@ -547,29 +547,7 @@ class TisReviewBoundaryTest {
         }
     }
 
-    @Test fun holdingParentalPermissionDoesNotCommitVideoAvailability() {
-        val session = allocate(MaleicacidLiveSession::class.java)
-        val field =
-            MaleicacidLiveSession::class.java
-                .getDeclaredField("lastParentalAccessState")
-                .apply { isAccessible = true }
-        val allowed = field.type.enumConstants.single { it.toString() == "ALLOWED" }
-        field.set(session, allowed)
-        set(session, "playbackState", PlaybackStartState.Idle)
-        // Framework Sessionの通知経路は未初期化。ここからavailabilityを呼べば試験が失敗する。
-        MaleicacidLiveSession::class.java
-            .getDeclaredMethod("holdPreviousParentalAccessState", String::class.java)
-            .apply { isAccessible = true }
-            .invoke(session, "provider query failed after recovery")
-        check(field.get(session) == allowed)
-        check(
-            MaleicacidLiveSession::class.java
-                .getDeclaredField("playbackState")
-                .apply { isAccessible = true }
-                .get(session) ==
-                PlaybackStartState.Idle,
-        )
-    }
+
 }
 
 private val unsafe =
