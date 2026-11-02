@@ -306,8 +306,9 @@ class PlaybackFilterAdmissionTest {
             check(released.get())
             val cleanup = ReflectionHelpers.getField<ResourceCleanup?>(session, "releaseCleanup")
             if (!executor.isShutdown) {
-                checkNotNull(cleanup).requireComplete()
-                error("正規生成SessionがonRelease後もexecutorを保持しています")
+                val error = runCatching { checkNotNull(cleanup).requireComplete() }.exceptionOrNull()
+                val causes = error?.suppressed?.joinToString { "${it.javaClass.simpleName}: ${it.message}" }
+                throw IllegalStateException("正規生成Sessionの解放が未完了です: $causes", error)
             }
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
             surface.release()
