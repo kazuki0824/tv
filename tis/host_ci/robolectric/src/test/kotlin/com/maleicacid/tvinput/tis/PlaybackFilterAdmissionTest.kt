@@ -62,6 +62,7 @@ import kotlin.test.assertTrue
 @RunWith(RobolectricTestRunner::class)
 @Config(
     sdk = [35],
+    instrumentedPackages = ["com.maleicacid.tvinput.aribsi"],
     shadows = [
         PlaybackFilterAdmissionTest.NativeTuner::class,
         PlaybackFilterAdmissionTest.NativeFilter::class,
@@ -69,6 +70,7 @@ import kotlin.test.assertTrue
         PlaybackFilterAdmissionTest.NativeLinearBlock::class,
         PlaybackFilterAdmissionTest.NativeCodec::class,
         PlaybackFilterAdmissionTest.DualMonoAudioTrack::class,
+        TunerFrontendLeaseTransitionTest.SiEngineBoundary::class,
     ],
 )
 // 同じproduction ownerとAndroid境界fixtureを共有する。
@@ -174,14 +176,21 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
-    // JNI等の端末初期化を省略し、Sessionの実予約処理と既存executorを実行する。
+    // native SIのみShadowに委ね、SessionとControllerは本番コンストラクタで初期化する。
     // SIは未取得とし、再試行受付までを検査する。実Codec再開・描画の証明ではない。
     private class RetryFixture(
         audioOnly: Boolean = false,
         surfaceReady: Boolean = true,
     ) : AutoCloseable {
-        val executor = LifecycleSerialExecutor("session-recovery-test")
-        val released = AtomicBoolean(false)
+        val session =
+            MaleicacidLiveSession(
+                RuntimeEnvironment.getApplication(),
+                RuntimeEnvironment.getApplication(),
+                "session-recovery-test",
+                "retry-fixture",
+            )
+        val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(session, "sessionExecutor")
+        val released = ReflectionHelpers.getField<AtomicBoolean>(session, "releaseOnce")
         val signature =
             AvPlaybackSignature(
                 serviceKey = ServiceKey(4, 0x4010, 101),
@@ -193,20 +202,10 @@ class PlaybackFilterAdmissionTest {
                 clear = true,
                 keyTokenAvailable = false,
             )
-        val session: MaleicacidLiveSession
         private val texture = SurfaceTexture(0)
         private val surface = Surface(texture)
 
         init {
-            val unsafeType = Class.forName("sun.misc.Unsafe")
-            val unsafe = unsafeType.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
-            session =
-                unsafeType
-                    .getMethod("allocateInstance", Class::class.java)
-                    .invoke(unsafe, MaleicacidLiveSession::class.java) as MaleicacidLiveSession
-            ReflectionHelpers.setField(session, "sessionExecutor", executor)
-            ReflectionHelpers.setField(session, "releaseOnce", released)
-            ReflectionHelpers.setField(session, "unblockTimerHandler", android.os.Handler(Looper.getMainLooper()))
             ReflectionHelpers.setField(session, "surface", surface.takeIf { surfaceReady })
             ReflectionHelpers.setField(session, "currentGeneration", 1L)
             check(surface.isValid)
@@ -243,16 +242,10 @@ class PlaybackFilterAdmissionTest {
             attach: Boolean,
             serviceAvailable: Boolean = true,
         ) {
-            val unsafeType = Class.forName("sun.misc.Unsafe")
-            val unsafe = unsafeType.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
-            val controller =
-                unsafeType
-                    .getMethod("allocateInstance", Class::class.java)
-                    .invoke(unsafe, TunerController::class.java) as TunerController
-            val pipeline = PlaybackPipeline("surface-retry-fixture", null)
-            try {
-                ReflectionHelpers.setField(controller, "playbackPipeline", pipeline)
-                ReflectionHelpers.setField(session, "tunerController", controller)
+            val controller = ReflectionHelpers.getField<TunerController>(session, "tunerController")
+            val pipeline = ReflectionHelpers.getField<PlaybackPipeline>(controller, "playbackPipeline")
+            check(pipeline.currentPlaybackGenerationForTest() == 0L)
+            run {
                 val programs =
                     com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot(
                         discoveryProfile = 0,
@@ -296,8 +289,6 @@ class PlaybackFilterAdmissionTest {
                     // 再開条件のSIは未取得へ戻し、実予約消費→通常開始受付のIdle境界を確認する。
                     ReflectionHelpers.setField(session, "latestLiveSnapshot", null)
                 }
-            } finally {
-                pipeline.release()
             }
         }
 
@@ -315,9 +306,9 @@ class PlaybackFilterAdmissionTest {
         fun state(): PlaybackStartState = executor.callControl(5_000L) { ReflectionHelpers.getField(session, "playbackState") }
 
         override fun close() {
-            released.set(true)
             Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(301L))
-            executor.shutdownNow()
+            session.onRelease()
+            check(released.get())
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
             surface.release()
             texture.release()
