@@ -212,6 +212,15 @@ class CoverageTest(unittest.TestCase):
         self.db.execute("INSERT INTO android_logs VALUES (60, 'MediaSync', 'PLAYBACK_SYNC_CREATE native=0x123', 1)")
         self.assertEqual(0, self.result('native_instance_coverage_ok'))
 
+    def test_stages_outside_creation_lifetime_are_not_combined(self):
+        self.db.execute("UPDATE android_logs SET ts = 40 WHERE msg LIKE 'PLAYBACK_SYNC_INPUT %'")
+        self.assertEqual(0, self.result('native_instance_coverage_ok'))
+        self.db.execute("UPDATE android_logs SET ts = 50 WHERE msg LIKE 'PLAYBACK_SYNC_INPUT %'")
+        self.db.execute("INSERT INTO android_logs VALUES (55, 'MediaSync', 'PLAYBACK_SYNC_DESTROY native=0x123', 1)")
+        self.assertEqual(1, self.result('native_instance_coverage_ok'))
+        self.db.execute("UPDATE android_logs SET ts = 60 WHERE msg LIKE 'PLAYBACK_SYNC_OUTPUT %'")
+        self.assertEqual(0, self.result('native_instance_coverage_ok'))
+
     def test_missing_marker(self):
         self.db.execute("DELETE FROM android_logs WHERE msg = 'capture-begin:test'")
         self.assertEqual(0, self.result())
