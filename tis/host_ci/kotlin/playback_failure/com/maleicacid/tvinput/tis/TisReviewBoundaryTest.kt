@@ -45,7 +45,9 @@ class TisReviewBoundaryTest {
                 .get(null) as sun.misc.Unsafe
         val controller = unsafe.allocateInstance(ChannelScanController::class.java) as ChannelScanController
         // 初期化済みのSIエンジンを正常に解放し、解放後snapshotの失敗を注入する。
-        val engine = com.maleicacid.tvinput.aribsi.AribSiEngine(ContextWrapper(null)).apply { close() }
+        val engine =
+            com.maleicacid.tvinput.aribsi.AribSiEngine(ContextWrapper(null))
+                .apply { close() }
         val key = ServiceKey(4, 0x4010, 101)
         val store =
             object : TvProviderWriter.ChannelStore {
