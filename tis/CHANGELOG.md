@@ -1,3 +1,10 @@
+# 2026-11-02 TIS test fixtureの正規初期化と失敗注入を修正
+
+- #183由来の字幕境界容量試験3件をRobolectricへ移設し、AribCaptionControllerの本番コンストラクタと優先順位キュー（mediaTimeMillis、frameToken、Display/Clear順）で検査する。Unsafe未初期化インスタンスとhashCode順の試験専用キューを廃止し、各試験終了時に作成したownerを解放する。
+- Host JVM側の発見クラス数を50、実行クラス数を46、試験数を413へ変更する。対象3件はRobolectric側へ移したのでテストを削除したわけではない。
+- #119由来のProgram snapshot失敗試験は、未初期化AribSiEngine.lockによる人工的NPEではなく、通常生成・解放済みSIエンジンのsnapshot拒否（IllegalStateException）を利用する。既存のchannel挿入とrollback確認を維持する。
+- 上記はfixtureの修正であり、実TISの再生・スキャン処理は変更していない。Framework native境界を模擬する他のfixtureの正規生成への移行は別途検討中であり、すべてのコンストラクタ迂回を解消したという意味ではない。
+
 # 2026-11-01 診断結果の回収と失敗判定を修正
 
 - 模擬adbはprocessごとに異なるPIDを返し、並列snapshotが同じ出力ファイルを競合更新する試験fixtureの不備を修正。実スクリプトの失敗判定は緩和しない。
