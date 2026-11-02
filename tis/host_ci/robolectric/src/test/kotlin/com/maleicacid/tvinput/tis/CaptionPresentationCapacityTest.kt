@@ -5,10 +5,33 @@ package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.aribsi.NativeAribCaptionRenderer
 import org.junit.Test
-import sun.misc.Unsafe
 import java.util.PriorityQueue
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class CaptionPresentationCapacityTest {
+    // 本番コンストラクタが生成したPriorityQueueをそのまま検証する。
+    @Suppress("UNCHECKED_CAST")
+    private fun boundaries(controller: AribCaptionController): PriorityQueue<Any> =
+        AribCaptionController::class.java
+            .getDeclaredField("boundaries")
+            .apply { isAccessible = true }
+            .get(controller) as PriorityQueue<Any>
+
+    private fun createController(
+        mediaClock: () -> PlaybackPipeline.MediaClockSnapshot?,
+        onDiagnostic: (AribCaptionController.CaptionDiagnostic) -> Unit,
+    ): AribCaptionController =
+        AribCaptionController(
+            overlayView = CaptionOverlayView(RuntimeEnvironment.getApplication()),
+            mediaClock = mediaClock,
+            onDiagnostic = onDiagnostic,
+        )
+
     @Test
     fun oversizedSamePtsReplacementPreservesAcceptedDisplayAndClear() {
         assertRejectedReplacementPreservesQueue(boundaryCount = 2, incomingBytes = 8_388_609)
@@ -23,31 +46,14 @@ class CaptionPresentationCapacityTest {
     @Suppress("LongMethod")
     @Test
     fun clockAcquisitionDiscardsDistantFramesAndTheirClearBoundaries() {
-        val unsafe =
-            Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as Unsafe
-        val controller = unsafe.allocateInstance(AribCaptionController::class.java) as AribCaptionController
         val viewport = AribCaptionController.CaptionViewport(1, 1, 0, 0, 1, 1)
         val image = NativeAribCaptionRenderer.RenderedCaptionImage(0, 0, 1, 1, 4, ByteArray(4))
         val frame = NativeAribCaptionRenderer.RenderedCaptionFrame(120_000L, null, listOf(image))
-        val queue = PriorityQueue<Any>(compareBy { it.hashCode() })
         val diagnostics = mutableListOf<AribCaptionController.CaptionDiagnostic.Reason>()
         var clock: PlaybackPipeline.MediaClockSnapshot? = null
+        val controller = createController({ clock }) { diagnostics += it.reason }
+        val queue = boundaries(controller)
 
-        fun set(
-            name: String,
-            value: Any,
-        ) {
-            AribCaptionController::class.java
-                .getDeclaredField(name)
-                .apply { isAccessible = true }
-                .set(controller, value)
-        }
-        set("boundaries", queue)
-        set("mediaClock", { clock })
-        set("onDiagnostic", { diagnostic: AribCaptionController.CaptionDiagnostic -> diagnostics += diagnostic.reason })
         val enqueue =
             AribCaptionController::class.java
                 .getDeclaredMethod("enqueueFrame", frame.javaClass, viewport.javaClass)
@@ -91,12 +97,6 @@ class CaptionPresentationCapacityTest {
         boundaryCount: Int,
         incomingBytes: Int,
     ) {
-        val unsafe =
-            Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as Unsafe
-        val controller = unsafe.allocateInstance(AribCaptionController::class.java) as AribCaptionController
         val viewport = AribCaptionController.CaptionViewport(1, 1, 0, 0, 1, 1)
         val image = NativeAribCaptionRenderer.RenderedCaptionImage(0, 0, 1, 1, 4, ByteArray(4))
         val frame =
@@ -114,26 +114,18 @@ class CaptionPresentationCapacityTest {
                 .declaredConstructors
                 .single()
                 .apply { isAccessible = true }
-        val queue = PriorityQueue<Any>(compareBy { it.hashCode() })
+        val diagnostics = mutableListOf<AribCaptionController.CaptionDiagnostic.Reason>()
+        val controller = createController({ null }) { diagnostics += it.reason }
+        val queue = boundaries(controller)
         queue += display
         val firstClearToken = if (boundaryCount == 2) 1L else 2L
         repeat(boundaryCount - 1) { queue += clearConstructor.newInstance(200L + it, firstClearToken + it) }
         val original = queue.toSet()
-        val diagnostics = mutableListOf<AribCaptionController.CaptionDiagnostic.Reason>()
 
-        fun set(
-            name: String,
-            value: Any,
-        ) {
-            AribCaptionController::class.java
-                .getDeclaredField(name)
-                .apply { isAccessible = true }
-                .set(controller, value)
-        }
-        set("nextFrameToken", boundaryCount.toLong())
-        set("boundaries", queue)
-        set("mediaClock", { null })
-        set("onDiagnostic", { diagnostic: AribCaptionController.CaptionDiagnostic -> diagnostics += diagnostic.reason })
+        AribCaptionController::class.java
+            .getDeclaredField("nextFrameToken")
+            .apply { isAccessible = true }
+            .setLong(controller, boundaryCount.toLong())
         val incoming =
             frame.copy(durationMillis = 100L, images = listOf(image.copy(rgba8888 = ByteArray(incomingBytes))))
         AribCaptionController::class.java
