@@ -56,6 +56,7 @@ jobs:
             --tests com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest \
             --tests com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest \
             --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest \
+            --tests com.maleicacid.tvinput.tis.CaptionPresentationCapacityTest \
             --tests com.maleicacid.tvinput.tis.ScanCancellationProviderTest
 
       - name: 実SDK scan境界試験の実行結果を確認
@@ -111,6 +112,10 @@ jobs:
           assert caption.get("tests") == "5", caption.attrib
           assert caption.get("failures") == "0" and caption.get("errors") == "0", caption.attrib
           assert caption.get("skipped", "0") == "0", caption.attrib
+          capacity = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CaptionPresentationCapacityTest.xml")).getroot()
+          assert capacity.get("tests") == "3", capacity.attrib
+          assert capacity.get("failures") == "0" and capacity.get("errors") == "0", capacity.attrib
+          assert capacity.get("skipped", "0") == "0", capacity.attrib
           for case in caption.findall("testcase"):
               print(f"Android 15字幕入力continuity試験: {case.get('name')} success")
           PYRESULT
