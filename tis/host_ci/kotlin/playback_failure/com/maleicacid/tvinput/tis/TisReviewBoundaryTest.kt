@@ -44,7 +44,8 @@ class TisReviewBoundaryTest {
                 .apply { isAccessible = true }
                 .get(null) as sun.misc.Unsafe
         val controller = unsafe.allocateInstance(ChannelScanController::class.java) as ChannelScanController
-        val engine = unsafe.allocateInstance(com.maleicacid.tvinput.aribsi.AribSiEngine::class.java)
+        // 初期化済みのSIエンジンを正常に解放し、解放後snapshotの失敗を注入する。
+        val engine = com.maleicacid.tvinput.aribsi.AribSiEngine(ContextWrapper(null)).apply { close() }
         val key = ServiceKey(4, 0x4010, 101)
         val store =
             object : TvProviderWriter.ChannelStore {
@@ -89,7 +90,7 @@ class TisReviewBoundaryTest {
                 .set(controller, value)
         }
         set("tvProviderWriter", writer)
-        set("engine", engine) // 未初期化lockで後続Program snapshot取得を確実に失敗させる。
+        set("engine", engine) // close済みnative parserのsnapshot拒否は本番でも起こり得る。
         set(
             "currentCandidate",
             ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13"),
@@ -158,7 +159,7 @@ class TisReviewBoundaryTest {
                     Unit
                 })
             }.exceptionOrNull()
-        check(failure is java.lang.reflect.InvocationTargetException && failure.cause is NullPointerException)
+        check(failure is java.lang.reflect.InvocationTargetException && failure.cause is IllegalStateException)
         check(rollbackIds == setOf(1L) && store.channels.keys == rollbackIds)
         check(writer.finalizeSetupChannels(false, rollbackIds, emptySet()).isSuccess)
         check(store.channels.isEmpty())
