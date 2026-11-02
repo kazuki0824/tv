@@ -12,6 +12,16 @@ JNI内部TRACEを詳細調査する場合は`arib_si_engine_rs/src/jni_logging.r
 
 製品build・起動後に、選局から通常視聴・停止・再選局までフィルタなしlogcatを採取し、`jni::wrapper::objects..`等のJNI VERBOSEが消え、`MaleicacidTIS`のDEBUG・停止phase診断が残ることを確認する。性能比較は受信局、vCPU、ログ収集・Perfettoの有無を一致させ、Codec入力返却・出力、画面最終フレーム、CPU時間を比較する。ログ抑制のみで音声入力飽和やCodec停滞の解消を確約しない。
 
+## VM音声不足とホスト音声ストリーム再生成の同時観測
+
+同じチャンネル・VMリソース・ホスト音声出力先で、通常ログ採取とTIS DEBUG採取を別試行として実施する。選局時刻、点滅開始・継続・無音になった時刻を記録する。DEBUGの採取負荷そのものを通常再生の挙動と同一視しない。
+
+TIS側は`PLAYBACK_AUDIO_FILTER_TIMING`の`callbackGapUs`（Filter callback受付時刻の差）と`ownerWaitUs`（callback受付から既存playback owner実行開始まで）、`PLAYBACK_CODEC_INPUT_QUEUE`、`PLAYBACK_CODEC_OUTPUT_RETURN`、`PLAYBACK_MEDIASYNC_AUDIO_QUEUE`、`PLAYBACK_MEDIASYNC_AUDIO_CONSUMED`を同一generationで照合する。音声Filterは先頭と32イベントごと、および100ms以上の受付間隔・owner待機をDEBUGで出力する。MediaSync投入は32 bufferIdごとに出力する。間引き記録で観測できないイベントの遅延やMediaSync内部のAudioTrackへの書込み完了は推測しない。
+
+Androidの`dumpsys media.audio_flinger`は同一Track ID・session・sample rateの`Underruns`累積差分と`FrmRdy`を時間順に扱う。累積不足フレームを連続無音時間と解釈しない。ホスト側はPipeWireの`pw-dump -m`／`pw-mon -N`でvirt-managerのPlayback Streamの生成・消失を記録し、QEMUの`info audio`・`info spice`の取得可否も保存する。QEMU monitorの状態snapshotはSPICE `PLAYBACK_START`／`PLAYBACK_STOP`パケットそのもののtraceではない。どちらが再生成を指示したかを確定するには、起動時から有効化したSPICE client／GStreamerの詳細ログなど別の証拠が必要となる。
+
+通常動作比較前に`adb shell getprop log.tag.MaleicacidTIS`を確認する。以前の採取で値が空だった場合にDEBUGが残留していたら、ゲスト上で`adb shell 'setprop log.tag.MaleicacidTIS ""'`を実行し、再度`getprop`で空文字を確認する。ログ採取スクリプトは全監視worker停止後にarchiveを作り、`getprop`の復元値一致とarchive整合性を検査する。復元不能・archive失敗を採取成功と扱わない。
+
 ## Section受付容量の負荷検証（未完了）
 
 現行16件の受付上限の位置付けは`DESIGN_JA.md`のController executor契約を正とする。固定TSの回帰証跡は[PR #123](https://github.com/kazuki0824/tv/pull/123)の`realTsBurstLossAndRetransmissionStayWithinCandidate`と同PRのfixture READMEを参照する。既存HAL section処理・SDK callback・SI JNI・候補別喪失snapshot・SI完成判定を実行し、owner占有時の複数Filter入力、喪失保持、再送回復、Filter交換・候補切替を確認する。試験成功は当該固定条件の機能回帰であり、実機の入力率に対する16件の十分性を表さない。
