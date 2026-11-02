@@ -4,6 +4,7 @@
 package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.aribsi.NativeAribCaptionRenderer
+import org.junit.After
 import org.junit.Test
 import java.util.PriorityQueue
 import org.junit.runner.RunWith
@@ -14,6 +15,14 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class CaptionPresentationCapacityTest {
+    private val createdControllers = mutableListOf<AribCaptionController>()
+
+    @After
+    fun tearDown() {
+        createdControllers.forEach { it.close() }
+        createdControllers.clear()
+    }
+
     // 本番コンストラクタが生成したPriorityQueueをそのまま検証する。
     @Suppress("UNCHECKED_CAST")
     private fun boundaries(controller: AribCaptionController): PriorityQueue<Any> =
@@ -30,7 +39,7 @@ class CaptionPresentationCapacityTest {
             overlayView = CaptionOverlayView(RuntimeEnvironment.getApplication()),
             mediaClock = mediaClock,
             onDiagnostic = onDiagnostic,
-        )
+        ).also(createdControllers::add)
 
     @Test
     fun oversizedSamePtsReplacementPreservesAcceptedDisplayAndClear() {
