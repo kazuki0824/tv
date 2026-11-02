@@ -16,6 +16,10 @@
 - 区間保持、同一nativeの4段階、対象TIS session/generationとの関連付けを分離。現行ログでは最後の対応が不明なため、総合coverageは未成立とし資料を保存する。製品ownerや台帳は追加しない。
 - SQLite反例と採取スクリプトへの失敗伝播回帰を追加。実機の対応付けとnative実行は未検証で、CI結果とは区別する。
 
+# 2026-11-02 親の正規生成fixture回帰と大型AV回帰の併存
+
+- 親のaudio-only Surface切断回帰と本PRの大型AV受付回帰を保持し、RobolectricのPlaybackFilterAdmissionTest期待件数を55へ追従した。試験はCIで実行し、実機・Soong検証の代用にはしない。
+
 # 2026-11-02 Scan取消しfixtureを正規初期化へ移設
 
 - ScanCancellationProviderTestをRobolectricへ移し、ChannelScanControllerとAribSiEngineを正規生成した上でManager ActiveScanTaskとの取消しと公開lockの競合を試験する。SI native入出力の代替には既存のRobolectric Shadowを使用する。
