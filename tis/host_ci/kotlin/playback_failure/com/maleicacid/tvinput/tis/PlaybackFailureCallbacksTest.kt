@@ -24,6 +24,7 @@ import org.junit.Test
 import sun.misc.Unsafe
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 // 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
@@ -1436,6 +1437,8 @@ class PlaybackFailureCallbacksTest {
             set("resourceCleanup", cleanup)
             // Unsafe fixtureはconstructor初期化を省くため、本番の診断専用fieldを明示初期化する。
             set("dataPathProgress", PlaybackDataPathProgress())
+            set("audioFilterCallbackSequence", AtomicLong(0L))
+            set("lastAudioFilterCallbackNs", AtomicLong(0L))
             set("outstandingAudioOutputs", linkedMapOf<Int, Any>())
             set("pendingAudioOutputReleases", mutableSetOf<Int>())
             val ptsType = field("ptsEpochCoordinator").type
