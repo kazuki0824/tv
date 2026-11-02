@@ -168,62 +168,6 @@ class TisReviewBoundaryTest {
         check(store.channels.isEmpty())
     }
 
-    @Test
-    fun broadcastClockGenerationExhaustionRemainsIrreversiblyFenced() {
-        val controller = allocate(TunerController::class.java)
-        set(
-            controller,
-            "latestBroadcastClockAuthority",
-            AribBroadcastClock.AuthoritySample(
-                tableId = AribBroadcastClock.TABLE_ID_TDT,
-                mjd = 60_000,
-                millisOfDay = 0L,
-                receivedNanoTime = 0L,
-                generation = Long.MAX_VALUE,
-            ),
-        )
-        set(controller, "broadcastClockGenerationExhausted", false)
-        set(controller, "onBroadcastClockUpdatedCallback", {})
-        val method =
-            TunerController::class.java
-                .getDeclaredMethod(
-                    "updateBroadcastClockAuthority",
-                    AribBroadcastClock.SourceSample::class.java,
-                ).apply { isAccessible = true }
-
-        method.invoke(
-            controller,
-            AribBroadcastClock.SourceSample(
-                tableId = AribBroadcastClock.TABLE_ID_TDT,
-                mjd = 60_000,
-                millisOfDay = 60_000L,
-                receivedNanoTime = 1_000_000L,
-            ),
-        )
-        val exhausted =
-            TunerController::class.java
-                .getDeclaredField("broadcastClockGenerationExhausted")
-                .apply { isAccessible = true }
-                .getBoolean(controller)
-        val authorityField =
-            TunerController::class.java
-                .getDeclaredField("latestBroadcastClockAuthority")
-                .apply { isAccessible = true }
-        check(exhausted)
-        check(authorityField.get(controller) == null)
-
-        method.invoke(
-            controller,
-            AribBroadcastClock.SourceSample(
-                tableId = AribBroadcastClock.TABLE_ID_TDT,
-                mjd = 60_000,
-                millisOfDay = 61_000L,
-                receivedNanoTime = 2_000_000L,
-            ),
-        )
-        check(authorityField.get(controller) == null)
-    }
-
     @Test fun liveTuneWithoutCurrentServiceFactsRemainsPending() {
         val pending =
             com.maleicacid.tvinput.aribsi.ServicePolicyDecision(

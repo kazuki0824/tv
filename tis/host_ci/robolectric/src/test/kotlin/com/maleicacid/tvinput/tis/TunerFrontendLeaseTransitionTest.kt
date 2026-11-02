@@ -60,6 +60,53 @@ import java.util.concurrent.locks.ReentrantLock
 )
 class TunerFrontendLeaseTransitionTest {
     @Test
+    fun broadcastClockGenerationExhaustionRemainsIrreversiblyFenced() {
+        val controller = controller()
+        try {
+            ReflectionHelpers.setField(
+                controller,
+                "latestBroadcastClockAuthority",
+                AribBroadcastClock.AuthoritySample(
+                    tableId = AribBroadcastClock.TABLE_ID_TDT,
+                    mjd = 60_000,
+                    millisOfDay = 0L,
+                    receivedNanoTime = 0L,
+                    generation = Long.MAX_VALUE,
+                ),
+            )
+            ReflectionHelpers.setField(controller, "broadcastClockGenerationExhausted", false)
+            ReflectionHelpers.setField(controller, "onBroadcastClockUpdatedCallback", {})
+            val method =
+                TunerController::class.java
+                    .getDeclaredMethod("updateBroadcastClockAuthority", AribBroadcastClock.SourceSample::class.java)
+                    .apply { isAccessible = true }
+            method.invoke(
+                controller,
+                AribBroadcastClock.SourceSample(
+                    tableId = AribBroadcastClock.TABLE_ID_TDT,
+                    mjd = 60_000,
+                    millisOfDay = 60_000L,
+                    receivedNanoTime = 1_000_000L,
+                ),
+            )
+            check(ReflectionHelpers.getField<Boolean>(controller, "broadcastClockGenerationExhausted"))
+            check(ReflectionHelpers.getField<Any?>(controller, "latestBroadcastClockAuthority") == null)
+            method.invoke(
+                controller,
+                AribBroadcastClock.SourceSample(
+                    tableId = AribBroadcastClock.TABLE_ID_TDT,
+                    mjd = 60_000,
+                    millisOfDay = 61_000L,
+                    receivedNanoTime = 2_000_000L,
+                ),
+            )
+            check(ReflectionHelpers.getField<Any?>(controller, "latestBroadcastClockAuthority") == null)
+        } finally {
+            controller.release()
+        }
+    }
+
+    @Test
     fun firstTypeChangeCloseFailureDoesNotResetSi() {
         val controller = controller()
         try {
