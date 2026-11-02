@@ -78,6 +78,7 @@ class TunerFrontendLeaseTransitionTest {
             check(controller.superimposeTrackFor(streams) == null)
             val pending = controller.selectAvStreams(ServiceKey(4, 1, 1), null, streams)
             check(pending.subtitle == caption && pending.subtitleLanguageId == null)
+
             fun language(tag: Int) = NativeAribCaptionFactParser.Language(tag, "jpn", 0, true, null, 0, 0, 0)
             languages[caption.elementaryPid] = listOf(language(2))
             languages[superimpose.elementaryPid] = listOf(language(7))
