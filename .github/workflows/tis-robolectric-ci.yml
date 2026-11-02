@@ -55,7 +55,8 @@ jobs:
             --tests com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest \
             --tests com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest \
             --tests com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest \
-            --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest
+            --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest \
+            --tests com.maleicacid.tvinput.tis.ScanCancellationProviderTest
 
       - name: 実SDK scan境界試験の実行結果を確認
         run: |

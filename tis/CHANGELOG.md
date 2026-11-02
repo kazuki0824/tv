@@ -1,3 +1,9 @@
+# 2026-11-02 Scan取消しfixtureを正規初期化へ移設
+
+- ScanCancellationProviderTestをRobolectricへ移し、ChannelScanControllerとAribSiEngineを正規生成した上でManager ActiveScanTaskとの取消しと公開lockの競合を試験する。SI native入出力の代替には既存のRobolectric Shadowを使用する。
+- Unsafeで未初期化ChannelScanControllerを生成してscanGenerationFenceを手動移植する操作を廃止。既存のcancel成功・final commit時拒否・完了後拒否という試験条件を保持する。
+- ホストJVMの固定クラス数とテスト数を移設1件分減らす。移設先をRobolectricの実行対象に追加する。
+
 # 2026-11-02 TIS test fixtureの正規初期化と失敗注入を修正
 
 - #183由来の字幕境界容量試験3件をRobolectricへ移設し、AribCaptionControllerの本番コンストラクタと優先順位キュー（mediaTimeMillis、frameToken、Display/Clear順）で検査する。Unsafe未初期化インスタンスとhashCode順の試験専用キューを廃止し、各試験終了時に作成したownerを解放する。
