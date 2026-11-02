@@ -388,7 +388,7 @@ class PlaybackPipeline(
         payloadBytes: Long,
     ) {
         val callbackGapUs =
-            if (previousSubmittedAtNs > 0L && submittedAtNs >= previousSubmittedAtNs) {
+            if (previousSubmittedAtNs in 1L..submittedAtNs) {
                 (submittedAtNs - previousSubmittedAtNs) / NANOS_PER_MICROSECOND
             } else {
                 -1L
