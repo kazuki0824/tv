@@ -6,11 +6,11 @@ package com.maleicacid.tvinput.tis
 import com.maleicacid.tvinput.aribsi.NativeAribCaptionRenderer
 import org.junit.After
 import org.junit.Test
-import java.util.PriorityQueue
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.util.PriorityQueue
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
