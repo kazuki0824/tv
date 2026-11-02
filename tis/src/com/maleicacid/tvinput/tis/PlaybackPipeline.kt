@@ -358,7 +358,6 @@ class PlaybackPipeline(
                             submittedAtNs,
                             previousAudioCallbackNs,
                             ownerWaitUs,
-                            events.size,
                             payloadBytes,
                         )
                     }
@@ -386,7 +385,6 @@ class PlaybackPipeline(
         submittedAtNs: Long,
         previousSubmittedAtNs: Long,
         ownerWaitUs: Long,
-        events: Int,
         payloadBytes: Long,
     ) {
         val callbackGapUs =
@@ -402,7 +400,7 @@ class PlaybackPipeline(
             LogTags.TIS,
             "PLAYBACK_AUDIO_FILTER_TIMING sessionId=$sessionId generation=$playbackGeneration " +
                 "sequence=$sequence callbackGapUs=$callbackGapUs ownerWaitUs=$ownerWaitUs " +
-                "events=$events payloadBytes=$payloadBytes",
+                "payloadBytes=$payloadBytes",
         )
     }
 
