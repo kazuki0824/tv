@@ -14,6 +14,7 @@ import android.media.tv.TvTrackInfo
 import com.maleicacid.tvinput.aribsi.AribComponentEntry
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.AribService
+import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.NativeAribCaptionFactParser
 import com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot
@@ -46,7 +47,7 @@ class TisReviewBoundaryTest {
         val controller = unsafe.allocateInstance(ChannelScanController::class.java) as ChannelScanController
         // 初期化済みのSIエンジンを正常に解放し、解放後snapshotの失敗を注入する。
         val engine =
-            com.maleicacid.tvinput.aribsi.AribSiEngine(ContextWrapper(null))
+            AribSiEngine(ContextWrapper(null))
                 .apply { close() }
         val key = ServiceKey(4, 0x4010, 101)
         val store =
