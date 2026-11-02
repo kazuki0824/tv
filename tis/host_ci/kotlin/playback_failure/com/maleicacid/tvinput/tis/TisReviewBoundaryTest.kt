@@ -224,21 +224,6 @@ class TisReviewBoundaryTest {
         check(authorityField.get(controller) == null)
     }
 
-    @Test
-    fun captionPresentationEpochExhaustionRemainsStableAcrossRepeatedAttempts() {
-        val controller = allocate(AribCaptionController::class.java)
-        set(controller, "presentationEpoch", AtomicLong(-1L))
-        val method =
-            AribCaptionController::class.java
-                .getDeclaredMethod("nextPresentationEpoch")
-                .apply { isAccessible = true }
-
-        repeat(2) {
-            val cause = runCatching { method.invoke(controller) }.exceptionOrNull()?.cause
-            check(cause is IllegalStateException)
-        }
-    }
-
     @Test fun liveTuneWithoutCurrentServiceFactsRemainsPending() {
         val pending =
             com.maleicacid.tvinput.aribsi.ServicePolicyDecision(

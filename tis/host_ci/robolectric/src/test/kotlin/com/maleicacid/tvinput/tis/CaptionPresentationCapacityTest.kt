@@ -15,6 +15,24 @@ import java.util.PriorityQueue
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class CaptionPresentationCapacityTest {
+    @Test
+    fun captionPresentationEpochExhaustionRemainsStableAcrossRepeatedAttempts() {
+        val controller = createController({ null }) { }
+        val counter =
+            AribCaptionController::class.java
+                .getDeclaredField("presentationEpoch")
+                .apply { isAccessible = true }
+                .get(controller) as java.util.concurrent.atomic.AtomicLong
+        counter.set(-1L)
+        val next =
+            AribCaptionController::class.java
+                .getDeclaredMethod("nextPresentationEpoch")
+                .apply { isAccessible = true }
+        repeat(2) {
+            check(runCatching { next.invoke(controller) }.exceptionOrNull()?.cause is IllegalStateException)
+        }
+    }
+
     private val createdControllers = mutableListOf<AribCaptionController>()
 
     @After

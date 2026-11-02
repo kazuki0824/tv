@@ -113,7 +113,7 @@ jobs:
           assert caption.get("failures") == "0" and caption.get("errors") == "0", caption.attrib
           assert caption.get("skipped", "0") == "0", caption.attrib
           capacity = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CaptionPresentationCapacityTest.xml")).getroot()
-          assert capacity.get("tests") == "3", capacity.attrib
+          assert capacity.get("tests") == "4", capacity.attrib
           assert capacity.get("failures") == "0" and capacity.get("errors") == "0", capacity.attrib
           assert capacity.get("skipped", "0") == "0", capacity.attrib
           for case in caption.findall("testcase"):
