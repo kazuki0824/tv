@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import tarfile
 import tempfile
@@ -19,7 +20,7 @@ elif args[:2] == ['shell', 'getprop']:
     print('test-fingerprint' if 'ro.build.fingerprint' in args else 'INFO')
 elif args[:2] == ['shell', 'perfetto']:
     if '--query' in args:
-        print('android.surfaceflinger.layers android.surfaceflinger.frametimeline')
+        print('android.surfaceflinger.layers android.surfaceflinger.frametimeline android.log')
     elif any(a.startswith('--attach=') for a in args): print('stopped')
 elif args[:1] == ['pull']: Path(args[-1]).write_bytes(b'test trace')
 elif args[:1] == ['logcat']:
@@ -57,6 +58,9 @@ class CaptureTest(unittest.TestCase):
         adb = self.bin / 'adb'
         adb.write_text(ADB)
         adb.chmod(0o755)
+        processor = self.bin / 'trace_processor_shell'
+        processor.write_text("#!/bin/sh\nprintf 'coverage_ok\\n1\\n'\n")
+        processor.chmod(0o755)
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}')
 
     def tearDown(self):
@@ -109,6 +113,49 @@ class CaptureTest(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+
+class CoverageTest(unittest.TestCase):
+    def setUp(self):
+        self.db = sqlite3.connect(':memory:')
+        self.db.executescript("""
+            CREATE TABLE android_logs(ts INT, tag TEXT, msg TEXT);
+            CREATE TABLE trace_bounds(start_ts INT, end_ts INT);
+            CREATE TABLE stats(name TEXT, severity TEXT, value INT);
+            INSERT INTO trace_bounds VALUES (0, 100);
+            INSERT INTO android_logs VALUES (1, 'MaleicacidCapture', 'capture-begin:test');
+            INSERT INTO android_logs VALUES (99, 'MaleicacidCapture', 'capture-trigger:test');
+        """)
+        for msg in ['PLAYBACK_SYNC_CREATE native=1', 'PLAYBACK_SYNC_INPUT buffer=1',
+                    'PLAYBACK_SYNC_SCHEDULE buffer=1', 'PLAYBACK_SYNC_OUTPUT buffer=1']:
+            self.db.execute('INSERT INTO android_logs VALUES (50, ?, ?)', ('MediaSync', msg))
+        self.sql = (ROOT / 'diagnostics/coverage.sql').read_text().replace('CAPTURE_KEY', 'test')
+
+    def tearDown(self):
+        self.db.close()
+
+    def result(self):
+        return self.db.execute(self.sql).fetchone()[0]
+
+    def test_complete_interval(self):
+        self.assertEqual(1, self.result())
+
+    def test_missing_marker(self):
+        self.db.execute("DELETE FROM android_logs WHERE msg = 'capture-begin:test'")
+        self.assertEqual(0, self.result())
+
+    def test_pre_capture_native_logs_do_not_satisfy_evidence(self):
+        self.db.execute("UPDATE android_logs SET ts = 0 WHERE tag = 'MediaSync'")
+        self.assertEqual(0, self.result())
+
+    def test_data_loss_and_short_interval(self):
+        for name, severity in [('ftrace_cpu_overrun_end', 'info'), ('long_trace_mode_bytes_overwritten', 'data_loss')]:
+            self.db.execute('DELETE FROM stats')
+            self.db.execute('INSERT INTO stats VALUES (?, ?, 1)', (name, severity))
+            self.assertEqual(0, self.result())
+        self.db.execute('DELETE FROM stats')
+        self.db.execute('UPDATE trace_bounds SET start_ts = 10')
+        self.assertEqual(0, self.result())
 
 
 if __name__ == '__main__':

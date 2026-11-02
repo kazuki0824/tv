@@ -544,6 +544,12 @@ class PlaybackPipeline(
         detail: String,
     ) {
         if (generation != playbackGeneration) return
+        // 資源解放前の累計と所有状態を残す。採取完了を待たず既存の停止へ進む。
+        Log.w(
+            LogTags.TIS,
+            "PLAYBACK_PRE_STOP sessionId=$sessionId generation=$generation reason=$reason " +
+                "detail=$detail progress=${dataPathProgress.summary()} ${decoderFlowSummary()}",
+        )
         completePlaybackFailureAction(generation, onVideoUnavailable) {
             stopOnPlaybackExecutor()
             onVideoUnavailable(PlaybackUnavailable(reason, detail, generation))
@@ -1729,9 +1735,8 @@ class PlaybackPipeline(
                         } else {
                             budget.decoderStartupDeadlineMs
                         }
-                    val reason = "PENDING_QUEUE_FULL bytes=${pendingSamples.sumOf {
-                        it.size
-                    }} samples=${pendingSamples.size} blockedMs=${nowMs - startedAtMs} deadlineMs=$deadlineMs"
+                    val reason =
+                        "${pendingInputDiagnostic(sample, queueBudget)} blockedMs=${nowMs - startedAtMs} deadlineMs=$deadlineMs"
                     onSampleRejected(reason)
                     if (backpressureDeadlineReached(startedAtMs, nowMs, deadlineMs)) {
                         onBackpressureDeadline(reason)
@@ -1767,12 +1772,21 @@ class PlaybackPipeline(
             sample: MediaSample,
             queueBudget: QueueBudget,
         ): String {
-            val pendingSpanUs =
-                timestampSpanUs(pendingSamples.map { it.presentationTimeUs } + sample.presentationTimeUs)
-            return "PENDING_QUEUE_FULL isAudio=${sample.isAudio} pendingSamples=${pendingSamples.size} " +
-                "pendingBytes=${pendingSamples.sumOf { it.size.toLong() }} pendingSpanUs=$pendingSpanUs " +
+            val submitting = inputSubmission?.sample
+            val submittingCount = if (submitting == null) 0 else 1
+            val pendingBytes = pendingSamples.sumOf { it.size.toLong() }
+            val heldSamples = pendingSamples.size + submittingCount
+            val heldBytes = pendingBytes + (submitting?.size ?: 0)
+            return "PENDING_QUEUE_FULL generation=$generation isAudio=${sample.isAudio} " +
+                "pendingSamples=${pendingSamples.size} pendingBytes=$pendingBytes " +
+                "submittingSamples=$submittingCount submittingBytes=${submitting?.size ?: 0} " +
+                "submissionDone=${inputSubmission?.completed?.isDone} " +
                 "incomingBytes=${sample.size} incomingPtsUs=${sample.presentationTimeUs} " +
-                "availableInputs=${availableInputIndexes.size} queuedInputs=${queuedSamples.size} budget=$queueBudget"
+                "sampleLimitExceeded=${heldSamples + 1 > queueBudget.maxSamples} " +
+                "byteLimitExceeded=${heldBytes + sample.size > queueBudget.maxBytes} " +
+                "maxSamples=${queueBudget.maxSamples} maxBytes=${queueBudget.maxBytes} " +
+                "availableInputs=${availableInputIndexes.size} queuedInputs=${queuedSamples.size} " +
+                "inboundInputCallbacks=${inboundCodecInputIndexes.size}"
         }
 
         // 単一ownerのみがCodecの入力所有を変更する。callback threadはindexを引き渡すだけ。
@@ -2029,7 +2043,9 @@ class PlaybackPipeline(
                             "PLAYBACK_CODEC_INPUT_QUEUE sessionId=$sessionId generation=$generation isAudio=${sample.isAudio} " +
                                 "index=${submission.index} bytes=${sample.size} ptsUs=${sample.presentationTimeUs} " +
                                 "queueUs=${submission.queueDurationNs / 1_000L} " +
-                                "pending=${pendingSamples.size} queued=${queuedSamples.size}",
+                                "pending=${pendingSamples.size} queued=${queuedSamples.size} " +
+                                "inputCount=${dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)} " +
+                                "returnedCount=${dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT_RETURNED, sample.isAudio)}",
                         )
                     }
                     onCompressedInputQueued(sample)

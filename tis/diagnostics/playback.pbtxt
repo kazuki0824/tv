@@ -31,3 +31,13 @@ data_sources {
     }
   }
 }
+data_sources {
+  config {
+    name: "android.log"
+    android_log_config {
+      filter_tags: "MaleicacidCapture"
+      filter_tags: "MaleicacidTIS"
+      filter_tags: "MediaSync"
+    }
+  }
+}

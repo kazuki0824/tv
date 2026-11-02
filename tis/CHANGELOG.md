@@ -11,6 +11,14 @@
 - #119由来のProgram snapshot失敗試験は、未初期化AribSiEngine.lockによる人工的NPEではなく、通常生成・解放済みSIエンジンのsnapshot拒否（IllegalStateException）を利用する。既存のchannel挿入とrollback確認を維持する。
 - 上記はfixtureの修正であり、実TISの再生・スキャン処理は変更していない。Framework native境界を模擬する他のfixtureの正規生成への移行は別途検討中であり、すべてのコンストラクタ迂回を解消したという意味ではない。
 
+# 2026-11-01 停止前の再生診断と採取証拠の検査
+
+- 既存PlaybackPipeline ownerで解放前のgeneration・理由・全段階累計・decoder所有状態を記録する。PENDING_QUEUE_FULLへ投入中sampleの課金、incoming、件数/byte上限と超過判定を追加し、起動中拒否も同じ内訳を使う。間引く入力ログへ既存累計を追加。
+- LineageOS 22.1 MediaSyncの生成/破棄、入力buffer/PTS、schedule、出力queue結果をDEBUG条件付きで記録する独立patchと適用手順を追加。first-output callback patchだけではログが実装されないことを明示。
+- Perfettoを1秒周期の継続書出しへ変更し、android.logに今回の開始/トリガーmarkerとTIS/MediaSyncを収録。終了後のTrace Processor SQLで区間、欠落、nativeログを検査し、検査不能も非0にする。保存物をアーカイブへ含める。
+- DESIGNとINTEGRATIONへ診断の責務、必要ツール、IO/ログ負荷、判定できない範囲を記載。正常/欠落/旧ログ/短い区間のSQL回帰、stockと任意callback patch併用時の適用検査を通常CIに追加。
+- 検証はCIで実行する。platform Soong/native実行、実端末での負荷と症状再現、source/symbol照合は未確認。
+
 # 2026-11-01 診断結果の回収と失敗判定を修正
 
 - 模擬adbはprocessごとに異なるPIDを返し、並列snapshotが同じ出力ファイルを競合更新する試験fixtureの不備を修正。実スクリプトの失敗判定は緩和しない。
