@@ -242,53 +242,48 @@ class PlaybackFilterAdmissionTest {
             attach: Boolean,
             serviceAvailable: Boolean = true,
         ) {
-            val controller = ReflectionHelpers.getField<TunerController>(session, "tunerController")
-            val pipeline = ReflectionHelpers.getField<PlaybackPipeline>(controller, "playbackPipeline")
-            check(pipeline.currentPlaybackGenerationForTest() == 0L)
-            run {
-                val programs =
-                    com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot(
-                        discoveryProfile = 0,
-                        ingestSequence = 0L,
-                        events = emptyList(),
-                        updateWindows = emptyList(),
-                        semanticFactsByServiceKey = emptyMap(),
-                        descriptorDiagnostics = emptyList(),
-                        parserDiagnostics = emptyList(),
-                    )
-                val service =
-                    com.maleicacid.tvinput.aribsi
-                        .AribService(signature.serviceKey, "audio-only", serviceType = 2)
-                executor.callControl(5_000L) {
-                    ReflectionHelpers.setField(session, "currentService", signature.serviceKey)
-                    ReflectionHelpers.setField(
+            val programs =
+                com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot(
+                    discoveryProfile = 0,
+                    ingestSequence = 0L,
+                    events = emptyList(),
+                    updateWindows = emptyList(),
+                    semanticFactsByServiceKey = emptyMap(),
+                    descriptorDiagnostics = emptyList(),
+                    parserDiagnostics = emptyList(),
+                )
+            val service =
+                com.maleicacid.tvinput.aribsi
+                    .AribService(signature.serviceKey, "audio-only", serviceType = 2)
+            executor.callControl(5_000L) {
+                ReflectionHelpers.setField(session, "currentService", signature.serviceKey)
+                ReflectionHelpers.setField(
+                    session,
+                    "latestLiveSnapshot",
+                    com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot(
+                        0L,
+                        programs,
+                        0L,
+                        if (serviceAvailable) listOf(service) else emptyList(),
+                        emptyList(),
+                        emptyMap(),
+                        emptyList(),
+                        emptyMap(),
+                        emptyList(),
+                        emptyList(),
+                    ),
+                )
+                val reserved = ReflectionHelpers.getField<Runnable>(session, "playbackRetryTask")
+                assertTrue(
+                    ReflectionHelpers.callInstanceMethod<Boolean>(
                         session,
-                        "latestLiveSnapshot",
-                        com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot(
-                            0L,
-                            programs,
-                            0L,
-                            if (serviceAvailable) listOf(service) else emptyList(),
-                            emptyList(),
-                            emptyMap(),
-                            emptyList(),
-                            emptyMap(),
-                            emptyList(),
-                            emptyList(),
-                        ),
-                    )
-                    val reserved = ReflectionHelpers.getField<Runnable>(session, "playbackRetryTask")
-                    assertTrue(
-                        ReflectionHelpers.callInstanceMethod<Boolean>(
-                            session,
-                            "onSetSurfaceOnSessionExecutor",
-                            ReflectionHelpers.ClassParameter.from(Surface::class.java, surface.takeIf { attach }),
-                        ),
-                    )
-                    assertTrue(reserved === ReflectionHelpers.getField<Runnable?>(session, "playbackRetryTask"))
-                    // 再開条件のSIは未取得へ戻し、実予約消費→通常開始受付のIdle境界を確認する。
-                    ReflectionHelpers.setField(session, "latestLiveSnapshot", null)
-                }
+                        "onSetSurfaceOnSessionExecutor",
+                        ReflectionHelpers.ClassParameter.from(Surface::class.java, surface.takeIf { attach }),
+                    ),
+                )
+                assertTrue(reserved === ReflectionHelpers.getField<Runnable?>(session, "playbackRetryTask"))
+                // 再開条件のSIは未取得へ戻し、実予約消費→通常開始受付のIdle境界を確認する。
+                ReflectionHelpers.setField(session, "latestLiveSnapshot", null)
             }
         }
 

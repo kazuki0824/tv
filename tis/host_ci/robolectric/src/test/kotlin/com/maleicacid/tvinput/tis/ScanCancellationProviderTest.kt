@@ -26,7 +26,7 @@ class ScanCancellationProviderTest {
     @Test
     fun uiCancellationReturnsWhileProviderPublicationOrFinalCommitIsBlocked() {
         for (finalizing in listOf(false, true)) {
-            val context = RuntimeEnvironment.getApplication<android.content.Context>()
+            val context = RuntimeEnvironment.getApplication()
             val task = ChannelScanManager.ActiveScanTask(1, ScanPurpose.SETUP_SCAN, context)
             val engine = AribSiEngine(context)
             val controller =
@@ -38,7 +38,8 @@ class ScanCancellationProviderTest {
                     task.cancelRequested,
                     task.publicationLock,
                 )
-            val fence = ReflectionHelpers.getField<ChannelScanController.ScanGenerationFence>(controller, "scanGenerationFence")
+            val fence =
+                ReflectionHelpers.getField<ChannelScanController.ScanGenerationFence>(controller, "scanGenerationFence")
             task.controller = controller
             val entered = CountDownLatch(1)
             val release = CountDownLatch(1)
