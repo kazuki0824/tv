@@ -11,6 +11,12 @@
 - #119由来のProgram snapshot失敗試験は、未初期化AribSiEngine.lockによる人工的NPEではなく、通常生成・解放済みSIエンジンのsnapshot拒否（IllegalStateException）を利用する。既存のchannel挿入とrollback確認を維持する。
 - 上記はfixtureの修正であり、実TISの再生・スキャン処理は変更していない。Framework native境界を模擬する他のfixtureの正規生成への移行は別途検討中であり、すべてのコンストラクタ迂回を解消したという意味ではない。
 
+# 2026-11-02 VM音声不足の時刻診断を追加
+
+- #223 の既存 PlaybackPipeline owner に、DEBUG時のみ音声Filter callbackの受付間隔（callbackGapUs）とowner待ち（ownerWaitUs）を記録する診断を追加した。先頭および32件ごとの間引きに加え、100ms以上の待機・受付間隔を記録する。
+- MediaSync.queueAudioの投入所要時間（queueUs）、bufferId、outstandingをDEBUGの32バッファごとに記録し、既存Codec入力・出力とMediaSync消費返却ログに結び付ける。
+- AudioTrack容量、再生開始条件、優先度、Codec及びMediaSync資源寿命は変更しない。実Androidゲストの13,312フレーム不足とTIS owner待ちの因果関係は新ログの実測前には確定しない。試験・整形・静的検査はCIを正とする。
+
 # 2026-11-01 停止前の再生診断と採取証拠の検査
 
 - 既存PlaybackPipeline ownerで解放前のgeneration・理由・全段階累計・decoder所有状態を記録する。PENDING_QUEUE_FULLへ投入中sampleの課金、incoming、件数/byte上限と超過判定を追加し、起動中拒否も同じ内訳を使う。間引く入力ログへ既存累計を追加。
