@@ -305,7 +305,8 @@ class PlaybackPipeline(
     // Frameworkのcallback lock内では配送だけを行い、ownerやpermitを待たない。
     private val filterCallbackExecutor = java.util.concurrent.Executor { task -> task.run() }
 
-    @Suppress("MagicNumber", "MaxLineLength")
+    // Filter容量会計とcallback所有権を一つの受付境界に保つ。
+    @Suppress("MagicNumber", "MaxLineLength", "LongMethod", "CyclomaticComplexMethod")
     private fun enqueuePlaybackFilterEvents(
         events: Array<FilterEvent>,
         onCapacity: () -> Unit,
