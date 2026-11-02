@@ -1736,7 +1736,8 @@ class PlaybackPipeline(
                             budget.decoderStartupDeadlineMs
                         }
                     val reason =
-                        "${pendingInputDiagnostic(sample, queueBudget)} blockedMs=${nowMs - startedAtMs} deadlineMs=$deadlineMs"
+                        "${pendingInputDiagnostic(sample, queueBudget)} " +
+                            "blockedMs=${nowMs - startedAtMs} deadlineMs=$deadlineMs"
                     onSampleRejected(reason)
                     if (backpressureDeadlineReached(startedAtMs, nowMs, deadlineMs)) {
                         onBackpressureDeadline(reason)
@@ -2038,14 +2039,16 @@ class PlaybackPipeline(
                     if (Log.isLoggable(LogTags.TIS, Log.DEBUG) &&
                         dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio) % 32L == 0L
                     ) {
+                        val inputCount = dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
+                        val returnedCount =
+                            dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT_RETURNED, sample.isAudio)
                         Log.d(
                             LogTags.TIS,
                             "PLAYBACK_CODEC_INPUT_QUEUE sessionId=$sessionId generation=$generation isAudio=${sample.isAudio} " +
                                 "index=${submission.index} bytes=${sample.size} ptsUs=${sample.presentationTimeUs} " +
                                 "queueUs=${submission.queueDurationNs / 1_000L} " +
                                 "pending=${pendingSamples.size} queued=${queuedSamples.size} " +
-                                "inputCount=${dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)} " +
-                                "returnedCount=${dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT_RETURNED, sample.isAudio)}",
+                                "inputCount=$inputCount returnedCount=$returnedCount",
                         )
                     }
                     onCompressedInputQueued(sample)

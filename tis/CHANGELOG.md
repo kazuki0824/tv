@@ -17,6 +17,7 @@
 - LineageOS 22.1 MediaSyncの生成/破棄、入力buffer/PTS、schedule、出力queue結果をDEBUG条件付きで記録する独立patchと適用手順を追加。first-output callback patchだけではログが実装されないことを明示。
 - Perfettoを1秒周期の継続書出しへ変更し、android.logに今回の開始/トリガーmarkerとTIS/MediaSyncを収録。終了後のTrace Processor SQLで区間、欠落、nativeログを検査し、検査不能も非0にする。保存物をアーカイブへ含める。
 - DESIGNとINTEGRATIONへ診断の責務、必要ツール、IO/ログ負荷、判定できない範囲を記載。正常/欠落/旧ログ/短い区間のSQL回帰、stockと任意callback patch併用時の適用検査を通常CIに追加。
+- 既存のnative入力待機回帰で、投入中1件・未完了・件数超過/byte非超過・generationの診断を追加検査。模擬adbはプロセス別PIDを返して並行backtraceの出力先を分離する。CIの整形指摘も修正。
 - 検証はCIで実行する。platform Soong/native実行、実端末での負荷と症状再現、source/symbol照合は未確認。
 
 # 2026-11-01 診断結果の回収と失敗判定を修正
