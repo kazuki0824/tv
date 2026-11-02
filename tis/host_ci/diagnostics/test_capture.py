@@ -111,6 +111,13 @@ class CaptureTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn('evidence-coverage\t1', (out / 'status.tsv').read_text())
 
+    def test_uncorrelated_native_coverage_is_not_capture_success(self):
+        (self.bin / 'trace_processor_shell').write_text(
+            "#!/bin/sh\nprintf 'coverage_ok,trace_coverage_ok,native_instance_coverage_ok,target_playback_correlated\\n0,1,1,0\\n'\n")
+        result, out = self.capture('ok')
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn('evidence-coverage\t1', (out / 'status.tsv').read_text())
+
     def test_zero_exit_error_output_is_not_success(self):
         for mode, expected in [('missing', 'not-found'), ('denied', 'permission-denied'),
                                ('empty', 'empty-output'), ('error', 'error-output')]:
@@ -142,26 +149,68 @@ class CoverageTest(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(':memory:')
         self.db.executescript("""
-            CREATE TABLE android_logs(ts INT, tag TEXT, msg TEXT);
+            CREATE TABLE android_logs(ts INT, tag TEXT, msg TEXT, utid INT);
+            CREATE TABLE thread(utid INT, upid INT);
+            INSERT INTO thread VALUES (1, 10), (2, 10), (3, 20);
             CREATE TABLE trace_bounds(start_ts INT, end_ts INT);
             CREATE TABLE stats(name TEXT, severity TEXT, value INT);
             INSERT INTO trace_bounds VALUES (0, 100);
-            INSERT INTO android_logs VALUES (1, 'MaleicacidCapture', 'capture-begin:test');
-            INSERT INTO android_logs VALUES (99, 'MaleicacidCapture', 'capture-trigger:test');
+            INSERT INTO android_logs VALUES (1, 'MaleicacidCapture', 'capture-begin:test', 1);
+            INSERT INTO android_logs VALUES (99, 'MaleicacidCapture', 'capture-trigger:test', 1);
         """)
-        for msg in ['PLAYBACK_SYNC_CREATE native=1', 'PLAYBACK_SYNC_INPUT buffer=1',
-                    'PLAYBACK_SYNC_SCHEDULE buffer=1', 'PLAYBACK_SYNC_OUTPUT buffer=1']:
-            self.db.execute('INSERT INTO android_logs VALUES (50, ?, ?)', ('MediaSync', msg))
+        for msg in ['PLAYBACK_SYNC_CREATE native=0x123', 'PLAYBACK_SYNC_INPUT native=0x123 buffer=1',
+                    'PLAYBACK_SYNC_SCHEDULE native=0x123 buffer=1',
+                    'PLAYBACK_SYNC_OUTPUT native=0x123 buffer=1']:
+            self.db.execute('INSERT INTO android_logs VALUES (50, ?, ?, 1)', ('MediaSync', msg))
         self.sql = (ROOT / 'diagnostics/coverage.sql').read_text().replace('CAPTURE_KEY', 'test')
 
     def tearDown(self):
         self.db.close()
 
-    def result(self):
-        return self.db.execute(self.sql).fetchone()[0]
+    def result(self, column='trace_coverage_ok'):
+        cursor = self.db.execute(self.sql)
+        return dict(zip([c[0] for c in cursor.description], cursor.fetchone()))[column]
 
     def test_complete_interval(self):
         self.assertEqual(1, self.result())
+
+    def test_same_instance_does_not_prove_target_generation(self):
+        self.assertEqual(1, self.result('native_instance_coverage_ok'))
+        self.assertEqual(0, self.result('target_playback_correlated'))
+        self.assertEqual(0, self.result('coverage_ok'))
+
+    def test_different_instances_cannot_combine_stages(self):
+        self.db.execute("UPDATE android_logs SET msg = REPLACE(msg, '0x123', '0x456') WHERE msg LIKE 'PLAYBACK_SYNC_OUTPUT %'")
+        self.assertEqual(0, self.result('native_instance_coverage_ok'))
+        self.assertEqual(0, self.result('coverage_ok'))
+
+    def test_four_stages_distributed_across_four_instances(self):
+        for stage, identity in [('CREATE', '0x1'), ('INPUT', '0x2'),
+                                ('SCHEDULE', '0x3'), ('OUTPUT', '0x4')]:
+            self.db.execute("UPDATE android_logs SET msg = REPLACE(msg, '0x123', ?) WHERE msg LIKE ?",
+                            (identity, f'PLAYBACK_SYNC_{stage} %'))
+        self.assertEqual(0, self.result('native_instance_coverage_ok'))
+        self.assertEqual(0, self.result('coverage_ok'))
+
+    def test_same_pointer_in_different_processes_cannot_combine_stages(self):
+        self.db.execute("UPDATE android_logs SET utid = 3 WHERE msg LIKE 'PLAYBACK_SYNC_OUTPUT %'")
+        self.assertEqual(0, self.result('native_instance_coverage_ok'))
+
+    def test_threads_in_same_process_can_supply_stages(self):
+        self.db.execute("UPDATE android_logs SET utid = 2 WHERE msg LIKE 'PLAYBACK_SYNC_OUTPUT %'")
+        self.assertEqual(1, self.result('native_instance_coverage_ok'))
+        self.assertEqual(0, self.result('coverage_ok'))
+
+    def test_missing_process_or_native_identity_is_not_coverage(self):
+        self.db.execute('DELETE FROM thread')
+        self.assertEqual(0, self.result('native_instance_coverage_ok'))
+        self.db.execute('INSERT INTO thread VALUES (1, 10)')
+        self.db.execute("UPDATE android_logs SET msg = REPLACE(msg, ' native=0x123', '')")
+        self.assertEqual(0, self.result('native_instance_coverage_ok'))
+
+    def test_reused_pointer_is_not_one_lifetime(self):
+        self.db.execute("INSERT INTO android_logs VALUES (60, 'MediaSync', 'PLAYBACK_SYNC_CREATE native=0x123', 1)")
+        self.assertEqual(0, self.result('native_instance_coverage_ok'))
 
     def test_missing_marker(self):
         self.db.execute("DELETE FROM android_logs WHERE msg = 'capture-begin:test'")
@@ -169,7 +218,8 @@ class CoverageTest(unittest.TestCase):
 
     def test_pre_capture_native_logs_do_not_satisfy_evidence(self):
         self.db.execute("UPDATE android_logs SET ts = 0 WHERE tag = 'MediaSync'")
-        self.assertEqual(0, self.result())
+        self.assertEqual(0, self.result('native_instance_coverage_ok'))
+        self.assertEqual(0, self.result('coverage_ok'))
 
     def test_data_loss_and_short_interval(self):
         for name, severity in [('ftrace_cpu_overrun_end', 'info'), ('long_trace_mode_bytes_overwritten', 'data_loss')]:
