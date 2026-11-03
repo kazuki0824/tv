@@ -36,7 +36,7 @@ class ProgramPublishCoordinatorR51FixTest {
                                             componentType = 3,
                                             codec = "AAC",
                                             language = "jpn",
-                                            parseStatus = "OK",
+                                            parseStatus = com.maleicacid.tvinput.aribsi.SiParseStatus.OK,
                                         ),
                                     ),
                             ),
@@ -47,8 +47,8 @@ class ProgramPublishCoordinatorR51FixTest {
             )
         val withoutAudio = p.copy(descriptors = p.descriptors.copy(components = AribComponents()))
         check(
-            ProgramPublishCoordinator.programSignatureForTest(listOf(p)) !=
-                ProgramPublishCoordinator.programSignatureForTest(listOf(withoutAudio)),
+            programSignatureForTest(listOf(p)) !=
+                programSignatureForTest(listOf(withoutAudio)),
         )
     }
 }

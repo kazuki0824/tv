@@ -1,3 +1,6 @@
+pub(crate) mod avc_timing;
+mod video_timestamp;
+pub(crate) use video_timestamp::{VideoTimestampAssociation, VideoTimestampFailure};
 mod audio_timestamp;
 pub mod event;
 mod release_txn;
@@ -13,11 +16,9 @@ pub(crate) use release_txn::{
     AvDataIdState, AvFilterReleaseState, AvHandleReleaseInput, AvHandleReleaseKind,
     AvHandleReleaseTxn,
 };
-pub(crate) use shared_backing::ClientHandleState;
 pub use shared_backing::{
-    AvDataIdAllocator, AvFileIdentity, AvHandleReleaseDescriptor, AvPayloadDeliveryOutcome,
-    AvRuntimeBudget, AvSharedBacking, AvSharedBackingError, AvSharedHandleExport,
-    DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
-    DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    AvDataIdAllocator, AvFileIdentity, AvFlowDiagnosticSnapshot, AvHandleReleaseDescriptor,
+    AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedBackingError, AvSharedHandleExport,
+    DEFAULT_AV_MAX_EVENT_BYTES,
 };
-pub use slot::{AvDataId, AvSlotId};
+pub use slot::AvDataId;

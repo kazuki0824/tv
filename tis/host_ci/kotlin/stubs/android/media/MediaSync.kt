@@ -49,6 +49,8 @@ class MediaSync {
 
     fun setAudioTrack(audioTrack: AudioTrack?) = Unit
 
+    fun flush() = Unit
+
     fun release() = Unit
 
     companion object {

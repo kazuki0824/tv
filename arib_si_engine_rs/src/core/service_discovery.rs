@@ -76,6 +76,23 @@ impl SmdSemanticState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BroadcastSystem {
+    IsdbSBs,
+    IsdbT,
+    IsdbS110Cs,
+}
+
+impl BroadcastSystem {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IsdbSBs => "ISDB_S_BS",
+            Self::IsdbT => "ISDB_T",
+            Self::IsdbS110Cs => "ISDB_S_110CS",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SystemManagementFacts {
     pub descriptor_present: bool,
@@ -83,6 +100,7 @@ pub struct SystemManagementFacts {
     pub system_management_id: Option<u16>,
     pub broadcasting_flag: Option<u8>,
     pub broadcasting_identifier: Option<u8>,
+    pub broadcast_system: Option<BroadcastSystem>,
     pub additional_broadcasting_identification: Option<u8>,
     pub additional_identification_info: Vec<u8>,
     pub semantic_state: SmdSemanticState,
@@ -95,6 +113,7 @@ pub struct DiscoveredService {
     pub original_network_id: u16,
     pub service_id: u16,
     pub service_type: Option<u8>,
+    pub partial_reception: bool,
     pub service_name: Option<String>,
     pub provider_name: Option<String>,
     pub bouquet_name: Option<String>,
@@ -182,6 +201,7 @@ pub struct ServiceSemanticFacts {
     pub transport_stream_id: u16,
     pub service_id: u16,
     pub service_type: Option<u8>,
+    pub partial_reception: bool,
     pub pmt_pid_resolved: bool,
     pub pmt_parsed: bool,
     pub pcr_pid_resolved: bool,
@@ -469,6 +489,7 @@ impl ServiceDiscoveryEngine {
                 service.network_name = None;
                 service.ts_name = None;
                 service.remote_control_key_id = None;
+                service.partial_reception = false;
                 service.system_management = SystemManagementFacts::default();
             }
         }
@@ -515,6 +536,7 @@ impl ServiceDiscoveryEngine {
                 original_network_id: onid,
                 service_id,
                 service_type: None,
+                partial_reception: false,
                 service_name: None,
                 provider_name: None,
                 bouquet_name: None,
@@ -572,6 +594,18 @@ impl ServiceDiscoveryEngine {
         if resolved_onid != onid {
             return;
         }
+
+        // PMT PID は PMT 本文ではなく PAT で確定する。
+        // PAT が SDT より先に到着した場合も、service が一意に解決できた時点で
+        // filter bootstrap 用の PID を公開し、PMT 受信前の循環依存を作らない。
+        {
+            let entry = self.service_entry_mut(tsid, onid, service_id);
+            if entry.pmt_pid != Some(pmt_pid) {
+                Self::clear_pmt_state(entry);
+                entry.pmt_pid = Some(pmt_pid);
+            }
+        }
+
         let full_key = (onid, tsid, service_id, pmt_pid);
         if let std::collections::btree_map::Entry::Vacant(e) = self.pending_pmts.entry(full_key) {
             if let Some(parsed) = self
@@ -832,21 +866,32 @@ impl ServiceDiscoveryEngine {
             self.transport_entry_mut(tsid, onid);
             self.transport_entry_mut(tsid, onid).system_management =
                 parse_system_management_descriptor(network_descriptors);
-            let (desc_network_name, ts_name, remote_control_key_id) =
-                parse_nit_transport_metadata(&section[desc_start..desc_end])
-                    .unwrap_or((None, None, None));
+            let metadata =
+                parse_nit_transport_metadata(&section[desc_start..desc_end]).unwrap_or_default();
+            for service_id in metadata.partial_reception_services {
+                self.transport_entry_mut(tsid, onid)
+                    .services
+                    .insert(service_id);
+                self.service_entry_mut(tsid, onid, service_id)
+                    .partial_reception = true;
+                self.apply_pending_pmt_to_service(tsid, onid, service_id);
+            }
             let transport = self.transport_entry_mut(tsid, onid);
             if transport.network_name.is_none() {
-                transport.network_name = desc_network_name
+                transport.network_name = metadata
+                    .network_name
                     .as_ref()
                     .map(|decoded| decoded.value.clone())
                     .or_else(|| network_name.as_ref().map(|decoded| decoded.value.clone()));
             }
             if transport.ts_name.is_none() {
-                transport.ts_name = ts_name.as_ref().map(|decoded| decoded.value.clone());
+                transport.ts_name = metadata
+                    .ts_name
+                    .as_ref()
+                    .map(|decoded| decoded.value.clone());
             }
             if transport.remote_control_key_id.is_none() {
-                transport.remote_control_key_id = remote_control_key_id;
+                transport.remote_control_key_id = metadata.remote_control_key_id;
             }
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
@@ -856,11 +901,11 @@ impl ServiceDiscoveryEngine {
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
-                desc_network_name.and_then(|decoded| decoded.diagnostic),
+                metadata.network_name.and_then(|decoded| decoded.diagnostic),
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
-                ts_name.and_then(|decoded| decoded.diagnostic),
+                metadata.ts_name.and_then(|decoded| decoded.diagnostic),
             );
             self.parse_service_list_descriptor(tsid, onid, &section[desc_start..desc_end]);
             if let Some(entry) = self.transports.get_mut(&(tsid, onid)) {
@@ -1016,6 +1061,59 @@ impl ServiceDiscoveryEngine {
 }
 
 impl ServiceDiscoveryCollector {
+    /// 既存の表trackerから保持量を算出し、同版反復や版の置換で累積課金しない。
+    pub fn admits_section_at(
+        &self,
+        pid: u16,
+        section: &[u8],
+        now: std::time::Instant,
+        limits: (usize, usize),
+    ) -> bool {
+        let (old, new) = self.section_storage_change_at(pid, section, now);
+        // 同版反復・矛盾検出など保持を増やさない入力で全表を走査しない。
+        if new.0 <= old.0 && new.1 <= old.1 {
+            return true;
+        }
+        let total = self.section_storage();
+        total.0 - old.0 + new.0 <= limits.0 && total.1 - old.1 + new.1 <= limits.1
+    }
+
+    pub fn section_storage(&self) -> (usize, usize) {
+        self.section_trackers
+            .values()
+            .map(SectionTracker::storage)
+            .fold((0, 0), |sum, value| (sum.0 + value.0, sum.1 + value.1))
+    }
+
+    fn section_storage_change_at(
+        &self,
+        pid: u16,
+        section: &[u8],
+        now: std::time::Instant,
+    ) -> ((usize, usize), (usize, usize)) {
+        let Some(header) = parse_section_header(section) else {
+            return ((0, 0), (0, 0));
+        };
+        let (Some(extension), Some(version), Some(number), Some(last)) = (
+            header.table_id_extension,
+            header.version,
+            header.section_number,
+            header.last_section_number,
+        ) else {
+            return ((0, 0), (0, 0));
+        };
+        let scope = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
+        let tracker = self
+            .section_trackers
+            .get(&(pid, header.table_id, extension, scope));
+        let old = tracker.map_or((0, 0), SectionTracker::storage);
+        let new = tracker.map_or_else(
+            || SectionTracker::default().projected_storage_at(version, number, last, section, now),
+            |tracker| tracker.projected_storage_at(version, number, last, section, now),
+        );
+        (old, new)
+    }
+
     pub fn reset_collection(&mut self) {
         *self = Self {
             discovery_profile: self.discovery_profile,
@@ -1046,16 +1144,21 @@ impl ServiceDiscoveryCollector {
 
 impl ServiceDiscoveryCollector {
     pub fn push_section(&mut self, pid: u16, section: &[u8]) {
+        self.push_section_at(pid, section, std::time::Instant::now());
+    }
+
+    pub fn push_section_at(&mut self, pid: u16, section: &[u8], now: std::time::Instant) {
         if !valid_current_section(section) {
             return;
         }
-        if !self.accepts_section_version(pid, section) {
+        // 期限境界を跨いでも版判定・派生fact失効・証拠置換を一致させる。
+        if !self.accepts_section_version(pid, section, now) {
             return;
         }
-        if self.section_version_changed(pid, section) {
+        if self.section_version_changed(pid, section, now) {
             self.invalidate_changed_table(pid, section);
         }
-        if !self.track_section(pid, section) {
+        if !self.track_section(pid, section, now) {
             if let Some(header) = parse_section_header(section) {
                 if let Some(extension) = header.table_id_extension {
                     if header.table_id == 0x02
@@ -1247,8 +1350,11 @@ impl ServiceDiscoveryCollector {
             let mut missing_for_service = table_requirements
                 .iter()
                 .filter(|status| {
+                    // other network/transportの完成はcollection全体の条件。
+                    // 現在TSの単独service登録にまで他networkの未受信を波及させない。
                     status.required
                         && !status.complete
+                        && !matches!(status.component, "SDT-other" | "NIT-other")
                         && status
                             .original_network_id
                             .map(|value| value == service.original_network_id)
@@ -1266,14 +1372,31 @@ impl ServiceDiscoveryCollector {
                 .collect::<Vec<_>>();
             missing_for_service.sort_unstable();
             missing_for_service.dedup();
-            let has_program_ca_descriptor = !service.program_ca_descriptors.is_empty();
-            let pmt_pid_resolved = service.pmt_pid.is_some();
-
-            let semantic_requires_cas = has_program_ca_descriptor
+            // 0x1FFFはECM非送出。ES第2ループは同方式のPROGRAMに優先する。
+            // raw CA descriptorは引き続きsnapshotに保持する。
+            let semantic_requires_cas = service.streams.iter().any(|stream| {
+                let es_descriptors = service
+                    .es_ca_descriptors
+                    .iter()
+                    .filter(|group| group.elementary_pid == stream.elementary_pid)
+                    .flat_map(|group| &group.descriptors)
+                    .collect::<Vec<_>>();
+                es_descriptors.iter().any(|ca| ca.ca_pid != 0x1fff)
+                    || service.program_ca_descriptors.iter().any(|program_ca| {
+                        program_ca.ca_pid != 0x1fff
+                            && !es_descriptors
+                                .iter()
+                                .any(|es_ca| es_ca.ca_system_id == program_ca.ca_system_id)
+                    })
+            });
+            // free_CA_modeの整合診断はPMTのraw CA descriptor有無を見る。
+            // 復号対象ESの有無を表すrequires_casとは別の放送事実。
+            let has_raw_ca_descriptor = !service.program_ca_descriptors.is_empty()
                 || service
                     .es_ca_descriptors
                     .iter()
                     .any(|metadata| !metadata.descriptors.is_empty());
+            let pmt_pid_resolved = service.pmt_pid.is_some();
             let ca_descriptors_resolved = service.pmt_parsed
                 && !snapshot
                     .malformed_ca_descriptor_diagnostics
@@ -1294,7 +1417,7 @@ impl ServiceDiscoveryCollector {
             {
                 semantic_diagnostics.push("RESERVED_DATA_COMPONENT_TIMING");
             }
-            if service.pmt_parsed && service.free_ca_mode == Some(true) && !semantic_requires_cas {
+            if service.pmt_parsed && service.free_ca_mode == Some(true) && !has_raw_ca_descriptor {
                 semantic_diagnostics.push("FREE_CA_MODE_WITHOUT_CA_DESCRIPTOR");
             }
             if service.service_type.is_none() {
@@ -1316,6 +1439,7 @@ impl ServiceDiscoveryCollector {
                 transport_stream_id: service.transport_stream_id,
                 service_id: service.service_id,
                 service_type: service.service_type,
+                partial_reception: service.partial_reception,
                 pmt_pid_resolved,
                 pmt_parsed: service.pmt_parsed,
                 pcr_pid_resolved: service.pcr_pid.is_some(),
@@ -1390,7 +1514,7 @@ impl ServiceDiscoveryCollector {
             .invalidate_table(pid, header.table_id, table_extension);
     }
 
-    fn section_version_changed(&self, pid: u16, section: &[u8]) -> bool {
+    fn section_version_changed(&self, pid: u16, section: &[u8], now: std::time::Instant) -> bool {
         let Some(header) = parse_section_header(section) else {
             return false;
         };
@@ -1406,11 +1530,15 @@ impl ServiceDiscoveryCollector {
         let scope_extension = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
         self.section_trackers
             .get(&(pid, header.table_id, table_extension, scope_extension))
-            .and_then(|tracker| tracker.version)
-            .is_some_and(|old_version| old_version != version)
+            .is_some_and(|tracker| {
+                tracker.version != Some(version)
+                    || header.section_number.is_some_and(|number| {
+                        tracker.needs_reacquisition_at(version, number, section, now)
+                    })
+            })
     }
 
-    fn accepts_section_version(&self, pid: u16, section: &[u8]) -> bool {
+    fn accepts_section_version(&self, pid: u16, section: &[u8], now: std::time::Instant) -> bool {
         let Some(header) = parse_section_header(section) else {
             return false;
         };
@@ -1420,10 +1548,10 @@ impl ServiceDiscoveryCollector {
         let scope = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
         self.section_trackers
             .get(&(pid, header.table_id, extension, scope))
-            .map_or(true, |tracker| tracker.accepts_version(version))
+            .map_or(true, |tracker| tracker.accepts_version_at(version, now))
     }
 
-    fn track_section(&mut self, pid: u16, section: &[u8]) -> bool {
+    fn track_section(&mut self, pid: u16, section: &[u8], now: std::time::Instant) -> bool {
         let Some(header) = parse_section_header(section) else {
             return false;
         };
@@ -1439,7 +1567,7 @@ impl ServiceDiscoveryCollector {
         self.section_trackers
             .entry((pid, header.table_id, extension, scope))
             .or_default()
-            .observe(version, number, last, section)
+            .observe_at(version, number, last, section, now)
     }
 
     fn track_transport_scopes(&mut self, section: &[u8]) {
@@ -1730,10 +1858,14 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
                 u16::from_be_bytes([descriptors[body_start], descriptors[body_start + 1]]);
             let broadcasting_flag = ((system_management_id >> 14) & 0x03) as u8;
             let broadcasting_identifier = ((system_management_id >> 8) & 0x3f) as u8;
+            let broadcast_system = match (broadcasting_flag, broadcasting_identifier) {
+                (0, 0b000010) => Some(BroadcastSystem::IsdbSBs),
+                (0, 0b000011) => Some(BroadcastSystem::IsdbT),
+                (0, 0b000100) => Some(BroadcastSystem::IsdbS110Cs),
+                _ => None,
+            };
             let semantic_state = match broadcasting_flag {
-                0 if matches!(broadcasting_identifier, 0b000010..=0b000100) => {
-                    SmdSemanticState::SupportedBroadcast
-                }
+                0 if broadcast_system.is_some() => SmdSemanticState::SupportedBroadcast,
                 0 => SmdSemanticState::UnsupportedBroadcastSystem,
                 1 | 2 => SmdSemanticState::NonBroadcast,
                 _ => SmdSemanticState::UndefinedBroadcastClass,
@@ -1744,6 +1876,7 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
                 system_management_id: Some(system_management_id),
                 broadcasting_flag: Some(broadcasting_flag),
                 broadcasting_identifier: Some(broadcasting_identifier),
+                broadcast_system,
                 additional_broadcasting_identification: Some(system_management_id as u8),
                 additional_identification_info: descriptors[body_start + 2..body_end].to_vec(),
                 semantic_state,
@@ -1758,12 +1891,16 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
     })
 }
 
-fn parse_nit_transport_metadata(
-    descriptors: &[u8],
-) -> Option<(Option<DecodedSiText>, Option<DecodedSiText>, Option<u8>)> {
-    let mut network_name = None;
-    let mut ts_name = None;
-    let mut remote_control_key_id = None;
+#[derive(Default)]
+struct NitTransportMetadata {
+    network_name: Option<DecodedSiText>,
+    ts_name: Option<DecodedSiText>,
+    remote_control_key_id: Option<u8>,
+    partial_reception_services: BTreeSet<u16>,
+}
+
+fn parse_nit_transport_metadata(descriptors: &[u8]) -> Option<NitTransportMetadata> {
+    let mut metadata = NitTransportMetadata::default();
     let mut cursor = 0usize;
     while cursor + 2 <= descriptors.len() {
         let tag = descriptors[cursor];
@@ -1774,7 +1911,7 @@ fn parse_nit_transport_metadata(
         };
         match tag {
             0x40 => {
-                network_name = Some(decode_si_text_lossy(
+                metadata.network_name = Some(decode_si_text_lossy(
                     "networkName",
                     &descriptors[body_start..body_end],
                 ))
@@ -1782,27 +1919,38 @@ fn parse_nit_transport_metadata(
             0xcd => {
                 let body_len = body_end.saturating_sub(body_start);
                 if body_len >= 2 {
-                    remote_control_key_id = Some(descriptors[body_start]);
+                    metadata.remote_control_key_id = Some(descriptors[body_start]);
                     let ts_name_len = ((descriptors[body_start + 1] >> 2) & 0x3f) as usize;
                     let ts_name_start = body_start + 2;
                     let remaining = body_end.saturating_sub(ts_name_start);
                     if ts_name_len <= remaining {
                         let ts_name_end = ts_name_start + ts_name_len;
-                        ts_name = Some(decode_si_text_lossy(
+                        metadata.ts_name = Some(decode_si_text_lossy(
                             "transportStreamName",
                             &descriptors[ts_name_start..ts_name_end],
                         ));
                     }
                 }
             }
+            0xfb if len % 2 == 0 => {
+                for service in descriptors[body_start..body_end].chunks_exact(2) {
+                    metadata
+                        .partial_reception_services
+                        .insert(u16::from_be_bytes([service[0], service[1]]));
+                }
+            }
             _ => {}
         }
         cursor = body_end;
     }
-    if network_name.is_none() && ts_name.is_none() && remote_control_key_id.is_none() {
+    if metadata.network_name.is_none()
+        && metadata.ts_name.is_none()
+        && metadata.remote_control_key_id.is_none()
+        && metadata.partial_reception_services.is_empty()
+    {
         None
     } else {
-        Some((network_name, ts_name, remote_control_key_id))
+        Some(metadata)
     }
 }
 
@@ -2243,6 +2391,67 @@ mod tests {
             &section_with_crc(vec![0x41, 0xf0, 0x0d, 0, 3, 0xc1, 0, 1, 0xf0, 0, 0xf0, 0]),
         );
         assert!(!collector.state().is_complete());
+    }
+
+    #[test]
+    fn satellite_other_tables_still_gate_collection_but_not_current_service_facts() {
+        // PAT/PMT/SDT actualとNIT actualは完成。他TS/他networkのテーブルを故意に未受信にする。
+        // collection完全性と現在サービスの登録準備は別の契約である。
+        for profile in [DiscoveryProfile::Bs, DiscoveryProfile::Cs110] {
+            let mut collector = collector_with_pmt(&[], &[0x1b, 0xe1, 0x01, 0xf0, 0], 0x101);
+            collector.set_discovery_profile(profile);
+            collector.push_section(
+                0x10,
+                &section_with_crc(vec![
+                    0x40, 0xf0, 0x19, 0, 1, 0xc1, 0, 0, 0xf0, 0, 0xf0, 12, 0, 0x11, 0, 0x22, 0xf0,
+                    0, 0, 0x12, 0, 0x22, 0xf0, 0,
+                ]),
+            );
+            let state = collector.state();
+            assert!(
+                !state.is_complete(),
+                "satellite completion must still require other tables"
+            );
+            assert!(state.table_requirements.iter().any(|status| {
+                status.component == "SDT-other" && status.required && !status.complete
+            }));
+            if profile == DiscoveryProfile::Cs110 {
+                assert!(state.table_requirements.iter().any(|status| {
+                    status.component == "NIT-other" && status.required && !status.complete
+                }));
+            }
+            let current = state
+                .semantic_facts_by_service
+                .iter()
+                .find(|facts| facts.transport_stream_id == 0x11 && facts.service_id == 1)
+                .expect("current transport service");
+            assert!(
+                current.missing_components.is_empty(),
+                "unrelated satellite other tables must not block actual service: {:?}",
+                current.missing_components
+            );
+            assert!(current.pmt_parsed && current.pmt_pid_resolved && current.pcr_pid_resolved);
+        }
+    }
+
+    #[test]
+    fn satellite_actual_nit_is_still_required_for_current_service() {
+        let mut collector = collector_with_pmt(&[], &[0x1b, 0xe1, 0x01, 0xf0, 0], 0x101);
+        collector.set_discovery_profile(DiscoveryProfile::Cs110);
+        let state = collector.state();
+        let service = state
+            .semantic_facts_by_service
+            .iter()
+            .find(|facts| facts.service_id == 1)
+            .expect("service from current SDT");
+        assert!(
+            service.missing_components.contains(&"NIT"),
+            "missing NIT actual must remain a registration blocker"
+        );
+        assert!(
+            !service.missing_components.contains(&"NIT-other"),
+            "other-network table absence is collection-level, not service-level"
+        );
     }
 
     #[test]
@@ -2831,6 +3040,157 @@ mod semantic_facts_coverage_tests {
         assert!(!facts.requires_cas);
     }
 
+    fn assert_provider_data_accepts_cas_facts(facts: &ServiceSemanticFacts, accepted: bool) {
+        use crate::provider_data::{
+            build_channel_provider_data, build_program_provider_data, decode_channel_provider_data,
+            extract_program_key_result, CasFactsV1,
+        };
+
+        let canonical = serde_json::to_string(&CasFactsV1::from(facts)).unwrap();
+        let mut program: serde_json::Value = serde_json::from_str(include_str!(
+            "../../testdata/program_provider_data_v1/minimal_clear_program.json"
+        ))
+        .unwrap();
+        program["schema"] = serde_json::json!("maleicacid.tv.programRequest");
+        program.as_object_mut().unwrap().remove("casFacts");
+        program["casFactsCanonicalJson"] = serde_json::json!(canonical);
+        program["cas"]["requiresCas"] = serde_json::json!(facts.requires_cas);
+        program["diagnostics"] = serde_json::json!({
+            "descriptorDiagnosticsCanonicalJson": "[]",
+            "publishDiagnostics": [],
+            "parserDiagnostics": [],
+        });
+        program["malformedCaDescriptorCount"] = serde_json::json!(0);
+        let channel = serde_json::json!({
+            "schema": "maleicacid.tv.channelRequest",
+            "schemaVersion": 1,
+            "serviceKey": {
+                "originalNetworkId": facts.original_network_id,
+                "transportStreamId": facts.transport_stream_id,
+                "serviceId": facts.service_id,
+            },
+            "tune": {
+                "deliverySystem": "ISDB_S", "frequencyHz": 1049480000,
+                "streamId": facts.transport_stream_id, "streamIdType": "TSID",
+                "physicalChannel": null, "satelliteBand": "BS", "remoteControlKeyId": null,
+            },
+            "cas": {"requiresCas": facts.requires_cas},
+            "casFactsCanonicalJson": canonical,
+            "diagnostics": {},
+        });
+        for (result, is_program) in [
+            (build_program_provider_data(&program.to_string()), true),
+            (build_channel_provider_data(&channel.to_string()), false),
+        ] {
+            assert_eq!(result.success, accepted, "{}", result.error_message);
+            if !accepted {
+                assert_eq!(
+                    result.error_code,
+                    if is_program {
+                        "PROGRAM_REQUEST_INVALID"
+                    } else {
+                        "CHANNEL_REQUEST_INVALID"
+                    }
+                );
+                continue;
+            }
+            let saved: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+            assert_eq!(saved["cas"]["requiresCas"], facts.requires_cas);
+            assert_eq!(
+                saved["casFacts"],
+                serde_json::from_str::<serde_json::Value>(&canonical).unwrap()
+            );
+            if is_program {
+                assert!(extract_program_key_result(result.json.as_bytes()).is_some());
+            } else {
+                assert!(!decode_channel_provider_data(result.json.as_bytes()).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn effective_cas_facts_survive_program_and_channel_provider_data() {
+        let cases = [
+            ("記述子なし", None, vec![None, None], false),
+            (
+                "PROGRAM非スクランブル",
+                Some(0x1fff),
+                vec![None, None],
+                false,
+            ),
+            (
+                "ES非スクランブル",
+                None,
+                vec![Some(0x1fff), Some(0x1fff)],
+                false,
+            ),
+            (
+                "全ES上書き",
+                Some(0x0031),
+                vec![Some(0x1fff), Some(0x1fff)],
+                false,
+            ),
+            ("一部ES上書き", Some(0x0031), vec![Some(0x1fff), None], true),
+            ("ESの実ECM", None, vec![Some(0x0032), None], true),
+            ("ESなし", Some(0x0031), vec![], false),
+        ];
+        for (name, program_pid, es_pids, expected) in cases {
+            let ca = |pid: u16| CaDescriptor {
+                ca_system_id: 5,
+                ca_pid: pid,
+                private_data: Vec::new(),
+                raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe0 | ((pid >> 8) as u8), pid as u8],
+            };
+            let mut service = base_service(
+                es_pids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| stream(0x0101 + index as u16, 0x02))
+                    .collect(),
+            );
+            service.pmt_parsed = true;
+            if let Some(pid) = program_pid {
+                service.program_ca_descriptors.push(ca(pid));
+            }
+            for (index, pid) in es_pids.into_iter().enumerate() {
+                if let Some(pid) = pid {
+                    service.es_ca_descriptors.push(EsCaMetadata {
+                        elementary_pid: 0x0101 + index as u16,
+                        descriptors: vec![ca(pid)],
+                    });
+                }
+            }
+            let facts = semantic_facts_for(service);
+            assert_eq!(facts.requires_cas, expected, "{name}");
+            assert_provider_data_accepts_cas_facts(&facts, true);
+        }
+    }
+
+    #[test]
+    fn provider_data_rejects_cas_requirement_without_ecm_and_clear_with_es_ecm() {
+        let mut facts = semantic_facts_for(base_service(vec![stream(0x0101, 0x02)]));
+        facts.requires_cas = true;
+        assert_provider_data_accepts_cas_facts(&facts, false);
+        facts.program_ca_descriptors.push(CaDescriptor {
+            ca_system_id: 5,
+            ca_pid: 0x1fff,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xff, 0xff],
+        });
+        assert_provider_data_accepts_cas_facts(&facts, false);
+        facts.requires_cas = false;
+        facts.es_ca_descriptors.push(EsCaMetadata {
+            elementary_pid: 0x0101,
+            descriptors: vec![CaDescriptor {
+                ca_system_id: 5,
+                ca_pid: 0x0032,
+                private_data: Vec::new(),
+                raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe0, 0x32],
+            }],
+        });
+        assert_provider_data_accepts_cas_facts(&facts, false);
+    }
+
     #[test]
     fn semantic_facts_preserve_avc_video_without_product_policy() {
         let facts = semantic_facts_for(base_service(vec![stream(0x0101, 0x1b)]));
@@ -2920,6 +3280,123 @@ mod semantic_facts_coverage_tests {
         });
         let facts = semantic_facts_for(es_ca);
         assert!(facts.requires_cas);
+
+        let mut null_program = base_service(vec![stream(0x0101, 0x1b)]);
+        null_program.program_ca_descriptors.push(CaDescriptor {
+            ca_system_id: 0x0005,
+            ca_pid: 0x1fff,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xff, 0xff],
+        });
+        assert!(!semantic_facts_for(null_program).requires_cas);
+
+        let mut null_es = base_service(vec![stream(0x0101, 0x1b)]);
+        null_es.es_ca_descriptors.push(EsCaMetadata {
+            elementary_pid: 0x0101,
+            descriptors: vec![CaDescriptor {
+                ca_system_id: 0x0005,
+                ca_pid: 0x1fff,
+                private_data: Vec::new(),
+                raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xff, 0xff],
+            }],
+        });
+        assert!(!semantic_facts_for(null_es).requires_cas);
+
+        // PROGRAM ECMがあっても全ESが同方式のclearを明示すればCAS不要。
+        let mut all_clear = base_service(vec![stream(0x0101, 0x1b), stream(0x0102, 0x0f)]);
+        all_clear.program_ca_descriptors.push(CaDescriptor {
+            ca_system_id: 0x0005,
+            ca_pid: 0x0031,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe0, 0x31],
+        });
+        let null_descriptor = CaDescriptor {
+            ca_system_id: 0x0005,
+            ca_pid: 0x1fff,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xff, 0xff],
+        };
+        all_clear.es_ca_descriptors = vec![
+            EsCaMetadata {
+                elementary_pid: 0x0101,
+                descriptors: vec![null_descriptor.clone()],
+            },
+            EsCaMetadata {
+                elementary_pid: 0x0102,
+                descriptors: vec![null_descriptor],
+            },
+        ];
+        let facts = semantic_facts_for(all_clear.clone());
+        assert!(!facts.requires_cas);
+        assert_eq!(facts.program_ca_descriptors.len(), 1);
+        assert_eq!(facts.es_ca_descriptors.len(), 2);
+
+        // 一部のESだけclearであれば、残るESにはPROGRAM ECMを適用する。
+        all_clear.es_ca_descriptors.pop();
+        assert!(semantic_facts_for(all_clear.clone()).requires_cas);
+        all_clear.es_ca_descriptors.push(EsCaMetadata {
+            elementary_pid: 0x0102,
+            descriptors: vec![CaDescriptor {
+                ca_system_id: 0x0005,
+                ca_pid: 0x0032,
+                private_data: Vec::new(),
+                raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe0, 0x32],
+            }],
+        });
+        assert!(semantic_facts_for(all_clear).requires_cas);
+    }
+
+    #[test]
+    fn free_ca_mode_diagnostic_uses_raw_descriptor_presence_not_effective_cas() {
+        let mut without_ca = base_service(vec![stream(0x0101, 0x1b)]);
+        without_ca.pmt_parsed = true;
+        without_ca.free_ca_mode = Some(true);
+        let missing = semantic_facts_for(without_ca);
+        assert!(!missing.requires_cas);
+        assert!(missing.program_ca_descriptors.is_empty());
+        assert!(missing.es_ca_descriptors.is_empty());
+        assert!(missing
+            .semantic_diagnostics
+            .contains(&"FREE_CA_MODE_WITHOUT_CA_DESCRIPTOR"));
+
+        // PROGRAM ECMは全ESの0x1FFF明示で無効でもraw descriptorは残る。
+        let mut all_clear = base_service(vec![stream(0x0101, 0x1b), stream(0x0102, 0x0f)]);
+        all_clear.pmt_parsed = true;
+        all_clear.free_ca_mode = Some(true);
+        all_clear.program_ca_descriptors.push(CaDescriptor {
+            ca_system_id: 0x0005,
+            ca_pid: 0x0031,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe0, 0x31],
+        });
+        let clear = CaDescriptor {
+            ca_system_id: 0x0005,
+            ca_pid: 0x1fff,
+            private_data: Vec::new(),
+            raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xff, 0xff],
+        };
+        all_clear.es_ca_descriptors = vec![
+            EsCaMetadata {
+                elementary_pid: 0x0101,
+                descriptors: vec![clear.clone()],
+            },
+            EsCaMetadata {
+                elementary_pid: 0x0102,
+                descriptors: vec![clear],
+            },
+        ];
+        let overridden = semantic_facts_for(all_clear);
+        assert_eq!(overridden.free_ca_mode, Some(true));
+        assert!(!overridden.requires_cas);
+        assert_eq!(overridden.program_ca_descriptors.len(), 1);
+        assert_eq!(overridden.program_ca_descriptors[0].ca_pid, 0x0031);
+        assert_eq!(overridden.es_ca_descriptors.len(), 2);
+        assert!(overridden.es_ca_descriptors.iter().all(|group| {
+            group.descriptors.len() == 1 && group.descriptors[0].ca_pid == 0x1fff
+        }));
+        assert!(!overridden
+            .semantic_diagnostics
+            .contains(&"FREE_CA_MODE_WITHOUT_CA_DESCRIPTOR"));
     }
 
     #[test]
@@ -2950,6 +3427,40 @@ mod current_version_tests {
     }
 
     #[test]
+    fn silent_table_reacquires_ambiguous_version_without_resetting_other_tables() {
+        let mut collector = ServiceDiscoveryCollector::default();
+        let pat = section_with_crc(vec![0, 0xb0, 0x0d, 0, 0x11, 0xc1, 0, 0, 0, 1, 0xe1, 0]);
+        let cat = section_with_crc(vec![1, 0xb0, 9, 0, 1, 0xc1, 0, 0]);
+        collector.push_section(0, &pat);
+        collector.push_section(1, &cat);
+        let mut next = pat[..pat.len() - 4].to_vec();
+        next[5] = 0xe1;
+        next[11] = 1;
+        let next = section_with_crc(next);
+        collector.push_section(0, &next);
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x100]);
+        collector
+            .section_trackers
+            .get_mut(&(0, 0, 0x11, super::TRACKER_GLOBAL_SCOPE))
+            .unwrap()
+            .last_observed_at =
+            Some(std::time::Instant::now() - crate::sections::TABLE_REACQUISITION_AGE);
+        collector.push_section(0, &next);
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x101]);
+        let mut same_version = next[..next.len() - 4].to_vec();
+        same_version[11] = 2;
+        collector
+            .section_trackers
+            .get_mut(&(0, 0, 0x11, super::TRACKER_GLOBAL_SCOPE))
+            .unwrap()
+            .last_observed_at =
+            Some(std::time::Instant::now() - crate::sections::TABLE_REACQUISITION_AGE);
+        collector.push_section(0, &section_with_crc(same_version));
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x102]);
+        assert!(collector.table_complete(1, 1));
+    }
+
+    #[test]
     fn next_section_is_not_used_for_current_discovery() {
         let pat_next = section_with_crc(vec![
             0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc0, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
@@ -2969,6 +3480,42 @@ mod current_version_tests {
         assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x0100]);
         assert!(collector.state().snapshot.pmt_pids_by_service.is_empty());
         assert!(collector.state().semantic_facts_by_service.is_empty());
+    }
+
+    #[test]
+    fn pat_before_sdt_exposes_pmt_pid_before_pmt_is_received() {
+        let pat = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
+        ]);
+        let sdt = section_with_crc(vec![
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x01, 0xfc,
+            0xf0, 0x07, 0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
+        ]);
+
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.push_section(0x0000, &pat);
+        collector.push_section(0x0011, &sdt);
+
+        let state = collector.state();
+        let facts = state
+            .semantic_facts_by_service
+            .iter()
+            .find(|facts| facts.service_id == 1)
+            .expect("サービス情報");
+
+        assert_eq!(facts.pmt_pid, Some(0x0100));
+        assert!(facts.pmt_pid_resolved);
+        assert!(!facts.pmt_parsed);
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x0100]);
+        assert_eq!(
+            state
+                .snapshot
+                .pmt_pids_by_service
+                .iter()
+                .find(|mapping| mapping.service_id == 1)
+                .map(|mapping| mapping.pmt_pid),
+            Some(0x0100)
+        );
     }
 
     #[test]
@@ -3173,7 +3720,23 @@ mod service_scoped_ca_metadata_tests {
 
 #[cfg(test)]
 mod section_tracker_consistency_tests {
-    use super::SectionTracker;
+    use super::{parse_nit_transport_metadata, SectionTracker};
+
+    #[test]
+    fn partial_reception_descriptor_exposes_only_listed_service_ids() {
+        let descriptors = [0xfb, 4, 0x01, 0x01, 0x01, 0x02];
+        let metadata = parse_nit_transport_metadata(&descriptors).expect("descriptorを取得できる");
+        assert_eq!(
+            metadata
+                .partial_reception_services
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![0x0101, 0x0102],
+        );
+
+        let malformed = [0xfb, 3, 0x01, 0x01, 0xff];
+        assert!(parse_nit_transport_metadata(&malformed).is_none());
+    }
 
     #[test]
     fn conflicting_last_section_number_never_becomes_complete() {

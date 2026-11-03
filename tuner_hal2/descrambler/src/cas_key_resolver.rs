@@ -51,6 +51,7 @@ fn erase(bytes: &mut [u8]) {
     for byte in bytes {
         // `byte` はこの可変slice内の有効な1 byteを指す。volatile write後も
         // sliceの長さ・所有権は変わらず、呼出し元からはゼロ化済みとして見える。
+        // SAFETY: byteは排他的に借用したスライス内の有効な要素を指し、ゼロも有効な値である。
         unsafe { ptr::write_volatile(byte, 0) };
     }
     compiler_fence(Ordering::SeqCst);
@@ -83,6 +84,7 @@ fn scheme_from_reference(
     reference: *const std::ffi::c_void,
 ) -> Result<Multi2Scheme, CasKeyResolveError> {
     // token自体を解析せず、CAS側が結合結果へ付けた方式識別だけを使う。
+    // SAFETY: referenceは結合成功後の有効な参照であり、呼出し中は解放されない。
     match unsafe { maleicacid_cas_key_reference_scheme(reference) } {
         CAS_SCHEME_B25 => Ok(Multi2Scheme::B25),
         CAS_SCHEME_B1 => Ok(Multi2Scheme::B1),
@@ -116,14 +118,17 @@ struct ProductKeyReference {
 // C++ 参照は読取り専用 mapping と不変の所有者 fd を所有する。snapshot 同士は
 // 競合せず、最後の Arc が破棄されるまで release は実行されない。
 #[cfg(target_os = "android")]
+// SAFETY: 所有する参照の読取り専用領域はスレッド間で共有可能で、最後のArcの破棄時にだけ解放する。
 unsafe impl Send for ProductKeyReference {}
 #[cfg(target_os = "android")]
+// SAFETY: 共有操作は読取り専用であり、所有参照は共有借用中に解放されない。
 unsafe impl Sync for ProductKeyReference {}
 
 #[cfg(target_os = "android")]
 impl Drop for ProductKeyReference {
     fn drop(&mut self) {
         // bind で取得した唯一の所有参照を一度だけ解放する。
+        // SAFETY: 結合成功時に取得した唯一の所有参照をDropで一度だけ解放する。
         unsafe { maleicacid_cas_release_key_reference(self.reference.as_ptr()) };
     }
 }
@@ -136,6 +141,7 @@ impl CasKeyReference for ProductKeyReference {
         let mut odd = [0_u8; 8];
         let mut even = [0_u8; 8];
         // self が所有する C++ 参照は呼出し中有効であり、各出力は8 byteを確保済み。
+        // SAFETY: 入力参照とスライスは呼出し中有効で、出力先は必要な長さを持つ排他的な書込み可能領域である。
         let status = unsafe {
             maleicacid_cas_snapshot_key_reference(
                 self.reference.as_ptr(),
@@ -163,6 +169,7 @@ impl CasKeyResolver for ProductCasKeyResolver {
     ) -> Result<Arc<dyn CasKeyReference>, CasKeyResolveError> {
         let mut reference = ptr::null_mut();
         // token は呼出し中有効。成功時の不透明参照の所有権を受け取る。
+        // SAFETY: 入力参照とスライスは呼出し中有効で、出力先は必要な長さを持つ排他的な書込み可能領域である。
         let status = unsafe {
             maleicacid_cas_bind_key_reference(
                 token.as_bytes().as_ptr(),
@@ -176,12 +183,14 @@ impl CasKeyResolver for ProductCasKeyResolver {
                 let scheme = match scheme_from_reference(reference.as_ptr()) {
                     Ok(scheme) => scheme,
                     Err(error) => {
+                        // SAFETY: 結合成功時に取得した非nullの所有参照を失敗経路で一度だけ解放し、以後使用しない。
                         unsafe { maleicacid_cas_release_key_reference(reference.as_ptr()) };
                         return Err(error);
                     }
                 };
                 // 対応する固定parameterがない方式は結合成功として扱わない。
                 if crate::product_parameters::product_parameters(scheme).is_err() {
+                    // SAFETY: 結合成功時に取得した非nullの所有参照を失敗経路で一度だけ解放し、以後使用しない。
                     unsafe { maleicacid_cas_release_key_reference(reference.as_ptr()) };
                     return Err(CasKeyResolveError::Unavailable);
                 }

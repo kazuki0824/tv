@@ -1473,16 +1473,22 @@ fn u16_at(bytes: &[u8], offset: usize) -> u16 {
 /// TvProvider の安定キーに自然に入らない記述子向けの診断専用 JSON。
 /// TvProvider 向けのタイトルと説明は event_provider_fields() を使う。
 
+pub(crate) fn event_descriptor_diagnostics_scoped(
+    desc: &EventDescriptors,
+    scope: Option<DescriptorSectionScope>,
+) -> Vec<DescriptorDiagnosticV1> {
+    desc.diagnostics
+        .iter()
+        .map(|d| descriptor_diagnostic_model(d, scope))
+        .collect()
+}
+
 pub fn event_descriptor_diagnostics_array_json_scoped(
     desc: &EventDescriptors,
     scope: Option<DescriptorSectionScope>,
 ) -> String {
-    let models = desc
-        .diagnostics
-        .iter()
-        .map(|d| descriptor_diagnostic_model(d, scope))
-        .collect::<Vec<_>>();
-    serde_json::to_string(&models).unwrap_or_else(|_| "[]".to_string())
+    serde_json::to_string(&event_descriptor_diagnostics_scoped(desc, scope))
+        .unwrap_or_else(|_| "[]".to_string())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2455,8 +2461,8 @@ mod component_group_structure_tests {
 
     #[test]
     fn mvtv_main_group_preserves_component_tags() {
-        // type=0 (MVTV), total_bit_rate_flag=0, one group; group id=0, one CA unit;
-        // CA_unit_id=1 with video/audio/caption component tags; empty text.
+        // type=0 (MVTV)、total_bit_rate_flag=0、groupは1個、group id=0、CA unitは1個。
+        // CA_unit_id=1で映像・音声・字幕のcomponent tagを持ち、textは空。
         let body = [0x01, 0x01, 0x13, 0x00, 0x10, 0x30, 0x00];
         let mut bytes = vec![0xd9, body.len() as u8];
         bytes.extend_from_slice(&body);

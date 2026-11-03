@@ -24,6 +24,7 @@ public:
 #endif
 private:
     Result initialize();
+    Result credentialUnavailable(const char* stage, int errorNumber);
     Result restorePersistentState(const std::array<uint8_t, 6>& cardId);
     Result applyMessage(const EmmMessage& message);
     Result failClosed();
@@ -31,6 +32,8 @@ private:
     std::timed_mutex mutex_;
     bool initialized_ = false;
     bool revoked_ = false;
+    std::string lastCredentialFailureStage_;
+    int lastCredentialFailureErrno_ = 0;
     std::string credentialPath_ = "/vendor/etc/maleicacid/bcas_keys";
     YakisobaStateStore stateStore_;
     YakisobaPersistentState state_;

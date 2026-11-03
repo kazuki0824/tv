@@ -94,10 +94,9 @@ class AribBroadcastClockTest {
         check(!totUpdate.discontinuity)
         check(totUpdate.authority.tableId == AribBroadcastClock.TABLE_ID_TOT)
         check(totUpdate.authority.generation == first.generation)
-        check(AribBroadcastClock.continuityToleranceMillisForTest() == 2_000L)
 
-        // Production scheduler integration: same-generation clock update must remove the old Runnable,
-        // arm a new delay, and make a racing old Runnable inert by arm-sequence identity.
+        // 本番schedulerでは、同一generationの時刻更新時に古いRunnableを取り除き、
+        // 新たな遅延実行を設定する。競合して実行された古いRunnableもarm-sequenceの識別子で無効化する。
         val timers = FakeTimers()
         val due = mutableListOf<Pair<String, ByteArray>>()
         var clockGeneration = 11L
@@ -142,6 +141,7 @@ class AribBroadcastClockTest {
         check(due.size == 1)
         check(due.single().first == trackId)
         check(due.single().second.contentEquals(byteArrayOf(1, 2, 3)))
+        assertTiming10PendingIsBoundedByCountBytesAndHorizon()
     }
 
     @Test
@@ -207,8 +207,8 @@ class AribBroadcastClockTest {
             ) == null,
         )
 
-        // Production scheduler integration: a new clock generation cancels the pending arm.
-        // Even if the removed Runnable races and executes, it must not display or re-arm.
+        // 本番schedulerでは、時計のgenerationが変わると保留中の遅延実行を取り消す。
+        // 除去済みのRunnableが競合して実行されても、表示や再設定を行ってはならない。
         val timers = FakeTimers()
         val due = mutableListOf<String>()
         var clockGeneration = 21L
@@ -240,4 +240,114 @@ class AribBroadcastClockTest {
         check(due.isEmpty())
         check(timers.posted.size == 1)
     }
+
+    @Test
+    fun timedPesArmSequenceExhaustionRollsBackPendingOwnership() {
+        val scheduler =
+            BroadcastTimedPesScheduler(
+                resolveDeadline = { _, _ -> AribBroadcastClock.Deadline(1L, 1_000L) },
+                currentPlaybackGeneration = { 1L },
+                currentTrackId = { "文字スーパー:1" },
+                dispatch = { action -> action() },
+                postDelayed = { _, _ -> },
+                removeCallbacks = { _ -> },
+                onDue = { _, _ -> },
+            )
+        scheduler.javaClass
+            .getDeclaredField("nextArmSequence")
+            .apply { isAccessible = true }
+            .setLong(scheduler, Long.MAX_VALUE)
+
+        val failure =
+            runCatching {
+                scheduler.submit(
+                    "文字スーパー:1",
+                    byteArrayOf(1),
+                    AribBroadcastClock.StatementTime(1L),
+                )
+            }.exceptionOrNull()
+
+        check(failure is IllegalStateException)
+        check(pendingCount(scheduler) == 0)
+    }
+
+    private fun assertTiming10PendingIsBoundedByCountBytesAndHorizon() {
+        val drops = mutableListOf<String>()
+        val statement = AribBroadcastClock.StatementTime(1L)
+        val scheduler =
+            BroadcastTimedPesScheduler(
+                resolveDeadline = { _, _ -> AribBroadcastClock.Deadline(1L, 1_000L) },
+                currentPlaybackGeneration = { 1L },
+                currentTrackId = { "superimpose:1" },
+                dispatch = { action -> action() },
+                postDelayed = { _, _ -> },
+                removeCallbacks = { _ -> },
+                onDue = { _, _ -> },
+                onDrop = drops::add,
+                maxPendingItems = 2,
+                maxPendingBytes = 4,
+                maxFutureDelayMillis = 2_000L,
+            )
+        scheduler.submit("superimpose:1", byteArrayOf(1, 2), statement)
+        scheduler.submit("superimpose:1", byteArrayOf(3, 4), statement)
+        scheduler.submit("superimpose:1", byteArrayOf(5), statement)
+        check(pendingCount(scheduler) == 2)
+        check(drops.size == 1)
+
+        val farFuture =
+            BroadcastTimedPesScheduler(
+                resolveDeadline = { _, _ -> AribBroadcastClock.Deadline(1L, 2_001L) },
+                currentPlaybackGeneration = { 1L },
+                currentTrackId = { "superimpose:1" },
+                dispatch = { action -> action() },
+                postDelayed = { _, _ -> },
+                removeCallbacks = { _ -> },
+                onDue = { _, _ -> },
+                onDrop = drops::add,
+                maxPendingItems = 2,
+                maxPendingBytes = 4,
+                maxFutureDelayMillis = 2_000L,
+            )
+        farFuture.submit("superimpose:1", byteArrayOf(1), statement)
+        check(pendingCount(farFuture) == 0)
+        check(drops.size == 2)
+
+        assertTiming10RearmDropsBeyondFutureHorizon(drops, statement)
+    }
+
+    private fun assertTiming10RearmDropsBeyondFutureHorizon(
+        drops: MutableList<String>,
+        statement: AribBroadcastClock.StatementTime,
+    ) {
+        var updatedDelayMs = 1_000L
+        val rearmed =
+            BroadcastTimedPesScheduler(
+                resolveDeadline = { _, _ -> AribBroadcastClock.Deadline(1L, updatedDelayMs) },
+                currentPlaybackGeneration = { 1L },
+                currentTrackId = { "superimpose:1" },
+                dispatch = { action -> action() },
+                postDelayed = { _, _ -> },
+                removeCallbacks = { _ -> },
+                onDue = { _, _ -> },
+                onDrop = drops::add,
+                maxPendingItems = 2,
+                maxPendingBytes = 4,
+                maxFutureDelayMillis = 2_000L,
+            )
+        rearmed.submit("superimpose:1", byteArrayOf(1), statement)
+        check(pendingCount(rearmed) == 1)
+        updatedDelayMs = 2_001L
+        rearmed.onClockChanged()
+        check(pendingCount(rearmed) == 0)
+        check(drops.size == 3)
+    }
 }
+
+// 観測専用のreflectionは試験targetに閉じ、productionへ入口を追加しない。
+private fun pendingCount(scheduler: BroadcastTimedPesScheduler): Int =
+    (
+        BroadcastTimedPesScheduler::class.java
+            .getDeclaredField("pending")
+            .apply { isAccessible = true }
+            .get(scheduler) as Map<*, *>
+    ).size

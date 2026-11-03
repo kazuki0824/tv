@@ -1,14 +1,12 @@
-/// The immutable comparison shape selected by a domain owner from committed
-/// settings and its queue contract. The variants describe measurements, not
-/// public API domains.
+/// domain ownerがcommit済み設定とqueue契約から選ぶ、不変の比較条件。
+/// variantは計測条件を表し、公開APIのdomain区分は表さない。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WatermarkPolicy {
     OccupancyBand { low: usize, high: usize },
     ReadableWritableBand { low: usize, high: usize },
 }
 
-/// One coherent queue observation supplied by the domain owner for a single
-/// status evaluation.
+/// 1回の状態評価に対してdomain ownerが渡す、一貫したqueue観測値。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WatermarkQueueSnapshot {
     pub readable_bytes: usize,
@@ -24,8 +22,7 @@ impl WatermarkQueueSnapshot {
     }
 }
 
-/// A classification result whose projection and transition state are owned
-/// by the caller.
+/// 分類結果の公開投影と状態遷移は呼出し元が所有する。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WatermarkDecision {
     Empty,
@@ -35,8 +32,8 @@ pub enum WatermarkDecision {
     NoTransition,
 }
 
-/// Pure category-C classifier shared across queue domains. Its policy is fixed
-/// for the lifetime of this per-evaluation instance.
+/// 複数のqueue domainで共有する、副作用のないcategory-C分類器。
+/// 評価ごとに生成するinstanceの存続中はpolicyを変更しない。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WatermarkClassifier {
     policy: WatermarkPolicy,

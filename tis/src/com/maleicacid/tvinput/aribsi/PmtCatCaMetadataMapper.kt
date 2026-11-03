@@ -9,25 +9,6 @@ class PmtCatCaMetadataMapper {
                 it.serviceKey != null
         }
 
-    fun elementaryStreamLevel(metadata: List<CaMetadata>): List<CaMetadata> =
-        metadata.filter {
-            it.source == CaMetadataSource.ELEMENTARY_STREAM && it.ecmPid != null && it.elementaryPid != null
-        }
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    fun emm(metadata: List<CaMetadata>): List<CaMetadata> = metadata.filter { it.source == CaMetadataSource.CAT && it.emmPid != null }
-
-    fun unsupportedForB25B1(
-        metadata: List<CaMetadata>,
-        supportedSystemIds: Set<Int>,
-    ): List<CaMetadata> =
-        metadata.filterNot {
-            it.caSystemId in supportedSystemIds
-        }
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-
     /**
      * PMT の番組単位 CA_descriptor を ES PID 単位の束縛へ展開する。
      * 同じ サービス、CA_system_id、ECM PID の ES-level CA_descriptor がない場合に使う。
@@ -39,18 +20,40 @@ class PmtCatCaMetadataMapper {
         services: List<AribService>,
     ): List<CaMetadata> {
         val serviceByKey = services.associateBy { it.serviceKey }
-        val existingEsKeys =
+        // 第2ループでESのCA方式が明示されていれば、第1ループの同方式のECMを
+        // そのESへ重複展開しない。ECM_PID=0x1FFFも明示的な非スクランブル指定。
+        val explicitEsKeys =
             metadata
+                .filter {
+                    it.source == CaMetadataSource.ELEMENTARY_STREAM &&
+                        it.serviceKey != null && it.elementaryPid != null
+                }.map { Triple(it.serviceKey, it.caSystemId, it.elementaryPid) }
+                .toSet()
+        // MediaCasへ配送するmetadataはECMを実際に送出するものだけにする。
+        val activeMetadata = metadata.filter { it.ecmPid != TsPid.NULL }
+        val existingEsKeys =
+            activeMetadata
                 .filter {
                     it.source == CaMetadataSource.ELEMENTARY_STREAM && it.serviceKey != null && it.ecmPid != null &&
                         it.elementaryPid != null
                 }.map { EsBindingKey(it.serviceKey.toString(), it.caSystemId, it.ecmPid!!, it.elementaryPid!!) }
                 .toMutableSet()
+        // 全ESが同方式の第2ループで明示されているPROGRAM ECMは実効sessionを所有しない。
+        // ES一覧が未確定ならPROGRAM行を従来どおり保持し、PIDを推測しない。
+        val applicablePrograms =
+            programLevel(activeMetadata).filter { programCa ->
+                val streams = serviceByKey[programCa.serviceKey]?.streams.orEmpty()
+                streams.isEmpty() ||
+                    streams.any { stream ->
+                        Triple(programCa.serviceKey, programCa.caSystemId, stream.elementaryPid) !in explicitEsKeys
+                    }
+            }
         val expanded = mutableListOf<CaMetadata>()
-        programLevel(metadata).forEach { programCa ->
+        applicablePrograms.forEach { programCa ->
             val service = serviceByKey[programCa.serviceKey] ?: return@forEach
             val ecmPid = programCa.ecmPid ?: return@forEach
-            service.streams.forEach { stream ->
+            service.streams.forEach stream@{ stream ->
+                if (Triple(programCa.serviceKey, programCa.caSystemId, stream.elementaryPid) in explicitEsKeys) return@stream
                 val key = EsBindingKey(programCa.serviceKey.toString(), programCa.caSystemId, ecmPid, stream.elementaryPid)
                 if (existingEsKeys.add(key)) {
                     expanded +=
@@ -61,7 +64,7 @@ class PmtCatCaMetadataMapper {
                 }
             }
         }
-        return metadata + expanded
+        return activeMetadata.filter { it.source != CaMetadataSource.PROGRAM || it in applicablePrograms } + expanded
     }
 
     private data class EsBindingKey(

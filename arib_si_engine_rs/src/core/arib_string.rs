@@ -101,8 +101,17 @@ enum GraphicSet {
     Alnum,
     Hiragana,
     Katakana,
+    JisX0201Katakana,
     Kanji,
     AdditionalSymbols,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GraphicSlot {
+    G0,
+    G1,
+    G2,
+    G3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,9 +120,20 @@ struct InvocationState {
     g1: GraphicSet,
     g2: GraphicSet,
     g3: GraphicSet,
-    gl: GraphicSet,
-    gr: GraphicSet,
+    gl: GraphicSlot,
+    gr: GraphicSlot,
     middle_size: bool,
+}
+
+impl InvocationState {
+    fn graphic_set(self, slot: GraphicSlot) -> GraphicSet {
+        match slot {
+            GraphicSlot::G0 => self.g0,
+            GraphicSlot::G1 => self.g1,
+            GraphicSlot::G2 => self.g2,
+            GraphicSlot::G3 => self.g3,
+        }
+    }
 }
 
 impl Default for InvocationState {
@@ -125,8 +145,8 @@ impl Default for InvocationState {
             g1: GraphicSet::Alnum,
             g2: GraphicSet::Hiragana,
             g3: GraphicSet::Katakana,
-            gl: GraphicSet::Kanji,
-            gr: GraphicSet::Hiragana,
+            gl: GraphicSlot::G0,
+            gr: GraphicSlot::G2,
             middle_size: false,
         }
     }
@@ -144,6 +164,7 @@ fn decode_single_shift(
         GraphicSet::Alnum => (first as char).to_string(),
         GraphicSet::Hiragana => map_hiragana(first).to_string(),
         GraphicSet::Katakana => map_katakana(first).to_string(),
+        GraphicSet::JisX0201Katakana => map_jis_x0201_katakana(first).to_string(),
         GraphicSet::Kanji | GraphicSet::AdditionalSymbols => {
             let second = *bytes
                 .get(index + 2)
@@ -280,9 +301,9 @@ fn decode_arib_string_with_policy(
         let byte = bytes[index];
         match byte {
             0x00 => {}
-            0x0d => out.push('\n'),      // APR
-            0x0e => state.gl = state.g1, // LS1
-            0x0f => state.gl = state.g0, // LS0
+            0x0d => out.push('\n'),             // APR
+            0x0e => state.gl = GraphicSlot::G1, // LS1
+            0x0f => state.gl = GraphicSlot::G0, // LS0
             0x19 | 0x1d => {
                 let set = if byte == 0x19 { state.g2 } else { state.g3 };
                 if state.middle_size && set != GraphicSet::Alnum {
@@ -427,7 +448,9 @@ fn decode_arib_string_with_policy(
                     break;
                 }
             },
-            0x21..=0x7e if state.middle_size && state.gl != GraphicSet::Alnum => {
+            0x21..=0x7e
+                if state.middle_size && state.graphic_set(state.gl) != GraphicSet::Alnum =>
+            {
                 if error_policy == ErrorPolicy::Strict {
                     return Err(AribStringDecodeError::MiddleSizeGraphic);
                 }
@@ -440,14 +463,17 @@ fn decode_arib_string_with_policy(
                     true,
                 );
                 out.push('�');
-                if is_two_byte_graphic(state.gl) && bytes.get(index + 1).is_some() {
+                if is_two_byte_graphic(state.graphic_set(state.gl))
+                    && bytes.get(index + 1).is_some()
+                {
                     index += 1;
                 }
             }
-            0x21..=0x7e => match state.gl {
+            0x21..=0x7e => match state.graphic_set(state.gl) {
                 GraphicSet::Alnum => out.push(byte as char),
                 GraphicSet::Hiragana => out.push_str(map_hiragana(byte)),
                 GraphicSet::Katakana => out.push_str(map_katakana(byte)),
+                GraphicSet::JisX0201Katakana => out.push_str(map_jis_x0201_katakana(byte)),
                 GraphicSet::Kanji | GraphicSet::AdditionalSymbols => {
                     let Some(next) = bytes.get(index + 1).copied() else {
                         if error_policy == ErrorPolicy::Strict {
@@ -476,13 +502,15 @@ fn decode_arib_string_with_policy(
                         diagnostic.record_entry(bytes, index, "GL/Kanji", "不正な2バイト目", true);
                         out.push('�');
                     } else {
-                        let mapped = map_two_byte_graphic(state.gl, byte, next);
+                        let mapped = map_two_byte_graphic(state.graphic_set(state.gl), byte, next);
                         out.push_str(mapped);
                         index += 1;
                     }
                 }
             },
-            0xa1..=0xfe if state.middle_size && state.gr != GraphicSet::Alnum => {
+            0xa1..=0xfe
+                if state.middle_size && state.graphic_set(state.gr) != GraphicSet::Alnum =>
+            {
                 if error_policy == ErrorPolicy::Strict {
                     return Err(AribStringDecodeError::MiddleSizeGraphic);
                 }
@@ -495,16 +523,21 @@ fn decode_arib_string_with_policy(
                     true,
                 );
                 out.push('�');
-                if is_two_byte_graphic(state.gr) && bytes.get(index + 1).is_some() {
+                if is_two_byte_graphic(state.graphic_set(state.gr))
+                    && bytes.get(index + 1).is_some()
+                {
                     index += 1;
                 }
             }
             0xa1..=0xfe => {
                 let normalized = byte & 0x7f;
-                match state.gr {
+                match state.graphic_set(state.gr) {
                     GraphicSet::Alnum => out.push(normalized as char),
                     GraphicSet::Hiragana => out.push_str(map_hiragana(normalized)),
                     GraphicSet::Katakana => out.push_str(map_katakana(normalized)),
+                    GraphicSet::JisX0201Katakana => {
+                        out.push_str(map_jis_x0201_katakana(normalized))
+                    }
                     GraphicSet::Kanji | GraphicSet::AdditionalSymbols => {
                         let Some(next) = bytes.get(index + 1).copied() else {
                             if error_policy == ErrorPolicy::Strict {
@@ -539,7 +572,11 @@ fn decode_arib_string_with_policy(
                             );
                             out.push('�');
                         } else {
-                            let mapped = map_two_byte_graphic(state.gr, normalized, next & 0x7f);
+                            let mapped = map_two_byte_graphic(
+                                state.graphic_set(state.gr),
+                                normalized,
+                                next & 0x7f,
+                            );
                             out.push_str(mapped);
                             index += 1;
                         }
@@ -581,23 +618,23 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
     }
     let consumed = match bytes[1] {
         b'n' => {
-            state.gl = state.g2;
+            state.gl = GraphicSlot::G2;
             2
         } // LS2
         b'o' => {
-            state.gl = state.g3;
+            state.gl = GraphicSlot::G3;
             2
         } // LS3
         b'~' => {
-            state.gr = state.g1;
+            state.gr = GraphicSlot::G1;
             2
         } // LS1R
         b'}' => {
-            state.gr = state.g2;
+            state.gr = GraphicSlot::G2;
             2
         } // LS2R
         b'|' => {
-            state.gr = state.g3;
+            state.gr = GraphicSlot::G3;
             2
         } // LS3R
         _ => {
@@ -611,28 +648,33 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
             match (bytes[1], bytes[2]) {
                 (b'(', b'B' | b'J') => {
                     state.g0 = GraphicSet::Alnum;
-                    state.gl = state.g0;
+                    3
+                }
+                (b'(', b'1' | b'8') => {
+                    state.g0 = GraphicSet::Katakana;
                     3
                 }
                 (b'(', b'I') => {
-                    state.g0 = GraphicSet::Katakana;
-                    state.gl = state.g0;
+                    state.g0 = GraphicSet::JisX0201Katakana;
                     3
                 }
-                (b'(', b'0') => {
+                (b'(', b'0' | b'7') => {
                     state.g0 = GraphicSet::Hiragana;
-                    state.gl = state.g0;
                     3
                 }
                 (b')', b'B' | b'J') => {
                     state.g1 = GraphicSet::Alnum;
                     3
                 }
-                (b')', b'I') => {
+                (b')', b'1' | b'8') => {
                     state.g1 = GraphicSet::Katakana;
                     3
                 }
-                (b')', b'0') => {
+                (b')', b'I') => {
+                    state.g1 = GraphicSet::JisX0201Katakana;
+                    3
+                }
+                (b')', b'0' | b'7') => {
                     state.g1 = GraphicSet::Hiragana;
                     3
                 }
@@ -640,11 +682,15 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
                     state.g2 = GraphicSet::Alnum;
                     3
                 }
-                (b'*', b'I') => {
+                (b'*', b'1' | b'8') => {
                     state.g2 = GraphicSet::Katakana;
                     3
                 }
-                (b'*', b'0') => {
+                (b'*', b'I') => {
+                    state.g2 = GraphicSet::JisX0201Katakana;
+                    3
+                }
+                (b'*', b'0' | b'7') => {
                     state.g2 = GraphicSet::Hiragana;
                     3
                 }
@@ -652,22 +698,24 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
                     state.g3 = GraphicSet::Alnum;
                     3
                 }
-                (b'+', b'I') => {
+                (b'+', b'1' | b'8') => {
                     state.g3 = GraphicSet::Katakana;
                     3
                 }
-                (b'+', b'0') => {
+                (b'+', b'I') => {
+                    state.g3 = GraphicSet::JisX0201Katakana;
+                    3
+                }
+                (b'+', b'0' | b'7') => {
                     state.g3 = GraphicSet::Hiragana;
                     3
                 }
                 (b'$', final_byte @ (b'B' | b'@' | b';')) => {
                     state.g0 = two_byte_graphic_set(final_byte)?;
-                    state.gl = state.g0;
                     3
                 }
                 (b'$', b'(') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
                     state.g0 = two_byte_graphic_set(bytes[3])?;
-                    state.gl = state.g0;
                     4
                 }
                 (b'$', b')') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
@@ -716,8 +764,8 @@ fn map_hiragana(byte: u8) -> &'static str {
         "た", "だ", "ち", "ぢ", "っ", "つ", "づ", "て", "で", "と", "ど", "な", "に", "ぬ", "ね",
         "の", "は", "ば", "ぱ", "ひ", "び", "ぴ", "ふ", "ぶ", "ぷ", "へ", "べ", "ぺ", "ほ", "ぼ",
         "ぽ", "ま", "み", "む", "め", "も", "ゃ", "や", "ゅ", "ゆ", "ょ", "よ", "ら", "り", "る",
-        "れ", "ろ", "ゎ", "わ", "ゐ", "ゑ", "を", "ん", "ゔ", "ゕ", "ゖ", "。", "「", "」", "、",
-        "・", "ー", "ゝ", "ゞ",
+        "れ", "ろ", "ゎ", "わ", "ゐ", "ゑ", "を", "ん", "�", "�", "�", "ゝ", "ゞ", "ー", "。",
+        "「", "」", "、", "・",
     ];
     TABLE
         .get((byte.saturating_sub(0x21)) as usize)
@@ -732,11 +780,25 @@ fn map_katakana(byte: u8) -> &'static str {
         "タ", "ダ", "チ", "ヂ", "ッ", "ツ", "ヅ", "テ", "デ", "ト", "ド", "ナ", "ニ", "ヌ", "ネ",
         "ノ", "ハ", "バ", "パ", "ヒ", "ビ", "ピ", "フ", "ブ", "プ", "ヘ", "ベ", "ペ", "ホ", "ボ",
         "ポ", "マ", "ミ", "ム", "メ", "モ", "ャ", "ヤ", "ュ", "ユ", "ョ", "ヨ", "ラ", "リ", "ル",
-        "レ", "ロ", "ヮ", "ワ", "ヰ", "ヱ", "ヲ", "ン", "ヴ", "ヵ", "ヶ", "。", "「", "」", "、",
-        "・", "ー", "ヽ", "ヾ",
+        "レ", "ロ", "ヮ", "ワ", "ヰ", "ヱ", "ヲ", "ン", "ヴ", "ヵ", "ヶ", "ヽ", "ヾ", "ー", "。",
+        "「", "」", "、", "・",
     ];
     TABLE
         .get((byte.saturating_sub(0x21)) as usize)
+        .copied()
+        .unwrap_or("�")
+}
+
+fn map_jis_x0201_katakana(byte: u8) -> &'static str {
+    // ESC ( Iで指定されるJIS X 0201片仮名は、ARIBのESC ( 1と別の符号表。
+    const TABLE: &[&str] = &[
+        "｡", "｢", "｣", "､", "･", "ｦ", "ｧ", "ｨ", "ｩ", "ｪ", "ｫ", "ｬ", "ｭ", "ｮ", "ｯ", "ｰ", "ｱ", "ｲ",
+        "ｳ", "ｴ", "ｵ", "ｶ", "ｷ", "ｸ", "ｹ", "ｺ", "ｻ", "ｼ", "ｽ", "ｾ", "ｿ", "ﾀ", "ﾁ", "ﾂ", "ﾃ", "ﾄ",
+        "ﾅ", "ﾆ", "ﾇ", "ﾈ", "ﾉ", "ﾊ", "ﾋ", "ﾌ", "ﾍ", "ﾎ", "ﾏ", "ﾐ", "ﾑ", "ﾒ", "ﾓ", "ﾔ", "ﾕ", "ﾖ",
+        "ﾗ", "ﾘ", "ﾙ", "ﾚ", "ﾛ", "ﾜ", "ﾝ", "ﾞ", "ﾟ",
+    ];
+    TABLE
+        .get(usize::from(byte.saturating_sub(0x21)))
         .copied()
         .unwrap_or("�")
 }
@@ -747,20 +809,73 @@ fn map_kanji(first: u8, second: u8) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn designation_preserves_invoked_slot_and_updates_its_graphic_set() {
+        for (bytes, expected) in [
+            (&[0x0e, 0x1b, 0x28, 0x31, 0x22][..], "\""),
+            (&[0x0e, 0x1b, 0x29, 0x31, 0x22][..], "ア"),
+            (&[0x1b, 0x7e, 0x1b, 0x29, 0x31, 0xa2][..], "ア"),
+            (&[0x1b, 0x7e, 0x1b, 0x28, 0x31, 0xa2][..], "\""),
+            (&[0x1b, 0x6e, 0x1b, 0x2a, 0x31, 0x22][..], "ア"),
+            (&[0x1b, 0x6f, 0x1b, 0x2b, 0x30, 0x22][..], "あ"),
+        ] {
+            assert_eq!(super::decode_arib_string(bytes).unwrap(), expected);
+        }
+    }
+
     use super::{
         decode_arib_string, decode_arib_string_lossy, AribStringDecodeError,
         ARIB_STRING_DECODER_SCOPE,
     };
 
     #[test]
+    fn b24_hiragana_and_katakana_last_cells_match_the_broadcast_code_chart() {
+        // ARIB SI/EPGで現れる0x79の長音符を句読点へ取り違えない。
+        let punctuation = ["ヽ", "ヾ", "ー", "。", "「", "」", "、", "・"];
+        for (offset, expected) in punctuation.iter().enumerate() {
+            let b = 0x77 + u8::try_from(offset).unwrap();
+            assert_eq!(
+                decode_arib_string_lossy(&[0x1b, b'(', b'1', b]).0,
+                *expected
+            );
+            assert_eq!(
+                decode_arib_string_lossy(&[0x1b, b'(', b'0', b]).0,
+                ["ゝ", "ゞ", "ー", "。", "「", "」", "、", "・"][offset]
+            );
+        }
+        assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'0', 0x74]).0, "�");
+        assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'0', 0x76]).0, "�");
+    }
+
+    #[test]
+    fn b24_arib_and_jis_x0201_katakana_are_distinct() {
+        assert_eq!(
+            decode_arib_string_lossy(&[0x1b, b'(', b'1', 0x22, 0x79]).0,
+            "アー"
+        );
+        assert_eq!(
+            decode_arib_string_lossy(&[0x1b, b'(', b'I', 0x31, 0x30]).0,
+            "ｱｰ"
+        );
+        assert_eq!(
+            decode_arib_string_lossy(&[0x1b, b'(', b'8', 0x22, 0x79]).0,
+            "アー"
+        );
+        assert_eq!(
+            decode_arib_string_lossy(&[0x1b, b')', b'1', 0x0e, 0x22, 0x79]).0,
+            "アー"
+        );
+    }
+
+    #[test]
     fn arib_string_decodes_basic_katakana() {
-        let bytes = [0x1b, b'(', b'I', 0x22, 0x24, 0x26];
+        let bytes = [0x1b, b'(', b'1', 0x22, 0x24, 0x26];
         assert_eq!(decode_arib_string_lossy(&bytes).0, "アイウ");
     }
 
     #[test]
     fn arib_string_decodes_service_name_descriptor_payload() {
-        let descriptor_body = [0x00, 0x05, 0x1b, b'(', b'I', 0x22, 0x24];
+        let descriptor_body = [0x00, 0x05, 0x1b, b'(', b'1', 0x22, 0x24];
         let service_name = &descriptor_body[2..];
         assert_eq!(decode_arib_string_lossy(service_name).0, "アイ");
     }
@@ -832,7 +947,7 @@ mod tests {
     fn strict_and_lossy_decoders_match_for_valid_si_inputs() {
         let valid_inputs: &[&[u8]] = &[
             b"El5~",
-            &[0x1b, b'(', b'I', 0x22, 0x24, 0x26],
+            &[0x1b, b'(', b'1', 0x22, 0x24, 0x26],
             &[0x1b, b'(', b'B', b'A', 0x19, 0x22, b'B'],
             &[0x1b, b'(', b'B', b'A', 0x9b, b'1', b';', b'2', b'X', b'B'],
         ];

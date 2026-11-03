@@ -5,6 +5,9 @@ version = 3
 [[package]]
 name = "maleicacid-tuner-hal2-capability-selection-host-ci"
 version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+]
 
 [[package]]
 name = "maleicacid-tuner-hal2-common-host-ci"
@@ -17,6 +20,8 @@ dependencies = [
 name = "maleicacid-tuner-hal2-compile-contract-host-ci"
 version = "0.0.0"
 dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+ "maleicacid-tuner-hal2-control-host-ci",
  "maleicacid-tuner-hal2-device-host-ci",
  "static_assertions",
 ]
@@ -86,6 +91,7 @@ dependencies = [
  "maleicacid-tuner-hal2-device-host-ci",
  "maleicacid-tuner-hal2-domain-request-host-ci",
  "maleicacid-tuner-hal2-lnb-host-ci",
+ "static_assertions",
 ]
 
 [[package]]
@@ -93,6 +99,21 @@ name = "maleicacid-tuner-hal2-resource-ledger-host-ci"
 version = "0.0.0"
 dependencies = [
  "maleicacid-tuner-hal2-common-host-ci",
+]
+
+[[package]]
+name = "maleicacid-tuner-hal2-service-runtime-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+ "maleicacid-tuner-hal2-control-host-ci",
+ "maleicacid-tuner-hal2-demux-host-ci",
+ "maleicacid-tuner-hal2-descrambler-host-ci",
+ "maleicacid-tuner-hal2-device-host-ci",
+ "maleicacid-tuner-hal2-domain-request-host-ci",
+ "maleicacid-tuner-hal2-lnb-host-ci",
+ "maleicacid-tuner-hal2-resource-ledger-host-ci",
+ "static_assertions",
 ]
 
 [[package]]

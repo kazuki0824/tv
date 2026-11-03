@@ -48,7 +48,7 @@ pub use generation_boundary::{
 };
 pub use queue_runtime::{
     QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorSnapshot,
-    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
+    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind, QueueRuntimeLockKind,
 };
 pub use source_boundary::{SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep};
 pub use watermark_classifier::{

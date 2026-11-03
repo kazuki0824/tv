@@ -1,0 +1,66 @@
+diff --git a/media/libstagefright/MediaSync.cpp b/media/libstagefright/MediaSync.cpp
+--- a/media/libstagefright/MediaSync.cpp
++++ b/media/libstagefright/MediaSync.cpp
+@@ -17,6 +17,7 @@
+ //#define LOG_NDEBUG 0
+ #define LOG_TAG "MediaSync"
+ #include <inttypes.h>
++#include <log/log.h>
+ 
+ #include <gui/BufferQueue.h>
+ #include <gui/IGraphicBufferConsumer.h>
+@@ -44,6 +45,8 @@
+ sp<MediaSync> MediaSync::create() {
+     sp<MediaSync> sync = new MediaSync();
+     sync->mLooper->registerHandler(sync);
++    ALOGD_IF(__android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO),
++            "PLAYBACK_SYNC_CREATE native=%p", static_cast<void *>(sync.get()));
+     return sync;
+ }
+ 
+@@ -73,6 +76,8 @@
+ }
+ 
+ MediaSync::~MediaSync() {
++    ALOGD_IF(__android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO),
++            "PLAYBACK_SYNC_DESTROY native=%p", static_cast<void *>(this));
+     if (mInput != NULL) {
+         mInput->consumerDisconnect();
+     }
+@@ -546,6 +551,11 @@
+         // adjust video frame PTS based on vsync
+         itemRealUs = mFrameScheduler->schedule(itemRealUs * 1000) / 1000;
+         int64_t twoVsyncsUs = 2 * (mFrameScheduler->getVsyncPeriod() / 1000);
++        ALOGD_IF(__android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO),
++                "PLAYBACK_SYNC_SCHEDULE native=%p bufferId=%" PRIu64 " inputFrame=%" PRIu64
++                " mediaUs=%" PRId64 " targetUs=%" PRId64 " nowUs=%" PRId64,
++                static_cast<void *>(this), bufferItem->mGraphicBuffer->getId(),
++                bufferItem->mFrameNumber, itemMediaUs, itemRealUs, nowUs);
+ 
+         // post 2 display refreshes before rendering is due
+         if (itemRealUs <= nowUs + twoVsyncsUs) {
+@@ -619,6 +629,11 @@
+         return;
+     }
+     ++mNumOutstandingBuffers;
++    ALOGD_IF(__android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO),
++            "PLAYBACK_SYNC_INPUT native=%p bufferId=%" PRIu64 " inputFrame=%" PRIu64
++            " ptsUs=%" PRId64 " outstanding=%zu",
++            static_cast<void *>(this), bufferItem.mGraphicBuffer->getId(),
++            bufferItem.mFrameNumber, bufferItem.mTimestamp / 1000, mNumOutstandingBuffers);
+ 
+     ALOGV("acquired buffer %#llx from input", (long long)bufferItem.mGraphicBuffer->getId());
+ 
+@@ -674,6 +689,12 @@
+     if (status == NO_ERROR) {
+         IGraphicBufferProducer::QueueBufferOutput queueOutput;
+         status = mOutput->queueBuffer(slot, queueInput, &queueOutput);
++        // 失敗時の出力frame番号は利用しない。queue成功はpresent成功を意味しない。
++        ALOGD_IF(__android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO),
++                "PLAYBACK_SYNC_OUTPUT native=%p bufferId=%" PRIu64 " inputFrame=%" PRIu64
++                " nextOutputFrame=%" PRIu64 " status=%d",
++                static_cast<void *>(this), bufferItem.mGraphicBuffer->getId(),
++                bufferItem.mFrameNumber, status == NO_ERROR ? queueOutput.nextFrameNumber : uint64_t(0), status);
+         ALOGE_IF(status != NO_ERROR, "queueing buffer to output failed (%d)", status);
+     }
+ 

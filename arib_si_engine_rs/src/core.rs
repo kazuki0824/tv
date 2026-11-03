@@ -4,6 +4,8 @@ pub mod arib_string;
 pub mod broadcast_clock;
 #[path = "core/ca_descriptor.rs"]
 pub mod ca_descriptor;
+#[path = "core/codec_probe_dto.rs"]
+pub mod codec_probe_dto;
 #[path = "core/codec_signaling.rs"]
 pub mod codec_signaling;
 #[path = "core/descriptors.rs"]
@@ -20,3 +22,9 @@ pub mod provider_data;
 pub mod sections;
 #[path = "core/service_discovery.rs"]
 pub mod service_discovery;
+
+#[path = "core/runtime_snapshot_dto.rs"]
+pub mod runtime_snapshot_dto;
+
+#[path = "core/runtime_snapshot_build.rs"]
+pub mod runtime_snapshot_build;

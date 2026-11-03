@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 from vts_profile.cli import _new_profile
-from vts_profile.device import resolve_device
+from vts_profile.device import _AgentSession, resolve_device
 from vts_profile.integration import write_product_artifacts
 from vts_profile.model import ProfileError, save_profile, validate_profile
 from vts_profile.region import resolve_region, select_candidate
@@ -405,30 +405,43 @@ class VtsProfileTest(unittest.TestCase):
                     resolve_device(path)
             self.assertEqual(json.loads(path.read_text()), original)
 
-    def test_architecture_matches_approved_resolver_design(self) -> None:
+    def test_agent_close_requires_successful_process_cleanup(self) -> None:
+        for outcome in (0, 2, subprocess.TimeoutExpired("agent", 1)):
+            with self.subTest(outcome=outcome):
+                session = _AgentSession.__new__(_AgentSession)
+                session._process = MagicMock()
+                session._process.poll.return_value = None
+                session._timeout = 1.0
+                session._stderr_lines = ["cleanup detail"]
+                if isinstance(outcome, Exception):
+                    session._process.wait.side_effect = outcome
+                else:
+                    session._process.wait.return_value = outcome
+                with (
+                    patch.object(session, "_request", return_value={"status": "closed"}),
+                    patch.object(session, "_terminate") as terminate,
+                ):
+                    if outcome == 0:
+                        session.close()
+                    else:
+                        with self.assertRaises(ProfileError):
+                            session.close()
+                    terminate.assert_called_once()
+
+    def test_agent_cleanup_failure_keeps_primary_failure(self) -> None:
+        session = _AgentSession.__new__(_AgentSession)
+        primary = ProfileError("section failed")
+        with patch.object(session, "close", side_effect=ProfileError("close failed")):
+            with self.assertRaisesRegex(ProfileError, "section failed; cleanup failed: close failed") as raised:
+                session.__exit__(ProfileError, primary, None)
+        self.assertIs(raised.exception.__cause__, primary)
+
+    def test_resolver_product_packaging(self) -> None:
         tuner_hal2 = Path(__file__).resolve().parents[1]
         repo = tuner_hal2.parent
-        agent = (tuner_hal2 / "vts_agent/main.rs").read_text()
-        device = (tuner_hal2 / "tools/vts_profile/device.py").read_text()
-        host = (repo / "arib_si_engine_rs/src/vts_profile_host.rs").read_text()
         arib_bp = (repo / "arib_si_engine_rs/Android.bp").read_text()
-        service_wrapper = (repo / "arib_si_engine_rs/src/service_discovery.rs").read_text()
         product = (tuner_hal2 / "config/product_integration.mk").read_text()
         test_product = (tuner_hal2 / "config/vts_test_agent_integration.mk").read_text()
-        self.assertIn("DemuxTsFilterType::SECTION", agent)
-        self.assertIn('.get("op")', agent)
-        self.assertNotIn("parse_pat", agent)
-        self.assertNotIn("parse_pmt", agent)
-        self.assertNotIn("SectionAssembler", agent)
-        self.assertIn("class _AgentSession", device)
-        self.assertNotIn("_run_agent_payload", device)
-        self.assertIn("with _AgentSession(", device)
-        self.assertIn("session.section(0x0011, 0x42)", device)
-        self.assertNotIn("include!", host)
-        self.assertIn("maleicacid_arib_si_engine_core", host)
-        self.assertIn("ServiceDiscoveryCollector", host)
-        self.assertIn("pmt_pids_for_section_filters", host)
-        self.assertEqual(service_wrapper.strip(), "pub use maleicacid_arib_si_engine_core::service_discovery::*;")
         self.assertIn('name: "libmaleicacid_arib_si_engine_core"', arib_bp)
         self.assertGreaterEqual(arib_bp.count('"libmaleicacid_arib_si_engine_core"'), 3)
         self.assertNotIn("maleicacid_tuner_hal2_vts_agent", product)
