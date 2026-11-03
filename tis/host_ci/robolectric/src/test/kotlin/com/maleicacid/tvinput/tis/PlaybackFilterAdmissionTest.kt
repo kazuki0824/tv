@@ -1704,6 +1704,12 @@ class PlaybackFilterAdmissionTest {
                 val completed = CountDownLatch(1)
                 fixture.executor.executeControl { completed.countDown() }
                 assertTrue(completed.await(2, TimeUnit.SECONDS), "映像native入力の待機中も制御処理が進むこと")
+                val detail = fixture.executor.callControl(5_000L) { pendingInputDiagnostic(fixture) }
+                assertTrue(detail.contains("submittingSamples=1"))
+                assertTrue(detail.contains("submissionDone=false"))
+                assertTrue(detail.contains("sampleLimitExceeded=true"))
+                assertTrue(detail.contains("byteLimitExceeded=false"))
+                assertTrue(detail.contains("generation=7"))
             }
         }
     }
@@ -1950,6 +1956,22 @@ class PlaybackFilterAdmissionTest {
                 resume.countDown()
             }
         }
+    }
+
+    private fun pendingInputDiagnostic(fixture: Fixture): String {
+        val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "videoDecoder")
+        val submission = ReflectionHelpers.getField<Any>(decoder, "inputSubmission")
+        val sample = ReflectionHelpers.getField<Any>(submission, "sample")
+        val budgetType = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "QueueBudget" }
+        val budget =
+            budgetType.declaredConstructors
+                .single()
+                .apply { isAccessible = true }
+                .newInstance(Long.MAX_VALUE, 1)
+        return decoder.javaClass.superclass
+            .getDeclaredMethod("pendingInputDiagnostic", sample.javaClass, budgetType)
+            .apply { isAccessible = true }
+            .invoke(decoder, sample, budget) as String
     }
 
     private fun Fixture.withVideoInputWaiting(

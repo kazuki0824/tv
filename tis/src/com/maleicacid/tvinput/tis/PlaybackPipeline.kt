@@ -110,6 +110,10 @@ class PlaybackPipeline(
     private val released = AtomicBoolean(false)
     private val resourceCleanup = ResourceCleanup()
     private val dataPathProgress = PlaybackDataPathProgress()
+    // DEBUG診断専用。再生制御・資源会計には使用しない。
+
+    private val audioFilterCallbackSequence = AtomicLong(0L)
+    private val lastAudioFilterCallbackNs = AtomicLong(0L)
     private var resourceActivityReported = false
 
     private data class RenderSubmission(
@@ -301,10 +305,12 @@ class PlaybackPipeline(
     // Frameworkのcallback lock内では配送だけを行い、ownerやpermitを待たない。
     private val filterCallbackExecutor = java.util.concurrent.Executor { task -> task.run() }
 
-    @Suppress("MagicNumber", "MaxLineLength")
+    // Filter容量会計とcallback所有権を一つの受付境界に保つ。
+    @Suppress("MagicNumber", "MaxLineLength", "LongMethod", "CyclomaticComplexMethod")
     private fun enqueuePlaybackFilterEvents(
         events: Array<FilterEvent>,
         onCapacity: () -> Unit,
+        isAudio: Boolean = false,
         action: () -> Unit,
     ) {
         // payloadとeventごとの保守的な1KiB帳簿予約を同じ既存permitへ課金する。件数64では判定しない。
@@ -327,6 +333,9 @@ class PlaybackPipeline(
             }
         // 入口ではcallback/ownerを待たず、DEBUG採取時だけ実際のowner待ち時間を測る。
         val submittedAtNs = if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) System.nanoTime() else 0L
+        val audioCallbackSequence = if (isAudio && submittedAtNs != 0L) audioFilterCallbackSequence.incrementAndGet() else 0L
+        val previousAudioCallbackNs =
+            if (audioCallbackSequence != 0L) lastAudioFilterCallbackNs.getAndSet(submittedAtNs) else 0L
         executor.executeCallback(
             isReleased = released::get,
             onFailure = ::handleSubmissionFailure,
@@ -342,6 +351,16 @@ class PlaybackPipeline(
             onDiscard = { events.filterIsInstance<MediaEvent>().forEach(::releaseMediaEvent) },
             action = {
                 if (submittedAtNs != 0L) {
+                    val ownerWaitUs = (System.nanoTime() - submittedAtNs) / 1_000L
+                    if (audioCallbackSequence != 0L) {
+                        logAudioFilterTiming(
+                            audioCallbackSequence,
+                            submittedAtNs,
+                            previousAudioCallbackNs,
+                            ownerWaitUs,
+                            payloadBytes,
+                        )
+                    }
                     val recorded =
                         dataPathProgress.count(PlaybackDataPathProgress.Stage.MEDIA_EVENT, true) +
                             dataPathProgress.count(PlaybackDataPathProgress.Stage.MEDIA_EVENT, false)
@@ -350,12 +369,38 @@ class PlaybackPipeline(
                             LogTags.TIS,
                             "PLAYBACK_CALLBACK_OWNER_LATENCY sessionId=$sessionId generation=$playbackGeneration " +
                                 "events=${events.size} payloadBytes=$payloadBytes reservedKiB=$slots " +
-                                "ownerWaitUs=${(System.nanoTime() - submittedAtNs) / 1_000L}",
+                                "ownerWaitUs=$ownerWaitUs",
                         )
                     }
                 }
                 action()
             },
+        )
+    }
+
+    // 実測時刻だけを記録し、音声の受付順・再生制御には干渉しない。
+    @Suppress("MaxLineLength")
+    private fun logAudioFilterTiming(
+        sequence: Long,
+        submittedAtNs: Long,
+        previousSubmittedAtNs: Long,
+        ownerWaitUs: Long,
+        payloadBytes: Long,
+    ) {
+        val callbackGapUs =
+            if (previousSubmittedAtNs in 1L..submittedAtNs) {
+                (submittedAtNs - previousSubmittedAtNs) / NANOS_PER_MICROSECOND
+            } else {
+                -1L
+            }
+        val sampled = sequence == 1L || sequence % AUDIO_DIAGNOSTIC_SAMPLE_INTERVAL == 0L
+        val slow = callbackGapUs >= AUDIO_DIAGNOSTIC_SLOW_US || ownerWaitUs >= AUDIO_DIAGNOSTIC_SLOW_US
+        if (!sampled && !slow) return
+        Log.d(
+            LogTags.TIS,
+            "PLAYBACK_AUDIO_FILTER_TIMING sessionId=$sessionId generation=$playbackGeneration " +
+                "sequence=$sequence callbackGapUs=$callbackGapUs ownerWaitUs=$ownerWaitUs " +
+                "payloadBytes=$payloadBytes",
         )
     }
 
@@ -544,6 +589,12 @@ class PlaybackPipeline(
         detail: String,
     ) {
         if (generation != playbackGeneration) return
+        // 資源解放前の累計と所有状態を残す。採取完了を待たず既存の停止へ進む。
+        Log.w(
+            LogTags.TIS,
+            "PLAYBACK_PRE_STOP sessionId=$sessionId generation=$generation reason=$reason " +
+                "detail=$detail progress=${dataPathProgress.summary()} ${decoderFlowSummary()}",
+        )
         completePlaybackFailureAction(generation, onVideoUnavailable) {
             stopOnPlaybackExecutor()
             onVideoUnavailable(PlaybackUnavailable(reason, detail, generation))
@@ -566,6 +617,8 @@ class PlaybackPipeline(
         val startGeneration = nextPlaybackGenerationOrFence()
         playbackGeneration = startGeneration
         dataPathProgress.reset()
+        audioFilterCallbackSequence.set(0L)
+        lastAudioFilterCallbackNs.set(0L)
         val currentSurface = surface
         val audioOnly = channel.serviceType == SERVICE_TYPE_DIGITAL_AUDIO
         activeChannel = channel
@@ -854,7 +907,7 @@ class PlaybackPipeline(
                                 events.filterIsInstance<MediaEvent>().forEach(::releaseMediaEvent)
                                 return
                             }
-                            enqueuePlaybackFilterEvents(events, { reportCapacityLoss(filter) }) {
+                            enqueuePlaybackFilterEvents(events, { reportCapacityLoss(filter) }, isAudio = isAudio) {
                                 var nextEvent = 0
                                 runCatching {
                                     try {
@@ -1729,9 +1782,9 @@ class PlaybackPipeline(
                         } else {
                             budget.decoderStartupDeadlineMs
                         }
-                    val reason = "PENDING_QUEUE_FULL bytes=${pendingSamples.sumOf {
-                        it.size
-                    }} samples=${pendingSamples.size} blockedMs=${nowMs - startedAtMs} deadlineMs=$deadlineMs"
+                    val reason =
+                        "${pendingInputDiagnostic(sample, queueBudget)} " +
+                            "blockedMs=${nowMs - startedAtMs} deadlineMs=$deadlineMs"
                     onSampleRejected(reason)
                     if (backpressureDeadlineReached(startedAtMs, nowMs, deadlineMs)) {
                         onBackpressureDeadline(reason)
@@ -1767,12 +1820,21 @@ class PlaybackPipeline(
             sample: MediaSample,
             queueBudget: QueueBudget,
         ): String {
-            val pendingSpanUs =
-                timestampSpanUs(pendingSamples.map { it.presentationTimeUs } + sample.presentationTimeUs)
-            return "PENDING_QUEUE_FULL isAudio=${sample.isAudio} pendingSamples=${pendingSamples.size} " +
-                "pendingBytes=${pendingSamples.sumOf { it.size.toLong() }} pendingSpanUs=$pendingSpanUs " +
+            val submitting = inputSubmission?.sample
+            val submittingCount = if (submitting == null) 0 else 1
+            val pendingBytes = pendingSamples.sumOf { it.size.toLong() }
+            val heldSamples = pendingSamples.size + submittingCount
+            val heldBytes = pendingBytes + (submitting?.size ?: 0)
+            return "PENDING_QUEUE_FULL generation=$generation isAudio=${sample.isAudio} " +
+                "pendingSamples=${pendingSamples.size} pendingBytes=$pendingBytes " +
+                "submittingSamples=$submittingCount submittingBytes=${submitting?.size ?: 0} " +
+                "submissionDone=${inputSubmission?.completed?.isDone} " +
                 "incomingBytes=${sample.size} incomingPtsUs=${sample.presentationTimeUs} " +
-                "availableInputs=${availableInputIndexes.size} queuedInputs=${queuedSamples.size} budget=$queueBudget"
+                "sampleLimitExceeded=${heldSamples + 1 > queueBudget.maxSamples} " +
+                "byteLimitExceeded=${heldBytes + sample.size > queueBudget.maxBytes} " +
+                "maxSamples=${queueBudget.maxSamples} maxBytes=${queueBudget.maxBytes} " +
+                "availableInputs=${availableInputIndexes.size} queuedInputs=${queuedSamples.size} " +
+                "inboundInputCallbacks=${inboundCodecInputIndexes.size}"
         }
 
         // 単一ownerのみがCodecの入力所有を変更する。callback threadはindexを引き渡すだけ。
@@ -2024,12 +2086,16 @@ class PlaybackPipeline(
                     if (Log.isLoggable(LogTags.TIS, Log.DEBUG) &&
                         dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio) % 32L == 0L
                     ) {
+                        val inputCount = dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT, sample.isAudio)
+                        val returnedCount =
+                            dataPathProgress.count(PlaybackDataPathProgress.Stage.CODEC_INPUT_RETURNED, sample.isAudio)
                         Log.d(
                             LogTags.TIS,
                             "PLAYBACK_CODEC_INPUT_QUEUE sessionId=$sessionId generation=$generation isAudio=${sample.isAudio} " +
                                 "index=${submission.index} bytes=${sample.size} ptsUs=${sample.presentationTimeUs} " +
                                 "queueUs=${submission.queueDurationNs / 1_000L} " +
-                                "pending=${pendingSamples.size} queued=${queuedSamples.size}",
+                                "pending=${pendingSamples.size} queued=${queuedSamples.size} " +
+                                "inputCount=$inputCount returnedCount=$returnedCount",
                         )
                     }
                     onCompressedInputQueued(sample)
@@ -2540,8 +2606,23 @@ class PlaybackPipeline(
             }
             val bufferId = allocateAudioBufferId()
             outstandingAudioOutputs[bufferId] = AudioOutput(codec, index, frame, block, bytes, info.size, info.presentationTimeUs)
+            val audioQueueAtNs =
+                if (Log.isLoggable(LogTags.TIS, Log.DEBUG) && bufferId % AUDIO_DIAGNOSTIC_SAMPLE_INTERVAL.toInt() == 0) {
+                    System.nanoTime()
+                } else {
+                    0L
+                }
             try {
                 requireNotNull(mediaSync).queueAudio(bytes, bufferId, info.presentationTimeUs)
+                if (audioQueueAtNs != 0L) {
+                    Log.d(
+                        LogTags.TIS,
+                        "PLAYBACK_MEDIASYNC_AUDIO_QUEUE sessionId=$sessionId generation=$generation " +
+                            "bufferId=$bufferId bytes=${info.size} ptsUs=${info.presentationTimeUs} " +
+                            "queueUs=${(System.nanoTime() - audioQueueAtNs) / NANOS_PER_MICROSECOND} " +
+                            "outstanding=${outstandingAudioOutputs.size}",
+                    )
+                }
             } catch (error: RuntimeException) {
                 releaseAudioOutput(bufferId)
                 if (outstandingAudioOutputs.isEmpty()) {
@@ -3768,6 +3849,12 @@ class PlaybackPipeline(
         private const val DATA_IDENTIFIER_CAPTION = 0x80
         private const val DATA_IDENTIFIER_SUPERIMPOSE = 0x81
         private const val CAPTION_PRIVATE_STREAM_ID = 0xff
+        // 診断の間引きと異常値の表示閾値であり、データ受付・再生の予算ではない。
+
+        private const val NANOS_PER_MICROSECOND = 1_000L
+        private const val AUDIO_DIAGNOSTIC_SAMPLE_INTERVAL = 32L
+        private const val AUDIO_DIAGNOSTIC_SLOW_US = 100_000L
+
         private const val DEFAULT_AUDIO_SAMPLE_RATE = 48_000
         private const val DEFAULT_AUDIO_CHANNEL_COUNT = 2
         private const val FIRST_FRAME_TIMEOUT_MS = 10_000L

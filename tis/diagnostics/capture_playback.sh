@@ -61,6 +61,17 @@ cleanup() {
         printf 'restore-sync-log\t%s\n' "$result" >> "$out/status.tsv"
         (( result == 0 )) || status=1
     fi
+    result=1
+    if command -v trace_processor_shell >/dev/null && [[ -s $out/playback.perfetto-trace ]]; then
+        sed "s/CAPTURE_KEY/$key/g" "$script_dir/coverage.sql" > "$out/coverage.sql"
+        timeout 120s trace_processor_shell "$out/playback.perfetto-trace" -q "$out/coverage.sql" \
+            > "$out/coverage.csv" 2> "$out/coverage.stderr"
+        if (( $? == 0 )) && awk -F, 'NR > 1 && $1 == 1 {ok=1} END {exit !ok}' "$out/coverage.csv"; then result=0; fi
+    else
+        echo 'trace_processor_shellまたはtraceがなく、採取区間・欠落・nativeログを検証できません。' > "$out/coverage.stderr"
+    fi
+    printf 'evidence-coverage\t%s\n' "$result" >> "$out/status.tsv"
+    (( result == 0 )) || status=1
     printf 'capture\t%s\n' "$status" >> "$out/status.tsv"
     echo "保存先: $out"
     cat "$out/status.tsv"
@@ -86,7 +97,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 adb shell perfetto --query --long > "$out/perfetto-sources.txt" 2>&1
-for source in android.surfaceflinger.layers android.surfaceflinger.frametimeline; do
+for source in android.surfaceflinger.layers android.surfaceflinger.frametimeline android.log; do
     grep -Fq "$source" "$out/perfetto-sources.txt" || { echo "必要なdata sourceがありません: $source" >&2; exit 1; }
 done
 old_tis=$(adb shell getprop log.tag.MaleicacidTIS | tr -d '\r')
@@ -114,11 +125,12 @@ adb shell setprop log.tag.MaleicacidTIS DEBUG
 adb shell setprop log.tag.MediaSync DEBUG
 adb logcat -b all -v threadtime -v monotonic > "$out/logcat.txt" 2> "$out/logcat.stderr" &
 log_pid=$!
-# 定期書出しを長周期にし、イベントまで中央バッファの古いデータを上書きする。
-sed 's/file_write_period_ms: 1000/file_write_period_ms: 1000000000/' "$script_dir/playback.pbtxt" > "$out/config.pbtxt"
+# 症状開始が不明でも採取開始以降を残す。端末ファイルへ継続書出しする。
+cp -- "$script_dir/playback.pbtxt" "$out/config.pbtxt"
 trace_started=1
 adb shell perfetto --txt -c - --detach="$key" -o "$remote" < "$out/config.pbtxt" > "$out/perfetto.txt" 2>&1
 adb shell perfetto --is_detached="$key" >/dev/null
+adb shell log -t MaleicacidCapture "capture-begin:$key"
 # eventsはアクセシビリティ通知を出力する。端末側で利用可能か実機で確認する。
 coproc EVENTS { exec adb shell uiautomator events 2> "$out/events.stderr"; }
 event_pid=$EVENTS_PID
@@ -148,7 +160,8 @@ while kill -0 "$event_pid" 2>/dev/null && kill -0 "$log_pid" 2>/dev/null; do
     fi
 done
 (( found )) || { echo 'イベント監視またはlogcatが終了しました。' >&2; exit 1; }
-# stackの取得はtrace停止を待たず開始する。症状直後の5秒もリングに含める。
+adb shell log -t MaleicacidCapture "capture-trigger:$key"
+# これはトースト後のsnapshotである。停止前の状態は継続traceとPLAYBACK_PRE_STOPで調べる。
 bash "$script_dir/snapshot_playback.sh" "$out" unavailable > "$out/snapshot.stdout" 2>&1 &
 snapshot_pid=$!
 sleep 5

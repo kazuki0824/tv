@@ -37,6 +37,8 @@ jobs:
           persist-credentials: false
       - name: 診断スクリプトの終了と失敗分類を検証
         run: python3 -m unittest discover -s tis/host_ci/diagnostics -v
+      - name: MediaSync診断patchの適用境界を検証
+        run: bash tis/host_ci/diagnostics/check_platform_patch.sh
 
   caption-check:
     runs-on: ubuntu-latest

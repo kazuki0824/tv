@@ -950,6 +950,10 @@ Program cleanupの完了通知は準備済み同期経路とworker完了経路�
 
 音声stream_typeは本番Filter設定と試験で一つの対応表を使い、真偽値をそのまま返す試験専用関数は設けない。
 
+再生障害では既存ownerが資源解放直前にgeneration、障害理由、既存の全段階累計進捗とdecoder所有状態を記録する。入力予算の拒否診断は判定時のpending・投入中・incomingの件数とbyte、上限、各超過判定を保持する。投入完了Futureだけからowner消費済みと判断しない。診断のために解放を遅延させず、別worker・queue・再試行状態・容量を追加しない。
+
+診断採取は開始から症状までの連続記録を保存し、今回の開始/トリガー区間・データ欠落・必要なnative境界記録の存在を機械検査する。native記録は同一プロセス・同一MediaSyncインスタンスで確認し、ログ4種の存在と対象TIS session/generationへの対応付けを分離する。対応付け不能な資料を対象再生の追跡成功としない。検査不能・不完全な資料を採取成立としない。トースト後のsnapshotを停止前の状態と同一視しない。これらは診断用の証拠の契約であり、製品再生の成功判定と独立する。
+
 ### 未使用の診断状態と試験専用関数
 
 boot/background同期の未読AtomicLongと最終skip理由の複製、current-program ratingの未読診断snapshotは保持しない。既存ログ、Direct Bootの永続pending/skip理由、実際のEIT優先・Provider選択・失敗返却を利用する。sessionIdをそのまま返す試験専用関数は設けない。

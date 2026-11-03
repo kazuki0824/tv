@@ -12,6 +12,16 @@ JNI内部TRACEを詳細調査する場合は`arib_si_engine_rs/src/jni_logging.r
 
 製品build・起動後に、選局から通常視聴・停止・再選局までフィルタなしlogcatを採取し、`jni::wrapper::objects..`等のJNI VERBOSEが消え、`MaleicacidTIS`のDEBUG・停止phase診断が残ることを確認する。性能比較は受信局、vCPU、ログ収集・Perfettoの有無を一致させ、Codec入力返却・出力、画面最終フレーム、CPU時間を比較する。ログ抑制のみで音声入力飽和やCodec停滞の解消を確約しない。
 
+## VM音声不足とホスト音声ストリーム再生成の同時観測
+
+同じチャンネル・VMリソース・ホスト音声出力先で、通常ログ採取とTIS DEBUG採取を別試行として実施する。選局時刻、点滅開始・継続・無音になった時刻を記録する。DEBUGの採取負荷そのものを通常再生の挙動と同一視しない。
+
+TIS側は`PLAYBACK_AUDIO_FILTER_TIMING`の`callbackGapUs`（Filter callback受付時刻の差）と`ownerWaitUs`（callback受付から既存playback owner実行開始まで）、`PLAYBACK_CODEC_INPUT_QUEUE`、`PLAYBACK_CODEC_OUTPUT_RETURN`、`PLAYBACK_MEDIASYNC_AUDIO_QUEUE`、`PLAYBACK_MEDIASYNC_AUDIO_CONSUMED`を同一generationで照合する。音声Filterは先頭と32イベントごと、および100ms以上の受付間隔・owner待機をDEBUGで出力する。MediaSync投入は32 bufferIdごとに出力する。間引き記録で観測できないイベントの遅延やMediaSync内部のAudioTrackへの書込み完了は推測しない。
+
+Androidの`dumpsys media.audio_flinger`は同一Track ID・session・sample rateの`Underruns`累積差分と`FrmRdy`を時間順に扱う。累積不足フレームを連続無音時間と解釈しない。ホスト側はPipeWireの`pw-dump -m`／`pw-mon -N`でvirt-managerのPlayback Streamの生成・消失を記録し、QEMUの`info audio`・`info spice`の取得可否も保存する。QEMU monitorの状態snapshotはSPICE `PLAYBACK_START`／`PLAYBACK_STOP`パケットそのもののtraceではない。どちらが再生成を指示したかを確定するには、起動時から有効化したSPICE client／GStreamerの詳細ログなど別の証拠が必要となる。
+
+通常動作比較前に`adb shell getprop log.tag.MaleicacidTIS`を確認する。以前の採取で値が空だった場合にDEBUGが残留していたら、ゲスト上で`adb shell 'setprop log.tag.MaleicacidTIS ""'`を実行し、再度`getprop`で空文字を確認する。ログ採取スクリプトは全監視worker停止後にarchiveを作り、`getprop`の復元値一致とarchive整合性を検査する。復元不能・archive失敗を採取成功と扱わない。
+
 ## Section受付容量の負荷検証（未完了）
 
 現行16件の受付上限の位置付けは`DESIGN_JA.md`のController executor契約を正とする。固定TSの回帰証跡は[PR #123](https://github.com/kazuki0824/tv/pull/123)の`realTsBurstLossAndRetransmissionStayWithinCandidate`と同PRのfixture READMEを参照する。既存HAL section処理・SDK callback・SI JNI・候補別喪失snapshot・SI完成判定を実行し、owner占有時の複数Filter入力、喪失保持、再送回復、Filter交換・候補切替を確認する。試験成功は当該固定条件の機能回帰であり、実機の入力率に対する16件の十分性を表さない。
@@ -235,7 +245,11 @@ bash tis/diagnostics/capture_playback.sh "$PWD/playback-capture"
 
 採取開始後にリモコン操作などでアクセシビリティイベントを発生させ、「アクセシビリティイベントを受信しました」と表示されてからMXワンセグ1とNHK総合1を交互に選局する。表示されなければ監視成立とは扱わない。`uiautomator events`の`TYPE_NOTIFICATION_STATE_CHANGED`からLive TV（`com.android.tv`）の `android.widget.Toast` を監視し、英語「The video is unexpectedly unavailable」または日本語「動画を再生できなくなりました」のイベントを受けたら、同じ症状区間のsnapshotを自動採取する。検出イベントは`trigger-event.txt`に保存する。文字列は現在の英語・日本語リソースに対応する。別言語や別アプリによる表示、イベントが配信されない端末では検出できないため、対象端末でイベント到達を確認する。自動化のために使うUiAutomationは他のaccessibility serviceと競合し得る。
 
-Perfettoは64MiBのリングバッファを使い、トースト前の古いtraceを上書きしながら待機する。検出後5秒で停止してtraceを保存するため、保持できる症状前の長さは書込み量によって変わる。固定秒数で採取を終了しない。定期書出し周期は1,000,000,000ミリ秒（約11.6日）で、それを超える採取では端末traceファイルへの書出しも起きる。`logcat.txt`はホストに連続保存されるため長時間では空き容量を確認する。`trigger-event.txt`の有無と時刻、traceの生成から症状前後までの区間、data lossを確認し、必要な範囲が欠けていれば採取成立と扱わない。端末やadbの切断、監視・traceの早期終了、権限不足などでも失敗する。Ctrl-Cで中断すると未捕捉として終了する。
+Perfettoは64MiBの中央バッファから1秒ごとに端末ファイルへ継続書出しし、トースト検出後5秒で停止する。長時間待機中に症状前の記録を意図的に上書きする運用にはしない。端末traceとホストlogcatは採取時間に比例して増えるため両側の空き容量を確保する。固定秒数やファイルサイズで正常終了へ置き換えない。書出しが追い付かない場合の欠落は別途検査する。
+
+ホストへ[公式Trace Processor](https://perfetto.dev/docs/quickstart/trace-analysis)を導入し、`trace_processor_shell`という名前でPATHに置く。終了時に`coverage.sql`を実行し、今回のsession keyの開始・トリガーmarker、trace区間、data_loss/中央バッファ上書き・破棄/ftrace overrun、同区間のMediaSync nativeログをthreadのupidとnative pointerで束ねて4段階を検査し、`coverage.csv`とstderrを保存する。実行不能、marker/ログ欠落、区間不足、欠落検出では`evidence-coverage`と全体を非0にする。`trace_coverage_ok`は区間と欠落、`native_instance_coverage_ok`は同一プロセス・同一pointerのCREATEが1回でINPUT/SCHEDULE/OUTPUTが存在することを示す。別プロセスの同じpointerとpointer再利用を合算しない。現行ログでは対象TIS session/generationとnative pointerを結べないため、`target_playback_correlated=0`、`correlation_status=target-session-generation-unverified`、総合`coverage_ok=0`を出し、`evidence-coverage`と全体は非0になる。資料とarchiveは保存する。この非0は資料が全くないという意味ではなく、対象再生の追跡成立を認定できないという意味である。関連付けを確定する実資料を確認するまで、4段階の存在を対象再生の成功に読み替えない。これは採取開始からトーストまでの資料の存在検査であり、採取開始より前の原因、個々のbufferの完全対応、全SurfaceFlinger layerの解析、原因特定、実present成功の証明ではない。問題の選局より前から開始する。開始前に生成済みのMediaSyncだけでは今回の生成ログを検証できない。
+
+`android.log` sourceへ開始・トリガーmarkerとTIS/MediaSyncログを含める。端末/adb切断、監視・traceの早期終了、権限不足でも非0終了する。Ctrl-Cでは未捕捉の資料として回収する。継続traceのIOとDEBUGログには観測影響があり、無負荷計測とは扱わない。
 
 snapshotは症状marker、uptime、thread一覧、TIS・Live TV・mediatuner・system_server・software codec・audioserver・SurfaceFlinger・Tuner HALのnative backtraceを採る。`debuggerd -b`は対象を終了させないが、一時停止による観測影響がある。native採取を先に並行開始し、その後にdumpsysを保存する。各外部採取commandの20秒上限はホスト収集を打ち切るためだけのもので、製品の停止期限ではない。対象不在、権限拒否、非0終了、timeoutは個別ファイルに残し、採取済みと読み替えない。
 
@@ -247,20 +261,36 @@ snapshotの`*.status`と`dumpsys-status.tsv`は対象・コマンド終了値・
 
 端末のfingerprint、TISのbase/split APKのpathとSHA-256、framework.jar・libstagefright・media JNIの実在ファイルのSHA-256を保存する。`host-tv-revision.txt`は採取ホストのrevisionだけを示す。`device-provenance.tsv`のsource-revisionは未照合とし、同じbuildのmanifest（revision固定）、未commit差分、APK/ライブラリ、symbolsのハッシュと一致するまでソースrevisionを断定しない。これらのbuild証跡は端末のハッシュから逆算できないため、製品build時に保持して採取資料と一緒に渡す。
 
+### MediaSync診断ログの組込み
+
+`setprop`だけでは下表のnativeログは増えない。採取構成では`frameworks_av_mediasync_diagnostics.patch`を適用し、`libstagefright`を再buildして端末へ組み込む。baselineはLineageOS frameworks/av `c2d9d7b479e84a27c09468a41e39d7c6c58ae748`。この診断patchは公開APIや再生制御を変更せず、`MediaSync` DEBUG有効時だけ生成/破棄、入力buffer、schedule、出力queue結果を記録する。先述の任意first-output callback patchとは別であり、callback patchだけでは診断ログを提供しない。
+
+```bash
+git -C frameworks/av apply --check \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_av_mediasync_diagnostics.patch"
+git -C frameworks/av apply \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_av_mediasync_diagnostics.patch"
+m libstagefright MaleicacidTvInput
+```
+
+対応buildの成果物を反映・再起動した後、下表のnativeログと生成区間を確認する。非0のqueue結果ではnextOutputFrameを解釈しない。全ログは同じ再生を観測するため、診断有効化による負荷も含めて判定する。host CIのpatch適用検査はSoongのnativeコンパイルと実端末の動作確認を代替しない。
+
 ### 証拠の対応と採取成立条件
 
 | 境界 | 対応付ける記録 | 判定できる範囲 |
 |---|---|---|
 | TIS世代→native MediaSync | 同一pid/tidの`PLAYBACK_SYNC_CREATE_BEGIN`→`PLAYBACK_SYNC_CREATE native`→`PLAYBACK_SYNC_CREATE_END` | session/generationとnative instanceの対応。pointerは破棄後に再利用され得るため生成区間も用いる。 |
 | Filter→TIS owner | `PLAYBACK_CALLBACK_OWNER_LATENCY`のownerWaitUs、events、payloadBytes、reservedKiB、拒否時の`PLAYBACK_CALLBACK_BUDGET_REJECT` | callback待ちと16MiB製品受付予算の区別。予約量は実メモリ使用量ではない。 |
-| TIS→Codec入力と返却 | `PLAYBACK_CODEC_INPUT_QUEUE`のqueueUs・pending・queued、`PLAYBACK_CODEC_INPUT_RETURN`のcallbackWaitUs・ownerUs・available、および世代別`CODEC_INPUT_AVAILABLE/RETURNED` | Codec.queue所要時間、空き入力index再通知、TIS owner滞留を区別。入力index返却はnative HALのMediaEvent解放成功そのものではない。 |
+| TIS→Codec入力と返却 | `PLAYBACK_CODEC_INPUT_QUEUE`のqueueUs・pending・queued・累計inputCount/returnedCount、および`PLAYBACK_PRE_STOP`の世代別`CODEC_INPUT_AVAILABLE/RETURNED`とownerの所有状態 | Codec.queue所要時間、空き入力index再通知、TIS owner滞留を区別。入力index返却はnative HALのMediaEvent解放成功そのものではない。 |
 | Codec→MediaSync入力 | `PLAYBACK_VIDEO_SUBMIT/RETURN`のgeneration・PTS、`PLAYBACK_CODEC_OUTPUT_RETURN`のcallbackWaitUs・ownerUs、`PLAYBACK_SYNC_INPUT`のnative・PTS・buffer ID・input frame | Codec output取得と入力bufferの所属。`PLAYBACK_CODEC_FRAME`のcallback時刻は最終表示時刻ではない。 |
 | MediaSync音声consume | `PLAYBACK_MEDIASYNC_AUDIO_CONSUMED`のbufferId・ownerWaitUs・outstanding、および世代別`MEDIASYNC_AUDIO_CONSUMED` | PCMバッファ消費callbackとTISでの返却進捗。音声PTSの離隔は資源超過ではない。 |
 | MediaSync→出力queue | `PLAYBACK_SYNC_SCHEDULE`のmediaUs/targetUsと`PLAYBACK_SYNC_OUTPUT`のbuffer ID・input frame・nextOutputFrame・status | 成功時のoutput frame numberはnextOutputFrame−1。queue成功は画面へのpresent成功ではない。 |
 | 最終合成・表示 | PerfettoのSurfaceFlinger layers/FrameTimelineとbuffer ID・output frame、外部撮影 | layerの可視性、保持buffer、新frameのlatch/presentとの対応。TISの世代番号を時刻だけで別Surfaceへ転用しない。 |
 | 停止待機 | 同じ症状区間のJava owner stack、native backtrace、Binder/scheduler trace、HAL dump | API境界と待機相手の候補。native stackが欠けた場合は内部原因確定としない。 |
 
-端末で`PLAYBACK_SYNC_CREATE`・`PLAYBACK_SYNC_INPUT`・`PLAYBACK_SYNC_OUTPUT`が出ること、対象SurfaceFlinger layerのbuffer記録がtraceに存在することを確認する。data source一覧に登録があるだけでは採取成立としない。PerfettoのTrace statsでbuffer overwrite・packet loss・ftrace overrunを確認し、生成から症状までの必要区間が欠けていれば時間短縮等で再採取する。圧縮時刻は世代ごとに同じ値から開始し得るので、PTS単独で世代を識別しない。
+端末で`PLAYBACK_SYNC_CREATE`・`PLAYBACK_SYNC_INPUT`・`PLAYBACK_SYNC_OUTPUT`が出ること、対象SurfaceFlinger layerのbuffer記録がtraceに存在することを確認する。data source一覧に登録があるだけでは採取成立としない。`coverage.csv`に加え、PerfettoのTrace statsと対象layerを確認する。生成から症状までの必要区間が欠けていれば、開始を早める・IO/ログ負荷を評価する等、欠落原因を是正して再採取する。圧縮時刻は世代ごとに同じ値から開始し得るので、PTS単独で世代を識別しない。
+
+`PLAYBACK_PRE_STOP`は既存ownerで資源解放を始める直前のgeneration・理由・累計進捗・decoder所有状態を記録する。`PENDING_QUEUE_FULL`はpendingと投入中の件数/byte、投入完了状態、incoming、各上限、件数/byteの超過判定を含む。投入完了済みでもownerが未消費なら投入中の課金は残る。間引きログがないことを進捗なしと扱わず、累計と停止前記録を照合する。これらは原因の上流候補を区別する資料であり、上限到達だけでCPU/Codec/Surfaceのどれが原因か断定しない。トースト後snapshotは停止前記録と区別する。
 
 採取資料は出力ディレクトリ全体、外部撮影、ビルドrevision/差分を一組にする。native symbol解決が不足する場合は、同じ製品buildのsymbols（libstagefright、libmediandk等の該当ライブラリとHAL）も保持する。この採取で、旧bufferが残って見えた場合と新generationのbufferまで進んだ場合を切り分ける。後者の画素内容が既に誤っている場合、下流の表示traceだけで上流ES/復号の原因まで確定することはできない。ログ欠落・採取によるタイミング変化・表示装置内部の遅延も含め、全原因を一回で必ず特定できるとは保証しない。
 

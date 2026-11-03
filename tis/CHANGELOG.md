@@ -1,3 +1,9 @@
+# 2026-11-02 MediaSync診断のインスタンス混同を防止
+
+- coverage SQLを既存Perfetto thread.upidとnative pointerごとの集約へ変更し、別インスタンス・別プロセス・pointer再生成のログ合算で4段階成立と判定しない。
+- 区間保持、同一nativeの4段階、対象TIS session/generationとの関連付けを分離。現行ログでは最後の対応が不明なため、総合coverageは未成立とし資料を保存する。製品ownerや台帳は追加しない。
+- SQLite反例と採取スクリプトへの失敗伝播回帰を追加。実機の対応付けとnative実行は未検証で、CI結果とは区別する。
+
 # 2026-11-02 Scan取消しfixtureを正規初期化へ移設
 
 - ScanCancellationProviderTestをRobolectricへ移し、ChannelScanControllerとAribSiEngineを正規生成した上でManager ActiveScanTaskとの取消しと公開lockの競合を試験する。SI native入出力の代替には既存のRobolectric Shadowを使用する。
@@ -10,6 +16,21 @@
 - Host JVM側の発見クラス数を50、実行クラス数を46、試験数を413へ変更する。対象3件はRobolectric側へ移したのでテストを削除したわけではない。
 - #119由来のProgram snapshot失敗試験は、未初期化AribSiEngine.lockによる人工的NPEではなく、通常生成・解放済みSIエンジンのsnapshot拒否（IllegalStateException）を利用する。既存のchannel挿入とrollback確認を維持する。
 - 上記はfixtureの修正であり、実TISの再生・スキャン処理は変更していない。Framework native境界を模擬する他のfixtureの正規生成への移行は別途検討中であり、すべてのコンストラクタ迂回を解消したという意味ではない。
+
+# 2026-11-02 VM音声不足の時刻診断を追加
+
+- #223 の既存 PlaybackPipeline owner に、DEBUG時のみ音声Filter callbackの受付間隔（callbackGapUs）とowner待ち（ownerWaitUs）を記録する診断を追加した。先頭および32件ごとの間引きに加え、100ms以上の待機・受付間隔を記録する。
+- MediaSync.queueAudioの投入所要時間（queueUs）、bufferId、outstandingをDEBUGの32バッファごとに記録し、既存Codec入力・出力とMediaSync消費返却ログに結び付ける。
+- AudioTrack容量、再生開始条件、優先度、Codec及びMediaSync資源寿命は変更しない。実Androidゲストの13,312フレーム不足とTIS owner待ちの因果関係は新ログの実測前には確定しない。試験・整形・静的検査はCIを正とする。
+
+# 2026-11-01 停止前の再生診断と採取証拠の検査
+
+- 既存PlaybackPipeline ownerで解放前のgeneration・理由・全段階累計・decoder所有状態を記録する。PENDING_QUEUE_FULLへ投入中sampleの課金、incoming、件数/byte上限と超過判定を追加し、起動中拒否も同じ内訳を使う。間引く入力ログへ既存累計を追加。
+- LineageOS 22.1 MediaSyncの生成/破棄、入力buffer/PTS、schedule、出力queue結果をDEBUG条件付きで記録する独立patchと適用手順を追加。first-output callback patchだけではログが実装されないことを明示。
+- Perfettoを1秒周期の継続書出しへ変更し、android.logに今回の開始/トリガーmarkerとTIS/MediaSyncを収録。終了後のTrace Processor SQLで区間、欠落、nativeログを検査し、検査不能も非0にする。保存物をアーカイブへ含める。
+- DESIGNとINTEGRATIONへ診断の責務、必要ツール、IO/ログ負荷、判定できない範囲を記載。正常/欠落/旧ログ/短い区間のSQL回帰、stockと任意callback patch併用時の適用検査を通常CIに追加。
+- 既存のnative入力待機回帰で、投入中1件・未完了・件数超過/byte非超過・generationの診断を追加検査。模擬adbはプロセス別PIDを返して並行backtraceの出力先を分離する。アーカイブ内部の完了済みbacktrace、圧縮失敗時の資料保持、Trace Processor失敗時の非0も検査する。CIの整形指摘も修正。
+- 検証はCIで実行する。platform Soong/native実行、実端末での負荷と症状再現、source/symbol照合は未確認。
 
 # 2026-11-01 診断結果の回収と失敗判定を修正
 
