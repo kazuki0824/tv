@@ -685,8 +685,7 @@ class MaleicacidLiveSession(
             }
 
             ContentAccessDecision.Allow -> {
-                rememberAllowedContent()
-                notifyContentAllowed()
+                notifyAllowedContent()
             }
 
             is ContentAccessDecision.HoldPrevious -> {
@@ -1258,8 +1257,7 @@ class MaleicacidLiveSession(
             }
 
             ContentAccessDecision.Allow -> {
-                rememberAllowedContent()
-                notifyContentAllowed()
+                notifyAllowedContent()
                 notifyVideoAvailable()
             }
 
@@ -1482,9 +1480,11 @@ class MaleicacidLiveSession(
         }
     }
 
-    private fun rememberAllowedContent() {
+    private fun notifyAllowedContent(unblockResponse: Boolean = false) {
+        val changed = lastParentalAccessState != ParentalAccessState.ALLOWED
         lastParentalAccessState = ParentalAccessState.ALLOWED
         lastBlockedContent = null
+        if (changed || unblockResponse) notifyContentAllowed()
     }
 
     private fun rememberBlockedContent(blocked: BlockedContent) {
@@ -1577,8 +1577,7 @@ class MaleicacidLiveSession(
             }
 
             ContentAccessDecision.Allow -> {
-                rememberAllowedContent()
-                notifyContentAllowed()
+                notifyAllowedContent()
                 latestService?.let { service ->
                     playbackState = PlaybackStartTransitions.allowRetry(playbackState)
                     maybeStartPlayback(service)
@@ -1795,7 +1794,7 @@ class MaleicacidLiveSession(
             reevaluateParentalControls()
             return
         }
-        notifyContentAllowed()
+        notifyAllowedContent(unblockResponse = true)
         latestService?.let { service ->
             playbackState = PlaybackStartTransitions.allowRetry(playbackState)
             maybeStartPlayback(service)

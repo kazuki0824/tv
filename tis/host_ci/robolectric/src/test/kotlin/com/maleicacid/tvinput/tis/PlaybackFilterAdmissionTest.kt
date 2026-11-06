@@ -78,6 +78,74 @@ import kotlin.test.assertTrue
 @Suppress("TooManyFunctions", "LargeClass")
 class PlaybackFilterAdmissionTest {
     @Test
+    fun repeatedAllowedEvaluationAndFirstOutputNotifyOnlyOnce() {
+        RetryFixture().use { fixture ->
+            val notifications = mutableListOf<String>()
+            captureSessionNotifications(fixture.session, notifications)
+            fixture.executor.callControl(5_000L) {
+                repeat(100) {
+                    ReflectionHelpers.callInstanceMethod<Unit>(fixture.session, "reevaluateParentalControls")
+                }
+                ReflectionHelpers.setField(
+                    fixture.session,
+                    "playbackState",
+                    PlaybackStartState.WaitingFirstOutput(fixture.signature, 7L),
+                )
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    fixture.session,
+                    "handleFirstFrameAvailable",
+                    ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, 7L),
+                )
+            }
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(1, notifications.count { it == "onContentAllowed" })
+            assertEquals(1, notifications.count { it == "onVideoAvailable" })
+        }
+    }
+
+    @Test
+    fun allowedTransitionAndExplicitUnblockResponseAreNotSuppressed() {
+        RetryFixture().use { fixture ->
+            val notifications = mutableListOf<String>()
+            captureSessionNotifications(fixture.session, notifications)
+            fixture.executor.callControl(5_000L) {
+                val field =
+                    MaleicacidLiveSession::class.java
+                        .getDeclaredField("lastParentalAccessState")
+                        .apply { isAccessible = true }
+                for (state in listOf("UNKNOWN", "BLOCKED", "UNKNOWN")) {
+                    // 新しい選局と遮断状態からの遷移を、同じSessionの通知境界で検査する。
+                    field.set(fixture.session, field.type.enumConstants.single { it.toString() == state })
+                    repeat(2) {
+                        ReflectionHelpers.callInstanceMethod<Unit>(fixture.session, "reevaluateParentalControls")
+                    }
+                }
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    fixture.session,
+                    "notifyAllowedContent",
+                    ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType, true),
+                )
+                ReflectionHelpers.callInstanceMethod<Unit>(fixture.session, "reevaluateParentalControls")
+            }
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(4, notifications.count { it == "onContentAllowed" })
+        }
+    }
+
+    private fun captureSessionNotifications(
+        session: MaleicacidLiveSession,
+        notifications: MutableList<String>,
+    ) {
+        val callbackType = Class.forName("android.media.tv.ITvInputSessionCallback")
+        val callback =
+            java.lang.reflect.Proxy.newProxyInstance(callbackType.classLoader, arrayOf(callbackType)) { _, method, _ ->
+                notifications += method.name
+                null
+            }
+        ReflectionHelpers.setField(session, "mSessionCallback", callback)
+    }
+
+    @Test
     fun holdingParentalPermissionDoesNotCommitVideoAvailability() {
         RetryFixture().use { fixture ->
             val session = fixture.session
