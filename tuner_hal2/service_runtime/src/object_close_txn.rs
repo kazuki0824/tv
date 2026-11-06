@@ -467,9 +467,7 @@ pub type ObjectCleanupExecutionReport =
 /// DVR通知workerの回収所有権だけがSupervisorへ移管済みであり、
 /// 他の全後片付けとruntime登録解除が成功した場合に限る局所隔離の証拠。
 /// Quarantinedへの論理遷移そのものを完了証拠には使わない。
-pub fn drop_leak_cleanup_is_supervised_pending(
-    report: &ObjectCleanupExecutionReport,
-) -> bool {
+pub fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionReport) -> bool {
     let mut supervised_pending = false;
     let mut runtime_unregistered = false;
     for outcome in report.outcomes() {
@@ -483,7 +481,8 @@ pub fn drop_leak_cleanup_is_supervised_pending(
                 HalError::WorkerCleanupFailed {
                     kind: WorkerCleanupFailureKind::Executing
                 }
-            ) => {
+            ) =>
+            {
                 supervised_pending = true;
             }
             ObjectCleanupStepOutcome::Runtime {
