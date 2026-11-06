@@ -1,3 +1,10 @@
+# 2026-11-06 CTSにより判明したTuner HAL全体停止条件と再起動経路の是正
+
+- PR #116のServiceFailureStateを単一正本として監視し、ServiceCritical確定後はHALプロセスを終了してAndroid initの再起動に移管する。Binder登録を残したまま永続的に全要求を拒否する状態を廃止する。Android initの既存non-oneshot設定を維持する。
+- cleanup再試行登録・reaper依存関係更新の失敗は、既存Closed/Quarantined判定とDrop-leak隔離へ接続し、対象objectを隔離できた場合は他のTuner HAL操作を継続させる。共有reaperの利用不能、実際のfence不能、サービス状態mutex汚染は引き続き全体停止とする。
+- DVR notifierの局所失敗とFrontend worker診断記録の失敗だけでは全体停止しない。共有Filter遅延配送・DVR notifier reaperの異常終了、frontend workerのfence確定不能、共有状態のcommit不能などの全体停止条件を改めて点検した。
+- Rust host回帰を追加（失効済みobjectの再試行、live objectの局所隔離、共有reaper喪失、監視bit、init設定）。ソース点検のみ実施。Android Soong、CTS/VTS再試験、実機再起動・旧Binder再接続の動作確認は未実施。CI結果を本PRのChecksで確認する。
+
 # 2026-10-31 worker終端とwake受付の競合を修正
 
 - 既存WorkerWakeのatomic通知状態へ閉鎖bitを統合し、終端observerより前に受付を閉じる。追加されたcompletion mutexでの通知判定を置き換え、CODE_CONVENTIONの非汚染通知契約を維持する。
