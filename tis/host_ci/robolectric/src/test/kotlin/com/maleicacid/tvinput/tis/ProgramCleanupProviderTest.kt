@@ -26,8 +26,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], shadows = [ProgramCleanupProviderTest.RejectedTuner::class])
+@Config(sdk = [35], shadows = [ProgramCleanupProviderTest.RejectedTuner::class, ProgramCleanupProviderTest.WrappedResolver::class])
 class ProgramCleanupProviderTest {
+    @Implements(ContentResolver::class)
+    class WrappedResolver
+
     // 実workerとContentResolverでProvider停止・部分削除・retryを連続して検証する。
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     @Test
