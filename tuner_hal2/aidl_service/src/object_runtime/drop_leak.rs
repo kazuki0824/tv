@@ -52,7 +52,6 @@ fn close_method_for_drop(
 pub(crate) struct DropLeakQuarantineOutcome {
     pub(crate) cleanup_result: Result<(), maleicacid_tuner_hal2_common::HalError>,
     pub(crate) diagnostic_result: Result<(), maleicacid_tuner_hal2_common::HalError>,
-    pub(crate) uncontained_failure: bool,
 }
 
 impl DropLeakQuarantineOutcome {
@@ -86,7 +85,6 @@ pub(crate) fn quarantine_drop_leak_object_with_evidence(
         &mut domain_executor,
         &mut artifact_executor,
     );
-    let uncontained_failure = maleicacid_tuner_hal2_service_runtime::drop_leak_cleanup_has_uncontained_failure(&report);
     let cleanup_result = report
         .clone()
         .into_result()
@@ -102,7 +100,6 @@ pub(crate) fn quarantine_drop_leak_object_with_evidence(
     Ok(DropLeakQuarantineOutcome {
         cleanup_result,
         diagnostic_result,
-        uncontained_failure,
     })
 }
 
