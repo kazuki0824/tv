@@ -112,7 +112,7 @@ impl CleanupReaperQueue {
     /// 呼出し元にreaper所有者を保持した型付き失敗として通知する。
     /// WorkerLockPoisonedのみでは異なるworkerとの識別ができないため、この正規owner境界で写像する。
     fn classify_enqueue_error(error: HalError) -> HalError {
-        if matches!(error.primary_error(), HalError::WorkerLockPoisoned { .. }) {
+        if maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(&error) {
             HalError::composed_failure(
                 "cleanup reaper共有終端状態の取得に失敗しました",
                 HalError::WorkerReaperUnavailable,
@@ -389,6 +389,16 @@ mod tests {
             HalError::WorkerReaperUnavailable
         ));
         assert_eq!(error.cleanup_error(), Some(&original));
+        let composed_worker = HalError::composed_failure(
+            "投入と予約解放",
+            HalError::cleanup_failed("queue", "primary"),
+            original.clone(),
+        );
+        let composed_result = CleanupReaperQueue::classify_enqueue_error(composed_worker);
+        assert!(matches!(
+            composed_result.primary_error(),
+            HalError::WorkerReaperUnavailable
+        ));
         let local = HalError::cleanup_failed("DVR", "local");
         assert_eq!(
             CleanupReaperQueue::classify_enqueue_error(local.clone()),
