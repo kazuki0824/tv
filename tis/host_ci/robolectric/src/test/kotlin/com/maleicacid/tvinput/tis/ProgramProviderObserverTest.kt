@@ -29,6 +29,7 @@ class ProgramProviderObserverTest {
         val released = ReflectionHelpers.getField<AtomicBoolean>(session, "releaseOnce")
         val dirty = ReflectionHelpers.getField<AtomicBoolean>(session, "programProviderDirty")
         val coordinator = ReflectionHelpers.getField<ProgramPublishCoordinator>(session, "programPublishCoordinator")
+
         @Suppress("UNCHECKED_CAST")
         val signatures =
             ProgramPublishCoordinator::class.java
