@@ -1050,6 +1050,17 @@ impl ObjectCloseTxn {
         })
     }
 
+    /// 進行中のcleanup権限を持つowner。Quarantineによる二重の副作用実行を防ぐ。
+    pub(crate) fn has_active_cleanup_attempt(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> bool {
+        self.obligations.get(&object_id).is_some_and(|obligation| {
+            obligation.generation == generation && obligation.active_attempt.is_some()
+        })
+    }
+
     pub(crate) fn attempt_is_current(
         &self,
         object_id: AidlObjectId,
