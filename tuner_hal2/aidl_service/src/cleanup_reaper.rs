@@ -181,7 +181,9 @@ fn run_cleanup_job(
         if job.registered_at.elapsed() >= policy.terminal_deadline {
             use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
             let terminal = match context.cleanup_retry_disposition(job.handle) {
-                Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Closed) => true,
+                Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Closed) => {
+                    true
+                }
                 Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
                     // 論理Quarantinedでなく物理cleanupの結果を確認する。
                     crate::object_runtime::quarantine_drop_leak_object(&context, job.handle).is_ok()
