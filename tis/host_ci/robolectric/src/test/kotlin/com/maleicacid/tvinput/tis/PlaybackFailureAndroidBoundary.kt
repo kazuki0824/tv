@@ -15,6 +15,7 @@ import android.media.tv.tuner.filter.FilterConfiguration
 import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.MediaEvent
 import android.media.tv.tuner.frontend.FrontendSettings
+import android.media.tv.tuner.frontend.OnTuneEventListener
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 import org.robolectric.annotation.RealObject
@@ -43,6 +44,12 @@ class FailureTuner {
 
     @Implementation
     fun clearOnTuneEventListener() = Unit
+
+    @Implementation
+    fun setOnTuneEventListener(
+        executor: Executor,
+        listener: OnTuneEventListener,
+    ) = Unit
 
     @Implementation
     fun closeFrontend() = Unit
