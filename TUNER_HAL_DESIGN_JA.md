@@ -1,6 +1,8 @@
 # Tuner HAL 設計判断
 
 
+`ObjectCloseTxn`の物理cleanup実行中に、drop-leak隔離が同じownerまたはその子孫の物理cleanupを並行実行しない。先行cleanupの完了が確認できない場合は、その事実を隠さずfail-closedで扱う。
+
 ## DESIGN_JA.md の責務境界
 
 `DESIGN_JA.md` は Tuner HAL の設計正本である。本書は、AOSP 公開契約、ARIB/ISDB 入力処理、本製品の対応範囲、状態所有者、資源寿命、失敗時遷移、quarantine 条件、未対応機能の返却方針を定義する。
