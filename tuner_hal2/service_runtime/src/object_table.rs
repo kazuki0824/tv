@@ -924,11 +924,7 @@ mod qg_object_lifecycle_tests {
             )
             .expect("close権限を取得");
         let attempt = table
-            .begin_close_cleanup_attempt(
-                AidlObjectId(100),
-                AidlObjectGeneration(1),
-                authority,
-            )
+            .begin_close_cleanup_attempt(AidlObjectId(100), AidlObjectGeneration(1), authority)
             .expect("cleanup実行権限を取得");
         assert!(table
             .quarantine_cascade(AidlObjectId(100), AidlObjectGeneration(1))
