@@ -117,8 +117,7 @@ pub fn aidl_object_cleanup_disposition(
         RuntimeObjectLifecycle::Prepared | RuntimeObjectLifecycle::Live => {
             AidlObjectCleanupDisposition::NoCleanupPending
         }
-        RuntimeObjectLifecycle::Closing { .. }
-        | RuntimeObjectLifecycle::CleanupPending { .. } => {
+        RuntimeObjectLifecycle::Closing { .. } | RuntimeObjectLifecycle::CleanupPending { .. } => {
             AidlObjectCleanupDisposition::RequiresIsolation
         }
     })
