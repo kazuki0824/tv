@@ -26,7 +26,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], shadows = [ProgramCleanupProviderTest.RejectedTuner::class, ProgramCleanupProviderTest.WrappedResolver::class])
+@Config(
+    sdk = [35],
+    shadows = [ProgramCleanupProviderTest.RejectedTuner::class, ProgramCleanupProviderTest.WrappedResolver::class],
+)
 class ProgramCleanupProviderTest {
     @Implements(ContentResolver::class)
     class WrappedResolver

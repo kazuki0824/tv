@@ -1,5 +1,5 @@
 // Android資源の失敗だけを注入し、TIS所有者の初期化は本番constructorを通す。
-@file:Suppress("MagicNumber", "UNUSED_PARAMETER")
+@file:Suppress("MagicNumber", "UNUSED_PARAMETER", "FunctionOnlyReturningConstant")
 
 package com.maleicacid.tvinput.tis
 
@@ -55,7 +55,22 @@ class FailureTuner {
         DemuxCapabilities::class.java.declaredConstructors
             .single()
             .apply { isAccessible = true }
-            .newInstance(1, 0, 0, 16, sectionFilterCount, 16, 16, 16, 16, 4096L, 0, intArrayOf(), intArrayOf(), false) as DemuxCapabilities
+            .newInstance(
+                1,
+                0,
+                0,
+                16,
+                sectionFilterCount,
+                16,
+                16,
+                16,
+                16,
+                4096L,
+                0,
+                intArrayOf(),
+                intArrayOf(),
+                false,
+            ) as DemuxCapabilities
 
     @Implementation
     fun openFilter(
@@ -245,7 +260,7 @@ class FailureMediaCas {
             invalidated = true
         }
         check(!invalidated) { "Framework接続は無効化済みです" }
-        if (Faults.stateFailureAt == operation) MediaCasStateException.throwExceptionIfNeeded(3, "CAS固有状態エラー")
+        if (Faults.stateFailureAt == operation) throwCasStateFailure("CAS固有状態エラー")
         require(Faults.argumentFailureAt != operation) { "CAS引数エラー" }
     }
 
@@ -306,7 +321,16 @@ class FailureCasSession {
         FailureMediaCas.Faults.sessionCloses++
         owner().call(FailureMediaCas.Operation.SESSION_CLOSE)
         if (FailureMediaCas.Faults.sessionFailure) {
-            MediaCasStateException.throwExceptionIfNeeded(3, "underlying session close failed")
+            throwCasStateFailure("underlying session close failed")
         }
     }
+}
+
+private fun throwCasStateFailure(message: String) {
+    ReflectionHelpers.callStaticMethod<Unit>(
+        MediaCasStateException::class.java,
+        "throwExceptionIfNeeded",
+        ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 3),
+        ReflectionHelpers.ClassParameter.from(String::class.java, message),
+    )
 }

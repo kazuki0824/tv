@@ -14,6 +14,7 @@ import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.MediaEvent
 import android.os.HandlerThread
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServicePolicyDecision
@@ -51,6 +52,16 @@ import java.util.concurrent.atomic.AtomicReference
     ],
 )
 class PlaybackFailureCallbacksTest {
+    private companion object {
+        fun closeOwner(owner: java.util.concurrent.ExecutorService) {
+            try {
+                Fixture.closeAll()
+            } finally {
+                owner.shutdownNow()
+            }
+        }
+    }
+
     @After
     fun closeFixtures() {
         Fixture.closeAll()
@@ -97,7 +108,7 @@ class PlaybackFailureCallbacksTest {
             controller.setCasController(cas)
 
             val failingFilter = fixture.create(Filter::class.java)
-            FailureFilter::class.java.getField("configureFailure").setInt(Shadow.extract<FailureFilter>(failingFilter), 1)
+            Shadow.extract<FailureFilter>(failingFilter).configureFailure = 1
             FailureTuner.nextFilter = failingFilter
             FailureTuner.openFilterCalls = 0
             FailureTuner.sectionFilterCount = 16
@@ -123,7 +134,7 @@ class PlaybackFailureCallbacksTest {
             FailureTuner.nextFilter = null
             cas.close()
         } finally {
-            executor.shutdownNow()
+            closeOwner(executor)
             FailureMediaCas.Faults.reset()
         }
     }
@@ -186,7 +197,7 @@ class PlaybackFailureCallbacksTest {
             controller.closeSectionFilters()
             FailureTuner.nextFilter = null
         } finally {
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
@@ -314,7 +325,7 @@ class PlaybackFailureCallbacksTest {
                 check(ecm.closes == 2)
             }
         } finally {
-            executor.shutdownNow()
+            closeOwner(executor)
             faults.reset()
         }
     }
@@ -401,7 +412,7 @@ class PlaybackFailureCallbacksTest {
                     }
                 }.get(10, TimeUnit.SECONDS)
         } finally {
-            executor.shutdownNow()
+            closeOwner(executor)
             FailureMediaCas.Faults.reset()
         }
     }
@@ -626,7 +637,7 @@ class PlaybackFailureCallbacksTest {
                 check(controller.startPlayback(fixture.selection, requiresCas = true, generation = 7L) == null)
             }
         } finally {
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
@@ -697,9 +708,9 @@ class PlaybackFailureCallbacksTest {
             live.ingestInitialTables()
             check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
             live.refresh()
-            check(FailureFilter::class.java.getField("starts").getInt(Shadow.extract<FailureFilter>(live.filter)) == 1)
+            check(Shadow.extract<FailureFilter>(live.filter).starts == 1)
             live.refresh()
-            check(FailureFilter::class.java.getField("starts").getInt(Shadow.extract<FailureFilter>(live.filter)) == 1)
+            check(Shadow.extract<FailureFilter>(live.filter).starts == 1)
             live.ingestPmt()
             val ready = live.decision()
             check(ready.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY && ready.casDecisionReady)
@@ -750,8 +761,8 @@ class PlaybackFailureCallbacksTest {
                 check(FailureMediaCas.Faults.pluginCloses == 1)
                 check(live.dynamicPids("dynamicEcmPids").isEmpty() && live.dynamicPids("dynamicEmmPids").isEmpty())
                 check(live.dynamicPids("dynamicPmtPids") == setOf(TsPid(0x100)))
-                check(FailureFilter::class.java.getField("closes").getInt(Shadow.extract<FailureFilter>(emmFilter)) == 1)
-                check(FailureFilter::class.java.getField("closes").getInt(Shadow.extract<FailureFilter>(live.filter)) == 0)
+                check(Shadow.extract<FailureFilter>(emmFilter).closes == 1)
+                check(Shadow.extract<FailureFilter>(live.filter).closes == 0)
                 check(live.pendingNotifications.size == if (playing) 1 else 0)
                 live.ingestPmt()
                 check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
@@ -873,7 +884,7 @@ class PlaybackFailureCallbacksTest {
             } finally {
                 FailureTuner.nextFilter = null
                 engine.close()
-                executor.shutdownNow()
+                closeOwner(executor)
                 PlaybackPipeline::class.java
                     .getDeclaredField("executor")
                     .apply { isAccessible = true }
@@ -959,7 +970,7 @@ class PlaybackFailureCallbacksTest {
             check(result.diagnostics.single().candidate == candidates.first())
         } finally {
             engine.close()
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
@@ -1002,9 +1013,7 @@ class PlaybackFailureCallbacksTest {
             set(session, "tuneRequestLock", Any())
             set(session, "tunerController", controller)
             set(session, "playbackState", fixture.state)
-            // 生成済み字幕ownerの投入拒否とFramework通知失敗を明示注入する。
-            val caption = ReflectionHelpers.getField<AribCaptionController>(session, "captionController")
-            ReflectionHelpers.getField<LifecycleSerialExecutor>(caption, "executor").shutdownNow()
+            // Framework通知失敗を注入し、別のplayback解放失敗とともに保持されることを検査する。
             android.media.tv.TvInputService.Session::class.java
                 .getDeclaredField("mPendingActions")
                 .apply {
@@ -1056,12 +1065,18 @@ class PlaybackFailureCallbacksTest {
             check(pending.hasPending)
             check(!sessionExecutor.isShutdown)
             check(!session.onTune(android.net.Uri.parse("content://android.media.tv/channel/3")))
+            set(parser, "handle", 0L)
+            android.media.tv.TvInputService.Session::class.java
+                .getDeclaredField("mPendingActions")
+                .apply {
+                    isAccessible = true
+                }.set(session, arrayListOf<Runnable>())
         } finally {
             fixture.rejectRelease = false
             runCatching { fixture.pipeline.release() }
             check(!fixture.cleanup.hasPending)
-            controllerExecutor.shutdownNow()
-            sessionExecutor.shutdownNow()
+            closeOwner(controllerExecutor)
+            closeOwner(sessionExecutor)
         }
     }
 
@@ -1121,7 +1136,7 @@ class PlaybackFailureCallbacksTest {
         } finally {
             if (registration.getBoolean(fixture.pipeline)) ChannelScanManager.unregisterPlaybackPipeline(null)
             unblock.countDown()
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
@@ -1132,56 +1147,53 @@ class PlaybackFailureCallbacksTest {
         fixture.set("executor", executor)
         val filter = fixture.create(Filter::class.java)
         val events = Array(6) { fixture.create(MediaEvent::class.java) }
-        val releases = FailureMediaEvent::class.java.getField("releases")
-        FailureMediaEvent::class.java.getField("rejectRead").setBoolean(Shadow.extract<FailureMediaEvent>(events[1]), true)
+        Shadow.extract<FailureMediaEvent>(events[1]).rejectRead = true
         events
             .drop(
                 2,
-            ).forEach { FailureMediaEvent::class.java.getField("rejectRelease").setBoolean(Shadow.extract<FailureMediaEvent>(it), true) }
+            ).forEach { Shadow.extract<FailureMediaEvent>(it).rejectRelease = true }
         FailureTuner.nextFilter = filter
         try {
             executor.callControl(5_000L) {
                 fixture.invoke("createAndStartAvFilter", fixture.tuner, fixture.selection.audio!!, true)
             }
             fixture.set("audioFilter", filter)
-            FailureFilter::class.java.getField("rejectClose").setBoolean(Shadow.extract<FailureFilter>(filter), true)
+            Shadow.extract<FailureFilter>(filter).rejectClose = true
             val failed = java.util.concurrent.CountDownLatch(1)
             fixture.set("onVideoUnavailable", { _: PlaybackPipeline.PlaybackUnavailable -> failed.countDown() })
-            val deliver = FailureFilter::class.java.getMethod("deliver", Array<FilterEvent>::class.java)
-            check(deliver.invoke(Shadow.extract<FailureFilter>(filter), Array<FilterEvent>(events.size) { events[it] }) == true)
+            check(Shadow.extract<FailureFilter>(filter).deliver(Array<FilterEvent>(events.size) { events[it] }) == true)
             check(failed.await(5, TimeUnit.SECONDS))
             executor.callControl(5_000L, cleanup = true) {
-                check(events.take(2).all { releases.getInt(Shadow.extract<FailureMediaEvent>(it)) == 1 })
-                check(events.drop(2).all { releases.getInt(Shadow.extract<FailureMediaEvent>(it)) >= 1 })
+                check(events.take(2).all { Shadow.extract<FailureMediaEvent>(it).releases == 1 })
+                check(events.drop(2).all { Shadow.extract<FailureMediaEvent>(it).releases >= 1 })
                 check(fixture.cleanup.hasPending)
                 val pending = ResourceCleanup::class.java.getDeclaredField("pending").apply { isAccessible = true }
                 val retained = (pending.get(fixture.cleanup) as List<*>).size
                 check(retained == 5)
                 repeat(100) {
-                    check(deliver.invoke(Shadow.extract<FailureFilter>(filter), Array<FilterEvent>(events.size) { events[it] }) == false)
+                    val delivered =
+                        Shadow.extract<FailureFilter>(filter).deliver(Array<FilterEvent>(events.size) { events[it] })
+                    check(!delivered)
                 }
                 check((pending.get(fixture.cleanup) as List<*>).size == retained)
                 events
                     .drop(
                         2,
                     ).forEach {
-                        FailureMediaEvent::class.java
-                            .getField(
-                                "rejectRelease",
-                            ).setBoolean(Shadow.extract<FailureMediaEvent>(it), false)
+                        Shadow.extract<FailureMediaEvent>(it).rejectRelease = false
                     }
-                FailureFilter::class.java.getField("rejectClose").setBoolean(Shadow.extract<FailureFilter>(filter), false)
+                Shadow.extract<FailureFilter>(filter).rejectClose = false
                 fixture.cleanup.retry()
                 fixture.cleanup.requireComplete()
                 check(
-                    releases.getInt(Shadow.extract<FailureMediaEvent>(events[0])) == 1 &&
-                        releases.getInt(Shadow.extract<FailureMediaEvent>(events[1])) == 1,
+                    Shadow.extract<FailureMediaEvent>(events[0]).releases == 1 &&
+                        Shadow.extract<FailureMediaEvent>(events[1]).releases == 1,
                 )
                 check(!fixture.cleanup.hasPending)
             }
         } finally {
             FailureTuner.nextFilter = null
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
@@ -1294,7 +1306,7 @@ class PlaybackFailureCallbacksTest {
                 } finally {
                     unblock.countDown()
                     worker.submit {}.get(5, TimeUnit.SECONDS)
-                    executor.shutdownNow()
+                    closeOwner(executor)
                 }
             }
         } finally {
@@ -1351,8 +1363,8 @@ class PlaybackFailureCallbacksTest {
             hex: Array<String>,
         ) {
             val payloads = hex.map { h -> h.chunked(2).map { it.toInt(16).toByte() }.toByteArray() }
-            FailureFilter::class.java.getField("sectionPayloads").set(Shadow.extract<FailureFilter>(filter), payloads.toTypedArray())
-            FailureFilter::class.java.getField("reads").setInt(Shadow.extract<FailureFilter>(filter), 0)
+            Shadow.extract<FailureFilter>(filter).sectionPayloads = payloads.toTypedArray()
+            Shadow.extract<FailureFilter>(filter).reads = 0
             val events = payloads.map { bytes -> eventConstructor.newInstance(0, 0, 0, bytes.size.toLong()) }
             val before = System.nanoTime()
             check(
@@ -1424,7 +1436,7 @@ class PlaybackFailureCallbacksTest {
             filters.keys.forEach { controller.closeSectionFilter(TsPid(it)) }
             FailureTuner.nextFilter = null
             engine.close()
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
@@ -1434,6 +1446,8 @@ class PlaybackFailureCallbacksTest {
         failCleanup: Boolean = true,
     ) {
         private val resources = mutableListOf<AutoCloseable>()
+        private val filters = mutableListOf<Filter>()
+        private val events = mutableListOf<MediaEvent>()
         private val threads = mutableListOf<HandlerThread>()
         val pipeline = PlaybackPipeline("test", "failure-test")
         val cleanup = ReflectionHelpers.getField<ResourceCleanup>(pipeline, "resourceCleanup")
@@ -1555,6 +1569,8 @@ class PlaybackFailureCallbacksTest {
         @Suppress("MaxLineLength")
         private fun field(name: String) = PlaybackPipeline::class.java.getDeclaredField(name).apply { isAccessible = true }
 
+        // 具体的な所有型ごとの正規生成と解放を同じfixtureに保持する。
+        @Suppress("CyclomaticComplexMethod", "LongMethod")
         fun <T> create(type: Class<T>): T {
             val context = RuntimeEnvironment.getApplication()
             val value: Any =
@@ -1572,7 +1588,9 @@ class PlaybackFailureCallbacksTest {
                         MaleicacidLiveSession(context, context, "failure-test", "failure-test").also {
                             resources += AutoCloseable { it.onRelease() }
                             resources += ReflectionHelpers.getField<TunerController>(it, "tunerController")
-                            resources += ReflectionHelpers.getField<com.maleicacid.tvinput.aribsi.AribSiEngine>(it, "aribSiEngine")
+                            val engine =
+                                ReflectionHelpers.getField<AribSiEngine>(it, "aribSiEngine")
+                            resources += engine
                             val owner = ReflectionHelpers.getField<LifecycleSerialExecutor>(it, "sessionExecutor")
                             resources += AutoCloseable { owner.shutdownNow() }
                         }
@@ -1610,19 +1628,39 @@ class PlaybackFailureCallbacksTest {
                         MediaEvent::class.java.declaredConstructors
                             .single()
                             .apply { isAccessible = true }
-                            .newInstance(0, false, 0L, false, 0L, 1L, -1L, null, false, 0L, 0, false, 0, null, emptyList<Any>())
+                            .newInstance(
+                                0,
+                                false,
+                                0L,
+                                false,
+                                0L,
+                                1L,
+                                -1L,
+                                null,
+                                false,
+                                0L,
+                                0,
+                                false,
+                                0,
+                                null,
+                                emptyList<Any>(),
+                            )
                     }
 
                     else -> {
                         error("unsupported fixture type: ${type.name}")
                     }
                 }
+            if (value is Filter) filters += value
+            if (value is MediaEvent) events += value
             return type.cast(value)
         }
 
         fun close() {
             rejectRelease = false
             FailureMediaCas.Faults.reset()
+            filters.forEach { Shadow.extract<FailureFilter>(it).rejectClose = false }
+            events.forEach { Shadow.extract<FailureMediaEvent>(it).rejectRelease = false }
             pipeline.close()
             resources.forEach { it.close() }
             threads.forEach { it.quitSafely() }
