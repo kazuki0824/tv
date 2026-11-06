@@ -728,7 +728,7 @@ fn transfer_frontend_replacement_wait_failure(
                 deadline_diagnostic_sink,
             );
         })),
-        completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
+        completion_action: Box::new(move |_runtime, outcomes, deadline_elapsed| {
             let completion_error = if deadline_elapsed {
                 compose_frontend_cleanup_error(
                     "frontend replacement reaper deadline elapsed",
