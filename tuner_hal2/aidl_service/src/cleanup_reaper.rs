@@ -206,9 +206,12 @@ fn run_cleanup_job(
                 Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Closed) => {
                     true
                 }
-                Ok(AidlObjectCleanupDisposition::Quarantined) => {
+                Ok(
+                    AidlObjectCleanupDisposition::Quarantined
+                    | AidlObjectCleanupDisposition::NoCleanupPending,
+                ) => {
                     log::error!(
-                        "cleanup reaper期限到達時点で隔離済みownerの回収を証明できません: handle={:?}",
+                        "cleanup reaper期限到達時点で後片付けの安全な完了を証明できません: handle={:?}",
                         job.handle
                     );
                     false
