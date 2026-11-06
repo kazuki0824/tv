@@ -878,8 +878,8 @@ fn record_dvr_notifier_cleanup_control_failure(
     handle: AidlObjectHandle,
     error: HalError,
 ) {
-    record_superseded_dvr_notifier_cleanup_failure(context, handle, error.clone());
-    context.isolate_failed_cleanup_retry(handle, &error);
+    // 再試行登録の失敗はenqueue側で隔離済み。診断では再隔離しない。
+    record_superseded_dvr_notifier_cleanup_failure(context, handle, error);
 }
 
 fn fence_dvr_notifier_owner_after_cleanup_failure(
@@ -909,6 +909,7 @@ fn fence_dvr_notifier_owner_after_cleanup_failure(
                 "Drop後の後片付け後もowner世代が有効です",
             ),
         );
+        mark_dvr_notifier_service_critical(context);
     }
 }
 
@@ -916,31 +917,25 @@ fn enqueue_cleanup_retry_after_notifier_reap(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) {
-    match context.cleanup_dependency_for_handle(handle) {
-        Ok(_) => {
+    use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+
+    match context.cleanup_retry_disposition(handle) {
+        Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
             if let Err(error) = context.enqueue_cleanup_retry(handle) {
-                // enqueue側が局所隔離または共有障害の昇格を既に処理した。
-                // 同じerrorを別の隔離入口へ再投入しない。
-                record_superseded_dvr_notifier_cleanup_failure(context, handle, error);
+                // enqueue側が局所隔離か全体停止をすでに判定している。
+                record_dvr_notifier_cleanup_control_failure(context, handle, error);
             }
         }
-        Err(dependency_error) => match context.cleanup_is_terminal_for_handle(handle) {
-            Ok(true) => {}
-            Ok(false) => {
-                record_dvr_notifier_cleanup_control_failure(context, handle, dependency_error);
-            }
-            Err(terminal_error) => {
-                record_dvr_notifier_cleanup_control_failure(
-                    context,
-                    handle,
-                    compose_primary_cleanup_failure(
-                        "DVR notifierの後片付け依存関係を解決できません",
-                        dependency_error,
-                        terminal_error,
-                    ),
-                );
-            }
-        },
+        Ok(
+            AidlObjectCleanupDisposition::Stale
+            | AidlObjectCleanupDisposition::Closed
+            | AidlObjectCleanupDisposition::Quarantined
+            | AidlObjectCleanupDisposition::NoCleanupPending,
+        ) => {}
+        Err(error) => {
+            record_dvr_notifier_cleanup_control_failure(context, handle, error);
+            mark_dvr_notifier_service_critical(context);
+        }
     }
 }
 
