@@ -697,7 +697,9 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
 }
 
 /// 既存ServiceFailureStateだけを観測し、fail-stop確定後にinitへ再起動を委譲する。
-fn service_requires_restart(failure_state: &maleicacid_tuner_hal2_service_runtime::ServiceFailureState) -> bool {
+fn service_requires_restart(
+    failure_state: &maleicacid_tuner_hal2_service_runtime::ServiceFailureState,
+) -> bool {
     failure_state.snapshot().service_critical
 }
 
@@ -737,7 +739,10 @@ pub fn run_service() {
     }
     let failure_state = {
         let runtime_handle = context.runtime();
-        match TunerServiceRuntime::lock_shared(runtime_handle.as_ref(), "ServiceCritical監視の初期化") {
+        match TunerServiceRuntime::lock_shared(
+            runtime_handle.as_ref(),
+            "ServiceCritical監視の初期化",
+        ) {
             Ok(runtime) => runtime.failure_state(),
             Err(error) => {
                 log::error!("ServiceCritical監視の初期化に失敗しました: {error:?}");
@@ -785,7 +790,9 @@ mod tests {
         assert!(rc.contains("service vendor.maleicacid-tuner2 "));
         assert!(rc.contains("class hal"));
         assert!(!rc.lines().any(|line| line.trim() == "oneshot"));
-        assert!(!rc.lines().any(|line| line.trim_start().starts_with("critical ")));
+        assert!(!rc
+            .lines()
+            .any(|line| line.trim_start().starts_with("critical ")));
     }
 
     use maleicacid_tuner_hal2_device::dvb::DtvPropertyBuffer;
