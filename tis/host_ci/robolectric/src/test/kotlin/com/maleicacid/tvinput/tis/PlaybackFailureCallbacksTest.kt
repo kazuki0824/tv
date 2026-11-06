@@ -103,14 +103,6 @@ class PlaybackFailureCallbacksTest {
             set("tuneGeneration", 7L)
             set("tuner", fixture.tuner)
             set("playbackPipeline", fixture.pipeline)
-            set("dynamicPmtPids", linkedSetOf<TsPid>())
-            set("dynamicEcmPids", linkedSetOf<TsPid>())
-            set("dynamicEmmPids", linkedSetOf<TsPid>())
-            set("failedDynamicPmtPids", linkedSetOf<TsPid>())
-            set("failedDynamicEcmPids", linkedSetOf<TsPid>())
-            set("failedDynamicEmmPids", linkedSetOf<TsPid>())
-            set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
-            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
             controller.setCasController(cas)
 
             val failingFilter = fixture.create(Filter::class.java)
@@ -175,14 +167,8 @@ class PlaybackFailureCallbacksTest {
             set("tuneGeneration", 7L)
             set("tuner", fixture.tuner)
             set("playbackPipeline", fixture.pipeline)
-            set("dynamicPmtPids", linkedSetOf<TsPid>())
-            set("dynamicEcmPids", linkedSetOf<TsPid>())
-            set("dynamicEmmPids", linkedSetOf<TsPid>())
             set("failedDynamicPmtPids", failedPmt)
-            set("failedDynamicEcmPids", linkedSetOf<TsPid>())
-            set("failedDynamicEmmPids", linkedSetOf<TsPid>())
             set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>(pid to retainedHandle))
-            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
 
             check(runCatching { controller.updatePmtFilters(emptySet(), 7L) }.isFailure)
             check(retainedHandle.closes == 1)
@@ -282,16 +268,10 @@ class PlaybackFailureCallbacksTest {
                 set("tuneAccepted", true)
                 set("tuneGeneration", 7L)
                 set("playbackPipeline", fixture.pipeline)
-                set("captionLanguagesByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
-                set("superimposeTimingByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
                 set("dynamicPmtPids", linkedSetOf(pmt.pid))
                 set("dynamicEcmPids", linkedSetOf(ecm.pid))
                 set("dynamicEmmPids", linkedSetOf(emm.pid))
-                set("failedDynamicPmtPids", linkedSetOf<TsPid>())
-                set("failedDynamicEcmPids", linkedSetOf<TsPid>())
-                set("failedDynamicEmmPids", linkedSetOf<TsPid>())
                 set("sectionFilterHandles", linkedMapOf(ecm.pid to ecm, emm.pid to emm, pmt.pid to pmt, eit.pid to eit))
-                set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
                 controller.setCasController(cas)
                 controller.setOnTunerResourceLostCallback { lostGeneration = it }
                 faults.pluginFailure = true
@@ -342,11 +322,11 @@ class PlaybackFailureCallbacksTest {
     // 同じ配送から所有解放・再生通知までの因果関係を一続きに確認する。
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun checkCasInvalidation(failCleanup: Boolean) {
-        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
-        try {
-            executor
-                .submit {
-                    for (operation in listOf(FailureMediaCas.Operation.ECM, FailureMediaCas.Operation.EMM)) {
+        for (operation in listOf(FailureMediaCas.Operation.ECM, FailureMediaCas.Operation.EMM)) {
+            val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
+            try {
+                executor
+                    .submit {
                         val faults = FailureMediaCas.Faults
                         faults.reset()
                         CasController().use { cas ->
@@ -374,6 +354,7 @@ class PlaybackFailureCallbacksTest {
                                     .set(controller, value)
                             }
                             set("inputId", "test")
+                            set("sectionExecutor", executor)
                             set("tuneAccepted", true)
                             set("tuneGeneration", 7L)
                             set("casController", cas)
@@ -381,12 +362,7 @@ class PlaybackFailureCallbacksTest {
                             set("dynamicPmtPids", pmtPids)
                             set("dynamicEcmPids", ecmPids)
                             set("dynamicEmmPids", emmPids)
-                            set("failedDynamicPmtPids", linkedSetOf<TsPid>())
-                            set("failedDynamicEcmPids", linkedSetOf<TsPid>())
-                            set("failedDynamicEmmPids", linkedSetOf<TsPid>())
                             set("sectionFilterHandles", linkedMapOf(pmt.pid to pmt, ecm.pid to ecm, emm.pid to emm))
-                            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
-                            set("casWarningCounts", linkedMapOf<String, Long>())
                             set("casWarningGeneration", -1L)
                             faults.invalidateAt = operation
                             faults.pluginFailure = failCleanup
@@ -417,11 +393,11 @@ class PlaybackFailureCallbacksTest {
                             check(!fixture.cleanup.hasPending)
                             check(cas.updateFromCaMetadata(metadata).diagnostics.isEmpty() && faults.creates == 2)
                         }
-                    }
-                }.get(10, TimeUnit.SECONDS)
-        } finally {
-            closeOwner(executor)
-            FailureMediaCas.Faults.reset()
+                    }.get(10, TimeUnit.SECONDS)
+            } finally {
+                closeOwner(executor)
+                FailureMediaCas.Faults.reset()
+            }
         }
     }
 
@@ -605,7 +581,6 @@ class PlaybackFailureCallbacksTest {
                 set("currentTune", fixture.channel)
                 set("tuner", fixture.tuner)
                 set("playbackPipeline", fixture.pipeline)
-                set("superimposeTimingByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
                 controller.setCasController(cas)
                 val decisions = mutableListOf<Boolean>()
                 val policy = ServicePolicyDecision(fixture.channel.serviceKey, true, true, true, emptyList())
@@ -772,7 +747,9 @@ class PlaybackFailureCallbacksTest {
                 check(live.playback.pipeline.currentPlaybackGenerationForTest() == 8L) {
                     "playing=$playing actual=${live.playback.pipeline.currentPlaybackGenerationForTest()}"
                 }
-                check(FailureMediaCas.Faults.pluginCloses == 1)
+                check(FailureMediaCas.Faults.pluginCloses == 1) {
+                    "playing=$playing pluginCloses=${FailureMediaCas.Faults.pluginCloses}"
+                }
                 check(live.dynamicPids("dynamicEcmPids").isEmpty() && live.dynamicPids("dynamicEmmPids").isEmpty())
                 check(live.dynamicPids("dynamicPmtPids") == setOf(TsPid(0x100)))
                 check(Shadow.extract<FailureFilter>(emmFilter).closes == 1)
@@ -808,18 +785,6 @@ class PlaybackFailureCallbacksTest {
             set(controller, "tuneGeneration", 7L)
             set(controller, "tuner", playback.tuner)
             set(controller, "playbackPipeline", playback.pipeline)
-            for (name in listOf(
-                "dynamicPmtPids",
-                "dynamicEcmPids",
-                "dynamicEmmPids",
-                "failedDynamicPmtPids",
-                "failedDynamicEcmPids",
-                "failedDynamicEmmPids",
-            )) {
-                set(controller, name, linkedSetOf<TsPid>())
-            }
-            set(controller, "sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
-            set(controller, "sectionFilters", linkedMapOf<TsPid, List<Filter>>())
             controller.setCasController(cas)
             set(session, "currentService", key)
             set(session, "currentGeneration", 7L)
@@ -831,7 +796,6 @@ class PlaybackFailureCallbacksTest {
                 ReflectionHelpers.getField<AribCaptionController>(session, name).close()
             }
             val sessionType = android.media.tv.TvInputService.Session::class.java
-            sessionType.getDeclaredField("mLock").apply { isAccessible = true }.set(session, Any())
             sessionType
                 .getDeclaredField("mPendingActions")
                 .apply { isAccessible = true }
@@ -934,21 +898,6 @@ class PlaybackFailureCallbacksTest {
         set(controller, "sectionExecutor", executor)
         set(controller, "inputId", "input.test")
         set(controller, "playbackPipeline", fixture.pipeline)
-        for (name in listOf(
-            "dynamicPmtPids",
-            "dynamicEcmPids",
-            "dynamicEmmPids",
-            "failedDynamicPmtPids",
-            "failedDynamicEcmPids",
-            "failedDynamicEmmPids",
-        )) {
-            set(controller, name, linkedSetOf<TsPid>())
-        }
-        for (name in listOf("captionLanguagesByPid", "captionFactParsers", "superimposeTimingByPid")) {
-            set(controller, name, java.util.concurrent.ConcurrentHashMap<TsPid, Any>())
-        }
-        set(controller, "sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
-        set(controller, "sectionFilters", linkedMapOf<TsPid, List<Filter>>())
         // Tuner境界は利用不可を同期返却する。実tuneForScan経路を差し替えない。
         set(scan, "engine", engine)
         set(scan, "ingestController", SectionIngestController(engine))
@@ -1013,18 +962,8 @@ class PlaybackFailureCallbacksTest {
             set(controller, "playbackPipeline", fixture.pipeline)
             set(controller, "tuneAccepted", true)
             set(controller, "currentTune", fixture.channel)
-            for (name in listOf("failedDynamicPmtPids", "failedDynamicEcmPids", "failedDynamicEmmPids")) {
-                set(controller, name, linkedSetOf<TsPid>())
-            }
-            for (name in listOf("captionLanguagesByPid", "captionFactParsers", "superimposeTimingByPid")) {
-                set(controller, name, java.util.concurrent.ConcurrentHashMap<TsPid, Any>())
-            }
-            set(controller, "sectionFilters", linkedMapOf<TsPid, Any>())
-            set(controller, "sectionFilterHandles", linkedMapOf<TsPid, Any>())
-            val released = AtomicBoolean(false)
-            set(session, "releaseOnce", released)
+            val released = ReflectionHelpers.getField<AtomicBoolean>(session, "releaseOnce")
             set(session, "sessionExecutor", sessionExecutor)
-            set(session, "tuneRequestLock", Any())
             set(session, "tunerController", controller)
             set(session, "playbackState", fixture.state)
             // Framework通知失敗を注入し、別のplayback解放失敗とともに保持されることを検査する。
@@ -1293,12 +1232,9 @@ class PlaybackFailureCallbacksTest {
                         override fun getApplicationContext() = this
                     }
                 val notifications = mutableListOf<Runnable>()
-                val released = AtomicBoolean(false)
+                val released = ReflectionHelpers.getField<AtomicBoolean>(session, "releaseOnce")
                 set(MaleicacidLiveSession::class.java, "appContext", context)
-                set(MaleicacidLiveSession::class.java, "releaseOnce", released)
                 set(MaleicacidLiveSession::class.java, "sessionExecutor", executor)
-                set(MaleicacidLiveSession::class.java, "tuneRequestLock", Any())
-                set(android.media.tv.TvInputService.Session::class.java, "mLock", Any())
                 set(android.media.tv.TvInputService.Session::class.java, "mPendingActions", notifications)
                 try {
                     check(
@@ -1398,11 +1334,7 @@ class PlaybackFailureCallbacksTest {
             set("tuneGeneration", 7L)
             set("tuner", fixture.tuner)
             set("sectionIngestController", ingest)
-            set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
-            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
             set("dynamicPmtPids", linkedSetOf(TsPid(0x100)))
-            set("dynamicEcmPids", linkedSetOf<TsPid>())
-            set("dynamicEmmPids", linkedSetOf<TsPid>())
             FailureTuner.sectionFilterCount = 16
             for (pid in listOf(0, 0x10, 0x11, 0x100)) {
                 val filter = fixture.create(Filter::class.java)
