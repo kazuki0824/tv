@@ -5,6 +5,10 @@
 
 # 2026-11-06 CTSにより判明したTuner HAL全体停止条件と再起動経路の是正
 
+- cleanup再試行の対象を失効済み・論理終端・局所隔離必要に型付き分類し、`Err(_)`の一括無視を撤廃。論理`Quarantined`を物理cleanup成功の証拠としないよう変更し、物理cleanup失敗時はfail-closedを維持する。
+- 独立した無管理監視スレッドを廃止し、既存`WorkerRuntime::spawn_observed`を利用。サービス存続中はworker handleを保持し、Binder thread pool終了時には停止・回収する。
+- Frontend診断失敗を既存loggerへ接続し、オブジェクト状態分類の単体テストを追加。initによる実再起動・CTS/VTS・Binder再接続は未検証。
+
 - PR #116のServiceFailureStateを単一正本として監視し、ServiceCritical確定後はHALプロセスを終了してAndroid initの再起動に移管する。Binder登録を残したまま永続的に全要求を拒否する状態を廃止する。Android initの既存non-oneshot設定を維持する。
 - cleanup再試行登録・reaper依存関係更新の失敗は、既存Closed/Quarantined判定とDrop-leak隔離へ接続し、対象objectを隔離できた場合は他のTuner HAL操作を継続させる。共有reaperの利用不能、実際のfence不能、サービス状態mutex汚染は引き続き全体停止とする。
 - DVR notifierの局所失敗とFrontend worker診断記録の失敗だけでは全体停止しない。共有Filter遅延配送・DVR notifier reaperの異常終了、frontend workerのfence確定不能、共有状態のcommit不能などの全体停止条件を改めて点検した。
