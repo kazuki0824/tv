@@ -1138,11 +1138,8 @@ mod lock_poison_tests {
                 api: AidlApi::TunerOpenDemux,
             })
             .expect("Demuxの作成が成功する");
-        let handle = AidlObjectHandle::new(
-            AidlObjectKind::Demux,
-            demux.object_id(),
-            demux.generation(),
-        );
+        let handle =
+            AidlObjectHandle::new(AidlObjectKind::Demux, demux.object_id(), demux.generation());
         let failure_state = runtime.failure_state();
         let context =
             AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
