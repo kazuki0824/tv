@@ -388,9 +388,8 @@ impl AidlServiceContext {
                     log::error!(
                         "cleanup隔離の後片付けが未完了です: handle={handle:?} error={error:?} cleanup={cleanup_error:?}"
                     );
-                    if outcome.uncontained_failure {
-                        TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
-                    }
+                    // 物理回収またはowner遮断の成功を証明できないため、全体をfail-closedにする。
+                    TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
                 }
             }
             Err(quarantine_error) => {
