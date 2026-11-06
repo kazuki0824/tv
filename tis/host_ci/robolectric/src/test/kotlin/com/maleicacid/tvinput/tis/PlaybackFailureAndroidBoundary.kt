@@ -60,7 +60,7 @@ class FailureTuner {
     @Implementation
     fun getDemuxCapabilities(): DemuxCapabilities =
         DemuxCapabilities::class.java.declaredConstructors
-            .single()
+            .single { it.parameterCount == 14 }
             .apply { isAccessible = true }
             .newInstance(
                 1,

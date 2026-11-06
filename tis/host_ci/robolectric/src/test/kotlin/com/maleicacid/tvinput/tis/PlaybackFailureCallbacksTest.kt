@@ -374,7 +374,6 @@ class PlaybackFailureCallbacksTest {
                                     .set(controller, value)
                             }
                             set("inputId", "test")
-                            set("sectionExecutor", executor)
                             set("tuneAccepted", true)
                             set("tuneGeneration", 7L)
                             set("casController", cas)
@@ -1633,7 +1632,7 @@ class PlaybackFailureCallbacksTest {
 
                     MediaEvent::class.java -> {
                         MediaEvent::class.java.declaredConstructors
-                            .single()
+                            .single { it.parameterCount == 15 }
                             .apply { isAccessible = true }
                             .newInstance(
                                 0,
