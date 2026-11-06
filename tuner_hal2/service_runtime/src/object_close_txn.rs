@@ -1858,7 +1858,11 @@ mod tests {
         )
         .is_err());
         assert!(matches!(
-            runtime.object_table().entry(AidlObjectId(30)).unwrap().lifecycle,
+            runtime
+                .object_table()
+                .entry(AidlObjectId(30))
+                .unwrap()
+                .lifecycle,
             crate::RuntimeObjectLifecycle::Closing { .. }
         ));
 
@@ -1878,7 +1882,11 @@ mod tests {
         )
         .expect("先行cleanup実行権限解放後は隔離できる");
         assert_eq!(
-            runtime.object_table().entry(AidlObjectId(30)).unwrap().lifecycle,
+            runtime
+                .object_table()
+                .entry(AidlObjectId(30))
+                .unwrap()
+                .lifecycle,
             crate::RuntimeObjectLifecycle::Quarantined
         );
     }
