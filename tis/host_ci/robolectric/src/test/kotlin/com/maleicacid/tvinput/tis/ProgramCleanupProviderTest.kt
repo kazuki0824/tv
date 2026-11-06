@@ -260,7 +260,7 @@ class ProgramCleanupProviderTest {
                     }
 
                     else -> {
-                        error("Unexpected provider call ${method.name}")
+                        error("想定外のプロバイダー呼出し ${method.name}")
                     }
                 }
             } as ContentInterface
@@ -320,7 +320,7 @@ class ProgramCleanupProviderTest {
             tvInputSessionId: String?,
             useCase: Int,
         ) {
-            error("injected tuner connection rejection")
+            error("注入したチューナー接続拒否")
         }
     }
 }

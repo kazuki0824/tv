@@ -346,7 +346,7 @@ class TisReviewBoundaryTest {
         val unavailable =
             PlaybackPipeline.PlaybackUnavailable(
                 PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
-                "ECM failed before immediate recovery",
+                "即時回復前のECM処理失敗",
                 7L,
             )
         val method =
@@ -392,7 +392,7 @@ class TisReviewBoundaryTest {
         check(!TisInputIdResolver.isOwnInputId(context, "own/1"))
         inputs = listOf(input("own/1"))
         check(TisInputIdResolver.isOwnInputId(context, "own/1")) {
-            "package=${context.packageName} inputs=${manager.tvInputList.map {
+            "パッケージ=${context.packageName} 入力一覧=${manager.tvInputList.map {
                 Triple(
                     it.id,
                     it.serviceInfo.packageName,

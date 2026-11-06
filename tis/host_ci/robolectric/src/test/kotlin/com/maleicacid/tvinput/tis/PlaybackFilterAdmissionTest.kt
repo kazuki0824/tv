@@ -91,7 +91,7 @@ class PlaybackFilterAdmissionTest {
             ReflectionHelpers.callInstanceMethod<Unit>(
                 session,
                 "holdPreviousParentalAccessState",
-                ReflectionHelpers.ClassParameter.from(String::class.java, "provider query failed after recovery"),
+                ReflectionHelpers.ClassParameter.from(String::class.java, "回復後のプロバイダー照会失敗"),
             )
             assertEquals(allowed, field.get(session))
             assertEquals(PlaybackStartState.Idle, ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState"))
@@ -680,7 +680,7 @@ class PlaybackFilterAdmissionTest {
                     )
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
                 while (inbox.isEmpty() && System.nanoTime() < deadline) Thread.yield()
-                assertTrue(inbox.isNotEmpty(), "Codec input callback must have arrived")
+                assertTrue(inbox.isNotEmpty(), "コーデック入力コールバックが到着している必要があります")
             }
             samples[1].let { second ->
                 Shadow.extract<NativeMediaEvent>(second).onBlockRead = {
@@ -734,7 +734,7 @@ class PlaybackFilterAdmissionTest {
                 if (previous == null) {
                     assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
                 } else {
-                    assertTrue(released.await(5, TimeUnit.SECONDS), "old input must be returned")
+                    assertTrue(released.await(5, TimeUnit.SECONDS), "旧入力が返却される必要があります")
                 }
                 fixture.drain()
                 // Android側callbackによる出力・描画進捗も同じdecoder generationで120件継続させる。
@@ -742,7 +742,7 @@ class PlaybackFilterAdmissionTest {
                 postCodecCallback(codec, 2, frame % 4, MediaCodec.BufferInfo().apply { set(0, 1, ptsUs, 0) })
                 rendered.onFrameRendered(codec, ptsUs, System.nanoTime())
             }
-            assertTrue(outputsReturned.await(5, TimeUnit.SECONDS), "mock Codec must return 120 video outputs")
+            assertTrue(outputsReturned.await(5, TimeUnit.SECONDS), "模擬コーデックが映像出力を120件返却する必要があります")
             returnCodecInputAndAwaitEventRelease(codec, samples.last())
             fixture.drain()
             assertEquals(120L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
@@ -1016,7 +1016,7 @@ class PlaybackFilterAdmissionTest {
     fun actualOwnerExecutionFailureNotifiesOnceAndCleansOnSameOwner() {
         Fixture().use { fixture ->
             val video = fixture.avFilter(false)
-            fixture.invoke("enqueuePlaybackAction", { error("actual callback failure") })
+            fixture.invoke("enqueuePlaybackAction", { error("コールバック実行時の失敗") })
             assertTrue(fixture.executor.awaitTermination(5, TimeUnit.SECONDS))
             assertTrue(fixture.released())
             assertEquals(1, fixture.unavailable.size)
@@ -2098,7 +2098,7 @@ class PlaybackFilterAdmissionTest {
         Shadow.extract<NativeMediaEvent>(event).onRelease = { released.countDown() }
         postCodecCallback(codec, 1, 0, null)
         // CodecのHandlerからownerへ届く前に、ownerだけのdrainが完了し得る。
-        assertTrue(released.await(5, TimeUnit.SECONDS), "returned Codec input must release its MediaEvent")
+        assertTrue(released.await(5, TimeUnit.SECONDS), "返却されたコーデック入力はMediaEventを解放する必要があります")
     }
 
     private fun postCodecCallback(
@@ -2631,7 +2631,7 @@ class PlaybackFilterAdmissionTest {
             if (blockAfterClear) pendingBytes.clear()
             reclamationBlock?.let { (started, allow) ->
                 started.countDown()
-                check(allow.await(5, TimeUnit.SECONDS)) { "test reclamation was not released" }
+                check(allow.await(5, TimeUnit.SECONDS)) { "試験用の回収待機が解除されていません" }
                 reclamationBlock = null
             }
             if (!blockAfterClear) pendingBytes.clear()
