@@ -369,15 +369,28 @@ impl AidlServiceContext {
                 return;
             }
         }
-        // quarantineへの論理遷移だけでは実際のcleanup成功は保証されない。
-        // 既存Drop-leakのtypedな全step結果で失敗した場合はfail-closedを維持する。
-        if let Err(quarantine_error) =
-            crate::object_runtime::quarantine_drop_leak_object(self, handle)
-        {
-            log::error!(
-                "cleanup失敗後の物理後片付けを確定できません: handle={handle:?} error={error:?} quarantine={quarantine_error:?}"
-            );
-            TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+        // 論理Quarantinedへの遷移ではなく、全後片付けstepの結果で昇格を判定する。
+        match crate::object_runtime::quarantine_drop_leak_object_with_evidence(self, handle) {
+            Ok(outcome) => {
+                if let Err(diagnostic_error) = outcome.diagnostic_result {
+                    // diagnostic storeは既存failure counterも保持する。
+                    log::error!(
+                        "cleanup隔離の診断記録に失敗しました: handle={handle:?} diagnostic={diagnostic_error:?}"
+                    );
+                }
+                if let Err(cleanup_error) = outcome.cleanup_result {
+                    log::error!(
+                        "cleanup隔離の物理後片付けが未完了です: handle={handle:?} error={error:?} cleanup={cleanup_error:?}"
+                    );
+                    TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+                }
+            }
+            Err(quarantine_error) => {
+                log::error!(
+                    "cleanup隔離の開始を確定できません: handle={handle:?} error={error:?} quarantine={quarantine_error:?}"
+                );
+                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+            }
         }
     }
 
