@@ -603,9 +603,9 @@ impl RuntimeObjectTable {
             targets.push((parent_id, parent_generation));
             parent = self.entry_checked_any(parent_id, parent_generation)?.owner;
         }
-        Ok(targets.into_iter().any(|(id, gen)| {
-            self.object_close_txn.has_active_cleanup_attempt(id, gen)
-        }))
+        Ok(targets
+            .into_iter()
+            .any(|(id, gen)| self.object_close_txn.has_active_cleanup_attempt(id, gen)))
     }
 
     pub fn quarantine_cascade(
