@@ -5,6 +5,7 @@
 
 # 2026-11-06 CTSにより判明したTuner HAL全体停止条件と再起動経路の是正
 
+- `ObjectCloseTxn`で進行中のcleanup attemptがあるowner/descendantへのDrop-leak quarantineは、同じobject-tableロック内で全対象の実行権限を確認してから一括拒否する。部分的な論理Quarantined書換えと二重の物理cleanupを防ぎ、実行中の旧attemptが従来どおり終端処理を完了できる回帰を追加した。ロック外でのworker終了・実デバイスへの最終影響は未検証。
 - 共有cleanup reaperの`WorkerReaperPending`/`WorkerReaperReceiver`汚染およびworker終端エラーを、型付きでサービス全体の失敗に分類する。reaper pending予約の更新不能は共有owner不整合として全体停止する。reaper期限到達時は論理`Quarantined`だけで回収成功と判定せず、物理cleanup結果を確認する。
 - `ObjectCloseTxn`の型付きstep結果を維持し、LNB drop-leak処理がLNBの実行状態を隔離するためのmutationであり、単なる診断ではないことを確認した。LNB隔離の失敗やbackend/worker/artifact/runtime cleanup失敗は、安全な局所隔離の証拠がない限り全体fail-closedとする。別の診断ストア書込み失敗のみ既存failure counterへ保持する。
 - CIのLoom専用jobを依存ライブラリの要求するRust 1.95で実行するよう更新し、他のhost workspaceのRust 1.81指定は維持。Rust quality CI、host CIとLoomの検証結果はGitHub Checksで追跡する。
