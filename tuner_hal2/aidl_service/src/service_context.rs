@@ -1166,12 +1166,26 @@ mod lock_poison_tests {
                     counter_saturated: false,
                 },
             ),
+            HalError::LockPoisoned(
+                maleicacid_tuner_hal2_common::LockPoisonDiagnostic {
+                    lock: RuntimeLockKind::WorkerReaperReceiver,
+                    poison_count: 1,
+                    counter_saturated: false,
+                },
+            ),
+            HalError::WorkerLockPoisoned {
+                owner: "ワーカー回収終端",
+                lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
+            },
             HalError::WorkerReaperUnavailable,
             HalError::WorkerReaperPanicked,
         ];
         for error in errors {
             assert!(cleanup_reaper_is_globally_unavailable(&error));
         }
+        assert!(!cleanup_reaper_is_globally_unavailable(
+            &HalError::cleanup_failed("object", "DVR単独の後片付け失敗")
+        ));
     }
 
     #[test]
