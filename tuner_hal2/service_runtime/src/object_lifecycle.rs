@@ -277,6 +277,58 @@ mod closeable_lifecycle_tests {
     }
 
     #[test]
+    fn cleanup_disposition_classifies_stale_live_terminal_and_wrong_kind() {
+        let mut runtime = runtime_with_filter();
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(999),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::Stale)
+        );
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(501),
+                AidlObjectGeneration(2),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::Stale)
+        );
+        assert!(aidl_object_cleanup_disposition(
+            &runtime,
+            AidlObjectId(501),
+            AidlObjectGeneration(1),
+            AidlObjectKind::Dvr,
+        )
+        .is_err());
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::RequiresIsolation)
+        );
+        runtime
+            .object_table_mut()
+            .quarantine_cascade(AidlObjectId(501), AidlObjectGeneration(1))
+            .expect("論理隔離に成功する");
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::Terminal)
+        );
+    }
+
+    #[test]
     fn aidl_object_closeable_accepts_live_and_cleanup_failed() {
         let mut runtime = runtime_with_filter();
         assert_eq!(
