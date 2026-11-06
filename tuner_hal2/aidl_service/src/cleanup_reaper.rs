@@ -181,13 +181,38 @@ fn run_cleanup_job(
         if job.registered_at.elapsed() >= policy.terminal_deadline {
             // Quarantinedという論理状態だけでは物理cleanup成功を証明できない。
             // 隔離実行後の型付きstep結果を正本として判定する。
-            let isolated = match crate::object_runtime::quarantine_drop_leak_object_with_evidence(
-                &context,
-                job.handle,
-            ) {
-                Ok(outcome) => outcome.cleanup_result.is_ok(),
+            use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+            let isolated = match context.cleanup_retry_disposition(job.handle) {
+                Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Closed) => {
+                    true
+                }
+                Ok(AidlObjectCleanupDisposition::Quarantined) => {
+                    log::error!(
+                        "cleanup reaper期限到達時点で隔離済みownerの回収を証明できません: handle={:?}",
+                        job.handle
+                    );
+                    false
+                }
+                Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
+                    match crate::object_runtime::quarantine_drop_leak_object_with_evidence(
+                        &context,
+                        job.handle,
+                    ) {
+                        Ok(outcome) => outcome.cleanup_result.is_ok(),
+                        Err(error) => {
+                            log::error!(
+                                "cleanup reaper期限後の隔離失敗: handle={:?} error={error:?}",
+                                job.handle
+                            );
+                            false
+                        }
+                    }
+                }
                 Err(error) => {
-                    log::error!("cleanup reaper期限後の隔離失敗: handle={:?} error={error:?}", job.handle);
+                    log::error!(
+                        "cleanup reaper期限後の状態分類に失敗しました: handle={:?} error={error:?}",
+                        job.handle
+                    );
                     false
                 }
             };
@@ -198,7 +223,13 @@ fn run_cleanup_job(
         }
         let dependency = match context.cleanup_dependency_for_handle(job.handle) {
             Ok(dependency) => dependency,
-            Err(_) if context.cleanup_is_terminal_for_handle(job.handle) == Ok(true) => {
+            Err(_)
+                if matches!(
+                    context.cleanup_retry_disposition(job.handle),
+                    Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Stale
+                        | maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
+                ) =>
+            {
                 return;
             }
             Err(error) => {
