@@ -39,9 +39,11 @@ fn cleanup_reaper_is_globally_unavailable(error: &HalError) -> bool {
         HalError::WorkerReaperUnavailable | HalError::WorkerReaperPanicked => true,
         HalError::LockPoisoned(poison) => matches!(
             poison.lock,
-            RuntimeLockKind::CleanupReaperOwner | RuntimeLockKind::WorkerReaperPending
+            RuntimeLockKind::CleanupReaperOwner
+                | RuntimeLockKind::WorkerReaperPending
+                | RuntimeLockKind::WorkerReaperReceiver
         ),
-        HalError::WorkerLockPoisoned { owner, .. } => *owner == "ワーカー回収終端",
+        HalError::WorkerLockPoisoned { .. } => true,
         _ => false,
     }
 }
