@@ -117,7 +117,10 @@ pub use object_domain_cleanup::{
     ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectDomainCleanupKind,
     ObjectDomainCleanupOutcome,
 };
-pub use object_lifecycle::{aidl_object_cleanup_dependency, aidl_object_cleanup_is_terminal};
+pub use object_lifecycle::{
+    aidl_object_cleanup_dependency, aidl_object_cleanup_disposition,
+    aidl_object_cleanup_is_terminal, AidlObjectCleanupDisposition,
+};
 pub use object_method_use_case::{
     lnb_profile_supports_voltage_status, ObjectFrontendStatusReadinessValue,
     ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectMethodExecutionToken,
