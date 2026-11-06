@@ -363,7 +363,16 @@ impl AidlServiceContext {
         }
         use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
         match self.cleanup_retry_disposition(handle) {
-            Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Terminal) => {
+            Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Closed) => {
+                return;
+            }
+            Ok(AidlObjectCleanupDisposition::Quarantined) => {
+                // 論理隔離済みでも、未完の物理cleanup義務が残存し得る。
+                // ここでは先行実行の完了証拠を取得できないため成功扱いにしない。
+                log::error!(
+                    "cleanup再試行が論理隔離済みownerへ到達しました: handle={handle:?} error={error:?}"
+                );
+                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
                 return;
             }
             Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {}
