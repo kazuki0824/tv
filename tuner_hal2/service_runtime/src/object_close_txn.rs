@@ -468,12 +468,13 @@ pub type ObjectCleanupExecutionReport =
 /// 他の全後片付けとruntime登録解除が成功した場合に限る局所隔離の証拠。
 /// Quarantinedへの論理遷移そのものを完了証拠には使わない。
 pub fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionReport) -> bool {
-    let mut supervised_pending = false;
-    let mut runtime_unregistered = false;
+    let mut pending_owners = Vec::new();
+    let mut unregistered = None;
     for outcome in report.outcomes() {
         match outcome {
             ObjectCleanupStepOutcome::Artifact {
                 kind: ObjectArtifactCleanupKind::DvrStatusNotifier,
+                target,
                 result: Err(failure),
                 ..
             } if matches!(
@@ -483,20 +484,29 @@ pub fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionRe
                 }
             ) =>
             {
-                supervised_pending = true;
+                pending_owners.push(*target);
             }
             ObjectCleanupStepOutcome::Runtime {
                 kind: ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
+                cascade_entries,
                 result: Ok(()),
-                ..
             } => {
-                runtime_unregistered = true;
+                unregistered = Some(cascade_entries.as_slice());
             }
             other if other.result().is_err() => return false,
             _ => {}
         }
     }
-    supervised_pending && runtime_unregistered
+    !pending_owners.is_empty()
+        && unregistered.is_some_and(|entries| {
+            pending_owners.iter().all(|target| {
+                entries.iter().any(|entry| {
+                    entry.object_kind == target.object_kind()
+                        && entry.object_id == target.object_id()
+                        && entry.generation == target.generation()
+                })
+            })
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1498,9 +1508,26 @@ mod tests {
             cascade_entries: Vec::new(),
             result: Ok(()),
         });
-        assert!(drop_leak_cleanup_is_supervised_pending(&report));
+        assert!(!drop_leak_cleanup_is_supervised_pending(&report));
+        let mut grounded = ObjectCleanupExecutionReport::new();
+        grounded.push(report.outcomes()[0].clone());
+        grounded.push(ObjectCleanupStepOutcome::Runtime {
+            kind: ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
+            cascade_entries: vec![RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Dvr,
+                object_id: AidlObjectId(17),
+                generation: AidlObjectGeneration(2),
+                ledger_id: LedgerId(17),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: crate::RuntimeObjectLifecycle::Quarantined,
+            }],
+            result: Ok(()),
+        });
+        assert!(drop_leak_cleanup_is_supervised_pending(&grounded));
 
-        report.push(ObjectCleanupStepOutcome::Artifact {
+        grounded.push(ObjectCleanupStepOutcome::Artifact {
             kind: ObjectArtifactCleanupKind::OwnerCallbackRegistration,
             target: ObjectCleanupObjectTarget::new(
                 AidlObjectKind::Dvr,
@@ -1513,7 +1540,7 @@ mod tests {
                 HalError::cleanup_failed("callback store", "解除失敗"),
             )),
         });
-        assert!(!drop_leak_cleanup_is_supervised_pending(&report));
+        assert!(!drop_leak_cleanup_is_supervised_pending(&grounded));
     }
 
     #[test]
