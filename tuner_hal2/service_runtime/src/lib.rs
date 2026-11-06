@@ -104,7 +104,8 @@ pub use lnb_ops::{
     SharedLnbRuntime,
 };
 pub use object_close_txn::{
-    close_object_use_case, finish_object_close_use_case, quarantine_object_drop_leak_use_case,
+    close_object_use_case, drop_leak_cleanup_is_supervised_pending,
+    finish_object_close_use_case, quarantine_object_drop_leak_use_case,
     CloseCleanupAttemptCompletion, CloseCleanupAuthority, ObjectArtifactCleanupCommand,
     ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind, ObjectCleanupDiagnosticKind,
     ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot, ObjectCleanupExecutionKind,
