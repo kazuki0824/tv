@@ -463,6 +463,24 @@ impl CleanupExecutionStepOutcome for ObjectCleanupStepOutcome {
 pub type ObjectCleanupExecutionReport =
     CleanupExecutionReport<ObjectCleanupStepOutcome, ObjectCloseCleanupFailure>;
 
+/// ObjectCloseTxnが所有するfail-closed判定。Quarantinedの論理状態だけで物理遮断を証明しない。
+/// LNB drop-leakの記録処理は物理cleanupではなく診断なので、失敗をサービス全体に波及させない。
+/// それ以外の未完了cleanupは遮断の証拠が無いため、全体の安全性を優先する。
+pub fn drop_leak_cleanup_has_uncontained_failure(report: &ObjectCleanupExecutionReport) -> bool {
+    report.outcomes().iter().any(|outcome| {
+        if matches!(
+            outcome,
+            ObjectCleanupStepOutcome::Domain {
+                kind: ObjectDomainCleanupKind::LnbDropLeakRecord,
+                ..
+            }
+        ) {
+            return false;
+        }
+        outcome.result().is_err()
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectCleanupDiagnosticKind {
     Close,
@@ -1431,6 +1449,63 @@ pub(crate) fn quarantine_object_cascade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drop_leak_cleanup_scope_ignores_diagnostic_only_failure() {
+        let mut report = ObjectCleanupExecutionReport::new();
+        report.push(ObjectCleanupStepOutcome::Domain {
+            kind: ObjectDomainCleanupKind::LnbDropLeakRecord,
+            target: ObjectCleanupObjectTarget::new(
+                AidlObjectKind::Lnb,
+                AidlObjectId(1),
+                AidlObjectGeneration(1),
+            ),
+            step: CleanupStep::ReleaseBackend,
+            result: Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::ReleaseBackend,
+                HalError::cleanup_failed("LNB drop-leak diagnostic", "記録できません"),
+            )),
+        });
+        assert!(!drop_leak_cleanup_has_uncontained_failure(&report));
+
+        report.push(ObjectCleanupStepOutcome::Runtime {
+            kind: ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
+            cascade_entries: Vec::new(),
+            result: Ok(()),
+        });
+        assert!(!drop_leak_cleanup_has_uncontained_failure(&report));
+    }
+
+    #[test]
+    fn drop_leak_cleanup_scope_rejects_unfinished_runtime_or_worker_cleanup() {
+        let mut report = ObjectCleanupExecutionReport::new();
+        report.push(ObjectCleanupStepOutcome::Runtime {
+            kind: ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
+            cascade_entries: Vec::new(),
+            result: Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::UnregisterRuntime,
+                HalError::cleanup_failed("runtime", "rollback不明"),
+            )),
+        });
+        assert!(drop_leak_cleanup_has_uncontained_failure(&report));
+
+        let mut notifier = ObjectCleanupExecutionReport::new();
+        notifier.push(ObjectCleanupStepOutcome::Artifact {
+            kind: ObjectArtifactCleanupKind::DvrStatusNotifier,
+            target: ObjectCleanupObjectTarget::new(
+                AidlObjectKind::Dvr,
+                AidlObjectId(2),
+                AidlObjectGeneration(1),
+            ),
+            step: CleanupStep::StopWorker,
+            result: Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::StopWorker,
+                HalError::cleanup_failed("DVR notifier", "worker未回収"),
+            )),
+        });
+        assert!(drop_leak_cleanup_has_uncontained_failure(&notifier));
+    }
+
     use crate::{RuntimeObjectEntry, RuntimeOwnerRelation};
     use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlObjectKind, CommandPlan};
     use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
