@@ -318,10 +318,8 @@ impl AidlServiceContext {
         &self,
         handle: AidlObjectHandle,
     ) -> Result<maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition, HalError> {
-        let runtime = TunerServiceRuntime::lock_shared(
-            &self.runtime,
-            "cleanup再試行対象の状態判定",
-        )?;
+        let runtime =
+            TunerServiceRuntime::lock_shared(&self.runtime, "cleanup再試行対象の状態判定")?;
         maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_disposition(
             &runtime,
             handle.object_id(),
