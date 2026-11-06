@@ -185,7 +185,7 @@ fn run_cleanup_job(
                 &context,
                 job.handle,
             ) {
-                Ok(outcome) => !outcome.uncontained_failure,
+                Ok(outcome) => outcome.cleanup_result.is_ok(),
                 Err(error) => {
                     log::error!("cleanup reaper期限後の隔離失敗: handle={:?} error={error:?}", job.handle);
                     false
