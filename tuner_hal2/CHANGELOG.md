@@ -3,10 +3,12 @@
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
 - 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
 
-# 2026-11-09 回収予約の存在照会から値の複製を除去
+# 2026-11-06 CTSにより判明したTuner HAL全体停止条件と再起動経路の是正
 
-- any_pendingは既存の予約正本を一度ロックしてキーの存在を調べる。不要になったpending_valuesを削除し、予約・異常分類・待機期限は変更しない。
-- 空集合、全件不在、混在、重複キー、解放後、値を複製しない照会と空集合を含むロック汚染伝播を既存control試験で検査する。試験実行はCIへ委ねる。
+- PR #116のServiceFailureStateを単一正本として監視し、ServiceCritical確定後はHALプロセスを終了してAndroid initの再起動に移管する。Binder登録を残したまま永続的に全要求を拒否する状態を廃止する。Android initの既存non-oneshot設定を維持する。
+- cleanup再試行登録・reaper依存関係更新の失敗は、既存Closed/Quarantined判定とDrop-leak隔離へ接続し、対象objectを隔離できた場合は他のTuner HAL操作を継続させる。共有reaperの利用不能、実際のfence不能、サービス状態mutex汚染は引き続き全体停止とする。
+- DVR notifierの局所失敗とFrontend worker診断記録の失敗だけでは全体停止しない。共有Filter遅延配送・DVR notifier reaperの異常終了、frontend workerのfence確定不能、共有状態のcommit不能などの全体停止条件を改めて点検した。
+- Rust host回帰を追加（失効済みobjectの再試行、live objectの局所隔離、共有reaper喪失、監視bit、init設定）。ソース点検のみ実施。Android Soong、CTS/VTS再試験、実機再起動・旧Binder再接続の動作確認は未実施。CI結果を本PRのChecksで確認する。
 
 # 2026-11-08 VTS資源検査とAIDLの回収試験を修正
 
@@ -3611,3 +3613,9 @@
 - `common`、`descrambler`、`frontend_px4` の再利用断片を追加した。
 - 旧制御層をコピーせず、`control` crate に worker / lifecycle / FMQ delivery / stream boundary の型付き骨格を追加した。
 - r50ed 時点では Binder service / AIDL HAL 実装は未達である。
+
+# 2026-11-09 回収予約の存在照会から値の複製を除去
+
+- any_pendingは既存の予約正本を一度ロックしてキーの存在を調べる。不要になったpending_valuesを削除し、予約・異常分類・待機期限は変更しない。
+- 空集合、全件不在、混在、重複キー、解放後、値を複製しない照会と空集合を含むロック汚染伝播を既存control試験で検査する。試験実行はCIへ委ねる。
+

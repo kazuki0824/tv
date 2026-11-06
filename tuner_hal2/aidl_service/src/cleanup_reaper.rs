@@ -192,13 +192,13 @@ fn run_cleanup_job(
             Err(_) if context.cleanup_is_terminal_for_handle(job.handle) == Ok(true) => {
                 return;
             }
-            Err(_) => {
-                mark_cleanup_reaper_critical(&context);
+            Err(error) => {
+                context.isolate_failed_cleanup_retry(job.handle, &error);
                 return;
             }
         };
-        if pending.update_value(&key, dependency).is_err() {
-            mark_cleanup_reaper_critical(&context);
+        if let Err(error) = pending.update_value(&key, dependency) {
+            context.isolate_failed_cleanup_retry(job.handle, &error);
             return;
         }
         let result = close_method(job.handle.object_kind()).and_then(|method| {
