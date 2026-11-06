@@ -89,6 +89,7 @@ pub enum AidlObjectCleanupDisposition {
     Stale,
     Closed,
     Quarantined,
+    NoCleanupPending,
     RequiresIsolation,
 }
 
@@ -113,9 +114,10 @@ pub fn aidl_object_cleanup_disposition(
     Ok(match entry.lifecycle {
         RuntimeObjectLifecycle::Closed => AidlObjectCleanupDisposition::Closed,
         RuntimeObjectLifecycle::Quarantined => AidlObjectCleanupDisposition::Quarantined,
-        RuntimeObjectLifecycle::Prepared
-        | RuntimeObjectLifecycle::Live
-        | RuntimeObjectLifecycle::Closing { .. }
+        RuntimeObjectLifecycle::Prepared | RuntimeObjectLifecycle::Live => {
+            AidlObjectCleanupDisposition::NoCleanupPending
+        }
+        RuntimeObjectLifecycle::Closing { .. }
         | RuntimeObjectLifecycle::CleanupPending { .. } => {
             AidlObjectCleanupDisposition::RequiresIsolation
         }
@@ -311,6 +313,23 @@ mod closeable_lifecycle_tests {
                 AidlObjectGeneration(1),
                 AidlObjectKind::Filter,
             ),
+            Ok(AidlObjectCleanupDisposition::NoCleanupPending)
+        );
+        runtime
+            .object_table_mut()
+            .begin_close_cascade(
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                CleanupStep::UnregisterRuntime,
+            )
+            .expect("close開始で後片付け依存関係を生成する");
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            ),
             Ok(AidlObjectCleanupDisposition::RequiresIsolation)
         );
         runtime
@@ -325,6 +344,33 @@ mod closeable_lifecycle_tests {
                 AidlObjectKind::Filter,
             ),
             Ok(AidlObjectCleanupDisposition::Quarantined)
+        );
+    }
+
+    #[test]
+    fn prepared_object_does_not_have_cleanup_retry_obligation() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime
+            .object_table_mut()
+            .insert_prepared(RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Filter,
+                object_id: AidlObjectId(502),
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(502),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("Preparedの作成に成功");
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(502),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::NoCleanupPending)
         );
     }
 
