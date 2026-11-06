@@ -1349,6 +1349,33 @@ mod tests {
     }
 
     #[test]
+    fn repeated_dvr_cleanup_diagnostic_does_not_quarantine_live_owner() {
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        let error = HalError::cleanup_failed("DVR notifier", "局所通知失敗");
+
+        record_dvr_notifier_cleanup_control_failure(&context, handle, error.clone());
+        record_dvr_notifier_cleanup_control_failure(&context, handle, error);
+        assert!(!failure_state.snapshot().service_critical);
+        assert_eq!(
+            context.cleanup_retry_disposition(handle),
+            Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::NoCleanupPending)
+        );
+    }
+
+    #[test]
+    fn notifier_reap_without_cleanup_obligation_keeps_live_dvr() {
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        enqueue_cleanup_retry_after_notifier_reap(&context, handle);
+        assert_eq!(
+            context.cleanup_retry_disposition(handle),
+            Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::NoCleanupPending)
+        );
+        assert!(!failure_state.snapshot().service_critical);
+    }
+
+    #[test]
     fn deliver_started_dvr_status_emits_current_playback_status() {
         let (context, runtime, handle) = build_started_playback_dvr_context();
         let state = Arc::new(CallbackState::default());
