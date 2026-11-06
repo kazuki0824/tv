@@ -7,21 +7,23 @@ import android.media.tv.tuner.filter.Filter
 import android.media.tv.tuner.filter.FilterCallback
 import android.media.tv.tuner.filter.FilterEvent
 import org.junit.Test
-import sun.misc.Unsafe
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+import org.robolectric.util.ReflectionHelpers
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class FrameworkFilterCallbackLockTest {
     @Test
     fun sectionHandoffReturnsBeforeOwnerCompletesAndCloseCanAcquireFrameworkLock() {
         val executor = ControllerSerialExecutor("Framework section配送試験")
-        val unsafe =
-            Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as Unsafe
-        val controller = unsafe.allocateInstance(TunerController::class.java) as TunerController
+        val controller = TunerController(RuntimeEnvironment.getApplication(), "framework-lock-test")
+        ReflectionHelpers.getField<ControllerSerialExecutor>(controller, "sectionExecutor").shutdownNow()
         TunerController::class.java
             .getDeclaredField("sectionExecutor")
             .apply { isAccessible = true }
@@ -79,6 +81,7 @@ class FrameworkFilterCallbackLockTest {
         } finally {
             releaseOwner.countDown()
             producer.interrupt()
+            controller.close()
             executor.shutdownNow()
             producer.join(1_000)
         }
@@ -151,18 +154,11 @@ class FrameworkFilterCallbackLockTest {
         callback: FilterCallback,
         executor: Executor,
     ): Filter {
-        val unsafe =
-            Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as Unsafe
-        val filter = unsafe.allocateInstance(Filter::class.java) as Filter
-        for (name in listOf("mCallbackLock", "mLock")) {
-            Filter::class.java
-                .getDeclaredField(name)
-                .apply { isAccessible = true }
-                .set(filter, Any())
-        }
+        val filter =
+            ReflectionHelpers.callConstructor(
+                Filter::class.java,
+                ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, 1L),
+            )
         // Javaの実close境界まで検証し、native handleの作成は行わない。
         Filter::class.java
             .getDeclaredField("mIsClosed")
