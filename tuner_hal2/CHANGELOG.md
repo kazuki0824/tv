@@ -1,21 +1,10 @@
-# 2026-11-06 CTSにより判明したTuner HAL全体停止条件と再起動経路の是正
-- `ObjectCloseTxn`が同一objectまたは子孫に対する物理cleanupを実行中なら、drop-leak隔離の物理cleanupを開始しない。既存のcleanup実行権限と世代fenceを維持し、実行権限の解放後には局所隔離を開始できることをRust回帰テストで確認する（同時実行の実機試験は未実施）。
+# 2026-11-07 Tuner HALの終端常駐とcleanup競合の修正
 
-- DVR通知workerの`ReaperPending`を従来の文字列`CleanupFailed`ではなく`WorkerCleanupFailed(Executing)`の型付き結果として保持する。正本`ObjectCloseTxn`のcleanup reportで当該Supervisor移管のみが未完、ほかの全stepと当該DVRの同一object ID/generationを含むpublic runtime解除が成功した場合に限って局所隔離で続行し、その他のbackend/worker/登録解除失敗は全体Fail-closedを維持する。正常な移管のみを受理するテスト・他step失敗と解除未完を拒否するテストを追加した。旧`quarantine_drop_leak_object`ラッパーと従属の未使用result合成を削除し、型付き結果を返す単一の実装入口に集約した。これらのAndroid実機動作は未検証。
-- cleanup再試行の判定でPrepared/Liveを「未完cleanup義務なし」と区別し、再試行依存関係が存在しない正常なobjectをQuarantinedへ変更しない。共有reaperに由来する複合失敗は主・cleanup側の全ての子要素から型付き判定する。DVR notifierの再試行受付失敗では、enqueue所有者で実施済みの局所隔離・昇格を再度実行せず、呼出し元は診断記録だけを行う。正本classifierと状態分類の回帰テストを追加する。
-- 既存`quarantine_cascade()`への`has_active_cleanup_attempt()`一律拒否ガードをデグレとして撤回。Frontend worker期限到達時などの従来の隔離成功経路を復元し、cleanup実行権限が存在する場合にも既存のQuarantined遷移が可能であることを回帰テストで確認する。既存の進行中cleanupとの物理副作用の競合安全性は、本変更では解決・証明していない。
-- 共有cleanup reaperの`WorkerReaperPending`/`WorkerReaperReceiver`汚染およびworker終端エラーを、型付きでサービス全体の失敗に分類する。reaper pending予約の更新不能は共有owner不整合として全体停止する。reaper期限到達時は論理`Quarantined`だけで回収成功と判定せず、物理cleanup結果を確認する。
-- `ObjectCloseTxn`の型付きstep結果を維持し、LNB drop-leak処理がLNBの実行状態を隔離するためのmutationであり、単なる診断ではないことを確認した。LNB隔離の失敗やbackend/worker/artifact/runtime cleanup失敗は、安全な局所隔離の証拠がない限り全体fail-closedとする。別の診断ストア書込み失敗のみ既存failure counterへ保持する。
-- CIのLoom専用jobを依存ライブラリの要求するRust 1.95で実行するよう更新し、他のhost workspaceのRust 1.81指定は維持。Rust quality CI、host CIとLoomの検証結果はGitHub Checksで追跡する。
-
-- cleanup再試行の対象を失効済み・論理終端・局所隔離必要に型付き分類し、`Err(_)`の一括無視を撤廃。論理`Quarantined`を物理cleanup成功の証拠としないよう変更し、物理cleanupと診断書き込みの結果を別々に保持する。物理cleanup失敗時はfail-closed、診断のみの失敗では局所障害に留める。
-- 独立した無管理監視スレッドを廃止し、既存`WorkerRuntime::spawn_observed`を利用。サービス存続中はworker handleを保持し、Binder thread pool終了時には停止・回収する。
-- Frontend診断失敗は既存failure counterと標準エラー出力で保持し、オブジェクト状態分類の単体テストを追加。initによる実再起動・CTS/VTS・Binder再接続は未検証。
-
-- PR #116のServiceFailureStateを単一正本として監視し、ServiceCritical確定後はHALプロセスを終了してAndroid initの再起動に移管する。Binder登録を残したまま永続的に全要求を拒否する状態を廃止する。Android initの既存non-oneshot設定を維持する。
-- cleanup再試行登録・reaper依存関係更新の失敗は、既存Closed/Quarantined判定とDrop-leak隔離へ接続し、対象objectを隔離できた場合は他のTuner HAL操作を継続させる。共有reaperの利用不能、実際のfence不能、サービス状態mutex汚染は引き続き全体停止とする。
-- DVR notifierの局所失敗とFrontend worker診断記録の失敗だけでは全体停止しない。共有Filter遅延配送・DVR notifier reaperの異常終了、frontend workerのfence確定不能、共有状態のcommit不能などの全体停止条件を改めて点検した。
-- Rust host回帰を追加（失効済みobjectの再試行、Liveの誤隔離防止、共有reaper喪失、監視bit、init設定）。ソース点検のみ実施。Android Soong、CTS/VTS再試験、実機再起動・旧Binder再接続の動作確認は未実施。CI結果を本PRのChecksで確認する。
+- 既存`ServiceFailureState`の全体停止が確定した場合は、従属`WorkerRuntime`からHALプロセスを終了させてAndroid initへ再起動を委譲する。停止状態の第二正本は設けない。
+- cleanup再試行失敗で未完義務なし・失効済み・Closedと確定した場合だけ全体停止を省略する。それ以外は隔離を推測せずfail-closed。reaper期限時に論理Quarantinedを物理cleanup完了と誤認しない。
+- `ObjectCloseTxn`の実行中権限を対象・祖先・子孫まで検査し、drop-leak隔離が同じ物理cleanupを並行実行しない。host回帰試験を追加。
+- 未検証のDVR通知例外・独自隔離結果wrapper・reaperエラー再分類・Frontend診断回復経路等は撤回してPR #116のコードへ戻す。Loom CIのRust 1.95更新は依存互換のため維持。
+- Android Soong／AIDL VTS／CTS再試験／実機再起動・Binder再接続は未実施。CI結果はPRのChecksを参照。
 
 # 2026-10-31 worker終端とwake受付の競合を修正
 

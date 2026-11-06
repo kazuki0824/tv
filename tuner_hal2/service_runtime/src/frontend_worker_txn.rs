@@ -728,7 +728,7 @@ fn transfer_frontend_replacement_wait_failure(
                 deadline_diagnostic_sink,
             );
         })),
-        completion_action: Box::new(move |_runtime, outcomes, deadline_elapsed| {
+        completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
             let completion_error = if deadline_elapsed {
                 compose_frontend_cleanup_error(
                     "frontend replacement reaper deadline elapsed",
@@ -741,15 +741,17 @@ fn transfer_frontend_replacement_wait_failure(
             } else {
                 completion_public_error.clone()
             };
-            if let Err(record_error) = record_aborted_frontend_replacement_after_reap(
+            if record_aborted_frontend_replacement_after_reap(
                 cleanup_diagnostic_sink,
                 target,
                 kind,
                 generation,
                 &outcomes,
                 completion_error,
-            ) {
-                eprintln!("frontend reaper終了診断の記録に失敗しました: {record_error:?}");
+            )
+            .is_err()
+            {
+                TunerServiceRuntime::mark_shared_service_critical(runtime);
             }
         }),
     };
@@ -4095,8 +4097,8 @@ fn handle_frontend_worker_reaper_deadline(
         report,
         Some(public_error),
     );
-    if let Err(record_error) = record_frontend_cleanup_diagnostic(&diagnostic_sink, record) {
-        eprintln!("frontend reaper期限診断の記録に失敗しました: {record_error:?}");
+    if record_frontend_cleanup_diagnostic(&diagnostic_sink, record).is_err() {
+        TunerServiceRuntime::mark_shared_service_critical(&runtime);
     }
 }
 

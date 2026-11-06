@@ -109,20 +109,6 @@ impl CleanupReaperQueue {
         Ok(())
     }
 
-    /// 呼出し元にreaper所有者を保持した型付き失敗として通知する。
-    /// WorkerLockPoisonedのみでは異なるworkerとの識別ができないため、この正規owner境界で写像する。
-    fn classify_enqueue_error(error: HalError) -> HalError {
-        if maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(&error) {
-            HalError::composed_failure(
-                "cleanup reaper共有終端状態の取得に失敗しました",
-                HalError::WorkerReaperUnavailable,
-                error,
-            )
-        } else {
-            error
-        }
-    }
-
     pub(crate) fn enqueue(
         &self,
         handle: AidlObjectHandle,
@@ -136,22 +122,16 @@ impl CleanupReaperQueue {
                 "cleanup reaperの正規ownerが設定されていません",
             )
         })?;
-        if runtime
-            .pending_value(&key)
-            .map_err(Self::classify_enqueue_error)?
-            .is_some()
-        {
+        if runtime.pending_value(&key)?.is_some() {
             return Ok(());
         }
-        runtime
-            .enqueue_reserved(
-                CleanupJob {
-                    handle,
-                    registered_at: Instant::now(),
-                },
-                [(key, dependency)],
-            )
-            .map_err(Self::classify_enqueue_error)
+        runtime.enqueue_reserved(
+            CleanupJob {
+                handle,
+                registered_at: Instant::now(),
+            },
+            [(key, dependency)],
+        )
     }
 }
 
@@ -199,70 +179,37 @@ fn run_cleanup_job(
             return;
         };
         if job.registered_at.elapsed() >= policy.terminal_deadline {
-            // Quarantinedという論理状態だけでは物理cleanup成功を証明できない。
-            // 隔離実行後の型付きstep結果を正本として判定する。
             use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
-            let isolated = match context.cleanup_retry_disposition(job.handle) {
-                Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Closed) => {
-                    true
-                }
-                Ok(
-                    AidlObjectCleanupDisposition::Quarantined
-                    | AidlObjectCleanupDisposition::NoCleanupPending,
-                ) => {
-                    log::error!(
-                        "cleanup reaper期限到達時点で後片付けの安全な完了を証明できません: handle={:?}",
-                        job.handle
-                    );
-                    false
-                }
+            let terminal = match context.cleanup_retry_disposition(job.handle) {
+                Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Closed) => true,
                 Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
-                    match crate::object_runtime::quarantine_drop_leak_object_with_evidence(
-                        &context, job.handle,
-                    ) {
-                        Ok(outcome) => outcome.cleanup_result.is_ok() || outcome.supervised_pending,
-                        Err(error) => {
-                            log::error!(
-                                "cleanup reaper期限後の隔離失敗: handle={:?} error={error:?}",
-                                job.handle
-                            );
-                            false
-                        }
-                    }
+                    // 論理Quarantinedでなく物理cleanupの結果を確認する。
+                    crate::object_runtime::quarantine_drop_leak_object(&context, job.handle).is_ok()
                 }
-                Err(error) => {
-                    log::error!(
-                        "cleanup reaper期限後の状態分類に失敗しました: handle={:?} error={error:?}",
-                        job.handle
-                    );
-                    false
-                }
+                _ => false,
             };
-            if !isolated {
+            if !terminal {
                 mark_cleanup_reaper_critical(&context);
             }
             return;
         }
         let dependency = match context.cleanup_dependency_for_handle(job.handle) {
             Ok(dependency) => dependency,
-            Err(_)
-                if matches!(
-                    context.cleanup_retry_disposition(job.handle),
-                    Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Stale
-                        | maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
-                ) =>
-            {
+            Err(_) if matches!(
+                context.cleanup_retry_disposition(job.handle),
+                Ok(
+                    maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Stale
+                        | maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed
+                )
+            ) => {
                 return;
             }
-            Err(error) => {
-                context.isolate_failed_cleanup_retry(job.handle, &error);
+            Err(_) => {
+                mark_cleanup_reaper_critical(&context);
                 return;
             }
         };
-        if let Err(error) = pending.update_value(&key, dependency) {
-            // 予約済みpending keyを更新できないのは共有reaper状態の不整合。
-            // 個別ownerだけの隔離では、他jobの保留所有権を保証できない。
-            log::error!("共有reaperの保留予約更新に失敗しました: error={error:?}");
+        if pending.update_value(&key, dependency).is_err() {
             mark_cleanup_reaper_critical(&context);
             return;
         }
@@ -305,35 +252,6 @@ pub(crate) fn start_cleanup_reaper(
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn shared_reaper_terminal_worker_failure_has_typed_global_owner() {
-        let original = HalError::WorkerLockPoisoned {
-            owner: "ワーカー回収終端",
-            lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
-        };
-        let error = CleanupReaperQueue::classify_enqueue_error(original.clone());
-        assert!(matches!(
-            error.primary_error(),
-            HalError::WorkerReaperUnavailable
-        ));
-        assert_eq!(error.cleanup_error(), Some(&original));
-        let composed_worker = HalError::composed_failure(
-            "投入と予約解放",
-            HalError::cleanup_failed("queue", "primary"),
-            original.clone(),
-        );
-        let composed_result = CleanupReaperQueue::classify_enqueue_error(composed_worker);
-        assert!(matches!(
-            composed_result.primary_error(),
-            HalError::WorkerReaperUnavailable
-        ));
-        let local = HalError::cleanup_failed("DVR", "local");
-        assert_eq!(
-            CleanupReaperQueue::classify_enqueue_error(local.clone()),
-            local
-        );
-    }
 
     #[test]
     fn poisoned_owner_slot_rejects_enqueue_with_identity() {
