@@ -314,6 +314,22 @@ impl AidlServiceContext {
         )
     }
 
+    pub(crate) fn cleanup_retry_disposition(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition, HalError> {
+        let runtime = TunerServiceRuntime::lock_shared(
+            &self.runtime,
+            "cleanup再試行対象の状態判定",
+        )?;
+        maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_disposition(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        )
+    }
+
     pub(crate) fn cleanup_is_terminal_for_handle(
         &self,
         handle: AidlObjectHandle,
@@ -341,16 +357,27 @@ impl AidlServiceContext {
             TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
             return;
         }
-        // 既にClosed/Quarantinedなら未完cleanupはない。存在しない・旧世代のhandleも
-        // 他のlive ownerを汚染しない。runtime lock汚染はlock_sharedが既に全体停止に記録する。
-        match self.cleanup_is_terminal_for_handle(handle) {
-            Ok(true) | Err(_) => return,
-            Ok(false) => {}
+        use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+        match self.cleanup_retry_disposition(handle) {
+            Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Terminal) => {
+                return;
+            }
+            Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {}
+            Err(disposition_error) => {
+                log::error!(
+                    "cleanup対象の状態分類に失敗しました: handle={handle:?} error={error:?} disposition={disposition_error:?}"
+                );
+                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+                return;
+            }
         }
-        let quarantine = crate::object_runtime::quarantine_drop_leak_object(self, handle);
-        if quarantine.is_err() && self.cleanup_is_terminal_for_handle(handle) != Ok(true) {
+        // quarantineへの論理遷移だけでは実際のcleanup成功は保証されない。
+        // 既存Drop-leakのtypedな全step結果で失敗した場合はfail-closedを維持する。
+        if let Err(quarantine_error) =
+            crate::object_runtime::quarantine_drop_leak_object(self, handle)
+        {
             log::error!(
-                "cleanup失敗後に対象objectを隔離できません: handle={handle:?} error={error:?} quarantine={quarantine:?}"
+                "cleanup失敗後の物理後片付けを確定できません: handle={handle:?} error={error:?} quarantine={quarantine_error:?}"
             );
             TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
         }
