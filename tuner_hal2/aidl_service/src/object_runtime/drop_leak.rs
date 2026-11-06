@@ -52,6 +52,7 @@ fn close_method_for_drop(
 pub(crate) struct DropLeakQuarantineOutcome {
     pub(crate) cleanup_result: Result<(), maleicacid_tuner_hal2_common::HalError>,
     pub(crate) diagnostic_result: Result<(), maleicacid_tuner_hal2_common::HalError>,
+    pub(crate) supervised_pending: bool,
 }
 
 impl DropLeakQuarantineOutcome {
@@ -85,6 +86,8 @@ pub(crate) fn quarantine_drop_leak_object_with_evidence(
         &mut domain_executor,
         &mut artifact_executor,
     );
+    let supervised_pending =
+        maleicacid_tuner_hal2_service_runtime::drop_leak_cleanup_is_supervised_pending(&report);
     let cleanup_result = report
         .clone()
         .into_result()
@@ -100,6 +103,7 @@ pub(crate) fn quarantine_drop_leak_object_with_evidence(
     Ok(DropLeakQuarantineOutcome {
         cleanup_result,
         diagnostic_result,
+        supervised_pending,
     })
 }
 
