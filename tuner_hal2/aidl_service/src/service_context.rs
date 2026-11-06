@@ -43,7 +43,7 @@ fn cleanup_reaper_is_globally_unavailable(error: &HalError) -> bool {
                 | RuntimeLockKind::WorkerReaperPending
                 | RuntimeLockKind::WorkerReaperReceiver
         ),
-        HalError::WorkerLockPoisoned { .. } => true,
+        // WorkerLockPoisoned単体では障害ownerを識別できない。reaper側の受付境界で変換する。
         _ => false,
     }
 }
@@ -1181,10 +1181,6 @@ mod lock_poison_tests {
                     counter_saturated: false,
                 },
             ),
-            HalError::WorkerLockPoisoned {
-                owner: "ワーカー回収終端",
-                lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
-            },
             HalError::WorkerReaperUnavailable,
             HalError::WorkerReaperPanicked,
         ];
@@ -1193,6 +1189,12 @@ mod lock_poison_tests {
         }
         assert!(!cleanup_reaper_is_globally_unavailable(
             &HalError::cleanup_failed("object", "DVR単独の後片付け失敗")
+        ));
+        assert!(!cleanup_reaper_is_globally_unavailable(
+            &HalError::WorkerLockPoisoned {
+                owner: "DVR通知worker",
+                lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
+            }
         ));
     }
 
