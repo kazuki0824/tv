@@ -1,6 +1,6 @@
 # 2026-11-06 CTSにより判明したTuner HAL全体停止条件と再起動経路の是正
 
-- cleanup再試行の対象を失効済み・論理終端・局所隔離必要に型付き分類し、`Err(_)`の一括無視を撤廃。論理`Quarantined`を物理cleanup成功の証拠としないよう変更し、物理cleanup失敗時はfail-closedを維持する。
+- cleanup再試行の対象を失効済み・論理終端・局所隔離必要に型付き分類し、`Err(_)`の一括無視を撤廃。論理`Quarantined`を物理cleanup成功の証拠としないよう変更し、物理cleanupと診断書き込みの結果を別々に保持する。物理cleanup失敗時はfail-closed、診断のみの失敗では局所障害に留める。
 - 独立した無管理監視スレッドを廃止し、既存`WorkerRuntime::spawn_observed`を利用。サービス存続中はworker handleを保持し、Binder thread pool終了時には停止・回収する。
 - Frontend診断失敗は既存failure counterと標準エラー出力で保持し、オブジェクト状態分類の単体テストを追加。initによる実再起動・CTS/VTS・Binder再接続は未検証。
 
