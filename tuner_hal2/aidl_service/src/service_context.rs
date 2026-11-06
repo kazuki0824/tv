@@ -33,6 +33,15 @@ use crate::object_handle::AidlObjectHandle;
 
 const MAX_DROP_LEAK_ERROR_RECORDS: usize = 64;
 
+/// 終了済みの共有reaperは局所隔離で代替できない。
+fn cleanup_reaper_is_globally_unavailable(error: &HalError) -> bool {
+    match error.primary_error() {
+        HalError::WorkerReaperUnavailable | HalError::WorkerReaperPanicked => true,
+        HalError::LockPoisoned(poison) => poison.lock == RuntimeLockKind::CleanupReaperOwner,
+        _ => false,
+    }
+}
+
 fn saturating_increment_atomic_usize(counter: &AtomicUsize) {
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
@@ -321,12 +330,41 @@ impl AidlServiceContext {
         )
     }
 
-    pub(crate) fn enqueue_cleanup_retry(&self, handle: AidlObjectHandle) -> Result<(), HalError> {
+    /// 再試行受付の失敗は、共有reaper自体の喪失と対象objectの隔離可能な失敗を分ける。
+    pub(crate) fn isolate_failed_cleanup_retry(
+        self: &Arc<Self>,
+        handle: AidlObjectHandle,
+        error: &HalError,
+    ) {
+        if cleanup_reaper_is_globally_unavailable(error) {
+            log::error!("共有cleanup reaperが利用不能です: {error:?}");
+            TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+            return;
+        }
+        // 既にClosed/Quarantinedなら未完cleanupはない。存在しない・旧世代のhandleも
+        // 他のlive ownerを汚染しない。runtime lock汚染はlock_sharedが既に全体停止に記録する。
+        match self.cleanup_is_terminal_for_handle(handle) {
+            Ok(true) | Err(_) => return,
+            Ok(false) => {}
+        }
+        let quarantine = crate::object_runtime::quarantine_drop_leak_object(self, handle);
+        if quarantine.is_err() && self.cleanup_is_terminal_for_handle(handle) != Ok(true) {
+            log::error!(
+                "cleanup失敗後に対象objectを隔離できません: handle={handle:?} error={error:?} quarantine={quarantine:?}"
+            );
+            TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+        }
+    }
+
+    pub(crate) fn enqueue_cleanup_retry(
+        self: &Arc<Self>,
+        handle: AidlObjectHandle,
+    ) -> Result<(), HalError> {
         let result = self
             .cleanup_dependency_for_handle(handle)
             .and_then(|dependency| self.cleanup_reaper_queue.enqueue(handle, dependency));
-        if result.is_err() {
-            TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+        if let Err(error) = &result {
+            self.isolate_failed_cleanup_retry(handle, error);
         }
         result
     }
@@ -1071,6 +1109,49 @@ impl AidlServiceContext {
 #[cfg(test)]
 mod lock_poison_tests {
     use super::*;
+
+    #[test]
+    fn missing_cleanup_owner_does_not_poison_service_but_shared_reaper_loss_does() {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let failure_state = runtime.lock().unwrap().failure_state();
+        let context = AidlServiceContext::from_shared_runtime_for_test(runtime);
+        let stale = AidlObjectHandle::new(
+            AidlObjectKind::Dvr,
+            AidlObjectId(701),
+            AidlObjectGeneration(8),
+        );
+        assert!(context.enqueue_cleanup_retry(stale).is_err());
+        assert!(!failure_state.snapshot().service_critical);
+        context.isolate_failed_cleanup_retry(stale, &HalError::WorkerReaperUnavailable);
+        assert!(failure_state.snapshot().service_critical);
+    }
+
+    #[test]
+    fn live_object_without_retry_dependency_is_quarantined_not_service_critical() {
+        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
+
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .expect("Demuxの作成が成功する");
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Demux,
+            demux.object_id(),
+            demux.generation(),
+        );
+        let failure_state = runtime.failure_state();
+        let context = AidlServiceContext::from_shared_runtime_for_test(
+            Arc::new(Mutex::new(runtime)),
+        );
+        assert!(context.enqueue_cleanup_retry(handle).is_err());
+        assert_eq!(context.cleanup_is_terminal_for_handle(handle), Ok(true));
+        assert!(!failure_state.snapshot().service_critical);
+    }
+
 
     fn poison<T>(lock: &PoisonTrackedMutex<T>) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

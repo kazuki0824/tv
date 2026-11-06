@@ -439,6 +439,10 @@ rollback不能、cleanup不能、正本不一致、backend実状態とregistry�
 
 サービス全体の利用停止状態はサービス所有者に一元化し、一度確定した`ServiceCritical`を再初期化で解除しない。サービスの状態ロックが汚染された場合も、利用停止と汚染検出回数を同じ観測値として読み出せること。停止状態の記録には当該ロックの正常取得を要求せず、診断参照から通常状態を変更する権限は与えない。ロック汚染時の実装規約は`GLOBAL_CODE_CONVENTION.md`の「mutex汚染復旧」と`tuner_hal2/CODE_CONVENTION.md`の「サービス状態ロックの実装入口」を参照する。
 
+サービス全体の`ServiceCritical`は「停止したままBinder登録を保持する状態」ではない。Tuner HALサービス起動時に既存`ServiceFailureState`の読取り参照を取得し、単一の監視スレッドが通常操作用mutexを取得せず停止bitを監視する。停止確定時は理由と診断counterをログへ残して当該HALプロセスを非ゼロ終了させ、`oneshot`でないAndroid initのサービス再起動へ移管する。通常操作による再初期化で停止bitを解除しない。原因が残る場合の再起動成功は保証せず、ハードウェア・driverの再probe、Binder再接続、旧object世代の失効を別途確認する。
+
+`ServiceCritical`への昇格は、サービス状態mutex汚染、共有worker/reaperの利用不能、または世代fence・局所quarantineの両方を実証的に確定できず他のownerへ副作用が及ぶ場合に限る。個別DVR callback/start、失効済みobjectのcleanup再登録、Frontend cleanup診断の記録失敗だけでは昇格しない。後片付け再試行の登録に失敗した場合は、まず該当objectの`Closed`/`Quarantined`を確認し、live objectは`ObjectCloseTxn`の既存Drop-leak隔離へ渡す。共有reaper自体の喪失は例外として全体停止する。診断上の失敗と実際のworker/ownerのfence失敗を混同しない。
+
 #### 0-S-2. 状態所有者表
 
 | 資源 / 状態 | 正本所有者 | 補助所有者 | 禁止事項 |
