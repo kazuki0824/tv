@@ -878,8 +878,9 @@ fn record_dvr_notifier_cleanup_control_failure(
     handle: AidlObjectHandle,
     error: HalError,
 ) {
+    // この入口は診断専用。ownerのfence不成立とcleanup enqueue失敗は
+    // 各正本入口が別途判定する。
     record_superseded_dvr_notifier_cleanup_failure(context, handle, error);
-    mark_dvr_notifier_service_critical(context);
 }
 
 fn fence_dvr_notifier_owner_after_cleanup_failure(
@@ -898,6 +899,9 @@ fn fence_dvr_notifier_owner_after_cleanup_failure(
                 format!("Drop漏れ検出後の後片付けに失敗しました: {status:?}"),
             ),
         );
+        if !dvr_notifier_owner_generation_is_fenced(context, handle) {
+            mark_dvr_notifier_service_critical(context);
+        }
         return;
     }
     if !dvr_notifier_owner_generation_is_fenced(context, handle) {
@@ -909,6 +913,7 @@ fn fence_dvr_notifier_owner_after_cleanup_failure(
                 "Drop後の後片付け後もowner世代が有効です",
             ),
         );
+        mark_dvr_notifier_service_critical(context);
     }
 }
 
@@ -916,29 +921,35 @@ fn enqueue_cleanup_retry_after_notifier_reap(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) {
-    match context.cleanup_dependency_for_handle(handle) {
-        Ok(_) => {
+    use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+    match context.cleanup_retry_disposition(handle) {
+        Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
             if let Err(error) = context.enqueue_cleanup_retry(handle) {
+                // enqueueの正本所有者が既に全体停止の必要性を判定する。
                 record_dvr_notifier_cleanup_control_failure(context, handle, error);
             }
         }
-        Err(dependency_error) => match context.cleanup_is_terminal_for_handle(handle) {
-            Ok(true) => {}
-            Ok(false) => {
-                record_dvr_notifier_cleanup_control_failure(context, handle, dependency_error);
-            }
-            Err(terminal_error) => {
-                record_dvr_notifier_cleanup_control_failure(
-                    context,
-                    handle,
-                    compose_primary_cleanup_failure(
-                        "DVR notifierの後片付け依存関係を解決できません",
-                        dependency_error,
-                        terminal_error,
-                    ),
-                );
-            }
-        },
+        Ok(
+            AidlObjectCleanupDisposition::Stale
+            | AidlObjectCleanupDisposition::Closed
+            | AidlObjectCleanupDisposition::NoCleanupPending,
+        ) => {}
+        Ok(AidlObjectCleanupDisposition::Quarantined) => {
+            // 論理隔離は物理回収の完了証拠ではない。
+            record_dvr_notifier_cleanup_control_failure(
+                context,
+                handle,
+                HalError::cleanup_failed(
+                    "DVR notifier cleanup",
+                    "隔離済みobjectの物理回収完了を証明できません",
+                ),
+            );
+            mark_dvr_notifier_service_critical(context);
+        }
+        Err(error) => {
+            record_dvr_notifier_cleanup_control_failure(context, handle, error);
+            mark_dvr_notifier_service_critical(context);
+        }
     }
 }
 
@@ -994,7 +1005,7 @@ fn finish_reaped_dvr_status_notifier(
         Ok(()) if restart_requested => {
             if let Err(error) = start_dvr_status_notifier(&context, handle) {
                 record_superseded_dvr_notifier_cleanup_failure(&context, handle, error);
-                mark_dvr_notifier_service_critical(&context);
+                fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
             }
         }
         Ok(()) => {}
@@ -1135,10 +1146,9 @@ pub(crate) fn finish_dvr_status_notifier_cleanup(
             "DVR状態通知ワーカーの後片付け",
             "ワーカー開始処理の完了待ちです",
         )),
-        DvrStatusNotifierStopDisposition::ReaperPending => Err(HalError::cleanup_failed(
-            "DVR状態通知ワーカーの後片付け",
-            "ワーカー所有権をDVR通知回収処理へ移管しました",
-        )),
+        DvrStatusNotifierStopDisposition::ReaperPending => Err(HalError::WorkerCleanupFailed {
+            kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Executing,
+        }),
     }
 }
 
@@ -1345,6 +1355,30 @@ mod tests {
             *state.playback_statuses.lock().unwrap(),
             vec![PlaybackStatus::SPACE_ALMOST_EMPTY]
         );
+    }
+
+    #[test]
+    fn notifier_diagnostic_record_does_not_disable_healthy_dvr() {
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        record_dvr_notifier_cleanup_control_failure(
+            &context,
+            handle,
+            HalError::cleanup_failed("DVR notifier", "診断のみの失敗"),
+        );
+        assert!(!failure_state.snapshot().service_critical);
+        assert_eq!(
+            context.cleanup_retry_disposition(handle),
+            Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::NoCleanupPending)
+        );
+    }
+
+    #[test]
+    fn notifier_reap_without_cleanup_obligation_keeps_service_ready() {
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        enqueue_cleanup_retry_after_notifier_reap(&context, handle);
+        assert!(!failure_state.snapshot().service_critical);
     }
 
     #[test]
