@@ -593,6 +593,16 @@ impl RuntimeObjectTable {
         self.entry_checked_any(object_id, generation)?;
         let mut targets = self.descendant_object_keys(object_id, generation);
         targets.push((object_id, generation));
+        // 親ownerのcloseも子を物理cleanupするため、対象から親へ遡る。
+        // 不正な親循環で停止しないよう登録object数で探索を制限する。
+        let mut parent = self.entry_checked_any(object_id, generation)?.owner;
+        for _ in 0..self.entries.len() {
+            let Some((_, parent_id, parent_generation)) = parent.referenced_object() else {
+                break;
+            };
+            targets.push((parent_id, parent_generation));
+            parent = self.entry_checked_any(parent_id, parent_generation)?.owner;
+        }
         Ok(targets.into_iter().any(|(id, gen)| {
             self.object_close_txn.has_active_cleanup_attempt(id, gen)
         }))
@@ -977,6 +987,43 @@ mod qg_object_lifecycle_tests {
         assert!(table
             .has_active_cleanup_attempt_in_cascade(AidlObjectId(100), AidlObjectGeneration(1))
             .expect("親の隔離時に子の実行中cleanupを検出"));
+    }
+
+    #[test]
+    fn active_parent_cleanup_blocks_child_drop_leak_quarantine() {
+        let mut table = RuntimeObjectTable::default();
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                100,
+                100,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("親Demux登録");
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                101,
+                101,
+                RuntimeOwnerRelation::Demux {
+                    demux: AidlObjectId(100),
+                    generation: AidlObjectGeneration(1),
+                },
+            ))
+            .expect("子Filter登録");
+        let (_, authority) = table
+            .begin_close_cascade_with_cleanup_authority(
+                AidlObjectId(100),
+                AidlObjectGeneration(1),
+                CleanupStep::StopWorker,
+            )
+            .expect("親Demux close権限");
+        table
+            .begin_close_cleanup_attempt(AidlObjectId(100), AidlObjectGeneration(1), authority)
+            .expect("親Demux cleanup実行開始");
+        assert!(table
+            .has_active_cleanup_attempt_in_cascade(AidlObjectId(101), AidlObjectGeneration(1))
+            .expect("親のcleanup権限を子の隔離で検出する"));
     }
 
     #[test]
