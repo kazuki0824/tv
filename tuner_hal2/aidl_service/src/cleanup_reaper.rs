@@ -109,6 +109,20 @@ impl CleanupReaperQueue {
         Ok(())
     }
 
+    /// 呼出し元にreaper所有者を保持した型付き失敗として通知する。
+    /// WorkerLockPoisonedのみでは異なるworkerとの識別ができないため、この正規owner境界で写像する。
+    fn classify_enqueue_error(error: HalError) -> HalError {
+        if matches!(error.primary_error(), HalError::WorkerLockPoisoned { .. }) {
+            HalError::composed_failure(
+                "cleanup reaper共有終端状態の取得に失敗しました",
+                HalError::WorkerReaperUnavailable,
+                error,
+            )
+        } else {
+            error
+        }
+    }
+
     pub(crate) fn enqueue(
         &self,
         handle: AidlObjectHandle,
@@ -122,16 +136,22 @@ impl CleanupReaperQueue {
                 "cleanup reaperの正規ownerが設定されていません",
             )
         })?;
-        if runtime.pending_value(&key)?.is_some() {
+        if runtime
+            .pending_value(&key)
+            .map_err(Self::classify_enqueue_error)?
+            .is_some()
+        {
             return Ok(());
         }
-        runtime.enqueue_reserved(
-            CleanupJob {
-                handle,
-                registered_at: Instant::now(),
-            },
-            [(key, dependency)],
-        )
+        runtime
+            .enqueue_reserved(
+                CleanupJob {
+                    handle,
+                    registered_at: Instant::now(),
+                },
+                [(key, dependency)],
+            )
+            .map_err(Self::classify_enqueue_error)
     }
 }
 
@@ -283,6 +303,25 @@ pub(crate) fn start_cleanup_reaper(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn shared_reaper_terminal_worker_failure_has_typed_global_owner() {
+        let original = HalError::WorkerLockPoisoned {
+            owner: "ワーカー回収終端",
+            lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
+        };
+        let error = CleanupReaperQueue::classify_enqueue_error(original.clone());
+        assert!(matches!(
+            error.primary_error(),
+            HalError::WorkerReaperUnavailable
+        ));
+        assert_eq!(error.cleanup_error(), Some(&original));
+        let local = HalError::cleanup_failed("DVR", "local");
+        assert_eq!(
+            CleanupReaperQueue::classify_enqueue_error(local.clone()),
+            local
+        );
+    }
 
     #[test]
     fn poisoned_owner_slot_rejects_enqueue_with_identity() {
