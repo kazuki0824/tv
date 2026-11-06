@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - "tis/**"
+      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-robolectric-ci.yml"
   push:
     branches: [main]
     paths:
       - "tis/**"
+      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-robolectric-ci.yml"
 
 permissions:

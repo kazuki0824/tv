@@ -216,6 +216,7 @@ class FailureCodec : ShadowMediaCodec() {
 @Implements(MediaCas::class)
 class FailureMediaCas {
     private var invalidated = false
+    private var closed = false
 
     @RealObject private lateinit var mediaCas: MediaCas
 
@@ -256,8 +257,10 @@ class FailureMediaCas {
 
     @Implementation
     fun close() {
+        if (closed) return
         Faults.pluginCloses++
         if (Faults.pluginFailure) error("underlying plugin close failed")
+        closed = true
     }
 
     fun call(operation: Operation) {
