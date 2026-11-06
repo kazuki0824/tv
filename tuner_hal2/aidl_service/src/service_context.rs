@@ -1144,14 +1144,12 @@ mod lock_poison_tests {
             demux.generation(),
         );
         let failure_state = runtime.failure_state();
-        let context = AidlServiceContext::from_shared_runtime_for_test(
-            Arc::new(Mutex::new(runtime)),
-        );
+        let context =
+            AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
         assert!(context.enqueue_cleanup_retry(handle).is_err());
         assert_eq!(context.cleanup_is_terminal_for_handle(handle), Ok(true));
         assert!(!failure_state.snapshot().service_critical);
     }
-
 
     fn poison<T>(lock: &PoisonTrackedMutex<T>) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
