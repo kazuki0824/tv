@@ -741,17 +741,15 @@ fn transfer_frontend_replacement_wait_failure(
             } else {
                 completion_public_error.clone()
             };
-            if record_aborted_frontend_replacement_after_reap(
+            if let Err(record_error) = record_aborted_frontend_replacement_after_reap(
                 cleanup_diagnostic_sink,
                 target,
                 kind,
                 generation,
                 &outcomes,
                 completion_error,
-            )
-            .is_err()
-            {
-                TunerServiceRuntime::mark_shared_service_critical(runtime);
+            ) {
+                eprintln!("frontend reaper終了診断の記録に失敗しました: {record_error:?}");
             }
         }),
     };
@@ -4097,8 +4095,8 @@ fn handle_frontend_worker_reaper_deadline(
         report,
         Some(public_error),
     );
-    if record_frontend_cleanup_diagnostic(&diagnostic_sink, record).is_err() {
-        TunerServiceRuntime::mark_shared_service_critical(&runtime);
+    if let Err(record_error) = record_frontend_cleanup_diagnostic(&diagnostic_sink, record) {
+        eprintln!("frontend reaper期限診断の記録に失敗しました: {record_error:?}");
     }
 }
 

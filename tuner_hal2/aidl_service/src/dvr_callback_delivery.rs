@@ -878,8 +878,8 @@ fn record_dvr_notifier_cleanup_control_failure(
     handle: AidlObjectHandle,
     error: HalError,
 ) {
-    record_superseded_dvr_notifier_cleanup_failure(context, handle, error);
-    mark_dvr_notifier_service_critical(context);
+    record_superseded_dvr_notifier_cleanup_failure(context, handle, error.clone());
+    context.isolate_failed_cleanup_retry(handle, &error);
 }
 
 fn fence_dvr_notifier_owner_after_cleanup_failure(
@@ -994,7 +994,7 @@ fn finish_reaped_dvr_status_notifier(
         Ok(()) if restart_requested => {
             if let Err(error) = start_dvr_status_notifier(&context, handle) {
                 record_superseded_dvr_notifier_cleanup_failure(&context, handle, error);
-                mark_dvr_notifier_service_critical(&context);
+                fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
             }
         }
         Ok(()) => {}

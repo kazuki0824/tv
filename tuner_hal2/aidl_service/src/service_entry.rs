@@ -696,6 +696,31 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
     outcomes
 }
 
+/// 既存ServiceFailureStateだけを観測し、fail-stop確定後にinitへ再起動を委譲する。
+fn service_requires_restart(failure_state: &maleicacid_tuner_hal2_service_runtime::ServiceFailureState) -> bool {
+    failure_state.snapshot().service_critical
+}
+
+fn start_service_critical_monitor(
+    failure_state: maleicacid_tuner_hal2_service_runtime::ServiceFailureState,
+) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("tuner-hal2-fatal-monitor".to_string())
+        .spawn(move || loop {
+            if service_requires_restart(&failure_state) {
+                let snapshot = failure_state.snapshot();
+                log::error!(
+                    "ServiceCriticalを検出したためHALプロセスを終了します: runtime_lock_poison_count={} diagnostic_counter_saturated={}",
+                    snapshot.runtime_lock_poison_count,
+                    snapshot.diagnostic_counter_saturated
+                );
+                std::process::exit(1);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        })?;
+    Ok(())
+}
+
 pub fn run_service() {
     binder::ProcessState::start_thread_pool();
     let runtime = match TunerServiceRuntime::try_new() {
@@ -710,6 +735,16 @@ pub fn run_service() {
         log::error!("Tuner service startup failed: phase=probe-reset error={error:?}");
         std::process::exit(1);
     }
+    let failure_state = {
+        let runtime_handle = context.runtime();
+        match TunerServiceRuntime::lock_shared(runtime_handle.as_ref(), "ServiceCritical監視の初期化") {
+            Ok(runtime) => runtime.failure_state(),
+            Err(error) => {
+                log::error!("ServiceCritical監視の初期化に失敗しました: {error:?}");
+                std::process::exit(1);
+            }
+        }
+    };
     let tuner = match TunerAidlService::from_context(context) {
         Ok(tuner) => tuner,
         Err(error) => {
@@ -718,6 +753,10 @@ pub fn run_service() {
         }
     };
     let binder = BnTuner::new_binder(tuner, BinderFeatures::default());
+    if let Err(error) = start_service_critical_monitor(failure_state) {
+        log::error!("ServiceCritical監視スレッドの起動に失敗しました: {error:?}");
+        std::process::exit(1);
+    }
     if let Err(error) = binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()) {
         log::error!(
             "Tuner serviceの起動に失敗しました: 段階=binder-register service={TUNER_SERVICE_NAME} エラー={error:?}"
@@ -730,6 +769,25 @@ pub fn run_service() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_critical_monitor_observes_existing_failure_owner() {
+        let mut runtime = TunerServiceRuntime::new();
+        let state = runtime.failure_state();
+        assert!(!service_requires_restart(&state));
+        runtime.mark_service_critical();
+        assert!(service_requires_restart(&state));
+    }
+
+    #[test]
+    fn init_is_configured_to_restart_fatal_hal_exit() {
+        let rc = include_str!("../../init/android.hardware.tv.tuner-service.maleicacid2.rc");
+        assert!(rc.contains("service vendor.maleicacid-tuner2 "));
+        assert!(rc.contains("class hal"));
+        assert!(!rc.lines().any(|line| line.trim() == "oneshot"));
+        assert!(!rc.lines().any(|line| line.trim_start().starts_with("critical ")));
+    }
+
     use maleicacid_tuner_hal2_device::dvb::DtvPropertyBuffer;
 
     #[test]

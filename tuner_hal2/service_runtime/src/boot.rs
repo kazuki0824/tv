@@ -2899,22 +2899,14 @@ impl TunerServiceRuntime {
         phase: DvrPostCommitNotificationPhase,
         primary: HalError,
     ) -> Result<(), HalError> {
-        let service_critical = phase == DvrPostCommitNotificationPhase::StatusNotifierStart
-            && self
-                .dvr_status_metadata_snapshot_for_aidl_object(object_id, generation)
-                .map(|snapshot| snapshot.is_playback)
-                .unwrap_or(true);
+        // callbackの失敗は対象DVRをunhealthyにする。サービス全体の整合性破壊ではない。
         self.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::dvr(
             object_id,
             generation,
             CallbackDeliveryFailurePhase::PostCommitNotification,
             phase,
             primary,
-        ))?;
-        if service_critical {
-            self.mark_service_critical();
-        }
-        Ok(())
+        ))
     }
 
     pub fn finish_callback_delivery_failure_use_case(
