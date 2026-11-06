@@ -87,7 +87,8 @@ pub fn aidl_object_closeable(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AidlObjectCleanupDisposition {
     Stale,
-    Terminal,
+    Closed,
+    Quarantined,
     RequiresIsolation,
 }
 
@@ -110,9 +111,8 @@ pub fn aidl_object_cleanup_disposition(
         ));
     }
     Ok(match entry.lifecycle {
-        RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {
-            AidlObjectCleanupDisposition::Terminal
-        }
+        RuntimeObjectLifecycle::Closed => AidlObjectCleanupDisposition::Closed,
+        RuntimeObjectLifecycle::Quarantined => AidlObjectCleanupDisposition::Quarantined,
         RuntimeObjectLifecycle::Prepared
         | RuntimeObjectLifecycle::Live
         | RuntimeObjectLifecycle::Closing { .. }
@@ -324,7 +324,7 @@ mod closeable_lifecycle_tests {
                 AidlObjectGeneration(1),
                 AidlObjectKind::Filter,
             ),
-            Ok(AidlObjectCleanupDisposition::Terminal)
+            Ok(AidlObjectCleanupDisposition::Quarantined)
         );
     }
 
