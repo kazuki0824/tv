@@ -1,5 +1,9 @@
 # 2026-11-06 CTSにより判明したTuner HAL全体停止条件と再起動経路の是正
 
+- 共有cleanup reaperの`WorkerReaperPending`/`WorkerReaperReceiver`汚染およびworker終端エラーを、型付きでサービス全体の失敗に分類する。reaper pending予約の更新不能は共有owner不整合として全体停止する。reaper期限到達時は論理`Quarantined`だけで回収成功と判定せず、物理cleanup結果を確認する。
+- 正本`ObjectCloseTxn`のstep結果に基づき、LNB drop-leak記録だけの失敗を物理回収失敗から区別する。backend/worker/artifact/runtime cleanupが完了していなければfail-closedを維持する。診断記録失敗を安全性に必要なcleanupの失敗と混同しない。
+- CIのLoom専用jobを依存ライブラリの要求するRust 1.95で実行するよう更新し、他のhost workspaceのRust 1.81指定は維持。Rust quality CI、host CIとLoomの検証結果はGitHub Checksで追跡する。
+
 - cleanup再試行の対象を失効済み・論理終端・局所隔離必要に型付き分類し、`Err(_)`の一括無視を撤廃。論理`Quarantined`を物理cleanup成功の証拠としないよう変更し、物理cleanupと診断書き込みの結果を別々に保持する。物理cleanup失敗時はfail-closed、診断のみの失敗では局所障害に留める。
 - 独立した無管理監視スレッドを廃止し、既存`WorkerRuntime::spawn_observed`を利用。サービス存続中はworker handleを保持し、Binder thread pool終了時には停止・回収する。
 - Frontend診断失敗は既存failure counterと標準エラー出力で保持し、オブジェクト状態分類の単体テストを追加。initによる実再起動・CTS/VTS・Binder再接続は未検証。
