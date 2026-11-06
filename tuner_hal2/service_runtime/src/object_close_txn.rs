@@ -1096,6 +1096,17 @@ impl ObjectCloseTxn {
         })
     }
 
+    /// 現在進行中の物理cleanup実行権限を読み取る。世代を跨いだ一致は許可しない。
+    pub(crate) fn has_active_cleanup_attempt(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> bool {
+        self.obligations.get(&object_id).is_some_and(|obligation| {
+            obligation.generation == generation && obligation.active_attempt.is_some()
+        })
+    }
+
     pub(crate) fn attempt_is_current(
         &self,
         object_id: AidlObjectId,
@@ -1449,6 +1460,19 @@ pub fn quarantine_object_drop_leak_use_case(
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
 ) -> Result<ObjectDropLeakQuarantinePlan, HalError> {
+    // 通常closeはruntime lock外で物理cleanupを行う。ここで進行中の
+    // ObjectCloseTxnの実行権限を奪って別のcleanupを走らせてはならない。
+    // 確認とquarantine遷移は同じruntime lock内で実行される。
+    if runtime
+        .object_table()
+        .has_active_cleanup_attempt_in_cascade(object_id, generation)
+        .map_err(object_table_error_to_hal)?
+    {
+        return Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "ObjectCloseTxn cleanup already executing; parallel quarantine is unsafe",
+        ));
+    }
     let cascade_entries = quarantine_object_cascade(runtime, object_id, generation)?;
     let artifact_cleanup_commands =
         artifact_cleanup_commands_for_drop_leak_plan(runtime, &cascade_entries);
@@ -1819,6 +1843,44 @@ mod tests {
         let _attempt = retry
             .begin_cleanup_attempt(&mut runtime)
             .expect("dropped authority leaves the obligation reissuable");
+    }
+
+    #[test]
+    fn drop_leak_quarantine_cannot_preempt_an_active_close_cleanup() {
+        let mut runtime = runtime_with_filter_for_close_attempt(30);
+        let first = begin_filter_close_plan(&mut runtime, 30)
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("既存closeがcleanup実行権限を獲得する");
+        assert!(quarantine_object_drop_leak_use_case(
+            &mut runtime,
+            AidlObjectId(30),
+            AidlObjectGeneration(1)
+        )
+        .is_err());
+        assert!(matches!(
+            runtime.object_table().entry(AidlObjectId(30)).unwrap().lifecycle,
+            crate::RuntimeObjectLifecycle::Closing { .. }
+        ));
+
+        let result = finish_object_close_use_case(
+            &mut runtime,
+            first.completion,
+            Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::ReleaseBackend,
+                HalError::cleanup_failed("テスト", "先行cleanup失敗"),
+            )),
+        );
+        assert!(result.is_err());
+        quarantine_object_drop_leak_use_case(
+            &mut runtime,
+            AidlObjectId(30),
+            AidlObjectGeneration(1),
+        )
+        .expect("先行cleanup実行権限解放後は隔離できる");
+        assert_eq!(
+            runtime.object_table().entry(AidlObjectId(30)).unwrap().lifecycle,
+            crate::RuntimeObjectLifecycle::Quarantined
+        );
     }
 
     #[test]

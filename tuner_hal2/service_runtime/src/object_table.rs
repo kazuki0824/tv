@@ -583,6 +583,21 @@ impl RuntimeObjectTable {
         Ok(changed)
     }
 
+    /// rootと子孫のどれかに既存ObjectCloseTxnの実行中cleanupがあるかを判定する。
+    /// drop-leak隔離はこの検査を通過した場合だけ外部副作用を開始できる。
+    pub(crate) fn has_active_cleanup_attempt_in_cascade(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<bool, RuntimeObjectTableError> {
+        self.entry_checked_any(object_id, generation)?;
+        let mut targets = self.descendant_object_keys(object_id, generation);
+        targets.push((object_id, generation));
+        Ok(targets.into_iter().any(|(id, gen)| {
+            self.object_close_txn.has_active_cleanup_attempt(id, gen)
+        }))
+    }
+
     pub fn quarantine_cascade(
         &mut self,
         object_id: AidlObjectId,
@@ -910,6 +925,9 @@ mod qg_object_lifecycle_tests {
         let _attempt = table
             .begin_close_cleanup_attempt(AidlObjectId(100), AidlObjectGeneration(1), authority)
             .expect("cleanup実行権限を取得");
+        assert!(table
+            .has_active_cleanup_attempt_in_cascade(AidlObjectId(100), AidlObjectGeneration(1))
+            .expect("cleanupの実行中判定が成功する"));
         let quarantined = table
             .quarantine_cascade(AidlObjectId(100), AidlObjectGeneration(1))
             .expect("既存のquarantineは実行中cleanupを理由に拒否しない");
@@ -922,6 +940,43 @@ mod qg_object_lifecycle_tests {
             table.entry(AidlObjectId(101)).unwrap().lifecycle,
             RuntimeObjectLifecycle::Quarantined
         );
+    }
+
+    #[test]
+    fn active_child_cleanup_is_visible_from_owner_cascade() {
+        let mut table = RuntimeObjectTable::default();
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                100,
+                100,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("親Demux登録");
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                101,
+                101,
+                RuntimeOwnerRelation::Demux {
+                    demux: AidlObjectId(100),
+                    generation: AidlObjectGeneration(1),
+                },
+            ))
+            .expect("子Filter登録");
+        let (_, authority) = table
+            .begin_close_cascade_with_cleanup_authority(
+                AidlObjectId(101),
+                AidlObjectGeneration(1),
+                CleanupStep::StopWorker,
+            )
+            .expect("子Filterのclose実行権限");
+        table
+            .begin_close_cleanup_attempt(AidlObjectId(101), AidlObjectGeneration(1), authority)
+            .expect("子Filterのcleanup実行を開始");
+        assert!(table
+            .has_active_cleanup_attempt_in_cascade(AidlObjectId(100), AidlObjectGeneration(1))
+            .expect("親の隔離時に子の実行中cleanupを検出"));
     }
 
     #[test]
