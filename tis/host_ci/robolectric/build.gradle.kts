@@ -64,6 +64,8 @@ val prepareRobolectricSdk by tasks.registering(Sync::class) {
 }
 
 tasks.withType<Test>().configureEach {
+    // JNI libraryのclassloader所有権を試験class間で共有しない。
+    forkEvery = 1
     dependsOn(prepareRobolectricSdk)
     systemProperty("robolectric.offline", "true")
     systemProperty(

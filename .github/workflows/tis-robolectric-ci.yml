@@ -63,6 +63,7 @@ jobs:
             --tests com.maleicacid.tvinput.tis.FrameworkFilterCallbackLockTest \
             --tests com.maleicacid.tvinput.tis.ProgramProviderObserverTest \
             --tests com.maleicacid.tvinput.tis.ProgramCleanupProviderTest \
+            --tests com.maleicacid.tvinput.tis.TisReviewBoundaryTest \
             --tests com.maleicacid.tvinput.tis.PlaybackSurfaceWaitTest \
             --tests com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest \
             --tests com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest \
@@ -78,7 +79,7 @@ jobs:
           from pathlib import Path
 
           report = Path("tis/host_ci/robolectric/build/test-results/testDebugUnitTest/TEST-com.maleicacid.tvinput.tis.FrameworkTunerScanBoundaryTest.xml")
-          for name, expected in (("ControllerSerialExecutorReviewBoundaryTest", 7), ("FrameworkFilterCallbackLockTest", 2), ("ProgramProviderObserverTest", 1), ("PlaybackSurfaceWaitTest", 2), ("ProgramCleanupProviderTest", 2)):
+          for name, expected in (("ControllerSerialExecutorReviewBoundaryTest", 7), ("FrameworkFilterCallbackLockTest", 2), ("ProgramProviderObserverTest", 1), ("PlaybackSurfaceWaitTest", 2), ("ProgramCleanupProviderTest", 2), ("TisReviewBoundaryTest", 8)):
               migrated = ET.parse(report.with_name(f"TEST-com.maleicacid.tvinput.tis.{name}.xml")).getroot()
               assert migrated.get("tests") == str(expected), migrated.attrib
               assert migrated.get("failures") == "0" and migrated.get("errors") == "0", migrated.attrib
