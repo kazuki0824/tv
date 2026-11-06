@@ -4,11 +4,18 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentInterface
 import android.content.ContentResolver
+import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
 import android.database.MatrixCursor
+import android.media.tv.tuner.Tuner
 import android.net.Uri
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
@@ -18,6 +25,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35], shadows = [ProgramCleanupProviderTest.RejectedTuner::class])
 class ProgramCleanupProviderTest {
     // 実workerとContentResolverでProvider停止・部分削除・retryを連続して検証する。
     @Suppress("LongMethod", "CyclomaticComplexMethod")
@@ -67,17 +76,7 @@ class ProgramCleanupProviderTest {
                     }
                 }
             } as ContentInterface
-        // Android固定jarのwrapperだけを構築し、Binder/native初期化をホスト境界で省く。
-        val unsafe =
-            sun.misc.Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as sun.misc.Unsafe
-        val resolver = unsafe.allocateInstance(Class.forName("android.content.ContentResolver\$1")) as ContentResolver
-        ContentResolver::class.java.getDeclaredField("mWrapped").apply {
-            isAccessible = true
-            set(resolver, provider)
-        }
+        val resolver = ContentResolver.wrap(provider)
         val pendingReads = AtomicInteger()
         val preferences =
             Proxy.newProxyInstance(
@@ -181,7 +180,7 @@ class ProgramCleanupProviderTest {
             check(resumed.await(5, TimeUnit.SECONDS))
             worker.submit {}.get(5, TimeUnit.SECONDS)
             scanWorker.submit {}.get(5, TimeUnit.SECONDS)
-            // cleanup成功後は再要求なしで実scanへ進む。hostのAndroid Tuner constructorは未提供。
+            // cleanup成功後は再要求なしで実scanへ進み、明示注入したTuner接続拒否で終端する。
             val attempted = ChannelScanManager.currentState() as ScanState.Failed
             check(attempted.generation == retriedSetup && attempted.message != "Program cleanupに失敗しました")
             check(rows.isEmpty() && committed && ProgramUpgradeCleanup.ensure(cleanup))
@@ -259,16 +258,7 @@ class ProgramCleanupProviderTest {
                     }
                 }
             } as ContentInterface
-        val unsafe =
-            sun.misc.Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as sun.misc.Unsafe
-        val resolver = unsafe.allocateInstance(Class.forName("android.content.ContentResolver\$1")) as ContentResolver
-        ContentResolver::class.java
-            .getDeclaredField("mWrapped")
-            .apply { isAccessible = true }
-            .set(resolver, provider)
+        val resolver = ContentResolver.wrap(provider)
         val context =
             object : ContextWrapper(null) {
                 override fun getContentResolver() = resolver
@@ -313,5 +303,18 @@ class ProgramCleanupProviderTest {
         val second = writer.upsertPreparedPrograms(publication)
         check(second.failures.isEmpty() && second.inserted == 1)
         check(operations.single().existingProgramId == null)
+    }
+
+    @Implements(Tuner::class)
+    class RejectedTuner {
+        @Implementation(methodName = "__constructor__")
+        @Suppress("UNUSED_PARAMETER")
+        fun construct(
+            context: Context,
+            tvInputSessionId: String?,
+            useCase: Int,
+        ) {
+            error("injected tuner connection rejection")
+        }
     }
 }
