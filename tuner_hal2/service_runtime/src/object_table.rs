@@ -591,22 +591,6 @@ impl RuntimeObjectTable {
         self.entry_checked_any(object_id, generation)?;
         let mut targets = self.descendant_object_keys(object_id, generation);
         targets.push((object_id, generation));
-        // 正本ObjectCloseTxnの実行中権限を保有したowner/descendantがいる場合、
-        // 先にquarantineを公開すると、実行中cleanupと二重で外部副作用を起こす。
-        // 全対象を先に検査し、一つでも競合するなら状態は一切変更しない。
-        for (target_id, target_generation) in &targets {
-            if self
-                .object_close_txn
-                .has_active_cleanup_attempt(*target_id, *target_generation)
-            {
-                return Err(RuntimeObjectTableError::InvalidLifecycle {
-                    object_id: *target_id,
-                    lifecycle: self
-                        .entry_checked_any(*target_id, *target_generation)?
-                        .lifecycle,
-                });
-            }
-        }
         let mut changed = Vec::with_capacity(targets.len());
         for (target_id, target_generation) in targets {
             if let Some(entry) =
@@ -895,7 +879,7 @@ mod qg_object_lifecycle_tests {
     }
 
     #[test]
-    fn quarantine_rejects_concurrent_cleanup_attempt_without_state_mutation() {
+    fn quarantine_during_active_cleanup_restores_existing_behavior() {
         let mut table = RuntimeObjectTable::default();
         table
             .insert(entry(
@@ -923,37 +907,21 @@ mod qg_object_lifecycle_tests {
                 CleanupStep::StopWorker,
             )
             .expect("close権限を取得");
-        let attempt = table
+        let _attempt = table
             .begin_close_cleanup_attempt(AidlObjectId(100), AidlObjectGeneration(1), authority)
             .expect("cleanup実行権限を取得");
-        assert!(table
+        let quarantined = table
             .quarantine_cascade(AidlObjectId(100), AidlObjectGeneration(1))
-            .is_err());
+            .expect("既存のquarantineは実行中cleanupを理由に拒否しない");
+        assert_eq!(quarantined.len(), 2);
         assert_eq!(
             table.entry(AidlObjectId(100)).unwrap().lifecycle,
-            RuntimeObjectLifecycle::Closing {
-                step: CleanupStep::StopWorker
-            }
+            RuntimeObjectLifecycle::Quarantined
         );
         assert_eq!(
             table.entry(AidlObjectId(101)).unwrap().lifecycle,
-            RuntimeObjectLifecycle::Closing {
-                step: CleanupStep::StopWorker
-            }
+            RuntimeObjectLifecycle::Quarantined
         );
-        table
-            .finish_close_cleanup_attempt(
-                AidlObjectId(100),
-                AidlObjectGeneration(1),
-                attempt,
-                CloseCleanupAttemptOutcome::Pending {
-                    step: CleanupStep::ReleaseBackend,
-                },
-            )
-            .expect("既存実行権限の完了を受理");
-        assert!(table
-            .quarantine_cascade(AidlObjectId(100), AidlObjectGeneration(1))
-            .is_ok());
     }
 
     #[test]
