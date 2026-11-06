@@ -2149,20 +2149,20 @@ class PlaybackFilterAdmissionTest {
             )
         }
 
-        private val sessionCaptionExecutors = mutableListOf<LifecycleSerialExecutor>()
+        private val audioSessions = mutableListOf<MaleicacidLiveSession>()
 
-        // Android Session通知と本番Session→Controller→Pipelineを通し、字幕native初期化だけを省く。
+        // 正規生成したSessionとControllerへ、試験中のPipelineを接続する。
         // 同じSessionの選択・通知・字幕寿命を一つのfixtureとして初期化する。
         @Suppress("LongMethod")
         fun audioSession(
             selection: TunerController.AvStreamSelection,
             next: TunerController.AvStreamSelection,
         ): MaleicacidLiveSession {
-            val unsafeType = Class.forName("sun.misc.Unsafe")
-            val unsafe = unsafeType.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
-            val allocate = unsafeType.getMethod("allocateInstance", Class::class.java)
-            val session = allocate.invoke(unsafe, MaleicacidLiveSession::class.java) as MaleicacidLiveSession
-            val controller = allocate.invoke(unsafe, TunerController::class.java) as TunerController
+            val context = RuntimeEnvironment.getApplication()
+            val session = MaleicacidLiveSession(context, context, "admission-test", "audio-switch-fixture")
+            audioSessions += session
+            val controller = ReflectionHelpers.getField<TunerController>(session, "tunerController")
+            ReflectionHelpers.getField<PlaybackPipeline>(controller, "playbackPipeline").close()
             ReflectionHelpers.setField(controller, "currentTune", ReflectionHelpers.getField<Any>(pipeline, "activeChannel"))
             ReflectionHelpers.setField(controller, "tuner", tuner)
             ReflectionHelpers.setField(controller, "playbackPipeline", pipeline)
@@ -2224,23 +2224,8 @@ class PlaybackFilterAdmissionTest {
                 )
             ReflectionHelpers.setField(session, "playbackState", PlaybackStartState.Started(signature, 7L))
             for (name in listOf("captionController", "superimposeController")) {
-                val caption = allocate.invoke(unsafe, AribCaptionController::class.java) as AribCaptionController
-                ReflectionHelpers.setField(caption, "released", AtomicBoolean(true))
-                ReflectionHelpers.setField(caption, "pesAdmissionLock", Any())
-                val captionExecutor = LifecycleSerialExecutor("closed audio-switch caption fixture")
-                sessionCaptionExecutors += captionExecutor
-                ReflectionHelpers.setField(caption, "executor", captionExecutor)
-                ReflectionHelpers.setField(session, name, caption)
+                ReflectionHelpers.getField<AribCaptionController>(session, name).close()
             }
-            TvInputService.Session::class.java
-                .getDeclaredField("mLock")
-                .apply { isAccessible = true }
-                .set(session, Any())
-            TvInputService.Session::class.java
-                .getDeclaredField(
-                    "mPendingActions",
-                ).apply { isAccessible = true }
-                .set(session, mutableListOf<Runnable>())
             return session
         }
 
@@ -2462,7 +2447,7 @@ class PlaybackFilterAdmissionTest {
                 .invoke(pipeline, *arguments)
 
         override fun close() {
-            sessionCaptionExecutors.forEach { it.shutdownNow() }
+            audioSessions.forEach { it.onRelease() }
             // pipelineから切り離したMediaSyncはfixtureが解放する。
             if (availabilitySync != null) ReflectionHelpers.setField(pipeline, "mediaSync", null)
             try {
