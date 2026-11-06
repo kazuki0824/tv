@@ -498,7 +498,7 @@ class PlaybackFailureCallbacksTest {
                 PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM,
             )) {
                 val fixture = Fixture(waiting, false)
-                fixture.invoke("handleAudioFailure", reason, "audio output/configuration/deadline failure", false)
+                fixture.invoke("handleAudioFailure", reason, "音声出力・設定・期限の失敗", false)
                 fixture.checkTerminalCleanupFailure()
             }
             val fixture = Fixture(waiting, false)
@@ -528,8 +528,8 @@ class PlaybackFailureCallbacksTest {
             // 開始例外後の回収でも世代を失効させるため、固定増分ではなく返却された現世代を照合する。
             check(generation > 7L && generation == fixture.pipeline.currentPlaybackGenerationForTest())
             // 開始失敗とcatch内再停止の失敗が、別々の診断として呼出元へ返る。
-            check(diagnostics.count { it.contains("injected filter") } == 2) {
-                "switchAudio=$switchAudio diagnostics=$diagnostics"
+            check(diagnostics.count { it.contains("失敗注入対象フィルター") } == 2) {
+                "音声切替=$switchAudio 診断=$diagnostics"
             }
             check(fixture.failures.isEmpty() && fixture.notifications == 0)
             val next =
@@ -635,7 +635,7 @@ class PlaybackFailureCallbacksTest {
             fixture.invoke(
                 "handleAudioFailure",
                 PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                "audio output failure",
+                "音声出力失敗",
                 audioOnly,
             )
             check(fixture.notifications == 1 && fixture.state is PlaybackStartState.Failed)
@@ -745,10 +745,10 @@ class PlaybackFailureCallbacksTest {
                 live.refresh()
                 check(live.state() == if (playing) PlaybackStartState.Stopped else PlaybackStartState.Idle)
                 check(live.playback.pipeline.currentPlaybackGenerationForTest() == 8L) {
-                    "playing=$playing actual=${live.playback.pipeline.currentPlaybackGenerationForTest()}"
+                    "再生中=$playing 実際の世代=${live.playback.pipeline.currentPlaybackGenerationForTest()}"
                 }
                 check(FailureMediaCas.Faults.pluginCloses == 1) {
-                    "playing=$playing pluginCloses=${FailureMediaCas.Faults.pluginCloses}"
+                    "再生中=$playing プラグイン閉鎖回数=${FailureMediaCas.Faults.pluginCloses}"
                 }
                 check(live.dynamicPids("dynamicEcmPids").isEmpty() && live.dynamicPids("dynamicEmmPids").isEmpty())
                 check(live.dynamicPids("dynamicPmtPids") == setOf(TsPid(0x100)))
@@ -974,7 +974,7 @@ class PlaybackFailureCallbacksTest {
                 }.set(
                     session,
                     object : ArrayList<Runnable>() {
-                        override fun add(element: Runnable): Boolean = error("injected framework notification failure")
+                        override fun add(element: Runnable): Boolean = error("注入したフレームワーク通知失敗")
                     },
                 )
             val engine =
@@ -1467,9 +1467,9 @@ class PlaybackFailureCallbacksTest {
                 }
             })
             if (failCleanup) {
-                cleanup.release("injected filter") {
+                cleanup.release("失敗注入対象フィルター") {
                     releaseAttempts++
-                    if (rejectRelease) error("filter close rejected")
+                    if (rejectRelease) error("フィルター閉鎖拒否")
                     resourceOwned = false
                 }
             }
@@ -1478,7 +1478,7 @@ class PlaybackFailureCallbacksTest {
         fun checkTerminalCleanupFailure() {
             val failure = failures.single()
             check(failure.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
-            check(failure.generation == 7L && failure.detail.contains("injected filter"))
+            check(failure.generation == 7L && failure.detail.contains("失敗注入対象フィルター"))
             check(pipeline.currentPlaybackGenerationForTest() == 8L)
             check(notifications == 1 && state == PlaybackStartState.Failed(signature, 7L))
             check(restarts.isEmpty())
@@ -1487,8 +1487,8 @@ class PlaybackFailureCallbacksTest {
 
         fun checkRetainedThenReleased(expectedFailedAttempts: Int = 2) {
             check(cleanup.hasPending && resourceOwned && releaseAttempts == expectedFailedAttempts) {
-                "pending=${cleanup.hasPending} owned=$resourceOwned " +
-                    "attempts=$releaseAttempts expected=$expectedFailedAttempts"
+                "解放保留=${cleanup.hasPending} 資源所有=$resourceOwned " +
+                    "試行回数=$releaseAttempts 期待失敗回数=$expectedFailedAttempts"
             }
             check(field("activeTuner").get(pipeline) == null && field("activeChannel").get(pipeline) == null)
             rejectRelease = false
@@ -1586,7 +1586,7 @@ class PlaybackFailureCallbacksTest {
                     }
 
                     else -> {
-                        error("unsupported fixture type: ${type.name}")
+                        error("未対応の試験構成型: ${type.name}")
                     }
                 }
             if (value is Filter) filters += value
@@ -1605,7 +1605,7 @@ class PlaybackFailureCallbacksTest {
             }
             threads.forEach { it.quitSafely() }
             threads.forEach { it.join(5_000) }
-            check(threads.none { it.isAlive }) { "fixture callback threads did not terminate" }
+            check(threads.none { it.isAlive }) { "試験用コールバックスレッドが終了していません" }
             check(failures.isEmpty()) { failures.joinToString { it.stackTraceToString() } }
         }
 

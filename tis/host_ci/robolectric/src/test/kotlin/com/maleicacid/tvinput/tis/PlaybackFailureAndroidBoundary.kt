@@ -144,14 +144,14 @@ class FailureFilter {
     @Implementation
     fun configure(configuration: FilterConfiguration): Int {
         configurations++
-        check(configureFailure != 2) { "injected configure" }
+        check(configureFailure != 2) { "注入したフィルター設定失敗" }
         return configureFailure
     }
 
     @Implementation
     fun start(): Int {
         starts++
-        check(startFailure != 2) { "injected start" }
+        check(startFailure != 2) { "注入したフィルター開始失敗" }
         return startFailure
     }
 
@@ -162,7 +162,7 @@ class FailureFilter {
     fun close() {
         callback = null
         closes++
-        check(!rejectClose) { "injected filter close" }
+        check(!rejectClose) { "注入したフィルター閉鎖失敗" }
     }
 }
 
@@ -176,7 +176,7 @@ class FailureMediaEvent {
 
     @Implementation
     fun getOffset(): Long {
-        check(!rejectRead) { "injected MediaEvent read" }
+        check(!rejectRead) { "注入したMediaEvent読取失敗" }
         return -1L
     }
 
@@ -195,7 +195,7 @@ class FailureMediaEvent {
     @Implementation
     fun release() {
         releases++
-        check(!rejectRelease) { "injected MediaEvent release" }
+        check(!rejectRelease) { "注入したMediaEvent解放失敗" }
     }
 }
 
@@ -208,7 +208,7 @@ class FailureCodec : ShadowMediaCodec() {
         index: Int,
         render: Boolean,
     ) {
-        check(!rejectOutputRelease) { "injected codec output release" }
+        check(!rejectOutputRelease) { "注入したコーデック出力解放失敗" }
     }
 }
 
@@ -238,7 +238,7 @@ class FailureMediaCas {
     @Implementation
     fun openSession(): MediaCas.Session {
         call(Operation.OPEN)
-        if (Faults.openFailure) throw UnsupportedOperationException("underlying session open failed")
+        if (Faults.openFailure) throw UnsupportedOperationException("下位セッションの開始失敗")
         return ReflectionHelpers.callConstructor(
             MediaCas.Session::class.java,
             ReflectionHelpers.ClassParameter.from(MediaCas::class.java, mediaCas),
@@ -259,7 +259,7 @@ class FailureMediaCas {
     fun close() {
         if (closed) return
         Faults.pluginCloses++
-        if (Faults.pluginFailure) error("underlying plugin close failed")
+        if (Faults.pluginFailure) error("下位プラグインの閉鎖失敗")
         closed = true
     }
 
@@ -331,7 +331,7 @@ class FailureCasSession {
         FailureMediaCas.Faults.sessionCloses++
         owner().call(FailureMediaCas.Operation.SESSION_CLOSE)
         if (FailureMediaCas.Faults.sessionFailure) {
-            throwCasStateFailure("underlying session close failed")
+            throwCasStateFailure("下位セッションの閉鎖失敗")
         }
     }
 }
