@@ -1167,20 +1167,16 @@ mod lock_poison_tests {
     #[test]
     fn cleanup_reaper_shared_poison_is_not_treated_as_object_local() {
         let errors = [
-            HalError::LockPoisoned(
-                maleicacid_tuner_hal2_common::LockPoisonDiagnostic {
-                    lock: RuntimeLockKind::WorkerReaperPending,
-                    poison_count: 1,
-                    counter_saturated: false,
-                },
-            ),
-            HalError::LockPoisoned(
-                maleicacid_tuner_hal2_common::LockPoisonDiagnostic {
-                    lock: RuntimeLockKind::WorkerReaperReceiver,
-                    poison_count: 1,
-                    counter_saturated: false,
-                },
-            ),
+            HalError::LockPoisoned(maleicacid_tuner_hal2_common::LockPoisonDiagnostic {
+                lock: RuntimeLockKind::WorkerReaperPending,
+                poison_count: 1,
+                counter_saturated: false,
+            }),
+            HalError::LockPoisoned(maleicacid_tuner_hal2_common::LockPoisonDiagnostic {
+                lock: RuntimeLockKind::WorkerReaperReceiver,
+                poison_count: 1,
+                counter_saturated: false,
+            }),
             HalError::WorkerReaperUnavailable,
             HalError::WorkerReaperPanicked,
         ];
