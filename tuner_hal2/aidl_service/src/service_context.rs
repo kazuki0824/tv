@@ -1108,7 +1108,8 @@ mod lock_poison_tests {
         let handle =
             AidlObjectHandle::new(AidlObjectKind::Demux, demux.object_id(), demux.generation());
         let state = runtime.failure_state();
-        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
+        let context =
+            AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
         assert!(context.enqueue_cleanup_retry(handle).is_err());
         assert_eq!(
             context.cleanup_retry_disposition(handle),
