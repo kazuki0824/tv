@@ -4,7 +4,6 @@ use super::{
     BinderResult, ObjectCloseCleanupFailure,
 };
 use crate::service_context::SharedAidlServiceContext;
-use maleicacid_tuner_hal2_common::compose_primary_cleanup_failure;
 use maleicacid_tuner_hal2_domain_request::{AidlMethodCall, AidlObjectKind};
 use maleicacid_tuner_hal2_service_runtime::{
     quarantine_object_drop_leak_use_case, ObjectCleanupDiagnosticRecord, TunerServiceRuntime,
@@ -55,20 +54,6 @@ pub(crate) struct DropLeakQuarantineOutcome {
     pub(crate) supervised_pending: bool,
 }
 
-impl DropLeakQuarantineOutcome {
-    fn into_result(self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        match (self.cleanup_result, self.diagnostic_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
-                "drop-leak cleanup diagnostic record failed after terminalization failure",
-                primary,
-                cleanup,
-            )),
-        }
-    }
-}
-
 pub(crate) fn quarantine_drop_leak_object_with_evidence(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
@@ -105,15 +90,6 @@ pub(crate) fn quarantine_drop_leak_object_with_evidence(
         diagnostic_result,
         supervised_pending,
     })
-}
-
-pub(crate) fn quarantine_drop_leak_object(
-    context: &SharedAidlServiceContext,
-    handle: AidlObjectHandle,
-) -> BinderResult<()> {
-    quarantine_drop_leak_object_with_evidence(context, handle)
-        .and_then(DropLeakQuarantineOutcome::into_result)
-        .map_err(status_from_hal_error)
 }
 
 pub(crate) fn drop_leak_object_from_drop(
