@@ -220,7 +220,7 @@ fn run_cleanup_job(
                     match crate::object_runtime::quarantine_drop_leak_object_with_evidence(
                         &context, job.handle,
                     ) {
-                        Ok(outcome) => outcome.cleanup_result.is_ok(),
+                        Ok(outcome) => outcome.cleanup_result.is_ok() || outcome.supervised_pending,
                         Err(error) => {
                             log::error!(
                                 "cleanup reaper期限後の隔離失敗: handle={:?} error={error:?}",
