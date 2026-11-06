@@ -63,7 +63,8 @@ class TisReviewBoundaryTest {
         val engine =
             AribSiEngine(RuntimeEnvironment.getApplication())
                 .apply { close() }
-        val controller = ChannelScanController(RuntimeEnvironment.getApplication(), "input.test", engine, ScanPurpose.SETUP_SCAN)
+        val controller =
+            ChannelScanController(RuntimeEnvironment.getApplication(), "input.test", engine, ScanPurpose.SETUP_SCAN)
         resources += controller
         val key = ServiceKey(4, 0x4010, 101)
         val store =
@@ -371,9 +372,7 @@ class TisReviewBoundaryTest {
             }
         val manager = TvInputManager(service, 0)
         val context =
-            object : ContextWrapper(null) {
-                override fun getPackageName() = "com.maleicacid.tvinput"
-
+            object : ContextWrapper(RuntimeEnvironment.getApplication()) {
                 override fun getSystemService(name: String): Any? =
                     when (name) {
                         Context.TV_INPUT_SERVICE -> manager
@@ -384,13 +383,23 @@ class TisReviewBoundaryTest {
             }
 
         fun input(id: String): TvInputInfo =
-            TvInputInfo.Builder(
-                RuntimeEnvironment.getApplication(),
-                ComponentName(RuntimeEnvironment.getApplication(), MaleicacidTvInputService::class.java),
-            ).build().also { set(it, "mId", id) }
+            TvInputInfo
+                .Builder(
+                    RuntimeEnvironment.getApplication(),
+                    ComponentName(RuntimeEnvironment.getApplication(), MaleicacidTvInputService::class.java),
+                ).build()
+                .also { set(it, "mId", id) }
         check(!TisInputIdResolver.isOwnInputId(context, "own/1"))
         inputs = listOf(input("own/1"))
-        check(TisInputIdResolver.isOwnInputId(context, "own/1"))
+        check(TisInputIdResolver.isOwnInputId(context, "own/1")) {
+            "package=${context.packageName} inputs=${manager.tvInputList.map {
+                Triple(
+                    it.id,
+                    it.serviceInfo.packageName,
+                    it.serviceInfo.name,
+                )
+            }}"
+        }
         check(!TisInputIdResolver.isOwnInputId(context, "other/1"))
         inputs = inputs + input("own/2")
         check(!TisInputIdResolver.isOwnInputId(context, "own/1"))
