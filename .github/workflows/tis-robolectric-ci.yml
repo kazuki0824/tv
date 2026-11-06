@@ -52,6 +52,7 @@ jobs:
             --tests com.maleicacid.tvinput.tis.ProgramUpgradeIdentityTest \
             --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest \
             --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest \
+            --tests com.maleicacid.tvinput.tis.ControllerSerialExecutorReviewBoundaryTest \
             --tests com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest \
             --tests com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest \
             --tests com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest \

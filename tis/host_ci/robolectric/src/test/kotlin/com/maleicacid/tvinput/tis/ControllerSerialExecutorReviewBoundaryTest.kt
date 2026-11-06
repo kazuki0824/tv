@@ -6,7 +6,11 @@ package com.maleicacid.tvinput.tis
 import com.maleicacid.tvinput.aribsi.NativeAribCaptionFactParser
 import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
-import sun.misc.Unsafe
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+import org.robolectric.util.ReflectionHelpers
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -15,21 +19,14 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class ControllerSerialExecutorReviewBoundaryTest {
     @Test
     fun replacementWorkerReentersControllerWithoutSelfQueueWait() {
         val executor = ControllerSerialExecutor("交換worker試験")
         val previous = AtomicReference<Thread>()
-        val unsafe =
-            Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as Unsafe
-        val controller = unsafe.allocateInstance(TunerController::class.java) as TunerController
-        TunerController::class.java
-            .getDeclaredField("sectionExecutor")
-            .apply { isAccessible = true }
-            .set(controller, executor)
+        val controller = controllerForRelease(executor)
         val dataCall =
             TunerController::class.java
                 .getDeclaredMethod("postOnControllerData", Function0::class.java)
@@ -251,45 +248,15 @@ class ControllerSerialExecutorReviewBoundaryTest {
         check(executor.queue.size == count)
     }
 
-    // Android資源なしで、本番releaseのcontroller所有と投入・終了境界を検査する共通fixture。
+    // 正規生成・停止済みPipelineを保持し、Controllerの投入・終了境界へ失敗を注入する。
     private fun controllerForRelease(
         executor: ControllerSerialExecutor,
         onClear: () -> Unit = {},
     ): TunerController {
-        val playbackExecutor = LifecycleSerialExecutor("解放済みplayback試験")
-        playbackExecutor.shutdownNow()
-        val unsafe =
-            Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as Unsafe
-        val controller = unsafe.allocateInstance(TunerController::class.java) as TunerController
-        val playback = unsafe.allocateInstance(PlaybackPipeline::class.java) as PlaybackPipeline
-
-        fun set(
-            target: Any,
-            name: String,
-            value: Any,
-        ) {
-            target.javaClass
-                .getDeclaredField(name)
-                .apply { isAccessible = true }
-                .set(target, value)
-        }
-        set(controller, "sectionExecutor", executor)
-        set(controller, "playbackPipeline", playback)
-        set(playback, "executor", playbackExecutor)
-        listOf(
-            "failedDynamicPmtPids",
-            "failedDynamicEcmPids",
-            "failedDynamicEmmPids",
-            "dynamicPmtPids",
-            "dynamicEcmPids",
-            "dynamicEmmPids",
-        ).forEach { set(controller, it, linkedSetOf<TsPid>()) }
-        listOf("sectionFilters", "sectionFilterHandles").forEach { set(controller, it, LinkedHashMap<TsPid, Any>()) }
-        set(controller, "captionFactParsers", ConcurrentHashMap<TsPid, NativeAribCaptionFactParser>())
-        set(controller, "superimposeTimingByPid", ConcurrentHashMap<TsPid, Int>())
+        val controller = TunerController(RuntimeEnvironment.getApplication(), "controller-boundary-test")
+        ReflectionHelpers.getField<ControllerSerialExecutor>(controller, "sectionExecutor").shutdownNow()
+        ReflectionHelpers.setField(controller, "sectionExecutor", executor)
+        ReflectionHelpers.getField<PlaybackPipeline>(controller, "playbackPipeline").close()
         val languages =
             object : ConcurrentHashMap<TsPid, List<NativeAribCaptionFactParser.Language>>() {
                 override fun clear() {
@@ -297,7 +264,7 @@ class ControllerSerialExecutorReviewBoundaryTest {
                     super.clear()
                 }
             }
-        set(controller, "captionLanguagesByPid", languages)
+        ReflectionHelpers.setField(controller, "captionLanguagesByPid", languages)
         return controller
     }
 
