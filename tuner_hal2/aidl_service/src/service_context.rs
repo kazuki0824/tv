@@ -335,82 +335,19 @@ impl AidlServiceContext {
         )
     }
 
-    /// 再試行受付の失敗は、共有reaper自体の喪失と対象objectの隔離可能な失敗を分ける。
-    pub(crate) fn isolate_failed_cleanup_retry(
-        self: &Arc<Self>,
-        handle: AidlObjectHandle,
-        error: &HalError,
-    ) {
-        if maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(error) {
-            log::error!("共有cleanup reaperが利用不能です: {error:?}");
-            TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
-            return;
-        }
-        use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
-        match self.cleanup_retry_disposition(handle) {
-            Ok(
-                AidlObjectCleanupDisposition::Stale
-                | AidlObjectCleanupDisposition::Closed
-                | AidlObjectCleanupDisposition::NoCleanupPending,
-            ) => {
-                // 未完cleanupのないLive/Preparedは状態を変更しない。
-                return;
-            }
-            Ok(AidlObjectCleanupDisposition::Quarantined) => {
-                // 論理隔離済みでも、未完の物理cleanup義務が残存し得る。
-                // ここでは先行実行の完了証拠を取得できないため成功扱いにしない。
-                log::error!(
-                    "cleanup再試行が論理隔離済みownerへ到達しました: handle={handle:?} error={error:?}"
-                );
-                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
-                return;
-            }
-            Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {}
-            Err(disposition_error) => {
-                log::error!(
-                    "cleanup対象の状態分類に失敗しました: handle={handle:?} error={error:?} disposition={disposition_error:?}"
-                );
-                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
-                return;
-            }
-        }
-        // 論理Quarantinedへの遷移ではなく、全後片付けstepの結果で昇格を判定する。
-        match crate::object_runtime::quarantine_drop_leak_object_with_evidence(self, handle) {
-            Ok(outcome) => {
-                if let Err(diagnostic_error) = outcome.diagnostic_result {
-                    // diagnostic storeは既存failure counterも保持する。
-                    log::error!(
-                        "cleanup隔離の診断記録に失敗しました: handle={handle:?} diagnostic={diagnostic_error:?}"
-                    );
-                }
-                if let Err(cleanup_error) = outcome.cleanup_result {
-                    log::error!(
-                        "cleanup隔離の後片付けが未完了です: handle={handle:?} error={error:?} cleanup={cleanup_error:?}"
-                    );
-                    if !outcome.supervised_pending {
-                        // 回収先・owner遮断を証明できない場合だけサービス全体を停止する。
-                        TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
-                    }
-                }
-            }
-            Err(quarantine_error) => {
-                log::error!(
-                    "cleanup隔離の開始を確定できません: handle={handle:?} error={error:?} quarantine={quarantine_error:?}"
-                );
-                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
-            }
-        }
-    }
-
-    pub(crate) fn enqueue_cleanup_retry(
-        self: &Arc<Self>,
-        handle: AidlObjectHandle,
-    ) -> Result<(), HalError> {
+    pub(crate) fn enqueue_cleanup_retry(&self, handle: AidlObjectHandle) -> Result<(), HalError> {
         let result = self
             .cleanup_dependency_for_handle(handle)
             .and_then(|dependency| self.cleanup_reaper_queue.enqueue(handle, dependency));
-        if let Err(error) = &result {
-            self.isolate_failed_cleanup_retry(handle, error);
+        if result.is_err() {
+            use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+            match self.cleanup_retry_disposition(handle) {
+                Ok(AidlObjectCleanupDisposition::Stale)
+                | Ok(AidlObjectCleanupDisposition::Closed)
+                | Ok(AidlObjectCleanupDisposition::NoCleanupPending) => {}
+                // cleanup未完を証明できないときは、別の物理cleanupを起動せず停止する。
+                _ => TunerServiceRuntime::mark_shared_service_critical(&self.runtime),
+            }
         }
         result
     }
@@ -1157,53 +1094,7 @@ mod lock_poison_tests {
     use super::*;
 
     #[test]
-    fn cleanup_reaper_shared_poison_is_not_treated_as_object_local() {
-        let errors = [
-            HalError::LockPoisoned(maleicacid_tuner_hal2_common::LockPoisonDiagnostic {
-                lock: RuntimeLockKind::WorkerReaperPending,
-                poison_count: 1,
-                counter_saturated: false,
-            }),
-            HalError::LockPoisoned(maleicacid_tuner_hal2_common::LockPoisonDiagnostic {
-                lock: RuntimeLockKind::WorkerReaperReceiver,
-                poison_count: 1,
-                counter_saturated: false,
-            }),
-            HalError::WorkerReaperUnavailable,
-            HalError::WorkerReaperPanicked,
-        ];
-        for error in errors {
-            assert!(maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&error));
-        }
-        assert!(!maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
-            &HalError::cleanup_failed("object", "DVR単独の後片付け失敗")
-        ));
-        assert!(!maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
-            &HalError::WorkerLockPoisoned {
-                owner: "DVR通知worker",
-                lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
-            }
-        ));
-    }
-
-    #[test]
-    fn missing_cleanup_owner_does_not_poison_service_but_shared_reaper_loss_does() {
-        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
-        let failure_state = runtime.lock().unwrap().failure_state();
-        let context = AidlServiceContext::from_shared_runtime_for_test(runtime);
-        let stale = AidlObjectHandle::new(
-            AidlObjectKind::Dvr,
-            AidlObjectId(701),
-            AidlObjectGeneration(8),
-        );
-        assert!(context.enqueue_cleanup_retry(stale).is_err());
-        assert!(!failure_state.snapshot().service_critical);
-        context.isolate_failed_cleanup_retry(stale, &HalError::WorkerReaperUnavailable);
-        assert!(failure_state.snapshot().service_critical);
-    }
-
-    #[test]
-    fn live_object_without_retry_dependency_remains_live() {
+    fn cleanup_retry_without_pending_obligation_is_not_service_critical() {
         use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
 
         let mut runtime = TunerServiceRuntime::new();
@@ -1213,19 +1104,25 @@ mod lock_poison_tests {
                 object: AidlObjectKind::Tuner,
                 api: AidlApi::TunerOpenDemux,
             })
-            .expect("Demuxの作成が成功する");
+            .expect("Demux作成が成功する");
         let handle =
             AidlObjectHandle::new(AidlObjectKind::Demux, demux.object_id(), demux.generation());
-        let failure_state = runtime.failure_state();
-        let context =
-            AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
+        let state = runtime.failure_state();
+        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
         assert!(context.enqueue_cleanup_retry(handle).is_err());
         assert_eq!(
             context.cleanup_retry_disposition(handle),
             Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::NoCleanupPending)
         );
-        assert_eq!(context.cleanup_is_terminal_for_handle(handle), Ok(false));
-        assert!(!failure_state.snapshot().service_critical);
+        assert!(!state.snapshot().service_critical);
+
+        let stale = AidlObjectHandle::new(
+            AidlObjectKind::Dvr,
+            AidlObjectId(701),
+            AidlObjectGeneration(8),
+        );
+        assert!(context.enqueue_cleanup_retry(stale).is_err());
+        assert!(!state.snapshot().service_critical);
     }
 
     fn poison<T>(lock: &PoisonTrackedMutex<T>) {
