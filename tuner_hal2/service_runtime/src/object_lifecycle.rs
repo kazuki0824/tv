@@ -83,6 +83,45 @@ pub fn aidl_object_closeable(
     }
 }
 
+/// Cleanup受付で使用するread-onlyなobject世代・状態分類。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AidlObjectCleanupDisposition {
+    Stale,
+    Terminal,
+    RequiresIsolation,
+}
+
+pub fn aidl_object_cleanup_disposition(
+    runtime: &TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    expected_kind: AidlObjectKind,
+) -> Result<AidlObjectCleanupDisposition, HalError> {
+    let Some(entry) = runtime.object_table().entry(object_id) else {
+        return Ok(AidlObjectCleanupDisposition::Stale);
+    };
+    if entry.generation != generation {
+        return Ok(AidlObjectCleanupDisposition::Stale);
+    }
+    if entry.object_kind != expected_kind {
+        return Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object kind mismatch while classifying cleanup retry",
+        ));
+    }
+    Ok(match entry.lifecycle {
+        RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {
+            AidlObjectCleanupDisposition::Terminal
+        }
+        RuntimeObjectLifecycle::Prepared
+        | RuntimeObjectLifecycle::Live
+        | RuntimeObjectLifecycle::Closing { .. }
+        | RuntimeObjectLifecycle::CleanupPending { .. } => {
+            AidlObjectCleanupDisposition::RequiresIsolation
+        }
+    })
+}
+
 pub fn aidl_object_cleanup_dependency(
     runtime: &TunerServiceRuntime,
     object_id: AidlObjectId,
