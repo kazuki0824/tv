@@ -33,21 +33,6 @@ use crate::object_handle::AidlObjectHandle;
 
 const MAX_DROP_LEAK_ERROR_RECORDS: usize = 64;
 
-/// 終了済みの共有reaperは局所隔離で代替できない。
-fn cleanup_reaper_is_globally_unavailable(error: &HalError) -> bool {
-    match error.primary_error() {
-        HalError::WorkerReaperUnavailable | HalError::WorkerReaperPanicked => true,
-        HalError::LockPoisoned(poison) => matches!(
-            poison.lock,
-            RuntimeLockKind::CleanupReaperOwner
-                | RuntimeLockKind::WorkerReaperPending
-                | RuntimeLockKind::WorkerReaperReceiver
-        ),
-        // WorkerLockPoisoned単体では障害ownerを識別できない。reaper側の受付境界で変換する。
-        _ => false,
-    }
-}
-
 fn saturating_increment_atomic_usize(counter: &AtomicUsize) {
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
@@ -356,14 +341,19 @@ impl AidlServiceContext {
         handle: AidlObjectHandle,
         error: &HalError,
     ) {
-        if cleanup_reaper_is_globally_unavailable(error) {
+        if maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(error) {
             log::error!("共有cleanup reaperが利用不能です: {error:?}");
             TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
             return;
         }
         use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
         match self.cleanup_retry_disposition(handle) {
-            Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Closed) => {
+            Ok(
+                AidlObjectCleanupDisposition::Stale
+                | AidlObjectCleanupDisposition::Closed
+                | AidlObjectCleanupDisposition::NoCleanupPending,
+            ) => {
+                // 未完cleanupのないLive/Preparedは状態を変更しない。
                 return;
             }
             Ok(AidlObjectCleanupDisposition::Quarantined) => {
@@ -1181,12 +1171,12 @@ mod lock_poison_tests {
             HalError::WorkerReaperPanicked,
         ];
         for error in errors {
-            assert!(cleanup_reaper_is_globally_unavailable(&error));
+            assert!(maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&error));
         }
-        assert!(!cleanup_reaper_is_globally_unavailable(
+        assert!(!maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
             &HalError::cleanup_failed("object", "DVR単独の後片付け失敗")
         ));
-        assert!(!cleanup_reaper_is_globally_unavailable(
+        assert!(!maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
             &HalError::WorkerLockPoisoned {
                 owner: "DVR通知worker",
                 lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
@@ -1211,7 +1201,7 @@ mod lock_poison_tests {
     }
 
     #[test]
-    fn live_object_without_retry_dependency_is_quarantined_not_service_critical() {
+    fn live_object_without_retry_dependency_remains_live() {
         use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
 
         let mut runtime = TunerServiceRuntime::new();
@@ -1228,7 +1218,11 @@ mod lock_poison_tests {
         let context =
             AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
         assert!(context.enqueue_cleanup_retry(handle).is_err());
-        assert_eq!(context.cleanup_is_terminal_for_handle(handle), Ok(true));
+        assert_eq!(
+            context.cleanup_retry_disposition(handle),
+            Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::NoCleanupPending)
+        );
+        assert_eq!(context.cleanup_is_terminal_for_handle(handle), Ok(false));
         assert!(!failure_state.snapshot().service_critical);
     }
 
