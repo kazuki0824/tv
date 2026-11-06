@@ -24,7 +24,9 @@ impl WorkerFailureClassifier {
     /// 共有cleanup reaperの喪失は複合エラーのprimary/cleanup双方から判定する。
     pub fn cleanup_reaper_requires_service_stop(error: &HalError) -> bool {
         match error {
-            HalError::ComposedFailure { primary, cleanup, .. } => {
+            HalError::ComposedFailure {
+                primary, cleanup, ..
+            } => {
                 Self::cleanup_reaper_requires_service_stop(primary)
                     || Self::cleanup_reaper_requires_service_stop(cleanup)
             }
@@ -42,7 +44,9 @@ impl WorkerFailureClassifier {
     /// reaper受付境界でのみ、WorkerLockPoisonedを共有owner障害へ変換するための分類。
     pub fn reaper_enqueue_worker_lock_poisoned(error: &HalError) -> bool {
         match error {
-            HalError::ComposedFailure { primary, cleanup, .. } => {
+            HalError::ComposedFailure {
+                primary, cleanup, ..
+            } => {
                 Self::reaper_enqueue_worker_lock_poisoned(primary)
                     || Self::reaper_enqueue_worker_lock_poisoned(cleanup)
             }
@@ -156,31 +160,22 @@ mod tests {
             local.clone(),
             HalError::composed_failure("再試行", local.clone(), poisoned),
         );
-        assert!(WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
-            &composed
-        ));
-        assert!(!WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
-            &local
-        ));
-        assert!(WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
-            &HalError::WorkerReaperUnavailable
-        ));
+        assert!(WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&composed));
+        assert!(!WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&local));
+        assert!(
+            WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
+                &HalError::WorkerReaperUnavailable
+            )
+        );
 
         let worker_poison = HalError::WorkerLockPoisoned {
             owner: "cleanup reaper",
             lock: WorkerLockKind::Result,
         };
-        let composed_worker = HalError::composed_failure(
-            "投入と回収",
-            local.clone(),
-            worker_poison,
-        );
-        assert!(WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(
-            &composed_worker
-        ));
-        assert!(!WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(
-            &local
-        ));
+        let composed_worker =
+            HalError::composed_failure("投入と回収", local.clone(), worker_poison);
+        assert!(WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(&composed_worker));
+        assert!(!WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(&local));
     }
 
     #[test]
