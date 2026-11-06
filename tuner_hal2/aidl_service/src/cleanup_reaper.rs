@@ -179,10 +179,19 @@ fn run_cleanup_job(
             return;
         };
         if job.registered_at.elapsed() >= policy.terminal_deadline {
-            let terminal = crate::object_runtime::quarantine_drop_leak_object(&context, job.handle)
-                .is_ok()
-                || context.cleanup_is_terminal_for_handle(job.handle) == Ok(true);
-            if !terminal {
+            // Quarantinedという論理状態だけでは物理cleanup成功を証明できない。
+            // 隔離実行後の型付きstep結果を正本として判定する。
+            let isolated = match crate::object_runtime::quarantine_drop_leak_object_with_evidence(
+                &context,
+                job.handle,
+            ) {
+                Ok(outcome) => !outcome.uncontained_failure,
+                Err(error) => {
+                    log::error!("cleanup reaper期限後の隔離失敗: handle={:?} error={error:?}", job.handle);
+                    false
+                }
+            };
+            if !isolated {
                 mark_cleanup_reaper_critical(&context);
             }
             return;
@@ -198,7 +207,10 @@ fn run_cleanup_job(
             }
         };
         if let Err(error) = pending.update_value(&key, dependency) {
-            context.isolate_failed_cleanup_retry(job.handle, &error);
+            // 予約済みpending keyを更新できないのは共有reaper状態の不整合。
+            // 個別ownerだけの隔離では、他jobの保留所有権を保証できない。
+            log::error!("共有reaperの保留予約更新に失敗しました: error={error:?}");
+            mark_cleanup_reaper_critical(&context);
             return;
         }
         let result = close_method(job.handle.object_kind()).and_then(|method| {
