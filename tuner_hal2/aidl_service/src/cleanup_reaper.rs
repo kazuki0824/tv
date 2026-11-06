@@ -215,8 +215,7 @@ fn run_cleanup_job(
                 }
                 Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
                     match crate::object_runtime::quarantine_drop_leak_object_with_evidence(
-                        &context,
-                        job.handle,
+                        &context, job.handle,
                     ) {
                         Ok(outcome) => outcome.cleanup_result.is_ok(),
                         Err(error) => {
