@@ -898,6 +898,10 @@ fn fence_dvr_notifier_owner_after_cleanup_failure(
                 format!("Drop漏れ検出後の後片付けに失敗しました: {status:?}"),
             ),
         );
+        if !dvr_notifier_owner_generation_is_fenced(context, handle) {
+            // 停止・後片付けの失敗後もownerが有効なら副作用遮断を証明できない。
+            mark_dvr_notifier_service_critical(context);
+        }
         return;
     }
     if !dvr_notifier_owner_generation_is_fenced(context, handle) {
