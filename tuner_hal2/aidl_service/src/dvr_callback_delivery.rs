@@ -919,7 +919,9 @@ fn enqueue_cleanup_retry_after_notifier_reap(
     match context.cleanup_dependency_for_handle(handle) {
         Ok(_) => {
             if let Err(error) = context.enqueue_cleanup_retry(handle) {
-                record_dvr_notifier_cleanup_control_failure(context, handle, error);
+                // enqueue側が局所隔離または共有障害の昇格を既に処理した。
+                // 同じerrorを別の隔離入口へ再投入しない。
+                record_superseded_dvr_notifier_cleanup_failure(context, handle, error);
             }
         }
         Err(dependency_error) => match context.cleanup_is_terminal_for_handle(handle) {
