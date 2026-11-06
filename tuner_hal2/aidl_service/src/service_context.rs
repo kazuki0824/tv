@@ -37,7 +37,11 @@ const MAX_DROP_LEAK_ERROR_RECORDS: usize = 64;
 fn cleanup_reaper_is_globally_unavailable(error: &HalError) -> bool {
     match error.primary_error() {
         HalError::WorkerReaperUnavailable | HalError::WorkerReaperPanicked => true,
-        HalError::LockPoisoned(poison) => poison.lock == RuntimeLockKind::CleanupReaperOwner,
+        HalError::LockPoisoned(poison) => matches!(
+            poison.lock,
+            RuntimeLockKind::CleanupReaperOwner | RuntimeLockKind::WorkerReaperPending
+        ),
+        HalError::WorkerLockPoisoned { owner, .. } => *owner == "ワーカー回収終端",
         _ => false,
     }
 }
@@ -380,9 +384,11 @@ impl AidlServiceContext {
                 }
                 if let Err(cleanup_error) = outcome.cleanup_result {
                     log::error!(
-                        "cleanup隔離の物理後片付けが未完了です: handle={handle:?} error={error:?} cleanup={cleanup_error:?}"
+                        "cleanup隔離の後片付けが未完了です: handle={handle:?} error={error:?} cleanup={cleanup_error:?}"
                     );
-                    TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+                    if outcome.uncontained_failure {
+                        TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+                    }
                 }
             }
             Err(quarantine_error) => {
@@ -1147,6 +1153,24 @@ impl AidlServiceContext {
 #[cfg(test)]
 mod lock_poison_tests {
     use super::*;
+
+    #[test]
+    fn cleanup_reaper_shared_poison_is_not_treated_as_object_local() {
+        let errors = [
+            HalError::LockPoisoned(
+                maleicacid_tuner_hal2_common::LockPoisonDiagnostic {
+                    lock: RuntimeLockKind::WorkerReaperPending,
+                    poison_count: 1,
+                    counter_saturated: false,
+                },
+            ),
+            HalError::WorkerReaperUnavailable,
+            HalError::WorkerReaperPanicked,
+        ];
+        for error in errors {
+            assert!(cleanup_reaper_is_globally_unavailable(&error));
+        }
+    }
 
     #[test]
     fn missing_cleanup_owner_does_not_poison_service_but_shared_reaper_loss_does() {
