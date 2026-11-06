@@ -24,6 +24,7 @@ import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.common.TunerKeyToken
 import org.junit.After
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -62,13 +63,18 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
+    @Before
+    fun initializeApplication() {
+        RuntimeEnvironment.getApplication()
+    }
+
     @After
     fun closeFixtures() {
         Fixture.closeAll()
     }
 
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun casFilterRejectRollbackKeepsProductionRetryMarker() {
         FailureMediaCas.Faults.reset()
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
@@ -140,7 +146,7 @@ class PlaybackFailureCallbacksTest {
     }
 
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun removedFailedPmtRetriesRetainedCleanupBeforeSingleReopen() {
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         try {
@@ -201,16 +207,19 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun invalidatedEcmAndEmmStopFiltersAndPlaybackAndNotifyOriginalGeneration() {
+    @Test(timeout = 60_000)
+    fun invalidatedEcmAndEmmStopFiltersAndPlaybackAndNotifyOriginalGeneration() {
         checkCasInvalidation(failCleanup = false)
     }
 
-    @Test fun casAndFilterCleanupFailuresStillStopPlaybackAndNotifyOriginalGeneration() {
+    @Test(timeout = 60_000)
+    fun casAndFilterCleanupFailuresStillStopPlaybackAndNotifyOriginalGeneration() {
         checkCasInvalidation(failCleanup = true)
     }
 
     // 実controllerの通知から失効・独立cleanup・再試行までを同じ受信contextで確認する。
-    @Test fun casFailureAndReclaimPreserveSiWithoutReportingTunerLoss() {
+    @Test(timeout = 60_000)
+    fun casFailureAndReclaimPreserveSiWithoutReportingTunerLoss() {
         for (initializing in listOf(false, true)) checkCasConnectionFailure(initializing)
     }
 
@@ -434,7 +443,7 @@ class PlaybackFailureCallbacksTest {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 候補の処理と入れ子の資源寿命を同じ手順内で確認できる構造を保つ。
     @Suppress("MaxLineLength", "NestedBlockDepth")
-    @Test
+    @Test(timeout = 60_000)
     fun avAndCaptionFilterFactoriesRetainFailedConfigurationAndStartCleanup() {
         for (kind in listOf("video", "audio", "subtitle", "superimpose")) {
             for (phase in listOf("configure", "start")) {
@@ -493,7 +502,8 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun mediaSyncAudioFailureRetainsResourcesAndNotifiesOriginalSession() {
+    @Test(timeout = 60_000)
+    fun mediaSyncAudioFailureRetainsResourcesAndNotifiesOriginalSession() {
         for (waiting in listOf(false, true)) {
             for (audioOnly in listOf(false, true)) {
                 val fixture = Fixture(waiting, audioOnly)
@@ -505,7 +515,8 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun audioFailureAndRouteOrFormatRestartShareTerminalCleanupHandling() {
+    @Test(timeout = 60_000)
+    fun audioFailureAndRouteOrFormatRestartShareTerminalCleanupHandling() {
         for (waiting in listOf(false, true)) {
             for (reason in listOf(
                 PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
@@ -521,7 +532,8 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun requestedStartAndAudioSwitchReturnCleanupFailureToTheirCaller() {
+    @Test(timeout = 60_000)
+    fun requestedStartAndAudioSwitchReturnCleanupFailureToTheirCaller() {
         for (switchAudio in listOf(false, true)) {
             // Surfaceを必要としないaudio-only経路で、音声切替のcleanup失敗伝達を検査する。
             val fixture = Fixture(false, audioOnly = switchAudio)
@@ -562,7 +574,8 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun realCasLinkageReevaluatesLiveAndReachesGenericPlaybackStart() {
+    @Test(timeout = 60_000)
+    fun realCasLinkageReevaluatesLiveAndReachesGenericPlaybackStart() {
         FailureMediaCas.Faults.reset()
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         val factory =
@@ -641,7 +654,8 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun audioFailureStopsBeforeNotifyingOriginalGeneration() {
+    @Test(timeout = 60_000)
+    fun audioFailureStopsBeforeNotifyingOriginalGeneration() {
         for (audioOnly in listOf(false, true)) {
             val fixture = Fixture(false, audioOnly, failCleanup = false)
             fixture.invoke(
@@ -664,7 +678,8 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun staleMediaSyncAndRestartCallbacksDoNotTouchCurrentGeneration() {
+    @Test(timeout = 60_000)
+    fun staleMediaSyncAndRestartCallbacksDoNotTouchCurrentGeneration() {
         val fixture = Fixture(false, false)
         val sync = MediaSync()
         fixture.set("mediaSync", sync)
@@ -678,7 +693,7 @@ class PlaybackFailureCallbacksTest {
         fixture.cleanup.requireComplete()
     }
 
-    @Test
+    @Test(timeout = 60_000)
     fun repeatedSiBeyondFormerCollectionLimitKeepsPlaybackControllerGeneration() {
         LiveSiFixture().use { live ->
             live.ingestInitialTables()
@@ -702,7 +717,7 @@ class PlaybackFailureCallbacksTest {
     }
 
     // 実JNIのPAT/SDTから本番session refreshとcontrollerのFilter開始までを通す。
-    @Test
+    @Test(timeout = 60_000)
     fun pendingLiveSiBootstrapsPmtFilterAndBecomesReadyAfterPmtReception() {
         LiveSiFixture().use { live ->
             live.ingestInitialTables()
@@ -720,7 +735,7 @@ class PlaybackFailureCallbacksTest {
 
     // 同じ実JNI失効からCAS・再生停止・通知までを一つの回帰で観測する。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun conflictingPmtStopsEstablishedPlaybackAndRetiresCasMetadata() {
         for (playing in listOf(true, false)) {
             LiveSiFixture().use { live ->
@@ -897,7 +912,7 @@ class PlaybackFailureCallbacksTest {
 
     // 恒等写像ではなく、本番候補loop・実tune拒否・typed scan終端を通す。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun synchronousTuneFailureStopsRemainingInitialScanCandidates() {
         val executor = ControllerSerialExecutor("scan同期選局拒否試験")
         val fixture = executor.submitControl { Fixture(false, false, failCleanup = false) }.get(5, TimeUnit.SECONDS)
@@ -976,7 +991,7 @@ class PlaybackFailureCallbacksTest {
 
     // 同一ownerの初期化・実資源停止・失敗保持を一続きの反例で検査する。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun acceptedTuneFailureFencesOldPlaybackAndRetainsCleanupDespiteNotificationFailure() {
         val controllerExecutor = ControllerSerialExecutor("accepted-tune-controller-test")
         val sessionExecutor = LifecycleSerialExecutor("accepted-tune-session-test")
@@ -1080,7 +1095,7 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test
+    @Test(timeout = 60_000)
     fun releaseRetainsOwnerWhenDiscardedInputReleaseFailsThenCompletesOnRetry() {
         val fixture = Fixture(false, false, false)
         val executor = LifecycleSerialExecutor("未実行event解放試験")
@@ -1140,7 +1155,7 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test
+    @Test(timeout = 60_000)
     fun mediaArrayFailureReleasesOnlyUnprocessedInputsAndRetainsReleaseFailure() {
         val fixture = Fixture(false, false, false)
         val executor = LifecycleSerialExecutor("複数MediaEvent失敗試験")
@@ -1199,7 +1214,7 @@ class PlaybackFailureCallbacksTest {
 
     // 実consume入口が旧sync/世代をmap変更より先に拒否することを検査する。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun delayedAudioConsumeCannotReleaseReassignedOutputAndIdsDoNotWrapWithinSync() {
         val fixture = Fixture(false, false, failCleanup = false)
         val oldSync = fixture.create(MediaSync::class.java)
@@ -1243,7 +1258,7 @@ class PlaybackFailureCallbacksTest {
 
     // Android Sessionの通知queueだけを初期化し、実onTune受付と同じownerへの再開を確認する。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun singlePendingTuneResumesAfterCleanupAndFailureNeverEntersTune() {
         val ready =
             ProgramUpgradeCleanup::class.java
@@ -1316,7 +1331,7 @@ class PlaybackFailureCallbacksTest {
 
     // 本番callback/readから実JNIまで、正常集合・有限飽和・retune失効を同じfixtureで検査する。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun sectionCallbackBurstCompletesSiAndReportsFiniteAdmissionLoss() {
         val executor = ControllerSerialExecutor("section burst試験", maxPendingDataTasks = 16)
         val fixture = executor.submitControl { Fixture(false, false, failCleanup = false) }.get(5, TimeUnit.SECONDS)
@@ -1496,20 +1511,12 @@ class PlaybackFailureCallbacksTest {
 
         init {
             activeFixtures += this
+            val initialOwner = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            resources += AutoCloseable { initialOwner.shutdownNow() }
             threads += ReflectionHelpers.getField<HandlerThread>(pipeline, "codecCallbackThread")
             threads += ReflectionHelpers.getField<HandlerThread>(pipeline, "videoRenderThread")
             set("playbackGeneration", 7L)
-            set("released", AtomicBoolean(false))
-            set("blockedVideoOutputSync", AtomicReference<MediaSync?>())
             set("videoAvailableNotified", AtomicBoolean(!waiting))
-            set("resourceCleanup", cleanup)
-            set("dataPathProgress", PlaybackDataPathProgress())
-            set("audioFilterCallbackSequence", AtomicLong(0L))
-            set("lastAudioFilterCallbackNs", AtomicLong(0L))
-            set("outstandingAudioOutputs", linkedMapOf<Int, Any>())
-            set("pendingAudioOutputReleases", mutableSetOf<Int>())
-            val ptsType = field("ptsEpochCoordinator").type
-            set("ptsEpochCoordinator", ptsType.getDeclaredConstructor().apply { isAccessible = true }.newInstance())
             set("activeTuner", tuner)
             set("activeChannel", channel)
             set("activeSelection", selection)
@@ -1661,10 +1668,14 @@ class PlaybackFailureCallbacksTest {
             FailureMediaCas.Faults.reset()
             filters.forEach { Shadow.extract<FailureFilter>(it).rejectClose = false }
             events.forEach { Shadow.extract<FailureMediaEvent>(it).rejectRelease = false }
-            pipeline.close()
-            resources.forEach { it.close() }
+            val failures = mutableListOf<Throwable>()
+            (listOf<AutoCloseable>(pipeline) + resources).forEach { resource ->
+                runCatching { resource.close() }.exceptionOrNull()?.let(failures::add)
+            }
             threads.forEach { it.quitSafely() }
             threads.forEach { it.join(5_000) }
+            check(threads.none { it.isAlive }) { "fixture callback threads did not terminate" }
+            check(failures.isEmpty()) { failures.joinToString { it.stackTraceToString() } }
         }
 
         companion object {
