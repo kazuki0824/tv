@@ -1136,11 +1136,9 @@ pub(crate) fn finish_dvr_status_notifier_cleanup(
             "DVR状態通知ワーカーの後片付け",
             "ワーカー開始処理の完了待ちです",
         )),
-        DvrStatusNotifierStopDisposition::ReaperPending => Err(
-            HalError::WorkerCleanupFailed {
-                kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Executing,
-            },
-        ),
+        DvrStatusNotifierStopDisposition::ReaperPending => Err(HalError::WorkerCleanupFailed {
+            kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Executing,
+        }),
     }
 }
 
