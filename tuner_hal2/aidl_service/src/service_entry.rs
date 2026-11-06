@@ -705,22 +705,42 @@ fn service_requires_restart(
 
 fn start_service_critical_monitor(
     failure_state: maleicacid_tuner_hal2_service_runtime::ServiceFailureState,
-) -> std::io::Result<()> {
-    std::thread::Builder::new()
-        .name("tuner-hal2-fatal-monitor".to_string())
-        .spawn(move || loop {
-            if service_requires_restart(&failure_state) {
-                let snapshot = failure_state.snapshot();
-                log::error!(
-                    "ServiceCriticalを検出したためHALプロセスを終了します: runtime_lock_poison_count={} diagnostic_counter_saturated={}",
-                    snapshot.runtime_lock_poison_count,
-                    snapshot.diagnostic_counter_saturated
-                );
+) -> std::io::Result<maleicacid_tuner_hal2_service_runtime::WorkerRuntime<()>> {
+    use maleicacid_tuner_hal2_service_runtime::{WorkerRuntime, WorkerTerminalResult};
+    // サービス世代に1個だけ生成し、Binder thread poolの存続期間中所有する。
+    WorkerRuntime::spawn_observed(
+        "tuner-hal2-fatal-monitor".to_string(),
+        1,
+        1,
+        move |control| -> Result<(), HalError> {
+            loop {
+                if service_requires_restart(&failure_state) {
+                    let snapshot = failure_state.snapshot();
+                    log::error!(
+                        "ServiceCriticalを検出したためHALプロセスを終了します: runtime_lock_poison_count={} diagnostic_counter_saturated={}",
+                        snapshot.runtime_lock_poison_count,
+                        snapshot.diagnostic_counter_saturated
+                    );
+                    std::process::exit(1);
+                }
+                if control.stop_requested() {
+                    return Ok(());
+                }
+                control.wait_until(Some(
+                    std::time::Instant::now() + std::time::Duration::from_millis(100),
+                ));
+            }
+        },
+        |terminal| {
+            if !matches!(
+                terminal,
+                WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested
+            ) {
+                log::error!("ServiceCritical監視workerが異常終了しました: {terminal:?}");
                 std::process::exit(1);
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        })?;
-    Ok(())
+        },
+    )
 }
 
 pub fn run_service() {
@@ -758,10 +778,13 @@ pub fn run_service() {
         }
     };
     let binder = BnTuner::new_binder(tuner, BinderFeatures::default());
-    if let Err(error) = start_service_critical_monitor(failure_state) {
-        log::error!("ServiceCritical監視スレッドの起動に失敗しました: {error:?}");
-        std::process::exit(1);
-    }
+    let monitor = match start_service_critical_monitor(failure_state) {
+        Ok(monitor) => monitor,
+        Err(error) => {
+            log::error!("ServiceCritical監視workerの起動に失敗しました: {error:?}");
+            std::process::exit(1);
+        }
+    };
     if let Err(error) = binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()) {
         log::error!(
             "Tuner serviceの起動に失敗しました: 段階=binder-register service={TUNER_SERVICE_NAME} エラー={error:?}"
@@ -769,6 +792,15 @@ pub fn run_service() {
         std::process::exit(1);
     }
     binder::ProcessState::join_thread_pool();
+    monitor.request_stop();
+    match monitor.join() {
+        maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::Normal(())
+        | maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::StopRequested => {}
+        terminal => {
+            log::error!("ServiceCritical監視workerの回収に失敗しました: {terminal:?}");
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
