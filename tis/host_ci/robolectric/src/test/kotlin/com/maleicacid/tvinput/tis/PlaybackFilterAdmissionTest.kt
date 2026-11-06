@@ -2292,18 +2292,13 @@ class PlaybackFilterAdmissionTest {
 
         var availabilitySync: MediaSync? = null
 
-        // native初期化だけを省略し、stockでのmode選択とarmは本番処理を通す。
+        // stockでのmode選択とarmは本番処理を通す。
         fun armCompatibilityAvailability(
             generation: Long,
             exact: Boolean = false,
         ): Long {
             val sync =
-                availabilitySync ?: run {
-                    val type = Class.forName("sun.misc.Unsafe")
-                    val unsafe = type.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
-                    (type.getMethod("allocateInstance", Class::class.java).invoke(unsafe, MediaSync::class.java) as MediaSync)
-                        .also { availabilitySync = it }
-                }
+                availabilitySync ?: MediaSync().also { availabilitySync = it }
             return executor.callControl(5_000L) {
                 ReflectionHelpers.setField(pipeline, "surface", requireNotNull(codecSurface))
                 ReflectionHelpers.setField(pipeline, "videoPathExpected", true)
@@ -2468,11 +2463,12 @@ class PlaybackFilterAdmissionTest {
 
         override fun close() {
             sessionCaptionExecutors.forEach { it.shutdownNow() }
-            // このfixtureのMediaSyncはnative資源を確保していない。
+            // pipelineから切り離したMediaSyncはfixtureが解放する。
             if (availabilitySync != null) ReflectionHelpers.setField(pipeline, "mediaSync", null)
             try {
                 pipeline.close()
             } finally {
+                availabilitySync?.release()
                 codecSurface?.release()
                 codecTexture?.release()
             }
