@@ -749,7 +749,7 @@ fn transfer_frontend_replacement_wait_failure(
                 &outcomes,
                 completion_error,
             ) {
-                log::error!("frontend reaper終了診断の記録に失敗しました: {record_error:?}");
+                eprintln!("frontend reaper終了診断の記録に失敗しました: {record_error:?}");
             }
         }),
     };
@@ -4096,7 +4096,7 @@ fn handle_frontend_worker_reaper_deadline(
         Some(public_error),
     );
     if let Err(record_error) = record_frontend_cleanup_diagnostic(&diagnostic_sink, record) {
-        log::error!("frontend reaper期限診断の記録に失敗しました: {record_error:?}");
+        eprintln!("frontend reaper期限診断の記録に失敗しました: {record_error:?}");
     }
 }
 
