@@ -1176,6 +1176,61 @@ mod qg_object_lifecycle_tests {
     }
 
     #[test]
+    fn pending_supervised_quarantine_prevents_runtime_reuse_until_join() {
+        let mut table = RuntimeObjectTable::default();
+        let object_id = AidlObjectId(20);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                20,
+                20,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("DVR登録");
+        table
+            .quarantine_cascade(object_id, generation)
+            .expect("隔離");
+        table
+            .begin_quarantine_cleanup(object_id, generation, [(object_id, generation)])
+            .expect("ObjectCloseTxnが未完義務を保持");
+        table
+            .finish_quarantined_cleanup_report(
+                object_id,
+                generation,
+                &[(object_id, generation)],
+            )
+            .expect("DVR WorkerをSupervisorに移管");
+        assert!(table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                21,
+                20,
+                RuntimeOwnerRelation::Root,
+            ))
+            .is_err());
+        assert_eq!(
+            table.entry(object_id).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Quarantined
+        );
+        table
+            .notify_supervised_dvr_joined(object_id, generation)
+            .expect("DVR Workerの回収が完了");
+        assert_eq!(
+            table.entry(object_id).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                21,
+                20,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("物理回収の完了後ならruntimeを再利用できる");
+    }
+
+    #[test]
     fn quarantined_runtime_binding_can_be_reinserted() {
         let mut table = RuntimeObjectTable::default();
         table
