@@ -89,8 +89,20 @@ pub enum AidlObjectCleanupDisposition {
     Stale,
     Closed,
     Quarantined,
+    QuarantineAwaitingReport,
+    QuarantineSupervised,
     NoCleanupPending,
     RequiresIsolation,
+}
+
+impl AidlObjectCleanupDisposition {
+    /// この受付・予約を返してよい。Supervisor移管済みは物理回収完了とは異なる。
+    pub fn recovery_settled(self) -> bool {
+        matches!(
+            self,
+            Self::Stale | Self::Closed | Self::NoCleanupPending | Self::QuarantineSupervised
+        )
+    }
 }
 
 pub fn aidl_object_cleanup_disposition(
@@ -113,7 +125,13 @@ pub fn aidl_object_cleanup_disposition(
     }
     Ok(match entry.lifecycle {
         RuntimeObjectLifecycle::Closed => AidlObjectCleanupDisposition::Closed,
-        RuntimeObjectLifecycle::Quarantined => AidlObjectCleanupDisposition::Quarantined,
+        RuntimeObjectLifecycle::Quarantined => {
+            match runtime.object_table().quarantine_cleanup_is_supervised(object_id, generation) {
+                Some(false) => AidlObjectCleanupDisposition::QuarantineAwaitingReport,
+                Some(true) => AidlObjectCleanupDisposition::QuarantineSupervised,
+                None => AidlObjectCleanupDisposition::Quarantined,
+            }
+        }
         RuntimeObjectLifecycle::Prepared | RuntimeObjectLifecycle::Live => {
             AidlObjectCleanupDisposition::NoCleanupPending
         }
@@ -121,21 +139,6 @@ pub fn aidl_object_cleanup_disposition(
             AidlObjectCleanupDisposition::RequiresIsolation
         }
     })
-}
-
-pub fn aidl_object_quarantine_cleanup_has_owner(
-    runtime: &TunerServiceRuntime,
-    object_id: AidlObjectId,
-    generation: AidlObjectGeneration,
-    expected_kind: AidlObjectKind,
-) -> Result<bool, HalError> {
-    Ok(
-        aidl_object_cleanup_disposition(runtime, object_id, generation, expected_kind)?
-            == AidlObjectCleanupDisposition::Quarantined
-            && runtime
-                .object_table()
-                .quarantine_cleanup_is_managed(object_id, generation),
-    )
 }
 
 pub fn aidl_object_cleanup_dependency(

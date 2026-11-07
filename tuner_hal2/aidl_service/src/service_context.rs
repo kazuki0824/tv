@@ -338,20 +338,6 @@ impl AidlServiceContext {
         )
     }
 
-    pub(crate) fn quarantine_cleanup_has_owner(
-        &self,
-        handle: AidlObjectHandle,
-    ) -> Result<bool, HalError> {
-        let runtime =
-            TunerServiceRuntime::lock_shared(&self.runtime, "quarantine cleanup owner確認")?;
-        maleicacid_tuner_hal2_service_runtime::aidl_object_quarantine_cleanup_has_owner(
-            &runtime,
-            handle.object_id(),
-            handle.generation(),
-            handle.object_kind(),
-        )
-    }
-
     /// 対象・祖先・子孫の既存ObjectCloseTxnの権限を世代付きで返す。
     /// 再予約はこの入口では行わず、reaper内の単一予約グループで実施する。
     pub(crate) fn related_cleanup_recovery_owners(
@@ -408,13 +394,23 @@ impl AidlServiceContext {
                 TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
                 return result;
             }
-            if matches!(
-                self.cleanup_retry_disposition(handle),
-                Ok(AidlObjectCleanupDisposition::Stale
-                    | AidlObjectCleanupDisposition::Closed
-                    | AidlObjectCleanupDisposition::NoCleanupPending)
-            ) {
-                return result;
+            match self.cleanup_retry_disposition(handle) {
+                Ok(disposition) if disposition.recovery_settled() => return Ok(()),
+                Ok(AidlObjectCleanupDisposition::QuarantineAwaitingReport) => {
+                    let watched = self.cleanup_reaper_queue.supervise_unqueued_owner(
+                        Arc::downgrade(self),
+                        handle,
+                    );
+                    if watched.is_ok()
+                        || self.cleanup_retry_disposition(handle)
+                            .is_ok_and(AidlObjectCleanupDisposition::recovery_settled)
+                    {
+                        return Ok(());
+                    }
+                    TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+                    return watched;
+                }
+                _ => {}
             }
             if matches!(error.primary_error(), HalError::Busy { .. }) {
                 // 容量不足は共有状態の失陥ではない。別のreaperの予約を占有せず
@@ -439,6 +435,11 @@ impl AidlServiceContext {
                                             .cleanup_reaper_queue
                                             .supervise_unqueued_owner(Arc::downgrade(self), owner)
                                         {
+                                            if self.cleanup_retry_disposition(owner)
+                                                .is_ok_and(AidlObjectCleanupDisposition::recovery_settled)
+                                            {
+                                                continue;
+                                            }
                                             log::error!("未予約のcleanup owner監督失敗: owner={owner:?} active={active} error={watch_error:?}");
                                             all_owners_supervised = false;
                                             break;
@@ -464,6 +465,11 @@ impl AidlServiceContext {
                     }
                 }
                 // 物理回収のowner/fenceを証明できない場合だけ全体停止する。
+            }
+            if self.cleanup_retry_disposition(handle)
+                .is_ok_and(AidlObjectCleanupDisposition::recovery_settled)
+            {
+                return Ok(());
             }
             TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
         }

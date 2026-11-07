@@ -828,13 +828,22 @@ impl RuntimeObjectTable {
         Ok(())
     }
 
-    pub(crate) fn quarantine_cleanup_is_managed(
+    pub(crate) fn quarantine_cleanup_is_supervised(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-    ) -> bool {
-        self.object_close_txn
-            .has_managed_quarantine(object_id, generation)
+    ) -> Option<bool> {
+        let mut entry = self.entry_checked_any(object_id, generation).ok()?;
+        loop {
+            if let Some(supervised) = self.object_close_txn.quarantine_cleanup_is_supervised(
+                entry.object_id,
+                entry.generation,
+            ) {
+                return Some(supervised);
+            }
+            let (_, id, gen) = entry.owner.referenced_object()?;
+            entry = self.entry_checked_any(id, gen).ok()?;
+        }
     }
 
     pub fn quarantine_cascade(

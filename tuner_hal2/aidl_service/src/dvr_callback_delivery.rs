@@ -878,7 +878,9 @@ fn dvr_notifier_owner_generation_is_fenced(
         Ok(
             AidlObjectCleanupDisposition::Stale
             | AidlObjectCleanupDisposition::Closed
-            | AidlObjectCleanupDisposition::Quarantined,
+            | AidlObjectCleanupDisposition::Quarantined
+            | AidlObjectCleanupDisposition::QuarantineAwaitingReport
+            | AidlObjectCleanupDisposition::QuarantineSupervised,
         ) => true,
         Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
             // 進行中のcloseが既に世代を遮断している。物理回収の結果はそのownerが確定する。
@@ -961,7 +963,11 @@ fn enqueue_cleanup_retry_after_notifier_reap(
             | AidlObjectCleanupDisposition::Closed
             | AidlObjectCleanupDisposition::NoCleanupPending,
         ) => {}
-        Ok(AidlObjectCleanupDisposition::Quarantined) => {
+        Ok(
+            AidlObjectCleanupDisposition::Quarantined
+            | AidlObjectCleanupDisposition::QuarantineAwaitingReport
+            | AidlObjectCleanupDisposition::QuarantineSupervised,
+        ) => {
             // 論理隔離は物理回収の完了証拠ではない。
             record_dvr_notifier_cleanup_control_failure(
                 context,
@@ -1463,7 +1469,10 @@ mod tests {
                 );
             }
             crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending => {
-                assert!(context.quarantine_cleanup_has_owner(handle).unwrap());
+                assert_eq!(
+                    context.cleanup_retry_disposition(handle),
+                    Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::QuarantineSupervised)
+                );
             }
             crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup => {
                 panic!("競合ownerのない隔離が既存cleanupへ委譲されました");
