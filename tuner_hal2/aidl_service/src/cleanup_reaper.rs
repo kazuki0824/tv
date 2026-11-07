@@ -61,17 +61,25 @@ struct CleanupJob {
     registered_at: Instant,
 }
 
-pub(crate) struct CleanupReaperQueue {
-    policy: CleanupReaperPolicy,
-    runtime: PoisonTrackedMutex<
-        Option<
-            maleicacid_tuner_hal2_service_runtime::WorkerRuntimeReaperQueue<
-                CleanupJobKey,
-                CleanupStep,
-                CleanupJob,
-            >,
+/// 物理cleanupの正本はObjectCloseTxn。ここでは既存reaperと、
+/// 満杯時の受付継続を監視する従属WorkerRuntimeのhandleだけを所有する。
+struct CleanupReaperQueueOwner {
+    queue: Option<
+        maleicacid_tuner_hal2_service_runtime::WorkerRuntimeReaperQueue<
+            CleanupJobKey,
+            CleanupStep,
+            CleanupJob,
         >,
     >,
+    admission_watchers: std::collections::BTreeMap<
+        CleanupJobKey,
+        maleicacid_tuner_hal2_service_runtime::WorkerRuntime<()>,
+    >,
+}
+
+pub(crate) struct CleanupReaperQueue {
+    policy: CleanupReaperPolicy,
+    runtime: PoisonTrackedMutex<CleanupReaperQueueOwner>,
 }
 
 impl core::fmt::Debug for CleanupReaperQueue {
@@ -86,7 +94,13 @@ impl CleanupReaperQueue {
     pub(crate) fn from_snapshot(snapshot: CapabilitySnapshot) -> Self {
         Self {
             policy: CleanupReaperPolicy::from_snapshot(snapshot),
-            runtime: PoisonTrackedMutex::new(None, RuntimeLockKind::CleanupReaperOwner),
+            runtime: PoisonTrackedMutex::new(
+                CleanupReaperQueueOwner {
+                    queue: None,
+                    admission_watchers: std::collections::BTreeMap::new(),
+                },
+                RuntimeLockKind::CleanupReaperOwner,
+            ),
         }
     }
 
@@ -99,13 +113,13 @@ impl CleanupReaperQueue {
         >,
     ) -> Result<(), HalError> {
         let mut slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
-        if slot.is_some() {
+        if slot.queue.is_some() {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "cleanup reaperの正規ownerが重複して設定されました",
             ));
         }
-        *slot = Some(runtime);
+        slot.queue = Some(runtime);
         Ok(())
     }
 
@@ -134,7 +148,8 @@ impl CleanupReaperQueue {
         loop {
             let runtime = {
                 let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
-                slot.as_ref()
+                slot.queue
+                    .as_ref()
                     .ok_or_else(|| {
                         HalError::internal(
                             HalInternalKind::InvariantViolation,
@@ -175,10 +190,128 @@ impl CleanupReaperQueue {
         }
     }
 
+    /// reaperが満杯でも未完cleanupを無監視にしない。物理cleanupは行わず、
+    /// 既存ObjectCloseTxnの終端を観測して元reaperへ登録する従属workerだけを起動する。
+    pub(crate) fn supervise_unqueued_owner(
+        &self,
+        context: Weak<AidlServiceContext>,
+        handle: AidlObjectHandle,
+    ) -> Result<(), HalError> {
+        use maleicacid_tuner_hal2_service_runtime::{WorkerRuntime, WorkerTerminalResult};
+        let key = CleanupJobKey::from_handle(handle);
+        let mut owner = self.runtime.lock().map_err(HalError::LockPoisoned)?;
+        owner.admission_watchers.retain(|_, worker| !worker.is_finished());
+        if owner.admission_watchers.contains_key(&key) {
+            return Ok(());
+        }
+        if owner.admission_watchers.len() >= self.policy.max_jobs {
+            return Err(HalError::Busy {
+                path: None,
+                detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
+                    "受付監視workerの上限に達しました",
+                ),
+            });
+        }
+        let queue = owner.queue.as_ref().ok_or_else(|| {
+            HalError::internal(HalInternalKind::InvariantViolation, "cleanup reaper ownerなし")
+        })?.clone();
+        let monitor_context = context.clone();
+        let budget = self.policy.terminal_deadline;
+        let worker = WorkerRuntime::spawn_observed(
+            format!("tuner-hal2-cleanup-admission-{}", handle.object_id().0),
+            handle.object_id().0,
+            handle.generation().0,
+            move |control| -> Result<(), HalError> {
+                use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+                let started = Instant::now();
+                loop {
+                    if control.stop_requested() {
+                        return Ok(());
+                    }
+                    let Some(context) = context.upgrade() else {
+                        return Ok(());
+                    };
+                    match context.cleanup_retry_disposition(handle)? {
+                        AidlObjectCleanupDisposition::Stale
+                        | AidlObjectCleanupDisposition::Closed
+                        | AidlObjectCleanupDisposition::NoCleanupPending => return Ok(()),
+                        AidlObjectCleanupDisposition::Quarantined
+                            if context.quarantine_cleanup_has_owner(handle)? => return Ok(()),
+                        AidlObjectCleanupDisposition::RequiresIsolation
+                        | AidlObjectCleanupDisposition::Quarantined => {}
+                    }
+                    if queue
+                        .pending_value(&key)
+                        .map_err(CleanupReaperQueue::classify_enqueue_error)?
+                        .is_some()
+                    {
+                        return Ok(());
+                    }
+                    if let Ok(dependency) = context.cleanup_dependency_for_handle(handle) {
+                        match queue
+                            .enqueue_reserved(
+                                CleanupJob { handle, registered_at: Instant::now() },
+                                [(key, dependency)],
+                            )
+                            .map_err(CleanupReaperQueue::classify_enqueue_error)
+                        {
+                            Ok(()) => return Ok(()),
+                            Err(HalError::Busy { .. }) => {}
+                            Err(error) => return Err(error),
+                        }
+                    } else if matches!(
+                        context.cleanup_retry_disposition(handle)?,
+                        AidlObjectCleanupDisposition::Stale
+                            | AidlObjectCleanupDisposition::Closed
+                            | AidlObjectCleanupDisposition::NoCleanupPending
+                    ) {
+                        return Ok(());
+                    }
+                    if started.elapsed() >= budget {
+                        // active ownerの実行権限を奪わず、既存の局所隔離だけを試す。
+                        return match crate::object_runtime::quarantine_drop_leak_object(
+                            &context, handle,
+                        ) {
+                            Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
+                            | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => Ok(()),
+                            _ => Err(HalError::cleanup_failed(
+                                "cleanup reaper受付の監督期限",
+                                "既存ownerが終端せず、世代fence付きの局所隔離も確定できません",
+                            )),
+                        };
+                    }
+                    control.wait_until(Instant::now().checked_add(Duration::from_millis(10)));
+                }
+            },
+            move |terminal| {
+                if !matches!(
+                    terminal,
+                    WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested
+                ) {
+                    log::error!("cleanup受付監督workerが失敗しました: handle={handle:?} result={terminal:?}");
+                    if let Some(context) = monitor_context.upgrade() {
+                        maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(
+                            &context.runtime(),
+                        );
+                    }
+                }
+            },
+        )
+        .map_err(|error| HalError::Io {
+            backend: "cleanup-admission",
+            operation: "受付監督worker起動",
+            path: None,
+            errno: error.raw_os_error(),
+            detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(error.to_string()),
+        })?;
+        owner.admission_watchers.insert(key, worker);
+        Ok(())
+    }
+
     /// 同じ正本reaperが関連ownerの未完cleanupを既に受付済みか確認する。
     pub(crate) fn has_pending(&self, handle: AidlObjectHandle) -> Result<bool, HalError> {
         let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
-        let runtime = slot.as_ref().ok_or_else(|| {
+        let runtime = slot.queue.as_ref().ok_or_else(|| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "cleanup reaper ownerなし",
