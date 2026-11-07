@@ -520,7 +520,7 @@ pub fn drop_leak_cleanup_supervised_targets(
     Some(targets)
 }
 
-/// Test-only convenience for the original boolean contract.
+/// 元の真偽判定を確認する単体テスト専用の入口。
 #[cfg(test)]
 fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionReport) -> bool {
     drop_leak_cleanup_supervised_targets(report).is_some()
@@ -605,8 +605,8 @@ pub struct CloseCleanupAuthority {
     key: CloseCleanupAuthorityKey,
 }
 
-/// The original ObjectCloseTxn owner retains the completion obligation after
-/// handing a notifier worker to WorkerRuntimeSupervisor. No second owner table.
+/// 通知workerをSupervisorへ移管した後も、完了義務は既存ObjectCloseTxnが保持する。
+/// 別の所有台帳は設けない。
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct QuarantinedCleanupProgress {
     candidate_notifiers: BTreeMap<(AidlObjectId, AidlObjectGeneration), bool>,
@@ -1084,8 +1084,8 @@ impl ObjectCloseTxn {
         generation: AidlObjectGeneration,
         notifier_candidates: impl IntoIterator<Item = (AidlObjectId, AidlObjectGeneration)>,
     ) -> Result<(), ObjectCloseTxnStateError> {
-        // Reserving the canonical obligation precedes all physical cleanup. If a
-        // notifier finishes before its report, its completion is not lost.
+        // 物理cleanupより前に正本へ義務を登録する。
+        // 通知workerの回収がreportより先に終了しても完了通知を失わない。
         if self
             .obligations
             .get(&object_id)
@@ -1112,8 +1112,8 @@ impl ObjectCloseTxn {
         Ok(())
     }
 
-    /// Physical cleanup succeeded except for these typed, supervisor-owned
-    /// notifier handles. Returns true only after all have actually finished.
+    /// Supervisorに移管した通知worker以外の物理cleanupが成功した場合だけ呼ぶ。
+    /// 全通知workerの回収終了後に限り完了を返す。
     pub(crate) fn accept_quarantine_cleanup_report(
         &mut self,
         object_id: AidlObjectId,
@@ -1153,8 +1153,8 @@ impl ObjectCloseTxn {
         Ok(finished)
     }
 
-    /// Issued only after WorkerRuntimeSupervisor has joined a specific worker.
-    /// The same generation cannot be acknowledged twice as a new obligation.
+    /// WorkerRuntimeSupervisorが対象workerをjoinした後だけ通知する。
+    /// 同じ世代への重複通知から新たなcleanup義務を生成しない。
     pub(crate) fn notifier_joined(
         &mut self,
         notifier: (AidlObjectId, AidlObjectGeneration),
@@ -1637,8 +1637,8 @@ pub fn quarantine_object_drop_leak_use_case(
     let cascade_entries = quarantine_object_cascade(runtime, object_id, generation)?;
     let artifact_cleanup_commands =
         artifact_cleanup_commands_for_drop_leak_plan(runtime, &cascade_entries);
-    // The cleanup owner is installed under the same runtime lock as the fence,
-    // before the artifact executor can hand a worker to its Supervisor.
+    // 世代遮断と同じruntime lock下でcleanup義務を登録し、
+    // artifact executorがworkerをSupervisorへ移管するより前に正本を確定する。
     let notifier_candidates = artifact_cleanup_commands
         .iter()
         .filter(|command| command.kind == ObjectArtifactCleanupKind::DvrStatusNotifier)
@@ -1658,8 +1658,8 @@ pub fn quarantine_object_drop_leak_use_case(
     })
 }
 
-/// Accept a physical cleanup report without re-executing already completed
-/// external side effects. The original ObjectCloseTxn remains the only authority.
+/// 成功済みの外部副作用を再実行せず、物理cleanup reportを確定する。
+/// cleanupの実行・完了権限は既存ObjectCloseTxnだけが保持する。
 pub fn finish_quarantined_cleanup_report_use_case(
     runtime: &mut TunerServiceRuntime,
     object_id: AidlObjectId,
@@ -2018,7 +2018,7 @@ mod tests {
         assert!(!txn.has_outstanding_obligation(root, generation));
         assert!(txn.notifier_joined(notifier).is_empty());
 
-        // A fast Supervisor can complete before the last physical report.
+        // Supervisorの回収完了通知が物理cleanup reportより先に到着する場合。
         let mut txn = ObjectCloseTxn::new();
         txn.begin_quarantined_cleanup(root, generation, [notifier])
             .expect("次のテストownerを登録");
