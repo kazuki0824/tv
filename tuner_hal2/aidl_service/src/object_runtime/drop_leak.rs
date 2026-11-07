@@ -67,7 +67,12 @@ pub(crate) fn quarantine_drop_leak_object(
     };
 
     let mut error_collector = FirstErrorCollector::new();
-    let mut supervised_handoff = false;
+    let mut supervised_handoff: Option<
+        Vec<(
+            maleicacid_tuner_hal2_domain_request::AidlObjectId,
+            maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        )>,
+    > = None;
     match quarantine_result {
         Ok(plan) => {
             let terminalization_result = {
@@ -80,7 +85,7 @@ pub(crate) fn quarantine_drop_leak_object(
                     &mut artifact_executor,
                 );
                 let supervised_pending =
-                    maleicacid_tuner_hal2_service_runtime::drop_leak_cleanup_is_supervised_pending(
+                    maleicacid_tuner_hal2_service_runtime::drop_leak_cleanup_supervised_targets(
                         &report,
                     );
                 let terminalization_result = report
@@ -103,8 +108,8 @@ pub(crate) fn quarantine_drop_leak_object(
                 }
                 // 物理回収の成功とSupervisorへの所有権移管を別の値として返す。
                 // 後続reaperはCompletedとSupervisedPendingを混同できない。
-                if supervised_pending {
-                    supervised_handoff = true;
+                if let Some(pending) = supervised_pending {
+                    supervised_handoff = Some(pending);
                     Ok(())
                 } else {
                     terminalization_result
@@ -115,11 +120,29 @@ pub(crate) fn quarantine_drop_leak_object(
         Err(error) => error_collector.push_error(error),
     }
 
-    match error_collector.into_result() {
-        Err(error) => Err(status_from_hal_error(error)),
-        Ok(()) if supervised_handoff => Ok(DropLeakQuarantineOutcome::SupervisedPending),
-        Ok(()) => Ok(DropLeakQuarantineOutcome::Completed),
+    error_collector
+        .into_result()
+        .map_err(status_from_hal_error)?;
+
+    // ObjectCloseTxn was reserved under the runtime lock before any external
+    // cleanup. A notifier may join before or after this physical report.
+    {
+        let mut runtime =
+            TunerServiceRuntime::lock_shared(&runtime_handle, "Drop漏れ後片付け完了確定")
+                .map_err(status_from_hal_error)?;
+        maleicacid_tuner_hal2_service_runtime::finish_quarantined_cleanup_report_use_case(
+            &mut runtime,
+            handle.object_id(),
+            handle.generation(),
+            supervised_handoff.as_deref().unwrap_or(&[]),
+        )
+        .map_err(status_from_hal_error)?;
     }
+    Ok(if supervised_handoff.is_some() {
+        DropLeakQuarantineOutcome::SupervisedPending
+    } else {
+        DropLeakQuarantineOutcome::Completed
+    })
 }
 
 pub(crate) fn drop_leak_object_from_drop(
