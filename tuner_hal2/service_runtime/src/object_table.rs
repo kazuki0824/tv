@@ -608,6 +608,103 @@ impl RuntimeObjectTable {
             .any(|(id, gen)| self.object_close_txn.has_active_cleanup_attempt(id, gen)))
     }
 
+    pub(crate) fn begin_quarantine_cleanup(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        notifier_candidates: impl IntoIterator<Item = (AidlObjectId, AidlObjectGeneration)>,
+    ) -> Result<(), RuntimeObjectTableError> {
+        let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
+        if lifecycle != RuntimeObjectLifecycle::Quarantined {
+            return Err(RuntimeObjectTableError::InvalidLifecycle { object_id, lifecycle });
+        }
+        // A child whose own cleanup is unfinished cannot silently lose its
+        // independent authority when the parent's quarantine completes.
+        for (child_id, child_generation) in self.descendant_object_keys(object_id, generation) {
+            if self
+                .object_close_txn
+                .has_outstanding_obligation(child_id, child_generation)
+            {
+                return Err(RuntimeObjectTableError::InvalidLifecycle {
+                    object_id: child_id,
+                    lifecycle: self.entry_checked_any(child_id, child_generation)?.lifecycle,
+                });
+            }
+        }
+        self.object_close_txn
+            .begin_quarantined_cleanup(object_id, generation, notifier_candidates)
+            .map_err(|error| Self::close_txn_error(object_id, lifecycle, error))
+    }
+
+    fn close_completed_quarantine_cascade(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<(), RuntimeObjectTableError> {
+        let mut keys = self.descendant_object_keys(object_id, generation);
+        keys.push((object_id, generation));
+        // Preflight all generations before changing any lifecycle.
+        for (id, gen) in &keys {
+            let entry = self.entry_checked_any(*id, *gen)?;
+            if !matches!(
+                entry.lifecycle,
+                RuntimeObjectLifecycle::Quarantined | RuntimeObjectLifecycle::Closed
+            ) {
+                return Err(RuntimeObjectTableError::InvalidLifecycle {
+                    object_id: *id,
+                    lifecycle: entry.lifecycle,
+                });
+            }
+        }
+        for (id, gen) in keys {
+            let entry = self.entry_mut_checked_any(id, gen)?;
+            if entry.lifecycle == RuntimeObjectLifecycle::Quarantined {
+                entry.lifecycle = RuntimeObjectLifecycle::Closed;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_quarantined_cleanup_report(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        pending: &[(AidlObjectId, AidlObjectGeneration)],
+    ) -> Result<(), RuntimeObjectTableError> {
+        let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
+        if lifecycle != RuntimeObjectLifecycle::Quarantined {
+            return Err(RuntimeObjectTableError::InvalidLifecycle { object_id, lifecycle });
+        }
+        let completed = self
+            .object_close_txn
+            .accept_quarantine_cleanup_report(object_id, generation, pending)
+            .map_err(|error| Self::close_txn_error(object_id, lifecycle, error))?;
+        if completed {
+            self.close_completed_quarantine_cascade(object_id, generation)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn notify_supervised_dvr_joined(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<(), RuntimeObjectTableError> {
+        let finished = self.object_close_txn.notifier_joined((object_id, generation));
+        for (root_id, root_generation) in finished {
+            self.close_completed_quarantine_cascade(root_id, root_generation)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn quarantine_cleanup_is_managed(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> bool {
+        self.object_close_txn.has_managed_quarantine(object_id, generation)
+    }
+
     pub fn quarantine_cascade(
         &mut self,
         object_id: AidlObjectId,

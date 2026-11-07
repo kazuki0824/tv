@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInvalidStateKind,
@@ -587,11 +587,21 @@ pub struct CloseCleanupAuthority {
     key: CloseCleanupAuthorityKey,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The original ObjectCloseTxn owner retains the completion obligation after
+/// handing a notifier worker to WorkerRuntimeSupervisor. No second owner table.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QuarantinedCleanupProgress {
+    candidate_notifiers: BTreeMap<(AidlObjectId, AidlObjectGeneration), bool>,
+    report_accepted: bool,
+    pending_notifiers: BTreeSet<(AidlObjectId, AidlObjectGeneration)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct CloseCleanupObligation {
     generation: AidlObjectGeneration,
     obligation_id: u64,
     active_attempt: Option<u64>,
+    quarantine: Option<QuarantinedCleanupProgress>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1030,13 +1040,136 @@ impl ObjectCloseTxn {
         self.obligations.remove(&object_id);
     }
 
+    pub(crate) fn has_outstanding_obligation(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> bool {
+        self.obligations.get(&object_id).is_some_and(|obligation| {
+            obligation.generation == generation
+        })
+    }
+
+    pub(crate) fn has_managed_quarantine(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> bool {
+        self.obligations.get(&object_id).is_some_and(|obligation| {
+            obligation.generation == generation && obligation.quarantine.is_some()
+        })
+    }
+
+    pub(crate) fn begin_quarantined_cleanup(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        notifier_candidates: impl IntoIterator<Item = (AidlObjectId, AidlObjectGeneration)>,
+    ) -> Result<(), ObjectCloseTxnStateError> {
+        // Reserving the canonical obligation precedes all physical cleanup. If a
+        // notifier finishes before its report, its completion is not lost.
+        if self
+            .obligations
+            .get(&object_id)
+            .is_some_and(|obligation| obligation.quarantine.is_some())
+        {
+            return Err(ObjectCloseTxnStateError::InvalidAuthority);
+        }
+        let authority = self.issue_cleanup_authority(object_id, generation)?;
+        let obligation = self
+            .obligations
+            .get_mut(&object_id)
+            .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
+        if obligation.obligation_id != authority.obligation_id {
+            return Err(ObjectCloseTxnStateError::InvalidAuthority);
+        }
+        obligation.quarantine = Some(QuarantinedCleanupProgress {
+            candidate_notifiers: notifier_candidates
+                .into_iter()
+                .map(|key| (key, false))
+                .collect(),
+            report_accepted: false,
+            pending_notifiers: BTreeSet::new(),
+        });
+        Ok(())
+    }
+
+    /// Physical cleanup succeeded except for these typed, supervisor-owned
+    /// notifier handles. Returns true only after all have actually finished.
+    pub(crate) fn accept_quarantine_cleanup_report(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        pending: &[(AidlObjectId, AidlObjectGeneration)],
+    ) -> Result<bool, ObjectCloseTxnStateError> {
+        let obligation = self
+            .obligations
+            .get_mut(&object_id)
+            .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
+        if obligation.generation != generation || obligation.active_attempt.is_some() {
+            return Err(ObjectCloseTxnStateError::InvalidAuthority);
+        }
+        let progress = obligation
+            .quarantine
+            .as_mut()
+            .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
+        if progress.report_accepted {
+            return Err(ObjectCloseTxnStateError::InvalidAuthority);
+        }
+        let mut outstanding = BTreeSet::new();
+        for key in pending {
+            let joined = progress
+                .candidate_notifiers
+                .get(key)
+                .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
+            if !*joined {
+                outstanding.insert(*key);
+            }
+        }
+        progress.pending_notifiers = outstanding;
+        progress.report_accepted = true;
+        let finished = progress.pending_notifiers.is_empty();
+        if finished {
+            self.obligations.remove(&object_id);
+        }
+        Ok(finished)
+    }
+
+    /// Issued only after WorkerRuntimeSupervisor has joined a specific worker.
+    /// The same generation cannot be acknowledged twice as a new obligation.
+    pub(crate) fn notifier_joined(
+        &mut self,
+        notifier: (AidlObjectId, AidlObjectGeneration),
+    ) -> Vec<(AidlObjectId, AidlObjectGeneration)> {
+        let mut finished = Vec::new();
+        for (object_id, obligation) in &mut self.obligations {
+            let Some(progress) = obligation.quarantine.as_mut() else {
+                continue;
+            };
+            if let Some(joined) = progress.candidate_notifiers.get_mut(&notifier) {
+                *joined = true;
+                progress.pending_notifiers.remove(&notifier);
+                if progress.report_accepted && progress.pending_notifiers.is_empty() {
+                    finished.push((*object_id, obligation.generation));
+                }
+            }
+        }
+        for (object_id, _) in &finished {
+            self.obligations.remove(object_id);
+        }
+        finished
+    }
+
     pub(crate) fn issue_cleanup_authority(
         &mut self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<CloseCleanupAuthorityKey, ObjectCloseTxnStateError> {
         if let Some(obligation) = self.obligations.get(&object_id) {
-            if obligation.generation != generation || obligation.active_attempt.is_some() {
+            if obligation.generation != generation
+                || obligation.active_attempt.is_some()
+                || obligation.quarantine.is_some()
+            {
                 return Err(ObjectCloseTxnStateError::InvalidAuthority);
             }
             return Ok(CloseCleanupAuthorityKey {
@@ -1056,6 +1189,7 @@ impl ObjectCloseTxn {
                 generation,
                 obligation_id,
                 active_attempt: None,
+                quarantine: None,
             },
         );
         Ok(CloseCleanupAuthorityKey { obligation_id })
@@ -1070,7 +1204,7 @@ impl ObjectCloseTxn {
         let obligation = self
             .obligations
             .get(&object_id)
-            .copied()
+            .cloned()
             .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
         if obligation.generation != generation
             || obligation.obligation_id != authority.obligation_id
@@ -1475,6 +1609,16 @@ pub fn quarantine_object_drop_leak_use_case(
     let cascade_entries = quarantine_object_cascade(runtime, object_id, generation)?;
     let artifact_cleanup_commands =
         artifact_cleanup_commands_for_drop_leak_plan(runtime, &cascade_entries);
+    // The cleanup owner is installed under the same runtime lock as the fence,
+    // before the artifact executor can hand a worker to its Supervisor.
+    let notifier_candidates = artifact_cleanup_commands
+        .iter()
+        .filter(|command| command.kind == ObjectArtifactCleanupKind::DvrStatusNotifier)
+        .map(|command| (command.object_id, command.generation));
+    runtime
+        .object_table_mut()
+        .begin_quarantine_cleanup(object_id, generation, notifier_candidates)
+        .map_err(object_table_error_to_hal)?;
     let domain_cleanup_commands = cascade_entries
         .iter()
         .filter_map(drop_leak_domain_cleanup_command_for_entry)
@@ -1484,6 +1628,31 @@ pub fn quarantine_object_drop_leak_use_case(
         artifact_cleanup_commands,
         domain_cleanup_commands,
     })
+}
+
+/// Accept a physical cleanup report without re-executing already completed
+/// external side effects. The original ObjectCloseTxn remains the only authority.
+pub fn finish_quarantined_cleanup_report_use_case(
+    runtime: &mut TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    pending: &[(AidlObjectId, AidlObjectGeneration)],
+) -> Result<(), HalError> {
+    runtime
+        .object_table_mut()
+        .finish_quarantined_cleanup_report(object_id, generation, pending)
+        .map_err(object_table_error_to_hal)
+}
+
+pub fn notify_supervised_dvr_joined_use_case(
+    runtime: &mut TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+) -> Result<(), HalError> {
+    runtime
+        .object_table_mut()
+        .notify_supervised_dvr_joined(object_id, generation)
+        .map_err(object_table_error_to_hal)
 }
 
 pub(crate) fn quarantine_object_cascade(
