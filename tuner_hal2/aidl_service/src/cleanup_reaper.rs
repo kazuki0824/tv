@@ -453,7 +453,9 @@ mod tests {
             if context.cleanup_retry_disposition(parent_handle)
                 == Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
                 && context.cleanup_retry_disposition(child_handle)
-                    == Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
+                    == Ok(
+                        maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed,
+                    )
             {
                 return;
             }
