@@ -187,6 +187,9 @@ fn run_cleanup_job(
 ) {
     let key = CleanupJobKey::from_handle(job.handle);
     let mut attempt = 0usize;
+    // 物理cleanup済みではなくDVR notifierの回収移管中。reaper予約は
+    // Supervisorが実workerを終了させるまでこのjob内で保持する。
+    let mut notifier_handoff_pending = false;
     loop {
         if worker.stop_requested() {
             return;
@@ -196,40 +199,74 @@ fn run_cleanup_job(
             // reaper状態が破棄されるまで未完了の予約を保持する。
             return;
         };
+        if notifier_handoff_pending {
+            match crate::dvr_callback_delivery::dvr_notifier_supervised_cleanup_complete(
+                &context,
+                job.handle,
+            ) {
+                Ok(true) => return,
+                Ok(false) => {
+                    worker.wait_until(Instant::now().checked_add(Duration::from_millis(100)));
+                    continue;
+                }
+                Err(error) => {
+                    log::error!(
+                        "DVR通知workerのSupervisor回収状態を確認できません: handle={:?} error={error:?}",
+                        job.handle
+                    );
+                    mark_cleanup_reaper_critical(&context);
+                    return;
+                }
+            }
+        }
         if job.registered_at.elapsed() >= policy.terminal_deadline {
             use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
-            let terminal = match context.cleanup_retry_disposition(job.handle) {
-                Ok(AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Closed) => {
-                    true
+            match context.cleanup_retry_disposition(job.handle) {
+                Ok(AidlObjectCleanupDisposition::Stale
+                    | AidlObjectCleanupDisposition::Closed
+                    | AidlObjectCleanupDisposition::NoCleanupPending) => return,
+                Ok(AidlObjectCleanupDisposition::Quarantined) => {
+                    // Quarantinedは局所的な隔離であり物理回収の完了ではない。
+                    // それだけを理由に全体停止しない。未完義務は既存ObjectCloseTxnに残る。
+                    log::warn!(
+                        "cleanup reaper期限後も対象は局所隔離中です: handle={:?}",
+                        job.handle
+                    );
+                    return;
                 }
                 Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
-                    // 物理完了と、DVR notifier Supervisorへの回収権限移管は別。
-                    // いずれもこのcleanup reaperの担当は終了するが、後者では
-                    // supervisorが実workerの回収と完了観測を継続する。
                     match crate::object_runtime::quarantine_drop_leak_object(&context, job.handle) {
-                        Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed) => true,
+                        Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed) => return,
                         Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
-                            log::warn!(
-                                "DVR notifierの回収はSupervisorへ移管済みです: handle={:?}",
-                                job.handle
-                            );
-                            true
+                            // Supervisorが持つworkerの終了を観測するまでgroupを解放しない。
+                            notifier_handoff_pending = true;
+                            continue;
                         }
                         Err(error) => {
                             log::error!(
                                 "cleanup reaper期限の隔離に失敗しました: handle={:?} error={error:?}",
                                 job.handle
                             );
-                            false
+                            // 局所隔離自体が成立しているなら全体停止には昇格しない。
+                            if context.cleanup_retry_disposition(job.handle)
+                                == Ok(AidlObjectCleanupDisposition::Quarantined)
+                            {
+                                return;
+                            }
+                            mark_cleanup_reaper_critical(&context);
+                            return;
                         }
                     }
                 }
-                _ => false,
-            };
-            if !terminal {
-                mark_cleanup_reaper_critical(&context);
+                Err(error) => {
+                    log::error!(
+                        "cleanup reaper期限の状態判定に失敗しました: handle={:?} error={error:?}",
+                        job.handle
+                    );
+                    mark_cleanup_reaper_critical(&context);
+                    return;
+                }
             }
-            return;
         }
         let dependency = match context.cleanup_dependency_for_handle(job.handle) {
             Ok(dependency) => dependency,
