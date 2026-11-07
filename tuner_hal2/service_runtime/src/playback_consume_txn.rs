@@ -343,7 +343,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn delayed_playback_packet_cannot_commit_after_boundary_in_worker_runtime() {
         use std::sync::{mpsc, Arc, Mutex};
@@ -355,29 +354,29 @@ mod tests {
         let (resume_tx, resume_rx) = mpsc::sync_channel::<()>(0);
         let worker_state = Arc::clone(&shared);
         let worker = std::thread::spawn(move || {
-                let pending = {
-                    let guard = worker_state.lock().unwrap();
-                    let (demux, txn) = &*guard;
-                    txn.pending_packet(demux)
-                        .expect("パケット取得")
-                        .expect("隔離前にPlaybackPacketを取得する")
-                };
-                ready_tx.send(()).expect("取得済みパケット通知");
-                resume_rx.recv().expect("境界確定後に再開");
-                let packet_bytes = *pending.bytes();
-                let output = ValidatedTsPacket::validate(&packet_bytes).expect("正しいTS");
-                let mut guard = worker_state.lock().unwrap();
-                let (demux, txn) = &mut *guard;
-                let result = txn
-                    .consume(demux, pending, Some(&output))
-                    .expect("遅延したconsume完了");
-                (
-                    result.completed_packets,
-                    demux
-                        .note_playback_consume_result(7, 0, 0, 0)
-                        .expect("注入診断")
-                        .injected_packets,
-                )
+            let pending = {
+                let guard = worker_state.lock().unwrap();
+                let (demux, txn) = &*guard;
+                txn.pending_packet(demux)
+                    .expect("パケット取得")
+                    .expect("隔離前にPlaybackPacketを取得する")
+            };
+            ready_tx.send(()).expect("取得済みパケット通知");
+            resume_rx.recv().expect("境界確定後に再開");
+            let packet_bytes = *pending.bytes();
+            let output = ValidatedTsPacket::validate(&packet_bytes).expect("正しいTS");
+            let mut guard = worker_state.lock().unwrap();
+            let (demux, txn) = &mut *guard;
+            let result = txn
+                .consume(demux, pending, Some(&output))
+                .expect("遅延したconsume完了");
+            (
+                result.completed_packets,
+                demux
+                    .note_playback_consume_result(7, 0, 0, 0)
+                    .expect("注入診断")
+                    .injected_packets,
+            )
         });
 
         ready_rx.recv().expect("旧世代パケット取得済み");
@@ -406,24 +405,24 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel::<()>(0);
         let worker_state = Arc::clone(&shared);
         let worker = std::thread::spawn(move || {
-                let mut guard = worker_state.lock().unwrap();
-                let (demux, txn) = &mut *guard;
-                let pending = txn
-                    .pending_packet(demux)
-                    .expect("パケット照会")
-                    .expect("PlaybackPacket取得");
-                let bytes = *pending.bytes();
-                let output = ValidatedTsPacket::validate(&bytes).expect("正しいTS");
-                assert_eq!(
-                    txn.consume(demux, pending, Some(&output))
-                        .expect("確定済みconsume")
-                        .completed_packets,
-                    1
-                );
-                committed_tx.send(()).expect("commit完了通知");
-                // service/runtime lockを保持したまま待ち、後続のboundaryが
-                // 既に確定したcommitの途中へ割り込めないことを確認する。
-                release_rx.recv().expect("lock解放");
+            let mut guard = worker_state.lock().unwrap();
+            let (demux, txn) = &mut *guard;
+            let pending = txn
+                .pending_packet(demux)
+                .expect("パケット照会")
+                .expect("PlaybackPacket取得");
+            let bytes = *pending.bytes();
+            let output = ValidatedTsPacket::validate(&bytes).expect("正しいTS");
+            assert_eq!(
+                txn.consume(demux, pending, Some(&output))
+                    .expect("確定済みconsume")
+                    .completed_packets,
+                1
+            );
+            committed_tx.send(()).expect("commit完了通知");
+            // service/runtime lockを保持したまま待ち、後続のboundaryが
+            // 既に確定したcommitの途中へ割り込めないことを確認する。
+            release_rx.recv().expect("lock解放");
         });
 
         committed_rx.recv().expect("先行commit完了");
