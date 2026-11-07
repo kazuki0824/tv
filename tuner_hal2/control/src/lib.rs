@@ -2351,6 +2351,17 @@ mod tests {
     }
 
     #[test]
+    fn full_reaper_reservation_reports_busy_not_invariant_violation() {
+        let pending = super::WorkerRuntimeReaperPending::new(1);
+        let group = pending.reserve_group([(1u32, 1u32)]).unwrap();
+        let error = pending.reserve_group([(2, 2)]).unwrap_err();
+        assert!(matches!(error, maleicacid_tuner_hal2_common::HalError::Busy { .. }));
+        assert_eq!(pending.pending_value(&1).unwrap(), Some(1));
+        pending.release_group(group).unwrap();
+        assert!(pending.reserve_group([(2, 2)]).is_ok());
+    }
+
+    #[test]
     fn reaper_admission_timeout_keeps_both_endpoint_reservations() {
         use std::time::{Duration, Instant};
         let pending = super::WorkerRuntimeReaperPending::new(1);
