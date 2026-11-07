@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Weak};
 
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInvalidStateKind,
@@ -776,6 +777,7 @@ impl QuarantineCleanupReport {
         &self.report
     }
 
+    /// report受領後もSupervisorのjoin待ちが残る場合だけtrueを返す。
     pub fn finish(self, runtime: &mut TunerServiceRuntime) -> Result<bool, HalError> {
         let supervised = drop_leak_cleanup_supervised_targets(&self.report);
         if supervised.is_none() {
@@ -790,8 +792,8 @@ impl QuarantineCleanupReport {
                 self.generation,
                 supervised.as_deref().unwrap_or(&[]),
             )
-            .map_err(object_table_error_to_hal)?;
-        Ok(supervised.is_some())
+            .map(|completed| !completed)
+            .map_err(object_table_error_to_hal)
     }
 }
 
@@ -1068,6 +1070,8 @@ fn unregister_public_runtime_entries_for_drop_leak(
 #[derive(Debug)]
 pub struct ObjectCloseTxn {
     obligations: BTreeMap<AidlObjectId, CloseCleanupObligation>,
+    // workerの生存状態はSupervisorが保持する。ここではjoin証明の同一性だけを照合する。
+    dvr_notifier_registrations: BTreeMap<AidlObjectId, Weak<()>>,
     next_obligation_id: u64,
     next_attempt_id: u64,
 }
@@ -1076,6 +1080,7 @@ impl ObjectCloseTxn {
     pub(crate) fn new() -> Self {
         Self {
             obligations: BTreeMap::new(),
+            dvr_notifier_registrations: BTreeMap::new(),
             next_obligation_id: 0,
             next_attempt_id: 0,
         }
@@ -1083,12 +1088,50 @@ impl ObjectCloseTxn {
 
     pub(crate) fn clear(&mut self) {
         self.obligations.clear();
+        self.dvr_notifier_registrations.clear();
         self.next_obligation_id = 0;
         self.next_attempt_id = 0;
     }
 
     pub(crate) fn clear_obligation(&mut self, object_id: AidlObjectId) {
         self.obligations.remove(&object_id);
+        self.clear_dvr_notifier_registration(object_id);
+    }
+
+    pub(crate) fn clear_dvr_notifier_registration(&mut self, object_id: AidlObjectId) {
+        self.dvr_notifier_registrations.remove(&object_id);
+    }
+
+    pub(crate) fn register_dvr_notifier(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<DvrNotifierStart, HalError> {
+        if self
+            .dvr_notifier_registrations
+            .get(&object_id)
+            .and_then(Weak::upgrade)
+            .is_some()
+        {
+            return Err(HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "同一DVR ownerの通知workerが既に登録されています",
+            ));
+        }
+        let identity = Arc::new(());
+        self.dvr_notifier_registrations
+            .insert(object_id, Arc::downgrade(&identity));
+        Ok(DvrNotifierStart {
+            object_id,
+            generation,
+            identity,
+        })
+    }
+
+    pub(crate) fn matches_dvr_notifier(&self, registration: &DvrNotifierStart) -> bool {
+        self.dvr_notifier_registrations
+            .get(&registration.object_id)
+            .is_some_and(|identity| identity.ptr_eq(&Arc::downgrade(&registration.identity)))
     }
 
     #[cfg(test)]
@@ -1735,27 +1778,73 @@ pub fn quarantine_object_drop_leak_use_case(
     }))
 }
 
-/// Supervisorが所有する通知workerを消費し、joinの成功からだけ完了権限を発行する。
+/// 生存DVRに対してruntimeが一度だけ発行する通知workerの起動権限。
 #[must_use]
-pub struct DvrNotifierJoinCompletion {
+pub struct DvrNotifierStart {
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
+    identity: Arc<()>,
 }
 
-impl DvrNotifierJoinCompletion {
+impl DvrNotifierStart {
+    pub fn register(
+        runtime: &mut TunerServiceRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Self, HalError> {
+        runtime
+            .object_table_mut()
+            .register_dvr_notifier(object_id, generation)
+    }
+
+    pub(crate) fn key(&self) -> (AidlObjectId, AidlObjectGeneration) {
+        (self.object_id, self.generation)
+    }
+
+    pub fn spawn(
+        self,
+        name: String,
+        run: impl FnOnce(crate::WorkerContext) -> Result<(), HalError> + Send + 'static,
+        wake_supervisor: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<DvrNotifierWorker> {
+        let worker = crate::WorkerRuntime::spawn(
+            name,
+            self.object_id.0,
+            self.generation.0,
+            run,
+            wake_supervisor,
+        )?;
+        Ok(DvrNotifierWorker {
+            worker,
+            registration: self,
+        })
+    }
+}
+
+/// 起動権限を消費して起動した実workerだけをSupervisorへ渡す。
+#[must_use]
+pub struct DvrNotifierWorker {
+    worker: crate::WorkerRuntime<()>,
+    registration: DvrNotifierStart,
+}
+
+impl DvrNotifierWorker {
+    pub fn is_finished(&self) -> bool {
+        self.worker.is_finished()
+    }
+
+    pub fn request_stop(&self) {
+        self.worker.request_stop();
+    }
+
     pub fn join(
-        worker: crate::WorkerRuntime<()>,
-    ) -> (crate::ClassifiedWorkerTerminalResult<()>, Option<Self>) {
-        let object_id = AidlObjectId(worker.owner_id());
-        let generation = AidlObjectGeneration(worker.generation());
-        let (terminal, completion) = match worker.join_with_result() {
-            Ok(terminal) => (
-                terminal,
-                Some(Self {
-                    object_id,
-                    generation,
-                }),
-            ),
+        self,
+    ) -> (
+        crate::ClassifiedWorkerTerminalResult<()>,
+        Option<DvrNotifierJoinCompletion>,
+    ) {
+        let (terminal, completion) = match self.worker.join_with_result() {
+            Ok(terminal) => (terminal, Some(DvrNotifierJoinCompletion(self.registration))),
             Err(error) => (error.into_terminal_result("DVR notifier"), None),
         };
         (
@@ -1766,11 +1855,17 @@ impl DvrNotifierJoinCompletion {
             completion,
         )
     }
+}
 
+/// 登録したworkerの実join成功からだけ発行する、消費型の回収証明。
+#[must_use]
+pub struct DvrNotifierJoinCompletion(DvrNotifierStart);
+
+impl DvrNotifierJoinCompletion {
     pub fn finish(self, runtime: &mut TunerServiceRuntime) -> Result<(), HalError> {
         runtime
             .object_table_mut()
-            .notify_supervised_dvr_joined(self.object_id, self.generation)
+            .finish_dvr_notifier_join(&self.0)
             .map_err(object_table_error_to_hal)
     }
 }
@@ -1795,22 +1890,29 @@ mod tests {
 
     #[test]
     fn failed_dvr_worker_can_prove_successful_join() {
-        let worker = crate::WorkerRuntime::<()>::spawn(
-            "dvr-join-regression".to_string(),
-            17,
-            2,
-            |_| Err(HalError::cleanup_failed("DVR通知", "異常終了を注入")),
-            || {},
-        )
-        .unwrap();
-        let (terminal, completion) = DvrNotifierJoinCompletion::join(worker);
+        let mut txn = ObjectCloseTxn::new();
+        let object_id = AidlObjectId(17);
+        let generation = AidlObjectGeneration(2);
+        let mut other_txn = ObjectCloseTxn::new();
+        let foreign = other_txn.register_dvr_notifier(object_id, generation).unwrap();
+        let registration = txn.register_dvr_notifier(object_id, generation).unwrap();
+        assert!(txn.register_dvr_notifier(object_id, generation).is_err());
+        let worker = registration
+            .spawn(
+                "dvr-join-regression".to_string(),
+                |_| Err(HalError::cleanup_failed("DVR通知", "異常終了を注入")),
+                || {},
+            )
+            .unwrap();
+        let (terminal, completion) = worker.join();
         assert!(matches!(
             terminal,
             crate::ClassifiedWorkerTerminalResult::Failure { .. }
         ));
         let completion = completion.expect("業務結果が失敗でもjoinは完了する");
-        assert_eq!(completion.object_id, AidlObjectId(17));
-        assert_eq!(completion.generation, AidlObjectGeneration(2));
+        assert!(txn.matches_dvr_notifier(&completion.0));
+        assert!(!other_txn.matches_dvr_notifier(&completion.0));
+        assert!(!txn.matches_dvr_notifier(&foreign));
     }
 
     #[test]

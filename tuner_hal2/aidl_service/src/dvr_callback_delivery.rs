@@ -14,7 +14,7 @@ use maleicacid_tuner_hal2_common::{
 use maleicacid_tuner_hal2_demux::DvrStatusEvent;
 use maleicacid_tuner_hal2_service_runtime::{
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, CapabilitySnapshot,
-    ClassifiedWorkerTerminalResult, DvrNotifierJoinCompletion,
+    ClassifiedWorkerTerminalResult, DvrNotifierStart, DvrNotifierWorker,
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationFailureKind,
     DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
     DvrStatusPollSnapshot, TunerServiceRuntime, WorkerFailureClassifier, WorkerRuntime,
@@ -44,7 +44,7 @@ impl DvrStatusNotifierKey {
 }
 
 pub(crate) struct DvrStatusNotifier {
-    worker: WorkerRuntime<()>,
+    worker: DvrNotifierWorker,
 }
 
 struct DvrStatusNotifierReaperJob {
@@ -823,15 +823,18 @@ fn spawn_dvr_status_notifier(
     handle: AidlObjectHandle,
     supervisor: Weak<DvrStatusNotifierSupervisor>,
 ) -> Result<DvrStatusNotifier, HalError> {
+    let runtime = context.runtime();
+    let registration = {
+        let mut runtime = TunerServiceRuntime::lock_shared(&runtime, "DVR通知workerの登録")?;
+        DvrNotifierStart::register(&mut runtime, handle.object_id(), handle.generation())?
+    };
     let thread_context = Arc::clone(context);
-    let worker = WorkerRuntime::spawn(
+    let worker = registration.spawn(
         format!(
             "tuner-hal2-dvr-status-{}-{}",
             handle.object_id().0,
             handle.generation().0
         ),
-        handle.object_id().0,
-        handle.generation().0,
         move |cancel| {
             run_dvr_status_notifier_with_terminal_diagnostic(thread_context, handle, cancel)
         },
@@ -984,7 +987,7 @@ fn finish_reaped_dvr_status_notifier(
 ) {
     let handle = job.handle;
     let restart_requested = job.restart_requested;
-    let (terminal, join_completion) = DvrNotifierJoinCompletion::join(job.notifier.worker);
+    let (terminal, join_completion) = job.notifier.worker.join();
     let cleanup_result = match &terminal {
         ClassifiedWorkerTerminalResult::Normal(())
         | ClassifiedWorkerTerminalResult::StopRequested => Ok(()),
