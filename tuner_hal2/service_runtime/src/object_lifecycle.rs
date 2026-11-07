@@ -129,11 +129,13 @@ pub fn aidl_object_quarantine_cleanup_has_owner(
     generation: AidlObjectGeneration,
     expected_kind: AidlObjectKind,
 ) -> Result<bool, HalError> {
-    Ok(aidl_object_cleanup_disposition(runtime, object_id, generation, expected_kind)?
-        == AidlObjectCleanupDisposition::Quarantined
-        && runtime
-            .object_table()
-            .quarantine_cleanup_is_managed(object_id, generation))
+    Ok(
+        aidl_object_cleanup_disposition(runtime, object_id, generation, expected_kind)?
+            == AidlObjectCleanupDisposition::Quarantined
+            && runtime
+                .object_table()
+                .quarantine_cleanup_is_managed(object_id, generation),
+    )
 }
 
 pub fn aidl_object_cleanup_dependency(
