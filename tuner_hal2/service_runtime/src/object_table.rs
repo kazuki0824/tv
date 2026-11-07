@@ -267,10 +267,9 @@ impl RuntimeObjectTable {
     ) -> Result<(), RuntimeObjectTableError> {
         if let Some(existing) = self.entries.get(&entry.object_id) {
             if !existing.lifecycle.is_terminal()
-                || self.object_close_txn.has_outstanding_obligation(
-                    existing.object_id,
-                    existing.generation,
-                )
+                || self
+                    .object_close_txn
+                    .has_outstanding_obligation(existing.object_id, existing.generation)
             {
                 return Err(RuntimeObjectTableError::DuplicateObjectId {
                     object_id: entry.object_id,
@@ -283,10 +282,9 @@ impl RuntimeObjectTable {
             existing.object_kind == entry.object_kind
                 && existing.ledger_id == entry.ledger_id
                 && (!existing.lifecycle.is_terminal()
-                    || self.object_close_txn.has_outstanding_obligation(
-                        existing.object_id,
-                        existing.generation,
-                    ))
+                    || self
+                        .object_close_txn
+                        .has_outstanding_obligation(existing.object_id, existing.generation))
         }) {
             return Err(RuntimeObjectTableError::DuplicateRuntimeBinding {
                 object_kind: entry.object_kind,
@@ -637,7 +635,10 @@ impl RuntimeObjectTable {
     ) -> Result<(), RuntimeObjectTableError> {
         let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
         if lifecycle != RuntimeObjectLifecycle::Quarantined {
-            return Err(RuntimeObjectTableError::InvalidLifecycle { object_id, lifecycle });
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle,
+            });
         }
         // A child whose own cleanup is unfinished cannot silently lose its
         // independent authority when the parent's quarantine completes.
@@ -648,7 +649,9 @@ impl RuntimeObjectTable {
             {
                 return Err(RuntimeObjectTableError::InvalidLifecycle {
                     object_id: child_id,
-                    lifecycle: self.entry_checked_any(child_id, child_generation)?.lifecycle,
+                    lifecycle: self
+                        .entry_checked_any(child_id, child_generation)?
+                        .lifecycle,
                 });
             }
         }
@@ -694,7 +697,10 @@ impl RuntimeObjectTable {
     ) -> Result<(), RuntimeObjectTableError> {
         let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
         if lifecycle != RuntimeObjectLifecycle::Quarantined {
-            return Err(RuntimeObjectTableError::InvalidLifecycle { object_id, lifecycle });
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle,
+            });
         }
         let completed = self
             .object_close_txn
@@ -711,7 +717,9 @@ impl RuntimeObjectTable {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<(), RuntimeObjectTableError> {
-        let finished = self.object_close_txn.notifier_joined((object_id, generation));
+        let finished = self
+            .object_close_txn
+            .notifier_joined((object_id, generation));
         for (root_id, root_generation) in finished {
             self.close_completed_quarantine_cascade(root_id, root_generation)?;
         }
@@ -723,7 +731,8 @@ impl RuntimeObjectTable {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> bool {
-        self.object_close_txn.has_managed_quarantine(object_id, generation)
+        self.object_close_txn
+            .has_managed_quarantine(object_id, generation)
     }
 
     pub fn quarantine_cascade(
@@ -1195,11 +1204,7 @@ mod qg_object_lifecycle_tests {
             .begin_quarantine_cleanup(object_id, generation, [(object_id, generation)])
             .expect("ObjectCloseTxnが未完義務を保持");
         table
-            .finish_quarantined_cleanup_report(
-                object_id,
-                generation,
-                &[(object_id, generation)],
-            )
+            .finish_quarantined_cleanup_report(object_id, generation, &[(object_id, generation)])
             .expect("DVR WorkerをSupervisorに移管");
         assert!(table
             .insert(entry(

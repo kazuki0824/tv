@@ -245,11 +245,9 @@ fn run_cleanup_job(
                 // initial read. Re-check the same cleanup owner.
                 if matches!(
                     context.cleanup_retry_disposition(job.handle),
-                    Ok(
-                        AidlObjectCleanupDisposition::Stale
-                            | AidlObjectCleanupDisposition::Closed
-                            | AidlObjectCleanupDisposition::NoCleanupPending
-                    )
+                    Ok(AidlObjectCleanupDisposition::Stale
+                        | AidlObjectCleanupDisposition::Closed
+                        | AidlObjectCleanupDisposition::NoCleanupPending)
                 ) || context.quarantine_cleanup_has_owner(job.handle) == Ok(true)
                 {
                     return;
