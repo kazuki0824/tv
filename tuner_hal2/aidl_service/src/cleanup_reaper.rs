@@ -221,9 +221,16 @@ impl CleanupReaperQueue {
                 ),
             });
         }
-        let queue = owner.queue.as_ref().ok_or_else(|| {
-            HalError::internal(HalInternalKind::InvariantViolation, "cleanup reaper ownerなし")
-        })?.clone();
+        let queue = owner
+            .queue
+            .as_ref()
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "cleanup reaper ownerなし",
+                )
+            })?
+            .clone();
         let monitor_context = context.clone();
         let budget = self.policy.terminal_deadline;
         let worker = WorkerRuntime::spawn_observed(
@@ -921,13 +928,10 @@ mod tests {
     }
 
     /// reaper満杯時の未予約active ownerを、外部APIの再呼出しなしで監督する。
-    fn admission_monitor_case(
-        complete_owner: bool,
-    ) {
+    fn admission_monitor_case(complete_owner: bool) {
         use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
         use maleicacid_tuner_hal2_service_runtime::{
-            close_object_use_case, finish_object_close_use_case, TunerServiceRuntime,
-            WorkerRuntime,
+            close_object_use_case, finish_object_close_use_case, TunerServiceRuntime, WorkerRuntime,
         };
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{mpsc, Mutex};
@@ -974,7 +978,9 @@ mod tests {
             },
         );
         queue
-            .install(WorkerRuntime::start_reaper_queue(1, "test-admission-monitor", runner).unwrap())
+            .install(
+                WorkerRuntime::start_reaper_queue(1, "test-admission-monitor", runner).unwrap(),
+            )
             .unwrap();
         let unrelated = AidlObjectHandle::new(
             AidlObjectKind::Filter,
@@ -993,17 +999,10 @@ mod tests {
         queue
             .supervise_unqueued_owner(Arc::downgrade(&context), handle)
             .expect("同一世代の監督workerは重複生成しない");
-        assert_eq!(
-            queue.runtime.lock().unwrap().admission_watchers.len(),
-            1
-        );
+        assert_eq!(queue.runtime.lock().unwrap().admission_watchers.len(), 1);
         if complete_owner {
-            finish_object_close_use_case(
-                &mut runtime.lock().unwrap(),
-                attempt.completion,
-                Ok(()),
-            )
-            .unwrap();
+            finish_object_close_use_case(&mut runtime.lock().unwrap(), attempt.completion, Ok(()))
+                .unwrap();
         }
         let key = CleanupJobKey::from_handle(handle);
         let mut finished = false;
@@ -1028,10 +1027,12 @@ mod tests {
             !complete_owner,
             "正常完了時は全体停止せず、無応答時はfail-stopする"
         );
-        assert!(matches!(
-            context.cleanup_retry_disposition(handle),
-            Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
-        ) == complete_owner);
+        assert!(
+            matches!(
+                context.cleanup_retry_disposition(handle),
+                Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
+            ) == complete_owner
+        );
     }
 
     #[test]
