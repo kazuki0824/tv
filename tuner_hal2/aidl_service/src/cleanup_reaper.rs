@@ -730,6 +730,108 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_second_cleanup_capacity_full_is_retryable_busy() {
+        use maleicacid_tuner_hal2_service_runtime::WorkerRuntime;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+
+        let mut snapshot = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::new()
+            .capability_snapshot();
+        snapshot.cleanup_reaper_capacity = 1;
+        snapshot.cleanup_retry_schedule_ms = [0, 10, 20, 40];
+        let queue = CleanupReaperQueue::from_snapshot(snapshot);
+        let release = Arc::new(AtomicBool::new(false));
+        let release_worker = Arc::clone(&release);
+        let (started_tx, started_rx) = mpsc::channel();
+        let runner = Arc::new(move |_: CleanupJob, _: _, _: maleicacid_tuner_hal2_service_runtime::WorkerContext| {
+            started_tx.send(()).unwrap();
+            while !release_worker.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+        });
+        let owner = WorkerRuntime::start_reaper_queue(1, "test-capacity-reaper", runner).unwrap();
+        queue.install(owner).unwrap();
+        let first = AidlObjectHandle::new(
+            AidlObjectKind::Filter, AidlObjectId(100), AidlObjectGeneration(1),
+        );
+        let second = AidlObjectHandle::new(
+            AidlObjectKind::Filter, AidlObjectId(101), AidlObjectGeneration(1),
+        );
+        queue.enqueue(first, CleanupStep::StopWorker).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let busy = queue.enqueue(second, CleanupStep::StopWorker).unwrap_err();
+        assert!(matches!(busy, HalError::Busy { .. }));
+        assert!(queue.has_pending(first).unwrap());
+        assert!(!queue.has_pending(second).unwrap());
+        release.store(true, Ordering::Release);
+        for _ in 0..100 {
+            if queue.enqueue(second, CleanupStep::StopWorker).is_ok() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("容量解放後も次のcleanup予約を受け付けられませんでした");
+    }
+
+    #[test]
+    fn active_owner_may_finish_after_delegation_deadline_without_hal_shutdown() {
+        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
+        use maleicacid_tuner_hal2_service_runtime::{
+            close_object_use_case, finish_object_close_use_case, TunerServiceRuntime, WorkerRuntime,
+        };
+        use std::sync::{mpsc, Mutex};
+
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let demux = runtime
+            .lock()
+            .unwrap()
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .unwrap();
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Demux, demux.object_id(), demux.generation(),
+        );
+        let close = close_object_use_case(
+            &mut runtime.lock().unwrap(),
+            demux.object_id(), demux.generation(),
+            AidlObjectKind::Demux, AidlMethodCall::DemuxClose,
+        )
+        .unwrap();
+        let attempt = close.begin_cleanup_attempt(&mut runtime.lock().unwrap()).unwrap();
+        let failure = runtime.lock().unwrap().failure_state();
+        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
+        let weak = Arc::downgrade(&context);
+        let policy = CleanupReaperPolicy {
+            max_jobs: 1,
+            terminal_deadline: Duration::from_millis(10),
+            retry_delays: [Duration::ZERO; 4],
+        };
+        let (done_tx, done_rx) = mpsc::channel();
+        let runner = Arc::new(move |job, pending, worker| {
+            run_cleanup_job(weak.clone(), policy, job, pending, worker);
+            done_tx.send(()).unwrap();
+        });
+        let queue = WorkerRuntime::start_reaper_queue(1, "test-delegation-deadline", runner).unwrap();
+        queue.enqueue_reserved(
+            CleanupJob {
+                handle,
+                registered_at: Instant::now() - Duration::from_millis(50),
+            },
+            [(CleanupJobKey::from_handle(handle), CleanupStep::ReleaseBackend)],
+        ).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(55));
+            finish_object_close_use_case(&mut runtime.lock().unwrap(), attempt.completion, Ok(())).unwrap();
+        });
+        done_rx.recv_timeout(Duration::from_secs(2)).expect("別ownerの正常完了後にreaper終了");
+        release.join().unwrap();
+        assert!(!failure.snapshot().service_critical);
+    }
+
+    #[test]
     fn poisoned_owner_slot_rejects_enqueue_with_identity() {
         let queue = CleanupReaperQueue::from_snapshot(
             maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::default()
