@@ -1432,6 +1432,57 @@ mod tests {
     }
 
     #[test]
+    fn old_dvr_worker_after_quarantine_cannot_consume_or_deliver_callback() {
+        // 本番のPlayback消費・IDvrCallback配送入口を通す。
+        // 通常の隔離前にはcallbackが配送可能であることも確認する。
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let state = Arc::new(CallbackState::default());
+        let callback = new_test_callback(Arc::clone(&state));
+        context
+            .retain_dvr_callback_for_test(handle, &callback)
+            .expect("DVR callback登録");
+        record_dvr_callback_registration_for_test(&runtime, handle);
+        deliver_started_dvr_status(&context, handle).expect("隔離前の通知成功");
+        assert_eq!(
+            state.playback_statuses.lock().unwrap().as_slice(),
+            &[PlaybackStatus::SPACE_EMPTY]
+        );
+
+        // ワーカーが世代を保持した後、実際のdata-path入口へ進む直前で停止する。
+        // sleepやポーリングに依存せず、隔離確定後にだけ旧世代の実処理を再開する。
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(0);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel::<()>(0);
+        let worker_context = Arc::clone(&context);
+        let old_worker = std::thread::spawn(move || {
+            ready_tx.send(()).expect("旧世代ワーカー準備");
+            resume_rx.recv().expect("旧世代ワーカー再開");
+            (
+                consume_playback_dvr_once(&worker_context, handle),
+                deliver_started_dvr_status(&worker_context, handle),
+            )
+        });
+        ready_rx.recv().expect("旧世代ワーカーが待機中");
+        let outcome = crate::object_runtime::quarantine_drop_leak_object(&context, handle)
+            .expect("対象DVRを物理cleanup付きで隔離");
+        assert!(matches!(
+            outcome,
+            crate::object_runtime::DropLeakQuarantineOutcome::Completed
+                | crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending
+        ));
+        assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));
+
+        resume_tx.send(()).expect("旧世代ワーカー実行");
+        let (playback_result, delivery_result) = old_worker.join().expect("ワーカー回収");
+        assert!(playback_result.is_err(), "隔離後の旧世代Playback消費は禁止");
+        assert!(delivery_result.is_err(), "隔離後の旧世代callback配送は禁止");
+        assert_eq!(
+            state.playback_statuses.lock().unwrap().as_slice(),
+            &[PlaybackStatus::SPACE_EMPTY],
+            "隔離前の配送結果は保持され、隔離後の配送は追加されない"
+        );
+    }
+
+    #[test]
     fn deliver_started_dvr_status_emits_current_playback_status() {
         let (context, runtime, handle) = build_started_playback_dvr_context();
         let state = Arc::new(CallbackState::default());
