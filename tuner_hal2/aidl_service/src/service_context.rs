@@ -224,6 +224,14 @@ impl AidlServiceContext {
     pub(crate) fn from_shared_runtime_for_test(
         runtime: SharedTunerRuntime,
     ) -> SharedAidlServiceContext {
+        Self::from_shared_runtime_with_cleanup_reaper_for_test(runtime, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_shared_runtime_with_cleanup_reaper_for_test(
+        runtime: SharedTunerRuntime,
+        preinstalled_reaper: Option<Arc<CleanupReaperQueue>>,
+    ) -> SharedAidlServiceContext {
         let (
             callback_artifact_runtime_split_diagnostics,
             dvr_post_commit_notification_diagnostics,
@@ -270,14 +278,18 @@ impl AidlServiceContext {
             ),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
-            cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot)),
+            cleanup_reaper_queue: preinstalled_reaper
+                .clone()
+                .unwrap_or_else(|| Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot))),
         });
-        if let Err(error) = start_cleanup_reaper(
-            Arc::downgrade(&context),
-            Arc::clone(&context.cleanup_reaper_queue),
-        ) {
-            log::error!("cleanup reaperの起動に失敗しました: {error:?}");
-            TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
+        if preinstalled_reaper.is_none() {
+            if let Err(error) = start_cleanup_reaper(
+                Arc::downgrade(&context),
+                Arc::clone(&context.cleanup_reaper_queue),
+            ) {
+                log::error!("cleanup reaperの起動に失敗しました: {error:?}");
+                TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
+            }
         }
         if let Err(error) = start_dvr_status_notifier_reaper(
             Arc::downgrade(&context),
