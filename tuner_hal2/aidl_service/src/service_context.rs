@@ -199,7 +199,9 @@ impl AidlServiceContext {
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot)),
         };
-        context.cleanup_reaper_queue.bind_service_runtime(&context.runtime);
+        context
+            .cleanup_reaper_queue
+            .bind_service_runtime(&context.runtime);
         context
     }
 
@@ -284,7 +286,9 @@ impl AidlServiceContext {
                 Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot))
             }),
         });
-        context.cleanup_reaper_queue.bind_service_runtime(&context.runtime);
+        context
+            .cleanup_reaper_queue
+            .bind_service_runtime(&context.runtime);
         if preinstalled_reaper.is_none() {
             if let Err(error) = start_cleanup_reaper(
                 Arc::downgrade(&context),
