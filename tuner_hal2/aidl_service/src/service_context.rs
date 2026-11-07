@@ -372,25 +372,51 @@ impl AidlServiceContext {
         )
     }
 
-    pub(crate) fn enqueue_cleanup_retry(&self, handle: AidlObjectHandle) -> Result<(), HalError> {
+    /// 容量不足時もObjectCloseTxnの未完義務は消さない。
+    /// 共有reaper喪失は全体停止し、一時的な容量不足は対象object隔離を優先する。
+    pub(crate) fn enqueue_cleanup_retry(self: &Arc<Self>, handle: AidlObjectHandle) -> Result<(), HalError> {
         let result = self
             .cleanup_dependency_for_handle(handle)
             .and_then(|dependency| self.cleanup_reaper_queue.enqueue(handle, dependency));
         if let Err(error) = &result {
-            // 共有reaperの失陥は、対象objectが後から失効しても他jobに波及する。
             let shared_reaper_lost =
                 maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(error);
             use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
-            if shared_reaper_lost
-                || !matches!(
-                    self.cleanup_retry_disposition(handle),
-                    Ok(AidlObjectCleanupDisposition::Stale
-                        | AidlObjectCleanupDisposition::Closed
-                        | AidlObjectCleanupDisposition::NoCleanupPending)
-                )
-            {
+            if shared_reaper_lost {
                 TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+                return result;
             }
+            if matches!(
+                self.cleanup_retry_disposition(handle),
+                Ok(AidlObjectCleanupDisposition::Stale
+                    | AidlObjectCleanupDisposition::Closed
+                    | AidlObjectCleanupDisposition::NoCleanupPending)
+            ) {
+                return result;
+            }
+            if matches!(error.primary_error(), HalError::Busy { .. }) {
+                // 容量不足は共有状態の失陥ではない。別のreaperの予約を占有せず
+                // 既存ObjectCloseTxnの隔離処理へ移し、完了／未完義務を型付き確認する。
+                match crate::object_runtime::quarantine_drop_leak_object(self, handle) {
+                    Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
+                    | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
+                        return Ok(());
+                    }
+                    Ok(crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup) => {
+                        let owners = self.related_cleanup_recovery_owners(handle)?;
+                        for (owner, active) in owners {
+                            if active || self.cleanup_reaper_queue.has_pending(owner)? {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Err(status) => {
+                        log::error!("cleanup容量不足後の局所隔離失敗: {status:?}");
+                    }
+                }
+                // 物理回収のowner/fenceを証明できない場合だけ全体停止する。
+            }
+            TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
         }
         result
     }
