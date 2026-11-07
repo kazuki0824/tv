@@ -144,6 +144,49 @@ pub fn aidl_object_cleanup_disposition(
     })
 }
 
+pub struct CleanupRecoveryRequest {
+    pub object_kind: AidlObjectKind,
+    pub object_id: AidlObjectId,
+    pub generation: AidlObjectGeneration,
+    pub requested_at: std::time::Instant,
+}
+
+pub fn request_aidl_cleanup_recovery(
+    runtime: &mut TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    expected_kind: AidlObjectKind,
+) -> Result<(), HalError> {
+    if aidl_object_cleanup_disposition(runtime, object_id, generation, expected_kind)?
+        .recovery_settled()
+    {
+        return Ok(());
+    }
+    runtime
+        .object_table_mut()
+        .request_cleanup_recovery(object_id, generation, std::time::Instant::now())
+        .map_err(object_table_error_to_hal)
+}
+
+pub fn finish_aidl_cleanup_recovery_admission(
+    runtime: &mut TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+) {
+    runtime
+        .object_table_mut()
+        .finish_cleanup_recovery_admission(object_id, generation);
+}
+
+pub fn aidl_cleanup_recovery_requests(
+    runtime: &TunerServiceRuntime,
+) -> Result<Vec<CleanupRecoveryRequest>, HalError> {
+    runtime
+        .object_table()
+        .cleanup_recovery_requests()
+        .map_err(object_table_error_to_hal)
+}
+
 pub fn aidl_object_cleanup_dependency(
     runtime: &TunerServiceRuntime,
     object_id: AidlObjectId,

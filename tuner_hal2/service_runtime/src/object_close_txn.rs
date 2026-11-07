@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
+use std::time::Instant;
 
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInvalidStateKind,
@@ -614,6 +615,7 @@ struct CloseCleanupObligation {
     generation: AidlObjectGeneration,
     obligation_id: u64,
     active_attempt: Option<u64>,
+    recovery_requested_at: Option<Instant>,
     quarantine: Option<QuarantinedCleanupProgress>,
 }
 
@@ -1154,6 +1156,46 @@ impl ObjectCloseTxn {
         self.next_obligation_id = u64::MAX;
     }
 
+    pub(crate) fn request_recovery(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        requested_at: Instant,
+    ) -> bool {
+        let Some(obligation) = self.obligations.get_mut(&object_id) else {
+            return false;
+        };
+        if obligation.generation != generation {
+            return false;
+        }
+        obligation.recovery_requested_at.get_or_insert(requested_at);
+        true
+    }
+
+    pub(crate) fn finish_recovery_admission(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) {
+        if let Some(obligation) = self.obligations.get_mut(&object_id) {
+            if obligation.generation == generation {
+                obligation.recovery_requested_at = None;
+            }
+        }
+    }
+
+    pub(crate) fn recovery_requests(
+        &self,
+    ) -> impl Iterator<Item = (AidlObjectId, AidlObjectGeneration, Instant)> + '_ {
+        self.obligations.iter().filter_map(|(id, obligation)| {
+            Some((
+                *id,
+                obligation.generation,
+                obligation.recovery_requested_at?,
+            ))
+        })
+    }
+
     pub(crate) fn has_outstanding_obligation(
         &self,
         object_id: AidlObjectId,
@@ -1327,6 +1369,7 @@ impl ObjectCloseTxn {
                 generation,
                 obligation_id,
                 active_attempt: None,
+                recovery_requested_at: None,
                 quarantine: None,
             },
         );
@@ -2476,6 +2519,33 @@ mod tests {
         assert!(txn.has_outstanding_obligation(root, generation));
         assert_eq!(txn.notifier_joined(notifier), vec![(root, generation)]);
         assert!(!txn.has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
+    fn recovery_request_preserves_the_first_time_and_same_generation() {
+        let mut txn = ObjectCloseTxn::new();
+        let id = AidlObjectId(438);
+        let generation = AidlObjectGeneration(2);
+        let stale = AidlObjectGeneration(1);
+        let first = Instant::now();
+        let later = first + std::time::Duration::from_secs(1);
+
+        assert!(!txn.request_recovery(id, generation, first));
+        let authority = txn.issue_cleanup_authority(id, generation).unwrap();
+        assert!(!txn.request_recovery(id, stale, first));
+        assert!(txn.request_recovery(id, generation, first));
+        assert!(txn.request_recovery(id, generation, later));
+        txn.finish_recovery_admission(id, stale);
+        assert_eq!(
+            txn.recovery_requests().collect::<Vec<_>>(),
+            [(id, generation, first)]
+        );
+        let attempt = txn
+            .begin_cleanup_attempt(id, generation, authority)
+            .unwrap();
+        txn.finish_cleanup_attempt(id, generation, attempt, true)
+            .unwrap();
+        assert!(txn.recovery_requests().next().is_none());
     }
 
     #[test]

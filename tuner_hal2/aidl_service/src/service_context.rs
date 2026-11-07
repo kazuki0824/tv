@@ -338,6 +338,39 @@ impl AidlServiceContext {
         )
     }
 
+    pub(crate) fn request_cleanup_recovery(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<(), HalError> {
+        let mut runtime = TunerServiceRuntime::lock_shared(&self.runtime, "cleanup受付要求")?;
+        maleicacid_tuner_hal2_service_runtime::request_aidl_cleanup_recovery(
+            &mut runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        )
+    }
+
+    pub(crate) fn finish_cleanup_recovery_admission(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<(), HalError> {
+        let mut runtime = TunerServiceRuntime::lock_shared(&self.runtime, "cleanup受付完了")?;
+        maleicacid_tuner_hal2_service_runtime::finish_aidl_cleanup_recovery_admission(
+            &mut runtime,
+            handle.object_id(),
+            handle.generation(),
+        );
+        Ok(())
+    }
+
+    pub(crate) fn cleanup_recovery_requests(
+        &self,
+    ) -> Result<Vec<maleicacid_tuner_hal2_service_runtime::CleanupRecoveryRequest>, HalError> {
+        let runtime = TunerServiceRuntime::lock_shared(&self.runtime, "cleanup受付対象の照会")?;
+        maleicacid_tuner_hal2_service_runtime::aidl_cleanup_recovery_requests(&runtime)
+    }
+
     /// 同世代の状態を再照会し、回収未確定の場合だけ同じlock下で停止を確定する。
     pub(crate) fn fail_cleanup_if_unsettled(
         &self,
@@ -403,40 +436,43 @@ impl AidlServiceContext {
         self: &Arc<Self>,
         handle: AidlObjectHandle,
     ) -> Result<(), HalError> {
-        let result = self
-            .cleanup_dependency_for_handle(handle)
-            .and_then(|_| self.cleanup_reaper_queue.enqueue(handle));
-        if let Err(error) = &result {
-            let shared_reaper_lost =
-                maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(error);
-            use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
-            if shared_reaper_lost {
-                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
-                return result;
-            }
-            let disposition = self.cleanup_retry_disposition(handle);
-            match disposition {
-                Ok(AidlObjectCleanupDisposition::QuarantineSupervised) => return Ok(()),
-                Ok(disposition) if disposition.recovery_settled() => return result,
-                _ => {}
-            }
-            if matches!(error.primary_error(), HalError::Busy { .. })
-                || disposition == Ok(AidlObjectCleanupDisposition::QuarantineAwaitingReport)
-            {
-                // 容量不足では実行権限を取得しない。受付または既存ownerの完了を待つ。
-                let watched = self
-                    .cleanup_reaper_queue
-                    .supervise_unqueued_owner(Arc::downgrade(self), handle);
-                if watched.is_ok() || !self.fail_cleanup_if_unsettled(handle)? {
-                    return Ok(());
+        use maleicacid_tuner_hal2_service_runtime::{
+            AidlObjectCleanupDisposition, WorkerFailureClassifier,
+        };
+
+        if let Err(error) = self.cleanup_dependency_for_handle(handle) {
+            match self.cleanup_retry_disposition(handle)? {
+                AidlObjectCleanupDisposition::QuarantineSupervised => return Ok(()),
+                AidlObjectCleanupDisposition::QuarantineAwaitingReport
+                | AidlObjectCleanupDisposition::RequiresIsolation => {}
+                disposition if disposition.recovery_settled() => return Err(error),
+                _ => {
+                    return if self.fail_cleanup_if_unsettled(handle)? {
+                        Err(error)
+                    } else {
+                        Ok(())
+                    };
                 }
-                return watched;
-            }
-            if !self.fail_cleanup_if_unsettled(handle)? {
-                return Ok(());
             }
         }
-        result
+        // 既存の回収義務へ受付を委譲し、呼出元を待機させない。
+        match self
+            .cleanup_reaper_queue
+            .supervise_unqueued_owner(Arc::downgrade(self), handle)
+        {
+            Ok(()) => Ok(()),
+            Err(error) if WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&error) => {
+                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+                Err(error)
+            }
+            Err(error) => {
+                if self.fail_cleanup_if_unsettled(handle)? {
+                    Err(error)
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 
     pub fn reset_runtime_from_probe_results<I>(

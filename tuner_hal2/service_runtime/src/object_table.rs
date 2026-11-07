@@ -828,6 +828,60 @@ impl RuntimeObjectTable {
         Ok(())
     }
 
+    pub(crate) fn request_cleanup_recovery(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        requested_at: std::time::Instant,
+    ) -> Result<(), RuntimeObjectTableError> {
+        let mut target = (object_id, generation);
+        loop {
+            let entry = self.entry_checked_any(target.0, target.1)?;
+            let owner = entry.owner;
+            let lifecycle = entry.lifecycle;
+            if self
+                .object_close_txn
+                .request_recovery(target.0, target.1, requested_at)
+            {
+                return Ok(());
+            }
+            // カスケード中の子には独立した回収義務を作らず、既存の親に登録する。
+            let Some((_, id, generation)) = owner.referenced_object() else {
+                return Err(RuntimeObjectTableError::InvalidLifecycle {
+                    object_id,
+                    lifecycle,
+                });
+            };
+            target = (id, generation);
+        }
+    }
+
+    pub(crate) fn finish_cleanup_recovery_admission(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) {
+        self.object_close_txn
+            .finish_recovery_admission(object_id, generation);
+    }
+
+    pub(crate) fn cleanup_recovery_requests(
+        &self,
+    ) -> Result<Vec<crate::object_lifecycle::CleanupRecoveryRequest>, RuntimeObjectTableError> {
+        self.object_close_txn
+            .recovery_requests()
+            .map(|(object_id, generation, requested_at)| {
+                let entry = self.entry_checked_any(object_id, generation)?;
+                Ok(crate::object_lifecycle::CleanupRecoveryRequest {
+                    object_kind: entry.object_kind,
+                    object_id,
+                    generation,
+                    requested_at,
+                })
+            })
+            .collect()
+    }
+
     pub(crate) fn quarantine_cleanup_is_supervised(
         &self,
         object_id: AidlObjectId,
