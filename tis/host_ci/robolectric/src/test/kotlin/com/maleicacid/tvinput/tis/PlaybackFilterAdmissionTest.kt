@@ -4,6 +4,8 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.Context
+import android.content.ContextWrapper
+import android.database.MatrixCursor
 import android.graphics.SurfaceTexture
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -11,6 +13,11 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaSync
+import android.media.tv.ITvInputManager
+import android.media.tv.TvContentRating
+import android.media.tv.TvContract
+import android.media.tv.TvInputInfo
+import android.media.tv.TvInputManager
 import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
 import android.media.tv.tuner.Tuner
@@ -27,6 +34,7 @@ import android.os.Looper
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
@@ -77,6 +85,180 @@ import kotlin.test.assertTrue
 // 同じproduction ownerとAndroid境界fixtureを共有する。
 @Suppress("TooManyFunctions", "LargeClass")
 class PlaybackFilterAdmissionTest {
+    @Test
+    fun repeatedAllowedEvaluationAndFirstOutputNotifyOnlyOnce() {
+        RetryFixture().use { fixture ->
+            val notifications = mutableListOf<String>()
+            captureSessionNotifications(fixture.session, notifications)
+            fixture.executor.callControl(5_000L) {
+                repeat(100) {
+                    reevaluateParentalControls(fixture.session)
+                }
+                ReflectionHelpers.setField(
+                    fixture.session,
+                    "playbackState",
+                    PlaybackStartState.WaitingFirstOutput(fixture.signature, 7L),
+                )
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    fixture.session,
+                    "handleFirstFrameAvailable",
+                    ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, 7L),
+                )
+            }
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(1, notifications.count { it == "onContentAllowed" })
+            assertEquals(1, notifications.count { it == "onVideoAvailable" })
+        }
+    }
+
+    @Test
+    fun allowedTransitionAndExplicitUnblockResponseAreNotSuppressed() {
+        RetryFixture().use { fixture ->
+            val notifications = mutableListOf<String>()
+            captureSessionNotifications(fixture.session, notifications)
+            fixture.executor.callControl(5_000L) {
+                val field =
+                    MaleicacidLiveSession::class.java
+                        .getDeclaredField("lastParentalAccessState")
+                        .apply { isAccessible = true }
+                for (state in listOf("UNKNOWN", "BLOCKED", "UNKNOWN")) {
+                    // 新しい選局と遮断状態からの遷移を、同じSessionの通知境界で検査する。
+                    field.set(fixture.session, field.type.enumConstants.single { it.toString() == state })
+                    repeat(2) {
+                        reevaluateParentalControls(fixture.session)
+                    }
+                }
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    fixture.session,
+                    "notifyAllowedContent",
+                    ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType, true),
+                )
+                reevaluateParentalControls(fixture.session)
+            }
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(4, notifications.count { it == "onContentAllowed" })
+        }
+    }
+
+    @Test
+    @Config(shadows = [CurrentProgramIdentity::class])
+    fun unblockingOneRatingKeepsContentBlockedWhenTheNextProviderQueryFails() {
+        RetryFixture(context = parentalControlsContext()).use { fixture ->
+            val first = TvContentRating.createRating("test", "test", "first")
+            val second = TvContentRating.createRating("test", "test", "second")
+            val notifications = mutableListOf<String>()
+            captureSessionNotifications(fixture.session, notifications)
+            fixture.executor.callControl(5_000L) {
+                var queries = 0
+                val now = System.currentTimeMillis()
+                val resolver =
+                    CurrentProgramRatingResolver { _, projection, _, _, _ ->
+                        if (++queries == 3) {
+                            null
+                        } else {
+                            MatrixCursor(projection).apply {
+                                val ratings = "${first.flattenToString()},${second.flattenToString()}"
+                                addRow(arrayOf(1L, 1, now - 1_000L, now + 60_000L, ratings, byteArrayOf(1)))
+                            }
+                        }
+                    }
+                ReflectionHelpers.setField(fixture.session, "currentProgramRatingResolver", resolver)
+                ReflectionHelpers.setField(fixture.session, "currentChannelUri", TvContract.buildChannelUri(1L))
+                ReflectionHelpers.setField(fixture.session, "currentService", fixture.signature.serviceKey)
+                reevaluateParentalControls(fixture.session)
+                unblockOnOwner(fixture.session, first)
+                assertEquals(3, queries)
+                assertEquals("BLOCKED", ReflectionHelpers.getField<Any>(fixture.session, "lastParentalAccessState").toString())
+                assertEquals(PlaybackStartState.Stopped, ReflectionHelpers.getField<PlaybackStartState>(fixture.session, "playbackState"))
+                reevaluateParentalControls(fixture.session)
+                assertEquals("BLOCKED", ReflectionHelpers.getField<Any>(fixture.session, "lastParentalAccessState").toString())
+            }
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(3, notifications.count { it == "onContentBlocked" })
+            assertFalse("onContentAllowed" in notifications)
+            fixture.executor.callControl(5_000L) { unblockOnOwner(fixture.session, second) }
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(1, notifications.count { it == "onContentAllowed" })
+        }
+    }
+
+    private fun reevaluateParentalControls(session: MaleicacidLiveSession) {
+        ReflectionHelpers.callInstanceMethod<Unit>(
+            session,
+            "reevaluateParentalControls",
+            ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType, false),
+        )
+    }
+
+    private fun unblockOnOwner(
+        session: MaleicacidLiveSession,
+        rating: TvContentRating,
+    ) {
+        ReflectionHelpers.callInstanceMethod<Unit>(
+            session,
+            "onUnblockContentOnSessionExecutor",
+            ReflectionHelpers.ClassParameter.from(TvContentRating::class.java, rating),
+        )
+    }
+
+    private fun parentalControlsContext(): Context {
+        val service =
+            object : ITvInputManager.Default() {
+                override fun getTvInputList(userId: Int): List<TvInputInfo> = emptyList()
+
+                override fun isParentalControlsEnabled(userId: Int): Boolean = userId == 0
+
+                override fun isRatingBlocked(
+                    rating: String,
+                    userId: Int,
+                ): Boolean = userId == 0 && TvContentRating.unflattenFromString(rating).domain == "test"
+            }
+        val manager = TvInputManager(service, 0)
+        return object : ContextWrapper(RuntimeEnvironment.getApplication()) {
+            override fun getApplicationContext(): Context = this
+
+            override fun getSystemServiceName(serviceClass: Class<*>): String? =
+                if (serviceClass == TvInputManager::class.java) Context.TV_INPUT_SERVICE else super.getSystemServiceName(serviceClass)
+
+            override fun getSystemService(name: String): Any? =
+                if (name == Context.TV_INPUT_SERVICE) manager else super.getSystemService(name)
+        }
+    }
+
+    // この回帰で固定した一番組のSI JNI境界だけを置き換える。
+    @Implements(ProviderDataBridge::class)
+    class CurrentProgramIdentity {
+        @Implementation
+        fun extractProgramKeyResult(providerData: ByteArray?): ProviderDataBridge.ProgramKeyResult? =
+            if (providerData?.contentEquals(byteArrayOf(1)) == true) {
+                ProviderDataBridge.ProgramKeyResult(ServiceKey(4, 0x4010, 101), 1, "test-program")
+            } else {
+                null
+            }
+
+        @Implementation
+        fun buildProgramKey(
+            serviceKey: ServiceKey,
+            eventId: Int,
+        ): String {
+            check(serviceKey == ServiceKey(4, 0x4010, 101) && eventId == 1)
+            return "test-program"
+        }
+    }
+
+    private fun captureSessionNotifications(
+        session: MaleicacidLiveSession,
+        notifications: MutableList<String>,
+    ) {
+        val callbackType = Class.forName("android.media.tv.ITvInputSessionCallback")
+        val callback =
+            java.lang.reflect.Proxy.newProxyInstance(callbackType.classLoader, arrayOf(callbackType)) { _, method, _ ->
+                notifications += method.name
+                null
+            }
+        ReflectionHelpers.setField(session, "mSessionCallback", callback)
+    }
+
     @Test
     fun holdingParentalPermissionDoesNotCommitVideoAvailability() {
         RetryFixture().use { fixture ->
@@ -203,10 +385,11 @@ class PlaybackFilterAdmissionTest {
     private class RetryFixture(
         audioOnly: Boolean = false,
         surfaceReady: Boolean = true,
+        context: Context = RuntimeEnvironment.getApplication(),
     ) : AutoCloseable {
         val session =
             MaleicacidLiveSession(
-                RuntimeEnvironment.getApplication(),
+                context,
                 RuntimeEnvironment.getApplication(),
                 "session-recovery-test",
                 "retry-fixture",
