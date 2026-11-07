@@ -364,7 +364,10 @@ mod closeable_lifecycle_tests {
             })
             .expect("DVR objectを登録する");
         assert!(runtime
-            .dvr_status_metadata_snapshot_for_aidl_object(AidlObjectId(707), AidlObjectGeneration(1))
+            .dvr_status_metadata_snapshot_for_aidl_object(
+                AidlObjectId(707),
+                AidlObjectGeneration(1)
+            )
             .is_err());
         assert_eq!(
             aidl_object_cleanup_disposition(
