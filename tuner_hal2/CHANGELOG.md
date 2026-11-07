@@ -3,6 +3,11 @@
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
 - 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
 
+# 2026-11-07 PR #227 製品既定容量176の正規open/close・実reaper経路を追加検証
+
+- Host`object_close_txn::product_capacity_saturates_after_real_open_close_before_reaper_group_release`：製品既定snapshot、公開Demuxの自動AIDL object ID、root open／close、public runtime unregister、ObjectCloseTxn完了、`WorkerRuntimeReaperQueue::enqueue_reserved`と実runnerを通す。runnerによるClosed確定後、pending group解放直前の停止を同期ゲートで注入し、実reaperが176 groupを保持して次の公開Demux openの予約がBusyになることを確認する。
+- AIDL Binder facade／実デバイス上の再現は未実施であり、Host Rust CIの結果と区別する。旧`RuntimeObjectTable`への手動世代・直接予約試験は補助的な境界試験として残す。
+
 # 2026-11-07 PR #227 製品予約容量と世代競合・idle駐機・join異常伝播の追加是正
 
 - 製品既定の公開オブジェクト82に対するreaper予約容量176が、旧世代Closed後のgroup解放遅延を数えないため厳密な予約上限ではないことをコード・設計SSOTで確認。製品既定snapshotのまま同一objectの世代更新・Closed確定後に旧世代groupを保持し、容量176のBusyに達するhost故障注入を追加。
