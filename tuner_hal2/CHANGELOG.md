@@ -1,3 +1,7 @@
+# 2026-11-07 Loom CIのRust toolchainを固定
+
+- Loomの依存generatorが要求するRust 1.95.0を当該jobで使用する。同一toolchainでlockfileを生成し、固定した解決結果を使ってLoomを実行する。製品用Rust toolchainと他jobは従来どおり。
+
 # 2026-10-31 worker終端とwake受付の競合を修正
 
 - 既存WorkerWakeのatomic通知状態へ閉鎖bitを統合し、終端observerより前に受付を閉じる。追加されたcompletion mutexでの通知判定を置き換え、CODE_CONVENTIONの非汚染通知契約を維持する。

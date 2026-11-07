@@ -792,12 +792,16 @@ class PlaybackFilterAdmissionTest {
     fun callbackBatchBeyondTheSharedLimitIsNotAcceptedByClampingItsCharge() {
         Fixture().use { fixture ->
             val filter = fixture.avFilter(false)
-            val oversized = arrayOf(mediaEvent(12L * 1024 * 1024), mediaEvent(12L * 1024 * 1024))
-            fixture.whileOwnerBlocked { deliver(filter, oversized) }
-            fixture.drain()
-            oversized.forEach { event ->
-                assertEquals(0, Shadow.extract<NativeMediaEvent>(event).blockReads)
-                assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
+            val mib = 1024L * 1024
+            val oversizedLengths = listOf(listOf(17 * mib), listOf(12 * mib, 12 * mib), listOf(Long.MAX_VALUE, mib))
+            for (lengths in oversizedLengths) {
+                val oversized = lengths.map(::mediaEvent).toTypedArray()
+                fixture.whileOwnerBlocked { deliver(filter, oversized) }
+                fixture.drain()
+                oversized.forEach { event ->
+                    assertEquals(0, Shadow.extract<NativeMediaEvent>(event).blockReads)
+                    assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
+                }
             }
         }
     }
