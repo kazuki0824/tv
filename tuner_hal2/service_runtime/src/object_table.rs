@@ -5,8 +5,7 @@ use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerGeneration, Ledge
 
 use crate::object_close_txn::{
     CloseCleanupAttemptKey, CloseCleanupAttemptOutcome, CloseCleanupAuthorityKey, DvrNotifierStart,
-    ObjectCloseTxn,
-    ObjectCloseTxnStateError,
+    ObjectCloseTxn, ObjectCloseTxnStateError,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -805,7 +804,8 @@ impl RuntimeObjectTable {
         }
         let (object_id, generation) = registration.key();
         self.notify_supervised_dvr_joined(object_id, generation)?;
-        self.object_close_txn.clear_dvr_notifier_registration(object_id);
+        self.object_close_txn
+            .clear_dvr_notifier_registration(object_id);
         Ok(())
     }
 
@@ -1746,7 +1746,12 @@ mod qg_object_lifecycle_tests {
         let start = |runtime: &mut crate::TunerServiceRuntime| {
             runtime
                 .object_table_mut()
-                .insert(entry(AidlObjectKind::Dvr, 20, 20, RuntimeOwnerRelation::Root))
+                .insert(entry(
+                    AidlObjectKind::Dvr,
+                    20,
+                    20,
+                    RuntimeOwnerRelation::Root,
+                ))
                 .unwrap();
             DvrNotifierStart::register(runtime, object_id, generation)
                 .unwrap()
@@ -1776,11 +1781,20 @@ mod qg_object_lifecycle_tests {
                 assert!(!finish_report(&mut runtime));
             }
             // 同じID・世代の別runtimeのworkerでも、こちらの隔離を完了できない。
-            foreign_worker.join().1.unwrap().finish(&mut runtime).unwrap();
+            foreign_worker
+                .join()
+                .1
+                .unwrap()
+                .finish(&mut runtime)
+                .unwrap();
             assert_eq!(
                 runtime.object_table().entry(object_id).unwrap().lifecycle,
                 RuntimeObjectLifecycle::Quarantined
             );
+            assert!(runtime
+                .object_table()
+                .object_close_txn
+                .has_outstanding_obligation(object_id, generation));
             worker.join().1.unwrap().finish(&mut runtime).unwrap();
             if !report_first {
                 assert!(finish_report(&mut runtime));
@@ -1789,6 +1803,10 @@ mod qg_object_lifecycle_tests {
                 runtime.object_table().entry(object_id).unwrap().lifecycle,
                 RuntimeObjectLifecycle::Closed
             );
+            assert!(!runtime
+                .object_table()
+                .object_close_txn
+                .has_outstanding_obligation(object_id, generation));
         }
     }
 
