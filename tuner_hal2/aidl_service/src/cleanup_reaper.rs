@@ -315,7 +315,6 @@ mod tests {
         completion
     }
 
-
     #[test]
     fn poisoned_owner_slot_rejects_enqueue_with_identity() {
         let queue = CleanupReaperQueue::from_snapshot(
