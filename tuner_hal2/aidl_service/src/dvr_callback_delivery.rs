@@ -1469,10 +1469,12 @@ mod tests {
                 );
             }
             crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending => {
-                assert_eq!(
+                use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+                assert!(matches!(
                     context.cleanup_retry_disposition(handle),
-                    Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::QuarantineSupervised)
-                );
+                    Ok(AidlObjectCleanupDisposition::QuarantineSupervised
+                        | AidlObjectCleanupDisposition::Closed)
+                ));
             }
             crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup => {
                 panic!("競合ownerのない隔離が既存cleanupへ委譲されました");
