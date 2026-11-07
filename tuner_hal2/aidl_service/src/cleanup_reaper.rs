@@ -87,7 +87,7 @@ pub(crate) struct CleanupReaperQueue {
     #[cfg(test)]
     idle_park_notice: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
     #[cfg(test)]
-    admission_grace_notice: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    admission_grace_notice: std::sync::OnceLock<std::sync::mpsc::SyncSender<()>>,
 }
 
 impl Drop for CleanupReaperQueue {
@@ -166,7 +166,15 @@ impl CleanupReaperQueue {
             #[cfg(test)]
             idle_park_notice: std::sync::Mutex::new(None),
             #[cfg(test)]
-            admission_grace_notice: std::sync::Mutex::new(None),
+            admission_grace_notice: std::sync::OnceLock::new(),
+        }
+    }
+
+    #[cfg(test)]
+    fn notify_admission_grace(&self) {
+        if let Some(notice) = self.admission_grace_notice.get() {
+            // 試験側の未受信・切断で監督の進行や終端理由を変えない。
+            let _ = notice.try_send(());
         }
     }
 
@@ -464,9 +472,7 @@ impl CleanupReaperQueue {
                                 // 既存closeに元の期限1回分だけ回復猶予を与える。
                                 // 予約・実行権限は既存ownerに残し、登録時刻も更新しない。
                                 #[cfg(test)]
-                                if let Some(notice) = queue_owner.admission_grace_notice.lock().unwrap().take() {
-                                    let _ = notice.send(());
-                                }
+                                queue_owner.notify_admission_grace();
                                 continue;
                             }
                             return Err(HalError::cleanup_failed(
@@ -1321,6 +1327,21 @@ mod tests {
         queue.record_terminal_failure("test join failure");
     }
 
+    #[test]
+    fn admission_grace_notice_does_not_wait_for_full_or_disconnected_receiver() {
+        use std::sync::mpsc::{sync_channel, TryRecvError};
+
+        let queue = CleanupReaperQueue::from_snapshot(CapabilitySnapshot::product_default());
+        let (signal, receiver) = sync_channel(1);
+        queue.admission_grace_notice.set(signal).unwrap();
+        queue.notify_admission_grace();
+        queue.notify_admission_grace();
+        assert_eq!(receiver.try_recv(), Ok(()));
+        assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
+        drop(receiver);
+        queue.notify_admission_grace();
+    }
+
     /// reaper満杯時の未予約active ownerを、外部APIの再呼出しなしで監督する。
     fn admission_monitor_case(complete_owner: bool) {
         use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
@@ -1388,8 +1409,8 @@ mod tests {
             Arc::clone(&runtime),
             Some(Arc::clone(&queue)),
         );
-        let (grace_tx, grace_rx) = mpsc::channel();
-        *queue.admission_grace_notice.lock().unwrap() = Some(grace_tx);
+        let (grace_tx, grace_rx) = mpsc::sync_channel(1);
+        queue.admission_grace_notice.set(grace_tx).unwrap();
         assert!(context.enqueue_cleanup_retry(handle).is_ok());
         queue
             .supervise_unqueued_owner(Arc::downgrade(&context), handle)
