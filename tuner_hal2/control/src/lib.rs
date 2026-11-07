@@ -831,6 +831,33 @@ where
         Ok(())
     }
 
+    /// 同じ回収グループに親子objectのキーを追加し、容量を再予約しない。
+    /// 既に別グループが保持しているキーは実行権限を重複させない。
+    pub fn attach_to_group(
+        &self,
+        anchor: &K,
+        key: K,
+        value: V,
+    ) -> Result<bool, maleicacid_tuner_hal2_common::HalError> {
+        let mut state = self.lock_state()?;
+        if state.entries.contains_key(&key) {
+            return Ok(false);
+        }
+        let group_id = state
+            .groups
+            .iter()
+            .find_map(|(id, keys)| keys.contains(anchor).then_some(*id))
+            .ok_or_else(|| {
+                maleicacid_tuner_hal2_common::HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "回収委譲元の予約グループが見つかりません",
+                )
+            })?;
+        state.groups.get_mut(&group_id).expect("既存group ID").push(key.clone());
+        state.entries.insert(key, value);
+        Ok(true)
+    }
+
     pub fn update_value(
         &self,
         key: &K,
@@ -2306,6 +2333,19 @@ mod tests {
         assert!(pending.any_pending([&1, &1]).unwrap());
         pending.release_group(group).unwrap();
         assert!(!pending.any_pending([&1, &2]).unwrap());
+    }
+
+    #[test]
+    fn reaper_handoff_uses_one_reserved_group() {
+        let pending = super::WorkerRuntimeReaperPending::new(1);
+        let group = pending.reserve_group([(1u32, 10u32)]).unwrap();
+        assert!(pending.attach_to_group(&1, 2, 20).unwrap());
+        assert_eq!(pending.pending_value(&2).unwrap(), Some(20));
+        assert!(!pending.attach_to_group(&1, 2, 21).unwrap());
+        assert!(pending.reserve_group([(3, 30)]).is_err());
+        pending.release_group(group).unwrap();
+        assert_eq!(pending.pending_value(&1).unwrap(), None);
+        assert_eq!(pending.pending_value(&2).unwrap(), None);
     }
 
     #[test]
