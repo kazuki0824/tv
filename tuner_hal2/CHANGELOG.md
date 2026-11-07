@@ -1,3 +1,10 @@
+# 2026-11-07 PR #227 製品予約容量と世代競合・idle駐機・join異常伝播の追加是正
+
+- 製品既定の公開オブジェクト82に対するreaper予約容量176が、旧世代Closed後のgroup解放遅延を数えないため厳密な予約上限ではないことをコード・設計SSOTで確認。製品既定snapshotのまま同一objectの世代更新・Closed確定後に旧世代groupを保持し、容量176のBusyに達するhost故障注入を追加。
+- 受付監督workerは待ち0件なら`WorkerContext::wait_until(None)`でstop/wakeまで駐機し、待ちありの場合だけ最早期限と有界周期から待機期限を導出する。待ち0件のdeadlineなしと、新規owner登録後の再起床を試験へ追加。
+- `CleanupReaperQueue::drop`は完了済みworkerのRuntimeFailure/PanicOrJoinFailureを既存service runtimeの全体停止状態へ伝播し、ログだけで破棄しない。終了結果の故障注入を追加。
+- Rust hostとAndroid AIDL/Soongは別証跡。AIDL/atest、CTS/VTS、実HAL再起動・Binder再接続は未検証。
+
 # 2026-11-07 PR #227 受付監督の二段目容量不足とjoin結果破棄を修正
 
 - 同一CleanupReaperQueueへ未受付ownerを世代付きで追加し、従属WorkerRuntimeの監督workerを1本に共用。reaper容量1にAが在籍中、B/Cが同時に未受付でも第二の監督worker上限による誤ServiceCriticalを発生させない。
