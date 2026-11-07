@@ -427,7 +427,8 @@ fn run_cleanup_job(
                                     | AidlObjectCleanupDisposition::NoCleanupPending,
                                 ) => continue,
                                 Ok(AidlObjectCleanupDisposition::Quarantined)
-                                    if context.quarantine_cleanup_has_owner(target.handle) == Ok(true) =>
+                                    if context.quarantine_cleanup_has_owner(target.handle)
+                                        == Ok(true) =>
                                 {
                                     return;
                                 }
@@ -879,7 +880,14 @@ mod tests {
         let (done_tx, done_rx) = mpsc::channel();
         let (checkpoint_tx, checkpoint_rx) = mpsc::channel();
         let runner = Arc::new(move |job, pending, worker| {
-            run_cleanup_job(weak.clone(), policy, job, pending, worker, Some(&checkpoint_tx));
+            run_cleanup_job(
+                weak.clone(),
+                policy,
+                job,
+                pending,
+                worker,
+                Some(&checkpoint_tx),
+            );
             done_tx.send(()).unwrap();
         });
         let queue =
@@ -955,7 +963,14 @@ mod tests {
         let (done_tx, done_rx) = mpsc::channel();
         let (checkpoint_tx, checkpoint_rx) = mpsc::channel();
         let runner = Arc::new(move |job, pending, worker| {
-            run_cleanup_job(weak.clone(), policy, job, pending, worker, Some(&checkpoint_tx));
+            run_cleanup_job(
+                weak.clone(),
+                policy,
+                job,
+                pending,
+                worker,
+                Some(&checkpoint_tx),
+            );
             done_tx.send(()).unwrap();
         });
         let queue = WorkerRuntime::start_reaper_queue(1, "test-stalled-owner", runner).unwrap();
@@ -965,7 +980,10 @@ mod tests {
                     handle,
                     registered_at: Instant::now() - Duration::from_millis(50),
                 },
-                [(CleanupJobKey::from_handle(handle), CleanupStep::ReleaseBackend)],
+                [(
+                    CleanupJobKey::from_handle(handle),
+                    CleanupStep::ReleaseBackend,
+                )],
             )
             .unwrap();
         checkpoint_rx
