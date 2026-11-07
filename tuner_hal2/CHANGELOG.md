@@ -3,6 +3,12 @@
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
 - 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
 
+# 2026-11-07 PR #227 受付監督の二段目容量不足とjoin結果破棄を修正
+
+- 同一CleanupReaperQueueへ未受付ownerを世代付きで追加し、従属WorkerRuntimeの監督workerを1本に共用。reaper容量1にAが在籍中、B/Cが同時に未受付でも第二の監督worker上限による誤ServiceCriticalを発生させない。
+- 完了した監督workerのWorkerTerminalResultを型付きで判定し、失敗は既存ServiceFailureStateへ伝播する。所有者破棄時にも完了済みのjoin結果を無視しない。監督workerは物理cleanupを行わず、ObjectCloseTxnが唯一のcleanup権限を維持する。
+- A/B/Cの容量1競合に対する回帰試験を追加。Android向けSoong/atest、CTS/VTS、HAL PID再起動とBinder再接続は引き続き未検証。
+
 # 2026-11-07 PR #227 bounded reaper満杯時のactive cleanupを監督
 
 - `run_cleanup_job()`のAndroid AIDL専用`#[cfg(test)]`引数追従漏れを修正した。
