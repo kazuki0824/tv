@@ -169,7 +169,7 @@ impl AidlServiceContext {
         let dvr_status_notifier_cleanup_diagnostics =
             runtime.dvr_status_notifier_cleanup_diagnostic_sink();
         let object_cleanup_diagnostics = runtime.object_cleanup_diagnostic_sink();
-        Self {
+        let context = Self {
             runtime: Arc::new(Mutex::new(runtime)),
             callback_store: PoisonTrackedMutex::new(
                 CallbackStore::default(),
@@ -198,7 +198,9 @@ impl AidlServiceContext {
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot)),
-        }
+        };
+        context.cleanup_reaper_queue.bind_service_runtime(&context.runtime);
+        context
     }
 
     pub fn shared(runtime: TunerServiceRuntime) -> SharedAidlServiceContext {
@@ -282,6 +284,7 @@ impl AidlServiceContext {
                 Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot))
             }),
         });
+        context.cleanup_reaper_queue.bind_service_runtime(&context.runtime);
         if preinstalled_reaper.is_none() {
             if let Err(error) = start_cleanup_reaper(
                 Arc::downgrade(&context),
