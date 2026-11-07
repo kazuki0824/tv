@@ -743,10 +743,12 @@ where
         }
         let mut state = self.lock_state()?;
         if state.groups.len() >= state.capacity {
-            return Err(maleicacid_tuner_hal2_common::HalError::internal(
-                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "ワーカー回収予約の容量が不足しています",
-            ));
+            return Err(maleicacid_tuner_hal2_common::HalError::Busy {
+                path: None,
+                detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
+                    "ワーカー回収予約の容量が不足しています",
+                ),
+            });
         }
         if reservations
             .iter()
@@ -1256,10 +1258,12 @@ where
                 let send_error = match error {
                     std::sync::mpsc::TrySendError::Full(queued) => {
                         drop(queued.job);
-                        maleicacid_tuner_hal2_common::HalError::internal(
-                            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                            "ワーカー回収の容量が不足しています",
-                        )
+                        maleicacid_tuner_hal2_common::HalError::Busy {
+                            path: None,
+                            detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
+                                "ワーカー回収の容量が不足しています",
+                            ),
+                        }
                     }
                     std::sync::mpsc::TrySendError::Disconnected(queued) => {
                         drop(queued.job);
