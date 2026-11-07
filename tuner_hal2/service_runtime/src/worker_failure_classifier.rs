@@ -162,16 +162,20 @@ mod tests {
         );
         assert!(WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&composed));
         assert!(!WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&local));
-        assert!(WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
-            &HalError::WorkerReaperUnavailable
-        ));
+        assert!(
+            WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
+                &HalError::WorkerReaperUnavailable
+            )
+        );
         assert!(!WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(&local));
-        assert!(WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(
-            &HalError::WorkerLockPoisoned {
-                owner: "cleanup reaper",
-                lock: WorkerLockKind::Result,
-            }
-        ));
+        assert!(
+            WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(
+                &HalError::WorkerLockPoisoned {
+                    owner: "cleanup reaper",
+                    lock: WorkerLockKind::Result,
+                }
+            )
+        );
     }
 
     #[test]
