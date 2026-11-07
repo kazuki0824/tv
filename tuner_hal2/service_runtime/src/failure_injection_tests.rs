@@ -346,9 +346,7 @@ fn queued_old_dvr_worker_cannot_consume_playback_after_owner_quarantine() {
         generation,
         AidlObjectKind::Dvr,
         || -> Result<_, HalError> { Ok((AidlMethodCall::DvrStart, ())) },
-        |runtime, dispatch, ()| {
-            runtime.start_dvr_for_object(object_id, generation, dispatch)
-        },
+        |runtime, dispatch, ()| runtime.start_dvr_for_object(object_id, generation, dispatch),
     )
     .expect("Playback DVR開始");
 
@@ -361,22 +359,15 @@ fn queued_old_dvr_worker_cannot_consume_playback_after_owner_quarantine() {
     let old_worker = std::thread::spawn(move || {
         ready_tx.send(()).expect("worker準備");
         resume_rx.recv().expect("worker再開");
-        TunerServiceRuntime::consume_playback_dvr_for_object(
-            &old_runtime,
-            object_id,
-            generation,
-        )
+        TunerServiceRuntime::consume_playback_dvr_for_object(&old_runtime, object_id, generation)
     });
     ready_rx.recv().expect("workerが旧世代を保持して待機中");
 
     // lifecycleの値を検査するだけでなく、実際のPlayback消費関数を
     // 隔離前後で呼び、隔離後に副作用が発生する入口が拒否されることを確認する。
-    let _plan = quarantine_object_drop_leak_use_case(
-        &mut runtime.lock().unwrap(),
-        object_id,
-        generation,
-    )
-    .expect("旧世代の隔離確定");
+    let _plan =
+        quarantine_object_drop_leak_use_case(&mut runtime.lock().unwrap(), object_id, generation)
+            .expect("旧世代の隔離確定");
     resume_tx.send(()).expect("workerを隔離後に再開");
     let result = old_worker.join().expect("旧世代worker終了");
     assert!(
