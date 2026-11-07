@@ -4,7 +4,7 @@ use super::{
     BinderResult, ObjectCloseCleanupFailure,
 };
 use crate::service_context::SharedAidlServiceContext;
-use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
+use maleicacid_tuner_hal2_common::FirstErrorCollector;
 use maleicacid_tuner_hal2_domain_request::{AidlMethodCall, AidlObjectKind};
 use maleicacid_tuner_hal2_service_runtime::{
     quarantine_object_drop_leak_use_case, ObjectCleanupDiagnosticRecord, TunerServiceRuntime,
@@ -84,15 +84,12 @@ pub(crate) fn quarantine_drop_leak_object(
                         public_error,
                     ),
                 );
-                match (terminalization_result, record_result) {
-                    (Ok(()), Ok(())) => Ok(()),
-                    (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                    (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
-                        "drop-leak cleanup diagnostic record failed after terminalization failure",
-                        primary,
-                        cleanup,
-                    )),
+                // cleanupと診断記録は別の確定内容であり、診断失敗で
+                // 成功した物理cleanupを再実行しない。
+                if let Err(error) = record_result {
+                    log::error!("drop-leak cleanupの診断記録に失敗しました: handle={handle:?} error={error:?}");
                 }
+                terminalization_result
             };
             error_collector.push_result(terminalization_result);
         }
