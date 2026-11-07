@@ -266,7 +266,12 @@ impl RuntimeObjectTable {
         lifecycle: RuntimeObjectLifecycle,
     ) -> Result<(), RuntimeObjectTableError> {
         if let Some(existing) = self.entries.get(&entry.object_id) {
-            if !existing.lifecycle.is_terminal() {
+            if !existing.lifecycle.is_terminal()
+                || self.object_close_txn.has_outstanding_obligation(
+                    existing.object_id,
+                    existing.generation,
+                )
+            {
                 return Err(RuntimeObjectTableError::DuplicateObjectId {
                     object_id: entry.object_id,
                     existing_kind: existing.object_kind,
@@ -277,7 +282,11 @@ impl RuntimeObjectTable {
         if self.entries.values().any(|existing| {
             existing.object_kind == entry.object_kind
                 && existing.ledger_id == entry.ledger_id
-                && !existing.lifecycle.is_terminal()
+                && (!existing.lifecycle.is_terminal()
+                    || self.object_close_txn.has_outstanding_obligation(
+                        existing.object_id,
+                        existing.generation,
+                    ))
         }) {
             return Err(RuntimeObjectTableError::DuplicateRuntimeBinding {
                 object_kind: entry.object_kind,
@@ -606,6 +615,18 @@ impl RuntimeObjectTable {
         Ok(targets
             .into_iter()
             .any(|(id, gen)| self.object_close_txn.has_active_cleanup_attempt(id, gen)))
+    }
+
+    pub(crate) fn has_descendant_outstanding_cleanup(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<bool, RuntimeObjectTableError> {
+        self.entry_checked_any(object_id, generation)?;
+        Ok(self
+            .descendant_object_keys(object_id, generation)
+            .into_iter()
+            .any(|(id, gen)| self.object_close_txn.has_outstanding_obligation(id, gen)))
     }
 
     pub(crate) fn begin_quarantine_cleanup(
