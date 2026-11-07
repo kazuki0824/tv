@@ -7,7 +7,7 @@
 
 - 対象・祖先・子孫の既存`ObjectCloseTxn`がcleanup実行中または別の後片付け義務を保持する場合、drop-leak隔離はplanを発行せず型付きの委譲結果を返す。既存の物理cleanupを二重実行せず、正常な競合拒否だけで`ServiceCritical`へ昇格させない。
 - `cleanup_reaper`の期限経路でも委譲結果と隔離失敗を区別し、別所有者への委譲では現在のreaper laneを解放する。実際の異常・隔離不能は従来どおりfail-closedとする。
-- 既存cleanupの実行中は隔離planを発行しないこと、処理が完了した後には隔離できること、競合だけではサービス停止bitを立てないことをRust host回帰テストへ追加した。Android Soong／CTS／VTSと実際のHAL再起動は未検証。
+- 既存cleanupの実行中は隔離planを発行しないこと、処理が完了した後には隔離できること、競合だけではサービス停止bitを立てないことをRust host回帰テストへ追加した。AIDL接着層でも既存権限との競合を型付き委譲として返し、既存closeの状態とサービス全体停止bitが変化しない試験を追加した。Android Soong／CTS／VTSと実際のHAL再起動は未検証。
 
 # 2026-11-07 PR #227の局所隔離とDVR通知worker回収の完了経路を修正
 
