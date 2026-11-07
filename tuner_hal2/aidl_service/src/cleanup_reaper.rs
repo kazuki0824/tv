@@ -535,9 +535,35 @@ mod tests {
                 .expect("親ownerとの競合拒否"),
             crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup
         );
-        assert!(context
-            .ensure_related_cleanup_progress(child_handle)
-            .expect("親のreaper投入を保証"));
+        // 容量1の同一予約groupで子の既存cleanup委譲を開始する。
+        // 別のreaper予約を要求すると、子が容量を保持中のため必ず失敗する。
+        let policy = CleanupReaperPolicy {
+            max_jobs: 1,
+            terminal_deadline: Duration::from_millis(20),
+            retry_delays: [Duration::ZERO; 4],
+        };
+        let weak = Arc::downgrade(&context);
+        let runner = Arc::new(move |job, pending, worker| {
+            run_cleanup_job(weak.clone(), policy, job, pending, worker);
+        });
+        let queue = maleicacid_tuner_hal2_service_runtime::WorkerRuntime::start_reaper_queue(
+            1,
+            "test-related-cleanup",
+            runner,
+        )
+        .expect("容量1のreaperが起動する");
+        let dependency = context
+            .cleanup_dependency_for_handle(child_handle)
+            .expect("子のcleanup依存関係");
+        queue
+            .enqueue_reserved(
+                CleanupJob {
+                    handle: child_handle,
+                    registered_at: Instant::now() - Duration::from_secs(1),
+                },
+                [(CleanupJobKey::from_handle(child_handle), dependency)],
+            )
+            .expect("子reaperが唯一の予約枠を保持する");
 
         for _ in 0..200 {
             if context.cleanup_retry_disposition(parent_handle)
