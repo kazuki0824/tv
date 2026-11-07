@@ -696,13 +696,6 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
     outcomes
 }
 
-/// 既存ServiceFailureStateだけを観測し、fail-stop確定後にinitへ再起動を委譲する。
-fn service_requires_restart(
-    failure_state: &maleicacid_tuner_hal2_service_runtime::ServiceFailureState,
-) -> bool {
-    failure_state.snapshot().service_critical
-}
-
 fn start_service_critical_monitor(
     failure_state: maleicacid_tuner_hal2_service_runtime::ServiceFailureState,
 ) -> std::io::Result<maleicacid_tuner_hal2_service_runtime::WorkerRuntime<()>> {
@@ -714,8 +707,8 @@ fn start_service_critical_monitor(
         1,
         move |control| -> Result<(), HalError> {
             loop {
-                if service_requires_restart(&failure_state) {
-                    let snapshot = failure_state.snapshot();
+                let snapshot = failure_state.snapshot();
+                if snapshot.service_critical {
                     log::error!(
                         "ServiceCriticalを検出したためHALプロセスを終了します: runtime_lock_poison_count={} diagnostic_counter_saturated={}",
                         snapshot.runtime_lock_poison_count,
@@ -811,9 +804,9 @@ mod tests {
     fn service_critical_monitor_observes_existing_failure_owner() {
         let mut runtime = TunerServiceRuntime::new();
         let state = runtime.failure_state();
-        assert!(!service_requires_restart(&state));
+        assert!(!state.snapshot().service_critical);
         runtime.mark_service_critical();
-        assert!(service_requires_restart(&state));
+        assert!(state.snapshot().service_critical);
     }
 
     use maleicacid_tuner_hal2_device::dvb::DtvPropertyBuffer;
