@@ -92,6 +92,8 @@ pub(crate) struct CleanupReaperQueue {
             std::sync::Mutex<maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime>,
         >,
     >,
+    #[cfg(test)]
+    idle_park_notice: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 impl Drop for CleanupReaperQueue {
@@ -163,6 +165,8 @@ impl CleanupReaperQueue {
                 RuntimeLockKind::CleanupReaperOwner,
             ),
             service_runtime: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            idle_park_notice: std::sync::Mutex::new(None),
         }
     }
 
@@ -491,6 +495,27 @@ impl CleanupReaperQueue {
                             Instant::now(),
                         )
                     };
+                    #[cfg(test)]
+                    let idle_notice = if next_wait.is_none() {
+                        queue_owner
+                            .idle_park_notice
+                            .lock()
+                            .ok()
+                            .and_then(|mut signal| signal.take())
+                    } else {
+                        None
+                    };
+                    // WorkerContextのwakeはatomic pending bitを持つため、
+                    // 強参照を解放してから無期限駐機しても通知は取りこぼさない。
+                    // context -> queue -> worker の強参照循環を作らない。
+                    drop(context);
+                    drop(queue_owner);
+                    #[cfg(test)]
+                    if let Some(signal) = idle_notice {
+                        if signal.send(()).is_err() {
+                            log::debug!("idle駐機通知のテスト受信側が終了しました");
+                        }
+                    }
                     control.wait_until(next_wait);
                 }
             },
@@ -1144,6 +1169,42 @@ mod tests {
             failure.snapshot().service_critical,
             "Drop中の異常join結果はSSOTへ伝播する"
         );
+    }
+
+    #[test]
+    fn idle_admission_worker_does_not_retain_service_or_queue() {
+        use maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime;
+        use std::sync::{mpsc, Mutex};
+
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let context = AidlServiceContext::from_shared_runtime_for_test(runtime);
+        let queue = Arc::clone(&context.cleanup_reaper_queue);
+        let (signal, reached_idle) = mpsc::channel();
+        *queue.idle_park_notice.lock().unwrap() = Some(signal);
+        let context_weak = Arc::downgrade(&context);
+        let queue_weak = Arc::downgrade(&queue);
+        // 未発行IDは直ちにStaleになり、監督リストが空になる。
+        let stale = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(999_991),
+            AidlObjectGeneration(1),
+        );
+        queue
+            .supervise_unqueued_owner(context_weak.clone(), stale)
+            .expect("既存の監督workerを起動する");
+        reached_idle
+            .recv_timeout(Duration::from_secs(2))
+            .expect("監督workerが待機対象0件のpark箇所へ到達する");
+        drop(context);
+        drop(queue);
+
+        for _ in 0..500 {
+            if context_weak.upgrade().is_none() && queue_weak.upgrade().is_none() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("idle監督workerがcontext/queueの強参照を保持したままです");
     }
 
     #[test]
