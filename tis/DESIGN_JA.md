@@ -434,7 +434,7 @@ genreを含む各TvProvider標準列への具体写像、直接設定可否、en
 
 ARIB `parental_rating_descriptor` からAndroid `TvContentRating`および`Programs.COLUMN_CONTENT_RATING`への具体写像は `ARIB_SI_EPG_TvProvider投影方針.md` を唯一の正本とする。TISの`AribRatingMapper`は同方針のruntime実装であり、Rust側の意味fact/provider-dataへAndroid投影結果を戻さない。
 
-ライブセッションは、現在番組のレーティングとsystem視聴制限設定を同期して扱う。`TvInputManager.isParentalControlsEnabled()` が true の場合、TIS は現在番組の `TvContentRating`、またはレーティング未取得時の `TvContentRating.UNRATED` を `TvInputManager.isRatingBlocked(...)` に渡して判定する。blocked の場合は video frame を表示する前に再生を停止または抑止し、`notifyContentBlocked(rating)` を呼ぶ。許可された場合は、同じ選局の初回許可と遮断から許可への遷移で `notifyContentAllowed()` を呼ぶ。同じ許可状態を維持するSI更新、視聴制限の再評価、最初の映像出力では許可通知を重複させない。選局準備で状態を未判定へ戻し、新しい選局の初回通知を抑止しない。有効な `onUnblockContent()` の解除要求には許可状態を記録して明示的に応答し、その直後の再生開始評価からは同じ許可通知を重複させない。映像の利用可能通知は視聴許可通知とは独立に、既存の出力確認条件に従う。
+ライブセッションは、現在番組のレーティングとsystem視聴制限設定を同期して扱う。`TvInputManager.isParentalControlsEnabled()` が true の場合、TIS は現在番組の `TvContentRating`、またはレーティング未取得時の `TvContentRating.UNRATED` を `TvInputManager.isRatingBlocked(...)` に渡して判定する。blocked の場合は video frame を表示する前に再生を停止または抑止し、`notifyContentBlocked(rating)` を呼ぶ。許可された場合は、同じ選局の初回許可と遮断から許可への遷移で `notifyContentAllowed()` を呼ぶ。同じ許可状態を維持するSI更新、視聴制限の再評価、最初の映像出力では許可通知を重複させない。選局準備で状態を未判定へ戻し、新しい選局の初回通知を抑止しない。有効な `onUnblockContent()` は指定レーティングだけを一時解除して現在番組の視聴制限を再評価する。番組全体の許可が確定した場合に許可状態を記録して通知し、遮断対象が残る場合はそのレーティングを通知して再生を抑止する。照会が失敗した場合は従前の状態を維持する。映像の利用可能通知は視聴許可通知とは独立に、既存の出力確認条件に従う。
 
 TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTION_PARENTAL_CONTROLS_ENABLED_CHANGED` を監視し、設定変更時に現在番組の視聴制限判定を即時再評価する。
 

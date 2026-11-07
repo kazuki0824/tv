@@ -1569,7 +1569,7 @@ class MaleicacidLiveSession(
         return false
     }
 
-    private fun reevaluateParentalControls() {
+    private fun reevaluateParentalControls(unblockResponse: Boolean = false) {
         when (val decision = contentAccessDecision()) {
             is ContentAccessDecision.Block -> {
                 rememberBlockedContent(decision.blocked)
@@ -1577,7 +1577,7 @@ class MaleicacidLiveSession(
             }
 
             ContentAccessDecision.Allow -> {
-                notifyAllowedContent()
+                notifyAllowedContent(unblockResponse)
                 latestService?.let { service ->
                     playbackState = PlaybackStartTransitions.allowRetry(playbackState)
                     maybeStartPlayback(service)
@@ -1794,11 +1794,7 @@ class MaleicacidLiveSession(
             reevaluateParentalControls()
             return
         }
-        notifyAllowedContent(unblockResponse = true)
-        latestService?.let { service ->
-            playbackState = PlaybackStartTransitions.allowRetry(playbackState)
-            maybeStartPlayback(service)
-        }
+        reevaluateParentalControls(unblockResponse = true)
     }
 
     @Synchronized
