@@ -248,12 +248,8 @@ fn run_cleanup_job(
                                 "cleanup reaper期限の隔離に失敗しました: handle={:?} error={error:?}",
                                 job.handle
                             );
-                            // 局所隔離自体が成立しているなら全体停止には昇格しない。
-                            if context.cleanup_retry_disposition(job.handle)
-                                == Ok(AidlObjectCleanupDisposition::Quarantined)
-                            {
-                                return;
-                            }
+                            // 失敗直後の論理Quarantinedだけでは、物理cleanupや
+                            // worker fenceの成功を証明できないためfail-closedを維持する。
                             mark_cleanup_reaper_critical(&context);
                             return;
                         }
