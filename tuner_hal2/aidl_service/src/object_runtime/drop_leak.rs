@@ -75,7 +75,11 @@ pub(crate) fn quarantine_drop_leak_object(
         &mut AidlObjectArtifactCleanupExecutor::new(context),
     );
     let diagnostic = report.report().clone();
-    let public_error = diagnostic.clone().into_result().err().map(ObjectCloseCleanupFailure::into_error);
+    let public_error = diagnostic
+        .clone()
+        .into_result()
+        .err()
+        .map(ObjectCloseCleanupFailure::into_error);
     if let Err(error) = context.record_object_cleanup_diagnostic_fallback(
         ObjectCleanupDiagnosticRecord::drop_leak_terminalization(
             handle.object_id(),

@@ -123,6 +123,7 @@ impl Drop for CleanupReaperQueue {
 fn next_admission_wake(
     pending: &std::collections::BTreeMap<CleanupJobKey, CleanupJob>,
     budget: Duration,
+    retry_delay: Duration,
     now: Instant,
 ) -> Option<Instant> {
     pending
@@ -130,7 +131,7 @@ fn next_admission_wake(
         .map(|task| task.registered_at.checked_add(budget).unwrap_or(now))
         .min()
         .map(|deadline| {
-            now.checked_add(Duration::from_millis(10))
+            now.checked_add(retry_delay)
                 .unwrap_or(now)
                 .min(deadline)
         })
@@ -234,20 +235,32 @@ impl CleanupReaperQueue {
         let key = CleanupJobKey::from_handle(handle);
         let runtime = {
             let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
-            slot.queue.as_ref().ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "cleanup reaperの正規ownerが設定されていません",
-                )
-            })?.clone()
+            slot.queue
+                .as_ref()
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "cleanup reaperの正規ownerが設定されていません",
+                    )
+                })?
+                .clone()
         };
-        if runtime.pending_value(&key).map_err(Self::classify_enqueue_error)?.is_some() {
+        if runtime
+            .pending_value(&key)
+            .map_err(Self::classify_enqueue_error)?
+            .is_some()
+        {
             return Ok(());
         }
-        runtime.enqueue_reserved(
-            CleanupJob { handle, registered_at: Instant::now() },
-            [(key, dependency)],
-        ).map_err(Self::classify_enqueue_error)
+        runtime
+            .enqueue_reserved(
+                CleanupJob {
+                    handle,
+                    registered_at: Instant::now(),
+                },
+                [(key, dependency)],
+            )
+            .map_err(Self::classify_enqueue_error)
     }
 
     /// 正本ObjectCloseTxnの世代付き未完義務を、容量不足の間も1本のWorkerRuntimeで監督する。
@@ -289,13 +302,10 @@ impl CleanupReaperQueue {
                 }
             }
         }
-        owner
-            .admission_pending
-            .entry(key)
-            .or_insert(CleanupJob {
-                handle,
-                registered_at: Instant::now(),
-            });
+        owner.admission_pending.entry(key).or_insert(CleanupJob {
+            handle,
+            registered_at: Instant::now(),
+        });
         if let Some(worker) = owner.admission_worker.as_ref() {
             // 新しいentryの登録は既存WorkerRuntimeのwakeで通知する。
             return worker.wake();
@@ -313,6 +323,7 @@ impl CleanupReaperQueue {
         let weak_queue = Arc::downgrade(self);
         let observer_context = context.clone();
         let budget = self.policy.terminal_deadline;
+        let retry_delay = self.policy.retry_delays[1];
         let worker = WorkerRuntime::spawn_observed(
             "tuner-hal2-cleanup-admission".to_string(),
             0,
@@ -450,6 +461,7 @@ impl CleanupReaperQueue {
                         next_admission_wake(
                             &state.admission_pending,
                             budget,
+                            retry_delay,
                             Instant::now(),
                         )
                     };
@@ -783,7 +795,7 @@ fn run_cleanup_job(
                             let _ = checkpoint.send(());
                         }
                     }
-                    worker.wait_until(Instant::now().checked_add(Duration::from_millis(20)));
+                    worker.wait_until(Instant::now().checked_add(policy.retry_delays[1]));
                     continue;
                 }
                 Err(error) => {
@@ -890,32 +902,56 @@ mod tests {
 
         struct SuccessfulCleanup;
         impl ObjectCloseRuntimeExecutor for SuccessfulCleanup {
-            fn execute_runtime_cleanup(&mut self, _: ObjectRuntimeCleanupCommand) -> Result<(), ObjectCloseCleanupFailure> {
+            fn execute_runtime_cleanup(
+                &mut self,
+                _: ObjectRuntimeCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
                 Ok(())
             }
         }
         impl ObjectDomainCleanupExecutor for SuccessfulCleanup {
-            fn execute_frontend_cleanup(&mut self, _: ObjectDomainCleanupCommand) -> Result<(), HalError> {
+            fn execute_frontend_cleanup(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
                 Ok(())
             }
-            fn execute_lnb_cleanup(&mut self, _: ObjectDomainCleanupCommand) -> Result<(), HalError> {
+            fn execute_lnb_cleanup(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
                 Ok(())
             }
-            fn execute_lnb_drop_leak_record(&mut self, _: ObjectDomainCleanupCommand) -> Result<(), HalError> {
+            fn execute_lnb_drop_leak_record(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
                 Ok(())
             }
         }
         impl ObjectArtifactCleanupExecutor for SuccessfulCleanup {
-            fn execute_owner_callback_cleanup(&mut self, _: ObjectArtifactCleanupCommand) -> Result<(), ObjectCloseCleanupFailure> {
+            fn execute_owner_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
                 Ok(())
             }
-            fn execute_descendant_callback_cleanup(&mut self, _: ObjectArtifactCleanupCommand) -> Result<(), ObjectCloseCleanupFailure> {
+            fn execute_descendant_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
                 Ok(())
             }
-            fn execute_lnb_owner_loss_callback_cleanup(&mut self, _: ObjectArtifactCleanupCommand) -> Result<(), ObjectCloseCleanupFailure> {
+            fn execute_lnb_owner_loss_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
                 Ok(())
             }
-            fn execute_dvr_status_notifier_cleanup(&mut self, _: ObjectArtifactCleanupCommand) -> Result<(), ObjectCloseCleanupFailure> {
+            fn execute_dvr_status_notifier_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
                 Ok(())
             }
         }
@@ -1219,8 +1255,10 @@ mod tests {
     fn idle_admission_worker_has_no_polling_deadline_and_new_owner_wakes_it() {
         let pending = std::collections::BTreeMap::new();
         let now = Instant::now();
+        let budget = Duration::from_millis(20);
+        let retry_delay = Duration::from_millis(10);
         assert_eq!(
-            next_admission_wake(&pending, Duration::from_millis(20), now),
+            next_admission_wake(&pending, budget, retry_delay, now),
             None
         );
         let mut pending = pending;
@@ -1236,14 +1274,28 @@ mod tests {
                 registered_at: now,
             },
         );
-        assert!(next_admission_wake(&pending, Duration::from_millis(20), now).is_some());
+        assert_eq!(
+            next_admission_wake(&pending, budget, retry_delay, now + budget),
+            Some(now + budget),
+        );
         pending.clear();
         assert_eq!(
-            next_admission_wake(&pending, Duration::from_millis(20), now),
+            next_admission_wake(&pending, budget, retry_delay, now),
             None
         );
         // 新規owner登録後のwake未着はWorkerWakeの原子的保留bitで防止する。
         // 既存WorkerRuntimeのwake/stop回帰はcontrolのworker_wakeテストで確認する。
+    }
+
+    #[test]
+    fn admission_failure_after_service_owner_drop_does_not_abort() {
+        let runtime = Arc::new(std::sync::Mutex::new(
+            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::new(),
+        ));
+        let queue = CleanupReaperQueue::from_snapshot(runtime.lock().unwrap().capability_snapshot());
+        queue.bind_service_runtime(&runtime);
+        drop(runtime);
+        queue.record_terminal_failure("test join failure");
     }
 
     /// reaper満杯時の未予約active ownerを、外部APIの再呼出しなしで監督する。
@@ -1320,8 +1372,12 @@ mod tests {
         assert_eq!(queue.runtime.lock().unwrap().admission_pending.len(), 1);
         assert!(queue.runtime.lock().unwrap().admission_worker.is_some());
         if complete_owner {
-            finish_object_close_use_case(&mut runtime.lock().unwrap(), simulated_cleanup_completion(attempt), Ok(()))
-                .unwrap();
+            finish_object_close_use_case(
+                &mut runtime.lock().unwrap(),
+                simulated_cleanup_completion(attempt),
+                Ok(()),
+            )
+            .unwrap();
         }
         let key = CleanupJobKey::from_handle(handle);
         let mut finished = false;
@@ -1513,8 +1569,12 @@ mod tests {
         }
         // Aのreaper予約は保持したまま、B/Cの正規closeだけを完了させる。
         for attempt in attempts {
-            finish_object_close_use_case(&mut runtime.lock().unwrap(), simulated_cleanup_completion(attempt), Ok(()))
-                .unwrap();
+            finish_object_close_use_case(
+                &mut runtime.lock().unwrap(),
+                simulated_cleanup_completion(attempt),
+                Ok(()),
+            )
+            .unwrap();
         }
         let mut completed = false;
         for _ in 0..300 {
@@ -1607,8 +1667,12 @@ mod tests {
             .expect("期限超過分岐を通過する");
         assert!(!failure.snapshot().service_critical);
         let release = std::thread::spawn(move || {
-            finish_object_close_use_case(&mut runtime.lock().unwrap(), simulated_cleanup_completion(attempt), Ok(()))
-                .unwrap();
+            finish_object_close_use_case(
+                &mut runtime.lock().unwrap(),
+                simulated_cleanup_completion(attempt),
+                Ok(()),
+            )
+            .unwrap();
         });
         done_rx
             .recv_timeout(Duration::from_secs(2))
