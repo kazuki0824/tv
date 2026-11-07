@@ -448,6 +448,86 @@ mod tests {
     }
 
     #[test]
+    fn issued_but_unstarted_parent_cleanup_progresses_without_public_retry() {
+        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
+        use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
+        use maleicacid_tuner_hal2_service_runtime::{
+            close_object_use_case, RuntimeObjectEntry, RuntimeOwnerRelation,
+            TunerServiceRuntime,
+        };
+        use std::sync::Mutex;
+
+        let mut runtime = TunerServiceRuntime::new();
+        let parent = runtime
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .expect("親Demuxを開く");
+        let child_id = AidlObjectId(977);
+        let generation = parent.generation();
+        runtime
+            .object_table_mut()
+            .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Filter,
+                object_id: child_id,
+                generation,
+                ledger_id: LedgerId(977),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Demux {
+                    demux: parent.object_id(),
+                    generation,
+                },
+                lifecycle: runtime
+                    .object_table()
+                    .entry(parent.object_id())
+                    .expect("親はLive")
+                    .lifecycle,
+            })
+            .expect("子の公開登録");
+        // 子は隔離済みで親closeが物理処理すべき対象は親だけとする。
+        runtime
+            .object_table_mut()
+            .quarantine_cascade(child_id, generation)
+            .expect("子を隔離");
+        let _unstarted = close_object_use_case(
+            &mut runtime,
+            parent.object_id(),
+            generation,
+            AidlObjectKind::Demux,
+            AidlMethodCall::DemuxClose,
+        )
+        .expect("親close権限は発行したが物理cleanupは未開始");
+        let parent_handle = AidlObjectHandle::new(
+            AidlObjectKind::Demux,
+            parent.object_id(),
+            generation,
+        );
+        let child_handle = AidlObjectHandle::new(AidlObjectKind::Filter, child_id, generation);
+        let context =
+            AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
+        assert_eq!(
+            crate::object_runtime::quarantine_drop_leak_object(&context, child_handle)
+                .expect("親ownerへの委譲"),
+            crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup
+        );
+        assert!(context
+            .ensure_related_cleanup_progress(child_handle)
+            .expect("親のreaper投入を保証"));
+        for _ in 0..200 {
+            if context.cleanup_retry_disposition(parent_handle)
+                == Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("公開closeを再呼出しせず親の未開始cleanupを自律回収できませんでした");
+    }
+
+    #[test]
     fn poisoned_owner_slot_rejects_enqueue_with_identity() {
         let queue = CleanupReaperQueue::from_snapshot(
             maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::default()
