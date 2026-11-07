@@ -70,33 +70,8 @@ struct CleanupReaperQueueOwner {
             CleanupJob,
         >,
     >,
-    /// reaperが満杯でも回収が未完のownerを列挙する受付予定。義務正本はObjectCloseTxn。
-    admission_pending: std::collections::BTreeMap<CleanupJobKey, CleanupJob>,
     /// 受付の空き待ちは１本の従属WorkerRuntimeで監視し、別の容量枠を作らない。
     admission_worker: Option<maleicacid_tuner_hal2_service_runtime::WorkerRuntime<()>>,
-}
-
-impl CleanupReaperQueueOwner {
-    fn track_admission(
-        &mut self,
-        key: CleanupJobKey,
-        job: CleanupJob,
-        limit: usize,
-    ) -> Result<(), HalError> {
-        if self.admission_pending.contains_key(&key) {
-            return Ok(());
-        }
-        if self.admission_pending.len() >= limit {
-            return Err(HalError::Busy {
-                path: None,
-                detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
-                    "cleanup受付監督の容量不足",
-                ),
-            });
-        }
-        self.admission_pending.insert(key, job);
-        Ok(())
-    }
 }
 
 pub(crate) struct CleanupReaperQueue {
@@ -147,13 +122,13 @@ impl Drop for CleanupReaperQueue {
 /// 未受付entryがない場合は新規登録のwake/stopのみ待機する。
 /// entryがあれば最も早い物理回収期限と再受付の監視周期を比較する。
 fn next_admission_wake(
-    pending: &std::collections::BTreeMap<CleanupJobKey, CleanupJob>,
+    pending: &[CleanupJob],
     budget: Duration,
     retry_delay: Duration,
     now: Instant,
 ) -> Option<Instant> {
     pending
-        .values()
+        .iter()
         .map(|task| {
             let budget = if now.saturating_duration_since(task.registered_at) >= budget {
                 budget.saturating_mul(2)
@@ -181,7 +156,6 @@ impl CleanupReaperQueue {
             runtime: PoisonTrackedMutex::new(
                 CleanupReaperQueueOwner {
                     queue: None,
-                    admission_pending: std::collections::BTreeMap::new(),
                     admission_worker: None,
                 },
                 RuntimeLockKind::CleanupReaperOwner,
@@ -266,7 +240,8 @@ impl CleanupReaperQueue {
     }
 
     /// 既存reaperへ一度だけ受付を試み、満杯は呼出元の回復判断へ返す。
-    pub(crate) fn enqueue(&self, handle: AidlObjectHandle) -> Result<(), HalError> {
+    #[cfg(test)]
+    fn enqueue(&self, handle: AidlObjectHandle) -> Result<(), HalError> {
         let key = CleanupJobKey::from_handle(handle);
         let runtime = {
             let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
@@ -305,47 +280,20 @@ impl CleanupReaperQueue {
         Ok(())
     }
 
-    /// 受付枠が満杯なら、呼出元で元の時刻から有界に空き・完了を待つ。
+    /// 受付の空き待ちは既存義務に委譲し、呼出元では待たない。
     pub(crate) fn supervise_unqueued_owner(
         self: &Arc<Self>,
         context: Weak<AidlServiceContext>,
         handle: AidlObjectHandle,
     ) -> Result<(), HalError> {
-        self.start_monitor(context.clone())?;
-        let job = CleanupJob {
-            handle,
-            registered_at: Instant::now(),
+        let Some(service) = context.upgrade() else {
+            return Ok(());
         };
-        let key = CleanupJobKey::from_handle(handle);
-        let deadline = self.policy.terminal_deadline.saturating_mul(2);
-        loop {
-            let Some(context) = context.upgrade() else {
-                return Ok(());
-            };
-            if context
-                .cleanup_retry_disposition(handle)?
-                .recovery_settled()
-                || self.has_pending(handle)?
-            {
-                return Ok(());
-            }
-            let tracked = self
-                .runtime
-                .lock()
-                .map_err(HalError::LockPoisoned)?
-                .track_admission(key, job, self.policy.max_jobs);
-            match tracked {
-                Ok(()) => return self.wake_monitor(),
-                Err(HalError::Busy { .. }) if job.registered_at.elapsed() < deadline => {
-                    drop(context);
-                    std::thread::sleep(
-                        self.policy.retry_delays[1]
-                            .min(deadline.saturating_sub(job.registered_at.elapsed())),
-                    );
-                }
-                Err(error) => return Err(error),
-            }
+        self.start_monitor(context)?;
+        if !self.has_pending(handle)? {
+            service.request_cleanup_recovery(handle)?;
         }
+        self.wake_monitor()
     }
 
     fn start_monitor(self: &Arc<Self>, context: Weak<AidlServiceContext>) -> Result<(), HalError> {
@@ -430,29 +378,26 @@ impl CleanupReaperQueue {
                         }
                     }
                     let mut handed_off = false;
-                    let tasks: Vec<(CleanupJobKey, CleanupJob)> = {
-                        let state = queue_owner.runtime.lock().map_err(HalError::LockPoisoned)?;
-                        state
-                            .admission_pending
-                            .iter()
-                            .map(|(key, task)| (*key, *task))
-                            .collect()
-                    };
-                    for (key, task) in tasks {
+                    let tasks: Vec<CleanupJob> = context.cleanup_recovery_requests()?
+                        .into_iter()
+                        .map(|request| CleanupJob {
+                            handle: AidlObjectHandle::new(
+                                request.object_kind, request.object_id, request.generation,
+                            ),
+                            registered_at: request.requested_at,
+                        })
+                        .collect();
+                    for &task in &tasks {
                         let handle = task.handle;
+                        let key = CleanupJobKey::from_handle(handle);
                         let disposition = context.cleanup_retry_disposition(handle)?;
-                        let managed = disposition.recovery_settled()
-                            || queue
-                                .pending_value(&key)
-                                .map_err(CleanupReaperQueue::classify_enqueue_error)?
-                                .is_some();
-                        if managed {
-                            queue_owner
-                                .runtime
-                                .lock()
-                                .map_err(HalError::LockPoisoned)?
-                                .admission_pending
-                                .remove(&key);
+                        let reservation = queue
+                            .pending_value(&key)
+                            .map_err(CleanupReaperQueue::classify_enqueue_error)?;
+                        if disposition.recovery_settled()
+                            || reservation.is_some_and(|job| job.registered_at <= task.registered_at)
+                        {
+                            context.finish_cleanup_recovery_admission(handle)?;
                             continue;
                         }
                         match disposition {
@@ -474,23 +419,22 @@ impl CleanupReaperQueue {
                             _ => {}
                         }
                         // 既存closeが物理cleanup中ならその実行権限を奪って再実行しない。
-                        let active = context
-                            .related_cleanup_recovery_owners(handle)?
-                            .iter()
-                            .any(|(_, active)| *active);
-                        if !active {
+                        let owners = match context.related_cleanup_recovery_owners(handle) {
+                            Ok(owners) => owners,
+                            Err(_) if context.cleanup_retry_disposition(handle)?.recovery_settled() => {
+                                context.finish_cleanup_recovery_admission(handle)?;
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        if reservation.is_none() && !owners.iter().any(|(_, active)| *active) {
                             if context.cleanup_dependency_for_handle(handle).is_ok() {
                                 match queue
                                     .enqueue_reserved(task, [(key, task)])
                                     .map_err(CleanupReaperQueue::classify_enqueue_error)
                                 {
                                     Ok(()) => {
-                                        queue_owner
-                                            .runtime
-                                            .lock()
-                                            .map_err(HalError::LockPoisoned)?
-                                            .admission_pending
-                                            .remove(&key);
+                                        context.finish_cleanup_recovery_admission(handle)?;
                                         handed_off = true;
                                         continue;
                                     }
@@ -502,12 +446,7 @@ impl CleanupReaperQueue {
                                             .map_err(CleanupReaperQueue::classify_enqueue_error)?
                                             .is_some()
                                         {
-                                            queue_owner
-                                                .runtime
-                                                .lock()
-                                                .map_err(HalError::LockPoisoned)?
-                                                .admission_pending
-                                                .remove(&key);
+                                            handed_off = true;
                                             continue;
                                         }
                                         return Err(error);
@@ -534,14 +473,8 @@ impl CleanupReaperQueue {
                     // 受付待ちが空ならstop/wakeを無期限で待つ。
                     // 新規登録のwakeはWorkerWakeのatomic pending bitで保持されるため、
                     // 空集合確認直後に登録されても起床を取りこぼさない。
-                    let next_wait = {
-                        let state = queue_owner.runtime.lock().map_err(HalError::LockPoisoned)?;
-                        let now = Instant::now();
-                        let admission = next_admission_wake(
-                            &state.admission_pending, budget, retry_delay, now,
-                        );
-                        admission.into_iter().chain(next_reaper_deadline).min()
-                    };
+                    let admission = next_admission_wake(&tasks, budget, retry_delay, Instant::now());
+                    let next_wait = admission.into_iter().chain(next_reaper_deadline).min();
                     #[cfg(test)]
                     let idle_notice = if next_wait.is_none() {
                         queue_owner
@@ -832,6 +765,16 @@ pub(crate) fn start_cleanup_reaper(
 mod tests {
 
     // 競合の検査対象は実ObjectCloseTxn。物理操作の成功は既存executor境界から注入する。
+    fn recovery_requested(context: &AidlServiceContext, handle: AidlObjectHandle) -> bool {
+        context
+            .cleanup_recovery_requests()
+            .unwrap()
+            .iter()
+            .any(|request| {
+                request.object_id == handle.object_id() && request.generation == handle.generation()
+            })
+    }
+
     fn simulated_cleanup_completion(
         attempt: maleicacid_tuner_hal2_service_runtime::ObjectCloseCleanupAttempt,
     ) -> maleicacid_tuner_hal2_service_runtime::CloseCleanupAttemptCompletion {
@@ -1209,7 +1152,7 @@ mod tests {
 
     #[test]
     fn idle_admission_worker_has_no_polling_deadline_and_new_owner_wakes_it() {
-        let pending = std::collections::BTreeMap::new();
+        let pending = Vec::new();
         let now = Instant::now();
         let budget = Duration::from_millis(20);
         let retry_delay = Duration::from_millis(10);
@@ -1223,13 +1166,10 @@ mod tests {
             AidlObjectId(111),
             AidlObjectGeneration(3),
         );
-        pending.insert(
-            CleanupJobKey::from_handle(handle),
-            CleanupJob {
-                handle,
-                registered_at: now,
-            },
-        );
+        pending.push(CleanupJob {
+            handle,
+            registered_at: now,
+        });
         assert_eq!(
             next_admission_wake(&pending, budget, retry_delay, now + budget),
             Some(now + budget + retry_delay),
@@ -1322,12 +1262,7 @@ mod tests {
             if !reserved {
                 assert!(queue.has_pending(first).unwrap());
                 context.enqueue_cleanup_retry(handle).unwrap();
-                assert!(queue
-                    .runtime
-                    .lock()
-                    .unwrap()
-                    .admission_pending
-                    .contains_key(&CleanupJobKey::from_handle(handle)));
+                assert!(recovery_requested(&context, handle));
             }
             for _ in 0..250 {
                 if failure.snapshot().service_critical {
@@ -1341,68 +1276,6 @@ mod tests {
                 context.cleanup_retry_disposition(handle),
                 Ok(AidlObjectCleanupDisposition::QuarantineAwaitingReport)
             );
-        }
-    }
-
-    #[test]
-    fn admission_bound_preserves_existing_generations_and_deadlines() {
-        for limit in [
-            1,
-            CapabilitySnapshot::product_default().cleanup_reaper_capacity,
-        ] {
-            let queue = CleanupReaperQueue::from_snapshot(CapabilitySnapshot::product_default());
-            let mut owner = queue.runtime.lock().unwrap();
-            for generation in 1..=limit {
-                let handle = AidlObjectHandle::new(
-                    AidlObjectKind::Demux,
-                    AidlObjectId(1),
-                    AidlObjectGeneration(generation as u64),
-                );
-                owner
-                    .track_admission(
-                        CleanupJobKey::from_handle(handle),
-                        CleanupJob {
-                            handle,
-                            registered_at: Instant::now(),
-                        },
-                        limit,
-                    )
-                    .unwrap();
-            }
-            let first = AidlObjectHandle::new(
-                AidlObjectKind::Demux,
-                AidlObjectId(1),
-                AidlObjectGeneration(1),
-            );
-            let key = CleanupJobKey::from_handle(first);
-            let original = owner.admission_pending[&key].registered_at;
-            owner
-                .track_admission(
-                    key,
-                    CleanupJob {
-                        handle: first,
-                        registered_at: Instant::now(),
-                    },
-                    limit,
-                )
-                .unwrap();
-            assert_eq!(owner.admission_pending[&key].registered_at, original);
-            let next = AidlObjectHandle::new(
-                AidlObjectKind::Demux,
-                AidlObjectId(1),
-                AidlObjectGeneration(limit as u64 + 1),
-            );
-            assert!(owner
-                .track_admission(
-                    CleanupJobKey::from_handle(next),
-                    CleanupJob {
-                        handle: next,
-                        registered_at: Instant::now()
-                    },
-                    limit
-                )
-                .is_err());
-            assert_eq!(owner.admission_pending.len(), limit);
         }
     }
 
@@ -1494,7 +1367,7 @@ mod tests {
         queue
             .supervise_unqueued_owner(Arc::downgrade(&context), handle)
             .expect("同一世代の監督workerは重複生成しない");
-        assert_eq!(queue.runtime.lock().unwrap().admission_pending.len(), 1);
+        assert_eq!(context.cleanup_recovery_requests().unwrap().len(), 1);
         assert!(queue.runtime.lock().unwrap().admission_worker.is_some());
         grace_rx
             .recv_timeout(Duration::from_secs(2))
@@ -1508,19 +1381,16 @@ mod tests {
             )
             .unwrap();
         }
-        let key = CleanupJobKey::from_handle(handle);
         let mut finished = false;
         for _ in 0..500 {
-            let (pending, worker_finished) = {
-                let owner = queue.runtime.lock().unwrap();
-                (
-                    owner.admission_pending.contains_key(&key),
-                    owner
-                        .admission_worker
-                        .as_ref()
-                        .is_some_and(|worker| worker.is_finished()),
-                )
-            };
+            let pending = recovery_requested(&context, handle);
+            let worker_finished = queue
+                .runtime
+                .lock()
+                .unwrap()
+                .admission_worker
+                .as_ref()
+                .is_some_and(|worker| worker.is_finished());
             if (complete_owner && !pending)
                 || (!complete_owner && worker_finished && state.snapshot().service_critical)
             {
@@ -1562,12 +1432,7 @@ mod tests {
                 .begin_cleanup_attempt(&mut runtime.lock().unwrap())
                 .unwrap();
             assert!(context.enqueue_cleanup_retry(second_handle).is_ok());
-            assert!(queue
-                .runtime
-                .lock()
-                .unwrap()
-                .admission_pending
-                .contains_key(&CleanupJobKey::from_handle(second_handle)));
+            assert!(recovery_requested(&context, second_handle));
             finish_object_close_use_case(
                 &mut runtime.lock().unwrap(),
                 simulated_cleanup_completion(second_attempt),
@@ -1576,13 +1441,7 @@ mod tests {
             .unwrap();
             let mut woken = false;
             for _ in 0..500 {
-                if !queue
-                    .runtime
-                    .lock()
-                    .unwrap()
-                    .admission_pending
-                    .contains_key(&CleanupJobKey::from_handle(second_handle))
-                {
+                if !recovery_requested(&context, second_handle) {
                     woken = true;
                     break;
                 }
@@ -1616,7 +1475,7 @@ mod tests {
     }
 
     #[test]
-    fn full_admission_waits_for_normal_close_without_global_stop() {
+    fn full_reaper_admits_concurrent_recovery_without_blocking_callers() {
         use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
         use maleicacid_tuner_hal2_service_runtime::{
             close_object_use_case, finish_object_close_use_case, TunerServiceRuntime, WorkerRuntime,
@@ -1627,7 +1486,7 @@ mod tests {
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         let mut attempts = Vec::new();
         let mut handles = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..4 {
             let demux = runtime
                 .lock()
                 .unwrap()
@@ -1657,7 +1516,7 @@ mod tests {
         let failure = runtime.lock().unwrap().failure_state();
         let mut snapshot = runtime.lock().unwrap().capability_snapshot();
         snapshot.cleanup_reaper_capacity = 1;
-        snapshot.cleanup_terminal_deadline_ms = 500;
+        snapshot.cleanup_terminal_deadline_ms = 1_000;
         snapshot.cleanup_retry_schedule_ms = [0, 5, 10, 20];
         let queue = CleanupReaperQueue::from_snapshot(snapshot);
         let release = Arc::new(AtomicBool::new(false));
@@ -1689,49 +1548,88 @@ mod tests {
             Some(Arc::clone(&queue)),
         );
         context.enqueue_cleanup_retry(handles[0]).unwrap();
-        let (begun_tx, begun_rx) = mpsc::channel();
         let (admitted_tx, admitted_rx) = mpsc::channel();
-        let delayed_context = Arc::clone(&context);
-        let delayed = handles[1];
-        let overflow = std::thread::spawn(move || {
-            if begun_tx.send(()).is_ok() {
-                let _ = admitted_tx.send(delayed_context.enqueue_cleanup_retry(delayed));
-            }
-        });
-        begun_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let callers: Vec<_> = handles[1..]
+            .iter()
+            .copied()
+            .map(|handle| {
+                let context = Arc::clone(&context);
+                let admitted_tx = admitted_tx.clone();
+                std::thread::spawn(move || {
+                    let _ = admitted_tx.send(context.enqueue_cleanup_retry(handle));
+                })
+            })
+            .collect();
+        // いずれの所有者もまだ完了できず、reaperにも空きはない。
+        for _ in &callers {
+            admitted_rx
+                .recv_timeout(Duration::from_millis(500))
+                .unwrap()
+                .unwrap();
+        }
+        for caller in callers {
+            caller.join().unwrap();
+        }
         assert_eq!(
-            admitted_rx.recv_timeout(Duration::from_millis(30)),
-            Err(mpsc::RecvTimeoutError::Timeout)
+            context.cleanup_recovery_requests().unwrap().len(),
+            handles.len()
         );
-        assert!(!failure.snapshot().service_critical);
-        let mut attempts = attempts.into_iter();
-        finish_object_close_use_case(
-            &mut runtime.lock().unwrap(),
-            simulated_cleanup_completion(attempts.next().unwrap()),
-            Ok(()),
-        )
-        .unwrap();
-        admitted_rx
-            .recv_timeout(Duration::from_secs(1))
+        let original = context
+            .cleanup_recovery_requests()
             .unwrap()
+            .into_iter()
+            .find(|request| request.object_id == handles[0].object_id())
+            .unwrap()
+            .requested_at;
+        context.enqueue_cleanup_retry(handles[0]).unwrap();
+        assert!(context
+            .cleanup_recovery_requests()
+            .unwrap()
+            .iter()
+            .any(|request| request.object_id == handles[0].object_id()
+                && request.requested_at == original));
+        assert!(!failure.snapshot().service_critical);
+        let last_attempt = attempts.pop().unwrap();
+        let last_handle = *handles.last().unwrap();
+        for attempt in attempts {
+            finish_object_close_use_case(
+                &mut runtime.lock().unwrap(),
+                simulated_cleanup_completion(attempt),
+                Ok(()),
+            )
             .unwrap();
-        overflow.join().unwrap();
-        finish_object_close_use_case(
-            &mut runtime.lock().unwrap(),
-            simulated_cleanup_completion(attempts.next().unwrap()),
-            Ok(()),
-        )
-        .unwrap();
-        let mut completed = false;
-        for _ in 0..300 {
-            if queue.runtime.lock().unwrap().admission_pending.is_empty() {
-                completed = true;
+        }
+        assert_eq!(context.cleanup_recovery_requests().unwrap().len(), 1);
+        assert!(recovery_requested(&context, last_handle));
+        let monitor = queue
+            .runtime
+            .lock()
+            .unwrap()
+            .admission_worker
+            .take()
+            .unwrap();
+        monitor.request_stop();
+        for _ in 0..250 {
+            if monitor.is_finished() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+        assert!(monitor.is_finished(), "空き待ち監督はstopで終了する");
+        assert!(matches!(
+            monitor.join(),
+            maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::Normal(())
+                | maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::StopRequested
+        ));
+        assert!(recovery_requested(&context, last_handle));
+        finish_object_close_use_case(
+            &mut runtime.lock().unwrap(),
+            simulated_cleanup_completion(last_attempt),
+            Ok(()),
+        )
+        .unwrap();
         release.store(true, Ordering::Release);
-        assert!(completed, "B/Cが独立した監視容量不足を起こさず終了する");
+        assert!(context.cleanup_recovery_requests().unwrap().is_empty());
         assert!(!failure.snapshot().service_critical);
         for handle in handles {
             assert!(matches!(

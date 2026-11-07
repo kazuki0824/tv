@@ -120,8 +120,10 @@ pub use object_domain_cleanup::{
     ObjectDomainCleanupOutcome,
 };
 pub use object_lifecycle::{
-    aidl_object_cleanup_dependency, aidl_object_cleanup_disposition,
-    aidl_object_cleanup_is_terminal, AidlObjectCleanupDisposition,
+    aidl_cleanup_recovery_requests, aidl_object_cleanup_dependency,
+    aidl_object_cleanup_disposition, aidl_object_cleanup_is_terminal,
+    finish_aidl_cleanup_recovery_admission, request_aidl_cleanup_recovery,
+    AidlObjectCleanupDisposition, CleanupRecoveryRequest,
 };
 pub use object_method_use_case::{
     lnb_profile_supports_voltage_status, ObjectFrontendStatusReadinessValue,
