@@ -1227,6 +1227,7 @@ impl ObjectCloseTxn {
         if obligation.generation != generation
             || obligation.obligation_id != authority.obligation_id
             || obligation.active_attempt.is_some()
+            || obligation.quarantine.is_some()
         {
             return Err(ObjectCloseTxnStateError::InvalidAuthority);
         }
@@ -1626,7 +1627,7 @@ pub fn quarantine_object_drop_leak_use_case(
     }
     if runtime
         .object_table()
-        .has_descendant_outstanding_cleanup(object_id, generation)
+        .has_related_outstanding_cleanup(object_id, generation)
         .map_err(object_table_error_to_hal)?
     {
         return Err(HalError::invalid_state(
@@ -1999,6 +2000,24 @@ mod tests {
                 .lifecycle,
             crate::RuntimeObjectLifecycle::Quarantined
         );
+    }
+
+    #[test]
+    fn issued_close_authority_cannot_start_after_quarantine_handoff() {
+        let object_id = AidlObjectId(450);
+        let generation = AidlObjectGeneration(1);
+        let mut txn = ObjectCloseTxn::new();
+        let authority = txn
+            .issue_cleanup_authority(object_id, generation)
+            .expect("close権限を取得する");
+        txn.begin_quarantined_cleanup(object_id, generation, [])
+            .expect("外部cleanup開始前に隔離権限へ移管する");
+        assert!(
+            txn.begin_cleanup_attempt(object_id, generation, authority)
+                .is_err(),
+            "隔離後に古いclose権限で物理cleanupを再開始してはならない"
+        );
+        assert!(txn.has_outstanding_obligation(object_id, generation));
     }
 
     #[test]
