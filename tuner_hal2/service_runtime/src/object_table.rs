@@ -1349,7 +1349,12 @@ mod qg_object_lifecycle_tests {
         let child = AidlObjectId(9951);
         let generation = AidlObjectGeneration(1);
         table
-            .insert(entry(AidlObjectKind::Demux, 9950, 9950, RuntimeOwnerRelation::Root))
+            .insert(entry(
+                AidlObjectKind::Demux,
+                9950,
+                9950,
+                RuntimeOwnerRelation::Root,
+            ))
             .unwrap();
         table
             .insert(entry(
@@ -1363,11 +1368,7 @@ mod qg_object_lifecycle_tests {
             ))
             .unwrap();
         let (_, authority) = table
-            .begin_close_cascade_with_cleanup_authority(
-                parent,
-                generation,
-                CleanupStep::StopWorker,
-            )
+            .begin_close_cascade_with_cleanup_authority(parent, generation, CleanupStep::StopWorker)
             .unwrap();
         let snapshot = table.related_cleanup_owners(child, generation).unwrap();
         assert_eq!(snapshot.len(), 1);
@@ -1385,10 +1386,21 @@ mod qg_object_lifecycle_tests {
                 CloseCleanupAttemptOutcome::Complete,
             )
             .unwrap();
-        assert!(table.related_cleanup_owners(child, generation).unwrap().is_empty());
-        assert_eq!(table.entry(parent).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
-        assert_eq!(table.entry(child).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
-        assert!(!table.object_close_txn.has_outstanding_obligation(parent, generation));
+        assert!(table
+            .related_cleanup_owners(child, generation)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            table.entry(parent).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert_eq!(
+            table.entry(child).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert!(!table
+            .object_close_txn
+            .has_outstanding_obligation(parent, generation));
     }
 
     #[test]
