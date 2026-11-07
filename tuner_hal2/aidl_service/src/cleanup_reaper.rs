@@ -994,6 +994,130 @@ mod tests {
         panic!("容量解放後も次のcleanup予約を受け付けられませんでした");
     }
 
+    /// reaper満杯時の未予約active ownerを、外部APIの再呼出しなしで監督する。
+    fn admission_monitor_case(
+        complete_owner: bool,
+    ) {
+        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
+        use maleicacid_tuner_hal2_service_runtime::{
+            close_object_use_case, finish_object_close_use_case, TunerServiceRuntime,
+            WorkerRuntime,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Mutex};
+
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let demux = runtime
+            .lock()
+            .unwrap()
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .unwrap();
+        let handle =
+            AidlObjectHandle::new(AidlObjectKind::Demux, demux.object_id(), demux.generation());
+        let close = close_object_use_case(
+            &mut runtime.lock().unwrap(),
+            demux.object_id(),
+            demux.generation(),
+            AidlObjectKind::Demux,
+            AidlMethodCall::DemuxClose,
+        )
+        .unwrap();
+        let attempt = close
+            .begin_cleanup_attempt(&mut runtime.lock().unwrap())
+            .unwrap();
+        let state = runtime.lock().unwrap().failure_state();
+        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
+        let mut snapshot = runtime.lock().unwrap().capability_snapshot();
+        snapshot.cleanup_reaper_capacity = 1;
+        snapshot.cleanup_terminal_deadline_ms = 80;
+        snapshot.cleanup_retry_schedule_ms = [0, 5, 10, 20];
+        let queue = CleanupReaperQueue::from_snapshot(snapshot);
+        let release = Arc::new(AtomicBool::new(false));
+        let release_worker = Arc::clone(&release);
+        let (started_tx, started_rx) = mpsc::channel();
+        let runner = Arc::new(
+            move |_: CleanupJob, _: _, _: maleicacid_tuner_hal2_service_runtime::WorkerContext| {
+                started_tx.send(()).unwrap();
+                while !release_worker.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            },
+        );
+        queue
+            .install(WorkerRuntime::start_reaper_queue(1, "test-admission-monitor", runner).unwrap())
+            .unwrap();
+        let unrelated = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(99990),
+            AidlObjectGeneration(1),
+        );
+        queue.enqueue(unrelated, CleanupStep::StopWorker).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            queue.enqueue(handle, CleanupStep::ReleaseBackend),
+            Err(HalError::Busy { .. })
+        ));
+        queue
+            .supervise_unqueued_owner(Arc::downgrade(&context), handle)
+            .expect("既存WorkerRuntimeで未予約active cleanupを監督する");
+        queue
+            .supervise_unqueued_owner(Arc::downgrade(&context), handle)
+            .expect("同一世代の監督workerは重複生成しない");
+        assert_eq!(
+            queue.runtime.lock().unwrap().admission_watchers.len(),
+            1
+        );
+        if complete_owner {
+            finish_object_close_use_case(
+                &mut runtime.lock().unwrap(),
+                attempt.completion,
+                Ok(()),
+            )
+            .unwrap();
+        }
+        let key = CleanupJobKey::from_handle(handle);
+        let mut finished = false;
+        for _ in 0..500 {
+            if queue
+                .runtime
+                .lock()
+                .unwrap()
+                .admission_watchers
+                .get(&key)
+                .is_some_and(|worker| worker.is_finished())
+            {
+                finished = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        release.store(true, Ordering::Release);
+        assert!(finished, "監督workerが有界期限内に終了しませんでした");
+        assert_eq!(
+            state.snapshot().service_critical,
+            !complete_owner,
+            "正常完了時は全体停止せず、無応答時はfail-stopする"
+        );
+        assert!(matches!(
+            context.cleanup_retry_disposition(handle),
+            Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
+        ) == complete_owner);
+    }
+
+    #[test]
+    fn admission_busy_active_close_finishes_without_global_shutdown() {
+        admission_monitor_case(true);
+    }
+
+    #[test]
+    fn admission_busy_stalled_active_close_is_not_left_unmonitored() {
+        admission_monitor_case(false);
+    }
+
     #[test]
     fn active_owner_may_finish_after_delegation_deadline_without_hal_shutdown() {
         use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
