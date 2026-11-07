@@ -278,9 +278,9 @@ impl AidlServiceContext {
             ),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
-            cleanup_reaper_queue: preinstalled_reaper
-                .clone()
-                .unwrap_or_else(|| Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot))),
+            cleanup_reaper_queue: preinstalled_reaper.clone().unwrap_or_else(|| {
+                Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot))
+            }),
         });
         if preinstalled_reaper.is_none() {
             if let Err(error) = start_cleanup_reaper(
