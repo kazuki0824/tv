@@ -1384,6 +1384,23 @@ mod tests {
     }
 
     #[test]
+    fn notifier_retry_after_fenced_quarantine_does_not_stop_service() {
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        runtime
+            .lock()
+            .unwrap()
+            .object_table_mut()
+            .quarantine_cascade(handle.object_id(), handle.generation())
+            .expect("対象DVRだけを隔離");
+        assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));
+        enqueue_cleanup_retry_after_notifier_reap(&context, handle);
+        // Quarantinedを物理cleanup完了とはみなさないが、fenceのある
+        // owner固有の異常だけでサービス全体を停止しない。
+        assert!(!failure_state.snapshot().service_critical);
+    }
+
+    #[test]
     fn deliver_started_dvr_status_emits_current_playback_status() {
         let (context, runtime, handle) = build_started_playback_dvr_context();
         let state = Arc::new(CallbackState::default());
