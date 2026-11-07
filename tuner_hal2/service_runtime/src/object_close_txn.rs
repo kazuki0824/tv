@@ -1621,9 +1621,11 @@ pub fn related_cleanup_recovery_owner_use_case(
     runtime
         .object_table()
         .ancestor_cleanup_owner(object_id, generation)
-        .map(|entry| entry.map(|(entry, active)| {
-            (entry.object_kind, entry.object_id, entry.generation, active)
-        }))
+        .map(|entry| {
+            entry.map(|(entry, active)| {
+                (entry.object_kind, entry.object_id, entry.generation, active)
+            })
+        })
         .map_err(object_table_error_to_hal)
 }
 
@@ -1656,7 +1658,8 @@ pub fn quarantine_object_drop_leak_use_case(
         .object_table()
         .quarantine_candidate_entries(object_id, generation)
         .map_err(object_table_error_to_hal)?;
-    let artifact_cleanup_commands = artifact_cleanup_commands_for_drop_leak_plan(runtime, &candidates);
+    let artifact_cleanup_commands =
+        artifact_cleanup_commands_for_drop_leak_plan(runtime, &candidates);
     let notifier_candidates = artifact_cleanup_commands
         .iter()
         .filter(|command| command.kind == ObjectArtifactCleanupKind::DvrStatusNotifier)

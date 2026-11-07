@@ -452,8 +452,7 @@ mod tests {
         use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
         use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
         use maleicacid_tuner_hal2_service_runtime::{
-            close_object_use_case, RuntimeObjectEntry, RuntimeOwnerRelation,
-            TunerServiceRuntime,
+            close_object_use_case, RuntimeObjectEntry, RuntimeOwnerRelation, TunerServiceRuntime,
         };
         use std::sync::Mutex;
 
@@ -501,11 +500,8 @@ mod tests {
             AidlMethodCall::DemuxClose,
         )
         .expect("親close権限は発行したが物理cleanupは未開始");
-        let parent_handle = AidlObjectHandle::new(
-            AidlObjectKind::Demux,
-            parent.object_id(),
-            generation,
-        );
+        let parent_handle =
+            AidlObjectHandle::new(AidlObjectKind::Demux, parent.object_id(), generation);
         let child_handle = AidlObjectHandle::new(AidlObjectKind::Filter, child_id, generation);
         let context =
             AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
