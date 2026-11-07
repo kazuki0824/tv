@@ -465,13 +465,14 @@ cleanupの再試行登録失敗では、対象の世代・完了状態、既存�
 | key token | `DescramblerKeyTable` | `DescramblerSession` | refcount不整合のまま成功扱いしない |
 | LNB永続制御・物理レール状態 | `LnbRegistry` | backend adapter | 電圧・トーン・衛星位置、LNB状態世代、失敗・隔離状態、共有レールのリース・参照数、物理LNB・レール単位のI/O直列化権限の正本を一箇所に保持し、backend状態とregistry状態の乖離を通常状態にしない |
 | ワーカー | `WorkerRuntime` | 所有オブジェクト | 所有者不明ワーカーを作らない |
+| stream boundary | `StreamBoundaryTxn` | demux/filter/DVR/AV | tune/scan/source切替で境界処理を重複実装しない |
+| packet pipeline | `PacketPipeline` | `soft_demux` | packet validation・origin分類・data-path dispatchを担当し、continuity / generation stateを各canonical ownerを迂回して更新しない |
+| AV allocation | `AvSharedBacking` | `FilterHal` | イベント専用領域とactive tokenを所有する。FD番号をallocation同一性として使わない |
 
 製品既定は公開Demux 8、Filter 58、DVR 16で計82個、`cleanup_reaper_capacity=176`であり、`validate_dependency_closures()`は同時公開数の2倍以上を要求する。しかしこの余裕は「同時予約groupが常に164以下」の証明ではない。`ObjectTable::insert_with_lifecycle()`は旧世代が`Closed`かつ未完義務なしなら次世代を登録できる。一方、`WorkerRuntimeReaperQueue`はworkerによるcleanup成功・`Closed`確定の後、runnerから戻って`pending.release_group()`する。これらは同一atomic commitではなく、workerがその短い区間でスケジューリング遅延すると、旧世代のgroupを保持したまま次世代open/close・予約が成立する。公開同時object数はこの解放待ちの旧世代groupを数えない。製品既定snapshotで同一Demux IDの世代を更新しながらClosedへ移行し、旧予約解放を保留するhost回帰で176 groupまで到達する条件を検査する。これは高頻度の運用状況と主張するものではなく、世代跨ぎの解放遅延時も容量不足だけで全体停止しないための境界検証である。
 
 WorkerRuntimeのcleanup reaperは、公開能力から導出する保留groupの予約容量と実行中worker数を別資源として扱う。保留予約容量および同時cleanup最大受付数を変えず、起動時はworkerを1本生成し、保留groupの同時数に応じて必要数まで遅延起動する。実行thread数は予約容量を超えない。既存queue、保留予約とgenerationの所有権、登録時点から数えるterminal期限、失敗時のquarantineと予約返却の責務はWorkerRuntimeが維持する。遅延起動失敗時は未投入予約を解放して失敗を通知する。公開能力の縮退や別reaperの追加はしない。
-| stream boundary | `StreamBoundaryTxn` | demux/filter/DVR/AV | tune/scan/source切替で境界処理を重複実装しない |
-| packet pipeline | `PacketPipeline` | `soft_demux` | packet validation・origin分類・data-path dispatchを担当し、continuity / generation stateを各canonical ownerを迂回して更新しない |
-| AV allocation | `AvSharedBacking` | `FilterHal` | イベント専用領域とactive tokenを所有する。FD番号をallocation同一性として使わない |
+
 
 未解放AV allocationの正本は、正の`avDataId`をkeyとするactive token台帳に記録した`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`とする。ファイル記述子番号や`fstat`の`{st_dev, st_ino, size}`をallocation identityの正本にしてはならない。`fstat`などの記述子メタデータは、採用した記憶領域実装で同一性が保証される場合だけ補助検証と診断に用いる。イベントFDの`dataId=0`解放は呼出先IFilterが保持する当該allocationのhandle使用権を対象とし、正の`dataId`解放はactive token台帳で当該IFilterの未解放allocationと転送方式を特定して行う。allocation解放成功時はtoken entryを削除し、その後activeでない正のtokenは`INVALID_ARGUMENT`として資源を変更しない。解放済みduplicate、foreign、never-issuedを永久に識別するためのtombstoneは持たない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、安全を確認できない記憶領域を隔離する。
 
