@@ -319,6 +319,20 @@ impl AidlServiceContext {
         )
     }
 
+    pub(crate) fn quarantine_cleanup_has_owner(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<bool, HalError> {
+        let runtime =
+            TunerServiceRuntime::lock_shared(&self.runtime, "quarantine cleanup owner確認")?;
+        maleicacid_tuner_hal2_service_runtime::aidl_object_quarantine_cleanup_has_owner(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        )
+    }
+
     pub(crate) fn cleanup_is_terminal_for_handle(
         &self,
         handle: AidlObjectHandle,
