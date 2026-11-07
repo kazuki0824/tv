@@ -466,7 +466,9 @@ pub type ObjectCleanupExecutionReport =
 /// DVR通知workerの回収権限がSupervisorへ移管済みで、他のcleanup工程と
 /// 対象runtime登録解除が成功した場合だけ、局所的な回収待ちを許す。
 /// 完全な物理cleanup成功ではなく、未完義務を保持した隔離の証拠である。
-pub fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionReport) -> bool {
+pub fn drop_leak_cleanup_supervised_targets(
+    report: &ObjectCleanupExecutionReport,
+) -> Option<Vec<(AidlObjectId, AidlObjectGeneration)>> {
     let mut pending_owners = Vec::new();
     let mut unregistered = None;
     for outcome in report.outcomes() {
@@ -492,12 +494,12 @@ pub fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionRe
             } => {
                 unregistered = Some(cascade_entries.as_slice());
             }
-            other if other.result().is_err() => return false,
+            other if other.result().is_err() => return None,
             _ => {}
         }
     }
-    !pending_owners.is_empty()
-        && unregistered.is_some_and(|entries| {
+    if pending_owners.is_empty()
+        || !unregistered.is_some_and(|entries| {
             pending_owners.iter().all(|target| {
                 entries.iter().any(|entry| {
                     entry.object_kind == target.object_kind()
@@ -506,6 +508,22 @@ pub fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionRe
                 })
             })
         })
+    {
+        return None;
+    }
+    let mut targets = pending_owners
+        .into_iter()
+        .map(|target| (target.object_id(), target.generation()))
+        .collect::<Vec<_>>();
+    targets.sort_unstable();
+    targets.dedup();
+    Some(targets)
+}
+
+/// Test-only convenience for the original boolean contract.
+#[cfg(test)]
+fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionReport) -> bool {
+    drop_leak_cleanup_supervised_targets(report).is_some()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1604,6 +1622,16 @@ pub fn quarantine_object_drop_leak_use_case(
         return Err(HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
             "ObjectCloseTxn cleanup already executing; parallel quarantine is unsafe",
+        ));
+    }
+    if runtime
+        .object_table()
+        .has_descendant_outstanding_cleanup(object_id, generation)
+        .map_err(object_table_error_to_hal)?
+    {
+        return Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "descendant ObjectCloseTxn owns unfinished cleanup",
         ));
     }
     let cascade_entries = quarantine_object_cascade(runtime, object_id, generation)?;
