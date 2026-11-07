@@ -641,6 +641,30 @@ impl RuntimeObjectTable {
         Ok(false)
     }
 
+    /// 対象のcleanupを包含する親の既存義務を特定する。物理回収開始前でも
+    /// そのownerの正規reaper入口に再登録できるようにする。
+    pub(crate) fn ancestor_cleanup_owner(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Option<(RuntimeObjectEntry, bool)>, RuntimeObjectTableError> {
+        let mut parent = self.entry_checked_any(object_id, generation)?.owner;
+        for _ in 0..self.entries.len() {
+            let Some((_, id, gen)) = parent.referenced_object() else {
+                return Ok(None);
+            };
+            let entry = self.entry_checked_any(id, gen)?;
+            if self.object_close_txn.has_outstanding_obligation(id, gen) {
+                return Ok(Some((
+                    entry.clone(),
+                    self.object_close_txn.has_active_cleanup_attempt(id, gen),
+                )));
+            }
+            parent = entry.owner;
+        }
+        Ok(None)
+    }
+
     /// 隔離対象を変更せず全件検証する。後続の権限発行が失敗しても状態を変えない。
     pub(crate) fn quarantine_candidate_entries(
         &self,
