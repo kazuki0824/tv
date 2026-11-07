@@ -1167,11 +1167,7 @@ mod qg_object_lifecycle_tests {
             ))
             .expect("子登録");
         let (_, authority) = table
-            .begin_close_cascade_with_cleanup_authority(
-                parent,
-                generation,
-                CleanupStep::StopWorker,
-            )
+            .begin_close_cascade_with_cleanup_authority(parent, generation, CleanupStep::StopWorker)
             .expect("物理cleanupを開始せず親の権限を発行する");
         let (owner, active) = table
             .ancestor_cleanup_owner(child, generation)
@@ -1182,11 +1178,13 @@ mod qg_object_lifecycle_tests {
         table
             .begin_close_cleanup_attempt(parent, generation, authority)
             .expect("親物理cleanupを開始");
-        assert!(table
-            .ancestor_cleanup_owner(child, generation)
-            .expect("実行中を検査")
-            .expect("親owner")
-            .1);
+        assert!(
+            table
+                .ancestor_cleanup_owner(child, generation)
+                .expect("実行中を検査")
+                .expect("親owner")
+                .1
+        );
     }
 
     #[test]
