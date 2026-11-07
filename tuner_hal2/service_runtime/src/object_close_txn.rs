@@ -1611,7 +1611,7 @@ pub fn quarantine_object_drop_leak_use_case(
     runtime: &mut TunerServiceRuntime,
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
-) -> Result<ObjectDropLeakQuarantinePlan, HalError> {
+) -> Result<Option<ObjectDropLeakQuarantinePlan>, HalError> {
     // 通常closeはruntime lock外で物理cleanupを行う。ここで進行中の
     // ObjectCloseTxnの実行権限を奪って別のcleanupを走らせてはならない。
     // 確認とquarantine遷移は同じruntime lock内で実行される。
@@ -1620,20 +1620,16 @@ pub fn quarantine_object_drop_leak_use_case(
         .has_active_cleanup_attempt_in_cascade(object_id, generation)
         .map_err(object_table_error_to_hal)?
     {
-        return Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "ObjectCloseTxn cleanup already executing; parallel quarantine is unsafe",
-        ));
+        // 競合を全体障害として報告しない。既存権限だけが物理cleanupを進める。
+        return Ok(None);
     }
     if runtime
         .object_table()
         .has_related_outstanding_cleanup(object_id, generation)
         .map_err(object_table_error_to_hal)?
     {
-        return Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "descendant ObjectCloseTxn owns unfinished cleanup",
-        ));
+        // 祖先・子孫の既存cleanup権限を優先し、重複する物理cleanupを開始しない。
+        return Ok(None);
     }
     let cascade_entries = quarantine_object_cascade(runtime, object_id, generation)?;
     let artifact_cleanup_commands =
@@ -1652,11 +1648,11 @@ pub fn quarantine_object_drop_leak_use_case(
         .iter()
         .filter_map(drop_leak_domain_cleanup_command_for_entry)
         .collect();
-    Ok(ObjectDropLeakQuarantinePlan {
+    Ok(Some(ObjectDropLeakQuarantinePlan {
         cascade_entries,
         artifact_cleanup_commands,
         domain_cleanup_commands,
-    })
+    }))
 }
 
 /// 成功済みの外部副作用を再実行せず、物理cleanup reportを確定する。
@@ -1962,12 +1958,15 @@ mod tests {
         let first = begin_filter_close_plan(&mut runtime, 30)
             .begin_cleanup_attempt(&mut runtime)
             .expect("既存closeがcleanup実行権限を獲得する");
+        let failure_state = runtime.failure_state();
         assert!(quarantine_object_drop_leak_use_case(
             &mut runtime,
             AidlObjectId(30),
             AidlObjectGeneration(1)
         )
-        .is_err());
+        .expect("既存cleanupの権限競合は異常ではない")
+        .is_none());
+        assert!(!failure_state.snapshot().service_critical);
         assert!(matches!(
             runtime
                 .object_table()
@@ -1991,7 +1990,8 @@ mod tests {
             AidlObjectId(30),
             AidlObjectGeneration(1),
         )
-        .expect("先行cleanup実行権限解放後は隔離できる");
+        .expect("先行cleanup実行権限解放後は隔離できる")
+        .expect("隔離planが発行される");
         assert_eq!(
             runtime
                 .object_table()

@@ -441,7 +441,7 @@ rollback不能、cleanup不能、正本不一致、backend実状態とregistry�
 
 全体停止が確定した場合は、既存`ServiceFailureState`を`WorkerRuntime`従属監視workerで観測し、HALプロセスを非ゼロ終了してAndroid initによる再起動に委ねる。停止bitの第二正本は作らず、通常処理から解除しない。
 
-cleanupの再試行登録失敗では、既存object-tableで失効済み・Closed・未完cleanup義務なしと確定した対象のみ全体停止に昇格しない。Closing／CleanupPending、Quarantined、分類不能は安全な物理回収を推測せずfail-closedとする。drop-leak隔離は対象・祖先・子孫の`ObjectCloseTxn`に実行中cleanupがないことを同じruntime lock下で確定してから物理cleanupを開始する。競合時は実行を重複させない。cleanup reaper期限では論理Quarantinedを物理回収成功とみなさない。
+cleanupの再試行登録失敗では、既存object-tableで失効済み・Closed・未完cleanup義務なしと確定した対象のみ全体停止に昇格しない。Closing／CleanupPending、Quarantined、分類不能は安全な物理回収を推測せずfail-closedとする。drop-leak隔離は対象・祖先・子孫の`ObjectCloseTxn`に実行中cleanupがないことを同じruntime lock下で確定してから物理cleanupを開始する。競合が既存`ObjectCloseTxn`の有効な回収所有権に由来する場合は型付きの委譲結果を返し、重複した物理cleanupも根拠のない`ServiceCritical`昇格もしない。未完cleanup義務を完了扱いにせず、既存所有者が継続する。cleanup reaper期限では論理Quarantinedを物理回収成功とみなさない。
 
 #### 0-S-2. 状態所有者表
 
