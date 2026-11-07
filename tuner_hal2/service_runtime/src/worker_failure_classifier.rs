@@ -1,4 +1,4 @@
-use maleicacid_tuner_hal2_common::HalError;
+use maleicacid_tuner_hal2_common::{HalError, RuntimeLockKind};
 
 use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
 use crate::diagnostics::WorkerFailureCategory;
@@ -21,6 +21,41 @@ use crate::diagnostics::ClassifiedWorkerTerminalResult;
 pub struct WorkerFailureClassifier;
 
 impl WorkerFailureClassifier {
+    /// 共有cleanup reaperの失陥は複合失敗の両側を調べて検出する。
+    /// 個別objectの失敗を共有reaperの失陥として誤分類しない。
+    pub fn cleanup_reaper_requires_service_stop(error: &HalError) -> bool {
+        match error {
+            HalError::ComposedFailure {
+                primary, cleanup, ..
+            } => {
+                Self::cleanup_reaper_requires_service_stop(primary)
+                    || Self::cleanup_reaper_requires_service_stop(cleanup)
+            }
+            HalError::WorkerReaperUnavailable | HalError::WorkerReaperPanicked => true,
+            HalError::LockPoisoned(poison) => matches!(
+                poison.lock,
+                RuntimeLockKind::CleanupReaperOwner
+                    | RuntimeLockKind::WorkerReaperPending
+                    | RuntimeLockKind::WorkerReaperReceiver
+            ),
+            _ => false,
+        }
+    }
+
+    /// cleanup reaper ownerのenqueue境界だけでWorkerLockPoisonedを検出する。
+    pub fn reaper_enqueue_worker_lock_poisoned(error: &HalError) -> bool {
+        match error {
+            HalError::ComposedFailure {
+                primary, cleanup, ..
+            } => {
+                Self::reaper_enqueue_worker_lock_poisoned(primary)
+                    || Self::reaper_enqueue_worker_lock_poisoned(cleanup)
+            }
+            HalError::WorkerLockPoisoned { .. } => true,
+            _ => false,
+        }
+    }
+
     pub fn classify_terminal<T>(
         result: WorkerTerminalResult<T>,
         panic_context: &'static str,
@@ -110,6 +145,34 @@ impl WorkerFailureClassifier {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{HalInternalKind, WorkerLockKind};
+
+    #[test]
+    fn reaper_shared_failure_is_detected_through_composition() {
+        use maleicacid_tuner_hal2_common::LockPoisonDiagnostic;
+        let poisoned = HalError::LockPoisoned(LockPoisonDiagnostic {
+            lock: RuntimeLockKind::WorkerReaperPending,
+            poison_count: 1,
+            counter_saturated: false,
+        });
+        let local = HalError::cleanup_failed("DVR", "局所的な後片付け失敗");
+        let composed = HalError::composed_failure(
+            "cleanup reaper",
+            local.clone(),
+            HalError::composed_failure("reserve", local.clone(), poisoned),
+        );
+        assert!(WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&composed));
+        assert!(!WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&local));
+        assert!(WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
+            &HalError::WorkerReaperUnavailable
+        ));
+        assert!(!WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(&local));
+        assert!(WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(
+            &HalError::WorkerLockPoisoned {
+                owner: "cleanup reaper",
+                lock: WorkerLockKind::Result,
+            }
+        ));
+    }
 
     #[test]
     fn terminal_failure_preserves_known_domains_and_unknown_fallback() {
