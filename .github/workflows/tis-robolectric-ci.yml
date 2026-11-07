@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - "tis/**"
+      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-robolectric-ci.yml"
   push:
     branches: [main]
     paths:
       - "tis/**"
+      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-robolectric-ci.yml"
 
 permissions:
@@ -38,7 +40,14 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: 実SI JNI libraryをビルド
+        run: |
+          rustup toolchain install 1.81.0 --profile minimal
+          cargo +1.81.0 build --lib --locked --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
+
       - name: Android依存Kotlin契約をRobolectricで実行
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/arib_si_engine_rs/host_ci/target/debug/deps
         run: |
           gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest \
             --tests com.maleicacid.tvinput.tis.DirectBootGuardR51FixTest \
@@ -52,6 +61,13 @@ jobs:
             --tests com.maleicacid.tvinput.tis.ProgramUpgradeIdentityTest \
             --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest \
             --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest \
+            --tests com.maleicacid.tvinput.tis.ControllerSerialExecutorReviewBoundaryTest \
+            --tests com.maleicacid.tvinput.tis.FrameworkFilterCallbackLockTest \
+            --tests com.maleicacid.tvinput.tis.ProgramProviderObserverTest \
+            --tests com.maleicacid.tvinput.tis.ProgramCleanupProviderTest \
+            --tests com.maleicacid.tvinput.tis.TisReviewBoundaryTest \
+            --tests com.maleicacid.tvinput.tis.PlaybackFailureCallbacksTest \
+            --tests com.maleicacid.tvinput.tis.PlaybackSurfaceWaitTest \
             --tests com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest \
             --tests com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest \
             --tests com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest \
@@ -66,6 +82,11 @@ jobs:
           from pathlib import Path
 
           report = Path("tis/host_ci/robolectric/build/test-results/testDebugUnitTest/TEST-com.maleicacid.tvinput.tis.FrameworkTunerScanBoundaryTest.xml")
+          for name, expected in (("ControllerSerialExecutorReviewBoundaryTest", 7), ("FrameworkFilterCallbackLockTest", 2), ("ProgramProviderObserverTest", 1), ("PlaybackSurfaceWaitTest", 2), ("ProgramCleanupProviderTest", 2), ("TisReviewBoundaryTest", 8), ("PlaybackFailureCallbacksTest", 22)):
+              migrated = ET.parse(report.with_name(f"TEST-com.maleicacid.tvinput.tis.{name}.xml")).getroot()
+              assert migrated.get("tests") == str(expected), migrated.attrib
+              assert migrated.get("failures") == "0" and migrated.get("errors") == "0", migrated.attrib
+              assert migrated.get("skipped", "0") == "0", migrated.attrib
           suite = ET.parse(report).getroot()
           assert suite.get("tests") == "2", suite.attrib
           assert suite.get("failures") == "0" and suite.get("errors") == "0", suite.attrib

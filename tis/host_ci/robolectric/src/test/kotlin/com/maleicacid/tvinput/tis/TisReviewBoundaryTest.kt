@@ -3,11 +3,10 @@
 
 package com.maleicacid.tvinput.tis
 
+import android.content.ComponentName
 import android.content.ContentValues
 import android.content.Context
 import android.content.ContextWrapper
-import android.content.pm.ResolveInfo
-import android.content.pm.ServiceInfo
 import android.media.tv.TvInputInfo
 import android.media.tv.TvInputManager
 import android.media.tv.TvTrackInfo
@@ -16,7 +15,6 @@ import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.BroadcastSystem
-import com.maleicacid.tvinput.aribsi.NativeAribCaptionFactParser
 import com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot
 import com.maleicacid.tvinput.aribsi.ServiceSemanticFacts
 import com.maleicacid.tvinput.aribsi.SmdSemanticFacts
@@ -26,29 +24,48 @@ import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
+import org.junit.After
 import org.junit.Test
-import sun.misc.Unsafe
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implements
+import org.robolectric.util.ReflectionHelpers
 
-// 実TIS境界の失敗注入を同じhost fixtureで検査し、関数数だけを理由にfixtureを複製しない。
+// 実TIS境界の失敗注入と資源寿命を、正規生成した所有者で検査する。
 @Suppress("TooManyFunctions")
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35], shadows = [TisReviewBoundaryTest.FrameworkInputManager::class])
 class TisReviewBoundaryTest {
+    private val resources = mutableListOf<AutoCloseable>()
+
+    @After
+    fun closeResources() {
+        resources.asReversed().forEach { it.close() }
+    }
+
+    private fun session(): MaleicacidLiveSession {
+        val context = RuntimeEnvironment.getApplication()
+        return MaleicacidLiveSession(context, context, "review-test", "review-test").also {
+            resources += AutoCloseable { it.onRelease() }
+        }
+    }
+
+    @Implements(TvInputManager::class)
+    class FrameworkInputManager
+
     // 実公開入口から挿入・snapshot失敗・既存rollbackまでを一続きに検証する。
     @Suppress("LongMethod")
     @Test
     fun programSnapshotExceptionRetainsInsertedChannelsForRollback() {
-        val unsafe =
-            sun.misc.Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as sun.misc.Unsafe
-        val controller = unsafe.allocateInstance(ChannelScanController::class.java) as ChannelScanController
         // 初期化済みのSIエンジンを正常に解放し、解放後snapshotの失敗を注入する。
         val engine =
-            AribSiEngine(ContextWrapper(null))
+            AribSiEngine(RuntimeEnvironment.getApplication())
                 .apply { close() }
+        val controller =
+            ChannelScanController(RuntimeEnvironment.getApplication(), "input.test", engine, ScanPurpose.SETUP_SCAN)
+        resources += controller
         val key = ServiceKey(4, 0x4010, 101)
         val store =
             object : TvProviderWriter.ChannelStore {
@@ -248,8 +265,8 @@ class TisReviewBoundaryTest {
     }
 
     @Test fun pmtPidAndConfigurationChangesCannotReuseAnotherVideoTrackGeometry() {
-        val controller = allocate(TunerController::class.java)
-        val session = allocate(MaleicacidLiveSession::class.java)
+        val session = session()
+        val controller = ReflectionHelpers.getField<TunerController>(session, "tunerController")
         val key = ServiceKey(4, 1, 1)
         val first = AribElementaryStream(TsPid(0x101), 0x1b, null, null, null)
         val second = first.copy(elementaryPid = TsPid(0x102))
@@ -322,17 +339,14 @@ class TisReviewBoundaryTest {
     }
 
     @Test fun casUnavailableAllowsSameSignatureToRestartAfterRapidRecovery() {
-        val session = allocate(MaleicacidLiveSession::class.java)
+        val session = session()
         val signature = AvPlaybackSignature(ServiceKey(4, 1, 1), null, TsPid(0x101), 0x1b, null, null, false, true)
         val started = PlaybackStartState.Started(signature, 7L)
         set(session, "playbackState", started)
-        val base = android.media.tv.TvInputService.Session::class.java
-        base.getDeclaredField("mLock").apply { isAccessible = true }.set(session, Any())
-        base.getDeclaredField("mPendingActions").apply { isAccessible = true }.set(session, arrayListOf<Runnable>())
         val unavailable =
             PlaybackPipeline.PlaybackUnavailable(
                 PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
-                "ECM failed before immediate recovery",
+                "即時回復前のECM処理失敗",
                 7L,
             )
         val method =
@@ -352,16 +366,13 @@ class TisReviewBoundaryTest {
 
     @Test fun setupRejectsAmbiguousFrameworkInputRegistration() {
         var inputs = emptyList<TvInputInfo>()
-        val manager = allocate(TvInputManager::class.java)
         val service =
             object : android.media.tv.ITvInputManager.Default() {
                 override fun getTvInputList(userId: Int): List<TvInputInfo> = inputs
             }
-        set(manager, "mService", service)
+        val manager = TvInputManager(service, 0)
         val context =
-            object : ContextWrapper(null) {
-                override fun getPackageName() = "com.maleicacid.tvinput"
-
+            object : ContextWrapper(RuntimeEnvironment.getApplication()) {
                 override fun getSystemService(name: String): Any? =
                     when (name) {
                         Context.TV_INPUT_SERVICE -> manager
@@ -372,189 +383,29 @@ class TisReviewBoundaryTest {
             }
 
         fun input(id: String): TvInputInfo =
-            allocate(TvInputInfo::class.java).also {
-                set(it, "mId", id)
-                set(
-                    it,
-                    "mService",
-                    ResolveInfo().apply {
-                        serviceInfo =
-                            ServiceInfo().apply {
-                                packageName = "com.maleicacid.tvinput"
-                                name = MaleicacidTvInputService::class.java.name
-                            }
-                    },
-                )
-            }
+            TvInputInfo
+                .Builder(
+                    RuntimeEnvironment.getApplication(),
+                    ComponentName(RuntimeEnvironment.getApplication(), MaleicacidTvInputService::class.java),
+                ).build()
+                .also { set(it, "mId", id) }
         check(!TisInputIdResolver.isOwnInputId(context, "own/1"))
         inputs = listOf(input("own/1"))
-        check(TisInputIdResolver.isOwnInputId(context, "own/1"))
+        check(TisInputIdResolver.isOwnInputId(context, "own/1")) {
+            "パッケージ=${context.packageName} 入力一覧=${manager.tvInputList.map {
+                Triple(
+                    it.id,
+                    it.serviceInfo.packageName,
+                    it.serviceInfo.name,
+                )
+            }}"
+        }
         check(!TisInputIdResolver.isOwnInputId(context, "other/1"))
         inputs = inputs + input("own/2")
         check(!TisInputIdResolver.isOwnInputId(context, "own/1"))
         check(!TisInputIdResolver.isOwnInputId(context, "own/2"))
     }
-
-    @Test fun surfaceWaitDoesNotTurnRepeatedLiveUpdatesIntoPlaybackAttempts() {
-        withSurfaceWaitSession(audioOnly = false) { session, service ->
-            val state = session.javaClass.getDeclaredField("playbackState").apply { isAccessible = true }
-            val diagnostic =
-                session.javaClass
-                    .getDeclaredField("lastPlaybackGateDiagnostic")
-                    .apply { isAccessible = true }
-            val start =
-                session.javaClass
-                    .getDeclaredMethod("maybeStartPlayback", AribService::class.java)
-                    .apply { isAccessible = true }
-            for (before in listOf(PlaybackStartState.Idle, PlaybackStartState.Stopped)) {
-                state.set(session, before)
-                repeat(3) {
-                    check(start.invoke(session, service) == false)
-                    check(state.get(session) == before)
-                    check((diagnostic.get(session) as String).contains("START_WAITING_SURFACE"))
-                }
-            }
-        }
-    }
-
-    @Test fun audioOnlyPlaybackCanRemainStartedWithoutSurface() {
-        withSurfaceWaitSession(audioOnly = true) { session, service ->
-            val controller =
-                session.javaClass
-                    .getDeclaredField("tunerController")
-                    .apply { isAccessible = true }
-                    .get(session) as TunerController
-            val selection = controller.selectAvStreams(service.serviceKey, service.pcrPid, service.streams)
-            val signature =
-                session.javaClass
-                    .getDeclaredMethod(
-                        "playbackSignatureFor",
-                        AribService::class.java,
-                        TunerController.AvStreamSelection::class.java,
-                    ).apply { isAccessible = true }
-                    .invoke(session, service, selection) as AvPlaybackSignature
-            val before = PlaybackStartState.Started(signature, 7L)
-            set(session, "playbackState", before)
-            val start =
-                session.javaClass
-                    .getDeclaredMethod("maybeStartPlayback", AribService::class.java)
-                    .apply { isAccessible = true }
-            check(start.invoke(session, service) == true)
-            check(
-                session.javaClass
-                    .getDeclaredField("playbackState")
-                    .apply { isAccessible = true }
-                    .get(session) == before,
-            )
-        }
-    }
-
-    // 実Sessionの開始判定を実行する。Controllerの資源は未接続で、不要な開始への到達を失敗にする。
-    @Suppress("LongMethod")
-    private fun withSurfaceWaitSession(
-        audioOnly: Boolean,
-        block: (MaleicacidLiveSession, AribService) -> Unit,
-    ) {
-        val executor = ControllerSerialExecutor("surface-wait-test")
-        try {
-            val session = allocate(MaleicacidLiveSession::class.java)
-            val controller = allocate(TunerController::class.java)
-            set(controller, "sectionExecutor", executor)
-            set(session, "tunerController", controller)
-            set(session, "releaseOnce", AtomicBoolean(false))
-            set(session, "dualMonoPresentation", PlaybackPipeline.DualMonoPresentation.MAIN)
-            val base = android.media.tv.TvInputService.Session::class.java
-            base.getDeclaredField("mLock").apply { isAccessible = true }.set(session, Any())
-            base.getDeclaredField("mPendingActions").apply { isAccessible = true }.set(session, arrayListOf<Runnable>())
-            val key = ServiceKey(4, 1, 1)
-            val stream = AribElementaryStream(TsPid(0x101), if (audioOnly) 0x03 else 0x02, null, null, null)
-            val streams =
-                if (audioOnly) {
-                    listOf(stream)
-                } else {
-                    listOf(stream, AribElementaryStream(TsPid(0x102), 0x03, null, null, null))
-                }
-            val service =
-                AribService(
-                    serviceKey = key,
-                    name = "test",
-                    serviceType = if (audioOnly) 0x02 else 0x01,
-                    pcrPid = TsPid(0x101),
-                    freeCaMode = false,
-                    streams = streams,
-                )
-            val facts =
-                ServiceSemanticFacts(
-                    serviceKey = key,
-                    serviceType = service.serviceType,
-                    pmtPidResolved = true,
-                    pmtParsed = true,
-                    pcrPidResolved = true,
-                    elementaryStreams = service.streams,
-                    requiresCas = false,
-                    caDescriptorsResolved = true,
-                    freeCaMode = false,
-                    smd =
-                        SmdSemanticFacts(
-                            true,
-                            true,
-                            0x0300,
-                            0,
-                            3,
-                            BroadcastSystem.ISDB_T,
-                            0,
-                            "",
-                            SmdSemanticState.SUPPORTED_BROADCAST,
-                            null,
-                        ),
-                    missingComponents = emptyList(),
-                    semanticDiagnostics = emptyList(),
-                    casFactsCanonicalJson = testCasFacts(false),
-                )
-            val programs =
-                com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot(
-                    discoveryProfile = com.maleicacid.tvinput.aribsi.SiDiscoveryProfile.ISDB_T,
-                    ingestSequence = 1L,
-                    events = emptyList(),
-                    updateWindows = emptyList(),
-                    semanticFactsByServiceKey = mapOf(key to facts),
-                    descriptorDiagnostics = emptyList(),
-                    parserDiagnostics = emptyList(),
-                )
-            val snapshot =
-                com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot(
-                    1L,
-                    programs,
-                    1L,
-                    listOf(service),
-                    emptyList(),
-                    emptyMap(),
-                    emptyList(),
-                    mapOf(key to facts),
-                    emptyList(),
-                    emptyList(),
-                )
-            check(
-                com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
-                    .evaluateLive(snapshot, key)
-                    .livePlaybackEligible(false),
-            )
-            set(session, "currentService", key)
-            set(session, "latestLiveSnapshot", snapshot)
-            block(session, service)
-        } finally {
-            executor.shutdownNow()
-        }
-    }
 }
-
-private val unsafe =
-    Unsafe::class.java
-        .getDeclaredField("theUnsafe")
-        .apply { isAccessible = true }
-        .get(null) as Unsafe
-
-private fun <T> allocate(type: Class<T>): T = type.cast(unsafe.allocateInstance(type))
 
 private fun set(
     target: Any,

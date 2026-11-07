@@ -42,6 +42,7 @@ import org.robolectric.annotation.Implements
 import org.robolectric.annotation.RealObject
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.util.ReflectionHelpers
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.LinkedBlockingQueue
@@ -566,7 +567,6 @@ class TunerFrontendLeaseTransitionTest {
                 filter: Filter,
                 tableId: Int,
             ) {
-                val before = executor.completedTaskCount
                 val method =
                     TunerController::class.java.declaredMethods.single {
                         it.name.startsWith("deliverSectionRead")
@@ -579,9 +579,10 @@ class TunerFrontendLeaseTransitionTest {
                     1,
                     if (filter === stale) staleHandle else handles.getValue(pid),
                 )
-                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-                while (executor.completedTaskCount == before && System.nanoTime() < deadline) Thread.yield()
-                check(executor.completedTaskCount > before)
+                // 同じ優先度の後続処理を待ち、別の処理の完了数を配送完了と取り違えない。
+                val delivered = CountDownLatch(1)
+                executor.executeData { delivered.countDown() }
+                check(delivered.await(5, TimeUnit.SECONDS)) { "SDT配送後の処理が完了していません" }
             }
             for (tableId in listOf(0x42, 0x46)) read(stale, tableId)
             check("sdtActualRead=0 sdtOtherRead=0" in ingest.sdtDeliveryDiagnostic())
