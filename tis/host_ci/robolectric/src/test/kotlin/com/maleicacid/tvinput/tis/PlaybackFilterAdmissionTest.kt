@@ -16,6 +16,7 @@ import android.media.MediaSync
 import android.media.tv.ITvInputManager
 import android.media.tv.TvContentRating
 import android.media.tv.TvContract
+import android.media.tv.TvInputInfo
 import android.media.tv.TvInputManager
 import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
@@ -203,6 +204,8 @@ class PlaybackFilterAdmissionTest {
     private fun parentalControlsContext(): Context {
         val service =
             object : ITvInputManager.Default() {
+                override fun getTvInputList(userId: Int): List<TvInputInfo> = emptyList()
+
                 override fun isParentalControlsEnabled(userId: Int): Boolean = userId == 0
 
                 override fun isRatingBlocked(
