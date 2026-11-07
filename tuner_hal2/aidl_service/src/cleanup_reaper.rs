@@ -86,6 +86,8 @@ pub(crate) struct CleanupReaperQueue {
     >,
     #[cfg(test)]
     idle_park_notice: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    #[cfg(test)]
+    admission_grace_notice: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 impl Drop for CleanupReaperQueue {
@@ -128,7 +130,14 @@ fn next_admission_wake(
 ) -> Option<Instant> {
     pending
         .values()
-        .map(|task| task.registered_at.checked_add(budget).unwrap_or(now))
+        .map(|task| {
+            let budget = if now.saturating_duration_since(task.registered_at) >= budget {
+                budget.saturating_mul(2)
+            } else {
+                budget
+            };
+            task.registered_at.checked_add(budget).unwrap_or(now)
+        })
         .min()
         .map(|deadline| now.checked_add(retry_delay).unwrap_or(now).min(deadline))
 }
@@ -156,6 +165,8 @@ impl CleanupReaperQueue {
             service_runtime: std::sync::OnceLock::new(),
             #[cfg(test)]
             idle_park_notice: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            admission_grace_notice: std::sync::Mutex::new(None),
         }
     }
 
@@ -325,7 +336,10 @@ impl CleanupReaperQueue {
             0,
             1,
             move |control| -> Result<(), HalError> {
+                use crate::object_runtime::DropLeakQuarantineOutcome;
                 use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+
+                let recovery_deadline = budget.saturating_mul(2);
                 loop {
                     if control.stop_requested() {
                         return Ok(());
@@ -381,10 +395,7 @@ impl CleanupReaperQueue {
                         if !active {
                             if let Ok(dependency) = context.cleanup_dependency_for_handle(handle) {
                                 match queue
-                                    .enqueue_reserved(
-                                        task,
-                                        [(key, dependency)],
-                                    )
+                                    .enqueue_reserved(task, [(key, dependency)])
                                     .map_err(CleanupReaperQueue::classify_enqueue_error)
                                 {
                                     Ok(()) => {
@@ -426,14 +437,18 @@ impl CleanupReaperQueue {
                             );
                             if matches!(
                                 isolated,
-                                Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
-                                    | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending)
+                                Ok(DropLeakQuarantineOutcome::Completed
+                                    | DropLeakQuarantineOutcome::SupervisedPending)
                             ) || matches!(
                                 context.cleanup_retry_disposition(handle)?,
                                 AidlObjectCleanupDisposition::Stale
                                     | AidlObjectCleanupDisposition::Closed
                                     | AidlObjectCleanupDisposition::NoCleanupPending
-                            ) || context.quarantine_cleanup_has_owner(handle) == Ok(true)
+                            ) || context.quarantine_cleanup_has_owner(handle)?
+                                || queue
+                                    .pending_value(&key)
+                                    .map_err(CleanupReaperQueue::classify_enqueue_error)?
+                                    .is_some()
                             {
                                 queue_owner
                                     .runtime
@@ -441,6 +456,17 @@ impl CleanupReaperQueue {
                                     .map_err(HalError::LockPoisoned)?
                                     .admission_pending
                                     .remove(&key);
+                                continue;
+                            }
+                            if matches!(isolated, Ok(DropLeakQuarantineOutcome::OwnedByExistingCleanup))
+                                && task.registered_at.elapsed() < recovery_deadline
+                            {
+                                // 既存closeに元の期限1回分だけ回復猶予を与える。
+                                // 予約・実行権限は既存ownerに残し、登録時刻も更新しない。
+                                #[cfg(test)]
+                                if let Some(notice) = queue_owner.admission_grace_notice.lock().unwrap().take() {
+                                    let _ = notice.send(());
+                                }
                                 continue;
                             }
                             return Err(HalError::cleanup_failed(
@@ -1272,7 +1298,7 @@ mod tests {
         );
         assert_eq!(
             next_admission_wake(&pending, budget, retry_delay, now + budget),
-            Some(now + budget),
+            Some(now + budget + retry_delay),
         );
         pending.clear();
         assert_eq!(
@@ -1330,7 +1356,7 @@ mod tests {
         let state = runtime.lock().unwrap().failure_state();
         let mut snapshot = runtime.lock().unwrap().capability_snapshot();
         snapshot.cleanup_reaper_capacity = 1;
-        snapshot.cleanup_terminal_deadline_ms = 80;
+        snapshot.cleanup_terminal_deadline_ms = 200;
         snapshot.cleanup_retry_schedule_ms = [0, 5, 10, 20];
         let queue = CleanupReaperQueue::from_snapshot(snapshot);
         let release = Arc::new(AtomicBool::new(false));
@@ -1362,12 +1388,18 @@ mod tests {
             Arc::clone(&runtime),
             Some(Arc::clone(&queue)),
         );
+        let (grace_tx, grace_rx) = mpsc::channel();
+        *queue.admission_grace_notice.lock().unwrap() = Some(grace_tx);
         assert!(context.enqueue_cleanup_retry(handle).is_ok());
         queue
             .supervise_unqueued_owner(Arc::downgrade(&context), handle)
             .expect("同一世代の監督workerは重複生成しない");
         assert_eq!(queue.runtime.lock().unwrap().admission_pending.len(), 1);
         assert!(queue.runtime.lock().unwrap().admission_worker.is_some());
+        grace_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("元の監督期限後に既存ownerの回復猶予へ入る");
+        assert!(!state.snapshot().service_critical);
         if complete_owner {
             finish_object_close_use_case(
                 &mut runtime.lock().unwrap(),

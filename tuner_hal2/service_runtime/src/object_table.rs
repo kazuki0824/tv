@@ -4,7 +4,8 @@ use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, A
 use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerGeneration, LedgerId};
 
 use crate::object_close_txn::{
-    CloseCleanupAttemptKey, CloseCleanupAttemptOutcome, CloseCleanupAuthorityKey, ObjectCloseTxn,
+    CloseCleanupAttemptKey, CloseCleanupAttemptOutcome, CloseCleanupAuthorityKey, DvrNotifierStart,
+    ObjectCloseTxn,
     ObjectCloseTxnStateError,
 };
 
@@ -764,7 +765,7 @@ impl RuntimeObjectTable {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
         pending: &[(AidlObjectId, AidlObjectGeneration)],
-    ) -> Result<(), RuntimeObjectTableError> {
+    ) -> Result<bool, RuntimeObjectTableError> {
         let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
         if lifecycle != RuntimeObjectLifecycle::Quarantined {
             return Err(RuntimeObjectTableError::InvalidLifecycle {
@@ -780,10 +781,35 @@ impl RuntimeObjectTable {
         if completed {
             self.close_completed_quarantine_cascade(object_id, generation)?;
         }
+        Ok(completed)
+    }
+
+    pub(crate) fn register_dvr_notifier(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<DvrNotifierStart, maleicacid_tuner_hal2_common::HalError> {
+        self.entry_for_kind(object_id, generation, AidlObjectKind::Dvr)
+            .map_err(crate::error_mapping::object_table_error_to_hal)?;
+        self.object_close_txn
+            .register_dvr_notifier(object_id, generation)
+    }
+
+    pub(crate) fn finish_dvr_notifier_join(
+        &mut self,
+        registration: &DvrNotifierStart,
+    ) -> Result<(), RuntimeObjectTableError> {
+        if !self.object_close_txn.matches_dvr_notifier(registration) {
+            // reset済みのruntimeや別ownerには古いjoin結果を適用しない。
+            return Ok(());
+        }
+        let (object_id, generation) = registration.key();
+        self.notify_supervised_dvr_joined(object_id, generation)?;
+        self.object_close_txn.clear_dvr_notifier_registration(object_id);
         Ok(())
     }
 
-    pub(crate) fn notify_supervised_dvr_joined(
+    fn notify_supervised_dvr_joined(
         &mut self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -1681,9 +1707,9 @@ mod qg_object_lifecycle_tests {
         table
             .begin_quarantine_cleanup(object_id, generation, [(object_id, generation)])
             .expect("隔離遷移とObjectCloseTxn未完義務を同時確定");
-        table
+        assert!(!table
             .finish_quarantined_cleanup_report(object_id, generation, &[(object_id, generation)])
-            .expect("DVR WorkerをSupervisorに移管");
+            .expect("DVR WorkerをSupervisorに移管"));
         assert!(table
             .insert(entry(
                 AidlObjectKind::Dvr,
@@ -1711,6 +1737,59 @@ mod qg_object_lifecycle_tests {
                 RuntimeOwnerRelation::Root,
             ))
             .expect("物理回収の完了後ならruntimeを再利用できる");
+    }
+
+    #[test]
+    fn quarantine_report_completes_only_after_its_registered_worker_joins() {
+        let object_id = AidlObjectId(20);
+        let generation = AidlObjectGeneration(1);
+        let start = |runtime: &mut crate::TunerServiceRuntime| {
+            runtime
+                .object_table_mut()
+                .insert(entry(AidlObjectKind::Dvr, 20, 20, RuntimeOwnerRelation::Root))
+                .unwrap();
+            DvrNotifierStart::register(runtime, object_id, generation)
+                .unwrap()
+                .spawn("dvr-quarantine-report".to_string(), |_| Ok(()), || {})
+                .unwrap()
+        };
+        for report_first in [false, true] {
+            let mut runtime = crate::TunerServiceRuntime::new();
+            let mut foreign_runtime = crate::TunerServiceRuntime::new();
+            let worker = start(&mut runtime);
+            let foreign_worker = start(&mut foreign_runtime);
+            runtime
+                .object_table_mut()
+                .begin_quarantine_cleanup(object_id, generation, [(object_id, generation)])
+                .unwrap();
+            let finish_report = |runtime: &mut crate::TunerServiceRuntime| {
+                runtime
+                    .object_table_mut()
+                    .finish_quarantined_cleanup_report(
+                        object_id,
+                        generation,
+                        &[(object_id, generation)],
+                    )
+                    .unwrap()
+            };
+            if report_first {
+                assert!(!finish_report(&mut runtime));
+            }
+            // 同じID・世代の別runtimeのworkerでも、こちらの隔離を完了できない。
+            foreign_worker.join().1.unwrap().finish(&mut runtime).unwrap();
+            assert_eq!(
+                runtime.object_table().entry(object_id).unwrap().lifecycle,
+                RuntimeObjectLifecycle::Quarantined
+            );
+            worker.join().1.unwrap().finish(&mut runtime).unwrap();
+            if !report_first {
+                assert!(finish_report(&mut runtime));
+            }
+            assert_eq!(
+                runtime.object_table().entry(object_id).unwrap().lifecycle,
+                RuntimeObjectLifecycle::Closed
+            );
+        }
     }
 
     #[test]

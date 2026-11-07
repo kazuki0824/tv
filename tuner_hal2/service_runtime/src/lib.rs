@@ -107,6 +107,7 @@ pub use object_close_txn::{
     close_object_use_case, drop_leak_cleanup_supervised_targets, finish_object_close_use_case,
     quarantine_object_drop_leak_use_case, related_cleanup_recovery_owners_use_case,
     CloseCleanupAttemptCompletion, CloseCleanupAuthority, DvrNotifierJoinCompletion,
+    DvrNotifierStart, DvrNotifierWorker,
     ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind,
     ObjectCleanupDiagnosticKind, ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot,
     ObjectCleanupExecutionKind, ObjectCleanupExecutionReport, ObjectCleanupObjectTarget,
