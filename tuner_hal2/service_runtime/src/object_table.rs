@@ -1397,11 +1397,8 @@ mod qg_object_lifecycle_tests {
             ))
             .expect("DVR登録");
         table
-            .quarantine_cascade(object_id, generation)
-            .expect("隔離");
-        table
             .begin_quarantine_cleanup(object_id, generation, [(object_id, generation)])
-            .expect("ObjectCloseTxnが未完義務を保持");
+            .expect("隔離遷移とObjectCloseTxn未完義務を同時確定");
         table
             .finish_quarantined_cleanup_report(object_id, generation, &[(object_id, generation)])
             .expect("DVR WorkerをSupervisorに移管");
