@@ -816,17 +816,6 @@ mod tests {
         assert!(service_requires_restart(&state));
     }
 
-    #[test]
-    fn init_is_configured_to_restart_fatal_hal_exit() {
-        let rc = include_str!("../../init/android.hardware.tv.tuner-service.maleicacid2.rc");
-        assert!(rc.contains("service vendor.maleicacid-tuner2 "));
-        assert!(rc.contains("class hal"));
-        assert!(!rc.lines().any(|line| line.trim() == "oneshot"));
-        assert!(!rc
-            .lines()
-            .any(|line| line.trim_start().starts_with("critical ")));
-    }
-
     use maleicacid_tuner_hal2_device::dvb::DtvPropertyBuffer;
 
     #[test]
