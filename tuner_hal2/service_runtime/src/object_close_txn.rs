@@ -1058,6 +1058,11 @@ impl ObjectCloseTxn {
         self.obligations.remove(&object_id);
     }
 
+    #[cfg(test)]
+    pub(crate) fn exhaust_cleanup_ids_for_test(&mut self) {
+        self.next_obligation_id = u64::MAX;
+    }
+
     pub(crate) fn has_outstanding_obligation(
         &self,
         object_id: AidlObjectId,
