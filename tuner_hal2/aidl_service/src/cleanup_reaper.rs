@@ -299,16 +299,31 @@ impl CleanupReaperQueue {
                     }
                     if started.elapsed() >= budget {
                         // active ownerの実行権限を奪わず、既存の局所隔離だけを試す。
-                        return match crate::object_runtime::quarantine_drop_leak_object(
-                            &context, handle,
-                        ) {
+                        let quarantine = crate::object_runtime::quarantine_drop_leak_object(
+                            &context,
+                            handle,
+                        );
+                        if matches!(
+                            quarantine,
                             Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
-                            | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => Ok(()),
-                            _ => Err(HalError::cleanup_failed(
-                                "cleanup reaper受付の監督期限",
-                                "既存ownerが終端せず、世代fence付きの局所隔離も確定できません",
-                            )),
-                        };
+                                | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending)
+                        ) {
+                            return Ok(());
+                        }
+                        // 隔離との競合で別ownerが正常終了した場合は誤全体停止しない。
+                        if matches!(
+                            context.cleanup_retry_disposition(handle)?,
+                            AidlObjectCleanupDisposition::Stale
+                                | AidlObjectCleanupDisposition::Closed
+                                | AidlObjectCleanupDisposition::NoCleanupPending
+                        ) || context.quarantine_cleanup_has_owner(handle) == Ok(true)
+                        {
+                            return Ok(());
+                        }
+                        return Err(HalError::cleanup_failed(
+                            "cleanup reaper受付の監督期限",
+                            "既存ownerが終端せず、世代fence付きの局所隔離も確定できません",
+                        ));
                     }
                     control.wait_until(Instant::now().checked_add(Duration::from_millis(10)));
                 }
@@ -1034,7 +1049,6 @@ mod tests {
             .begin_cleanup_attempt(&mut runtime.lock().unwrap())
             .unwrap();
         let state = runtime.lock().unwrap().failure_state();
-        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
         let mut snapshot = runtime.lock().unwrap().capability_snapshot();
         snapshot.cleanup_reaper_capacity = 1;
         snapshot.cleanup_terminal_deadline_ms = 80;
@@ -1063,13 +1077,13 @@ mod tests {
         );
         queue.enqueue(unrelated, CleanupStep::StopWorker).unwrap();
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(matches!(
-            queue.enqueue(handle, CleanupStep::ReleaseBackend),
-            Err(HalError::Busy { .. })
-        ));
-        queue
-            .supervise_unqueued_owner(Arc::downgrade(&context), handle)
-            .expect("既存WorkerRuntimeで未予約active cleanupを監督する");
+        // 実際のAIDL enqueue_cleanup_retry経路へ同じ満杯queueを注入する。
+        let queue = Arc::new(queue);
+        let context = AidlServiceContext::from_shared_runtime_with_cleanup_reaper_for_test(
+            Arc::clone(&runtime),
+            Some(Arc::clone(&queue)),
+        );
+        assert!(context.enqueue_cleanup_retry(handle).is_ok());
         queue
             .supervise_unqueued_owner(Arc::downgrade(&context), handle)
             .expect("同一世代の監督workerは重複生成しない");
