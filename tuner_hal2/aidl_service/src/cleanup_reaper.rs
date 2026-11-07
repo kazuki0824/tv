@@ -336,12 +336,10 @@ mod tests {
             .begin_cleanup_attempt(&mut runtime)
             .expect("既存closeの物理cleanup実行権限を取得する");
         let failure_state = runtime.failure_state();
-        let handle = AidlObjectHandle::new(
-            AidlObjectKind::Demux,
-            demux.object_id(),
-            demux.generation(),
-        );
-        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
+        let handle =
+            AidlObjectHandle::new(AidlObjectKind::Demux, demux.object_id(), demux.generation());
+        let context =
+            AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
 
         let result = crate::object_runtime::quarantine_drop_leak_object(&context, handle)
             .expect("既存cleanup権限との競合を型付きで返す");
