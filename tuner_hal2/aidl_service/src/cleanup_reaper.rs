@@ -678,7 +678,7 @@ mod tests {
         };
         let weak = Arc::downgrade(&context);
         let runner = Arc::new(move |job, pending, worker| {
-            run_cleanup_job(weak.clone(), policy, job, pending, worker);
+            run_cleanup_job(weak.clone(), policy, job, pending, worker, None);
         });
         let queue = maleicacid_tuner_hal2_service_runtime::WorkerRuntime::start_reaper_queue(
             1,
