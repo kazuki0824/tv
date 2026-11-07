@@ -641,28 +641,39 @@ impl RuntimeObjectTable {
         Ok(false)
     }
 
-    /// 対象のcleanupを包含する親の既存義務を特定する。物理回収開始前でも
-    /// そのownerの正規reaper入口に再登録できるようにする。
-    pub(crate) fn ancestor_cleanup_owner(
+    /// 対象・子孫・祖先の既存cleanup正本を世代付きで返す。子孫を先に
+    /// 列挙することで、子の独立した権限を親の物理cleanupで上書きしない。
+    pub(crate) fn related_cleanup_owners(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-    ) -> Result<Option<(RuntimeObjectEntry, bool)>, RuntimeObjectTableError> {
+    ) -> Result<Vec<(RuntimeObjectEntry, bool)>, RuntimeObjectTableError> {
+        let mut targets = self.descendant_object_keys(object_id, generation);
+        targets.push((object_id, generation));
         let mut parent = self.entry_checked_any(object_id, generation)?.owner;
         for _ in 0..self.entries.len() {
             let Some((_, id, gen)) = parent.referenced_object() else {
-                return Ok(None);
+                break;
             };
             let entry = self.entry_checked_any(id, gen)?;
-            if self.object_close_txn.has_outstanding_obligation(id, gen) {
-                return Ok(Some((
-                    entry.clone(),
-                    self.object_close_txn.has_active_cleanup_attempt(id, gen),
-                )));
-            }
+            targets.push((id, gen));
             parent = entry.owner;
         }
-        Ok(None)
+        let mut owners = Vec::new();
+        for (id, gen) in targets {
+            let entry = self.entry_checked_any(id, gen)?;
+            if self.object_close_txn.has_outstanding_obligation(id, gen)
+                && !owners.iter().any(|(known, _): &(RuntimeObjectEntry, bool)| {
+                    known.object_id == id && known.generation == gen
+                })
+            {
+                owners.push((
+                    entry.clone(),
+                    self.object_close_txn.has_active_cleanup_attempt(id, gen),
+                ));
+            }
+        }
+        Ok(owners)
     }
 
     /// 隔離対象を変更せず全件検証する。後続の権限発行が失敗しても状態を変えない。
