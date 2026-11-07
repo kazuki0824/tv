@@ -640,8 +640,7 @@ impl RuntimeObjectTable {
                 lifecycle,
             });
         }
-        // A child whose own cleanup is unfinished cannot silently lose its
-        // independent authority when the parent's quarantine completes.
+        // 子objectの未完cleanup権限を、親objectの隔離完了で失わせてはならない。
         for (child_id, child_generation) in self.descendant_object_keys(object_id, generation) {
             if self
                 .object_close_txn
@@ -667,7 +666,7 @@ impl RuntimeObjectTable {
     ) -> Result<(), RuntimeObjectTableError> {
         let mut keys = self.descendant_object_keys(object_id, generation);
         keys.push((object_id, generation));
-        // Preflight all generations before changing any lifecycle.
+        // lifecycle変更前に対象世代を全件検証する。
         for (id, gen) in &keys {
             let entry = self.entry_checked_any(*id, *gen)?;
             if !matches!(

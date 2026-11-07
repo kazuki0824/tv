@@ -1030,8 +1030,8 @@ fn finish_reaped_dvr_status_notifier(
         }
     }
 
-    // Only an actual successful join can satisfy the pending notifier step
-    // held by the original ObjectCloseTxn. Failed joins remain quarantined.
+    // 実際のjoin成功だけがObjectCloseTxnの通知worker回収義務を満たす。
+    // join失敗なら未完義務と隔離状態を維持する。
     if notifier_join_succeeded {
         let runtime = context.runtime();
         let completion =
