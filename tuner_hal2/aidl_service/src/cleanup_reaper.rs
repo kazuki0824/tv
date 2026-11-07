@@ -201,8 +201,7 @@ fn run_cleanup_job(
         };
         if notifier_handoff_pending {
             match crate::dvr_callback_delivery::dvr_notifier_supervised_cleanup_complete(
-                &context,
-                job.handle,
+                &context, job.handle,
             ) {
                 Ok(true) => return,
                 Ok(false) => {
@@ -222,9 +221,11 @@ fn run_cleanup_job(
         if job.registered_at.elapsed() >= policy.terminal_deadline {
             use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
             match context.cleanup_retry_disposition(job.handle) {
-                Ok(AidlObjectCleanupDisposition::Stale
+                Ok(
+                    AidlObjectCleanupDisposition::Stale
                     | AidlObjectCleanupDisposition::Closed
-                    | AidlObjectCleanupDisposition::NoCleanupPending) => return,
+                    | AidlObjectCleanupDisposition::NoCleanupPending,
+                ) => return,
                 Ok(AidlObjectCleanupDisposition::Quarantined) => {
                     // Quarantinedは局所的な隔離であり物理回収の完了ではない。
                     // それだけを理由に全体停止しない。未完義務は既存ObjectCloseTxnに残る。
