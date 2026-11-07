@@ -187,77 +187,50 @@ fn run_cleanup_job(
 ) {
     let key = CleanupJobKey::from_handle(job.handle);
     let mut attempt = 0usize;
-    // 物理cleanup済みではなくDVR notifierの回収移管中。reaper予約は
-    // Supervisorが実workerを終了させるまでこのjob内で保持する。
-    let mut notifier_handoff_pending = false;
     loop {
         if worker.stop_requested() {
             return;
         }
         let Some(context) = context.upgrade() else {
-            // 正規service ownerの消滅後はcleanup完了を確定できない。
-            // reaper状態が破棄されるまで未完了の予約を保持する。
             return;
         };
-        if notifier_handoff_pending {
-            match crate::dvr_callback_delivery::dvr_notifier_supervised_cleanup_complete(
-                &context, job.handle,
-            ) {
-                Ok(true) => return,
-                Ok(false) => {
-                    worker.wait_until(Instant::now().checked_add(Duration::from_millis(100)));
-                    continue;
-                }
-                Err(error) => {
-                    log::error!(
-                        "DVR通知workerのSupervisor回収状態を確認できません: handle={:?} error={error:?}",
-                        job.handle
-                    );
-                    mark_cleanup_reaper_critical(&context);
+        use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+        // The same state/ownership policy applies before and after the
+        // deadline; time only triggers a physical quarantine attempt.
+        match context.cleanup_retry_disposition(job.handle) {
+            Ok(
+                AidlObjectCleanupDisposition::Stale
+                | AidlObjectCleanupDisposition::Closed
+                | AidlObjectCleanupDisposition::NoCleanupPending,
+            ) => return,
+            Ok(AidlObjectCleanupDisposition::Quarantined) => {
+                if context.quarantine_cleanup_has_owner(job.handle) == Ok(true) {
                     return;
                 }
+                mark_cleanup_reaper_critical(&context);
+                return;
+            }
+            Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {}
+            Err(error) => {
+                log::error!(
+                    "cleanup reaper対象の状態を確認できません: handle={:?} error={error:?}",
+                    job.handle
+                );
+                mark_cleanup_reaper_critical(&context);
+                return;
             }
         }
         if job.registered_at.elapsed() >= policy.terminal_deadline {
-            use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
-            match context.cleanup_retry_disposition(job.handle) {
-                Ok(
-                    AidlObjectCleanupDisposition::Stale
-                    | AidlObjectCleanupDisposition::Closed
-                    | AidlObjectCleanupDisposition::NoCleanupPending,
-                ) => return,
-                Ok(AidlObjectCleanupDisposition::Quarantined) => {
-                    // Quarantinedは局所的な隔離であり物理回収の完了ではない。
-                    // それだけを理由に全体停止しない。未完義務は既存ObjectCloseTxnに残る。
-                    log::warn!(
-                        "cleanup reaper期限後も対象は局所隔離中です: handle={:?}",
-                        job.handle
-                    );
+            match crate::object_runtime::quarantine_drop_leak_object(&context, job.handle) {
+                Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
+                | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
+                    // ObjectCloseTxn now owns completion and receives the
+                    // Supervisor join. No reaper lane remains blocked.
                     return;
-                }
-                Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
-                    match crate::object_runtime::quarantine_drop_leak_object(&context, job.handle) {
-                        Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed) => return,
-                        Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
-                            // Supervisorが持つworkerの終了を観測するまでgroupを解放しない。
-                            notifier_handoff_pending = true;
-                            continue;
-                        }
-                        Err(error) => {
-                            log::error!(
-                                "cleanup reaper期限の隔離に失敗しました: handle={:?} error={error:?}",
-                                job.handle
-                            );
-                            // 失敗直後の論理Quarantinedだけでは、物理cleanupや
-                            // worker fenceの成功を証明できないためfail-closedを維持する。
-                            mark_cleanup_reaper_critical(&context);
-                            return;
-                        }
-                    }
                 }
                 Err(error) => {
                     log::error!(
-                        "cleanup reaper期限の状態判定に失敗しました: handle={:?} error={error:?}",
+                        "cleanup reaper期限での対象隔離に失敗: handle={:?} error={error:?}",
                         job.handle
                     );
                     mark_cleanup_reaper_critical(&context);
@@ -267,16 +240,20 @@ fn run_cleanup_job(
         }
         let dependency = match context.cleanup_dependency_for_handle(job.handle) {
             Ok(dependency) => dependency,
-            Err(_) if matches!(
-                context.cleanup_retry_disposition(job.handle),
-                Ok(
-                    maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Stale
-                        | maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed
-                )
-            ) => {
-                return;
-            }
             Err(_) => {
+                // Another owner may have quarantined the object after the
+                // initial read. Re-check the same cleanup owner.
+                if matches!(
+                    context.cleanup_retry_disposition(job.handle),
+                    Ok(
+                        AidlObjectCleanupDisposition::Stale
+                            | AidlObjectCleanupDisposition::Closed
+                            | AidlObjectCleanupDisposition::NoCleanupPending
+                    )
+                ) || context.quarantine_cleanup_has_owner(job.handle) == Ok(true)
+                {
+                    return;
+                }
                 mark_cleanup_reaper_critical(&context);
                 return;
             }
