@@ -271,6 +271,120 @@ fn dvr_delivery_failure_finish_use_case_records_diagnostic_and_composes_marking_
         .is_empty());
 }
 
+#[test]
+fn queued_old_dvr_worker_cannot_consume_playback_after_owner_quarantine() {
+    use crate::{quarantine_object_drop_leak_use_case, ObjectMethodUseCase};
+    use maleicacid_tuner_hal2_domain_request::{
+        AidlMethodCall, DvrConfigureKind, DvrConfigureRequest, DvrDataFormat, DvrOpenKind,
+        OpenDvrRequest,
+    };
+    use std::sync::{mpsc, Arc, Mutex};
+
+    let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+    let demux = runtime
+        .lock()
+        .unwrap()
+        .root_open_txn()
+        .open_demux_root_object(AidlMethodCall::PublicApi {
+            object: AidlObjectKind::Tuner,
+            api: AidlApi::TunerOpenDemux,
+        })
+        .expect("Demux公開");
+
+    let dvr = ObjectMethodUseCase::execute_after_live(
+        &runtime,
+        demux.object_id(),
+        demux.generation(),
+        AidlObjectKind::Demux,
+        || -> Result<_, HalError> {
+            let request = OpenDvrRequest {
+                kind: DvrOpenKind::Playback,
+                buffer_size: 188,
+            };
+            Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
+        },
+        |runtime, dispatch, request| {
+            runtime
+                .child_open_txn()
+                .open_dvr_child_runtime_for_demux_object(
+                    demux.object_id(),
+                    demux.generation(),
+                    request,
+                    dispatch,
+                )
+        },
+    )
+    .expect("Playback DVR公開");
+    let object_id = dvr.runtime_entry.object_id();
+    let generation = dvr.runtime_entry.generation();
+
+    ObjectMethodUseCase::execute_after_live(
+        &runtime,
+        object_id,
+        generation,
+        AidlObjectKind::Dvr,
+        || -> Result<_, HalError> {
+            let request = DvrConfigureRequest {
+                kind: DvrConfigureKind::Playback,
+                status_mask: 0,
+                low_threshold_bytes: 0,
+                high_threshold_bytes: 188,
+                data_format: DvrDataFormat::Ts,
+                packet_size: 188,
+            };
+            Ok((AidlMethodCall::DvrConfigure(request.clone()), request))
+        },
+        |runtime, dispatch, request| {
+            runtime.configure_dvr_runtime_for_object(object_id, generation, request, dispatch)
+        },
+    )
+    .expect("Playback DVR設定");
+
+    ObjectMethodUseCase::execute_after_live(
+        &runtime,
+        object_id,
+        generation,
+        AidlObjectKind::Dvr,
+        || -> Result<_, HalError> { Ok((AidlMethodCall::DvrStart, ())) },
+        |runtime, dispatch, ()| {
+            runtime.start_dvr_for_object(object_id, generation, dispatch)
+        },
+    )
+    .expect("Playback DVR開始");
+
+    TunerServiceRuntime::consume_playback_dvr_for_object(&runtime, object_id, generation)
+        .expect("隔離前は本物のPlayback消費入口が利用可能");
+
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<()>(0);
+    let (resume_tx, resume_rx) = mpsc::sync_channel::<()>(0);
+    let old_runtime = Arc::clone(&runtime);
+    let old_worker = std::thread::spawn(move || {
+        ready_tx.send(()).expect("worker準備");
+        resume_rx.recv().expect("worker再開");
+        TunerServiceRuntime::consume_playback_dvr_for_object(
+            &old_runtime,
+            object_id,
+            generation,
+        )
+    });
+    ready_rx.recv().expect("workerが旧世代を保持して待機中");
+
+    // lifecycleの値を検査するだけでなく、実際のPlayback消費関数を
+    // 隔離前後で呼び、隔離後に副作用が発生する入口が拒否されることを確認する。
+    let _plan = quarantine_object_drop_leak_use_case(
+        &mut runtime.lock().unwrap(),
+        object_id,
+        generation,
+    )
+    .expect("旧世代の隔離確定");
+    resume_tx.send(()).expect("workerを隔離後に再開");
+    let result = old_worker.join().expect("旧世代worker終了");
+    assert!(
+        matches!(result, Err(HalError::InvalidState { .. })),
+        "Quarantined後の旧世代Playback消費を拒否する"
+    );
+}
+
 fn record_runtime_callback_registration(
     runtime: &mut TunerServiceRuntime,
     owner_kind: AidlObjectKind,
