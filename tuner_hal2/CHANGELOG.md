@@ -1,3 +1,12 @@
+# 2026-11-07 PR #227で巻き戻された既存設計との整合性を復元
+
+- post-commit DVR通知失敗を`PostCommitCallbackFailureTxn`の既存health/診断へ接続し、callback失敗だけで`ServiceCritical`へ昇格させない。通知workerの再開始失敗では対象DVR ownerの世代遮断を確認し、遮断を証明できない場合だけサービス全体を停止する。
+- DVR通知workerのSupervisor回収移管中は既存`WorkerCleanupFailureKind::Executing`で表す。Drop-leak cleanupは既存`ObjectCloseTxn`のstep reportで、DVR workerの移管だけが未完・他step成功・該当ID/世代のruntime登録解除成功の場合だけ局所隔離の成立を認める。未完の物理回収を完了扱いにしない。
+- Frontend reaper終了後の診断記録失敗は既存診断storeの失敗counterと標準エラーへ残し、世代fenceやworker終了の失敗と混同しない。
+- Drop-leakの物理cleanup成功と診断記録成功を分離し、診断失敗だけで既に成功した物理cleanupを再実行しない。
+- 共有cleanup reaperに固有のlock/worker失陥は既存`WorkerFailureClassifier`でtypedに分類し、対象objectが後から失効しただけで共有reaperの異常を見落とさない。
+- 本体/設定ファイルの文字列検査を正当性確認とする新規自己参照テストを削除。host回帰試験とCIで検証した範囲はPRのChecksを参照する。Android Soong/VTS/CTS・実機回復検証は実施していない。
+
 # 2026-11-07 Tuner HALの終端常駐とcleanup競合の修正
 
 - 既存`ServiceFailureState`の全体停止が確定した場合は、従属`WorkerRuntime`からHALプロセスを終了させてAndroid initへ再起動を委譲する。停止状態の第二正本は設けない。
