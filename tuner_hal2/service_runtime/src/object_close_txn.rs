@@ -779,7 +779,9 @@ impl QuarantineCleanupReport {
     pub fn finish(self, runtime: &mut TunerServiceRuntime) -> Result<bool, HalError> {
         let supervised = drop_leak_cleanup_supervised_targets(&self.report);
         if supervised.is_none() {
-            self.report.into_result().map_err(ObjectCloseCleanupFailure::into_error)?;
+            self.report
+                .into_result()
+                .map_err(ObjectCloseCleanupFailure::into_error)?;
         }
         runtime
             .object_table_mut()
@@ -830,7 +832,11 @@ impl ObjectDropLeakQuarantinePlan {
             )
             .execute_outcome_with(runtime_executor),
         );
-        QuarantineCleanupReport { object_id, generation, report }
+        QuarantineCleanupReport {
+            object_id,
+            generation,
+            report,
+        }
     }
 }
 
@@ -1743,7 +1749,13 @@ impl DvrNotifierJoinCompletion {
         let object_id = AidlObjectId(worker.owner_id());
         let generation = AidlObjectGeneration(worker.generation());
         let (terminal, completion) = match worker.join_with_result() {
-            Ok(terminal) => (terminal, Some(Self { object_id, generation })),
+            Ok(terminal) => (
+                terminal,
+                Some(Self {
+                    object_id,
+                    generation,
+                }),
+            ),
             Err(error) => (error.into_terminal_result("DVR notifier"), None),
         };
         (
