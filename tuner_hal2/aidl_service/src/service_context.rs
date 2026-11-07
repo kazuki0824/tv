@@ -339,14 +339,22 @@ impl AidlServiceContext {
         let result = self
             .cleanup_dependency_for_handle(handle)
             .and_then(|dependency| self.cleanup_reaper_queue.enqueue(handle, dependency));
-        if result.is_err() {
+        if let Err(error) = &result {
+            // 共有reaperの失陥は、対象objectが後から失効しても他jobに波及する。
+            let shared_reaper_lost =
+                maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(error);
             use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
-            match self.cleanup_retry_disposition(handle) {
-                Ok(AidlObjectCleanupDisposition::Stale)
-                | Ok(AidlObjectCleanupDisposition::Closed)
-                | Ok(AidlObjectCleanupDisposition::NoCleanupPending) => {}
-                // cleanup未完を証明できないときは、別の物理cleanupを起動せず停止する。
-                _ => TunerServiceRuntime::mark_shared_service_critical(&self.runtime),
+            if shared_reaper_lost
+                || !matches!(
+                    self.cleanup_retry_disposition(handle),
+                    Ok(
+                        AidlObjectCleanupDisposition::Stale
+                            | AidlObjectCleanupDisposition::Closed
+                            | AidlObjectCleanupDisposition::NoCleanupPending
+                    )
+                )
+            {
+                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
             }
         }
         result

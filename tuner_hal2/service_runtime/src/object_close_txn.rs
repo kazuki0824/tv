@@ -481,7 +481,8 @@ pub fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionRe
                 HalError::WorkerCleanupFailed {
                     kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Executing
                 }
-            ) => {
+            ) =>
+            {
                 pending_owners.push(*target);
             }
             ObjectCleanupStepOutcome::Runtime {
