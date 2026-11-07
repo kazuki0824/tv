@@ -130,11 +130,7 @@ fn next_admission_wake(
         .values()
         .map(|task| task.registered_at.checked_add(budget).unwrap_or(now))
         .min()
-        .map(|deadline| {
-            now.checked_add(retry_delay)
-                .unwrap_or(now)
-                .min(deadline)
-        })
+        .map(|deadline| now.checked_add(retry_delay).unwrap_or(now).min(deadline))
 }
 
 impl core::fmt::Debug for CleanupReaperQueue {
@@ -1292,7 +1288,8 @@ mod tests {
         let runtime = Arc::new(std::sync::Mutex::new(
             maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::new(),
         ));
-        let queue = CleanupReaperQueue::from_snapshot(runtime.lock().unwrap().capability_snapshot());
+        let queue =
+            CleanupReaperQueue::from_snapshot(runtime.lock().unwrap().capability_snapshot());
         queue.bind_service_runtime(&runtime);
         drop(runtime);
         queue.record_terminal_failure("test join failure");
