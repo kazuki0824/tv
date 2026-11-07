@@ -1166,6 +1166,38 @@ mod tests {
     }
 
     #[test]
+    fn failed_admission_worker_join_during_drop_marks_existing_service_critical() {
+        use maleicacid_tuner_hal2_service_runtime::{TunerServiceRuntime, WorkerRuntime};
+        use std::sync::Mutex;
+
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let failure = runtime.lock().unwrap().failure_state();
+        let queue = CleanupReaperQueue::from_snapshot(
+            runtime.lock().unwrap().capability_snapshot()
+        );
+        queue.bind_service_runtime(&runtime);
+        let failed = WorkerRuntime::spawn_observed(
+            "test-admission-join-failure".to_string(),
+            0, 1,
+            |_| -> Result<(), HalError> {
+                Err(HalError::cleanup_failed("admission join", "injected runtime failure"))
+            },
+            |_| {},
+        )
+        .unwrap();
+        for _ in 0..1000 {
+            if failed.is_finished() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(failed.is_finished());
+        queue.runtime.lock().unwrap().admission_worker = Some(failed);
+        drop(queue);
+        assert!(failure.snapshot().service_critical, "Drop中の異常join結果はSSOTへ伝播する");
+    }
+
+    #[test]
     fn idle_admission_worker_has_no_polling_deadline_and_new_owner_wakes_it() {
         let pending = std::collections::BTreeMap::new();
         let now = Instant::now();
@@ -1286,11 +1318,65 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        release.store(true, Ordering::Release);
         assert!(
             finished,
             "受付監督が正常完了またはfail-stopを有界時間内に確定できませんでした"
         );
+        if complete_owner {
+            // 待ち0件で監督workerがparkした後、別のcleanupが登録された場合も
+            // WorkerWakeのpending bitにより起床を取りこぼさない。
+            let second = runtime
+                .lock()
+                .unwrap()
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .unwrap();
+            let second_handle = AidlObjectHandle::new(
+                AidlObjectKind::Demux, second.object_id(), second.generation()
+            );
+            let close = close_object_use_case(
+                &mut runtime.lock().unwrap(),
+                second.object_id(), second.generation(),
+                AidlObjectKind::Demux, AidlMethodCall::DemuxClose,
+            )
+            .unwrap();
+            let second_attempt = close
+                .begin_cleanup_attempt(&mut runtime.lock().unwrap())
+                .unwrap();
+            assert!(context.enqueue_cleanup_retry(second_handle).is_ok());
+            assert!(queue
+                .runtime
+                .lock()
+                .unwrap()
+                .admission_pending
+                .contains_key(&CleanupJobKey::from_handle(second_handle)));
+            finish_object_close_use_case(
+                &mut runtime.lock().unwrap(),
+                second_attempt.completion,
+                Ok(()),
+            )
+            .unwrap();
+            let mut woken = false;
+            for _ in 0..500 {
+                if !queue
+                    .runtime
+                    .lock()
+                    .unwrap()
+                    .admission_pending
+                    .contains_key(&CleanupJobKey::from_handle(second_handle))
+                {
+                    woken = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(woken, "idle状態からの新規owner通知を取りこぼしました");
+            assert!(!state.snapshot().service_critical);
+        }
+        release.store(true, Ordering::Release);
         assert_eq!(
             state.snapshot().service_critical,
             !complete_owner,
