@@ -467,6 +467,11 @@ mod tests {
             .expect("親Demuxを開く");
         let child_id = AidlObjectId(977);
         let generation = parent.generation();
+        let live = runtime
+            .object_table()
+            .entry(parent.object_id())
+            .expect("親はLive")
+            .lifecycle;
         runtime
             .object_table_mut()
             .insert(RuntimeObjectEntry {
@@ -480,11 +485,7 @@ mod tests {
                     demux: parent.object_id(),
                     generation,
                 },
-                lifecycle: runtime
-                    .object_table()
-                    .entry(parent.object_id())
-                    .expect("親はLive")
-                    .lifecycle,
+                lifecycle: live,
             })
             .expect("子の公開登録");
         // 子は隔離済みで親closeが物理処理すべき対象は親だけとする。
