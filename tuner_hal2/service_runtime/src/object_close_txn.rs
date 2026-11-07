@@ -1063,9 +1063,9 @@ impl ObjectCloseTxn {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> bool {
-        self.obligations.get(&object_id).is_some_and(|obligation| {
-            obligation.generation == generation
-        })
+        self.obligations
+            .get(&object_id)
+            .is_some_and(|obligation| obligation.generation == generation)
     }
 
     pub(crate) fn has_managed_quarantine(

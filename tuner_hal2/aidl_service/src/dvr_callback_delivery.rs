@@ -1034,17 +1034,15 @@ fn finish_reaped_dvr_status_notifier(
     // held by the original ObjectCloseTxn. Failed joins remain quarantined.
     if notifier_join_succeeded {
         let runtime = context.runtime();
-        let completion = TunerServiceRuntime::lock_shared(
-            &runtime,
-            "DVR notifier Supervisor回収完了通知",
-        )
-        .and_then(|mut runtime| {
-            maleicacid_tuner_hal2_service_runtime::notify_supervised_dvr_joined_use_case(
-                &mut runtime,
-                handle.object_id(),
-                handle.generation(),
-            )
-        });
+        let completion =
+            TunerServiceRuntime::lock_shared(&runtime, "DVR notifier Supervisor回収完了通知")
+                .and_then(|mut runtime| {
+                    maleicacid_tuner_hal2_service_runtime::notify_supervised_dvr_joined_use_case(
+                        &mut runtime,
+                        handle.object_id(),
+                        handle.generation(),
+                    )
+                });
         if let Err(error) = completion {
             record_dvr_notifier_cleanup_control_failure(&context, handle, error);
             mark_dvr_notifier_service_critical(&context);
@@ -1450,9 +1448,7 @@ mod tests {
             crate::object_runtime::DropLeakQuarantineOutcome::Completed => {
                 assert_eq!(
                     context.cleanup_retry_disposition(handle),
-                    Ok(
-                        maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed
-                    )
+                    Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
                 );
             }
             crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending => {
