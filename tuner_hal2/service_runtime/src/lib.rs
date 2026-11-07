@@ -104,7 +104,7 @@ pub use lnb_ops::{
     SharedLnbRuntime,
 };
 pub use object_close_txn::{
-    close_object_use_case, drop_leak_cleanup_is_supervised_pending, finish_object_close_use_case,
+    close_object_use_case, drop_leak_cleanup_supervised_targets, finish_object_close_use_case,
     finish_quarantined_cleanup_report_use_case, notify_supervised_dvr_joined_use_case,
     quarantine_object_drop_leak_use_case, CloseCleanupAttemptCompletion, CloseCleanupAuthority,
     ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind,
@@ -120,6 +120,7 @@ pub use object_domain_cleanup::{
 };
 pub use object_lifecycle::{
     aidl_object_cleanup_dependency, aidl_object_cleanup_disposition,
+    aidl_object_quarantine_cleanup_has_owner,
     aidl_object_cleanup_is_terminal, AidlObjectCleanupDisposition,
 };
 pub use object_method_use_case::{
