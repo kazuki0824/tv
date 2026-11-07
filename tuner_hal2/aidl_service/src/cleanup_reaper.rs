@@ -88,6 +88,34 @@ pub(crate) struct CleanupReaperQueue {
     runtime: PoisonTrackedMutex<CleanupReaperQueueOwner>,
 }
 
+impl Drop for CleanupReaperQueue {
+    fn drop(&mut self) {
+        let worker = match self.runtime.lock() {
+            Ok(mut owner) => owner.admission_worker.take(),
+            Err(error) => {
+                log::error!("cleanup受付監督ownerの破棄中にロック汚染: {error:?}");
+                None
+            }
+        };
+        if let Some(worker) = worker {
+            worker.request_stop();
+            // 無期限joinは禁止。完了済みの場合はtyped resultを必ず検査する。
+            if worker.is_finished() {
+                match worker.join() {
+                    maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::Normal(())
+                    | maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::StopRequested => {}
+                    maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::RuntimeFailure(error) => {
+                        log::error!("cleanup受付監督workerの終了失敗: {error:?}");
+                    }
+                    maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::PanicOrJoinFailure => {
+                        log::error!("cleanup受付監督workerのjoin/panic異常");
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl core::fmt::Debug for CleanupReaperQueue {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CleanupReaperQueue")
@@ -1148,7 +1176,8 @@ mod tests {
         queue
             .supervise_unqueued_owner(Arc::downgrade(&context), handle)
             .expect("同一世代の監督workerは重複生成しない");
-        assert_eq!(queue.runtime.lock().unwrap().admission_watchers.len(), 1);
+        assert_eq!(queue.runtime.lock().unwrap().admission_pending.len(), 1);
+        assert!(queue.runtime.lock().unwrap().admission_worker.is_some());
         if complete_owner {
             finish_object_close_use_case(&mut runtime.lock().unwrap(), attempt.completion, Ok(()))
                 .unwrap();
@@ -1156,13 +1185,17 @@ mod tests {
         let key = CleanupJobKey::from_handle(handle);
         let mut finished = false;
         for _ in 0..500 {
-            if queue
-                .runtime
-                .lock()
-                .unwrap()
-                .admission_watchers
-                .get(&key)
-                .is_some_and(|worker| worker.is_finished())
+            let (pending, worker_finished) = {
+                let owner = queue.runtime.lock().unwrap();
+                (
+                    owner.admission_pending.contains_key(&key),
+                    owner.admission_worker
+                        .as_ref()
+                        .is_some_and(|worker| worker.is_finished()),
+                )
+            };
+            if (complete_owner && !pending)
+                || (!complete_owner && worker_finished && state.snapshot().service_critical)
             {
                 finished = true;
                 break;
@@ -1170,7 +1203,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         release.store(true, Ordering::Release);
-        assert!(finished, "監督workerが有界期限内に終了しませんでした");
+        assert!(finished, "受付監督が正常完了またはfail-stopを有界時間内に確定できませんでした");
         assert_eq!(
             state.snapshot().service_critical,
             !complete_owner,
