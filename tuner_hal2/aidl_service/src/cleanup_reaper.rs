@@ -121,34 +121,55 @@ impl CleanupReaperQueue {
         }
     }
 
+    /// reaper容量はbounded受付数であり、全体runtime破損ではない。
+    /// 既存retry schedule内だけ受付を待ち、容量回復時に同じ義務を投入する。
     pub(crate) fn enqueue(
         &self,
         handle: AidlObjectHandle,
         dependency: CleanupStep,
     ) -> Result<(), HalError> {
         let key = CleanupJobKey::from_handle(handle);
+        let budget = self.policy.retry_delays[2];
+        let started = Instant::now();
+        loop {
+            let runtime = {
+                let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
+                slot.as_ref().ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "cleanup reaperの正規ownerが設定されていません",
+                    )
+                })?.clone()
+            };
+            if runtime.pending_value(&key).map_err(Self::classify_enqueue_error)?.is_some() {
+                return Ok(());
+            }
+            match runtime.enqueue_reserved(
+                CleanupJob { handle, registered_at: Instant::now() },
+                [(key, dependency)],
+            ).map_err(Self::classify_enqueue_error) {
+                Err(error @ HalError::Busy { .. }) if started.elapsed() < budget => {
+                    std::thread::sleep(
+                        budget.saturating_sub(started.elapsed()).min(Duration::from_millis(10))
+                    );
+                    if started.elapsed() >= budget {
+                        return Err(error);
+                    }
+                }
+                result => return result,
+            }
+        }
+    }
+
+    /// 同じ正本reaperが関連ownerの未完cleanupを既に受付済みか確認する。
+    pub(crate) fn has_pending(&self, handle: AidlObjectHandle) -> Result<bool, HalError> {
         let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
         let runtime = slot.as_ref().ok_or_else(|| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "cleanup reaperの正規ownerが設定されていません",
-            )
+            HalError::internal(HalInternalKind::InvariantViolation, "cleanup reaper ownerなし")
         })?;
-        if runtime
-            .pending_value(&key)
-            .map_err(Self::classify_enqueue_error)?
-            .is_some()
-        {
-            return Ok(());
-        }
         runtime
-            .enqueue_reserved(
-                CleanupJob {
-                    handle,
-                    registered_at: Instant::now(),
-                },
-                [(key, dependency)],
-            )
+            .pending_value(&CleanupJobKey::from_handle(handle))
+            .map(|entry| entry.is_some())
             .map_err(Self::classify_enqueue_error)
     }
 }
