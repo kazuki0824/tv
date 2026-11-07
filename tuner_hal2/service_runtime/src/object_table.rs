@@ -641,20 +641,47 @@ impl RuntimeObjectTable {
         Ok(false)
     }
 
+    /// 隔離対象を変更せず全件検証する。後続の権限発行が失敗しても状態を変えない。
+    pub(crate) fn quarantine_candidate_entries(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
+        let root = self.entry_checked_any(object_id, generation)?;
+        if matches!(
+            root.lifecycle,
+            RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+        ) {
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle: root.lifecycle,
+            });
+        }
+        let mut targets = self.descendant_object_keys(object_id, generation);
+        targets.push((object_id, generation));
+        let mut entries = Vec::with_capacity(targets.len());
+        for (id, gen) in targets {
+            let entry = self.entry_checked_any(id, gen)?;
+            if !matches!(
+                entry.lifecycle,
+                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+            ) {
+                entries.push(entry.clone());
+            }
+        }
+        Ok(entries)
+    }
+
     pub(crate) fn begin_quarantine_cleanup(
         &mut self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
         notifier_candidates: impl IntoIterator<Item = (AidlObjectId, AidlObjectGeneration)>,
-    ) -> Result<(), RuntimeObjectTableError> {
+    ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
+        // 前検証・権限発行・lifecycle確定を同一runtime lockで実行する。
+        let entries = self.quarantine_candidate_entries(object_id, generation)?;
         let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
-        if lifecycle != RuntimeObjectLifecycle::Quarantined {
-            return Err(RuntimeObjectTableError::InvalidLifecycle {
-                object_id,
-                lifecycle,
-            });
-        }
-        // 子objectの未完cleanup権限を、親objectの隔離完了で失わせてはならない。
+        // 子objectの独立したcleanup権限を上書きしてはならない。
         for (child_id, child_generation) in self.descendant_object_keys(object_id, generation) {
             if self
                 .object_close_txn
@@ -668,9 +695,18 @@ impl RuntimeObjectTable {
                 });
             }
         }
+        // 識別子枯渇・先行権限競合による失敗を、破壊的mutationより先に確定する。
         self.object_close_txn
             .begin_quarantined_cleanup(object_id, generation, notifier_candidates)
-            .map_err(|error| Self::close_txn_error(object_id, lifecycle, error))
+            .map_err(|error| Self::close_txn_error(object_id, lifecycle, error))?;
+        // 全entryを検証済みのため、ここからは失敗するlookupを行わない。
+        let mut changed = Vec::with_capacity(entries.len());
+        for mut entry in entries {
+            entry.lifecycle = RuntimeObjectLifecycle::Quarantined;
+            self.entries.insert(entry.object_id, entry.clone());
+            changed.push(entry);
+        }
+        Ok(changed)
     }
 
     fn close_completed_quarantine_cascade(
