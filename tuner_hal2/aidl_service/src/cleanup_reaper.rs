@@ -228,7 +228,10 @@ fn run_cleanup_job(
             }
             Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {}
             Err(error) => {
-                log::error!("cleanup reaper対象の状態確認失敗: handle={:?} error={error:?}", target.handle);
+                log::error!(
+                    "cleanup reaper対象の状態確認失敗: handle={:?} error={error:?}",
+                    target.handle
+                );
                 mark_cleanup_reaper_critical(&context);
                 return;
             }
@@ -276,11 +279,9 @@ fn run_cleanup_job(
                                 // owner確認後に別スレッドがcleanupを完了した場合は正常競合。
                                 if matches!(
                                     context.cleanup_retry_disposition(owner),
-                                    Ok(
-                                        AidlObjectCleanupDisposition::Stale
-                                            | AidlObjectCleanupDisposition::Closed
-                                            | AidlObjectCleanupDisposition::NoCleanupPending
-                                    )
+                                    Ok(AidlObjectCleanupDisposition::Stale
+                                        | AidlObjectCleanupDisposition::Closed
+                                        | AidlObjectCleanupDisposition::NoCleanupPending)
                                 ) || context.quarantine_cleanup_has_owner(owner) == Ok(true)
                                 {
                                     continue;
@@ -311,19 +312,19 @@ fn run_cleanup_job(
                     // その結果を期限付きで再照会する。
                     if matches!(
                         context.cleanup_retry_disposition(target.handle),
-                        Ok(
-                            AidlObjectCleanupDisposition::Stale
-                                | AidlObjectCleanupDisposition::Closed
-                                | AidlObjectCleanupDisposition::NoCleanupPending
-                        )
+                        Ok(AidlObjectCleanupDisposition::Stale
+                            | AidlObjectCleanupDisposition::Closed
+                            | AidlObjectCleanupDisposition::NoCleanupPending)
                     ) {
                         continue;
                     }
-                    if delegated_wait
-                        .get_or_insert_with(Instant::now)
-                        .elapsed() >= policy.terminal_deadline
+                    if delegated_wait.get_or_insert_with(Instant::now).elapsed()
+                        >= policy.terminal_deadline
                     {
-                        log::error!("関連cleanupの進行確認が期限超過: handle={:?}", target.handle);
+                        log::error!(
+                            "関連cleanupの進行確認が期限超過: handle={:?}",
+                            target.handle
+                        );
                         mark_cleanup_reaper_critical(&context);
                         return;
                     }
@@ -333,15 +334,16 @@ fn run_cleanup_job(
                 Err(error) => {
                     if matches!(
                         context.cleanup_retry_disposition(target.handle),
-                        Ok(
-                            AidlObjectCleanupDisposition::Stale
-                                | AidlObjectCleanupDisposition::Closed
-                                | AidlObjectCleanupDisposition::NoCleanupPending
-                        )
+                        Ok(AidlObjectCleanupDisposition::Stale
+                            | AidlObjectCleanupDisposition::Closed
+                            | AidlObjectCleanupDisposition::NoCleanupPending)
                     ) {
                         continue;
                     }
-                    log::error!("期限到達後のcleanup隔離失敗: handle={:?} error={error:?}", target.handle);
+                    log::error!(
+                        "期限到達後のcleanup隔離失敗: handle={:?} error={error:?}",
+                        target.handle
+                    );
                     mark_cleanup_reaper_critical(&context);
                     return;
                 }
@@ -352,16 +354,17 @@ fn run_cleanup_job(
             Err(error) => {
                 if matches!(
                     context.cleanup_retry_disposition(target.handle),
-                    Ok(
-                        AidlObjectCleanupDisposition::Stale
-                            | AidlObjectCleanupDisposition::Closed
-                            | AidlObjectCleanupDisposition::NoCleanupPending
-                    )
+                    Ok(AidlObjectCleanupDisposition::Stale
+                        | AidlObjectCleanupDisposition::Closed
+                        | AidlObjectCleanupDisposition::NoCleanupPending)
                 ) || context.quarantine_cleanup_has_owner(target.handle) == Ok(true)
                 {
                     continue;
                 }
-                log::error!("cleanup依存関係を取得できません: handle={:?} error={error:?}", target.handle);
+                log::error!(
+                    "cleanup依存関係を取得できません: handle={:?} error={error:?}",
+                    target.handle
+                );
                 mark_cleanup_reaper_critical(&context);
                 return;
             }

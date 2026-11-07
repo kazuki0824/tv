@@ -339,7 +339,8 @@ impl AidlServiceContext {
         &self,
         handle: AidlObjectHandle,
     ) -> Result<Vec<(AidlObjectHandle, bool)>, HalError> {
-        let runtime = TunerServiceRuntime::lock_shared(&self.runtime, "関連cleanupの回収owner確認")?;
+        let runtime =
+            TunerServiceRuntime::lock_shared(&self.runtime, "関連cleanupの回収owner確認")?;
         maleicacid_tuner_hal2_service_runtime::related_cleanup_recovery_owners_use_case(
             &runtime,
             handle.object_id(),
