@@ -360,10 +360,6 @@ fn run_cleanup_job(
                     let waited = delegated_wait.get_or_insert_with(Instant::now).elapsed();
                     if waited >= policy.terminal_deadline {
                         // 判定後のowner変更・正常完了も同一ID/世代で再照会する。
-                        #[cfg(test)]
-                        if let Some(checkpoint) = deadline_checkpoint {
-                            let _ = checkpoint.send(());
-                        }
                         let owners = match context.related_cleanup_recovery_owners(target.handle) {
                             Ok(owners) => owners,
                             Err(error) => {
@@ -450,6 +446,13 @@ fn run_cleanup_job(
                                     return;
                                 }
                             }
+                        }
+                    }
+                    // 別ownerの進行確認が済んでからテスト用同期点を通知する。
+                    #[cfg(test)]
+                    if waited >= policy.terminal_deadline {
+                        if let Some(checkpoint) = deadline_checkpoint {
+                            let _ = checkpoint.send(());
                         }
                     }
                     worker.wait_until(Instant::now().checked_add(Duration::from_millis(20)));
@@ -833,6 +836,83 @@ mod tests {
             .expect("別ownerの正常完了後にreaper終了");
         release.join().unwrap();
         assert!(!failure.snapshot().service_critical);
+    }
+
+    #[test]
+    fn permanently_stalled_owner_has_bounded_fail_stop_and_reaper_release() {
+        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
+        use maleicacid_tuner_hal2_service_runtime::{
+            close_object_use_case, TunerServiceRuntime, WorkerRuntime,
+        };
+        use std::sync::{mpsc, Mutex};
+
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let demux = runtime
+            .lock()
+            .unwrap()
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .unwrap();
+        let handle =
+            AidlObjectHandle::new(AidlObjectKind::Demux, demux.object_id(), demux.generation());
+        let close = close_object_use_case(
+            &mut runtime.lock().unwrap(),
+            demux.object_id(),
+            demux.generation(),
+            AidlObjectKind::Demux,
+            AidlMethodCall::DemuxClose,
+        )
+        .unwrap();
+        // 実行権限だけ確保し、物理cleanupの完了は通知しない。
+        let _stalled_attempt = close
+            .begin_cleanup_attempt(&mut runtime.lock().unwrap())
+            .unwrap();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
+        let weak = Arc::downgrade(&context);
+        let policy = CleanupReaperPolicy {
+            max_jobs: 1,
+            terminal_deadline: Duration::from_millis(10),
+            retry_delays: [Duration::ZERO; 4],
+        };
+        let (done_tx, done_rx) = mpsc::channel();
+        let (checkpoint_tx, checkpoint_rx) = mpsc::channel();
+        let runner = Arc::new(move |job, pending, worker| {
+            run_cleanup_job(weak.clone(), policy, job, pending, worker, Some(&checkpoint_tx));
+            done_tx.send(()).unwrap();
+        });
+        let queue = WorkerRuntime::start_reaper_queue(1, "test-stalled-owner", runner).unwrap();
+        queue
+            .enqueue_reserved(
+                CleanupJob {
+                    handle,
+                    registered_at: Instant::now() - Duration::from_millis(50),
+                },
+                [(CleanupJobKey::from_handle(handle), CleanupStep::ReleaseBackend)],
+            )
+            .unwrap();
+        checkpoint_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("期限到達後にownerを確認してなお待機した");
+        assert!(!failure_state.snapshot().service_critical);
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("回復期限後にreaperは終了し、予約グループを解放する");
+        assert!(failure_state.snapshot().service_critical);
+        for _ in 0..100 {
+            if queue
+                .pending_value(&CleanupJobKey::from_handle(handle))
+                .unwrap()
+                .is_none()
+            {
+                return;
+            }
+            std::thread::yield_now();
+        }
+        panic!("停止不能ownerがreaperの保留予約を占有し続けています");
     }
 
     #[test]
