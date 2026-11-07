@@ -134,23 +134,37 @@ impl CleanupReaperQueue {
         loop {
             let runtime = {
                 let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
-                slot.as_ref().ok_or_else(|| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "cleanup reaperの正規ownerが設定されていません",
-                    )
-                })?.clone()
+                slot.as_ref()
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "cleanup reaperの正規ownerが設定されていません",
+                        )
+                    })?
+                    .clone()
             };
-            if runtime.pending_value(&key).map_err(Self::classify_enqueue_error)?.is_some() {
+            if runtime
+                .pending_value(&key)
+                .map_err(Self::classify_enqueue_error)?
+                .is_some()
+            {
                 return Ok(());
             }
-            match runtime.enqueue_reserved(
-                CleanupJob { handle, registered_at: Instant::now() },
-                [(key, dependency)],
-            ).map_err(Self::classify_enqueue_error) {
+            match runtime
+                .enqueue_reserved(
+                    CleanupJob {
+                        handle,
+                        registered_at: Instant::now(),
+                    },
+                    [(key, dependency)],
+                )
+                .map_err(Self::classify_enqueue_error)
+            {
                 Err(error @ HalError::Busy { .. }) if started.elapsed() < budget => {
                     std::thread::sleep(
-                        budget.saturating_sub(started.elapsed()).min(Duration::from_millis(10))
+                        budget
+                            .saturating_sub(started.elapsed())
+                            .min(Duration::from_millis(10)),
                     );
                     if started.elapsed() >= budget {
                         return Err(error);
@@ -165,7 +179,10 @@ impl CleanupReaperQueue {
     pub(crate) fn has_pending(&self, handle: AidlObjectHandle) -> Result<bool, HalError> {
         let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
         let runtime = slot.as_ref().ok_or_else(|| {
-            HalError::internal(HalInternalKind::InvariantViolation, "cleanup reaper ownerなし")
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "cleanup reaper ownerなし",
+            )
         })?;
         runtime
             .pending_value(&CleanupJobKey::from_handle(handle))
@@ -398,7 +415,10 @@ fn run_cleanup_job(
                         // 有効な別ownerが物理cleanupを継続している間は、経過時間のみで
                         // HAL全体を停止しない。元の義務を保持し、完了後に再判定する。
                         delegated_wait = Some(Instant::now());
-                        log::warn!("関連cleanup ownerの処理継続を確認: handle={:?}", target.handle);
+                        log::warn!(
+                            "関連cleanup ownerの処理継続を確認: handle={:?}",
+                            target.handle
+                        );
                     }
                     worker.wait_until(Instant::now().checked_add(Duration::from_millis(20)));
                     continue;
@@ -735,27 +755,33 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::mpsc;
 
-        let mut snapshot = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::new()
-            .capability_snapshot();
+        let mut snapshot =
+            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::new().capability_snapshot();
         snapshot.cleanup_reaper_capacity = 1;
         snapshot.cleanup_retry_schedule_ms = [0, 10, 20, 40];
         let queue = CleanupReaperQueue::from_snapshot(snapshot);
         let release = Arc::new(AtomicBool::new(false));
         let release_worker = Arc::clone(&release);
         let (started_tx, started_rx) = mpsc::channel();
-        let runner = Arc::new(move |_: CleanupJob, _: _, _: maleicacid_tuner_hal2_service_runtime::WorkerContext| {
-            started_tx.send(()).unwrap();
-            while !release_worker.load(Ordering::Acquire) {
-                std::thread::yield_now();
-            }
-        });
+        let runner = Arc::new(
+            move |_: CleanupJob, _: _, _: maleicacid_tuner_hal2_service_runtime::WorkerContext| {
+                started_tx.send(()).unwrap();
+                while !release_worker.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            },
+        );
         let owner = WorkerRuntime::start_reaper_queue(1, "test-capacity-reaper", runner).unwrap();
         queue.install(owner).unwrap();
         let first = AidlObjectHandle::new(
-            AidlObjectKind::Filter, AidlObjectId(100), AidlObjectGeneration(1),
+            AidlObjectKind::Filter,
+            AidlObjectId(100),
+            AidlObjectGeneration(1),
         );
         let second = AidlObjectHandle::new(
-            AidlObjectKind::Filter, AidlObjectId(101), AidlObjectGeneration(1),
+            AidlObjectKind::Filter,
+            AidlObjectId(101),
+            AidlObjectGeneration(1),
         );
         queue.enqueue(first, CleanupStep::StopWorker).unwrap();
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -791,16 +817,19 @@ mod tests {
                 api: AidlApi::TunerOpenDemux,
             })
             .unwrap();
-        let handle = AidlObjectHandle::new(
-            AidlObjectKind::Demux, demux.object_id(), demux.generation(),
-        );
+        let handle =
+            AidlObjectHandle::new(AidlObjectKind::Demux, demux.object_id(), demux.generation());
         let close = close_object_use_case(
             &mut runtime.lock().unwrap(),
-            demux.object_id(), demux.generation(),
-            AidlObjectKind::Demux, AidlMethodCall::DemuxClose,
+            demux.object_id(),
+            demux.generation(),
+            AidlObjectKind::Demux,
+            AidlMethodCall::DemuxClose,
         )
         .unwrap();
-        let attempt = close.begin_cleanup_attempt(&mut runtime.lock().unwrap()).unwrap();
+        let attempt = close
+            .begin_cleanup_attempt(&mut runtime.lock().unwrap())
+            .unwrap();
         let failure = runtime.lock().unwrap().failure_state();
         let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
         let weak = Arc::downgrade(&context);
@@ -814,19 +843,28 @@ mod tests {
             run_cleanup_job(weak.clone(), policy, job, pending, worker);
             done_tx.send(()).unwrap();
         });
-        let queue = WorkerRuntime::start_reaper_queue(1, "test-delegation-deadline", runner).unwrap();
-        queue.enqueue_reserved(
-            CleanupJob {
-                handle,
-                registered_at: Instant::now() - Duration::from_millis(50),
-            },
-            [(CleanupJobKey::from_handle(handle), CleanupStep::ReleaseBackend)],
-        ).unwrap();
+        let queue =
+            WorkerRuntime::start_reaper_queue(1, "test-delegation-deadline", runner).unwrap();
+        queue
+            .enqueue_reserved(
+                CleanupJob {
+                    handle,
+                    registered_at: Instant::now() - Duration::from_millis(50),
+                },
+                [(
+                    CleanupJobKey::from_handle(handle),
+                    CleanupStep::ReleaseBackend,
+                )],
+            )
+            .unwrap();
         let release = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(55));
-            finish_object_close_use_case(&mut runtime.lock().unwrap(), attempt.completion, Ok(())).unwrap();
+            finish_object_close_use_case(&mut runtime.lock().unwrap(), attempt.completion, Ok(()))
+                .unwrap();
         });
-        done_rx.recv_timeout(Duration::from_secs(2)).expect("別ownerの正常完了後にreaper終了");
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("別ownerの正常完了後にreaper終了");
         release.join().unwrap();
         assert!(!failure.snapshot().service_critical);
     }
