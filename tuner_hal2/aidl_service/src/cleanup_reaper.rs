@@ -227,6 +227,15 @@ fn run_cleanup_job(
                     // cleanup reaperの実行レーンは占有し続けない。
                     return;
                 }
+                Ok(crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup) => {
+                    // 正本ObjectCloseTxnの別の有効なcleanup権限が同一資源を所有している。
+                    // 正常な競合拒否を全体停止へ昇格せず、二重cleanupも実行しない。
+                    log::debug!(
+                        "別のObjectCloseTxnが後片付けを所有中: handle={:?}",
+                        job.handle
+                    );
+                    return;
+                }
                 Err(error) => {
                     log::error!(
                         "cleanup reaper期限での対象隔離に失敗: handle={:?} error={error:?}",
