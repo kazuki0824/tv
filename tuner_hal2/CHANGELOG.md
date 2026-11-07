@@ -3,6 +3,13 @@
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
 - 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
 
+# 2026-11-07 PR #227 bounded reaper満杯時のactive cleanupを監督
+
+- `run_cleanup_job()`のAndroid AIDL専用`#[cfg(test)]`引数追従漏れを修正した。
+- `CleanupReaperQueue`が未予約ownerごとの従属`WorkerRuntime`監督handleを保持し、reaperの受付容量回復後に既存queueへ投入する。元の`ObjectCloseTxn`が世代・未完義務を保持し、監督workerは物理cleanupを二重実行しない。受付済みの場合は重複投入せず、同一世代の監督を重複生成しない。
+- 正常終了したactive closeと永久停止するactive closeを容量1の競合条件下で区別するAIDL回帰試験を追加した。期限到達して局所fenceを証明できない場合のみ既存ServiceFailureStateへfail-stopする。監督worker数は既存reaper容量を上限とし、専用のcleanup台帳や別reaperを追加しない。
+- Host Rust CIとRust品質CIはGitHub Checksを正とする。Android Soong/atest、CTS/VTS、HAL PID再起動・Binder再接続は未検証のまま扱う。
+
 # 2026-11-07 PR #227 終端回復の有界性とテスト同期を修正
 
 - 別ownerが物理cleanupを実行中／予約済みでもreaperの期限カウンターを繰り返し初期化しない。有界回復猶予の後で同世代の完了・局所fence・未完義務を再評価し、隔離不能な共有リスクだけをServiceCriticalへ伝播する。
