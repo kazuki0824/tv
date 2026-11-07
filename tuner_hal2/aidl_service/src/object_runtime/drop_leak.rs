@@ -71,6 +71,10 @@ pub(crate) fn quarantine_drop_leak_object(
                     &mut domain_executor,
                     &mut artifact_executor,
                 );
+                let supervised_pending =
+                    maleicacid_tuner_hal2_service_runtime::drop_leak_cleanup_is_supervised_pending(
+                        &report,
+                    );
                 let terminalization_result = report
                     .clone()
                     .into_result()
@@ -89,7 +93,13 @@ pub(crate) fn quarantine_drop_leak_object(
                 if let Err(error) = record_result {
                     log::error!("drop-leak cleanupの診断記録に失敗しました: handle={handle:?} error={error:?}");
                 }
-                terminalization_result
+                // Supervisorへ回収済みのDVR workerだけが残る場合は
+                // 物理回収の完了を捏造せず、局所隔離を成功として返す。
+                if supervised_pending {
+                    Ok(())
+                } else {
+                    terminalization_result
+                }
             };
             error_collector.push_result(terminalization_result);
         }
