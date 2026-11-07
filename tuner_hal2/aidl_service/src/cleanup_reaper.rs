@@ -342,12 +342,63 @@ fn run_cleanup_job(
                     if delegated_wait.get_or_insert_with(Instant::now).elapsed()
                         >= policy.terminal_deadline
                     {
-                        log::error!(
-                            "関連cleanupの進行確認が期限超過: handle={:?}",
-                            target.handle
-                        );
-                        mark_cleanup_reaper_critical(&context);
-                        return;
+                        // 期限超過は、共有stateの破損または世代fence不能の証明ではない。
+                        // 先行ownerの実行中／別reaper予約を改めて確認する。
+                        let owners = match context.related_cleanup_recovery_owners(target.handle) {
+                            Ok(owners) => owners,
+                            Err(error) => {
+                                log::error!("期限後の関連cleanup owner確認失敗: {error:?}");
+                                mark_cleanup_reaper_critical(&context);
+                                return;
+                            }
+                        };
+                        let mut other_owner_progressing = false;
+                        for (owner, active) in owners {
+                            if active {
+                                other_owner_progressing = true;
+                                break;
+                            }
+                            match pending.pending_value(&CleanupJobKey::from_handle(owner)) {
+                                Ok(Some(_)) => {
+                                    other_owner_progressing = true;
+                                    break;
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    log::error!("期限後のreaper予約確認失敗: {error:?}");
+                                    mark_cleanup_reaper_critical(&context);
+                                    return;
+                                }
+                            }
+                        }
+                        if !other_owner_progressing {
+                            // ownerが存在しないなら局所隔離を再試行する。
+                            // fenceを確定できない場合だけサービス停止へ昇格する。
+                            match crate::object_runtime::quarantine_drop_leak_object(&context, target.handle) {
+                                Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
+                                | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
+                                    if target.handle == origin.handle {
+                                        return;
+                                    }
+                                    target = origin;
+                                    attempt = 0;
+                                    delegated_wait = None;
+                                    continue;
+                                }
+                                Ok(crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup) => {
+                                    // 所有権が再取得中の競合。次回ownerを再評価する。
+                                }
+                                Err(error) => {
+                                    log::error!("関連cleanupの局所隔離不能: handle={:?} error={error:?}", target.handle);
+                                    mark_cleanup_reaper_critical(&context);
+                                    return;
+                                }
+                            }
+                        }
+                        // 有効な別ownerが物理cleanupを継続している間は、経過時間のみで
+                        // HAL全体を停止しない。元の義務を保持し、完了後に再判定する。
+                        delegated_wait = Some(Instant::now());
+                        log::warn!("関連cleanup ownerの処理継続を確認: handle={:?}", target.handle);
                     }
                     worker.wait_until(Instant::now().checked_add(Duration::from_millis(20)));
                     continue;
