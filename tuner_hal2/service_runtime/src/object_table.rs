@@ -615,16 +615,30 @@ impl RuntimeObjectTable {
             .any(|(id, gen)| self.object_close_txn.has_active_cleanup_attempt(id, gen)))
     }
 
-    pub(crate) fn has_descendant_outstanding_cleanup(
+    pub(crate) fn has_related_outstanding_cleanup(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<bool, RuntimeObjectTableError> {
-        self.entry_checked_any(object_id, generation)?;
-        Ok(self
+        let mut parent = self.entry_checked_any(object_id, generation)?.owner;
+        if self
             .descendant_object_keys(object_id, generation)
             .into_iter()
-            .any(|(id, gen)| self.object_close_txn.has_outstanding_obligation(id, gen)))
+            .any(|(id, gen)| self.object_close_txn.has_outstanding_obligation(id, gen))
+        {
+            return Ok(true);
+        }
+        // 先行して権限発行済みの親closeも、同じ子資源を回収できる。
+        for _ in 0..self.entries.len() {
+            let Some((_, id, gen)) = parent.referenced_object() else {
+                break;
+            };
+            if self.object_close_txn.has_outstanding_obligation(id, gen) {
+                return Ok(true);
+            }
+            parent = self.entry_checked_any(id, gen)?.owner;
+        }
+        Ok(false)
     }
 
     pub(crate) fn begin_quarantine_cleanup(
@@ -1064,6 +1078,46 @@ mod qg_object_lifecycle_tests {
         assert!(table
             .has_active_cleanup_attempt_in_cascade(AidlObjectId(100), AidlObjectGeneration(1))
             .expect("親の隔離時に子の実行中cleanupを検出"));
+    }
+
+    #[test]
+    fn issued_parent_authority_blocks_child_quarantine_before_side_effects() {
+        let mut table = RuntimeObjectTable::default();
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                150,
+                150,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("親Demux登録");
+        table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                151,
+                151,
+                RuntimeOwnerRelation::Demux {
+                    demux: AidlObjectId(150),
+                    generation: AidlObjectGeneration(1),
+                },
+            ))
+            .expect("子DVR登録");
+        table
+            .begin_close_cascade_with_cleanup_authority(
+                AidlObjectId(150),
+                AidlObjectGeneration(1),
+                CleanupStep::StopWorker,
+            )
+            .expect("親close権限発行、物理cleanupは未開始");
+        assert!(table
+            .has_related_outstanding_cleanup(AidlObjectId(151), AidlObjectGeneration(1))
+            .expect("親権限の検証"));
+        assert_eq!(
+            table.entry(AidlObjectId(151)).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closing {
+                step: CleanupStep::StopWorker
+            }
+        );
     }
 
     #[test]
