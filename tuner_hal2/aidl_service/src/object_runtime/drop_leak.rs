@@ -124,8 +124,8 @@ pub(crate) fn quarantine_drop_leak_object(
         .into_result()
         .map_err(status_from_hal_error)?;
 
-    // ObjectCloseTxn was reserved under the runtime lock before any external
-    // cleanup. A notifier may join before or after this physical report.
+    // 外部cleanup前にruntime lock下でObjectCloseTxnへ義務を登録済み。
+    // 通知workerのjoinと物理cleanup reportは、どちらが先でも許容する。
     {
         let mut runtime =
             TunerServiceRuntime::lock_shared(&runtime_handle, "Drop漏れ後片付け完了確定")
