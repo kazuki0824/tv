@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - "tuner_hal2/tools/**"
+      - "tuner_hal2/common/**"
+      - "tuner_hal2/demux/**"
+      - "tuner_hal2/service_runtime/**"
+      - "tuner_hal2/host_ci/**"
       - "tuner_hal2/Android.bp"
       - "tuner_hal2/init/mediatuner-trm-lifecycle.rc"
       - "tuner_hal2/config/vts_channel_plan*.json"
@@ -19,6 +23,10 @@ on:
     branches: [main]
     paths:
       - "tuner_hal2/tools/**"
+      - "tuner_hal2/common/**"
+      - "tuner_hal2/demux/**"
+      - "tuner_hal2/service_runtime/**"
+      - "tuner_hal2/host_ci/**"
       - "tuner_hal2/Android.bp"
       - "tuner_hal2/init/mediatuner-trm-lifecycle.rc"
       - "tuner_hal2/config/vts_channel_plan*.json"

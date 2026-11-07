@@ -136,6 +136,8 @@ VTS/product configは `../TUNER_HAL_DESIGN_JA.md` の現行capabilityをその�
 
 ### 6.1 単一VtsEnvironmentProfileファイルと依存方向
 
+資源閉包を検査するprofile CLIのホストにはCargoとRustコンパイラを用意する。検査は既存host crateの本番依存をビルドするため、Cargoの依存キャッシュまたはレジストリへのアクセスが必要になる。
+
 `VtsEnvironmentProfile` は論理概念だけではなく、対象productごとに実在する単一設定ファイルとする。VTS環境に関して人間またはCLIが保存する設定はこの1ファイルだけを正本とし、1回のVTS構成生成で複数のprofileファイル、product makefileの個別変数、生成済みXMLの手編集値を合成して1個の論理profileを作ってはならない。serialization形式と物理pathは実装詳細として一意に選んでよいが、同じproduct/profileについて複数の人間編集設定ファイルを設けてはならない。
 
 対話CLIはこの同一ファイルを生成・読み込み・更新する。地域から生成した受信候補、実機接続後に解決したfrequency / service / PAT / PMT / PIDに由来する具体値も、別のderived-resolution設定ファイルへ分離せず、同じ`VtsEnvironmentProfile`ファイルへ保存する。生成AOSP Tuner VTS XMLはderived artifactであり、この設定ファイルと同格の正本ではない。

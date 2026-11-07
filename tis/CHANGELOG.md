@@ -212,6 +212,11 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 - 後続の不正行を読まない先頭候補、候補が空の場合のunrated fallback、query失敗伝播をAndroid 15 Robolectricで検査する。TvProviderの選択順序、EIT優先、content rating/unblock identityの規範は変更しない。
 - 独立したstate、helper owner、worker、容量予算は追加しない。Android製品build・実機TvProviderでの照合は未実施。
 
+# 2026-10-30 Section overflowの重複述語試験を削除
+
+- callback内の既存bitmask式へ戻し、委譲だけのsectionFilterStatusIsOverflowと単独試験を削除する。実Filter callback・複合status・旧Filter/世代の隔離は既存TunerFrontendLeaseTransitionTestを正本とし、新しいhelper・状態・試験基盤を追加しない。
+- host試験の期待件数を413から412へ更新する。挙動を変えず、試験はCIで実行する。
+
 # 2026-10-29 現在番組選択の整列責務の記述を訂正
 
 - DESIGNの「cursor返却順に依存しない」という記述を、TvProviderへ指定したsort orderで返された行から、サービス照合を通過した先頭行を選ぶ契約へ訂正した。Kotlin側で再整列しないことを明記した。
@@ -1798,8 +1803,3 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 ## CIレビュー追補
 
 - 旧PES時刻テストの削除後に残った未使用型を削除し、QodanaのUnusedSymbol 3件を解消する。字幕時刻の実経路は変更しない。
-
-# 2026-10-30 Section overflowの重複述語試験を削除
-
-- callback内の既存bitmask式へ戻し、委譲だけのsectionFilterStatusIsOverflowと単独試験を削除する。実Filter callback・複合status・旧Filter/世代の隔離は既存TunerFrontendLeaseTransitionTestを正本とし、新しいhelper・状態・試験基盤を追加しない。
-- host試験の期待件数を413から412へ更新する。挙動を変えず、試験はCIで実行する。

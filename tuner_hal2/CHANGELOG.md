@@ -1,3 +1,8 @@
+# 2026-11-08 VTS資源検査とAIDLの回収試験を修正
+
+- VTS profileの資源検査は既存host crateの本番型とcapability選択を参照する。現行本番ソースの生成Rustをコンパイル・実行する試験を既存CIへ追加し、ホストのCargo依存を統合手順へ記載する。
+- Frontend回収試験で既存executorを実行して完了権限を取得し、別crateのprivate field参照を除く。Android Soong／atestは未実施。
+
 # 2026-10-31 worker終端とwake受付の競合を修正
 
 - 既存WorkerWakeのatomic通知状態へ閉鎖bitを統合し、終端observerより前に受付を閉じる。追加されたcompletion mutexでの通知判定を置き換え、CODE_CONVENTIONの非汚染通知契約を維持する。

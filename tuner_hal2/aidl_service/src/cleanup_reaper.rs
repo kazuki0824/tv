@@ -241,6 +241,81 @@ pub(crate) fn start_cleanup_reaper(
 #[cfg(test)]
 mod tests {
 
+    // 競合の検査対象は実ObjectCloseTxn。物理操作の成功は既存executor境界から注入する。
+    fn simulated_cleanup_completion(
+        attempt: maleicacid_tuner_hal2_service_runtime::ObjectCloseCleanupAttempt,
+    ) -> maleicacid_tuner_hal2_service_runtime::CloseCleanupAttemptCompletion {
+        use maleicacid_tuner_hal2_service_runtime::{
+            ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCloseCleanupFailure,
+            ObjectCloseRuntimeExecutor, ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor,
+            ObjectRuntimeCleanupCommand,
+        };
+
+        struct SuccessfulCleanup;
+        impl ObjectCloseRuntimeExecutor for SuccessfulCleanup {
+            fn execute_runtime_cleanup(
+                &mut self,
+                _: ObjectRuntimeCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                Ok(())
+            }
+        }
+        impl ObjectDomainCleanupExecutor for SuccessfulCleanup {
+            fn execute_frontend_cleanup(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
+                Ok(())
+            }
+            fn execute_lnb_cleanup(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
+                Ok(())
+            }
+            fn execute_lnb_drop_leak_record(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
+                Ok(())
+            }
+        }
+        impl ObjectArtifactCleanupExecutor for SuccessfulCleanup {
+            fn execute_owner_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                Ok(())
+            }
+            fn execute_descendant_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                Ok(())
+            }
+            fn execute_lnb_owner_loss_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                Ok(())
+            }
+            fn execute_dvr_status_notifier_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                Ok(())
+            }
+        }
+        let (completion, report) = attempt.execute_cleanup_report_with_executor(
+            &mut SuccessfulCleanup,
+            &mut SuccessfulCleanup,
+            &mut SuccessfulCleanup,
+        );
+        assert!(report.into_result().is_ok());
+        completion
+    }
+
+
     #[test]
     fn poisoned_owner_slot_rejects_enqueue_with_identity() {
         let queue = CleanupReaperQueue::from_snapshot(
@@ -331,7 +406,7 @@ mod tests {
             .expect("最初のcleanup試行開始が成功する");
         finish_object_close_use_case(
             &mut runtime,
-            attempt.completion,
+            simulated_cleanup_completion(attempt),
             Err(ObjectCloseCleanupFailure::new(
                 CleanupStep::ReleaseBackend,
                 HalError::cleanup_failed(

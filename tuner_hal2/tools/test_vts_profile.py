@@ -194,6 +194,9 @@ class VtsProfileTest(unittest.TestCase):
         with self.assertRaises(ProfileError):
             validate_profile(profile)
 
+    def test_resource_closure_compiles_and_checks_production_rust(self) -> None:
+        validate_resource_closure(self.profile())
+
     def test_resource_closure_uses_production_rust_ssot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "capability_snapshot.rs"
