@@ -935,6 +935,15 @@ mod tests {
 
     #[test]
     fn issued_but_unstarted_parent_cleanup_progresses_without_public_retry() {
+        parent_cleanup_delegation_case(false);
+    }
+
+    #[test]
+    fn expired_origin_does_not_grant_a_new_deadline_to_unstarted_parent() {
+        parent_cleanup_delegation_case(true);
+    }
+
+    fn parent_cleanup_delegation_case(expired: bool) {
         use maleicacid_tuner_hal2_domain_request::{
             AidlApi, AidlMethodCall, DvrOpenKind, OpenDvrRequest,
         };
@@ -999,6 +1008,7 @@ mod tests {
             parent.generation(),
         );
         let child_handle = AidlObjectHandle::new(AidlObjectKind::Dvr, child_id, generation);
+        let failure = runtime.lock().unwrap().failure_state();
         let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
         assert_eq!(
             crate::object_runtime::quarantine_drop_leak_object(&context, child_handle)
@@ -1029,15 +1039,26 @@ mod tests {
             .enqueue_reserved(
                 CleanupJob {
                     handle: child_handle,
-                    registered_at: Instant::now() - Duration::from_millis(275),
+                    registered_at: Instant::now()
+                        - Duration::from_millis(if expired { 550 } else { 275 }),
                 },
                 [(CleanupJobKey::from_handle(child_handle), dependency)],
             )
             .expect("子reaperが唯一の予約枠を保持する");
 
         for _ in 0..200 {
-            if context.cleanup_retry_disposition(parent_handle)
-                == Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
+            if expired && failure.snapshot().service_critical {
+                assert_eq!(
+                    context.cleanup_retry_disposition(parent_handle),
+                    Ok(AidlObjectCleanupDisposition::RequiresIsolation)
+                );
+                return;
+            }
+            if !expired
+                && context.cleanup_retry_disposition(parent_handle)
+                    == Ok(
+                        maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed,
+                    )
                 && context.cleanup_retry_disposition(child_handle)
                     == Ok(
                         maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed,
@@ -1047,7 +1068,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        panic!("外部APIの再呼出しなしに親の未開始cleanupを自律完了できませんでした");
+        panic!("元の予約期限に応じた親cleanupの完了または全体停止に到達しませんでした");
     }
 
     #[test]

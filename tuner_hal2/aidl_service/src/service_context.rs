@@ -415,7 +415,8 @@ impl AidlServiceContext {
                 return result;
             }
             match self.cleanup_retry_disposition(handle) {
-                Ok(disposition) if disposition.recovery_settled() => return Ok(()),
+                Ok(AidlObjectCleanupDisposition::QuarantineSupervised) => return Ok(()),
+                Ok(disposition) if disposition.recovery_settled() => return result,
                 Ok(AidlObjectCleanupDisposition::QuarantineAwaitingReport) => {
                     let watched = self
                         .cleanup_reaper_queue
