@@ -1170,6 +1170,84 @@ mod qg_object_lifecycle_tests {
     }
 
     #[test]
+    fn failed_quarantine_completion_keeps_cleanup_obligation() {
+        let mut table = RuntimeObjectTable::default();
+        let root = AidlObjectId(9913);
+        let child = AidlObjectId(9914);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(AidlObjectKind::Demux, 9913, 9913, RuntimeOwnerRelation::Root))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                9914,
+                9914,
+                RuntimeOwnerRelation::Demux {
+                    demux: root,
+                    generation,
+                },
+            ))
+            .unwrap();
+        table
+            .begin_quarantine_cleanup(root, generation, [(child, generation)])
+            .unwrap();
+        // 回収reportの受領前に子のlifecycle検査が失敗しても、義務は残る。
+        table.entry_mut_checked_any(child, generation).unwrap().lifecycle =
+            RuntimeObjectLifecycle::Live;
+        assert!(table
+            .finish_quarantined_cleanup_report(root, generation, &[])
+            .is_err());
+        assert!(table.object_close_txn.has_outstanding_obligation(root, generation));
+        table.entry_mut_checked_any(child, generation).unwrap().lifecycle =
+            RuntimeObjectLifecycle::Quarantined;
+        table
+            .finish_quarantined_cleanup_report(root, generation, &[])
+            .unwrap();
+        assert_eq!(table.entry(root).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
+        assert_eq!(table.entry(child).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
+        assert!(!table.object_close_txn.has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
+    fn failed_notifier_completion_does_not_erase_cleanup_obligation() {
+        let mut table = RuntimeObjectTable::default();
+        let root = AidlObjectId(9915);
+        let child = AidlObjectId(9916);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(AidlObjectKind::Demux, 9915, 9915, RuntimeOwnerRelation::Root))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                9916,
+                9916,
+                RuntimeOwnerRelation::Demux {
+                    demux: root,
+                    generation,
+                },
+            ))
+            .unwrap();
+        table
+            .begin_quarantine_cleanup(root, generation, [(child, generation)])
+            .unwrap();
+        table
+            .finish_quarantined_cleanup_report(root, generation, &[(child, generation)])
+            .unwrap();
+        table.entry_mut_checked_any(child, generation).unwrap().lifecycle =
+            RuntimeObjectLifecycle::Live;
+        assert!(table.notify_supervised_dvr_joined(child, generation).is_err());
+        assert!(table.object_close_txn.has_outstanding_obligation(root, generation));
+        table.entry_mut_checked_any(child, generation).unwrap().lifecycle =
+            RuntimeObjectLifecycle::Quarantined;
+        table.notify_supervised_dvr_joined(child, generation).unwrap();
+        assert_eq!(table.entry(root).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
+        assert_eq!(table.entry(child).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
+        assert!(!table.object_close_txn.has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
     fn issued_parent_cleanup_is_selected_for_autonomous_retry() {
         let mut table = RuntimeObjectTable::default();
         let parent = AidlObjectId(993);
