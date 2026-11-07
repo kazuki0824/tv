@@ -599,17 +599,21 @@ impl<T> WorkerRuntime<T> {
         }
     }
 
-    pub fn join(mut self) -> WorkerTerminalResult<T> {
+    pub fn join(self) -> WorkerTerminalResult<T> {
+        match self.join_with_result() {
+            Ok(terminal) => terminal,
+            Err(failure) => failure.into_terminal_result("WorkerRuntime"),
+        }
+    }
+
+    pub fn join_with_result(mut self) -> Result<WorkerTerminalResult<T>, WorkerRuntimeOwnerFailure> {
         let Some(handle) = self.handle.take() else {
-            return WorkerRuntimeOwnerFailure::ResultAlreadyCollected
-                .into_terminal_result("WorkerRuntime");
+            return Err(WorkerRuntimeOwnerFailure::ResultAlreadyCollected);
         };
         match handle.join_after_stop() {
-            Ok(Ok(result)) => result,
-            Err(failure) => failure.into_terminal_result("WorkerRuntime"),
-            Ok(Err(())) => {
-                WorkerRuntimeOwnerFailure::MissingReport.into_terminal_result("WorkerRuntime")
-            }
+            Ok(Ok(result)) => Ok(result),
+            Err(failure) => Err(failure),
+            Ok(Err(())) => Err(WorkerRuntimeOwnerFailure::MissingReport),
         }
     }
 }

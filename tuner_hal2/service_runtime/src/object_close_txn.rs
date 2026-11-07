@@ -521,11 +521,6 @@ pub fn drop_leak_cleanup_supervised_targets(
 }
 
 /// 元の真偽判定を確認する単体テスト専用の入口。
-#[cfg(test)]
-fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionReport) -> bool {
-    drop_leak_cleanup_supervised_targets(report).is_some()
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectCleanupDiagnosticKind {
     Close,
@@ -608,10 +603,9 @@ pub struct CloseCleanupAuthority {
 /// 通知workerをSupervisorへ移管した後も、完了義務は既存ObjectCloseTxnが保持する。
 /// 別の所有台帳は設けない。
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct QuarantinedCleanupProgress {
-    candidate_notifiers: BTreeMap<(AidlObjectId, AidlObjectGeneration), bool>,
-    report_accepted: bool,
-    pending_notifiers: BTreeSet<(AidlObjectId, AidlObjectGeneration)>,
+enum QuarantinedCleanupProgress {
+    AwaitingReport(BTreeMap<(AidlObjectId, AidlObjectGeneration), bool>),
+    AwaitingJoins(BTreeSet<(AidlObjectId, AidlObjectGeneration)>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -763,9 +757,40 @@ impl ObjectCloseCleanupAttempt {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ObjectDropLeakQuarantinePlan {
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
     cascade_entries: Vec<RuntimeObjectEntry>,
     artifact_cleanup_commands: Vec<ObjectArtifactCleanupCommand>,
     domain_cleanup_commands: Vec<ObjectDomainCleanupCommand>,
+}
+
+#[must_use]
+pub struct QuarantineCleanupReport {
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    report: ObjectCleanupExecutionReport,
+}
+
+impl QuarantineCleanupReport {
+    pub fn report(&self) -> &ObjectCleanupExecutionReport {
+        &self.report
+    }
+
+    pub fn finish(self, runtime: &mut TunerServiceRuntime) -> Result<bool, HalError> {
+        let supervised = drop_leak_cleanup_supervised_targets(&self.report);
+        if supervised.is_none() {
+            self.report.into_result().map_err(ObjectCloseCleanupFailure::into_error)?;
+        }
+        runtime
+            .object_table_mut()
+            .finish_quarantined_cleanup_report(
+                self.object_id,
+                self.generation,
+                supervised.as_deref().unwrap_or(&[]),
+            )
+            .map_err(object_table_error_to_hal)?;
+        Ok(supervised.is_some())
+    }
 }
 
 impl ObjectDropLeakQuarantinePlan {
@@ -774,13 +799,15 @@ impl ObjectDropLeakQuarantinePlan {
         runtime_executor: &mut R,
         domain_executor: &mut D,
         artifact_executor: &mut A,
-    ) -> ObjectCleanupExecutionReport
+    ) -> QuarantineCleanupReport
     where
         R: ObjectCloseRuntimeExecutor,
         D: ObjectDomainCleanupExecutor,
         A: ObjectArtifactCleanupExecutor,
     {
         let Self {
+            object_id,
+            generation,
             cascade_entries,
             artifact_cleanup_commands,
             domain_cleanup_commands,
@@ -803,7 +830,7 @@ impl ObjectDropLeakQuarantinePlan {
             )
             .execute_outcome_with(runtime_executor),
         );
-        report
+        QuarantineCleanupReport { object_id, generation, report }
     }
 }
 
@@ -1106,14 +1133,12 @@ impl ObjectCloseTxn {
         if obligation.obligation_id != authority.obligation_id {
             return Err(ObjectCloseTxnStateError::InvalidAuthority);
         }
-        obligation.quarantine = Some(QuarantinedCleanupProgress {
-            candidate_notifiers: notifier_candidates
+        obligation.quarantine = Some(QuarantinedCleanupProgress::AwaitingReport(
+            notifier_candidates
                 .into_iter()
                 .map(|key| (key, false))
                 .collect(),
-            report_accepted: false,
-            pending_notifiers: BTreeSet::new(),
-        });
+        ));
         Ok(())
     }
 
@@ -1132,28 +1157,25 @@ impl ObjectCloseTxn {
         if obligation.generation != generation || obligation.active_attempt.is_some() {
             return Err(ObjectCloseTxnStateError::InvalidAuthority);
         }
-        let progress = obligation
-            .quarantine
-            .as_mut()
-            .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
-        if progress.report_accepted {
+        let Some(QuarantinedCleanupProgress::AwaitingReport(candidates)) =
+            obligation.quarantine.as_ref()
+        else {
             return Err(ObjectCloseTxnStateError::InvalidAuthority);
-        }
+        };
         let mut outstanding = BTreeSet::new();
         for key in pending {
-            let joined = progress
-                .candidate_notifiers
+            let joined = candidates
                 .get(key)
                 .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
             if !*joined {
                 outstanding.insert(*key);
             }
         }
-        progress.pending_notifiers = outstanding;
-        progress.report_accepted = true;
-        let finished = progress.pending_notifiers.is_empty();
+        let finished = outstanding.is_empty();
         if finished {
             self.obligations.remove(&object_id);
+        } else {
+            obligation.quarantine = Some(QuarantinedCleanupProgress::AwaitingJoins(outstanding));
         }
         Ok(finished)
     }
@@ -1167,11 +1189,13 @@ impl ObjectCloseTxn {
         self.obligations
             .iter()
             .filter_map(|(object_id, obligation)| {
-                let progress = obligation.quarantine.as_ref()?;
-                (progress.report_accepted
-                    && progress.pending_notifiers.len() == 1
-                    && progress.pending_notifiers.contains(&notifier))
-                .then_some((*object_id, obligation.generation))
+                let QuarantinedCleanupProgress::AwaitingJoins(pending) =
+                    obligation.quarantine.as_ref()?
+                else {
+                    return None;
+                };
+                (pending.len() == 1 && pending.contains(&notifier))
+                    .then_some((*object_id, obligation.generation))
             })
             .collect()
     }
@@ -1184,15 +1208,18 @@ impl ObjectCloseTxn {
     ) -> Vec<(AidlObjectId, AidlObjectGeneration)> {
         let mut finished = Vec::new();
         for (object_id, obligation) in &mut self.obligations {
-            let Some(progress) = obligation.quarantine.as_mut() else {
-                continue;
-            };
-            if let Some(joined) = progress.candidate_notifiers.get_mut(&notifier) {
-                *joined = true;
-                progress.pending_notifiers.remove(&notifier);
-                if progress.report_accepted && progress.pending_notifiers.is_empty() {
-                    finished.push((*object_id, obligation.generation));
+            match obligation.quarantine.as_mut() {
+                Some(QuarantinedCleanupProgress::AwaitingReport(candidates)) => {
+                    if let Some(joined) = candidates.get_mut(&notifier) {
+                        *joined = true;
+                    }
                 }
+                Some(QuarantinedCleanupProgress::AwaitingJoins(pending)) => {
+                    if pending.remove(&notifier) && pending.is_empty() {
+                        finished.push((*object_id, obligation.generation));
+                    }
+                }
+                None => {}
             }
         }
         for (object_id, _) in &finished {
@@ -1694,35 +1721,46 @@ pub fn quarantine_object_drop_leak_use_case(
         .filter_map(drop_leak_domain_cleanup_command_for_entry)
         .collect();
     Ok(Some(ObjectDropLeakQuarantinePlan {
+        object_id,
+        generation,
         cascade_entries,
         artifact_cleanup_commands,
         domain_cleanup_commands,
     }))
 }
 
-/// 成功済みの外部副作用を再実行せず、物理cleanup reportを確定する。
-/// cleanupの実行・完了権限は既存ObjectCloseTxnだけが保持する。
-pub fn finish_quarantined_cleanup_report_use_case(
-    runtime: &mut TunerServiceRuntime,
+/// Supervisorが所有する通知workerを消費し、joinの成功からだけ完了権限を発行する。
+#[must_use]
+pub struct DvrNotifierJoinCompletion {
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
-    pending: &[(AidlObjectId, AidlObjectGeneration)],
-) -> Result<(), HalError> {
-    runtime
-        .object_table_mut()
-        .finish_quarantined_cleanup_report(object_id, generation, pending)
-        .map_err(object_table_error_to_hal)
 }
 
-pub fn notify_supervised_dvr_joined_use_case(
-    runtime: &mut TunerServiceRuntime,
-    object_id: AidlObjectId,
-    generation: AidlObjectGeneration,
-) -> Result<(), HalError> {
-    runtime
-        .object_table_mut()
-        .notify_supervised_dvr_joined(object_id, generation)
-        .map_err(object_table_error_to_hal)
+impl DvrNotifierJoinCompletion {
+    pub fn join(
+        worker: crate::WorkerRuntime<()>,
+    ) -> (crate::ClassifiedWorkerTerminalResult<()>, Option<Self>) {
+        let object_id = AidlObjectId(worker.owner_id());
+        let generation = AidlObjectGeneration(worker.generation());
+        let (terminal, completion) = match worker.join_with_result() {
+            Ok(terminal) => (terminal, Some(Self { object_id, generation })),
+            Err(error) => (error.into_terminal_result("DVR notifier"), None),
+        };
+        (
+            crate::WorkerFailureClassifier::classify_terminal(
+                terminal,
+                "DVR通知workerをjoinできませんでした",
+            ),
+            completion,
+        )
+    }
+
+    pub fn finish(self, runtime: &mut TunerServiceRuntime) -> Result<(), HalError> {
+        runtime
+            .object_table_mut()
+            .notify_supervised_dvr_joined(self.object_id, self.generation)
+            .map_err(object_table_error_to_hal)
+    }
 }
 
 pub(crate) fn quarantine_object_cascade(
@@ -1742,6 +1780,26 @@ mod tests {
     use crate::{RuntimeObjectEntry, RuntimeOwnerRelation};
     use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlObjectKind, CommandPlan};
     use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
+
+    #[test]
+    fn failed_dvr_worker_can_prove_successful_join() {
+        let worker = crate::WorkerRuntime::<()>::spawn(
+            "dvr-join-regression".to_string(),
+            17,
+            2,
+            |_| Err(HalError::cleanup_failed("DVR通知", "異常終了を注入")),
+            || {},
+        )
+        .unwrap();
+        let (terminal, completion) = DvrNotifierJoinCompletion::join(worker);
+        assert!(matches!(
+            terminal,
+            crate::ClassifiedWorkerTerminalResult::Failure { .. }
+        ));
+        let completion = completion.expect("業務結果が失敗でもjoinは完了する");
+        assert_eq!(completion.object_id, AidlObjectId(17));
+        assert_eq!(completion.generation, AidlObjectGeneration(2));
+    }
 
     #[test]
     fn product_capacity_saturates_after_real_open_close_before_reaper_group_release() {
@@ -2302,7 +2360,7 @@ mod tests {
         };
         let mut report = ObjectCleanupExecutionReport::new();
         report.push(pending);
-        assert!(!drop_leak_cleanup_is_supervised_pending(&report));
+        assert_eq!(drop_leak_cleanup_supervised_targets(&report), None);
 
         let mut safe = ObjectCleanupExecutionReport::new();
         safe.push(report.outcomes()[0].clone());
@@ -2320,7 +2378,10 @@ mod tests {
             }],
             result: Ok(()),
         });
-        assert!(drop_leak_cleanup_is_supervised_pending(&safe));
+        assert_eq!(
+            drop_leak_cleanup_supervised_targets(&safe),
+            Some(vec![(AidlObjectId(17), AidlObjectGeneration(2))])
+        );
         safe.push(ObjectCleanupStepOutcome::Artifact {
             kind: ObjectArtifactCleanupKind::OwnerCallbackRegistration,
             target: ObjectCleanupObjectTarget::new(
@@ -2334,7 +2395,7 @@ mod tests {
                 HalError::cleanup_failed("callback store", "解除失敗"),
             )),
         });
-        assert!(!drop_leak_cleanup_is_supervised_pending(&safe));
+        assert_eq!(drop_leak_cleanup_supervised_targets(&safe), None);
     }
 
     #[test]
