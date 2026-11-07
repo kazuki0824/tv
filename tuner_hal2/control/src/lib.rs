@@ -1298,6 +1298,17 @@ where
         self.enqueue_with_reservation(job, reservation)
     }
 
+    /// 予約の正本から監視用の値を写し、呼出側へlockを持ち出さない。
+    pub fn pending_snapshot(&self) -> Result<Vec<V>, maleicacid_tuner_hal2_common::HalError> {
+        Ok(self
+            .pending
+            .lock_state()?
+            .entries
+            .values()
+            .cloned()
+            .collect())
+    }
+
     pub fn pending_value(
         &self,
         key: &K,
