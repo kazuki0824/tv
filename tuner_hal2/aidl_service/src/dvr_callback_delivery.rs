@@ -1039,7 +1039,10 @@ pub(crate) fn dvr_notifier_supervised_cleanup_complete(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) -> Result<bool, HalError> {
-    match context.dvr_status_notifier_supervisor().signal_stop(handle)? {
+    match context
+        .dvr_status_notifier_supervisor()
+        .signal_stop(handle)?
+    {
         DvrStatusNotifierStopDisposition::Complete => Ok(true),
         DvrStatusNotifierStopDisposition::StartPending
         | DvrStatusNotifierStopDisposition::ReaperPending => Ok(false),
