@@ -944,7 +944,9 @@ fn enqueue_cleanup_retry_after_notifier_reap(
                     "隔離済みobjectの物理回収完了を証明できません",
                 ),
             );
-            mark_dvr_notifier_service_critical(context);
+            if !dvr_notifier_owner_generation_is_fenced(context, handle) {
+                mark_dvr_notifier_service_critical(context);
+            }
         }
         Err(error) => {
             record_dvr_notifier_cleanup_control_failure(context, handle, error);
