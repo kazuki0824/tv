@@ -375,79 +375,91 @@ mod tests {
 
     #[test]
     fn issued_but_unstarted_parent_cleanup_progresses_without_public_retry() {
-        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
-        use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
+        use maleicacid_tuner_hal2_domain_request::{
+            AidlApi, AidlMethodCall, DvrOpenKind, OpenDvrRequest,
+        };
         use maleicacid_tuner_hal2_service_runtime::{
-            close_object_use_case, RuntimeObjectEntry, RuntimeOwnerRelation, TunerServiceRuntime,
+            close_object_use_case, ObjectMethodUseCase, TunerServiceRuntime,
         };
         use std::sync::Mutex;
 
-        let mut runtime = TunerServiceRuntime::new();
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         let parent = runtime
+            .lock()
+            .unwrap()
             .root_open_txn()
             .open_demux_root_object(AidlMethodCall::PublicApi {
                 object: AidlObjectKind::Tuner,
                 api: AidlApi::TunerOpenDemux,
             })
             .expect("親Demuxを開く");
-        let child_id = AidlObjectId(977);
-        let generation = parent.generation();
-        let live = runtime
-            .object_table()
-            .entry(parent.object_id())
-            .expect("親はLive")
-            .lifecycle;
-        runtime
-            .object_table_mut()
-            .insert(RuntimeObjectEntry {
-                last_reference_ended: false,
-                object_kind: AidlObjectKind::Filter,
-                object_id: child_id,
-                generation,
-                ledger_id: LedgerId(977),
-                ledger_generation: LedgerGeneration(1),
-                owner: RuntimeOwnerRelation::Demux {
-                    demux: parent.object_id(),
-                    generation,
-                },
-                lifecycle: live,
-            })
-            .expect("子の公開登録");
-        // 子は隔離済みで親closeが物理処理すべき対象は親だけとする。
-        runtime
-            .object_table_mut()
-            .quarantine_cascade(child_id, generation)
-            .expect("子を隔離");
-        let _unstarted = close_object_use_case(
-            &mut runtime,
+        let child = ObjectMethodUseCase::execute_after_live(
+            &runtime,
             parent.object_id(),
-            generation,
+            parent.generation(),
+            AidlObjectKind::Demux,
+            || -> Result<_, HalError> {
+                let request = OpenDvrRequest {
+                    kind: DvrOpenKind::Playback,
+                    buffer_size: 188,
+                };
+                Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
+            },
+            |runtime, dispatch, request| {
+                runtime
+                    .child_open_txn()
+                    .open_dvr_child_runtime_for_demux_object(
+                        parent.object_id(),
+                        parent.generation(),
+                        request,
+                        dispatch,
+                    )
+            },
+        )
+        .expect("子DVRを正規open");
+        let child_id = child.runtime_entry.object_id();
+        let generation = child.runtime_entry.generation();
+        runtime
+            .lock()
+            .unwrap()
+            .commit_prepared_child_object(child_id, generation)
+            .expect("子DVRを公開確定");
+
+        let _unstarted = close_object_use_case(
+            &mut runtime.lock().unwrap(),
+            parent.object_id(),
+            parent.generation(),
             AidlObjectKind::Demux,
             AidlMethodCall::DemuxClose,
         )
-        .expect("親close権限は発行したが物理cleanupは未開始");
-        let parent_handle =
-            AidlObjectHandle::new(AidlObjectKind::Demux, parent.object_id(), generation);
-        let child_handle = AidlObjectHandle::new(AidlObjectKind::Filter, child_id, generation);
-        let context =
-            AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
+        .expect("親close権限だけを発行し、物理cleanupは開始しない");
+        let parent_handle = AidlObjectHandle::new(
+            AidlObjectKind::Demux,
+            parent.object_id(),
+            parent.generation(),
+        );
+        let child_handle = AidlObjectHandle::new(AidlObjectKind::Dvr, child_id, generation);
+        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
         assert_eq!(
             crate::object_runtime::quarantine_drop_leak_object(&context, child_handle)
-                .expect("親ownerへの委譲"),
+                .expect("親ownerとの競合拒否"),
             crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup
         );
         assert!(context
             .ensure_related_cleanup_progress(child_handle)
             .expect("親のreaper投入を保証"));
+
         for _ in 0..200 {
             if context.cleanup_retry_disposition(parent_handle)
                 == Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
+                && context.cleanup_retry_disposition(child_handle)
+                    == Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
             {
                 return;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        panic!("公開closeを再呼出しせず親の未開始cleanupを自律回収できませんでした");
+        panic!("外部APIの再呼出しなしに親の未開始cleanupを自律完了できませんでした");
     }
 
     #[test]
