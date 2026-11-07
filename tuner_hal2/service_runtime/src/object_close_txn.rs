@@ -2002,6 +2002,54 @@ mod tests {
     }
 
     #[test]
+    fn quarantine_handoff_completion_is_order_independent() {
+        let root = AidlObjectId(430);
+        let generation = AidlObjectGeneration(1);
+        let notifier = (AidlObjectId(431), generation);
+        let mut txn = ObjectCloseTxn::new();
+        txn.begin_quarantined_cleanup(root, generation, [notifier])
+            .expect("回収対象を一度だけ登録");
+        assert!(!txn
+            .accept_quarantine_cleanup_report(root, generation, &[notifier])
+            .expect("後片付けreportを登録"));
+        assert!(txn.has_outstanding_obligation(root, generation));
+        assert!(txn.issue_cleanup_authority(root, generation).is_err());
+        assert_eq!(txn.notifier_joined(notifier), vec![(root, generation)]);
+        assert!(!txn.has_outstanding_obligation(root, generation));
+        assert!(txn.notifier_joined(notifier).is_empty());
+
+        // A fast Supervisor can complete before the last physical report.
+        let mut txn = ObjectCloseTxn::new();
+        txn.begin_quarantined_cleanup(root, generation, [notifier])
+            .expect("次のテストownerを登録");
+        assert!(txn.notifier_joined(notifier).is_empty());
+        assert!(txn.has_outstanding_obligation(root, generation));
+        assert!(txn
+            .accept_quarantine_cleanup_report(root, generation, &[notifier])
+            .expect("先に届いたjoinを保持して完了を認める"));
+        assert!(!txn.has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
+    fn quarantine_handoff_cannot_be_finished_by_a_different_generation() {
+        let root = AidlObjectId(440);
+        let generation = AidlObjectGeneration(1);
+        let notifier = (AidlObjectId(441), generation);
+        let mut txn = ObjectCloseTxn::new();
+        txn.begin_quarantined_cleanup(root, generation, [notifier])
+            .expect("後片付けowner登録");
+        assert!(!txn
+            .accept_quarantine_cleanup_report(root, generation, &[notifier])
+            .expect("Worker回収を待つ"));
+        assert!(txn
+            .notifier_joined((AidlObjectId(441), AidlObjectGeneration(2)))
+            .is_empty());
+        assert!(txn.has_outstanding_obligation(root, generation));
+        assert_eq!(txn.notifier_joined(notifier), vec![(root, generation)]);
+        assert!(!txn.has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
     fn supervised_notifier_handoff_requires_matching_unregister_and_no_other_failures() {
         let pending = ObjectCleanupStepOutcome::Artifact {
             kind: ObjectArtifactCleanupKind::DvrStatusNotifier,
