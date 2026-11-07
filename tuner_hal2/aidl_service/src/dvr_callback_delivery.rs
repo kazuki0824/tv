@@ -1327,6 +1327,11 @@ mod tests {
             dvr_open.runtime_entry.object_id(),
             dvr_open.runtime_entry.generation(),
         );
+        runtime
+            .lock()
+            .unwrap()
+            .commit_prepared_child_object(handle.object_id(), handle.generation())
+            .expect("DVRを公開確定する");
         ObjectMethodUseCase::execute_after_live(
             &runtime,
             handle.object_id(),
