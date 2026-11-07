@@ -606,7 +606,9 @@ impl<T> WorkerRuntime<T> {
         }
     }
 
-    pub fn join_with_result(mut self) -> Result<WorkerTerminalResult<T>, WorkerRuntimeOwnerFailure> {
+    pub fn join_with_result(
+        mut self,
+    ) -> Result<WorkerTerminalResult<T>, WorkerRuntimeOwnerFailure> {
         let Some(handle) = self.handle.take() else {
             return Err(WorkerRuntimeOwnerFailure::ResultAlreadyCollected);
         };

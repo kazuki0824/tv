@@ -13,14 +13,15 @@ use maleicacid_tuner_hal2_common::{
 };
 use maleicacid_tuner_hal2_demux::DvrStatusEvent;
 use maleicacid_tuner_hal2_service_runtime::{
-    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, DvrNotifierJoinCompletion,
-    CapabilitySnapshot, ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
-    DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
-    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, TunerServiceRuntime, WorkerFailureClassifier,
-    WorkerRuntime, WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction,
-    WorkerRuntimeSupervisorActiveEntry, WorkerRuntimeSupervisorReapingEntry,
-    WorkerRuntimeSupervisorStartDisposition, WorkerRuntimeSupervisorStartOperation,
-    WorkerRuntimeSupervisorStopDisposition, WorkerTerminalResult,
+    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, CapabilitySnapshot,
+    ClassifiedWorkerTerminalResult, DvrNotifierJoinCompletion,
+    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationFailureKind,
+    DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
+    DvrStatusPollSnapshot, TunerServiceRuntime, WorkerFailureClassifier, WorkerRuntime,
+    WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction, WorkerRuntimeSupervisorActiveEntry,
+    WorkerRuntimeSupervisorReapingEntry, WorkerRuntimeSupervisorStartDisposition,
+    WorkerRuntimeSupervisorStartOperation, WorkerRuntimeSupervisorStopDisposition,
+    WorkerTerminalResult,
 };
 
 use crate::filter_callback_delivery::dispatch_filter_event_snapshots;
@@ -865,10 +866,10 @@ fn dvr_notifier_owner_generation_is_fenced(
     // ownerの世代/lifecycleだけを正本として、非Liveを明示的に確認する。
     use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
     match maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_disposition(
-            &runtime,
-            handle.object_id(),
-            handle.generation(),
-            handle.object_kind(),
+        &runtime,
+        handle.object_id(),
+        handle.generation(),
+        handle.object_kind(),
     ) {
         Ok(
             AidlObjectCleanupDisposition::Stale
@@ -1025,18 +1026,10 @@ fn finish_reaped_dvr_status_notifier(
     };
     record_dvr_status_notifier_lifecycle_outcome(&context, handle, record);
 
-    match cleanup_result {
-        Ok(()) if restart_requested => {
-            if let Err(error) = start_dvr_status_notifier(&context, handle) {
-                record_superseded_dvr_notifier_cleanup_failure(&context, handle, error);
-                fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
-            }
-        }
-        Ok(()) => {}
-        Err(error) => {
-            record_superseded_dvr_notifier_cleanup_failure(&context, handle, error);
-            fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
-        }
+    let restart = restart_requested && cleanup_result.is_ok();
+    if let Err(error) = cleanup_result {
+        record_superseded_dvr_notifier_cleanup_failure(&context, handle, error);
+        fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
     }
 
     // 実際のjoin成功だけがObjectCloseTxnの通知worker回収義務を満たす。
@@ -1052,6 +1045,12 @@ fn finish_reaped_dvr_status_notifier(
         }
     }
 
+    if restart {
+        if let Err(error) = start_dvr_status_notifier(&context, handle) {
+            record_superseded_dvr_notifier_cleanup_failure(&context, handle, error);
+            fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
+        }
+    }
     enqueue_cleanup_retry_after_notifier_reap(&context, handle);
 }
 
@@ -1435,7 +1434,8 @@ mod tests {
             handle.generation(),
             handle.object_kind(),
             AidlMethodCall::DvrClose,
-        ).unwrap();
+        )
+        .unwrap();
         let _attempt = plan.begin_cleanup_attempt(&mut guard).unwrap();
         let failure_state = guard.failure_state();
         drop(guard);
