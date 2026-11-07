@@ -1744,6 +1744,128 @@ mod tests {
     use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 
     #[test]
+    fn product_capacity_saturates_after_real_open_close_before_reaper_group_release() {
+        use crate::worker_runtime::{WorkerContext, WorkerRuntime};
+        use std::sync::{mpsc, Arc, Condvar, Mutex};
+        use std::time::Duration;
+
+        // 製品既定の公開能力・自動AIDL ID発行・正規Demux open/closeを使う。
+        // runnerは実close完了を確定した後でgroup解放直前だけ同期的に停止する。
+        let snapshot = crate::CapabilitySnapshot::product_default();
+        snapshot.validate_dependency_closures().unwrap();
+        let capacity = snapshot.cleanup_reaper_capacity;
+        assert_eq!(capacity, 176);
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        assert_eq!(runtime.lock().unwrap().capability_snapshot(), snapshot);
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker_gate = Arc::clone(&gate);
+        let worker_runtime = Arc::clone(&runtime);
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let runner = Arc::new(
+            move |(entry, completion): (RuntimeObjectEntry, CloseCleanupAttemptCompletion),
+                  _: _,
+                  _: WorkerContext| {
+                {
+                    let mut runtime = worker_runtime.lock().unwrap();
+                    runtime
+                        .validate_public_runtime_for_closed_aidl_entry(&entry)
+                        .unwrap();
+                    runtime
+                        .unregister_public_runtime_for_closed_aidl_entry(&entry)
+                        .unwrap();
+                    finish_object_close_use_case(&mut runtime, completion, Ok(())).unwrap();
+                    assert_eq!(
+                        runtime.object_table().entry(entry.object_id()).unwrap().lifecycle,
+                        crate::RuntimeObjectLifecycle::Closed
+                    );
+                }
+                finished_tx
+                    .send((entry.object_id(), entry.generation()))
+                    .unwrap();
+                // 正規runner終了後のpending.release_group直前でworkerが
+                // スケジューリング停止する区間を、同期ゲートで再現する。
+                let (lock, wake) = &*worker_gate;
+                let mut released = lock.lock().unwrap();
+                while !*released {
+                    released = wake.wait(released).unwrap();
+                }
+            },
+        );
+        let reaper = WorkerRuntime::start_reaper_queue::<
+            (AidlObjectId, AidlObjectGeneration),
+            CleanupStep,
+            (RuntimeObjectEntry, CloseCleanupAttemptCompletion),
+        >(capacity, "product-demux-close-overlap", runner)
+        .unwrap();
+        let mut distinct_ids = std::collections::BTreeSet::new();
+        for _ in 0..capacity {
+            let (entry, completion) = {
+                let mut runtime = runtime.lock().unwrap();
+                let entry = runtime
+                    .root_open_txn()
+                    .open_demux_root_object(AidlMethodCall::PublicApi {
+                        object: AidlObjectKind::Tuner,
+                        api: AidlApi::TunerOpenDemux,
+                    })
+                    .expect("公開Demux枠を再獲得");
+                let plan = close_object_use_case(
+                    &mut runtime,
+                    entry.object_id(),
+                    entry.generation(),
+                    AidlObjectKind::Demux,
+                    AidlMethodCall::DemuxClose,
+                )
+                .expect("正規close権限の発行");
+                let completion = plan
+                    .begin_cleanup_attempt(&mut runtime)
+                    .expect("cleanup実行権限の確保")
+                    .completion;
+                (entry, completion)
+            };
+            assert!(distinct_ids.insert(entry.object_id()));
+            let key = (entry.object_id(), entry.generation());
+            reaper
+                .enqueue_reserved(
+                    (entry, completion),
+                    [(key, CleanupStep::ReleaseBackend)],
+                )
+                .expect("製品容量までは正規reaperへ受付");
+            assert_eq!(
+                finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                key
+            );
+            assert!(reaper.pending_value(&key).unwrap().is_some());
+        }
+        // 全176件はpublic同時Liveではない。実open/closeでClosed確定済み、
+        // ただしworker内に留まる間は同世代の正規groupを返却できない。
+        let extra = {
+            let mut runtime = runtime.lock().unwrap();
+            runtime
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .expect("旧世代は閉じているため次のDemuxをopenできる")
+        };
+        assert!(distinct_ids.insert(extra.object_id()));
+        let capacity_error = reaper
+            .reserve_pending([(
+                (extra.object_id(), extra.generation()),
+                CleanupStep::ReleaseBackend,
+            )])
+            .err()
+            .expect("正規openから得た世代でも容量上限を超える");
+        let (lock, wake) = &*gate;
+        *lock.lock().unwrap() = true;
+        wake.notify_all();
+        assert!(matches!(
+            capacity_error,
+            maleicacid_tuner_hal2_common::HalError::Busy { .. }
+        ));
+    }
+
+    #[test]
     fn begin_close_cascade_moves_live_object_to_closing() {
         let mut runtime = TunerServiceRuntime::new();
         runtime
