@@ -411,8 +411,21 @@ impl AidlServiceContext {
                         Ok(owners) => {
                             for (owner, active) in owners {
                                 match self.cleanup_reaper_queue.has_pending(owner) {
-                                    Ok(queued) if active || queued => return Ok(()),
-                                    Ok(_) => {}
+                                    Ok(true) => return Ok(()),
+                                    Ok(false) => {
+                                        // active権限の存在は将来のcleanup完了保証ではない。
+                                        // 受付待ちの監督workerを正本reaper所有者に登録する。
+                                        match self.cleanup_reaper_queue.supervise_unqueued_owner(
+                                            Arc::downgrade(self),
+                                            owner,
+                                        ) {
+                                            Ok(()) => return Ok(()),
+                                            Err(watch_error) => {
+                                                log::error!("未予約のcleanup owner監督失敗: owner={owner:?} active={active} error={watch_error:?}");
+                                                break;
+                                            }
+                                        }
+                                    }
                                     Err(owner_error) => {
                                         log::error!("関連reaper owner照会失敗: {owner_error:?}");
                                         break;
