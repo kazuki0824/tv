@@ -1,3 +1,10 @@
+# 2026-11-07 PR #227 新規レビュー：受付容量・期限超過・Classifier正本追従
+
+- cleanup reaperの予約容量満杯をtyped`HalError::Busy`で通知し、既存retry scheduleに基づく有界受付再試行へ変更。容量不足だけで共有HALを停止せず、対象の局所隔離・既存ownerの進行証拠を評価し、fence不能な場合のみ全体停止へ進む。
+- 別のObjectCloseTxn ownerの処理が続く場合は、経過時間だけでServiceCriticalに昇格せず、ownerの正本進行・局所隔離可否を再判定する。期限超過後のactive ownerの遅延成功と、予約容量1でのBusy／解放後受付を検証する故障注入を追加。
+- WorkerFailureClassifierの既存規範アンカーへ公開入口2件を追記し、第二の分類表は追加しない。
+- Host Rust CI／Rust品質CIはチェック結果を参照。Android Soong／atest、AIDL VTS、CTS、実HAL再起動・Binder再接続は未実行。
+
 # 2026-11-07 PR #227 cleanup委譲・reaper予約容量・完了原子性の是正
 
 - `ObjectCloseTxn`の関連owner探索を対象自身・祖先・子孫へ統一し、削除済み`ancestor_cleanup_owner()`を参照していた回帰テストを改訂。既存権限の実行中／未開始を区別する。
