@@ -3,6 +3,11 @@
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
 - 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
 
+# 2026-11-08 VTS資源検査とAIDLの回収試験を修正
+
+- VTS profileの資源検査は既存host crateの本番型とcapability選択を参照する。現行本番ソースの生成Rustをコンパイル・実行する試験を既存CIへ追加し、ホストのCargo依存を統合手順へ記載する。
+- Frontend回収試験で既存executorを実行して完了権限を取得し、別crateのprivate field参照を除く。Android Soong／atestは未実施。
+
 # 2026-11-08 DVR通知workerの回収証明と受付回復猶予を是正
 
 - DVR通知workerはLiveな所有者のruntimeが発行した起動権限から生成し、実join後に同じ登録を照合する。同じID・世代の別workerから隔離を完了できない。
@@ -107,11 +112,6 @@
 - `ObjectCloseTxn`の実行中権限を対象・祖先・子孫まで検査し、drop-leak隔離が同じ物理cleanupを並行実行しない。host回帰試験を追加。
 - 未検証のDVR通知例外・独自隔離結果wrapper・reaperエラー再分類・Frontend診断回復経路等は撤回してPR #116のコードへ戻す。Loom CIのRust 1.95更新は依存互換のため維持。
 - Android Soong／AIDL VTS／CTS再試験／実機再起動・Binder再接続は未実施。CI結果はPRのChecksを参照。
-
-# 2026-11-08 VTS資源検査とAIDLの回収試験を修正
-
-- VTS profileの資源検査は既存host crateの本番型とcapability選択を参照する。現行本番ソースの生成Rustをコンパイル・実行する試験を既存CIへ追加し、ホストのCargo依存を統合手順へ記載する。
-- Frontend回収試験で既存executorを実行して完了権限を取得し、別crateのprivate field参照を除く。Android Soong／atestは未実施。
 
 # 2026-11-07 Loom CIのRust toolchainを固定
 
