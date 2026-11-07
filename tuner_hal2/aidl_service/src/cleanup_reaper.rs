@@ -195,8 +195,7 @@ fn run_cleanup_job(
             return;
         };
         use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
-        // The same state/ownership policy applies before and after the
-        // deadline; time only triggers a physical quarantine attempt.
+        // 期限前後で同じ状態・所有権判定を使う。期限は物理隔離試行の契機に限る。
         match context.cleanup_retry_disposition(job.handle) {
             Ok(
                 AidlObjectCleanupDisposition::Stale
@@ -224,8 +223,8 @@ fn run_cleanup_job(
             match crate::object_runtime::quarantine_drop_leak_object(&context, job.handle) {
                 Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
                 | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
-                    // ObjectCloseTxn now owns completion and receives the
-                    // Supervisor join. No reaper lane remains blocked.
+                    // ObjectCloseTxnが完了義務を保持し、Supervisorからjoin通知を受ける。
+                    // cleanup reaperの実行レーンは占有し続けない。
                     return;
                 }
                 Err(error) => {
@@ -241,8 +240,8 @@ fn run_cleanup_job(
         let dependency = match context.cleanup_dependency_for_handle(job.handle) {
             Ok(dependency) => dependency,
             Err(_) => {
-                // Another owner may have quarantined the object after the
-                // initial read. Re-check the same cleanup owner.
+                // 初回状態確認後に別のownerが隔離した可能性がある。
+                // 同じcleanup正本で所有権を再確認する。
                 if matches!(
                     context.cleanup_retry_disposition(job.handle),
                     Ok(AidlObjectCleanupDisposition::Stale

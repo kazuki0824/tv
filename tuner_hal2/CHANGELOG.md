@@ -3,6 +3,14 @@
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
 - 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
 
+# 2026-11-07 PR #227の局所隔離とDVR通知worker回収の完了経路を修正
+
+- cleanup reaperは期限前後で同じ対象状態・回収所有権を判定し、論理`Quarantined`だけで物理回収完了と判断しない。所有権が確認できず副作用の遮断を証明できない場合は全体停止に昇格する。
+- Supervisorへの通知worker移管後はreaper実行レーンを待機占有せず解放する。実workerのjoin結果は既存`WorkerRuntimeSupervisor`から受け、未完義務は`ObjectCloseTxn`だけに保持する。
+- 物理cleanup reportと通知workerのjoin通知が前後しても、対象ID・generationを照合して一度だけ完了確定する。未完義務のあるDVR runtime ID/ledgerの早期再利用を拒否し、重複物理cleanupを起こさない。
+- `Completed`と`SupervisedPending`の両方を許す試験の名称と期待結果を分け、先着join・重複join・別世代join・回収前再利用の回帰テストを追加した。
+- Android Soongビルド、Tuner AIDL VTS、CTS全体、実機でのHAL再起動・Binder再接続は未実施。実行済みCIの結果はGitHub Checksを参照する。
+
 # 2026-11-07 PR #227で巻き戻された既存設計との整合性を復元
 
 - post-commit DVR通知失敗を`PostCommitCallbackFailureTxn`の既存health/診断へ接続し、callback失敗だけで`ServiceCritical`へ昇格させない。通知workerの再開始失敗では対象DVR ownerの世代遮断を確認し、遮断を証明できない場合だけサービス全体を停止する。
