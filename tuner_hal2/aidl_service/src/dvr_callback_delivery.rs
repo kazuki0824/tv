@@ -1387,12 +1387,12 @@ mod tests {
     fn notifier_retry_after_fenced_quarantine_does_not_stop_service() {
         let (context, runtime, handle) = build_started_playback_dvr_context();
         let failure_state = runtime.lock().unwrap().failure_state();
-        runtime
-            .lock()
-            .unwrap()
-            .object_table_mut()
-            .quarantine_cascade(handle.object_id(), handle.generation())
-            .expect("対象DVRだけを隔離");
+        let _plan = maleicacid_tuner_hal2_service_runtime::quarantine_object_drop_leak_use_case(
+            &mut runtime.lock().unwrap(),
+            handle.object_id(),
+            handle.generation(),
+        )
+        .expect("対象DVRの隔離planを準備");
         assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));
         enqueue_cleanup_retry_after_notifier_reap(&context, handle);
         // Quarantinedを物理cleanup完了とはみなさないが、fenceのある
