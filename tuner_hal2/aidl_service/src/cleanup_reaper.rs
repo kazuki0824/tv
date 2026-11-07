@@ -61,14 +61,6 @@ struct CleanupJob {
     registered_at: Instant,
 }
 
-/// 物理cleanupの正本はObjectCloseTxn。ここでは既存reaperと、
-/// 満杯時の受付継続を監視する従属WorkerRuntimeのhandleだけを所有する。
-#[derive(Clone, Copy)]
-struct CleanupAdmission {
-    handle: AidlObjectHandle,
-    registered_at: Instant,
-}
-
 struct CleanupReaperQueueOwner {
     queue: Option<
         maleicacid_tuner_hal2_service_runtime::WorkerRuntimeReaperQueue<
@@ -78,7 +70,7 @@ struct CleanupReaperQueueOwner {
         >,
     >,
     /// reaperが満杯でも回収が未完のownerを列挙する受付予定。義務正本はObjectCloseTxn。
-    admission_pending: std::collections::BTreeMap<CleanupJobKey, CleanupAdmission>,
+    admission_pending: std::collections::BTreeMap<CleanupJobKey, CleanupJob>,
     /// 受付の空き待ちは１本の従属WorkerRuntimeで監視し、別の容量枠を作らない。
     admission_worker: Option<maleicacid_tuner_hal2_service_runtime::WorkerRuntime<()>>,
 }
@@ -129,7 +121,7 @@ impl Drop for CleanupReaperQueue {
 /// 未受付entryがない場合は新規登録のwake/stopのみ待機する。
 /// entryがあれば最も早い物理回収期限と再受付の監視周期を比較する。
 fn next_admission_wake(
-    pending: &std::collections::BTreeMap<CleanupJobKey, CleanupAdmission>,
+    pending: &std::collections::BTreeMap<CleanupJobKey, CleanupJob>,
     budget: Duration,
     now: Instant,
 ) -> Option<Instant> {
@@ -195,11 +187,10 @@ impl CleanupReaperQueue {
         {
             maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(&runtime);
         } else {
-            // service runtimeが先に破棄された場合にも異常joinをログだけで黙殺しない。
+            // service owner消滅後は、公開中のHALを停止する根拠が残っていない。
             log::error!(
                 "cleanup受付監督workerの異常を通知するservice runtimeが存在しません: {reason}"
             );
-            std::process::abort();
         }
     }
 
@@ -234,59 +225,29 @@ impl CleanupReaperQueue {
         }
     }
 
-    /// reaper容量はbounded受付数であり、全体runtime破損ではない。
-    /// 既存retry schedule内だけ受付を待ち、容量回復時に同じ義務を投入する。
+    /// 既存reaperへ一度だけ受付を試み、満杯は呼出元の回復判断へ返す。
     pub(crate) fn enqueue(
         &self,
         handle: AidlObjectHandle,
         dependency: CleanupStep,
     ) -> Result<(), HalError> {
         let key = CleanupJobKey::from_handle(handle);
-        let budget = self.policy.retry_delays[2];
-        let started = Instant::now();
-        loop {
-            let runtime = {
-                let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
-                slot.queue
-                    .as_ref()
-                    .ok_or_else(|| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "cleanup reaperの正規ownerが設定されていません",
-                        )
-                    })?
-                    .clone()
-            };
-            if runtime
-                .pending_value(&key)
-                .map_err(Self::classify_enqueue_error)?
-                .is_some()
-            {
-                return Ok(());
-            }
-            match runtime
-                .enqueue_reserved(
-                    CleanupJob {
-                        handle,
-                        registered_at: Instant::now(),
-                    },
-                    [(key, dependency)],
+        let runtime = {
+            let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
+            slot.queue.as_ref().ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "cleanup reaperの正規ownerが設定されていません",
                 )
-                .map_err(Self::classify_enqueue_error)
-            {
-                Err(error @ HalError::Busy { .. }) if started.elapsed() < budget => {
-                    std::thread::sleep(
-                        budget
-                            .saturating_sub(started.elapsed())
-                            .min(Duration::from_millis(10)),
-                    );
-                    if started.elapsed() >= budget {
-                        return Err(error);
-                    }
-                }
-                result => return result,
-            }
+            })?.clone()
+        };
+        if runtime.pending_value(&key).map_err(Self::classify_enqueue_error)?.is_some() {
+            return Ok(());
         }
+        runtime.enqueue_reserved(
+            CleanupJob { handle, registered_at: Instant::now() },
+            [(key, dependency)],
+        ).map_err(Self::classify_enqueue_error)
     }
 
     /// 正本ObjectCloseTxnの世代付き未完義務を、容量不足の間も1本のWorkerRuntimeで監督する。
@@ -331,7 +292,7 @@ impl CleanupReaperQueue {
         owner
             .admission_pending
             .entry(key)
-            .or_insert(CleanupAdmission {
+            .or_insert(CleanupJob {
                 handle,
                 registered_at: Instant::now(),
             });
@@ -368,7 +329,7 @@ impl CleanupReaperQueue {
                     let Some(context) = context.upgrade() else {
                         return Ok(());
                     };
-                    let tasks: Vec<(CleanupJobKey, CleanupAdmission)> = {
+                    let tasks: Vec<(CleanupJobKey, CleanupJob)> = {
                         let state = queue_owner.runtime.lock().map_err(HalError::LockPoisoned)?;
                         state
                             .admission_pending
@@ -414,10 +375,7 @@ impl CleanupReaperQueue {
                             if let Ok(dependency) = context.cleanup_dependency_for_handle(handle) {
                                 match queue
                                     .enqueue_reserved(
-                                        CleanupJob {
-                                            handle,
-                                            registered_at: Instant::now(),
-                                        },
+                                        task,
                                         [(key, dependency)],
                                     )
                                     .map_err(CleanupReaperQueue::classify_enqueue_error)
@@ -920,6 +878,56 @@ pub(crate) fn start_cleanup_reaper(
 #[cfg(test)]
 mod tests {
 
+    // 競合の検査対象は実ObjectCloseTxn。物理操作の成功は既存executor境界から注入する。
+    fn simulated_cleanup_completion(
+        attempt: maleicacid_tuner_hal2_service_runtime::ObjectCloseCleanupAttempt,
+    ) -> maleicacid_tuner_hal2_service_runtime::CloseCleanupAttemptCompletion {
+        use maleicacid_tuner_hal2_service_runtime::{
+            ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCloseCleanupFailure,
+            ObjectCloseRuntimeExecutor, ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor,
+            ObjectRuntimeCleanupCommand,
+        };
+
+        struct SuccessfulCleanup;
+        impl ObjectCloseRuntimeExecutor for SuccessfulCleanup {
+            fn execute_runtime_cleanup(&mut self, _: ObjectRuntimeCleanupCommand) -> Result<(), ObjectCloseCleanupFailure> {
+                Ok(())
+            }
+        }
+        impl ObjectDomainCleanupExecutor for SuccessfulCleanup {
+            fn execute_frontend_cleanup(&mut self, _: ObjectDomainCleanupCommand) -> Result<(), HalError> {
+                Ok(())
+            }
+            fn execute_lnb_cleanup(&mut self, _: ObjectDomainCleanupCommand) -> Result<(), HalError> {
+                Ok(())
+            }
+            fn execute_lnb_drop_leak_record(&mut self, _: ObjectDomainCleanupCommand) -> Result<(), HalError> {
+                Ok(())
+            }
+        }
+        impl ObjectArtifactCleanupExecutor for SuccessfulCleanup {
+            fn execute_owner_callback_cleanup(&mut self, _: ObjectArtifactCleanupCommand) -> Result<(), ObjectCloseCleanupFailure> {
+                Ok(())
+            }
+            fn execute_descendant_callback_cleanup(&mut self, _: ObjectArtifactCleanupCommand) -> Result<(), ObjectCloseCleanupFailure> {
+                Ok(())
+            }
+            fn execute_lnb_owner_loss_callback_cleanup(&mut self, _: ObjectArtifactCleanupCommand) -> Result<(), ObjectCloseCleanupFailure> {
+                Ok(())
+            }
+            fn execute_dvr_status_notifier_cleanup(&mut self, _: ObjectArtifactCleanupCommand) -> Result<(), ObjectCloseCleanupFailure> {
+                Ok(())
+            }
+        }
+        let (completion, report) = attempt.execute_cleanup_report_with_executor(
+            &mut SuccessfulCleanup,
+            &mut SuccessfulCleanup,
+            &mut SuccessfulCleanup,
+        );
+        assert!(report.into_result().is_ok());
+        completion
+    }
+
     #[test]
     fn concurrent_close_cleanup_defers_quarantine_without_service_shutdown() {
         use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
@@ -1223,7 +1231,7 @@ mod tests {
         );
         pending.insert(
             CleanupJobKey::from_handle(handle),
-            CleanupAdmission {
+            CleanupJob {
                 handle,
                 registered_at: now,
             },
@@ -1312,7 +1320,7 @@ mod tests {
         assert_eq!(queue.runtime.lock().unwrap().admission_pending.len(), 1);
         assert!(queue.runtime.lock().unwrap().admission_worker.is_some());
         if complete_owner {
-            finish_object_close_use_case(&mut runtime.lock().unwrap(), attempt.completion, Ok(()))
+            finish_object_close_use_case(&mut runtime.lock().unwrap(), simulated_cleanup_completion(attempt), Ok(()))
                 .unwrap();
         }
         let key = CleanupJobKey::from_handle(handle);
@@ -1377,7 +1385,7 @@ mod tests {
                 .contains_key(&CleanupJobKey::from_handle(second_handle)));
             finish_object_close_use_case(
                 &mut runtime.lock().unwrap(),
-                second_attempt.completion,
+                simulated_cleanup_completion(second_attempt),
                 Ok(()),
             )
             .unwrap();
@@ -1505,7 +1513,7 @@ mod tests {
         }
         // Aのreaper予約は保持したまま、B/Cの正規closeだけを完了させる。
         for attempt in attempts {
-            finish_object_close_use_case(&mut runtime.lock().unwrap(), attempt.completion, Ok(()))
+            finish_object_close_use_case(&mut runtime.lock().unwrap(), simulated_cleanup_completion(attempt), Ok(()))
                 .unwrap();
         }
         let mut completed = false;
@@ -1599,7 +1607,7 @@ mod tests {
             .expect("期限超過分岐を通過する");
         assert!(!failure.snapshot().service_critical);
         let release = std::thread::spawn(move || {
-            finish_object_close_use_case(&mut runtime.lock().unwrap(), attempt.completion, Ok(()))
+            finish_object_close_use_case(&mut runtime.lock().unwrap(), simulated_cleanup_completion(attempt), Ok(()))
                 .unwrap();
         });
         done_rx
@@ -1786,7 +1794,7 @@ mod tests {
             .expect("最初のcleanup試行開始が成功する");
         finish_object_close_use_case(
             &mut runtime,
-            attempt.completion,
+            simulated_cleanup_completion(attempt),
             Err(ObjectCloseCleanupFailure::new(
                 CleanupStep::ReleaseBackend,
                 HalError::cleanup_failed(

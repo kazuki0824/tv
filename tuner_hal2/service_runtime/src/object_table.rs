@@ -590,27 +590,35 @@ impl RuntimeObjectTable {
         Ok(changed)
     }
 
-    /// rootと子孫のどれかに既存ObjectCloseTxnの実行中cleanupがあるかを判定する。
-    /// drop-leak隔離はこの検査を通過した場合だけ外部副作用を開始できる。
+    /// 子孫、対象、祖先の順で、世代付きcleanup ownerの探索範囲を列挙する。
+    fn related_cleanup_keys(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        include_target: bool,
+    ) -> Result<Vec<(AidlObjectId, AidlObjectGeneration)>, RuntimeObjectTableError> {
+        let mut parent = self.entry_checked_any(object_id, generation)?.owner;
+        let mut targets = self.descendant_object_keys(object_id, generation);
+        if include_target {
+            targets.push((object_id, generation));
+        }
+        while let Some((_, id, gen)) = parent.referenced_object() {
+            if (id, gen) == (object_id, generation) || targets.contains(&(id, gen)) {
+                break;
+            }
+            parent = self.entry_checked_any(id, gen)?.owner;
+            targets.push((id, gen));
+        }
+        Ok(targets)
+    }
+
     pub(crate) fn has_active_cleanup_attempt_in_cascade(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<bool, RuntimeObjectTableError> {
-        self.entry_checked_any(object_id, generation)?;
-        let mut targets = self.descendant_object_keys(object_id, generation);
-        targets.push((object_id, generation));
-        // 親ownerのcloseも子を物理cleanupするため、対象から親へ遡る。
-        // 不正な親循環で停止しないよう登録object数で探索を制限する。
-        let mut parent = self.entry_checked_any(object_id, generation)?.owner;
-        for _ in 0..self.entries.len() {
-            let Some((_, parent_id, parent_generation)) = parent.referenced_object() else {
-                break;
-            };
-            targets.push((parent_id, parent_generation));
-            parent = self.entry_checked_any(parent_id, parent_generation)?.owner;
-        }
-        Ok(targets
+        Ok(self
+            .related_cleanup_keys(object_id, generation, true)?
             .into_iter()
             .any(|(id, gen)| self.object_close_txn.has_active_cleanup_attempt(id, gen)))
     }
@@ -620,62 +628,27 @@ impl RuntimeObjectTable {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<bool, RuntimeObjectTableError> {
-        let mut parent = self.entry_checked_any(object_id, generation)?.owner;
-        if self
-            .descendant_object_keys(object_id, generation)
+        Ok(self
+            .related_cleanup_keys(object_id, generation, false)?
             .into_iter()
-            .any(|(id, gen)| self.object_close_txn.has_outstanding_obligation(id, gen))
-        {
-            return Ok(true);
-        }
-        // 先行して権限発行済みの親closeも、同じ子資源を回収できる。
-        for _ in 0..self.entries.len() {
-            let Some((_, id, gen)) = parent.referenced_object() else {
-                break;
-            };
-            if self.object_close_txn.has_outstanding_obligation(id, gen) {
-                return Ok(true);
-            }
-            parent = self.entry_checked_any(id, gen)?.owner;
-        }
-        Ok(false)
+            .any(|(id, gen)| self.object_close_txn.has_outstanding_obligation(id, gen)))
     }
 
-    /// 対象・子孫・祖先の既存cleanup正本を世代付きで返す。子孫を先に
-    /// 列挙することで、子の独立した権限を親の物理cleanupで上書きしない。
     pub(crate) fn related_cleanup_owners(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<Vec<(RuntimeObjectEntry, bool)>, RuntimeObjectTableError> {
-        let mut targets = self.descendant_object_keys(object_id, generation);
-        targets.push((object_id, generation));
-        let mut parent = self.entry_checked_any(object_id, generation)?.owner;
-        for _ in 0..self.entries.len() {
-            let Some((_, id, gen)) = parent.referenced_object() else {
-                break;
-            };
-            let entry = self.entry_checked_any(id, gen)?;
-            targets.push((id, gen));
-            parent = entry.owner;
-        }
-        let mut owners = Vec::new();
-        for (id, gen) in targets {
-            let entry = self.entry_checked_any(id, gen)?;
-            if self.object_close_txn.has_outstanding_obligation(id, gen)
-                && !owners
-                    .iter()
-                    .any(|(known, _): &(RuntimeObjectEntry, bool)| {
-                        known.object_id == id && known.generation == gen
-                    })
-            {
-                owners.push((
-                    entry.clone(),
+        self.related_cleanup_keys(object_id, generation, true)?
+            .into_iter()
+            .filter(|(id, gen)| self.object_close_txn.has_outstanding_obligation(*id, *gen))
+            .map(|(id, gen)| {
+                Ok((
+                    self.entry_checked_any(id, gen)?.clone(),
                     self.object_close_txn.has_active_cleanup_attempt(id, gen),
-                ));
-            }
-        }
-        Ok(owners)
+                ))
+            })
+            .collect()
     }
 
     /// 隔離対象を変更せず全件検証する。後続の権限発行が失敗しても状態を変えない。
