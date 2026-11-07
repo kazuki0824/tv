@@ -744,26 +744,37 @@ impl RuntimeObjectTable {
         Ok(changed)
     }
 
-    fn close_completed_quarantine_cascade(
-        &mut self,
+    /// 物理回収完了時の全子孫状態を、未完義務を消す前に検証する。
+    fn preflight_close_completed_quarantine_cascade(
+        &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<(), RuntimeObjectTableError> {
         let mut keys = self.descendant_object_keys(object_id, generation);
         keys.push((object_id, generation));
-        // lifecycle変更前に対象世代を全件検証する。
-        for (id, gen) in &keys {
-            let entry = self.entry_checked_any(*id, *gen)?;
+        for (id, gen) in keys {
+            let entry = self.entry_checked_any(id, gen)?;
             if !matches!(
                 entry.lifecycle,
                 RuntimeObjectLifecycle::Quarantined | RuntimeObjectLifecycle::Closed
             ) {
                 return Err(RuntimeObjectTableError::InvalidLifecycle {
-                    object_id: *id,
+                    object_id: id,
                     lifecycle: entry.lifecycle,
                 });
             }
         }
+        Ok(())
+    }
+
+    fn close_completed_quarantine_cascade(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<(), RuntimeObjectTableError> {
+        self.preflight_close_completed_quarantine_cascade(object_id, generation)?;
+        let mut keys = self.descendant_object_keys(object_id, generation);
+        keys.push((object_id, generation));
         for (id, gen) in keys {
             let entry = self.entry_mut_checked_any(id, gen)?;
             if entry.lifecycle == RuntimeObjectLifecycle::Quarantined {
@@ -786,6 +797,7 @@ impl RuntimeObjectTable {
                 lifecycle,
             });
         }
+        self.preflight_close_completed_quarantine_cascade(object_id, generation)?;
         let completed = self
             .object_close_txn
             .accept_quarantine_cleanup_report(object_id, generation, pending)
@@ -801,9 +813,14 @@ impl RuntimeObjectTable {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<(), RuntimeObjectTableError> {
-        let finished = self
+        let notifier = (object_id, generation);
+        for (root_id, root_generation) in self
             .object_close_txn
-            .notifier_joined((object_id, generation));
+            .quarantine_roots_completing_on_join(notifier)
+        {
+            self.preflight_close_completed_quarantine_cascade(root_id, root_generation)?;
+        }
+        let finished = self.object_close_txn.notifier_joined(notifier);
         for (root_id, root_generation) in finished {
             self.close_completed_quarantine_cascade(root_id, root_generation)?;
         }
