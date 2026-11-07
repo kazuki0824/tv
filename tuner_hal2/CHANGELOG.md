@@ -3,6 +3,13 @@
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
 - 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
 
+# 2026-11-07 PR #227レビュー：親cleanup自律回収・隔離確定順序・未使用入口
+
+- `OwnedByExistingCleanup`で子のreaperジョブを終了する前に、既存親`ObjectCloseTxn`のcleanupが実行中であること、または正規cleanup reaperへの投入が成功したことを確認する。未開始の親close権限だけでは回収進行の証拠とせず、投入不能・委譲先不明は全体停止として報告する。
+- 隔離対象の全件preflightと未完cleanup権限の準備を先行させ、同一runtime lock下で`Quarantined`への遷移を確定する。権限発行失敗時の部分コミットを防止し、識別子枯渇の故障注入と親未開始権限の探索テストを追加する。
+- 呼出し元のない`dvr_notifier_supervised_cleanup_complete()`を削除し、通知workerの回収完了を既存Supervisorのjoin結果から`ObjectCloseTxn`へ伝える方式に統一する。
+- 実Demux/Playback DVRの公開経路を使い、親の未開始close権限から公開API再呼出しなしに自律回収されることを確認するAIDL回帰テストを追加する。Android向け`maleicacid_tuner_hal2_aidl_service_test`のSoongビルド・atestは未実施。HostのRust CI結果と区別する。
+
 # 2026-11-07 進行中cleanupの所有権競合を全体停止と区別
 
 - 対象・祖先・子孫の既存`ObjectCloseTxn`がcleanup実行中または別の後片付け義務を保持する場合、drop-leak隔離はplanを発行せず型付きの委譲結果を返す。既存の物理cleanupを二重実行せず、正常な競合拒否だけで`ServiceCritical`へ昇格させない。
