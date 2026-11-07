@@ -347,11 +347,9 @@ impl AidlServiceContext {
             if shared_reaper_lost
                 || !matches!(
                     self.cleanup_retry_disposition(handle),
-                    Ok(
-                        AidlObjectCleanupDisposition::Stale
-                            | AidlObjectCleanupDisposition::Closed
-                            | AidlObjectCleanupDisposition::NoCleanupPending
-                    )
+                    Ok(AidlObjectCleanupDisposition::Stale
+                        | AidlObjectCleanupDisposition::Closed
+                        | AidlObjectCleanupDisposition::NoCleanupPending)
                 )
             {
                 TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
