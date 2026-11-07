@@ -835,10 +835,10 @@ impl RuntimeObjectTable {
     ) -> Option<bool> {
         let mut entry = self.entry_checked_any(object_id, generation).ok()?;
         loop {
-            if let Some(supervised) = self.object_close_txn.quarantine_cleanup_is_supervised(
-                entry.object_id,
-                entry.generation,
-            ) {
+            if let Some(supervised) = self
+                .object_close_txn
+                .quarantine_cleanup_is_supervised(entry.object_id, entry.generation)
+            {
                 return Some(supervised);
             }
             let (_, id, gen) = entry.owner.referenced_object()?;

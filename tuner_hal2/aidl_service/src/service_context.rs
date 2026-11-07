@@ -338,6 +338,26 @@ impl AidlServiceContext {
         )
     }
 
+    /// 同世代の状態を再照会し、回収未確定の場合だけ同じlock下で停止を確定する。
+    pub(crate) fn fail_cleanup_if_unsettled(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<bool, HalError> {
+        let mut runtime =
+            TunerServiceRuntime::lock_shared(&self.runtime, "cleanup停止直前の世代確認")?;
+        let state = maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_disposition(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        );
+        if matches!(&state, Ok(disposition) if disposition.recovery_settled()) {
+            return Ok(false);
+        }
+        runtime.mark_service_critical();
+        state.map(|_| true)
+    }
+
     /// 対象・祖先・子孫の既存ObjectCloseTxnの権限を世代付きで返す。
     /// 再予約はこの入口では行わず、reaper内の単一予約グループで実施する。
     pub(crate) fn related_cleanup_recovery_owners(
@@ -397,17 +417,12 @@ impl AidlServiceContext {
             match self.cleanup_retry_disposition(handle) {
                 Ok(disposition) if disposition.recovery_settled() => return Ok(()),
                 Ok(AidlObjectCleanupDisposition::QuarantineAwaitingReport) => {
-                    let watched = self.cleanup_reaper_queue.supervise_unqueued_owner(
-                        Arc::downgrade(self),
-                        handle,
-                    );
-                    if watched.is_ok()
-                        || self.cleanup_retry_disposition(handle)
-                            .is_ok_and(AidlObjectCleanupDisposition::recovery_settled)
-                    {
+                    let watched = self
+                        .cleanup_reaper_queue
+                        .supervise_unqueued_owner(Arc::downgrade(self), handle);
+                    if watched.is_ok() || !self.fail_cleanup_if_unsettled(handle)? {
                         return Ok(());
                     }
-                    TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
                     return watched;
                 }
                 _ => {}
@@ -435,9 +450,9 @@ impl AidlServiceContext {
                                             .cleanup_reaper_queue
                                             .supervise_unqueued_owner(Arc::downgrade(self), owner)
                                         {
-                                            if self.cleanup_retry_disposition(owner)
-                                                .is_ok_and(AidlObjectCleanupDisposition::recovery_settled)
-                                            {
+                                            if self.cleanup_retry_disposition(owner).is_ok_and(
+                                                AidlObjectCleanupDisposition::recovery_settled,
+                                            ) {
                                                 continue;
                                             }
                                             log::error!("未予約のcleanup owner監督失敗: owner={owner:?} active={active} error={watch_error:?}");
@@ -466,12 +481,9 @@ impl AidlServiceContext {
                 }
                 // 物理回収のowner/fenceを証明できない場合だけ全体停止する。
             }
-            if self.cleanup_retry_disposition(handle)
-                .is_ok_and(AidlObjectCleanupDisposition::recovery_settled)
-            {
+            if !self.fail_cleanup_if_unsettled(handle)? {
                 return Ok(());
             }
-            TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
         }
         result
     }

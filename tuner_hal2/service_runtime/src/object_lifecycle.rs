@@ -126,7 +126,10 @@ pub fn aidl_object_cleanup_disposition(
     Ok(match entry.lifecycle {
         RuntimeObjectLifecycle::Closed => AidlObjectCleanupDisposition::Closed,
         RuntimeObjectLifecycle::Quarantined => {
-            match runtime.object_table().quarantine_cleanup_is_supervised(object_id, generation) {
+            match runtime
+                .object_table()
+                .quarantine_cleanup_is_supervised(object_id, generation)
+            {
                 Some(false) => AidlObjectCleanupDisposition::QuarantineAwaitingReport,
                 Some(true) => AidlObjectCleanupDisposition::QuarantineSupervised,
                 None => AidlObjectCleanupDisposition::Quarantined,
