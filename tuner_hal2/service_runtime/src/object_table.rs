@@ -663,9 +663,11 @@ impl RuntimeObjectTable {
         for (id, gen) in targets {
             let entry = self.entry_checked_any(id, gen)?;
             if self.object_close_txn.has_outstanding_obligation(id, gen)
-                && !owners.iter().any(|(known, _): &(RuntimeObjectEntry, bool)| {
-                    known.object_id == id && known.generation == gen
-                })
+                && !owners
+                    .iter()
+                    .any(|(known, _): &(RuntimeObjectEntry, bool)| {
+                        known.object_id == id && known.generation == gen
+                    })
             {
                 owners.push((
                     entry.clone(),
@@ -1176,7 +1178,12 @@ mod qg_object_lifecycle_tests {
         let child = AidlObjectId(9914);
         let generation = AidlObjectGeneration(1);
         table
-            .insert(entry(AidlObjectKind::Demux, 9913, 9913, RuntimeOwnerRelation::Root))
+            .insert(entry(
+                AidlObjectKind::Demux,
+                9913,
+                9913,
+                RuntimeOwnerRelation::Root,
+            ))
             .unwrap();
         table
             .insert(entry(
@@ -1193,20 +1200,34 @@ mod qg_object_lifecycle_tests {
             .begin_quarantine_cleanup(root, generation, [(child, generation)])
             .unwrap();
         // 回収reportの受領前に子のlifecycle検査が失敗しても、義務は残る。
-        table.entry_mut_checked_any(child, generation).unwrap().lifecycle =
-            RuntimeObjectLifecycle::Live;
+        table
+            .entry_mut_checked_any(child, generation)
+            .unwrap()
+            .lifecycle = RuntimeObjectLifecycle::Live;
         assert!(table
             .finish_quarantined_cleanup_report(root, generation, &[])
             .is_err());
-        assert!(table.object_close_txn.has_outstanding_obligation(root, generation));
-        table.entry_mut_checked_any(child, generation).unwrap().lifecycle =
-            RuntimeObjectLifecycle::Quarantined;
+        assert!(table
+            .object_close_txn
+            .has_outstanding_obligation(root, generation));
+        table
+            .entry_mut_checked_any(child, generation)
+            .unwrap()
+            .lifecycle = RuntimeObjectLifecycle::Quarantined;
         table
             .finish_quarantined_cleanup_report(root, generation, &[])
             .unwrap();
-        assert_eq!(table.entry(root).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
-        assert_eq!(table.entry(child).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
-        assert!(!table.object_close_txn.has_outstanding_obligation(root, generation));
+        assert_eq!(
+            table.entry(root).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert_eq!(
+            table.entry(child).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert!(!table
+            .object_close_txn
+            .has_outstanding_obligation(root, generation));
     }
 
     #[test]
@@ -1216,7 +1237,12 @@ mod qg_object_lifecycle_tests {
         let child = AidlObjectId(9916);
         let generation = AidlObjectGeneration(1);
         table
-            .insert(entry(AidlObjectKind::Demux, 9915, 9915, RuntimeOwnerRelation::Root))
+            .insert(entry(
+                AidlObjectKind::Demux,
+                9915,
+                9915,
+                RuntimeOwnerRelation::Root,
+            ))
             .unwrap();
         table
             .insert(entry(
@@ -1235,16 +1261,34 @@ mod qg_object_lifecycle_tests {
         table
             .finish_quarantined_cleanup_report(root, generation, &[(child, generation)])
             .unwrap();
-        table.entry_mut_checked_any(child, generation).unwrap().lifecycle =
-            RuntimeObjectLifecycle::Live;
-        assert!(table.notify_supervised_dvr_joined(child, generation).is_err());
-        assert!(table.object_close_txn.has_outstanding_obligation(root, generation));
-        table.entry_mut_checked_any(child, generation).unwrap().lifecycle =
-            RuntimeObjectLifecycle::Quarantined;
-        table.notify_supervised_dvr_joined(child, generation).unwrap();
-        assert_eq!(table.entry(root).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
-        assert_eq!(table.entry(child).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
-        assert!(!table.object_close_txn.has_outstanding_obligation(root, generation));
+        table
+            .entry_mut_checked_any(child, generation)
+            .unwrap()
+            .lifecycle = RuntimeObjectLifecycle::Live;
+        assert!(table
+            .notify_supervised_dvr_joined(child, generation)
+            .is_err());
+        assert!(table
+            .object_close_txn
+            .has_outstanding_obligation(root, generation));
+        table
+            .entry_mut_checked_any(child, generation)
+            .unwrap()
+            .lifecycle = RuntimeObjectLifecycle::Quarantined;
+        table
+            .notify_supervised_dvr_joined(child, generation)
+            .unwrap();
+        assert_eq!(
+            table.entry(root).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert_eq!(
+            table.entry(child).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert!(!table
+            .object_close_txn
+            .has_outstanding_obligation(root, generation));
     }
 
     #[test]
@@ -1275,7 +1319,9 @@ mod qg_object_lifecycle_tests {
         let (_, authority) = table
             .begin_close_cascade_with_cleanup_authority(parent, generation, CleanupStep::StopWorker)
             .expect("物理cleanupを開始せず親の権限を発行する");
-        let owners = table.related_cleanup_owners(child, generation).expect("回収先owner取得");
+        let owners = table
+            .related_cleanup_owners(child, generation)
+            .expect("回収先owner取得");
         let (owner, active) = owners
             .into_iter()
             .find(|(owner, _)| owner.object_id == parent)

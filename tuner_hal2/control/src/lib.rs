@@ -863,7 +863,11 @@ where
                     "回収委譲元の予約グループが見つかりません",
                 )
             })?;
-        state.groups.get_mut(&group_id).expect("既存group ID").push(key.clone());
+        state
+            .groups
+            .get_mut(&group_id)
+            .expect("既存group ID")
+            .push(key.clone());
         state.entries.insert(key, value);
         Ok(true)
     }
