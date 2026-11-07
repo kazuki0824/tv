@@ -3,6 +3,13 @@
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
 - 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
 
+# 2026-11-07 PR #227 製品reaper容量回帰テストの後始末を確定
+
+- `product_capacity_saturates_after_real_open_close_before_reaper_group_release`に`ReleaseGateOnDrop`を追加し、途中のassert/expect失敗・panic時も全runnerのCondvarゲートを必ず開く。
+- 正常終了時はゲート解放後、全176世代キーの保留予約について既存`WorkerRuntimeReaperQueue::wait_until_released`による有界完了確認とpending値の全件消滅を確認する。
+- reaper送信側を閉じ、runnerのWeak参照が失効するまで期限内で監視し、テスト用workerが残らないことを検証する。独立したcleanup状態正本やテスト基盤は追加しない。
+- host Rust CIの結果は最新HEADのChecksを正とする。Android Soong/atest、CTS/VTSおよび実HAL再起動は別の未検証事項。
+
 # 2026-11-07 PR #227 製品既定容量176の正規open/close・実reaper経路を追加検証
 
 - Host`object_close_txn::product_capacity_saturates_after_real_open_close_before_reaper_group_release`：製品既定snapshot、公開Demuxの自動AIDL object ID、root open／close、public runtime unregister、ObjectCloseTxn完了、`WorkerRuntimeReaperQueue::enqueue_reserved`と実runnerを通す。runnerによるClosed確定後、pending group解放直前の停止を同期ゲートで注入し、実reaperが176 groupを保持して次の公開Demux openの予約がBusyになることを確認する。
