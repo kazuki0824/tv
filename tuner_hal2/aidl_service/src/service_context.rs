@@ -169,7 +169,7 @@ impl AidlServiceContext {
         let dvr_status_notifier_cleanup_diagnostics =
             runtime.dvr_status_notifier_cleanup_diagnostic_sink();
         let object_cleanup_diagnostics = runtime.object_cleanup_diagnostic_sink();
-        Self {
+        let context = Self {
             runtime: Arc::new(Mutex::new(runtime)),
             callback_store: PoisonTrackedMutex::new(
                 CallbackStore::default(),
@@ -198,7 +198,11 @@ impl AidlServiceContext {
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot)),
-        }
+        };
+        context
+            .cleanup_reaper_queue
+            .bind_service_runtime(&context.runtime);
+        context
     }
 
     pub fn shared(runtime: TunerServiceRuntime) -> SharedAidlServiceContext {
@@ -223,6 +227,14 @@ impl AidlServiceContext {
     #[cfg(test)]
     pub(crate) fn from_shared_runtime_for_test(
         runtime: SharedTunerRuntime,
+    ) -> SharedAidlServiceContext {
+        Self::from_shared_runtime_with_cleanup_reaper_for_test(runtime, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_shared_runtime_with_cleanup_reaper_for_test(
+        runtime: SharedTunerRuntime,
+        preinstalled_reaper: Option<Arc<CleanupReaperQueue>>,
     ) -> SharedAidlServiceContext {
         let (
             callback_artifact_runtime_split_diagnostics,
@@ -270,14 +282,21 @@ impl AidlServiceContext {
             ),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
-            cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot)),
+            cleanup_reaper_queue: preinstalled_reaper.clone().unwrap_or_else(|| {
+                Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot))
+            }),
         });
-        if let Err(error) = start_cleanup_reaper(
-            Arc::downgrade(&context),
-            Arc::clone(&context.cleanup_reaper_queue),
-        ) {
-            log::error!("cleanup reaperの起動に失敗しました: {error:?}");
-            TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
+        context
+            .cleanup_reaper_queue
+            .bind_service_runtime(&context.runtime);
+        if preinstalled_reaper.is_none() {
+            if let Err(error) = start_cleanup_reaper(
+                Arc::downgrade(&context),
+                Arc::clone(&context.cleanup_reaper_queue),
+            ) {
+                log::error!("cleanup reaperの起動に失敗しました: {error:?}");
+                TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
+            }
         }
         if let Err(error) = start_dvr_status_notifier_reaper(
             Arc::downgrade(&context),
@@ -305,6 +324,57 @@ impl AidlServiceContext {
         )
     }
 
+    pub(crate) fn cleanup_retry_disposition(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition, HalError> {
+        let runtime =
+            TunerServiceRuntime::lock_shared(&self.runtime, "cleanup再試行対象の状態判定")?;
+        maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_disposition(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        )
+    }
+
+    pub(crate) fn quarantine_cleanup_has_owner(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<bool, HalError> {
+        let runtime =
+            TunerServiceRuntime::lock_shared(&self.runtime, "quarantine cleanup owner確認")?;
+        maleicacid_tuner_hal2_service_runtime::aidl_object_quarantine_cleanup_has_owner(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        )
+    }
+
+    /// 対象・祖先・子孫の既存ObjectCloseTxnの権限を世代付きで返す。
+    /// 再予約はこの入口では行わず、reaper内の単一予約グループで実施する。
+    pub(crate) fn related_cleanup_recovery_owners(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<Vec<(AidlObjectHandle, bool)>, HalError> {
+        let runtime =
+            TunerServiceRuntime::lock_shared(&self.runtime, "関連cleanupの回収owner確認")?;
+        maleicacid_tuner_hal2_service_runtime::related_cleanup_recovery_owners_use_case(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+        )
+        .map(|owners| {
+            owners
+                .into_iter()
+                .map(|(kind, id, generation, active)| {
+                    (AidlObjectHandle::new(kind, id, generation), active)
+                })
+                .collect()
+        })
+    }
+
     pub(crate) fn cleanup_is_terminal_for_handle(
         &self,
         handle: AidlObjectHandle,
@@ -321,11 +391,80 @@ impl AidlServiceContext {
         )
     }
 
-    pub(crate) fn enqueue_cleanup_retry(&self, handle: AidlObjectHandle) -> Result<(), HalError> {
+    /// 容量不足時もObjectCloseTxnの未完義務は消さない。
+    /// 共有reaper喪失は全体停止し、一時的な容量不足は対象object隔離を優先する。
+    pub(crate) fn enqueue_cleanup_retry(
+        self: &Arc<Self>,
+        handle: AidlObjectHandle,
+    ) -> Result<(), HalError> {
         let result = self
             .cleanup_dependency_for_handle(handle)
             .and_then(|dependency| self.cleanup_reaper_queue.enqueue(handle, dependency));
-        if result.is_err() {
+        if let Err(error) = &result {
+            let shared_reaper_lost =
+                maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(error);
+            use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+            if shared_reaper_lost {
+                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+                return result;
+            }
+            if matches!(
+                self.cleanup_retry_disposition(handle),
+                Ok(AidlObjectCleanupDisposition::Stale
+                    | AidlObjectCleanupDisposition::Closed
+                    | AidlObjectCleanupDisposition::NoCleanupPending)
+            ) {
+                return result;
+            }
+            if matches!(error.primary_error(), HalError::Busy { .. }) {
+                // 容量不足は共有状態の失陥ではない。別のreaperの予約を占有せず
+                // 既存ObjectCloseTxnの隔離処理へ移し、完了／未完義務を型付き確認する。
+                match crate::object_runtime::quarantine_drop_leak_object(self, handle) {
+                    Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
+                    | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
+                        return Ok(());
+                    }
+                    Ok(
+                        crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup,
+                    ) => match self.related_cleanup_recovery_owners(handle) {
+                        Ok(owners) => {
+                            let mut all_owners_supervised = !owners.is_empty();
+                            for (owner, active) in owners {
+                                match self.cleanup_reaper_queue.has_pending(owner) {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        // active権限の存在自体は将来の回収進行保証ではない。
+                                        // 全ての関連ownerを既存reaper受付へ監督付きで引き継ぐ。
+                                        if let Err(watch_error) = self
+                                            .cleanup_reaper_queue
+                                            .supervise_unqueued_owner(Arc::downgrade(self), owner)
+                                        {
+                                            log::error!("未予約のcleanup owner監督失敗: owner={owner:?} active={active} error={watch_error:?}");
+                                            all_owners_supervised = false;
+                                            break;
+                                        }
+                                    }
+                                    Err(owner_error) => {
+                                        log::error!("関連reaper owner照会失敗: {owner_error:?}");
+                                        all_owners_supervised = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if all_owners_supervised {
+                                return Ok(());
+                            }
+                        }
+                        Err(owner_error) => {
+                            log::error!("関連cleanupの正本owner確認失敗: {owner_error:?}");
+                        }
+                    },
+                    Err(status) => {
+                        log::error!("cleanup容量不足後の局所隔離失敗: {status:?}");
+                    }
+                }
+                // 物理回収のowner/fenceを証明できない場合だけ全体停止する。
+            }
             TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
         }
         result
@@ -1071,6 +1210,39 @@ impl AidlServiceContext {
 #[cfg(test)]
 mod lock_poison_tests {
     use super::*;
+
+    #[test]
+    fn cleanup_retry_without_pending_obligation_is_not_service_critical() {
+        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
+
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .expect("Demux作成が成功する");
+        let handle =
+            AidlObjectHandle::new(AidlObjectKind::Demux, demux.object_id(), demux.generation());
+        let state = runtime.failure_state();
+        let context =
+            AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
+        assert!(context.enqueue_cleanup_retry(handle).is_err());
+        assert_eq!(
+            context.cleanup_retry_disposition(handle),
+            Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::NoCleanupPending)
+        );
+        assert!(!state.snapshot().service_critical);
+
+        let stale = AidlObjectHandle::new(
+            AidlObjectKind::Dvr,
+            AidlObjectId(701),
+            AidlObjectGeneration(8),
+        );
+        assert!(context.enqueue_cleanup_retry(stale).is_err());
+        assert!(!state.snapshot().service_critical);
+    }
 
     fn poison<T>(lock: &PoisonTrackedMutex<T>) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

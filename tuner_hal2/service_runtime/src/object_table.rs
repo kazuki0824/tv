@@ -266,7 +266,11 @@ impl RuntimeObjectTable {
         lifecycle: RuntimeObjectLifecycle,
     ) -> Result<(), RuntimeObjectTableError> {
         if let Some(existing) = self.entries.get(&entry.object_id) {
-            if !existing.lifecycle.is_terminal() {
+            if !existing.lifecycle.is_terminal()
+                || self
+                    .object_close_txn
+                    .has_outstanding_obligation(existing.object_id, existing.generation)
+            {
                 return Err(RuntimeObjectTableError::DuplicateObjectId {
                     object_id: entry.object_id,
                     existing_kind: existing.object_kind,
@@ -277,7 +281,10 @@ impl RuntimeObjectTable {
         if self.entries.values().any(|existing| {
             existing.object_kind == entry.object_kind
                 && existing.ledger_id == entry.ledger_id
-                && !existing.lifecycle.is_terminal()
+                && (!existing.lifecycle.is_terminal()
+                    || self
+                        .object_close_txn
+                        .has_outstanding_obligation(existing.object_id, existing.generation))
         }) {
             return Err(RuntimeObjectTableError::DuplicateRuntimeBinding {
                 object_kind: entry.object_kind,
@@ -583,6 +590,227 @@ impl RuntimeObjectTable {
         Ok(changed)
     }
 
+    /// 子孫、対象、祖先の順で、世代付きcleanup ownerの探索範囲を列挙する。
+    fn related_cleanup_keys(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        include_target: bool,
+    ) -> Result<Vec<(AidlObjectId, AidlObjectGeneration)>, RuntimeObjectTableError> {
+        let mut parent = self.entry_checked_any(object_id, generation)?.owner;
+        let mut targets = self.descendant_object_keys(object_id, generation);
+        if include_target {
+            targets.push((object_id, generation));
+        }
+        while let Some((_, id, gen)) = parent.referenced_object() {
+            if (id, gen) == (object_id, generation) || targets.contains(&(id, gen)) {
+                break;
+            }
+            parent = self.entry_checked_any(id, gen)?.owner;
+            targets.push((id, gen));
+        }
+        Ok(targets)
+    }
+
+    pub(crate) fn has_active_cleanup_attempt_in_cascade(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<bool, RuntimeObjectTableError> {
+        Ok(self
+            .related_cleanup_keys(object_id, generation, true)?
+            .into_iter()
+            .any(|(id, gen)| self.object_close_txn.has_active_cleanup_attempt(id, gen)))
+    }
+
+    pub(crate) fn has_related_outstanding_cleanup(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<bool, RuntimeObjectTableError> {
+        Ok(self
+            .related_cleanup_keys(object_id, generation, false)?
+            .into_iter()
+            .any(|(id, gen)| self.object_close_txn.has_outstanding_obligation(id, gen)))
+    }
+
+    pub(crate) fn related_cleanup_owners(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Vec<(RuntimeObjectEntry, bool)>, RuntimeObjectTableError> {
+        self.related_cleanup_keys(object_id, generation, true)?
+            .into_iter()
+            .filter(|(id, gen)| self.object_close_txn.has_outstanding_obligation(*id, *gen))
+            .map(|(id, gen)| {
+                Ok((
+                    self.entry_checked_any(id, gen)?.clone(),
+                    self.object_close_txn.has_active_cleanup_attempt(id, gen),
+                ))
+            })
+            .collect()
+    }
+
+    /// 隔離対象を変更せず全件検証する。後続の権限発行が失敗しても状態を変えない。
+    pub(crate) fn quarantine_candidate_entries(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
+        let root = self.entry_checked_any(object_id, generation)?;
+        if matches!(
+            root.lifecycle,
+            RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+        ) {
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle: root.lifecycle,
+            });
+        }
+        let mut targets = self.descendant_object_keys(object_id, generation);
+        targets.push((object_id, generation));
+        let mut entries = Vec::with_capacity(targets.len());
+        for (id, gen) in targets {
+            let entry = self.entry_checked_any(id, gen)?;
+            if !matches!(
+                entry.lifecycle,
+                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+            ) {
+                entries.push(entry.clone());
+            }
+        }
+        Ok(entries)
+    }
+
+    pub(crate) fn begin_quarantine_cleanup(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        notifier_candidates: impl IntoIterator<Item = (AidlObjectId, AidlObjectGeneration)>,
+    ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
+        // 前検証・権限発行・lifecycle確定を同一runtime lockで実行する。
+        let entries = self.quarantine_candidate_entries(object_id, generation)?;
+        let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
+        // 子objectの独立したcleanup権限を上書きしてはならない。
+        for (child_id, child_generation) in self.descendant_object_keys(object_id, generation) {
+            if self
+                .object_close_txn
+                .has_outstanding_obligation(child_id, child_generation)
+            {
+                return Err(RuntimeObjectTableError::InvalidLifecycle {
+                    object_id: child_id,
+                    lifecycle: self
+                        .entry_checked_any(child_id, child_generation)?
+                        .lifecycle,
+                });
+            }
+        }
+        // 識別子枯渇・先行権限競合による失敗を、破壊的mutationより先に確定する。
+        self.object_close_txn
+            .begin_quarantined_cleanup(object_id, generation, notifier_candidates)
+            .map_err(|error| Self::close_txn_error(object_id, lifecycle, error))?;
+        // 全entryを検証済みのため、ここからは失敗するlookupを行わない。
+        let mut changed = Vec::with_capacity(entries.len());
+        for mut entry in entries {
+            entry.lifecycle = RuntimeObjectLifecycle::Quarantined;
+            self.entries.insert(entry.object_id, entry.clone());
+            changed.push(entry);
+        }
+        Ok(changed)
+    }
+
+    /// 物理回収完了時の全子孫状態を、未完義務を消す前に検証する。
+    fn preflight_close_completed_quarantine_cascade(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<(), RuntimeObjectTableError> {
+        let mut keys = self.descendant_object_keys(object_id, generation);
+        keys.push((object_id, generation));
+        for (id, gen) in keys {
+            let entry = self.entry_checked_any(id, gen)?;
+            if !matches!(
+                entry.lifecycle,
+                RuntimeObjectLifecycle::Quarantined | RuntimeObjectLifecycle::Closed
+            ) {
+                return Err(RuntimeObjectTableError::InvalidLifecycle {
+                    object_id: id,
+                    lifecycle: entry.lifecycle,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn close_completed_quarantine_cascade(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<(), RuntimeObjectTableError> {
+        self.preflight_close_completed_quarantine_cascade(object_id, generation)?;
+        let mut keys = self.descendant_object_keys(object_id, generation);
+        keys.push((object_id, generation));
+        for (id, gen) in keys {
+            let entry = self.entry_mut_checked_any(id, gen)?;
+            if entry.lifecycle == RuntimeObjectLifecycle::Quarantined {
+                entry.lifecycle = RuntimeObjectLifecycle::Closed;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_quarantined_cleanup_report(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        pending: &[(AidlObjectId, AidlObjectGeneration)],
+    ) -> Result<(), RuntimeObjectTableError> {
+        let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
+        if lifecycle != RuntimeObjectLifecycle::Quarantined {
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle,
+            });
+        }
+        self.preflight_close_completed_quarantine_cascade(object_id, generation)?;
+        let completed = self
+            .object_close_txn
+            .accept_quarantine_cleanup_report(object_id, generation, pending)
+            .map_err(|error| Self::close_txn_error(object_id, lifecycle, error))?;
+        if completed {
+            self.close_completed_quarantine_cascade(object_id, generation)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn notify_supervised_dvr_joined(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<(), RuntimeObjectTableError> {
+        let notifier = (object_id, generation);
+        for (root_id, root_generation) in self
+            .object_close_txn
+            .quarantine_roots_completing_on_join(notifier)
+        {
+            self.preflight_close_completed_quarantine_cascade(root_id, root_generation)?;
+        }
+        let finished = self.object_close_txn.notifier_joined(notifier);
+        for (root_id, root_generation) in finished {
+            self.close_completed_quarantine_cascade(root_id, root_generation)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn quarantine_cleanup_is_managed(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> bool {
+        self.object_close_txn
+            .has_managed_quarantine(object_id, generation)
+    }
+
     pub fn quarantine_cascade(
         &mut self,
         object_id: AidlObjectId,
@@ -879,6 +1107,485 @@ mod qg_object_lifecycle_tests {
     }
 
     #[test]
+    fn failed_cleanup_authority_prepare_leaves_all_lifecycles_unchanged() {
+        let mut table = RuntimeObjectTable::default();
+        let id = AidlObjectId(991);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                991,
+                991,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("root登録");
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                992,
+                992,
+                RuntimeOwnerRelation::Demux {
+                    demux: id,
+                    generation,
+                },
+            ))
+            .expect("子登録");
+        table.object_close_txn.exhaust_cleanup_ids_for_test();
+        assert!(table.begin_quarantine_cleanup(id, generation, []).is_err());
+        for target in [id, AidlObjectId(992)] {
+            assert_eq!(
+                table.entry(target).unwrap().lifecycle,
+                RuntimeObjectLifecycle::Live,
+                "権限発行に失敗した場合は隔離だけを確定してはならない"
+            );
+        }
+        assert!(!table
+            .object_close_txn
+            .has_outstanding_obligation(id, generation));
+    }
+
+    #[test]
+    fn failed_quarantine_completion_keeps_cleanup_obligation() {
+        let mut table = RuntimeObjectTable::default();
+        let root = AidlObjectId(9913);
+        let child = AidlObjectId(9914);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                9913,
+                9913,
+                RuntimeOwnerRelation::Root,
+            ))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                9914,
+                9914,
+                RuntimeOwnerRelation::Demux {
+                    demux: root,
+                    generation,
+                },
+            ))
+            .unwrap();
+        table
+            .begin_quarantine_cleanup(root, generation, [(child, generation)])
+            .unwrap();
+        // 回収reportの受領前に子のlifecycle検査が失敗しても、義務は残る。
+        table
+            .entry_mut_checked_any(child, generation)
+            .unwrap()
+            .lifecycle = RuntimeObjectLifecycle::Live;
+        assert!(table
+            .finish_quarantined_cleanup_report(root, generation, &[])
+            .is_err());
+        assert!(table
+            .object_close_txn
+            .has_outstanding_obligation(root, generation));
+        table
+            .entry_mut_checked_any(child, generation)
+            .unwrap()
+            .lifecycle = RuntimeObjectLifecycle::Quarantined;
+        table
+            .finish_quarantined_cleanup_report(root, generation, &[])
+            .unwrap();
+        assert_eq!(
+            table.entry(root).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert_eq!(
+            table.entry(child).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert!(!table
+            .object_close_txn
+            .has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
+    fn failed_notifier_completion_does_not_erase_cleanup_obligation() {
+        let mut table = RuntimeObjectTable::default();
+        let root = AidlObjectId(9915);
+        let child = AidlObjectId(9916);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                9915,
+                9915,
+                RuntimeOwnerRelation::Root,
+            ))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                9916,
+                9916,
+                RuntimeOwnerRelation::Demux {
+                    demux: root,
+                    generation,
+                },
+            ))
+            .unwrap();
+        table
+            .begin_quarantine_cleanup(root, generation, [(child, generation)])
+            .unwrap();
+        table
+            .finish_quarantined_cleanup_report(root, generation, &[(child, generation)])
+            .unwrap();
+        table
+            .entry_mut_checked_any(child, generation)
+            .unwrap()
+            .lifecycle = RuntimeObjectLifecycle::Live;
+        assert!(table
+            .notify_supervised_dvr_joined(child, generation)
+            .is_err());
+        assert!(table
+            .object_close_txn
+            .has_outstanding_obligation(root, generation));
+        table
+            .entry_mut_checked_any(child, generation)
+            .unwrap()
+            .lifecycle = RuntimeObjectLifecycle::Quarantined;
+        table
+            .notify_supervised_dvr_joined(child, generation)
+            .unwrap();
+        assert_eq!(
+            table.entry(root).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert_eq!(
+            table.entry(child).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert!(!table
+            .object_close_txn
+            .has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
+    fn valid_product_capacity_can_be_saturated_by_closed_old_generations() {
+        // public同時使用数82は「終了済みなのにreaper予約groupがまだ返却されていない」
+        // 旧世代を数えない。runner完了→release_groupの間に再open/再closeすると
+        // 旧generationの予約と新generationのcloseが同時に存在する。
+        use crate::worker_runtime::WorkerRuntime;
+
+        let snapshot = crate::CapabilitySnapshot::product_default();
+        snapshot.validate_dependency_closures().unwrap();
+        let capacity = snapshot.cleanup_reaper_capacity;
+        assert_eq!(capacity, 176);
+        let queue = WorkerRuntime::start_reaper_queue::<
+            (AidlObjectId, AidlObjectGeneration),
+            CleanupStep,
+            (),
+        >(
+            capacity,
+            "product-reaper-capacity-proof",
+            std::sync::Arc::new(|_, _, _| {}),
+        )
+        .unwrap();
+        let mut table = RuntimeObjectTable::default();
+        let object_id = AidlObjectId(99170);
+        let mut delayed_release = Vec::new();
+        for index in 1..=capacity {
+            let generation = AidlObjectGeneration(index as u64);
+            let mut candidate = entry(
+                AidlObjectKind::Demux,
+                object_id.0,
+                99170,
+                RuntimeOwnerRelation::Root,
+            );
+            candidate.generation = generation;
+            table
+                .insert(candidate)
+                .expect("旧世代Closed後は次世代を登録可能");
+            let (_, authority) = table
+                .begin_close_cascade_with_cleanup_authority(
+                    object_id,
+                    generation,
+                    CleanupStep::StopWorker,
+                )
+                .unwrap();
+            let attempt = table
+                .begin_close_cleanup_attempt(object_id, generation, authority)
+                .unwrap();
+            let pending = queue
+                .reserve_pending([((object_id, generation), CleanupStep::StopWorker)])
+                .expect("現世代のcleanup予約");
+            table
+                .finish_close_cleanup_attempt(
+                    object_id,
+                    generation,
+                    attempt,
+                    CloseCleanupAttemptOutcome::Complete,
+                )
+                .unwrap();
+            assert_eq!(
+                table.entry(object_id).unwrap().lifecycle,
+                RuntimeObjectLifecycle::Closed
+            );
+            // 実際のworkerがrun_cleanup_job成功後、pending.release_group直前で
+            // 一時停止したスケジューリングを予約handle保持で再現する。
+            delayed_release.push(pending);
+        }
+        // objectは常に1つしかLive/Closingではないが、古い世代の予約は176件。
+        // 公開object数82 * 2を、live数だけの推定では上限証明できない。
+        let overflow = queue
+            .reserve_pending([(
+                (object_id, AidlObjectGeneration((capacity + 1) as u64)),
+                CleanupStep::StopWorker,
+            )])
+            .err()
+            .expect("有効な製品snapshotのまま予約枠不足に到達する");
+        assert!(matches!(
+            overflow,
+            maleicacid_tuner_hal2_common::HalError::Busy { .. }
+        ));
+        for reservation in delayed_release {
+            queue.release_reservation(reservation).unwrap();
+        }
+    }
+
+    #[test]
+    fn issued_parent_cleanup_is_selected_for_autonomous_retry() {
+        let mut table = RuntimeObjectTable::default();
+        let parent = AidlObjectId(993);
+        let child = AidlObjectId(994);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                993,
+                993,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("親登録");
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                994,
+                994,
+                RuntimeOwnerRelation::Demux {
+                    demux: parent,
+                    generation,
+                },
+            ))
+            .expect("子登録");
+        let (_, authority) = table
+            .begin_close_cascade_with_cleanup_authority(parent, generation, CleanupStep::StopWorker)
+            .expect("物理cleanupを開始せず親の権限を発行する");
+        let owners = table
+            .related_cleanup_owners(child, generation)
+            .expect("回収先owner取得");
+        let (owner, active) = owners
+            .into_iter()
+            .find(|(owner, _)| owner.object_id == parent)
+            .expect("未開始の親ownerを発見");
+        assert_eq!(owner.object_id, parent);
+        assert!(!active, "未開始権限は実行中とみなしてはならない");
+        table
+            .begin_close_cleanup_attempt(parent, generation, authority)
+            .expect("親物理cleanupを開始");
+        assert!(
+            table
+                .related_cleanup_owners(child, generation)
+                .expect("実行中を検査")
+                .into_iter()
+                .find(|(owner, _)| owner.object_id == parent)
+                .expect("親owner")
+                .1
+        );
+    }
+
+    #[test]
+    fn owner_may_close_after_snapshot_without_invalidating_finished_cleanup() {
+        let mut table = RuntimeObjectTable::default();
+        let parent = AidlObjectId(9950);
+        let child = AidlObjectId(9951);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                9950,
+                9950,
+                RuntimeOwnerRelation::Root,
+            ))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                9951,
+                9951,
+                RuntimeOwnerRelation::Demux {
+                    demux: parent,
+                    generation,
+                },
+            ))
+            .unwrap();
+        let (_, authority) = table
+            .begin_close_cascade_with_cleanup_authority(parent, generation, CleanupStep::StopWorker)
+            .unwrap();
+        let snapshot = table.related_cleanup_owners(child, generation).unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].0.object_id, parent);
+        // 同期挿入点: owner照会が済んだ後、依存関係取得より前に
+        // 別のclose処理が完了するケースを決定論的に再現する。
+        let attempt = table
+            .begin_close_cleanup_attempt(parent, generation, authority)
+            .unwrap();
+        table
+            .finish_close_cleanup_attempt(
+                parent,
+                generation,
+                attempt,
+                CloseCleanupAttemptOutcome::Complete,
+            )
+            .unwrap();
+        assert!(table
+            .related_cleanup_owners(child, generation)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            table.entry(parent).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert_eq!(
+            table.entry(child).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        assert!(!table
+            .object_close_txn
+            .has_outstanding_obligation(parent, generation));
+    }
+
+    #[test]
+    fn active_child_cleanup_is_visible_from_owner_cascade() {
+        let mut table = RuntimeObjectTable::default();
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                100,
+                100,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("親Demux登録");
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                101,
+                101,
+                RuntimeOwnerRelation::Demux {
+                    demux: AidlObjectId(100),
+                    generation: AidlObjectGeneration(1),
+                },
+            ))
+            .expect("子Filter登録");
+        let (_, authority) = table
+            .begin_close_cascade_with_cleanup_authority(
+                AidlObjectId(101),
+                AidlObjectGeneration(1),
+                CleanupStep::StopWorker,
+            )
+            .expect("子Filterのclose実行権限");
+        table
+            .begin_close_cleanup_attempt(AidlObjectId(101), AidlObjectGeneration(1), authority)
+            .expect("子Filterのcleanup実行を開始");
+        assert!(table
+            .has_active_cleanup_attempt_in_cascade(AidlObjectId(100), AidlObjectGeneration(1))
+            .expect("親の隔離時に子の実行中cleanupを検出"));
+        let owners = table
+            .related_cleanup_owners(AidlObjectId(100), AidlObjectGeneration(1))
+            .expect("親のcleanup owner列挙");
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].0.object_id, AidlObjectId(101));
+        assert!(owners[0].1, "子の実行中ownerを同一正本から返す");
+        let self_owner = table
+            .related_cleanup_owners(AidlObjectId(101), AidlObjectGeneration(1))
+            .expect("対象自身のcleanup owner列挙");
+        assert_eq!(self_owner.len(), 1);
+        assert_eq!(self_owner[0].0.object_id, AidlObjectId(101));
+        assert!(self_owner[0].1);
+    }
+
+    #[test]
+    fn issued_parent_authority_blocks_child_quarantine_before_side_effects() {
+        let mut table = RuntimeObjectTable::default();
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                150,
+                150,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("親Demux登録");
+        table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                151,
+                151,
+                RuntimeOwnerRelation::Demux {
+                    demux: AidlObjectId(150),
+                    generation: AidlObjectGeneration(1),
+                },
+            ))
+            .expect("子DVR登録");
+        table
+            .begin_close_cascade_with_cleanup_authority(
+                AidlObjectId(150),
+                AidlObjectGeneration(1),
+                CleanupStep::StopWorker,
+            )
+            .expect("親close権限発行、物理cleanupは未開始");
+        assert!(table
+            .has_related_outstanding_cleanup(AidlObjectId(151), AidlObjectGeneration(1))
+            .expect("親権限の検証"));
+        assert_eq!(
+            table.entry(AidlObjectId(151)).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closing {
+                step: CleanupStep::StopWorker
+            }
+        );
+    }
+
+    #[test]
+    fn active_parent_cleanup_blocks_child_drop_leak_quarantine() {
+        let mut table = RuntimeObjectTable::default();
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                100,
+                100,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("親Demux登録");
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                101,
+                101,
+                RuntimeOwnerRelation::Demux {
+                    demux: AidlObjectId(100),
+                    generation: AidlObjectGeneration(1),
+                },
+            ))
+            .expect("子Filter登録");
+        let (_, authority) = table
+            .begin_close_cascade_with_cleanup_authority(
+                AidlObjectId(100),
+                AidlObjectGeneration(1),
+                CleanupStep::StopWorker,
+            )
+            .expect("親Demux close権限");
+        table
+            .begin_close_cleanup_attempt(AidlObjectId(100), AidlObjectGeneration(1), authority)
+            .expect("親Demux cleanup実行開始");
+        assert!(table
+            .has_active_cleanup_attempt_in_cascade(AidlObjectId(101), AidlObjectGeneration(1))
+            .expect("親のcleanup権限を子の隔離で検出する"));
+    }
+
+    #[test]
     fn quarantine_cascade_terminalizes_owner_and_descendants() {
         let mut table = RuntimeObjectTable::default();
         table
@@ -956,6 +1663,54 @@ mod qg_object_lifecycle_tests {
             .commit_close_cascade(object_id, AidlObjectGeneration(1))
             .expect("close commitが成功する");
         assert!(table.active_diagnostic_snapshots().is_empty());
+    }
+
+    #[test]
+    fn pending_supervised_quarantine_prevents_runtime_reuse_until_join() {
+        let mut table = RuntimeObjectTable::default();
+        let object_id = AidlObjectId(20);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                20,
+                20,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("DVR登録");
+        table
+            .begin_quarantine_cleanup(object_id, generation, [(object_id, generation)])
+            .expect("隔離遷移とObjectCloseTxn未完義務を同時確定");
+        table
+            .finish_quarantined_cleanup_report(object_id, generation, &[(object_id, generation)])
+            .expect("DVR WorkerをSupervisorに移管");
+        assert!(table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                21,
+                20,
+                RuntimeOwnerRelation::Root,
+            ))
+            .is_err());
+        assert_eq!(
+            table.entry(object_id).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Quarantined
+        );
+        table
+            .notify_supervised_dvr_joined(object_id, generation)
+            .expect("DVR Workerの回収が完了");
+        assert_eq!(
+            table.entry(object_id).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        table
+            .insert(entry(
+                AidlObjectKind::Dvr,
+                21,
+                20,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("物理回収の完了後ならruntimeを再利用できる");
     }
 
     #[test]

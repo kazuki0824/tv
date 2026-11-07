@@ -599,17 +599,23 @@ impl<T> WorkerRuntime<T> {
         }
     }
 
-    pub fn join(mut self) -> WorkerTerminalResult<T> {
+    pub fn join(self) -> WorkerTerminalResult<T> {
+        match self.join_with_result() {
+            Ok(terminal) => terminal,
+            Err(failure) => failure.into_terminal_result("WorkerRuntime"),
+        }
+    }
+
+    pub fn join_with_result(
+        mut self,
+    ) -> Result<WorkerTerminalResult<T>, WorkerRuntimeOwnerFailure> {
         let Some(handle) = self.handle.take() else {
-            return WorkerRuntimeOwnerFailure::ResultAlreadyCollected
-                .into_terminal_result("WorkerRuntime");
+            return Err(WorkerRuntimeOwnerFailure::ResultAlreadyCollected);
         };
         match handle.join_after_stop() {
-            Ok(Ok(result)) => result,
-            Err(failure) => failure.into_terminal_result("WorkerRuntime"),
-            Ok(Err(())) => {
-                WorkerRuntimeOwnerFailure::MissingReport.into_terminal_result("WorkerRuntime")
-            }
+            Ok(Ok(result)) => Ok(result),
+            Err(failure) => Err(failure),
+            Ok(Err(())) => Err(WorkerRuntimeOwnerFailure::MissingReport),
         }
     }
 }
@@ -743,10 +749,12 @@ where
         }
         let mut state = self.lock_state()?;
         if state.groups.len() >= state.capacity {
-            return Err(maleicacid_tuner_hal2_common::HalError::internal(
-                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "ワーカー回収予約の容量が不足しています",
-            ));
+            return Err(maleicacid_tuner_hal2_common::HalError::Busy {
+                path: None,
+                detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
+                    "ワーカー回収予約の容量が不足しています",
+                ),
+            });
         }
         if reservations
             .iter()
@@ -839,6 +847,39 @@ where
             );
         }
         Ok(())
+    }
+
+    /// 同じ回収グループに親子objectのキーを追加し、容量を再予約しない。
+    /// 既に別グループが保持しているキーは実行権限を重複させない。
+    pub fn attach_to_group(
+        &self,
+        anchor: &K,
+        key: K,
+        value: V,
+    ) -> Result<bool, maleicacid_tuner_hal2_common::HalError> {
+        let mut state = self.lock_state()?;
+        if state.entries.contains_key(&key) {
+            return Ok(false);
+        }
+        let group_id = state
+            .groups
+            .iter()
+            .find_map(|(id, keys)| keys.contains(anchor).then_some(*id))
+            .ok_or_else(|| {
+                maleicacid_tuner_hal2_common::HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "回収委譲元の予約グループが見つかりません",
+                )
+            })?;
+        let group = state.groups.get_mut(&group_id).ok_or_else(|| {
+            maleicacid_tuner_hal2_common::HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "回収委譲先の予約グループが消失しました",
+            )
+        })?;
+        group.push(key.clone());
+        state.entries.insert(key, value);
+        Ok(true)
     }
 
     pub fn update_value(
@@ -1223,10 +1264,12 @@ where
                 let send_error = match error {
                     std::sync::mpsc::TrySendError::Full(queued) => {
                         drop(queued.job);
-                        maleicacid_tuner_hal2_common::HalError::internal(
-                            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                            "ワーカー回収の容量が不足しています",
-                        )
+                        maleicacid_tuner_hal2_common::HalError::Busy {
+                            path: None,
+                            detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
+                                "ワーカー回収の容量が不足しています",
+                            ),
+                        }
                     }
                     std::sync::mpsc::TrySendError::Disconnected(queued) => {
                         drop(queued.job);
@@ -2298,6 +2341,33 @@ mod tests {
             supervisor.worker_terminal_result().unwrap(),
             Some(WorkerTerminalResult::PanicOrJoinFailure)
         );
+    }
+
+    #[test]
+    fn reaper_handoff_uses_one_reserved_group() {
+        let pending = super::WorkerRuntimeReaperPending::new(1);
+        let group = pending.reserve_group([(1u32, 10u32)]).unwrap();
+        assert!(pending.attach_to_group(&1, 2, 20).unwrap());
+        assert_eq!(pending.pending_value(&2).unwrap(), Some(20));
+        assert!(!pending.attach_to_group(&1, 2, 21).unwrap());
+        assert!(pending.reserve_group([(3, 30)]).is_err());
+        pending.release_group(group).unwrap();
+        assert_eq!(pending.pending_value(&1).unwrap(), None);
+        assert_eq!(pending.pending_value(&2).unwrap(), None);
+    }
+
+    #[test]
+    fn full_reaper_reservation_reports_busy_not_invariant_violation() {
+        let pending = super::WorkerRuntimeReaperPending::new(1);
+        let group = pending.reserve_group([(1u32, 1u32)]).unwrap();
+        let error = pending.reserve_group([(2, 2)]).unwrap_err();
+        assert!(matches!(
+            error,
+            maleicacid_tuner_hal2_common::HalError::Busy { .. }
+        ));
+        assert_eq!(pending.pending_value(&1).unwrap(), Some(1));
+        pending.release_group(group).unwrap();
+        assert!(pending.reserve_group([(2, 2)]).is_ok());
     }
 
     #[test]

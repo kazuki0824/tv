@@ -104,20 +104,25 @@ pub use lnb_ops::{
     SharedLnbRuntime,
 };
 pub use object_close_txn::{
-    close_object_use_case, finish_object_close_use_case, quarantine_object_drop_leak_use_case,
-    CloseCleanupAttemptCompletion, CloseCleanupAuthority, ObjectArtifactCleanupCommand,
-    ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind, ObjectCleanupDiagnosticKind,
-    ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot, ObjectCleanupExecutionKind,
-    ObjectCleanupExecutionReport, ObjectCleanupObjectTarget, ObjectCleanupStepOutcome,
-    ObjectCloseCleanupAttempt, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-    ObjectCloseTxn, ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind,
-    SharedObjectCleanupDiagnostics,
+    close_object_use_case, drop_leak_cleanup_supervised_targets, finish_object_close_use_case,
+    quarantine_object_drop_leak_use_case, related_cleanup_recovery_owners_use_case,
+    CloseCleanupAttemptCompletion, CloseCleanupAuthority, DvrNotifierJoinCompletion,
+    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind,
+    ObjectCleanupDiagnosticKind, ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot,
+    ObjectCleanupExecutionKind, ObjectCleanupExecutionReport, ObjectCleanupObjectTarget,
+    ObjectCleanupStepOutcome, ObjectCloseCleanupAttempt, ObjectCloseCleanupFailure,
+    ObjectCloseRuntimeExecutor, ObjectCloseTxn, ObjectCloseUseCasePlan,
+    ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind, SharedObjectCleanupDiagnostics,
 };
 pub use object_domain_cleanup::{
     ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectDomainCleanupKind,
     ObjectDomainCleanupOutcome,
 };
-pub use object_lifecycle::{aidl_object_cleanup_dependency, aidl_object_cleanup_is_terminal};
+pub use object_lifecycle::{
+    aidl_object_cleanup_dependency, aidl_object_cleanup_disposition,
+    aidl_object_cleanup_is_terminal, aidl_object_quarantine_cleanup_has_owner,
+    AidlObjectCleanupDisposition,
+};
 pub use object_method_use_case::{
     lnb_profile_supports_voltage_status, ObjectFrontendStatusReadinessValue,
     ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectMethodExecutionToken,

@@ -439,6 +439,14 @@ rollback不能、cleanup不能、正本不一致、backend実状態とregistry�
 
 サービス全体の利用停止状態はサービス所有者に一元化し、一度確定した`ServiceCritical`を再初期化で解除しない。サービスの状態ロックが汚染された場合も、利用停止と汚染検出回数を同じ観測値として読み出せること。停止状態の記録には当該ロックの正常取得を要求せず、診断参照から通常状態を変更する権限は与えない。ロック汚染時の実装規約は`GLOBAL_CODE_CONVENTION.md`の「mutex汚染復旧」と`tuner_hal2/CODE_CONVENTION.md`の「サービス状態ロックの実装入口」を参照する。
 
+全体停止が確定した場合は、既存`ServiceFailureState`を`WorkerRuntime`従属監視workerで観測し、HALプロセスを非ゼロ終了してAndroid initによる再起動に委ねる。停止bitの第二正本は作らず、通常処理から解除しない。
+
+別の正規cleanup ownerがactive_attemptを保持する場合、ownerの回収期限に達したという時間だけでは共有状態破損や世代fence不能を証明しない。reaperが期限を超えたら関連ownerの世代・active状態・予約済み権限と対象の終端状態を再確認し、局所隔離が可能ならその正規経路で処理する。別ownerが正常に進行中であれば重複物理cleanupを行わず、完了を再判定する。進行中のownerから回収権限を奪えない場合も、既存の有界回復期限1回分の猶予で完了・正規owner・局所隔離を再検査する。猶予期限を過ぎても同世代の未完義務が残り、局所隔離を確定できない場合には、物理cleanupを二重実行せずServiceCriticalへ昇格してinit再起動へ委譲する。期限だけで正常進行中のownerを即停止しないが、期限を繰り返し初期化してreaperの予約を無期限に占有しない。真の隔離不能・共有reaper破損とは区別する。
+
+関連する対象・祖先・子孫の`ObjectCloseTxn`にcleanup義務がある場合は、未完義務の存在だけで全体停止または回収済みと判断しない。元reaperの予約グループを保持したまま別の予約グループを要求すると、容量1または満杯時に循環的な受付失敗を引き起こすため、同じグループに世代付き関連キーを追加して同じworkerが順次回収する。他グループの実行中ownerは二重実行せず有界な時間で完了を確認する。owner照会後に別スレッドが正常closeを完了した場合は同じ世代の状態を再取得し、成功との競合を全体障害として報告しない。quarantine cleanupの報告・join通知は対象と子孫全件を破壊的変更前にpreflightし、失敗時に未完義務を残す。
+
+cleanupの再試行登録失敗では、対象の世代・完了状態、既存回収owner、局所隔離の成立を順に確認する。失効済み・Closed・未完義務なしの対象に加え、局所隔離を完了／Supervisorへ移管した対象や、未完のcleanupを実際に受付済みの正規ownerがある対象は共有HALを停止しない。active cleanup権限があるだけで将来の回収進行を保証したとみなさない。共有reaperの失陥は全体停止するが、正規reaperの予約容量不足（typed Busy）は共有状態破損ではない。受付結果に応じて、対象objectの隔離または既存ownerの実行中・予約済みを確認できれば、対象以外に障害を波及させない。局所隔離・回収権限・fenceが確定できない場合のみfail-closedとする。容量満杯でも、未予約の既存ownerは同じ回収基盤の監督対象として世代単位で保持し、空きの回復時に既存reaperへ受付できること。待機対象がない間は停止または新規受付まで待機し、登録との競合で起床を失わないこと。受付待ちで期限を延長せず、既存ownerの正常完了または管理済み隔離なら監督を終了する。期限までに受付・隔離のいずれも成立しなければfail-stopとする。物理cleanupの権限と義務の正本はObjectCloseTxnに残す。受付監督の実装は `tuner_hal2/aidl_service/src/cleanup_reaper.rs` を参照する。Closing／CleanupPending、Quarantined、分類不能を単に「容量満杯」だけでServiceCriticalへ昇格させない。drop-leak隔離は対象・祖先・子孫の`ObjectCloseTxn`に実行中cleanupがないことを同じruntime lock下で確定してから物理cleanupを開始する。競合が既存`ObjectCloseTxn`の有効な回収所有権に由来する場合は型付きの委譲結果を返し、重複した物理cleanupも根拠のない`ServiceCritical`昇格もしない。未完cleanup義務を完了扱いにせず、既存所有者が継続する。cleanup reaper期限では論理Quarantinedを物理回収成功とみなさない。
+
 #### 0-S-2. 状態所有者表
 
 | 資源 / 状態 | 正本所有者 | 補助所有者 | 禁止事項 |
@@ -457,11 +465,14 @@ rollback不能、cleanup不能、正本不一致、backend実状態とregistry�
 | key token | `DescramblerKeyTable` | `DescramblerSession` | refcount不整合のまま成功扱いしない |
 | LNB永続制御・物理レール状態 | `LnbRegistry` | backend adapter | 電圧・トーン・衛星位置、LNB状態世代、失敗・隔離状態、共有レールのリース・参照数、物理LNB・レール単位のI/O直列化権限の正本を一箇所に保持し、backend状態とregistry状態の乖離を通常状態にしない |
 | ワーカー | `WorkerRuntime` | 所有オブジェクト | 所有者不明ワーカーを作らない |
-
-WorkerRuntimeのcleanup reaperは、公開能力から導出する保留groupの予約容量と実行中worker数を別資源として扱う。保留予約容量および同時cleanup最大受付数を変えず、起動時はworkerを1本生成し、保留groupの同時数に応じて必要数まで遅延起動する。実行thread数は予約容量を超えない。既存queue、保留予約とgenerationの所有権、登録時点から数えるterminal期限、失敗時のquarantineと予約返却の責務はWorkerRuntimeが維持する。遅延起動失敗時は未投入予約を解放して失敗を通知する。公開能力の縮退や別reaperの追加はしない。
 | stream boundary | `StreamBoundaryTxn` | demux/filter/DVR/AV | tune/scan/source切替で境界処理を重複実装しない |
 | packet pipeline | `PacketPipeline` | `soft_demux` | packet validation・origin分類・data-path dispatchを担当し、continuity / generation stateを各canonical ownerを迂回して更新しない |
 | AV allocation | `AvSharedBacking` | `FilterHal` | イベント専用領域とactive tokenを所有する。FD番号をallocation同一性として使わない |
+
+製品既定は公開Demux 8、Filter 58、DVR 16で計82個、`cleanup_reaper_capacity=176`であり、`validate_dependency_closures()`は同時公開数の2倍以上を要求する。しかしこの余裕は「同時予約groupが常に164以下」の証明ではない。`ObjectTable::insert_with_lifecycle()`は旧世代が`Closed`かつ未完義務なしなら次世代を登録できる。一方、`WorkerRuntimeReaperQueue`はworkerによるcleanup成功・`Closed`確定の後、runnerから戻って`pending.release_group()`する。これらは同一atomic commitではなく、workerがその短い区間でスケジューリング遅延すると、旧世代のgroupを保持したまま次世代open/close・予約が成立する。公開同時object数はこの解放待ちの旧世代groupを数えない。製品既定snapshotで公開Demuxの自動AIDL ID発行→正規open/close→runtime unregister→`ObjectCloseTxn`の`Closed`確定を繰り返し、実`WorkerRuntimeReaperQueue::enqueue_reserved()`のrunnerが完了した後、`pending.release_group()`直前に同期ゲートで停止するhost試験で、旧世代groupの蓄積により予約容量176へ到達することを検証する。AIDL object IDは自動発行のため各回異なり、公開Demuxのruntime IDは解放後に再利用される。これは高頻度の運用状況と主張するものではなく、世代跨ぎの解放遅延時も容量不足だけで全体停止しないための境界検証である。
+
+WorkerRuntimeのcleanup reaperは、公開能力から導出する保留groupの予約容量と実行中worker数を別資源として扱う。保留予約容量および同時cleanup最大受付数を変えず、起動時はworkerを1本生成し、保留groupの同時数に応じて必要数まで遅延起動する。実行thread数は予約容量を超えない。既存queue、保留予約とgenerationの所有権、登録時点から数えるterminal期限、失敗時のquarantineと予約返却の責務はWorkerRuntimeが維持する。遅延起動失敗時は未投入予約を解放して失敗を通知する。公開能力の縮退や別reaperの追加はしない。
+
 
 未解放AV allocationの正本は、正の`avDataId`をkeyとするactive token台帳に記録した`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`とする。ファイル記述子番号や`fstat`の`{st_dev, st_ino, size}`をallocation identityの正本にしてはならない。`fstat`などの記述子メタデータは、採用した記憶領域実装で同一性が保証される場合だけ補助検証と診断に用いる。イベントFDの`dataId=0`解放は呼出先IFilterが保持する当該allocationのhandle使用権を対象とし、正の`dataId`解放はactive token台帳で当該IFilterの未解放allocationと転送方式を特定して行う。allocation解放成功時はtoken entryを削除し、その後activeでない正のtokenは`INVALID_ARGUMENT`として資源を変更しない。解放済みduplicate、foreign、never-issuedを永久に識別するためのtombstoneは持たない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、安全を確認できない記憶領域を隔離する。
 
