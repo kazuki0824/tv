@@ -340,10 +340,8 @@ impl AidlServiceContext {
         handle: AidlObjectHandle,
     ) -> Result<bool, HalError> {
         let parent = {
-            let runtime = TunerServiceRuntime::lock_shared(
-                &self.runtime,
-                "既存親cleanupの回収権限確認",
-            )?;
+            let runtime =
+                TunerServiceRuntime::lock_shared(&self.runtime, "既存親cleanupの回収権限確認")?;
             maleicacid_tuner_hal2_service_runtime::related_cleanup_recovery_owner_use_case(
                 &runtime,
                 handle.object_id(),
