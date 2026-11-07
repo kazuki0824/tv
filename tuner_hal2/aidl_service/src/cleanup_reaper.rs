@@ -200,7 +200,16 @@ impl CleanupReaperQueue {
         use maleicacid_tuner_hal2_service_runtime::{WorkerRuntime, WorkerTerminalResult};
         let key = CleanupJobKey::from_handle(handle);
         let mut owner = self.runtime.lock().map_err(HalError::LockPoisoned)?;
-        owner.admission_watchers.retain(|_, worker| !worker.is_finished());
+        let completed: Vec<_> = owner
+            .admission_watchers
+            .iter()
+            .filter_map(|(key, worker)| worker.is_finished().then_some(*key))
+            .collect();
+        for completed_key in completed {
+            if let Some(worker) = owner.admission_watchers.remove(&completed_key) {
+                let _ = worker.join();
+            }
+        }
         if owner.admission_watchers.contains_key(&key) {
             return Ok(());
         }
@@ -250,14 +259,28 @@ impl CleanupReaperQueue {
                     if let Ok(dependency) = context.cleanup_dependency_for_handle(handle) {
                         match queue
                             .enqueue_reserved(
-                                CleanupJob { handle, registered_at: Instant::now() },
+                                CleanupJob {
+                                    handle,
+                                    registered_at: Instant::now(),
+                                },
                                 [(key, dependency)],
                             )
                             .map_err(CleanupReaperQueue::classify_enqueue_error)
                         {
                             Ok(()) => return Ok(()),
                             Err(HalError::Busy { .. }) => {}
-                            Err(error) => return Err(error),
+                            Err(error) => {
+                                // pending照会後に他の実行主体が予約した競合。
+                                // 既存の同一キーが管理されていれば二重投入しない。
+                                if queue
+                                    .pending_value(&key)
+                                    .map_err(CleanupReaperQueue::classify_enqueue_error)?
+                                    .is_some()
+                                {
+                                    return Ok(());
+                                }
+                                return Err(error);
+                            }
                         }
                     } else if matches!(
                         context.cleanup_retry_disposition(handle)?,
