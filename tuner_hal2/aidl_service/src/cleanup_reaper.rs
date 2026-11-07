@@ -203,8 +203,27 @@ fn run_cleanup_job(
                     true
                 }
                 Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
-                    // 論理Quarantinedでなく物理cleanupの結果を確認する。
-                    crate::object_runtime::quarantine_drop_leak_object(&context, job.handle).is_ok()
+                    // 物理完了と、DVR notifier Supervisorへの回収権限移管は別。
+                    // いずれもこのcleanup reaperの担当は終了するが、後者では
+                    // supervisorが実workerの回収と完了観測を継続する。
+                    match crate::object_runtime::quarantine_drop_leak_object(&context, job.handle)
+                    {
+                        Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed) => true,
+                        Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
+                            log::warn!(
+                                "DVR notifierの回収はSupervisorへ移管済みです: handle={:?}",
+                                job.handle
+                            );
+                            true
+                        }
+                        Err(error) => {
+                            log::error!(
+                                "cleanup reaper期限の隔離に失敗しました: handle={:?} error={error:?}",
+                                job.handle
+                            );
+                            false
+                        }
+                    }
                 }
                 _ => false,
             };

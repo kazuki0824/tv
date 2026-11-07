@@ -861,9 +861,21 @@ fn dvr_notifier_owner_generation_is_fenced(
     ) else {
         return false;
     };
-    runtime
-        .dvr_status_metadata_snapshot_for_aidl_object(handle.object_id(), handle.generation())
-        .is_err()
+    // metadata照会の失敗はDVR backend欠損やregistry不整合でも起きる。
+    // ownerの世代/lifecycleだけを正本として、非Liveを明示的に確認する。
+    matches!(
+        maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_disposition(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        ),
+        Ok(
+            maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Stale
+                | maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed
+                | maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Quarantined
+        )
+    )
 }
 
 fn mark_dvr_notifier_service_critical(context: &SharedAidlServiceContext) {
@@ -1384,15 +1396,16 @@ mod tests {
     }
 
     #[test]
-    fn notifier_retry_after_fenced_quarantine_does_not_stop_service() {
+    fn notifier_retry_after_completed_quarantine_does_not_stop_service() {
         let (context, runtime, handle) = build_started_playback_dvr_context();
         let failure_state = runtime.lock().unwrap().failure_state();
-        let _plan = maleicacid_tuner_hal2_service_runtime::quarantine_object_drop_leak_use_case(
-            &mut runtime.lock().unwrap(),
-            handle.object_id(),
-            handle.generation(),
-        )
-        .expect("対象DVRの隔離planを準備");
+        // 隔離planの作成だけでは物理cleanupの証明にならない。
+        let outcome = crate::object_runtime::quarantine_drop_leak_object(&context, handle)
+            .expect("DVRの物理cleanupまで成功する");
+        assert_eq!(
+            outcome,
+            crate::object_runtime::DropLeakQuarantineOutcome::Completed
+        );
         assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));
         enqueue_cleanup_retry_after_notifier_reap(&context, handle);
         // Quarantinedを物理cleanup完了とはみなさないが、fenceのある
