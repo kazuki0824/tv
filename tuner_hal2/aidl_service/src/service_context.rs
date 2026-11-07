@@ -333,28 +333,26 @@ impl AidlServiceContext {
         )
     }
 
-    /// 既存の親close義務が自律再試行可能となることを、子ジョブ終了前に保証する。
-    /// active cleanupなら既に進行中、未開始なら正規reaperへ投入する。
-    pub(crate) fn ensure_related_cleanup_progress(
+    /// 対象・祖先・子孫の既存ObjectCloseTxnの権限を世代付きで返す。
+    /// 再予約はこの入口では行わず、reaper内の単一予約グループで実施する。
+    pub(crate) fn related_cleanup_recovery_owners(
         &self,
         handle: AidlObjectHandle,
-    ) -> Result<bool, HalError> {
-        let parent = {
-            let runtime =
-                TunerServiceRuntime::lock_shared(&self.runtime, "既存親cleanupの回収権限確認")?;
-            maleicacid_tuner_hal2_service_runtime::related_cleanup_recovery_owner_use_case(
-                &runtime,
-                handle.object_id(),
-                handle.generation(),
-            )?
-        };
-        let Some((kind, id, generation, active)) = parent else {
-            return Ok(false);
-        };
-        if !active {
-            self.enqueue_cleanup_retry(AidlObjectHandle::new(kind, id, generation))?;
-        }
-        Ok(true)
+    ) -> Result<Vec<(AidlObjectHandle, bool)>, HalError> {
+        let runtime = TunerServiceRuntime::lock_shared(&self.runtime, "関連cleanupの回収owner確認")?;
+        maleicacid_tuner_hal2_service_runtime::related_cleanup_recovery_owners_use_case(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+        )
+        .map(|owners| {
+            owners
+                .into_iter()
+                .map(|(kind, id, generation, active)| {
+                    (AidlObjectHandle::new(kind, id, generation), active)
+                })
+                .collect()
+        })
     }
 
     pub(crate) fn cleanup_is_terminal_for_handle(

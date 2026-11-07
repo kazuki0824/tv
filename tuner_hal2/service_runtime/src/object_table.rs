@@ -1180,9 +1180,10 @@ mod qg_object_lifecycle_tests {
         let (_, authority) = table
             .begin_close_cascade_with_cleanup_authority(parent, generation, CleanupStep::StopWorker)
             .expect("物理cleanupを開始せず親の権限を発行する");
-        let (owner, active) = table
-            .ancestor_cleanup_owner(child, generation)
-            .expect("回収先owner取得")
+        let owners = table.related_cleanup_owners(child, generation).expect("回収先owner取得");
+        let (owner, active) = owners
+            .into_iter()
+            .find(|(owner, _)| owner.object_id == parent)
             .expect("未開始の親ownerを発見");
         assert_eq!(owner.object_id, parent);
         assert!(!active, "未開始権限は実行中とみなしてはならない");
@@ -1191,8 +1192,10 @@ mod qg_object_lifecycle_tests {
             .expect("親物理cleanupを開始");
         assert!(
             table
-                .ancestor_cleanup_owner(child, generation)
+                .related_cleanup_owners(child, generation)
                 .expect("実行中を検査")
+                .into_iter()
+                .find(|(owner, _)| owner.object_id == parent)
                 .expect("親owner")
                 .1
         );
