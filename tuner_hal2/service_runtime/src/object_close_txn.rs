@@ -1158,6 +1158,24 @@ impl ObjectCloseTxn {
         Ok(finished)
     }
 
+    /// join通知で未完義務が消えるownerを、破壊的変更の前に列挙する。
+    /// ObjectTableはこの集合の全lifecycleを検証してから通知をcommitする。
+    pub(crate) fn quarantine_roots_completing_on_join(
+        &self,
+        notifier: (AidlObjectId, AidlObjectGeneration),
+    ) -> Vec<(AidlObjectId, AidlObjectGeneration)> {
+        self.obligations
+            .iter()
+            .filter_map(|(object_id, obligation)| {
+                let progress = obligation.quarantine.as_ref()?;
+                (progress.report_accepted
+                    && progress.pending_notifiers.len() == 1
+                    && progress.pending_notifiers.contains(&notifier))
+                .then_some((*object_id, obligation.generation))
+            })
+            .collect()
+    }
+
     /// WorkerRuntimeSupervisorが対象workerをjoinした後だけ通知する。
     /// 同じ世代への重複通知から新たなcleanup義務を生成しない。
     pub(crate) fn notifier_joined(
