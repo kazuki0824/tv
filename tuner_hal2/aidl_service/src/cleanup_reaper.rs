@@ -1228,6 +1228,123 @@ mod tests {
     }
 
     #[test]
+    fn three_owners_share_one_admission_monitor_without_global_stop() {
+        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
+        use maleicacid_tuner_hal2_service_runtime::{
+            close_object_use_case, finish_object_close_use_case, TunerServiceRuntime, WorkerRuntime,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Mutex};
+
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let mut attempts = Vec::new();
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let demux = runtime
+                .lock()
+                .unwrap()
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .unwrap();
+            let handle = AidlObjectHandle::new(
+                AidlObjectKind::Demux,
+                demux.object_id(),
+                demux.generation(),
+            );
+            let close = close_object_use_case(
+                &mut runtime.lock().unwrap(),
+                demux.object_id(),
+                demux.generation(),
+                AidlObjectKind::Demux,
+                AidlMethodCall::DemuxClose,
+            )
+            .unwrap();
+            handles.push(handle);
+            attempts.push(
+                close
+                    .begin_cleanup_attempt(&mut runtime.lock().unwrap())
+                    .unwrap(),
+            );
+        }
+        let failure = runtime.lock().unwrap().failure_state();
+        let mut snapshot = runtime.lock().unwrap().capability_snapshot();
+        snapshot.cleanup_reaper_capacity = 1;
+        snapshot.cleanup_terminal_deadline_ms = 500;
+        snapshot.cleanup_retry_schedule_ms = [0, 5, 10, 20];
+        let queue = CleanupReaperQueue::from_snapshot(snapshot);
+        let release = Arc::new(AtomicBool::new(false));
+        let release_worker = Arc::clone(&release);
+        let (started_tx, started_rx) = mpsc::channel();
+        let runner = Arc::new(
+            move |_: CleanupJob, _: _, _: maleicacid_tuner_hal2_service_runtime::WorkerContext| {
+                started_tx.send(()).unwrap();
+                while !release_worker.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            },
+        );
+        queue
+            .install(
+                WorkerRuntime::start_reaper_queue(
+                    1,
+                    "test-three-owner-admission",
+                    runner,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let unrelated = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(99990),
+            AidlObjectGeneration(1),
+        );
+        queue.enqueue(unrelated, CleanupStep::StopWorker).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let queue = Arc::new(queue);
+        let context = AidlServiceContext::from_shared_runtime_with_cleanup_reaper_for_test(
+            Arc::clone(&runtime),
+            Some(Arc::clone(&queue)),
+        );
+        for handle in &handles {
+            assert!(context.enqueue_cleanup_retry(*handle).is_ok());
+        }
+        {
+            let owner = queue.runtime.lock().unwrap();
+            assert_eq!(owner.admission_pending.len(), 2);
+            assert!(owner.admission_worker.is_some());
+        }
+        // Aのreaper予約は保持したまま、B/Cの正規closeだけを完了させる。
+        for attempt in attempts {
+            finish_object_close_use_case(
+                &mut runtime.lock().unwrap(),
+                attempt.completion,
+                Ok(()),
+            )
+            .unwrap();
+        }
+        let mut completed = false;
+        for _ in 0..300 {
+            if queue.runtime.lock().unwrap().admission_pending.is_empty() {
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        release.store(true, Ordering::Release);
+        assert!(completed, "B/Cが独立した監視容量不足を起こさず終了する");
+        assert!(!failure.snapshot().service_critical);
+        for handle in handles {
+            assert!(matches!(
+                context.cleanup_retry_disposition(handle),
+                Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
+            ));
+        }
+    }
+
+    #[test]
     fn active_owner_may_finish_after_delegation_deadline_without_hal_shutdown() {
         use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
         use maleicacid_tuner_hal2_service_runtime::{
