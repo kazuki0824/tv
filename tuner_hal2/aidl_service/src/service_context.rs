@@ -403,10 +403,21 @@ impl AidlServiceContext {
                         return Ok(());
                     }
                     Ok(crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup) => {
-                        let owners = self.related_cleanup_recovery_owners(handle)?;
-                        for (owner, active) in owners {
-                            if active || self.cleanup_reaper_queue.has_pending(owner)? {
-                                return Ok(());
+                        match self.related_cleanup_recovery_owners(handle) {
+                            Ok(owners) => {
+                                for (owner, active) in owners {
+                                    match self.cleanup_reaper_queue.has_pending(owner) {
+                                        Ok(queued) if active || queued => return Ok(()),
+                                        Ok(_) => {}
+                                        Err(owner_error) => {
+                                            log::error!("関連reaper owner照会失敗: {owner_error:?}");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(owner_error) => {
+                                log::error!("関連cleanupの正本owner確認失敗: {owner_error:?}");
                             }
                         }
                     }
