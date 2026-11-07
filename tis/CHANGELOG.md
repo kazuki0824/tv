@@ -6,6 +6,10 @@
 - Robolectric CIは実SI JNIをビルドして移設後の7クラスを実行し、各クラスの件数・失敗・skipを確認する。SI engine変更も起動条件に含め、Gradleは試験クラスごとにJVMを分けてJNI classloaderの所有権を分離する。従来のhost CIは残る試験へ実行対象と期待件数を更新する。
 - 検証はCIで実行する。実端末・製品Soong・CTS/VTSは未実施。
 
+# 2026-11-07 AV callbackの実長を受付予算へ反映
+
+- MediaEventの実長を上限へ丸めずに共有permitへ計上し、加算可能範囲を超えるbatchも既存の容量拒否・解放経路へ渡す。単一16 MiBは受付可能とし、17 MiB、複数eventでの予算超過、合算のLong超過を既存Robolectric回帰で検査する。
+
 # 2026-11-07 視聴制限と大型AVの回帰試験を併存
 
 - 親PRの個別レーティング解除回帰と本PRの大型AV受付回帰を保持し、Robolectricの期待件数を58へ更新する。
