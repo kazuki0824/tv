@@ -317,6 +317,11 @@ fn queued_old_dvr_worker_cannot_consume_playback_after_owner_quarantine() {
     .expect("Playback DVR公開");
     let object_id = dvr.runtime_entry.object_id();
     let generation = dvr.runtime_entry.generation();
+    runtime
+        .lock()
+        .unwrap()
+        .commit_prepared_child_object(object_id, generation)
+        .expect("DVRを公開確定する");
 
     ObjectMethodUseCase::execute_after_live(
         &runtime,
