@@ -1894,7 +1894,9 @@ mod tests {
         let object_id = AidlObjectId(17);
         let generation = AidlObjectGeneration(2);
         let mut other_txn = ObjectCloseTxn::new();
-        let foreign = other_txn.register_dvr_notifier(object_id, generation).unwrap();
+        let foreign = other_txn
+            .register_dvr_notifier(object_id, generation)
+            .unwrap();
         let registration = txn.register_dvr_notifier(object_id, generation).unwrap();
         assert!(txn.register_dvr_notifier(object_id, generation).is_err());
         let worker = registration

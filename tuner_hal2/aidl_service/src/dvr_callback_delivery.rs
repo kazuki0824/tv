@@ -829,28 +829,29 @@ fn spawn_dvr_status_notifier(
         DvrNotifierStart::register(&mut runtime, handle.object_id(), handle.generation())?
     };
     let thread_context = Arc::clone(context);
-    let worker = registration.spawn(
-        format!(
-            "tuner-hal2-dvr-status-{}-{}",
-            handle.object_id().0,
-            handle.generation().0
-        ),
-        move |cancel| {
-            run_dvr_status_notifier_with_terminal_diagnostic(thread_context, handle, cancel)
-        },
-        move || {
-            if let Some(supervisor) = supervisor.upgrade() {
-                supervisor.runtime.notify_worker();
-            }
-        },
-    )
-    .map_err(|error| HalError::Io {
-        backend: "DVR状態通知",
-        operation: "スレッド生成",
-        path: None,
-        errno: error.raw_os_error(),
-        detail: HalErrorDetail::new(error.to_string()),
-    })?;
+    let worker = registration
+        .spawn(
+            format!(
+                "tuner-hal2-dvr-status-{}-{}",
+                handle.object_id().0,
+                handle.generation().0
+            ),
+            move |cancel| {
+                run_dvr_status_notifier_with_terminal_diagnostic(thread_context, handle, cancel)
+            },
+            move || {
+                if let Some(supervisor) = supervisor.upgrade() {
+                    supervisor.runtime.notify_worker();
+                }
+            },
+        )
+        .map_err(|error| HalError::Io {
+            backend: "DVR状態通知",
+            operation: "スレッド生成",
+            path: None,
+            errno: error.raw_os_error(),
+            detail: HalErrorDetail::new(error.to_string()),
+        })?;
     Ok(DvrStatusNotifier { worker })
 }
 
