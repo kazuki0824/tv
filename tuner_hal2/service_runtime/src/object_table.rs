@@ -1292,6 +1292,87 @@ mod qg_object_lifecycle_tests {
     }
 
     #[test]
+    fn valid_product_capacity_can_be_saturated_by_closed_old_generations() {
+        // public同時使用数82は「終了済みなのにreaper予約groupがまだ返却されていない」
+        // 旧世代を数えない。runner完了→release_groupの間に再open/再closeすると
+        // 旧generationの予約と新generationのcloseが同時に存在する。
+        use crate::worker_runtime::WorkerRuntime;
+
+        let snapshot = crate::CapabilitySnapshot::product_default();
+        snapshot.validate_dependency_closures().unwrap();
+        let capacity = snapshot.cleanup_reaper_capacity;
+        assert_eq!(capacity, 176);
+        let queue = WorkerRuntime::start_reaper_queue::<
+            (AidlObjectId, AidlObjectGeneration),
+            CleanupStep,
+            (),
+        >(
+            capacity,
+            "product-reaper-capacity-proof",
+            std::sync::Arc::new(|_, _, _| {}),
+        )
+        .unwrap();
+        let mut table = RuntimeObjectTable::default();
+        let object_id = AidlObjectId(99170);
+        let mut delayed_release = Vec::new();
+        for index in 1..=capacity {
+            let generation = AidlObjectGeneration(index as u64);
+            let mut candidate = entry(
+                AidlObjectKind::Demux,
+                object_id.0,
+                99170,
+                RuntimeOwnerRelation::Root,
+            );
+            candidate.generation = generation;
+            table.insert(candidate).expect("旧世代Closed後は次世代を登録可能");
+            let (_, authority) = table
+                .begin_close_cascade_with_cleanup_authority(
+                    object_id,
+                    generation,
+                    CleanupStep::StopWorker,
+                )
+                .unwrap();
+            let attempt = table
+                .begin_close_cleanup_attempt(object_id, generation, authority)
+                .unwrap();
+            let pending = queue
+                .reserve_pending([((object_id, generation), CleanupStep::StopWorker)])
+                .expect("現世代のcleanup予約");
+            table
+                .finish_close_cleanup_attempt(
+                    object_id,
+                    generation,
+                    attempt,
+                    CloseCleanupAttemptOutcome::Complete,
+                )
+                .unwrap();
+            assert_eq!(
+                table.entry(object_id).unwrap().lifecycle,
+                RuntimeObjectLifecycle::Closed
+            );
+            // 実際のworkerがrun_cleanup_job成功後、pending.release_group直前で
+            // 一時停止したスケジューリングを予約handle保持で再現する。
+            delayed_release.push(pending);
+        }
+        // objectは常に1つしかLive/Closingではないが、古い世代の予約は176件。
+        // 公開object数82 * 2を、live数だけの推定では上限証明できない。
+        let overflow = queue
+            .reserve_pending([(
+                (object_id, AidlObjectGeneration((capacity + 1) as u64)),
+                CleanupStep::StopWorker,
+            )])
+            .err()
+            .expect("有効な製品snapshotのまま予約枠不足に到達する");
+        assert!(matches!(
+            overflow,
+            maleicacid_tuner_hal2_common::HalError::Busy { .. }
+        ));
+        for reservation in delayed_release {
+            queue.release_reservation(reservation).unwrap();
+        }
+    }
+
+    #[test]
     fn issued_parent_cleanup_is_selected_for_autonomous_retry() {
         let mut table = RuntimeObjectTable::default();
         let parent = AidlObjectId(993);
