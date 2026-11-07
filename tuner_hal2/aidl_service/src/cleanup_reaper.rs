@@ -222,6 +222,7 @@ fn run_cleanup_job(
         CleanupStep,
     >,
     worker: maleicacid_tuner_hal2_service_runtime::WorkerContext,
+    #[cfg(test)] deadline_checkpoint: Option<&std::sync::mpsc::Sender<()>>,
 ) {
     use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
     let origin = job;
@@ -356,11 +357,13 @@ fn run_cleanup_job(
                     ) {
                         continue;
                     }
-                    if delegated_wait.get_or_insert_with(Instant::now).elapsed()
-                        >= policy.terminal_deadline
-                    {
-                        // 期限超過は、共有stateの破損または世代fence不能の証明ではない。
-                        // 先行ownerの実行中／別reaper予約を改めて確認する。
+                    let waited = delegated_wait.get_or_insert_with(Instant::now).elapsed();
+                    if waited >= policy.terminal_deadline {
+                        // 判定後のowner変更・正常完了も同一ID/世代で再照会する。
+                        #[cfg(test)]
+                        if let Some(checkpoint) = deadline_checkpoint {
+                            let _ = checkpoint.send(());
+                        }
                         let owners = match context.related_cleanup_recovery_owners(target.handle) {
                             Ok(owners) => owners,
                             Err(error) => {
@@ -389,9 +392,11 @@ fn run_cleanup_job(
                             }
                         }
                         if !other_owner_progressing {
-                            // ownerが存在しないなら局所隔離を再試行する。
-                            // fenceを確定できない場合だけサービス停止へ昇格する。
-                            match crate::object_runtime::quarantine_drop_leak_object(&context, target.handle) {
+                            // 有効な回収ownerが消滅した場合は局所隔離を試す。
+                            match crate::object_runtime::quarantine_drop_leak_object(
+                                &context,
+                                target.handle,
+                            ) {
                                 Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
                                 | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
                                     if target.handle == origin.handle {
@@ -403,7 +408,7 @@ fn run_cleanup_job(
                                     continue;
                                 }
                                 Ok(crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup) => {
-                                    // 所有権が再取得中の競合。次回ownerを再評価する。
+                                    // owner移管の競合。残りの回復期限内で再検査する。
                                 }
                                 Err(error) => {
                                     log::error!("関連cleanupの局所隔離不能: handle={:?} error={error:?}", target.handle);
@@ -412,13 +417,40 @@ fn run_cleanup_job(
                                 }
                             }
                         }
-                        // 有効な別ownerが物理cleanupを継続している間は、経過時間のみで
-                        // HAL全体を停止しない。元の義務を保持し、完了後に再判定する。
-                        delegated_wait = Some(Instant::now());
-                        log::warn!(
-                            "関連cleanup ownerの処理継続を確認: handle={:?}",
-                            target.handle
-                        );
+                        // 元のcleanup期限に続く回復猶予は同じproduct期限1回分だけ。
+                        // 無応答ownerのactive権限を取り上げて二重cleanupすることはできない。
+                        // 本reaper予約はその間保持し、猶予を過ぎても局所fence不能なら
+                        // 既存ServiceFailureStateをfail-stopしてinitによる再起動を要求する。
+                        if waited >= policy.terminal_deadline.saturating_mul(2) {
+                            // 時間だけでは昇格しない。直前のQuarantineが
+                            // OwnedByExistingCleanupを返し、同一世代の未完義務が残る。
+                            match context.cleanup_retry_disposition(target.handle) {
+                                Ok(
+                                    AidlObjectCleanupDisposition::Stale
+                                    | AidlObjectCleanupDisposition::Closed
+                                    | AidlObjectCleanupDisposition::NoCleanupPending,
+                                ) => continue,
+                                Ok(AidlObjectCleanupDisposition::Quarantined)
+                                    if context.quarantine_cleanup_has_owner(target.handle) == Ok(true) =>
+                                {
+                                    return;
+                                }
+                                Ok(AidlObjectCleanupDisposition::RequiresIsolation)
+                                | Ok(AidlObjectCleanupDisposition::Quarantined) => {
+                                    log::error!(
+                                        "既存ownerの未完cleanupが有界回復期限を超え、世代fence付き局所隔離を確定できません: handle={:?}",
+                                        target.handle
+                                    );
+                                    mark_cleanup_reaper_critical(&context);
+                                    return;
+                                }
+                                Err(error) => {
+                                    log::error!("cleanup終端再確認に失敗: {error:?}");
+                                    mark_cleanup_reaper_critical(&context);
+                                    return;
+                                }
+                            }
+                        }
                     }
                     worker.wait_until(Instant::now().checked_add(Duration::from_millis(20)));
                     continue;
@@ -499,6 +531,9 @@ pub(crate) fn start_cleanup_reaper(
     let policy = queue.policy;
     let runner_context = context;
     let runner = Arc::new(move |job, pending, worker| {
+        #[cfg(test)]
+        run_cleanup_job(runner_context.clone(), policy, job, pending, worker, None);
+        #[cfg(not(test))]
         run_cleanup_job(runner_context.clone(), policy, job, pending, worker);
     });
     let owner = maleicacid_tuner_hal2_service_runtime::WorkerRuntime::start_reaper_queue(
@@ -765,8 +800,9 @@ mod tests {
             retry_delays: [Duration::ZERO; 4],
         };
         let (done_tx, done_rx) = mpsc::channel();
+        let (checkpoint_tx, checkpoint_rx) = mpsc::channel();
         let runner = Arc::new(move |job, pending, worker| {
-            run_cleanup_job(weak.clone(), policy, job, pending, worker);
+            run_cleanup_job(weak.clone(), policy, job, pending, worker, Some(&checkpoint_tx));
             done_tx.send(()).unwrap();
         });
         let queue =
@@ -783,8 +819,12 @@ mod tests {
                 )],
             )
             .unwrap();
+        // 実際に期限再評価分岐へ入るまで、別ownerを終了させない。
+        checkpoint_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("期限超過分岐を通過する");
+        assert!(!failure.snapshot().service_critical);
         let release = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(55));
             finish_object_close_use_case(&mut runtime.lock().unwrap(), attempt.completion, Ok(()))
                 .unwrap();
         });
