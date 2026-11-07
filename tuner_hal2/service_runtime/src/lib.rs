@@ -106,7 +106,7 @@ pub use lnb_ops::{
 pub use object_close_txn::{
     close_object_use_case, drop_leak_cleanup_supervised_targets, finish_object_close_use_case,
     finish_quarantined_cleanup_report_use_case, notify_supervised_dvr_joined_use_case,
-    quarantine_object_drop_leak_use_case, CloseCleanupAttemptCompletion, CloseCleanupAuthority,
+    quarantine_object_drop_leak_use_case, related_cleanup_recovery_owner_use_case, CloseCleanupAttemptCompletion, CloseCleanupAuthority,
     ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind,
     ObjectCleanupDiagnosticKind, ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot,
     ObjectCleanupExecutionKind, ObjectCleanupExecutionReport, ObjectCleanupObjectTarget,
