@@ -1754,7 +1754,9 @@ mod tests {
         impl ReleaseGateOnDrop {
             fn release(&self) {
                 let (lock, wake) = &*self.0;
-                *lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                *lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
                 wake.notify_all();
             }
         }
@@ -1895,9 +1897,9 @@ mod tests {
                 .wait_until_released([key], Some(remaining))
                 .expect("workerの予約groupは期限内に解放される");
         }
-        assert!(retained_keys.iter().all(|key| {
-            reaper.pending_value(key).unwrap().is_none()
-        }));
+        assert!(retained_keys
+            .iter()
+            .all(|key| { reaper.pending_value(key).unwrap().is_none() }));
         // Senderを閉じて各laneのrecvを終了させる。Weak runnerが失効するまで
         // 待つことで、テスト用のworkerを残さず終了したことを確認する。
         drop(reaper);
