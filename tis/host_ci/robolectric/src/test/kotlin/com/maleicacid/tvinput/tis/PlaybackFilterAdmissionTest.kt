@@ -4,6 +4,7 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.Context
+import android.content.ContextWrapper
 import android.database.MatrixCursor
 import android.graphics.SurfaceTexture
 import android.media.AudioFormat
@@ -12,6 +13,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaSync
+import android.media.tv.ITvInputManager
 import android.media.tv.TvContentRating
 import android.media.tv.TvContract
 import android.media.tv.TvInputManager
@@ -138,9 +140,9 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
-    @Config(shadows = [ParentalControls::class, CurrentProgramIdentity::class])
+    @Config(shadows = [CurrentProgramIdentity::class])
     fun unblockingOneRatingKeepsContentBlockedWhenTheNextProviderQueryFails() {
-        RetryFixture().use { fixture ->
+        RetryFixture(context = parentalControlsContext()).use { fixture ->
             val first = TvContentRating.createRating("test", "test", "first")
             val second = TvContentRating.createRating("test", "test", "second")
             val notifications = mutableListOf<String>()
@@ -198,13 +200,26 @@ class PlaybackFilterAdmissionTest {
         )
     }
 
-    @Implements(TvInputManager::class)
-    class ParentalControls {
-        @Implementation
-        fun isParentalControlsEnabled() = true
+    private fun parentalControlsContext(): Context {
+        val service =
+            object : ITvInputManager.Default() {
+                override fun isParentalControlsEnabled(userId: Int): Boolean = userId == 0
 
-        @Implementation
-        fun isRatingBlocked(rating: TvContentRating) = rating.domain == "test"
+                override fun isRatingBlocked(
+                    rating: String,
+                    userId: Int,
+                ): Boolean = userId == 0 && TvContentRating.unflattenFromString(rating).domain == "test"
+            }
+        val manager = TvInputManager(service, 0)
+        return object : ContextWrapper(RuntimeEnvironment.getApplication()) {
+            override fun getApplicationContext(): Context = this
+
+            override fun getSystemServiceName(serviceClass: Class<*>): String? =
+                if (serviceClass == TvInputManager::class.java) Context.TV_INPUT_SERVICE else super.getSystemServiceName(serviceClass)
+
+            override fun getSystemService(name: String): Any? =
+                if (name == Context.TV_INPUT_SERVICE) manager else super.getSystemService(name)
+        }
     }
 
     // この回帰で固定した一番組のSI JNI境界だけを置き換える。
@@ -367,10 +382,11 @@ class PlaybackFilterAdmissionTest {
     private class RetryFixture(
         audioOnly: Boolean = false,
         surfaceReady: Boolean = true,
+        context: Context = RuntimeEnvironment.getApplication(),
     ) : AutoCloseable {
         val session =
             MaleicacidLiveSession(
-                RuntimeEnvironment.getApplication(),
+                context,
                 RuntimeEnvironment.getApplication(),
                 "session-recovery-test",
                 "retry-fixture",
