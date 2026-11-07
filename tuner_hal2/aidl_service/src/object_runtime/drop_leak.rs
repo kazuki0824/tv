@@ -6,7 +6,8 @@ use super::{
 use crate::service_context::SharedAidlServiceContext;
 use maleicacid_tuner_hal2_domain_request::{AidlMethodCall, AidlObjectKind};
 use maleicacid_tuner_hal2_service_runtime::{
-    quarantine_object_drop_leak_use_case, ObjectCleanupDiagnosticRecord, TunerServiceRuntime,
+    aidl_object_cleanup_disposition, quarantine_object_drop_leak_use_case,
+    AidlObjectCleanupDisposition, ObjectCleanupDiagnosticRecord, TunerServiceRuntime,
 };
 
 pub(crate) fn drop_leak_object(
@@ -63,6 +64,25 @@ pub(crate) fn quarantine_drop_leak_object(
     let plan = {
         let mut runtime = TunerServiceRuntime::lock_shared(&runtime_handle, "Drop漏れ隔離")
             .map_err(status_from_hal_error)?;
+        match aidl_object_cleanup_disposition(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        )
+        .map_err(status_from_hal_error)?
+        {
+            AidlObjectCleanupDisposition::Stale | AidlObjectCleanupDisposition::Closed => {
+                return Ok(DropLeakQuarantineOutcome::Completed);
+            }
+            AidlObjectCleanupDisposition::QuarantineSupervised => {
+                return Ok(DropLeakQuarantineOutcome::SupervisedPending);
+            }
+            AidlObjectCleanupDisposition::QuarantineAwaitingReport => {
+                return Ok(DropLeakQuarantineOutcome::OwnedByExistingCleanup);
+            }
+            _ => {}
+        }
         quarantine_object_drop_leak_use_case(&mut runtime, handle.object_id(), handle.generation())
             .map_err(status_from_hal_error)?
     };
