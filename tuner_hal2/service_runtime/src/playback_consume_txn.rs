@@ -344,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn delayed_playback_packet_cannot_commit_after_boundary_in_worker_runtime() {
+    fn delayed_playback_packet_cannot_commit_after_boundary_on_host() {
         use std::sync::{mpsc, Arc, Mutex};
 
         // データ経路が取得済みの実PlaybackPacketを保持している段階で
@@ -420,7 +420,7 @@ mod tests {
                 1
             );
             committed_tx.send(()).expect("commit完了通知");
-            // service/runtime lockを保持したまま待ち、後続のboundaryが
+            // txn/demuxの同期lockを保持したまま待ち、後続boundaryが
             // 既に確定したcommitの途中へ割り込めないことを確認する。
             release_rx.recv().expect("lock解放");
         });
