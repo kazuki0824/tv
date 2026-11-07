@@ -63,6 +63,12 @@ struct CleanupJob {
 
 /// 物理cleanupの正本はObjectCloseTxn。ここでは既存reaperと、
 /// 満杯時の受付継続を監視する従属WorkerRuntimeのhandleだけを所有する。
+#[derive(Clone, Copy)]
+struct CleanupAdmission {
+    handle: AidlObjectHandle,
+    registered_at: Instant,
+}
+
 struct CleanupReaperQueueOwner {
     queue: Option<
         maleicacid_tuner_hal2_service_runtime::WorkerRuntimeReaperQueue<
@@ -71,10 +77,10 @@ struct CleanupReaperQueueOwner {
             CleanupJob,
         >,
     >,
-    admission_watchers: std::collections::BTreeMap<
-        CleanupJobKey,
-        maleicacid_tuner_hal2_service_runtime::WorkerRuntime<()>,
-    >,
+    /// reaperが満杯でも回収が未完のownerを列挙する受付予定。義務正本はObjectCloseTxn。
+    admission_pending: std::collections::BTreeMap<CleanupJobKey, CleanupAdmission>,
+    /// 受付の空き待ちは１本の従属WorkerRuntimeで監視し、別の容量枠を作らない。
+    admission_worker: Option<maleicacid_tuner_hal2_service_runtime::WorkerRuntime<()>>,
 }
 
 pub(crate) struct CleanupReaperQueue {
@@ -97,7 +103,8 @@ impl CleanupReaperQueue {
             runtime: PoisonTrackedMutex::new(
                 CleanupReaperQueueOwner {
                     queue: None,
-                    admission_watchers: std::collections::BTreeMap::new(),
+                    admission_pending: std::collections::BTreeMap::new(),
+                    admission_worker: None,
                 },
                 RuntimeLockKind::CleanupReaperOwner,
             ),
@@ -190,36 +197,48 @@ impl CleanupReaperQueue {
         }
     }
 
-    /// reaperが満杯でも未完cleanupを無監視にしない。物理cleanupは行わず、
-    /// 既存ObjectCloseTxnの終端を観測して元reaperへ登録する従属workerだけを起動する。
+    /// 正本ObjectCloseTxnの世代付き未完義務を、容量不足の間も1本のWorkerRuntimeで監督する。
+    /// pendingは受付スケジュールであり、物理cleanupの新たな台帳・ownerではない。
     pub(crate) fn supervise_unqueued_owner(
-        &self,
+        self: &Arc<Self>,
         context: Weak<AidlServiceContext>,
         handle: AidlObjectHandle,
     ) -> Result<(), HalError> {
         use maleicacid_tuner_hal2_service_runtime::{WorkerRuntime, WorkerTerminalResult};
+
         let key = CleanupJobKey::from_handle(handle);
         let mut owner = self.runtime.lock().map_err(HalError::LockPoisoned)?;
-        let completed: Vec<_> = owner
-            .admission_watchers
-            .iter()
-            .filter_map(|(key, worker)| worker.is_finished().then_some(*key))
-            .collect();
-        for completed_key in completed {
-            if let Some(worker) = owner.admission_watchers.remove(&completed_key) {
-                let _ = worker.join();
+        if owner.admission_worker.as_ref().is_some_and(WorkerRuntime::is_finished) {
+            if let Some(finished) = owner.admission_worker.take() {
+                match finished.join() {
+                    WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested => {}
+                    WorkerTerminalResult::RuntimeFailure(error) => {
+                        log::error!("cleanup受付監督workerのjoinが異常: {error:?}");
+                        if let Some(context) = context.upgrade() {
+                            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(
+                                &context.runtime(),
+                            );
+                        }
+                        return Err(error);
+                    }
+                    WorkerTerminalResult::PanicOrJoinFailure => {
+                        if let Some(context) = context.upgrade() {
+                            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(
+                                &context.runtime(),
+                            );
+                        }
+                        return Err(HalError::WorkerReaperPanicked);
+                    }
+                }
             }
         }
-        if owner.admission_watchers.contains_key(&key) {
-            return Ok(());
-        }
-        if owner.admission_watchers.len() >= self.policy.max_jobs {
-            return Err(HalError::Busy {
-                path: None,
-                detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
-                    "受付監視workerの上限に達しました",
-                ),
-            });
+        owner.admission_pending.entry(key).or_insert(CleanupAdmission {
+            handle,
+            registered_at: Instant::now(),
+        });
+        if let Some(worker) = owner.admission_worker.as_ref() {
+            // 新しいentryの登録は既存WorkerRuntimeのwakeで通知する。
+            return worker.wake();
         }
         let queue = owner
             .queue
@@ -231,100 +250,142 @@ impl CleanupReaperQueue {
                 )
             })?
             .clone();
-        let monitor_context = context.clone();
+        let weak_queue = Arc::downgrade(self);
+        let observer_context = context.clone();
         let budget = self.policy.terminal_deadline;
         let worker = WorkerRuntime::spawn_observed(
-            format!("tuner-hal2-cleanup-admission-{}", handle.object_id().0),
-            handle.object_id().0,
-            handle.generation().0,
+            "tuner-hal2-cleanup-admission".to_string(),
+            0,
+            1,
             move |control| -> Result<(), HalError> {
                 use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
-                let started = Instant::now();
                 loop {
                     if control.stop_requested() {
                         return Ok(());
                     }
+                    let Some(queue_owner) = weak_queue.upgrade() else {
+                        return Ok(());
+                    };
                     let Some(context) = context.upgrade() else {
                         return Ok(());
                     };
-                    match context.cleanup_retry_disposition(handle)? {
-                        AidlObjectCleanupDisposition::Stale
-                        | AidlObjectCleanupDisposition::Closed
-                        | AidlObjectCleanupDisposition::NoCleanupPending => return Ok(()),
-                        AidlObjectCleanupDisposition::Quarantined
-                            if context.quarantine_cleanup_has_owner(handle)? => return Ok(()),
-                        AidlObjectCleanupDisposition::RequiresIsolation
-                        | AidlObjectCleanupDisposition::Quarantined => {}
-                    }
-                    if queue
-                        .pending_value(&key)
-                        .map_err(CleanupReaperQueue::classify_enqueue_error)?
-                        .is_some()
-                    {
-                        return Ok(());
-                    }
-                    if let Ok(dependency) = context.cleanup_dependency_for_handle(handle) {
-                        match queue
-                            .enqueue_reserved(
-                                CleanupJob {
-                                    handle,
-                                    registered_at: Instant::now(),
-                                },
-                                [(key, dependency)],
-                            )
-                            .map_err(CleanupReaperQueue::classify_enqueue_error)
-                        {
-                            Ok(()) => return Ok(()),
-                            Err(HalError::Busy { .. }) => {}
-                            Err(error) => {
-                                // pending照会後に他の実行主体が予約した競合。
-                                // 既存の同一キーが管理されていれば二重投入しない。
-                                if queue
-                                    .pending_value(&key)
-                                    .map_err(CleanupReaperQueue::classify_enqueue_error)?
-                                    .is_some()
+                    let tasks: Vec<(CleanupJobKey, CleanupAdmission)> = {
+                        let state = queue_owner.runtime.lock().map_err(HalError::LockPoisoned)?;
+                        state
+                            .admission_pending
+                            .iter()
+                            .map(|(key, task)| (*key, *task))
+                            .collect()
+                    };
+                    for (key, task) in tasks {
+                        let handle = task.handle;
+                        let disposition = context.cleanup_retry_disposition(handle)?;
+                        let terminal = match disposition {
+                            AidlObjectCleanupDisposition::Stale
+                            | AidlObjectCleanupDisposition::Closed
+                            | AidlObjectCleanupDisposition::NoCleanupPending => true,
+                            AidlObjectCleanupDisposition::Quarantined => {
+                                context.quarantine_cleanup_has_owner(handle)?
+                            }
+                            AidlObjectCleanupDisposition::RequiresIsolation => false,
+                        };
+                        let managed = if terminal {
+                            true
+                        } else {
+                            queue
+                                .pending_value(&key)
+                                .map_err(CleanupReaperQueue::classify_enqueue_error)?
+                                .is_some()
+                        };
+                        if managed {
+                            queue_owner
+                                .runtime
+                                .lock()
+                                .map_err(HalError::LockPoisoned)?
+                                .admission_pending
+                                .remove(&key);
+                            continue;
+                        }
+                        // 既存closeが物理cleanup中ならその実行権限を奪って再実行しない。
+                        let active = context
+                            .related_cleanup_recovery_owners(handle)?
+                            .iter()
+                            .any(|(_, active)| *active);
+                        if !active {
+                            if let Ok(dependency) = context.cleanup_dependency_for_handle(handle) {
+                                match queue
+                                    .enqueue_reserved(
+                                        CleanupJob {
+                                            handle,
+                                            registered_at: Instant::now(),
+                                        },
+                                        [(key, dependency)],
+                                    )
+                                    .map_err(CleanupReaperQueue::classify_enqueue_error)
                                 {
-                                    return Ok(());
+                                    Ok(()) => {
+                                        queue_owner
+                                            .runtime
+                                            .lock()
+                                            .map_err(HalError::LockPoisoned)?
+                                            .admission_pending
+                                            .remove(&key);
+                                        continue;
+                                    }
+                                    Err(HalError::Busy { .. }) => {}
+                                    Err(error) => {
+                                        // pending照会後に別の実行主体が予約した競合は成功。
+                                        if queue
+                                            .pending_value(&key)
+                                            .map_err(CleanupReaperQueue::classify_enqueue_error)?
+                                            .is_some()
+                                        {
+                                            queue_owner
+                                                .runtime
+                                                .lock()
+                                                .map_err(HalError::LockPoisoned)?
+                                                .admission_pending
+                                                .remove(&key);
+                                            continue;
+                                        }
+                                        return Err(error);
+                                    }
                                 }
-                                return Err(error);
                             }
                         }
-                    } else if matches!(
-                        context.cleanup_retry_disposition(handle)?,
-                        AidlObjectCleanupDisposition::Stale
-                            | AidlObjectCleanupDisposition::Closed
-                            | AidlObjectCleanupDisposition::NoCleanupPending
-                    ) {
-                        return Ok(());
-                    }
-                    if started.elapsed() >= budget {
-                        // active ownerの実行権限を奪わず、既存の局所隔離だけを試す。
-                        let quarantine = crate::object_runtime::quarantine_drop_leak_object(
-                            &context,
-                            handle,
-                        );
-                        if matches!(
-                            quarantine,
-                            Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
-                                | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending)
-                        ) {
-                            return Ok(());
+                        if task.registered_at.elapsed() >= budget {
+                            // 期限は局所隔離の再確認を開始する条件であって、
+                            // 旧ownerの物理cleanupを重ねて良い根拠にはならない。
+                            let isolated = crate::object_runtime::quarantine_drop_leak_object(
+                                &context,
+                                handle,
+                            );
+                            if matches!(
+                                isolated,
+                                Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
+                                    | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending)
+                            ) || matches!(
+                                context.cleanup_retry_disposition(handle)?,
+                                AidlObjectCleanupDisposition::Stale
+                                    | AidlObjectCleanupDisposition::Closed
+                                    | AidlObjectCleanupDisposition::NoCleanupPending
+                            ) || context.quarantine_cleanup_has_owner(handle) == Ok(true)
+                            {
+                                queue_owner
+                                    .runtime
+                                    .lock()
+                                    .map_err(HalError::LockPoisoned)?
+                                    .admission_pending
+                                    .remove(&key);
+                                continue;
+                            }
+                            return Err(HalError::cleanup_failed(
+                                "cleanup reaper受付の監督期限",
+                                "既存ownerが終端せず、世代fence付きの局所隔離も確定できません",
+                            ));
                         }
-                        // 隔離との競合で別ownerが正常終了した場合は誤全体停止しない。
-                        if matches!(
-                            context.cleanup_retry_disposition(handle)?,
-                            AidlObjectCleanupDisposition::Stale
-                                | AidlObjectCleanupDisposition::Closed
-                                | AidlObjectCleanupDisposition::NoCleanupPending
-                        ) || context.quarantine_cleanup_has_owner(handle) == Ok(true)
-                        {
-                            return Ok(());
-                        }
-                        return Err(HalError::cleanup_failed(
-                            "cleanup reaper受付の監督期限",
-                            "既存ownerが終端せず、世代fence付きの局所隔離も確定できません",
-                        ));
                     }
+                    // 空き待ちも停止要求で解除でき、追加ownerは同じworkerへwakeする。
                     control.wait_until(Instant::now().checked_add(Duration::from_millis(10)));
                 }
             },
@@ -333,8 +394,8 @@ impl CleanupReaperQueue {
                     terminal,
                     WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested
                 ) {
-                    log::error!("cleanup受付監督workerが失敗しました: handle={handle:?} result={terminal:?}");
-                    if let Some(context) = monitor_context.upgrade() {
+                    log::error!("cleanup受付監督workerが失敗しました: result={terminal:?}");
+                    if let Some(context) = observer_context.upgrade() {
                         maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(
                             &context.runtime(),
                         );
@@ -349,7 +410,7 @@ impl CleanupReaperQueue {
             errno: error.raw_os_error(),
             detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(error.to_string()),
         })?;
-        owner.admission_watchers.insert(key, worker);
+        owner.admission_worker = Some(worker);
         Ok(())
     }
 
