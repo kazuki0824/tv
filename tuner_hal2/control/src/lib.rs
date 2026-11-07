@@ -863,11 +863,13 @@ where
                     "回収委譲元の予約グループが見つかりません",
                 )
             })?;
-        state
-            .groups
-            .get_mut(&group_id)
-            .expect("既存group ID")
-            .push(key.clone());
+        let group = state.groups.get_mut(&group_id).ok_or_else(|| {
+            maleicacid_tuner_hal2_common::HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "回収委譲先の予約グループが消失しました",
+            )
+        })?;
+        group.push(key.clone());
         state.entries.insert(key, value);
         Ok(true)
     }
