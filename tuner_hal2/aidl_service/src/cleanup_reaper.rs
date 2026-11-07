@@ -86,6 +86,10 @@ struct CleanupReaperQueueOwner {
 pub(crate) struct CleanupReaperQueue {
     policy: CleanupReaperPolicy,
     runtime: PoisonTrackedMutex<CleanupReaperQueueOwner>,
+    /// 元サービス状態のWeak参照。Drop中のtyped worker異常を第二正本を作らず通知する。
+    service_runtime: std::sync::OnceLock<std::sync::Weak<std::sync::Mutex<
+        maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime,
+    >>>,
 }
 
 impl Drop for CleanupReaperQueue {
@@ -106,14 +110,30 @@ impl Drop for CleanupReaperQueue {
                     | maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::StopRequested => {}
                     maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::RuntimeFailure(error) => {
                         log::error!("cleanup受付監督workerの終了失敗: {error:?}");
+                        self.record_terminal_failure("runtime failure during Drop");
                     }
                     maleicacid_tuner_hal2_service_runtime::WorkerTerminalResult::PanicOrJoinFailure => {
                         log::error!("cleanup受付監督workerのjoin/panic異常");
+                        self.record_terminal_failure("panic or join failure during Drop");
                     }
                 }
             }
         }
     }
+}
+
+/// 未受付entryがない場合は新規登録のwake/stopのみ待機する。
+/// entryがあれば最も早い物理回収期限と再受付の監視周期を比較する。
+fn next_admission_wake(
+    pending: &std::collections::BTreeMap<CleanupJobKey, CleanupAdmission>,
+    budget: Duration,
+    now: Instant,
+) -> Option<Instant> {
+    pending
+        .values()
+        .map(|task| task.registered_at.checked_add(budget).unwrap_or(now))
+        .min()
+        .map(|deadline| now.checked_add(Duration::from_millis(10)).unwrap_or(now).min(deadline))
 }
 
 impl core::fmt::Debug for CleanupReaperQueue {
@@ -136,6 +156,29 @@ impl CleanupReaperQueue {
                 },
                 RuntimeLockKind::CleanupReaperOwner,
             ),
+            service_runtime: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn bind_service_runtime(
+        &self,
+        runtime: &std::sync::Arc<std::sync::Mutex<
+            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime,
+        >>,
+    ) {
+        // 既存ServiceFailureStateへの唯一のmutation入口を参照するだけ。
+        if self.service_runtime.set(std::sync::Arc::downgrade(runtime)).is_err() {
+            log::error!("cleanup受付監督ownerのservice runtime参照が重複登録されました");
+            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(runtime);
+        }
+    }
+
+    fn record_terminal_failure(&self, reason: &'static str) {
+        if let Some(runtime) = self.service_runtime.get().and_then(std::sync::Weak::upgrade) {
+            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(&runtime);
+        } else {
+            // すでにservice runtimeそのものが破棄された後は状態変更先が存在しない。
+            log::error!("cleanup受付監督workerの異常を通知するservice runtimeが存在しません: {reason}");
         }
     }
 
@@ -420,8 +463,18 @@ impl CleanupReaperQueue {
                             ));
                         }
                     }
-                    // 空き待ちも停止要求で解除でき、追加ownerは同じworkerへwakeする。
-                    control.wait_until(Instant::now().checked_add(Duration::from_millis(10)));
+                    // 受付待ちが空ならstop/wakeを無期限で待つ。
+                    // 新規登録のwakeはWorkerWakeのatomic pending bitで保持されるため、
+                    // 空集合確認直後に登録されても起床を取りこぼさない。
+                    let next_wait = {
+                        let state = queue_owner.runtime.lock().map_err(HalError::LockPoisoned)?;
+                        next_admission_wake(
+                            &state.admission_pending,
+                            budget,
+                            Instant::now(),
+                        )
+                    };
+                    control.wait_until(next_wait);
                 }
             },
             move |terminal| {
@@ -1036,6 +1089,29 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("容量解放後も次のcleanup予約を受け付けられませんでした");
+    }
+
+    #[test]
+    fn idle_admission_worker_has_no_polling_deadline_and_new_owner_wakes_it() {
+        let pending = std::collections::BTreeMap::new();
+        let now = Instant::now();
+        assert_eq!(next_admission_wake(&pending, Duration::from_millis(20), now), None);
+        let mut pending = pending;
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Filter, AidlObjectId(111), AidlObjectGeneration(3)
+        );
+        pending.insert(
+            CleanupJobKey::from_handle(handle),
+            CleanupAdmission {
+                handle,
+                registered_at: now,
+            },
+        );
+        assert!(next_admission_wake(&pending, Duration::from_millis(20), now).is_some());
+        pending.clear();
+        assert_eq!(next_admission_wake(&pending, Duration::from_millis(20), now), None);
+        // 新規owner登録後のwake未着はWorkerWakeの原子的保留bitで防止する。
+        // 既存WorkerRuntimeのwake/stop回帰はcontrolのworker_wakeテストで確認する。
     }
 
     /// reaper満杯時の未予約active ownerを、外部APIの再呼出しなしで監督する。
