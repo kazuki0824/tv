@@ -3,6 +3,13 @@
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
 - 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
 
+# 2026-11-07 PR #227 終端回復の有界性とテスト同期を修正
+
+- 別ownerが物理cleanupを実行中／予約済みでもreaperの期限カウンターを繰り返し初期化しない。有界回復猶予の後で同世代の完了・局所fence・未完義務を再評価し、隔離不能な共有リスクだけをServiceCriticalへ伝播する。
+- AIDL回帰テストは時間固定のsleepではなく期限評価分岐のテスト専用チャネル通知でowner終了を同期させる。終了しないownerのfault injectionは別のテストで確認する。
+- TUNER_HAL_DESIGN_JA.mdの全体停止条件について、局所隔離と正規ownerの例外を明記して「のみ」の矛盾を解消。リテラル改行文字列はMarkdown空行に変換した。
+- Host CIとAndroid Soong/atestは別証跡。Android AIDL test、CTS/VTS、HAL PID再起動・Binder再接続は未検証。
+
 # 2026-11-07 PR #227 新規レビュー：受付容量・期限超過・Classifier正本追従
 
 - cleanup reaperの予約容量満杯をtyped`HalError::Busy`で通知し、既存retry scheduleに基づく有界受付再試行へ変更。容量不足だけで共有HALを停止せず、対象の局所隔離・既存ownerの進行証拠を評価し、fence不能な場合のみ全体停止へ進む。
