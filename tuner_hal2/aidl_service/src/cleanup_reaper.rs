@@ -309,6 +309,54 @@ pub(crate) fn start_cleanup_reaper(
 mod tests {
 
     #[test]
+    fn concurrent_close_cleanup_defers_quarantine_without_service_shutdown() {
+        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
+        use maleicacid_tuner_hal2_service_runtime::{
+            close_object_use_case, AidlObjectCleanupDisposition, TunerServiceRuntime,
+        };
+        use std::sync::Mutex;
+
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .expect("Demuxを公開する");
+        let close = close_object_use_case(
+            &mut runtime,
+            demux.object_id(),
+            demux.generation(),
+            AidlObjectKind::Demux,
+            AidlMethodCall::DemuxClose,
+        )
+        .expect("既存close開始");
+        let _active_attempt = close
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("既存closeの物理cleanup実行権限を取得する");
+        let failure_state = runtime.failure_state();
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Demux,
+            demux.object_id(),
+            demux.generation(),
+        );
+        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::new(Mutex::new(runtime)));
+
+        let result = crate::object_runtime::quarantine_drop_leak_object(&context, handle)
+            .expect("既存cleanup権限との競合を型付きで返す");
+        assert_eq!(
+            result,
+            crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup
+        );
+        assert_eq!(
+            context.cleanup_retry_disposition(handle),
+            Ok(AidlObjectCleanupDisposition::RequiresIsolation)
+        );
+        assert!(!failure_state.snapshot().service_critical);
+    }
+
+    #[test]
     fn poisoned_owner_slot_rejects_enqueue_with_identity() {
         let queue = CleanupReaperQueue::from_snapshot(
             maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::default()
