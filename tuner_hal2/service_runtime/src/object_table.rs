@@ -1343,6 +1343,55 @@ mod qg_object_lifecycle_tests {
     }
 
     #[test]
+    fn owner_may_close_after_snapshot_without_invalidating_finished_cleanup() {
+        let mut table = RuntimeObjectTable::default();
+        let parent = AidlObjectId(9950);
+        let child = AidlObjectId(9951);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(AidlObjectKind::Demux, 9950, 9950, RuntimeOwnerRelation::Root))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                9951,
+                9951,
+                RuntimeOwnerRelation::Demux {
+                    demux: parent,
+                    generation,
+                },
+            ))
+            .unwrap();
+        let (_, authority) = table
+            .begin_close_cascade_with_cleanup_authority(
+                parent,
+                generation,
+                CleanupStep::StopWorker,
+            )
+            .unwrap();
+        let snapshot = table.related_cleanup_owners(child, generation).unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].0.object_id, parent);
+        // 同期挿入点: owner照会が済んだ後、依存関係取得より前に
+        // 別のclose処理が完了するケースを決定論的に再現する。
+        let attempt = table
+            .begin_close_cleanup_attempt(parent, generation, authority)
+            .unwrap();
+        table
+            .finish_close_cleanup_attempt(
+                parent,
+                generation,
+                attempt,
+                CloseCleanupAttemptOutcome::Complete,
+            )
+            .unwrap();
+        assert!(table.related_cleanup_owners(child, generation).unwrap().is_empty());
+        assert_eq!(table.entry(parent).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
+        assert_eq!(table.entry(child).unwrap().lifecycle, RuntimeObjectLifecycle::Closed);
+        assert!(!table.object_close_txn.has_outstanding_obligation(parent, generation));
+    }
+
+    #[test]
     fn active_child_cleanup_is_visible_from_owner_cascade() {
         let mut table = RuntimeObjectTable::default();
         table
