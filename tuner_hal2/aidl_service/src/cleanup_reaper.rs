@@ -236,7 +236,11 @@ impl CleanupReaperQueue {
 
         let key = CleanupJobKey::from_handle(handle);
         let mut owner = self.runtime.lock().map_err(HalError::LockPoisoned)?;
-        if owner.admission_worker.as_ref().is_some_and(WorkerRuntime::is_finished) {
+        if owner
+            .admission_worker
+            .as_ref()
+            .is_some_and(WorkerRuntime::is_finished)
+        {
             if let Some(finished) = owner.admission_worker.take() {
                 match finished.join() {
                     WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested => {}
@@ -260,10 +264,13 @@ impl CleanupReaperQueue {
                 }
             }
         }
-        owner.admission_pending.entry(key).or_insert(CleanupAdmission {
-            handle,
-            registered_at: Instant::now(),
-        });
+        owner
+            .admission_pending
+            .entry(key)
+            .or_insert(CleanupAdmission {
+                handle,
+                registered_at: Instant::now(),
+            });
         if let Some(worker) = owner.admission_worker.as_ref() {
             // 新しいentryの登録は既存WorkerRuntimeのwakeで通知する。
             return worker.wake();
@@ -1189,7 +1196,8 @@ mod tests {
                 let owner = queue.runtime.lock().unwrap();
                 (
                     owner.admission_pending.contains_key(&key),
-                    owner.admission_worker
+                    owner
+                        .admission_worker
                         .as_ref()
                         .is_some_and(|worker| worker.is_finished()),
                 )
@@ -1203,7 +1211,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         release.store(true, Ordering::Release);
-        assert!(finished, "受付監督が正常完了またはfail-stopを有界時間内に確定できませんでした");
+        assert!(
+            finished,
+            "受付監督が正常完了またはfail-stopを有界時間内に確定できませんでした"
+        );
         assert_eq!(
             state.snapshot().service_critical,
             !complete_owner,
@@ -1249,11 +1260,8 @@ mod tests {
                     api: AidlApi::TunerOpenDemux,
                 })
                 .unwrap();
-            let handle = AidlObjectHandle::new(
-                AidlObjectKind::Demux,
-                demux.object_id(),
-                demux.generation(),
-            );
+            let handle =
+                AidlObjectHandle::new(AidlObjectKind::Demux, demux.object_id(), demux.generation());
             let close = close_object_use_case(
                 &mut runtime.lock().unwrap(),
                 demux.object_id(),
@@ -1288,12 +1296,7 @@ mod tests {
         );
         queue
             .install(
-                WorkerRuntime::start_reaper_queue(
-                    1,
-                    "test-three-owner-admission",
-                    runner,
-                )
-                .unwrap(),
+                WorkerRuntime::start_reaper_queue(1, "test-three-owner-admission", runner).unwrap(),
             )
             .unwrap();
         let unrelated = AidlObjectHandle::new(
@@ -1318,12 +1321,8 @@ mod tests {
         }
         // Aのreaper予約は保持したまま、B/Cの正規closeだけを完了させる。
         for attempt in attempts {
-            finish_object_close_use_case(
-                &mut runtime.lock().unwrap(),
-                attempt.completion,
-                Ok(()),
-            )
-            .unwrap();
+            finish_object_close_use_case(&mut runtime.lock().unwrap(), attempt.completion, Ok(()))
+                .unwrap();
         }
         let mut completed = false;
         for _ in 0..300 {
