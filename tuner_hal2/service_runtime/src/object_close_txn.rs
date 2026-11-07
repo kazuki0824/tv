@@ -1607,6 +1607,21 @@ fn artifact_cleanup_commands_for_drop_leak_plan(
     commands
 }
 
+/// 子の隔離を拒否した際、既存親のcleanup義務の進行先を確定する。
+pub fn related_cleanup_recovery_owner_use_case(
+    runtime: &TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+) -> Result<Option<(AidlObjectKind, AidlObjectId, AidlObjectGeneration, bool)>, HalError> {
+    runtime
+        .object_table()
+        .ancestor_cleanup_owner(object_id, generation)
+        .map(|entry| entry.map(|(entry, active)| {
+            (entry.object_kind, entry.object_id, entry.generation, active)
+        }))
+        .map_err(object_table_error_to_hal)
+}
+
 pub fn quarantine_object_drop_leak_use_case(
     runtime: &mut TunerServiceRuntime,
     object_id: AidlObjectId,

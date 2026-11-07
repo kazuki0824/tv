@@ -228,12 +228,31 @@ fn run_cleanup_job(
                     return;
                 }
                 Ok(crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup) => {
-                    // 正本ObjectCloseTxnの別の有効なcleanup権限が同一資源を所有している。
-                    // 正常な競合拒否を全体停止へ昇格せず、二重cleanupも実行しない。
-                    log::debug!(
-                        "別のObjectCloseTxnが後片付けを所有中: handle={:?}",
-                        job.handle
-                    );
+                    // 親の未開始権限を見ただけで子ジョブを終了してはならない。
+                    // 既存親ownerが実行中、または正規reaperに登録された場合だけ移管する。
+                    match context.ensure_related_cleanup_progress(job.handle) {
+                        Ok(true) => {
+                            log::debug!(
+                                "親ObjectCloseTxnの正規回収経路へ委譲: handle={:?}",
+                                job.handle
+                            );
+                            return;
+                        }
+                        Ok(false) => {
+                            log::error!(
+                                "親cleanupへの進行委譲を証明できません: handle={:?}",
+                                job.handle
+                            );
+                        }
+                        Err(error) => {
+                            log::error!(
+                                "親cleanupの回収登録に失敗: handle={:?} error={error:?}",
+                                job.handle
+                            );
+                        }
+                    }
+                    // 実行中または予約済みという証拠なしに成功終了させない。
+                    mark_cleanup_reaper_critical(&context);
                     return;
                 }
                 Err(error) => {
