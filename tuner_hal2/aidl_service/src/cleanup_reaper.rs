@@ -206,8 +206,7 @@ fn run_cleanup_job(
                     // 物理完了と、DVR notifier Supervisorへの回収権限移管は別。
                     // いずれもこのcleanup reaperの担当は終了するが、後者では
                     // supervisorが実workerの回収と完了観測を継続する。
-                    match crate::object_runtime::quarantine_drop_leak_object(&context, job.handle)
-                    {
+                    match crate::object_runtime::quarantine_drop_leak_object(&context, job.handle) {
                         Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed) => true,
                         Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
                             log::warn!(
