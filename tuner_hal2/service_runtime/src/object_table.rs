@@ -1104,6 +1104,92 @@ mod qg_object_lifecycle_tests {
     }
 
     #[test]
+    fn failed_cleanup_authority_prepare_leaves_all_lifecycles_unchanged() {
+        let mut table = RuntimeObjectTable::default();
+        let id = AidlObjectId(991);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                991,
+                991,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("root登録");
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                992,
+                992,
+                RuntimeOwnerRelation::Demux {
+                    demux: id,
+                    generation,
+                },
+            ))
+            .expect("子登録");
+        table.object_close_txn.exhaust_cleanup_ids_for_test();
+        assert!(table.begin_quarantine_cleanup(id, generation, []).is_err());
+        for target in [id, AidlObjectId(992)] {
+            assert_eq!(
+                table.entry(target).unwrap().lifecycle,
+                RuntimeObjectLifecycle::Live,
+                "権限発行に失敗した場合は隔離だけを確定してはならない"
+            );
+        }
+        assert!(!table
+            .object_close_txn
+            .has_outstanding_obligation(id, generation));
+    }
+
+    #[test]
+    fn issued_parent_cleanup_is_selected_for_autonomous_retry() {
+        let mut table = RuntimeObjectTable::default();
+        let parent = AidlObjectId(993);
+        let child = AidlObjectId(994);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                993,
+                993,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("親登録");
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                994,
+                994,
+                RuntimeOwnerRelation::Demux {
+                    demux: parent,
+                    generation,
+                },
+            ))
+            .expect("子登録");
+        let (_, authority) = table
+            .begin_close_cascade_with_cleanup_authority(
+                parent,
+                generation,
+                CleanupStep::StopWorker,
+            )
+            .expect("物理cleanupを開始せず親の権限を発行する");
+        let (owner, active) = table
+            .ancestor_cleanup_owner(child, generation)
+            .expect("回収先owner取得")
+            .expect("未開始の親ownerを発見");
+        assert_eq!(owner.object_id, parent);
+        assert!(!active, "未開始権限は実行中とみなしてはならない");
+        table
+            .begin_close_cleanup_attempt(parent, generation, authority)
+            .expect("親物理cleanupを開始");
+        assert!(table
+            .ancestor_cleanup_owner(child, generation)
+            .expect("実行中を検査")
+            .expect("親owner")
+            .1);
+    }
+
+    #[test]
     fn active_child_cleanup_is_visible_from_owner_cascade() {
         let mut table = RuntimeObjectTable::default();
         table
