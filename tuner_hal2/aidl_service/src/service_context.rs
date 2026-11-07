@@ -405,7 +405,7 @@ impl AidlServiceContext {
     ) -> Result<(), HalError> {
         let result = self
             .cleanup_dependency_for_handle(handle)
-            .and_then(|dependency| self.cleanup_reaper_queue.enqueue(handle, dependency));
+            .and_then(|_| self.cleanup_reaper_queue.enqueue(handle));
         if let Err(error) = &result {
             let shared_reaper_lost =
                 maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::cleanup_reaper_requires_service_stop(error);
@@ -414,73 +414,23 @@ impl AidlServiceContext {
                 TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
                 return result;
             }
-            match self.cleanup_retry_disposition(handle) {
+            let disposition = self.cleanup_retry_disposition(handle);
+            match disposition {
                 Ok(AidlObjectCleanupDisposition::QuarantineSupervised) => return Ok(()),
                 Ok(disposition) if disposition.recovery_settled() => return result,
-                Ok(AidlObjectCleanupDisposition::QuarantineAwaitingReport) => {
-                    let watched = self
-                        .cleanup_reaper_queue
-                        .supervise_unqueued_owner(Arc::downgrade(self), handle);
-                    if watched.is_ok() || !self.fail_cleanup_if_unsettled(handle)? {
-                        return Ok(());
-                    }
-                    return watched;
-                }
                 _ => {}
             }
-            if matches!(error.primary_error(), HalError::Busy { .. }) {
-                // 容量不足は共有状態の失陥ではない。別のreaperの予約を占有せず
-                // 既存ObjectCloseTxnの隔離処理へ移し、完了／未完義務を型付き確認する。
-                match crate::object_runtime::quarantine_drop_leak_object(self, handle) {
-                    Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
-                    | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
-                        return Ok(());
-                    }
-                    Ok(
-                        crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup,
-                    ) => match self.related_cleanup_recovery_owners(handle) {
-                        Ok(owners) => {
-                            let mut all_owners_supervised = !owners.is_empty();
-                            for (owner, active) in owners {
-                                match self.cleanup_reaper_queue.has_pending(owner) {
-                                    Ok(true) => {}
-                                    Ok(false) => {
-                                        // active権限の存在自体は将来の回収進行保証ではない。
-                                        // 全ての関連ownerを既存reaper受付へ監督付きで引き継ぐ。
-                                        if let Err(watch_error) = self
-                                            .cleanup_reaper_queue
-                                            .supervise_unqueued_owner(Arc::downgrade(self), owner)
-                                        {
-                                            if self.cleanup_retry_disposition(owner).is_ok_and(
-                                                AidlObjectCleanupDisposition::recovery_settled,
-                                            ) {
-                                                continue;
-                                            }
-                                            log::error!("未予約のcleanup owner監督失敗: owner={owner:?} active={active} error={watch_error:?}");
-                                            all_owners_supervised = false;
-                                            break;
-                                        }
-                                    }
-                                    Err(owner_error) => {
-                                        log::error!("関連reaper owner照会失敗: {owner_error:?}");
-                                        all_owners_supervised = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            if all_owners_supervised {
-                                return Ok(());
-                            }
-                        }
-                        Err(owner_error) => {
-                            log::error!("関連cleanupの正本owner確認失敗: {owner_error:?}");
-                        }
-                    },
-                    Err(status) => {
-                        log::error!("cleanup容量不足後の局所隔離失敗: {status:?}");
-                    }
+            if matches!(error.primary_error(), HalError::Busy { .. })
+                || disposition == Ok(AidlObjectCleanupDisposition::QuarantineAwaitingReport)
+            {
+                // 容量不足では実行権限を取得しない。受付または既存ownerの完了を待つ。
+                let watched = self
+                    .cleanup_reaper_queue
+                    .supervise_unqueued_owner(Arc::downgrade(self), handle);
+                if watched.is_ok() || !self.fail_cleanup_if_unsettled(handle)? {
+                    return Ok(());
                 }
-                // 物理回収のowner/fenceを証明できない場合だけ全体停止する。
+                return watched;
             }
             if !self.fail_cleanup_if_unsettled(handle)? {
                 return Ok(());
