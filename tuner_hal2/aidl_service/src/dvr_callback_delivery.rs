@@ -13,10 +13,10 @@ use maleicacid_tuner_hal2_common::{
 };
 use maleicacid_tuner_hal2_demux::DvrStatusEvent;
 use maleicacid_tuner_hal2_service_runtime::{
-    join_worker_classified, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
+    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, DvrNotifierJoinCompletion,
     CapabilitySnapshot, ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
-    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerFailureClassifier,
+    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, TunerServiceRuntime, WorkerFailureClassifier,
     WorkerRuntime, WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction,
     WorkerRuntimeSupervisorActiveEntry, WorkerRuntimeSupervisorReapingEntry,
     WorkerRuntimeSupervisorStartDisposition, WorkerRuntimeSupervisorStartOperation,
@@ -863,19 +863,29 @@ fn dvr_notifier_owner_generation_is_fenced(
     };
     // metadata照会の失敗はDVR backend欠損やregistry不整合でも起きる。
     // ownerの世代/lifecycleだけを正本として、非Liveを明示的に確認する。
-    matches!(
-        maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_disposition(
+    use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+    match maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_disposition(
             &runtime,
             handle.object_id(),
             handle.generation(),
             handle.object_kind(),
-        ),
+    ) {
         Ok(
-            maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Stale
-                | maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed
-                | maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Quarantined
-        )
-    )
+            AidlObjectCleanupDisposition::Stale
+            | AidlObjectCleanupDisposition::Closed
+            | AidlObjectCleanupDisposition::Quarantined,
+        ) => true,
+        Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
+            // 進行中のcloseが既に世代を遮断している。物理回収の結果はそのownerが確定する。
+            maleicacid_tuner_hal2_service_runtime::related_cleanup_recovery_owners_use_case(
+                &runtime,
+                handle.object_id(),
+                handle.generation(),
+            )
+            .is_ok_and(|owners| owners.into_iter().any(|(_, _, _, active)| active))
+        }
+        Ok(AidlObjectCleanupDisposition::NoCleanupPending) | Err(_) => false,
+    }
 }
 
 fn mark_dvr_notifier_service_critical(context: &SharedAidlServiceContext) {
@@ -973,7 +983,7 @@ fn finish_reaped_dvr_status_notifier(
 ) {
     let handle = job.handle;
     let restart_requested = job.restart_requested;
-    let terminal = join_worker_classified(job.notifier.worker);
+    let (terminal, join_completion) = DvrNotifierJoinCompletion::join(job.notifier.worker);
     let cleanup_result = match &terminal {
         ClassifiedWorkerTerminalResult::Normal(())
         | ClassifiedWorkerTerminalResult::StopRequested => Ok(()),
@@ -1015,7 +1025,6 @@ fn finish_reaped_dvr_status_notifier(
     };
     record_dvr_status_notifier_lifecycle_outcome(&context, handle, record);
 
-    let notifier_join_succeeded = cleanup_result.is_ok();
     match cleanup_result {
         Ok(()) if restart_requested => {
             if let Err(error) = start_dvr_status_notifier(&context, handle) {
@@ -1032,17 +1041,11 @@ fn finish_reaped_dvr_status_notifier(
 
     // 実際のjoin成功だけがObjectCloseTxnの通知worker回収義務を満たす。
     // join失敗なら未完義務と隔離状態を維持する。
-    if notifier_join_succeeded {
+    if let Some(join_completion) = join_completion {
         let runtime = context.runtime();
         let completion =
             TunerServiceRuntime::lock_shared(&runtime, "DVR notifier Supervisor回収完了通知")
-                .and_then(|mut runtime| {
-                    maleicacid_tuner_hal2_service_runtime::notify_supervised_dvr_joined_use_case(
-                        &mut runtime,
-                        handle.object_id(),
-                        handle.generation(),
-                    )
-                });
+                .and_then(|mut runtime| join_completion.finish(&mut runtime));
         if let Err(error) = completion {
             record_dvr_notifier_cleanup_control_failure(&context, handle, error);
             mark_dvr_notifier_service_critical(&context);
@@ -1421,6 +1424,27 @@ mod tests {
     }
 
     #[test]
+    fn notifier_failure_during_owned_close_keeps_service_ready() {
+        use maleicacid_tuner_hal2_domain_request::AidlMethodCall;
+        use maleicacid_tuner_hal2_service_runtime::close_object_use_case;
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let mut guard = runtime.lock().unwrap();
+        let plan = close_object_use_case(
+            &mut guard,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+            AidlMethodCall::DvrClose,
+        ).unwrap();
+        let _attempt = plan.begin_cleanup_attempt(&mut guard).unwrap();
+        let failure_state = guard.failure_state();
+        drop(guard);
+        assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));
+        fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
+        assert!(!failure_state.snapshot().service_critical);
+    }
+
+    #[test]
     fn notifier_retry_after_quarantine_does_not_stop_service() {
         let (context, runtime, handle) = build_started_playback_dvr_context();
         let failure_state = runtime.lock().unwrap().failure_state();
@@ -1436,6 +1460,9 @@ mod tests {
             }
             crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending => {
                 assert!(context.quarantine_cleanup_has_owner(handle).unwrap());
+            }
+            crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup => {
+                panic!("競合ownerのない隔離が既存cleanupへ委譲されました");
             }
         }
         assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));

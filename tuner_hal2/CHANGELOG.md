@@ -3,6 +3,13 @@
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
 - 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
 
+# 2026-11-08 DVR通知回収とcleanup受付を是正
+
+- DVRのclose中に既存ownerが世代を遮断している場合は、通知workerの故障から重複cleanupや全体停止へ進まない。通知workerの終端結果を診断に残し、join成功から発行した世代付き完了値でSupervisorの回収を確定する。
+- 隔離時の実行済みreportを消費して物理回収を確定し、ID・世代・未完一覧を別々に渡せる入口を除去する。報告前とjoin待ちを排他的に保持し、関連owner探索を集約する。
+- cleanup受付は呼出し元でsleepせず、満杯時は既存の隔離・受付監督へ渡す。受付とreaperで同じjobと登録時刻を使い、service owner消滅後のDropは異常を記録する。
+- AIDL試験の非網羅matchと別crateのprivate field参照を修正し、既存executor経由で完了権限を受け取る。正規closeとの競合、異常終端したworkerのjoin、Supervisorへ渡す対象IDと世代を検査する。Soong/atest、実HAL再起動・Binder再接続、CTS/VTSは未実施。
+
 # 2026-11-07 PR #227 製品reaper容量回帰テストの後始末を確定
 
 - `product_capacity_saturates_after_real_open_close_before_reaper_group_release`に`ReleaseGateOnDrop`を追加し、途中のassert/expect失敗・panic時も全runnerのCondvarゲートを必ず開く。
