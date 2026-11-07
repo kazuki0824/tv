@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_domain_request::AidlMethodCall;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
-use maleicacid_tuner_hal2_service_runtime::CapabilitySnapshot;
+use maleicacid_tuner_hal2_service_runtime::{AidlObjectCleanupDisposition, CapabilitySnapshot};
 
 use crate::object_handle::{AidlObjectHandle, AidlObjectKind};
 use crate::service_context::AidlServiceContext;
@@ -73,6 +73,33 @@ struct CleanupReaperQueueOwner {
     admission_pending: std::collections::BTreeMap<CleanupJobKey, CleanupJob>,
     /// 受付の空き待ちは１本の従属WorkerRuntimeで監視し、別の容量枠を作らない。
     admission_worker: Option<maleicacid_tuner_hal2_service_runtime::WorkerRuntime<()>>,
+}
+
+impl CleanupReaperQueueOwner {
+    fn track_admission(
+        &mut self,
+        key: CleanupJobKey,
+        handle: AidlObjectHandle,
+        limit: usize,
+    ) -> Result<(), HalError> {
+        if self.admission_pending.contains_key(&key) {
+            return Ok(());
+        }
+        if self.admission_pending.len() >= limit {
+            return Err(HalError::cleanup_failed(
+                "cleanup reaper受付監督",
+                "受付待ち上限に達し、未完義務を監督へ引き渡せません",
+            ));
+        }
+        self.admission_pending.insert(
+            key,
+            CleanupJob {
+                handle,
+                registered_at: Instant::now(),
+            },
+        );
+        Ok(())
+    }
 }
 
 pub(crate) struct CleanupReaperQueue {
@@ -317,10 +344,7 @@ impl CleanupReaperQueue {
                 }
             }
         }
-        owner.admission_pending.entry(key).or_insert(CleanupJob {
-            handle,
-            registered_at: Instant::now(),
-        });
+        owner.track_admission(key, handle, self.policy.max_jobs)?;
         if let Some(worker) = owner.admission_worker.as_ref() {
             // 新しいentryの登録は既存WorkerRuntimeのwakeで通知する。
             return worker.wake();
@@ -345,7 +369,6 @@ impl CleanupReaperQueue {
             1,
             move |control| -> Result<(), HalError> {
                 use crate::object_runtime::DropLeakQuarantineOutcome;
-                use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
 
                 let recovery_deadline = budget.saturating_mul(2);
                 loop {
@@ -369,23 +392,11 @@ impl CleanupReaperQueue {
                     for (key, task) in tasks {
                         let handle = task.handle;
                         let disposition = context.cleanup_retry_disposition(handle)?;
-                        let terminal = match disposition {
-                            AidlObjectCleanupDisposition::Stale
-                            | AidlObjectCleanupDisposition::Closed
-                            | AidlObjectCleanupDisposition::NoCleanupPending => true,
-                            AidlObjectCleanupDisposition::Quarantined => {
-                                context.quarantine_cleanup_has_owner(handle)?
-                            }
-                            AidlObjectCleanupDisposition::RequiresIsolation => false,
-                        };
-                        let managed = if terminal {
-                            true
-                        } else {
-                            queue
+                        let managed = disposition.recovery_settled()
+                            || queue
                                 .pending_value(&key)
                                 .map_err(CleanupReaperQueue::classify_enqueue_error)?
-                                .is_some()
-                        };
+                                .is_some();
                         if managed {
                             queue_owner
                                 .runtime
@@ -394,6 +405,24 @@ impl CleanupReaperQueue {
                                 .admission_pending
                                 .remove(&key);
                             continue;
+                        }
+                        match disposition {
+                            AidlObjectCleanupDisposition::QuarantineAwaitingReport
+                                if task.registered_at.elapsed() < recovery_deadline =>
+                            {
+                                continue;
+                            }
+                            AidlObjectCleanupDisposition::QuarantineAwaitingReport
+                            | AidlObjectCleanupDisposition::Quarantined => {
+                                if context.cleanup_retry_disposition(handle)?.recovery_settled() {
+                                    continue;
+                                }
+                                return Err(HalError::cleanup_failed(
+                                    "cleanup reaper受付の監督期限",
+                                    "隔離の物理cleanup報告を確定できません",
+                                ));
+                            }
+                            _ => {}
                         }
                         // 既存closeが物理cleanup中ならその実行権限を奪って再実行しない。
                         let active = context
@@ -447,12 +476,7 @@ impl CleanupReaperQueue {
                                 isolated,
                                 Ok(DropLeakQuarantineOutcome::Completed
                                     | DropLeakQuarantineOutcome::SupervisedPending)
-                            ) || matches!(
-                                context.cleanup_retry_disposition(handle)?,
-                                AidlObjectCleanupDisposition::Stale
-                                    | AidlObjectCleanupDisposition::Closed
-                                    | AidlObjectCleanupDisposition::NoCleanupPending
-                            ) || context.quarantine_cleanup_has_owner(handle)?
+                            ) || context.cleanup_retry_disposition(handle)?.recovery_settled()
                                 || queue
                                     .pending_value(&key)
                                     .map_err(CleanupReaperQueue::classify_enqueue_error)?
@@ -591,12 +615,13 @@ fn run_cleanup_job(
     worker: maleicacid_tuner_hal2_service_runtime::WorkerContext,
     #[cfg(test)] deadline_checkpoint: Option<&std::sync::mpsc::Sender<()>>,
 ) {
-    use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+    use crate::object_runtime::DropLeakQuarantineOutcome;
+
     let origin = job;
     let origin_key = CleanupJobKey::from_handle(origin.handle);
+    let recovery_deadline = policy.terminal_deadline.saturating_mul(2);
     let mut target = origin;
     let mut attempt = 0usize;
-    let mut delegated_wait = None::<Instant>;
     'job: loop {
         if worker.stop_requested() {
             return;
@@ -604,256 +629,112 @@ fn run_cleanup_job(
         let Some(context) = context.upgrade() else {
             return;
         };
-        let disposition = context.cleanup_retry_disposition(target.handle);
-        match disposition {
-            Ok(
-                AidlObjectCleanupDisposition::Stale
-                | AidlObjectCleanupDisposition::Closed
-                | AidlObjectCleanupDisposition::NoCleanupPending,
-            ) => {
+        let elapsed = origin.registered_at.elapsed();
+        match context.cleanup_retry_disposition(target.handle) {
+            Ok(disposition) if disposition.recovery_settled() => {
                 if target.handle == origin.handle {
                     return;
                 }
                 target = origin;
                 attempt = 0;
-                delegated_wait = None;
                 continue;
             }
-            Ok(AidlObjectCleanupDisposition::Quarantined) => {
-                if context.quarantine_cleanup_has_owner(target.handle) == Ok(true) {
-                    if target.handle == origin.handle {
-                        return;
-                    }
-                    target = origin;
-                    attempt = 0;
-                    delegated_wait = None;
-                    continue;
-                }
-                mark_cleanup_reaper_critical(&context);
-                return;
+            Ok(AidlObjectCleanupDisposition::QuarantineAwaitingReport)
+                if elapsed < recovery_deadline =>
+            {
+                let delay = policy.retry_delays[1].min(recovery_deadline.saturating_sub(elapsed));
+                worker.wait_until(Instant::now().checked_add(delay));
+                continue;
             }
             Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {}
-            Err(error) => {
+            disposition => {
                 log::error!(
-                    "cleanup reaper対象の状態確認失敗: handle={:?} error={error:?}",
+                    "cleanup reaper対象の隔離報告を確定できません: handle={:?} disposition={disposition:?}",
                     target.handle
                 );
                 mark_cleanup_reaper_critical(&context);
                 return;
             }
         }
-        if target.registered_at.elapsed() >= policy.terminal_deadline {
-            match crate::object_runtime::quarantine_drop_leak_object(&context, target.handle) {
-                Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
-                | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
-                    if target.handle == origin.handle {
+        // 関連ownerの通常closeは、元の予約から測った残りの回復猶予だけ試す。
+        let deadline = if target.handle == origin.handle {
+            policy.terminal_deadline
+        } else {
+            recovery_deadline
+        };
+        if elapsed >= deadline {
+            let isolation = crate::object_runtime::quarantine_drop_leak_object(&context, target.handle);
+            if matches!(
+                isolation,
+                Ok(DropLeakQuarantineOutcome::Completed | DropLeakQuarantineOutcome::SupervisedPending)
+            ) || context.cleanup_retry_disposition(target.handle)
+                .is_ok_and(AidlObjectCleanupDisposition::recovery_settled)
+            {
+                if target.handle == origin.handle {
+                    return;
+                }
+                target = origin;
+                attempt = 0;
+                continue;
+            }
+            if matches!(isolation, Ok(DropLeakQuarantineOutcome::OwnedByExistingCleanup))
+                && origin.registered_at.elapsed() < recovery_deadline
+            {
+                let owners = match context.related_cleanup_recovery_owners(target.handle) {
+                    Ok(owners) => owners,
+                    Err(error) => {
+                        log::error!("関連cleanup ownerの列挙失敗: {error:?}");
+                        mark_cleanup_reaper_critical(&context);
                         return;
                     }
-                    target = origin;
-                    attempt = 0;
-                    delegated_wait = None;
-                    continue;
-                }
-                Ok(crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup) => {
-                    let owners = match context.related_cleanup_recovery_owners(target.handle) {
-                        Ok(owners) => owners,
+                };
+                // 追加の予約枠を取らず、同じgroupへ未開始ownerを引き継ぐ。
+                for (owner, active) in owners {
+                    if active || owner == target.handle {
+                        continue;
+                    }
+                    let Ok(dependency) = context.cleanup_dependency_for_handle(owner) else {
+                        // 並行closeや隔離開始で依存関係が消えることがある。
+                        continue;
+                    };
+                    let key = CleanupJobKey::from_handle(owner);
+                    match pending.attach_to_group(&origin_key, key, dependency) {
+                        Ok(true) => {
+                            target.handle = owner;
+                            attempt = 0;
+                            continue 'job;
+                        }
+                        Ok(false) => {}
                         Err(error) => {
-                            log::error!("関連cleanup ownerの列挙失敗: {error:?}");
+                            log::error!("関連cleanupの予約移管失敗: {error:?}");
                             mark_cleanup_reaper_critical(&context);
                             return;
                         }
-                    };
-                    // 未開始のownerは、現在のreaper予約グループを使って回収する。
-                    // 同一・祖先・子孫いずれのownerでも別の予約枠を必要としない。
-                    for (owner, active) in owners {
-                        if active || owner == target.handle {
-                            continue;
-                        }
-                        let key = CleanupJobKey::from_handle(owner);
-                        match pending.pending_value(&key) {
-                            Ok(Some(_)) => continue,
-                            Ok(None) => {}
-                            Err(error) => {
-                                log::error!("関連cleanupの予約照会失敗: {error:?}");
-                                mark_cleanup_reaper_critical(&context);
-                                return;
-                            }
-                        }
-                        let dependency = match context.cleanup_dependency_for_handle(owner) {
-                            Ok(dependency) => dependency,
-                            Err(error) => {
-                                // owner確認後に別スレッドがcleanupを完了した場合は正常競合。
-                                if matches!(
-                                    context.cleanup_retry_disposition(owner),
-                                    Ok(AidlObjectCleanupDisposition::Stale
-                                        | AidlObjectCleanupDisposition::Closed
-                                        | AidlObjectCleanupDisposition::NoCleanupPending)
-                                ) || context.quarantine_cleanup_has_owner(owner) == Ok(true)
-                                {
-                                    continue;
-                                }
-                                log::debug!("関連cleanupの依存関係が変化しました: owner={owner:?} error={error:?}");
-                                continue;
-                            }
-                        };
-                        match pending.attach_to_group(&origin_key, key, dependency) {
-                            Ok(true) => {
-                                target = CleanupJob {
-                                    handle: owner,
-                                    registered_at: Instant::now(),
-                                };
-                                attempt = 0;
-                                delegated_wait = None;
-                                continue 'job;
-                            }
-                            Ok(false) => {}
-                            Err(error) => {
-                                log::error!("関連cleanupの予約移管失敗: {error:?}");
-                                mark_cleanup_reaper_critical(&context);
-                                return;
-                            }
-                        }
                     }
-                    // 別の既存ownerが処理中または予約済み。重複cleanupを行わず
-                    // その結果を期限付きで再照会する。
-                    if matches!(
-                        context.cleanup_retry_disposition(target.handle),
-                        Ok(AidlObjectCleanupDisposition::Stale
-                            | AidlObjectCleanupDisposition::Closed
-                            | AidlObjectCleanupDisposition::NoCleanupPending)
-                    ) {
-                        continue;
-                    }
-                    let waited = delegated_wait.get_or_insert_with(Instant::now).elapsed();
-                    if waited >= policy.terminal_deadline {
-                        // 判定後のowner変更・正常完了も同一ID/世代で再照会する。
-                        let owners = match context.related_cleanup_recovery_owners(target.handle) {
-                            Ok(owners) => owners,
-                            Err(error) => {
-                                log::error!("期限後の関連cleanup owner確認失敗: {error:?}");
-                                mark_cleanup_reaper_critical(&context);
-                                return;
-                            }
-                        };
-                        let mut other_owner_progressing = false;
-                        for (owner, active) in owners {
-                            if active {
-                                other_owner_progressing = true;
-                                break;
-                            }
-                            match pending.pending_value(&CleanupJobKey::from_handle(owner)) {
-                                Ok(Some(_)) => {
-                                    other_owner_progressing = true;
-                                    break;
-                                }
-                                Ok(None) => {}
-                                Err(error) => {
-                                    log::error!("期限後のreaper予約確認失敗: {error:?}");
-                                    mark_cleanup_reaper_critical(&context);
-                                    return;
-                                }
-                            }
-                        }
-                        if !other_owner_progressing {
-                            // 有効な回収ownerが消滅した場合は局所隔離を試す。
-                            match crate::object_runtime::quarantine_drop_leak_object(
-                                &context,
-                                target.handle,
-                            ) {
-                                Ok(crate::object_runtime::DropLeakQuarantineOutcome::Completed)
-                                | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
-                                    if target.handle == origin.handle {
-                                        return;
-                                    }
-                                    target = origin;
-                                    attempt = 0;
-                                    delegated_wait = None;
-                                    continue;
-                                }
-                                Ok(crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup) => {
-                                    // owner移管の競合。残りの回復期限内で再検査する。
-                                }
-                                Err(error) => {
-                                    log::error!("関連cleanupの局所隔離不能: handle={:?} error={error:?}", target.handle);
-                                    mark_cleanup_reaper_critical(&context);
-                                    return;
-                                }
-                            }
-                        }
-                        // 元のcleanup期限に続く回復猶予は同じproduct期限1回分だけ。
-                        // 無応答ownerのactive権限を取り上げて二重cleanupすることはできない。
-                        // 本reaper予約はその間保持し、猶予を過ぎても局所fence不能なら
-                        // 既存ServiceFailureStateをfail-stopしてinitによる再起動を要求する。
-                        if waited >= policy.terminal_deadline.saturating_mul(2) {
-                            // 時間だけでは昇格しない。直前のQuarantineが
-                            // OwnedByExistingCleanupを返し、同一世代の未完義務が残る。
-                            match context.cleanup_retry_disposition(target.handle) {
-                                Ok(
-                                    AidlObjectCleanupDisposition::Stale
-                                    | AidlObjectCleanupDisposition::Closed
-                                    | AidlObjectCleanupDisposition::NoCleanupPending,
-                                ) => continue,
-                                Ok(AidlObjectCleanupDisposition::Quarantined)
-                                    if context.quarantine_cleanup_has_owner(target.handle)
-                                        == Ok(true) =>
-                                {
-                                    return;
-                                }
-                                Ok(AidlObjectCleanupDisposition::RequiresIsolation)
-                                | Ok(AidlObjectCleanupDisposition::Quarantined) => {
-                                    log::error!(
-                                        "既存ownerの未完cleanupが有界回復期限を超え、世代fence付き局所隔離を確定できません: handle={:?}",
-                                        target.handle
-                                    );
-                                    mark_cleanup_reaper_critical(&context);
-                                    return;
-                                }
-                                Err(error) => {
-                                    log::error!("cleanup終端再確認に失敗: {error:?}");
-                                    mark_cleanup_reaper_critical(&context);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    // 別ownerの進行確認が済んでからテスト用同期点を通知する。
-                    #[cfg(test)]
-                    if waited >= policy.terminal_deadline {
-                        if let Some(checkpoint) = deadline_checkpoint {
-                            let _ = checkpoint.send(());
-                        }
-                    }
-                    worker.wait_until(Instant::now().checked_add(policy.retry_delays[1]));
-                    continue;
                 }
-                Err(error) => {
-                    if matches!(
-                        context.cleanup_retry_disposition(target.handle),
-                        Ok(AidlObjectCleanupDisposition::Stale
-                            | AidlObjectCleanupDisposition::Closed
-                            | AidlObjectCleanupDisposition::NoCleanupPending)
-                    ) {
-                        continue;
-                    }
-                    log::error!(
-                        "期限到達後のcleanup隔離失敗: handle={:?} error={error:?}",
-                        target.handle
-                    );
-                    mark_cleanup_reaper_critical(&context);
-                    return;
+                #[cfg(test)]
+                if let Some(checkpoint) = deadline_checkpoint {
+                    let _ = checkpoint.send(());
                 }
+                let delay = policy.retry_delays[1]
+                    .min(recovery_deadline.saturating_sub(origin.registered_at.elapsed()));
+                worker.wait_until(Instant::now().checked_add(delay));
+                continue;
             }
+            log::error!(
+                "cleanup reaper期限までに局所回収を確定できません: handle={:?} result={isolation:?}",
+                target.handle
+            );
+            mark_cleanup_reaper_critical(&context);
+            return;
         }
         let dependency = match context.cleanup_dependency_for_handle(target.handle) {
             Ok(dependency) => dependency,
             Err(error) => {
-                if matches!(
-                    context.cleanup_retry_disposition(target.handle),
-                    Ok(AidlObjectCleanupDisposition::Stale
-                        | AidlObjectCleanupDisposition::Closed
-                        | AidlObjectCleanupDisposition::NoCleanupPending)
-                ) || context.quarantine_cleanup_has_owner(target.handle) == Ok(true)
-                {
+                if context.cleanup_retry_disposition(target.handle).is_ok_and(|state| {
+                    state.recovery_settled()
+                        || state == AidlObjectCleanupDisposition::QuarantineAwaitingReport
+                }) {
                     continue;
                 }
                 log::error!(
@@ -879,7 +760,6 @@ fn run_cleanup_job(
             }
             target = origin;
             attempt = 0;
-            delegated_wait = None;
             continue;
         }
         attempt = attempt.saturating_add(1);
@@ -888,9 +768,7 @@ fn run_cleanup_job(
             .get(attempt)
             .copied()
             .unwrap_or(Duration::from_millis(1_000));
-        let remaining = policy
-            .terminal_deadline
-            .saturating_sub(target.registered_at.elapsed());
+        let remaining = deadline.saturating_sub(origin.registered_at.elapsed());
         worker.wait_until(Instant::now().checked_add(delay.min(remaining)));
     }
 }
@@ -1114,7 +992,7 @@ mod tests {
         // 別のreaper予約を要求すると、子が容量を保持中のため必ず失敗する。
         let policy = CleanupReaperPolicy {
             max_jobs: 1,
-            terminal_deadline: Duration::from_millis(20),
+            terminal_deadline: Duration::from_millis(250),
             retry_delays: [Duration::ZERO; 4],
         };
         let weak = Arc::downgrade(&context);
@@ -1134,7 +1012,7 @@ mod tests {
             .enqueue_reserved(
                 CleanupJob {
                     handle: child_handle,
-                    registered_at: Instant::now() - Duration::from_secs(1),
+                    registered_at: Instant::now() - Duration::from_millis(275),
                 },
                 [(CleanupJobKey::from_handle(child_handle), dependency)],
             )
@@ -1325,6 +1203,36 @@ mod tests {
         queue.bind_service_runtime(&runtime);
         drop(runtime);
         queue.record_terminal_failure("test join failure");
+    }
+
+    #[test]
+    fn admission_bound_preserves_existing_generations_and_deadlines() {
+        for limit in [1, CapabilitySnapshot::product_default().cleanup_reaper_capacity] {
+            let queue = CleanupReaperQueue::from_snapshot(CapabilitySnapshot::product_default());
+            let mut owner = queue.runtime.lock().unwrap();
+            for generation in 1..=limit {
+                let handle = AidlObjectHandle::new(
+                    AidlObjectKind::Demux,
+                    AidlObjectId(1),
+                    AidlObjectGeneration(generation as u64),
+                );
+                owner.track_admission(CleanupJobKey::from_handle(handle), handle, limit).unwrap();
+            }
+            let first = AidlObjectHandle::new(
+                AidlObjectKind::Demux, AidlObjectId(1), AidlObjectGeneration(1),
+            );
+            let key = CleanupJobKey::from_handle(first);
+            let original = owner.admission_pending[&key].registered_at;
+            owner.track_admission(key, first, limit).unwrap();
+            assert_eq!(owner.admission_pending[&key].registered_at, original);
+            let next = AidlObjectHandle::new(
+                AidlObjectKind::Demux,
+                AidlObjectId(1),
+                AidlObjectGeneration(limit as u64 + 1),
+            );
+            assert!(owner.track_admission(CleanupJobKey::from_handle(next), next, limit).is_err());
+            assert_eq!(owner.admission_pending.len(), limit);
+        }
     }
 
     #[test]
@@ -1577,7 +1485,7 @@ mod tests {
         }
         let failure = runtime.lock().unwrap().failure_state();
         let mut snapshot = runtime.lock().unwrap().capability_snapshot();
-        snapshot.cleanup_reaper_capacity = 1;
+        snapshot.cleanup_reaper_capacity = 2;
         snapshot.cleanup_terminal_deadline_ms = 500;
         snapshot.cleanup_retry_schedule_ms = [0, 5, 10, 20];
         let queue = CleanupReaperQueue::from_snapshot(snapshot);
@@ -1646,7 +1554,7 @@ mod tests {
     }
 
     #[test]
-    fn active_owner_may_finish_after_delegation_deadline_without_hal_shutdown() {
+    fn active_owner_may_finish_during_recovery_grace_without_hal_shutdown() {
         use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall};
         use maleicacid_tuner_hal2_service_runtime::{
             close_object_use_case, finish_object_close_use_case, TunerServiceRuntime, WorkerRuntime,
@@ -1681,8 +1589,8 @@ mod tests {
         let weak = Arc::downgrade(&context);
         let policy = CleanupReaperPolicy {
             max_jobs: 1,
-            terminal_deadline: Duration::from_millis(10),
-            retry_delays: [Duration::ZERO; 4],
+            terminal_deadline: Duration::from_millis(250),
+            retry_delays: [Duration::from_millis(5); 4],
         };
         let (done_tx, done_rx) = mpsc::channel();
         let (checkpoint_tx, checkpoint_rx) = mpsc::channel();
@@ -1703,7 +1611,7 @@ mod tests {
             .enqueue_reserved(
                 CleanupJob {
                     handle,
-                    registered_at: Instant::now() - Duration::from_millis(50),
+                    registered_at: Instant::now() - Duration::from_millis(275),
                 },
                 [(
                     CleanupJobKey::from_handle(handle),
@@ -1768,8 +1676,8 @@ mod tests {
         let weak = Arc::downgrade(&context);
         let policy = CleanupReaperPolicy {
             max_jobs: 1,
-            terminal_deadline: Duration::from_millis(10),
-            retry_delays: [Duration::ZERO; 4],
+            terminal_deadline: Duration::from_millis(250),
+            retry_delays: [Duration::from_millis(5); 4],
         };
         let (done_tx, done_rx) = mpsc::channel();
         let (checkpoint_tx, checkpoint_rx) = mpsc::channel();
@@ -1789,7 +1697,7 @@ mod tests {
             .enqueue_reserved(
                 CleanupJob {
                     handle,
-                    registered_at: Instant::now() - Duration::from_millis(50),
+                    registered_at: Instant::now() - Duration::from_millis(275),
                 },
                 [(
                     CleanupJobKey::from_handle(handle),

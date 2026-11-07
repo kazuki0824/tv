@@ -780,20 +780,35 @@ impl QuarantineCleanupReport {
     /// report受領後もSupervisorのjoin待ちが残る場合だけtrueを返す。
     pub fn finish(self, runtime: &mut TunerServiceRuntime) -> Result<bool, HalError> {
         let supervised = drop_leak_cleanup_supervised_targets(&self.report);
-        if supervised.is_none() {
+        let result = if supervised.is_none() {
             self.report
                 .into_result()
-                .map_err(ObjectCloseCleanupFailure::into_error)?;
+                .map_err(ObjectCloseCleanupFailure::into_error)
+        } else {
+            Ok(())
         }
-        runtime
-            .object_table_mut()
-            .finish_quarantined_cleanup_report(
+        .and_then(|()| {
+            runtime
+                .object_table_mut()
+                .finish_quarantined_cleanup_report(
+                    self.object_id,
+                    self.generation,
+                    supervised.as_deref().unwrap_or(&[]),
+                )
+                .map(|completed| !completed)
+                .map_err(object_table_error_to_hal)
+        });
+        // 物理操作の部分成功を安全に巻き戻せない。現世代の一回実行権限を
+        // 消費した報告が失敗した場合は、未完義務を残したまま既存の再起動へ渡す。
+        if result.is_err()
+            && runtime.object_table().quarantine_cleanup_is_supervised(
                 self.object_id,
                 self.generation,
-                supervised.as_deref().unwrap_or(&[]),
-            )
-            .map(|completed| !completed)
-            .map_err(object_table_error_to_hal)
+            ) == Some(false)
+        {
+            runtime.mark_service_critical();
+        }
+        result
     }
 }
 
@@ -1149,14 +1164,20 @@ impl ObjectCloseTxn {
             .is_some_and(|obligation| obligation.generation == generation)
     }
 
-    pub(crate) fn has_managed_quarantine(
+    /// Noneは隔離義務なし。報告未受理とSupervisor移管済みを区別する。
+    pub(crate) fn quarantine_cleanup_is_supervised(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-    ) -> bool {
-        self.obligations.get(&object_id).is_some_and(|obligation| {
-            obligation.generation == generation && obligation.quarantine.is_some()
-        })
+    ) -> Option<bool> {
+        let obligation = self.obligations.get(&object_id)?;
+        if obligation.generation != generation {
+            return None;
+        }
+        obligation
+            .quarantine
+            .as_ref()
+            .map(|progress| matches!(progress, QuarantinedCleanupProgress::AwaitingJoins(_)))
     }
 
     pub(crate) fn begin_quarantined_cleanup(
@@ -2455,6 +2476,43 @@ mod tests {
         assert!(txn.has_outstanding_obligation(root, generation));
         assert_eq!(txn.notifier_joined(notifier), vec![(root, generation)]);
         assert!(!txn.has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
+    fn failed_physical_quarantine_report_preserves_fence_and_requests_fail_stop() {
+        use crate::{aidl_object_cleanup_disposition, AidlObjectCleanupDisposition};
+
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .unwrap();
+        let (object_id, generation) = (demux.object_id(), demux.generation());
+        let _plan = quarantine_object_drop_leak_use_case(&mut runtime, object_id, generation)
+            .unwrap()
+            .unwrap();
+        let disposition = |runtime: &TunerServiceRuntime| {
+            aidl_object_cleanup_disposition(runtime, object_id, generation, AidlObjectKind::Demux)
+                .unwrap()
+        };
+        assert_eq!(disposition(&runtime), AidlObjectCleanupDisposition::QuarantineAwaitingReport);
+        assert!(!runtime.failure_state().snapshot().service_critical);
+        let mut report = ObjectCleanupExecutionReport::new();
+        report.push(ObjectCleanupStepOutcome::Runtime {
+            kind: ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
+            cascade_entries: vec![],
+            result: Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::UnregisterRuntime,
+                HalError::cleanup_failed("隔離", "物理回収失敗を注入"),
+            )),
+        });
+        assert!(QuarantineCleanupReport { object_id, generation, report }.finish(&mut runtime).is_err());
+        assert_eq!(disposition(&runtime), AidlObjectCleanupDisposition::QuarantineAwaitingReport);
+        assert!(runtime.failure_state().snapshot().service_critical);
+        assert!(quarantine_object_drop_leak_use_case(&mut runtime, object_id, generation).is_err());
     }
 
     #[test]

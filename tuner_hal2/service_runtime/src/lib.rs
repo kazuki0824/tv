@@ -121,7 +121,7 @@ pub use object_domain_cleanup::{
 };
 pub use object_lifecycle::{
     aidl_object_cleanup_dependency, aidl_object_cleanup_disposition,
-    aidl_object_cleanup_is_terminal, aidl_object_quarantine_cleanup_has_owner,
+    aidl_object_cleanup_is_terminal,
     AidlObjectCleanupDisposition,
 };
 pub use object_method_use_case::{
