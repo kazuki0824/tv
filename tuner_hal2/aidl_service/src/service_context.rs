@@ -374,7 +374,10 @@ impl AidlServiceContext {
 
     /// 容量不足時もObjectCloseTxnの未完義務は消さない。
     /// 共有reaper喪失は全体停止し、一時的な容量不足は対象object隔離を優先する。
-    pub(crate) fn enqueue_cleanup_retry(self: &Arc<Self>, handle: AidlObjectHandle) -> Result<(), HalError> {
+    pub(crate) fn enqueue_cleanup_retry(
+        self: &Arc<Self>,
+        handle: AidlObjectHandle,
+    ) -> Result<(), HalError> {
         let result = self
             .cleanup_dependency_for_handle(handle)
             .and_then(|dependency| self.cleanup_reaper_queue.enqueue(handle, dependency));
@@ -402,25 +405,25 @@ impl AidlServiceContext {
                     | Ok(crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending) => {
                         return Ok(());
                     }
-                    Ok(crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup) => {
-                        match self.related_cleanup_recovery_owners(handle) {
-                            Ok(owners) => {
-                                for (owner, active) in owners {
-                                    match self.cleanup_reaper_queue.has_pending(owner) {
-                                        Ok(queued) if active || queued => return Ok(()),
-                                        Ok(_) => {}
-                                        Err(owner_error) => {
-                                            log::error!("関連reaper owner照会失敗: {owner_error:?}");
-                                            break;
-                                        }
+                    Ok(
+                        crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup,
+                    ) => match self.related_cleanup_recovery_owners(handle) {
+                        Ok(owners) => {
+                            for (owner, active) in owners {
+                                match self.cleanup_reaper_queue.has_pending(owner) {
+                                    Ok(queued) if active || queued => return Ok(()),
+                                    Ok(_) => {}
+                                    Err(owner_error) => {
+                                        log::error!("関連reaper owner照会失敗: {owner_error:?}");
+                                        break;
                                     }
                                 }
                             }
-                            Err(owner_error) => {
-                                log::error!("関連cleanupの正本owner確認失敗: {owner_error:?}");
-                            }
                         }
-                    }
+                        Err(owner_error) => {
+                            log::error!("関連cleanupの正本owner確認失敗: {owner_error:?}");
+                        }
+                    },
                     Err(status) => {
                         log::error!("cleanup容量不足後の局所隔離失敗: {status:?}");
                     }
