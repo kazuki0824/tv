@@ -1331,6 +1331,18 @@ mod qg_object_lifecycle_tests {
         assert!(table
             .has_active_cleanup_attempt_in_cascade(AidlObjectId(100), AidlObjectGeneration(1))
             .expect("親の隔離時に子の実行中cleanupを検出"));
+        let owners = table
+            .related_cleanup_owners(AidlObjectId(100), AidlObjectGeneration(1))
+            .expect("親のcleanup owner列挙");
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].0.object_id, AidlObjectId(101));
+        assert!(owners[0].1, "子の実行中ownerを同一正本から返す");
+        let self_owner = table
+            .related_cleanup_owners(AidlObjectId(101), AidlObjectGeneration(1))
+            .expect("対象自身のcleanup owner列挙");
+        assert_eq!(self_owner.len(), 1);
+        assert_eq!(self_owner[0].0.object_id, AidlObjectId(101));
+        assert!(self_owner[0].1);
     }
 
     #[test]
