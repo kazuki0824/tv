@@ -109,6 +109,18 @@ impl CleanupReaperQueue {
         Ok(())
     }
 
+    fn classify_enqueue_error(error: HalError) -> HalError {
+        if maleicacid_tuner_hal2_service_runtime::WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(&error) {
+            HalError::composed_failure(
+                "cleanup reaper worker lock失陥",
+                HalError::WorkerReaperUnavailable,
+                error,
+            )
+        } else {
+            error
+        }
+    }
+
     pub(crate) fn enqueue(
         &self,
         handle: AidlObjectHandle,
@@ -122,16 +134,22 @@ impl CleanupReaperQueue {
                 "cleanup reaperの正規ownerが設定されていません",
             )
         })?;
-        if runtime.pending_value(&key)?.is_some() {
+        if runtime
+            .pending_value(&key)
+            .map_err(Self::classify_enqueue_error)?
+            .is_some()
+        {
             return Ok(());
         }
-        runtime.enqueue_reserved(
-            CleanupJob {
-                handle,
-                registered_at: Instant::now(),
-            },
-            [(key, dependency)],
-        )
+        runtime
+            .enqueue_reserved(
+                CleanupJob {
+                    handle,
+                    registered_at: Instant::now(),
+                },
+                [(key, dependency)],
+            )
+            .map_err(Self::classify_enqueue_error)
     }
 }
 
