@@ -87,9 +87,11 @@ pub(crate) struct CleanupReaperQueue {
     policy: CleanupReaperPolicy,
     runtime: PoisonTrackedMutex<CleanupReaperQueueOwner>,
     /// 元サービス状態のWeak参照。Drop中のtyped worker異常を第二正本を作らず通知する。
-    service_runtime: std::sync::OnceLock<std::sync::Weak<std::sync::Mutex<
-        maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime,
-    >>>,
+    service_runtime: std::sync::OnceLock<
+        std::sync::Weak<
+            std::sync::Mutex<maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime>,
+        >,
+    >,
 }
 
 impl Drop for CleanupReaperQueue {
@@ -133,7 +135,11 @@ fn next_admission_wake(
         .values()
         .map(|task| task.registered_at.checked_add(budget).unwrap_or(now))
         .min()
-        .map(|deadline| now.checked_add(Duration::from_millis(10)).unwrap_or(now).min(deadline))
+        .map(|deadline| {
+            now.checked_add(Duration::from_millis(10))
+                .unwrap_or(now)
+                .min(deadline)
+        })
 }
 
 impl core::fmt::Debug for CleanupReaperQueue {
@@ -162,23 +168,33 @@ impl CleanupReaperQueue {
 
     pub(crate) fn bind_service_runtime(
         &self,
-        runtime: &std::sync::Arc<std::sync::Mutex<
-            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime,
-        >>,
+        runtime: &std::sync::Arc<
+            std::sync::Mutex<maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime>,
+        >,
     ) {
         // 既存ServiceFailureStateへの唯一のmutation入口を参照するだけ。
-        if self.service_runtime.set(std::sync::Arc::downgrade(runtime)).is_err() {
+        if self
+            .service_runtime
+            .set(std::sync::Arc::downgrade(runtime))
+            .is_err()
+        {
             log::error!("cleanup受付監督ownerのservice runtime参照が重複登録されました");
             maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(runtime);
         }
     }
 
     fn record_terminal_failure(&self, reason: &'static str) {
-        if let Some(runtime) = self.service_runtime.get().and_then(std::sync::Weak::upgrade) {
+        if let Some(runtime) = self
+            .service_runtime
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+        {
             maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(&runtime);
         } else {
             // すでにservice runtimeそのものが破棄された後は状態変更先が存在しない。
-            log::error!("cleanup受付監督workerの異常を通知するservice runtimeが存在しません: {reason}");
+            log::error!(
+                "cleanup受付監督workerの異常を通知するservice runtimeが存在しません: {reason}"
+            );
         }
     }
 
@@ -1172,15 +1188,18 @@ mod tests {
 
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         let failure = runtime.lock().unwrap().failure_state();
-        let queue = CleanupReaperQueue::from_snapshot(
-            runtime.lock().unwrap().capability_snapshot()
-        );
+        let queue =
+            CleanupReaperQueue::from_snapshot(runtime.lock().unwrap().capability_snapshot());
         queue.bind_service_runtime(&runtime);
         let failed = WorkerRuntime::spawn_observed(
             "test-admission-join-failure".to_string(),
-            0, 1,
+            0,
+            1,
             |_| -> Result<(), HalError> {
-                Err(HalError::cleanup_failed("admission join", "injected runtime failure"))
+                Err(HalError::cleanup_failed(
+                    "admission join",
+                    "injected runtime failure",
+                ))
             },
             |_| {},
         )
@@ -1194,17 +1213,25 @@ mod tests {
         assert!(failed.is_finished());
         queue.runtime.lock().unwrap().admission_worker = Some(failed);
         drop(queue);
-        assert!(failure.snapshot().service_critical, "Drop中の異常join結果はSSOTへ伝播する");
+        assert!(
+            failure.snapshot().service_critical,
+            "Drop中の異常join結果はSSOTへ伝播する"
+        );
     }
 
     #[test]
     fn idle_admission_worker_has_no_polling_deadline_and_new_owner_wakes_it() {
         let pending = std::collections::BTreeMap::new();
         let now = Instant::now();
-        assert_eq!(next_admission_wake(&pending, Duration::from_millis(20), now), None);
+        assert_eq!(
+            next_admission_wake(&pending, Duration::from_millis(20), now),
+            None
+        );
         let mut pending = pending;
         let handle = AidlObjectHandle::new(
-            AidlObjectKind::Filter, AidlObjectId(111), AidlObjectGeneration(3)
+            AidlObjectKind::Filter,
+            AidlObjectId(111),
+            AidlObjectGeneration(3),
         );
         pending.insert(
             CleanupJobKey::from_handle(handle),
@@ -1215,7 +1242,10 @@ mod tests {
         );
         assert!(next_admission_wake(&pending, Duration::from_millis(20), now).is_some());
         pending.clear();
-        assert_eq!(next_admission_wake(&pending, Duration::from_millis(20), now), None);
+        assert_eq!(
+            next_admission_wake(&pending, Duration::from_millis(20), now),
+            None
+        );
         // 新規owner登録後のwake未着はWorkerWakeの原子的保留bitで防止する。
         // 既存WorkerRuntimeのwake/stop回帰はcontrolのworker_wakeテストで確認する。
     }
@@ -1335,12 +1365,16 @@ mod tests {
                 })
                 .unwrap();
             let second_handle = AidlObjectHandle::new(
-                AidlObjectKind::Demux, second.object_id(), second.generation()
+                AidlObjectKind::Demux,
+                second.object_id(),
+                second.generation(),
             );
             let close = close_object_use_case(
                 &mut runtime.lock().unwrap(),
-                second.object_id(), second.generation(),
-                AidlObjectKind::Demux, AidlMethodCall::DemuxClose,
+                second.object_id(),
+                second.generation(),
+                AidlObjectKind::Demux,
+                AidlMethodCall::DemuxClose,
             )
             .unwrap();
             let second_attempt = close
