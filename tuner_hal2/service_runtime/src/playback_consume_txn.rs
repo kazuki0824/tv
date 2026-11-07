@@ -346,7 +346,6 @@ mod tests {
 
     #[test]
     fn delayed_playback_packet_cannot_commit_after_boundary_in_worker_runtime() {
-        use crate::worker_runtime::{WorkerRuntime, WorkerTerminalResult};
         use std::sync::{mpsc, Arc, Mutex};
 
         // データ経路が取得済みの実PlaybackPacketを保持している段階で
@@ -355,11 +354,7 @@ mod tests {
         let (ready_tx, ready_rx) = mpsc::sync_channel::<()>(0);
         let (resume_tx, resume_rx) = mpsc::sync_channel::<()>(0);
         let worker_state = Arc::clone(&shared);
-        let worker = WorkerRuntime::spawn(
-            "playback-fence-before-packet-commit-test".to_owned(),
-            7,
-            1,
-            move |_control| {
+        let worker = std::thread::spawn(move || {
                 let pending = {
                     let guard = worker_state.lock().unwrap();
                     let (demux, txn) = &*guard;
@@ -376,17 +371,14 @@ mod tests {
                 let result = txn
                     .consume(demux, pending, Some(&output))
                     .expect("遅延したconsume完了");
-                Ok((
+                (
                     result.completed_packets,
                     demux
                         .note_playback_consume_result(7, 0, 0, 0)
                         .expect("注入診断")
                         .injected_packets,
-                ))
-            },
-            || {},
-        )
-        .expect("WorkerRuntime起動");
+                )
+        });
 
         ready_rx.recv().expect("旧世代パケット取得済み");
         {
@@ -402,26 +394,18 @@ mod tests {
             );
         }
         resume_tx.send(()).expect("旧世代WorkerRuntime再開");
-        assert!(matches!(
-            worker.join(),
-            WorkerTerminalResult::Normal((0, 0))
-        ));
+        assert_eq!(worker.join().expect("worker終了"), (0, 0));
     }
 
     #[test]
     fn playback_commit_accepted_before_boundary_is_serialized_before_fence() {
-        use crate::worker_runtime::{WorkerRuntime, WorkerTerminalResult};
         use std::sync::{mpsc, Arc, Mutex, TryLockError};
 
         let shared = Arc::new(Mutex::new((started_demux(), pending_txn(clear_packet()))));
         let (committed_tx, committed_rx) = mpsc::sync_channel::<()>(0);
         let (release_tx, release_rx) = mpsc::sync_channel::<()>(0);
         let worker_state = Arc::clone(&shared);
-        let worker = WorkerRuntime::spawn(
-            "playback-commit-before-fence-test".to_owned(),
-            7,
-            1,
-            move |_control| {
+        let worker = std::thread::spawn(move || {
                 let mut guard = worker_state.lock().unwrap();
                 let (demux, txn) = &mut *guard;
                 let pending = txn
@@ -440,11 +424,7 @@ mod tests {
                 // service/runtime lockを保持したまま待ち、後続のboundaryが
                 // 既に確定したcommitの途中へ割り込めないことを確認する。
                 release_rx.recv().expect("lock解放");
-                Ok(())
-            },
-            || {},
-        )
-        .expect("WorkerRuntime起動");
+        });
 
         committed_rx.recv().expect("先行commit完了");
         assert!(matches!(shared.try_lock(), Err(TryLockError::WouldBlock)));
@@ -464,7 +444,7 @@ mod tests {
         fence_started_rx.recv().expect("boundary開始");
         assert!(matches!(shared.try_lock(), Err(TryLockError::WouldBlock)));
         release_tx.send(()).expect("先行WorkerRuntime解放");
-        assert!(matches!(worker.join(), WorkerTerminalResult::Normal(())));
+        worker.join().expect("先行worker終了");
         let (discarded, injected) = fence.join().expect("boundary完了");
         assert_eq!(discarded, 0, "確定済みパケットを後から捨て直さない");
         assert_eq!(injected, 1, "boundary以前の確定済み副作用は保持する");
