@@ -463,6 +463,50 @@ impl CleanupExecutionStepOutcome for ObjectCleanupStepOutcome {
 pub type ObjectCleanupExecutionReport =
     CleanupExecutionReport<ObjectCleanupStepOutcome, ObjectCloseCleanupFailure>;
 
+/// DVR通知workerの回収権限がSupervisorへ移管済みで、他のcleanup工程と
+/// 対象runtime登録解除が成功した場合だけ、局所的な回収待ちを許す。
+/// 完全な物理cleanup成功ではなく、未完義務を保持した隔離の証拠である。
+pub fn drop_leak_cleanup_is_supervised_pending(report: &ObjectCleanupExecutionReport) -> bool {
+    let mut pending_owners = Vec::new();
+    let mut unregistered = None;
+    for outcome in report.outcomes() {
+        match outcome {
+            ObjectCleanupStepOutcome::Artifact {
+                kind: ObjectArtifactCleanupKind::DvrStatusNotifier,
+                target,
+                result: Err(failure),
+                ..
+            } if matches!(
+                failure.error(),
+                HalError::WorkerCleanupFailed {
+                    kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Executing
+                }
+            ) => {
+                pending_owners.push(*target);
+            }
+            ObjectCleanupStepOutcome::Runtime {
+                kind: ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
+                cascade_entries,
+                result: Ok(()),
+            } => {
+                unregistered = Some(cascade_entries.as_slice());
+            }
+            other if other.result().is_err() => return false,
+            _ => {}
+        }
+    }
+    !pending_owners.is_empty()
+        && unregistered.is_some_and(|entries| {
+            pending_owners.iter().all(|target| {
+                entries.iter().any(|entry| {
+                    entry.object_kind == target.object_kind()
+                        && entry.object_id == target.object_id()
+                        && entry.generation == target.generation()
+                })
+            })
+        })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectCleanupDiagnosticKind {
     Close,
@@ -1757,6 +1801,60 @@ mod tests {
                 .lifecycle,
             crate::RuntimeObjectLifecycle::Quarantined
         );
+    }
+
+    #[test]
+    fn supervised_notifier_handoff_requires_matching_unregister_and_no_other_failures() {
+        let pending = ObjectCleanupStepOutcome::Artifact {
+            kind: ObjectArtifactCleanupKind::DvrStatusNotifier,
+            target: ObjectCleanupObjectTarget::new(
+                AidlObjectKind::Dvr,
+                AidlObjectId(17),
+                AidlObjectGeneration(2),
+            ),
+            step: CleanupStep::StopWorker,
+            result: Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::StopWorker,
+                HalError::WorkerCleanupFailed {
+                    kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Executing,
+                },
+            )),
+        };
+        let mut report = ObjectCleanupExecutionReport::new();
+        report.push(pending);
+        assert!(!drop_leak_cleanup_is_supervised_pending(&report));
+
+        let mut safe = ObjectCleanupExecutionReport::new();
+        safe.push(report.outcomes()[0].clone());
+        safe.push(ObjectCleanupStepOutcome::Runtime {
+            kind: ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
+            cascade_entries: vec![RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Dvr,
+                object_id: AidlObjectId(17),
+                generation: AidlObjectGeneration(2),
+                ledger_id: LedgerId(17),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: crate::RuntimeObjectLifecycle::Quarantined,
+            }],
+            result: Ok(()),
+        });
+        assert!(drop_leak_cleanup_is_supervised_pending(&safe));
+        safe.push(ObjectCleanupStepOutcome::Artifact {
+            kind: ObjectArtifactCleanupKind::OwnerCallbackRegistration,
+            target: ObjectCleanupObjectTarget::new(
+                AidlObjectKind::Dvr,
+                AidlObjectId(17),
+                AidlObjectGeneration(2),
+            ),
+            step: CleanupStep::UnregisterRuntime,
+            result: Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::UnregisterRuntime,
+                HalError::cleanup_failed("callback store", "解除失敗"),
+            )),
+        });
+        assert!(!drop_leak_cleanup_is_supervised_pending(&safe));
     }
 
     #[test]
