@@ -101,6 +101,10 @@ live更新では既存のProgram索引queryで保存列も読み、同値行をb
 - current EITでdual monoが確定した音声ESだけに、同じPIDの主／副／主副の論理選択肢を広告する。音声PIDを増やさず既存AudioTrackのmode切替へ接続し、選択成功をLiveTvへ通知する。副言語は放送factがある場合だけ利用する。
 - 同じESのmode変更は再生再起動せずに適用し、AudioTrack側の変更失敗時には内部mode stateを変更しない。字幕選択の通知は既存のcaptionEnabled条件を維持する。
 - host回帰を追加し、JUnit固定検査を1件増加させる。実機NHK受信の通知・選択結果は未検証であり、テスト実行はCIへ委ねる。
+# 2026-10-31 実TS結合試験の完了同期を修正
+
+- queueとactiveCountの別観測を廃止し、data末尾のmarker実行と、その後のcontrol完了で入力処理・permit返却を待つ。満杯時は既存拒否結果を受けて試験期限内でmarker受付を待つ。
+- 製品executorや受付容量は変更しない。実TS試験の実行はCIへ委ねる。実機の到着率・容量妥当性を証明する変更ではない。
 
 # 2026-10-31 選局世代と初期化の失敗境界を修正
 
@@ -1803,3 +1807,14 @@ ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時�
 
 - callback内の既存bitmask式へ戻し、委譲だけのsectionFilterStatusIsOverflowと単独試験を削除する。実Filter callback・複合status・旧Filter/世代の隔離は既存TunerFrontendLeaseTransitionTestを正本とし、新しいhelper・状態・試験基盤を追加しない。
 - host試験の期待件数を413から412へ更新する。挙動を変えず、試験はCIで実行する。
+# 2026-10-30 PR #123 実TS AVC AU・PTS回帰をhost CIへ接続
+
+- #116で追加した`video_timestamp.rs::captured_transport_frames_have_individual_timestamps`の試験本体・期待値・`#[ignore]`は変えず、#123が所有する既存の実TS fixtureを`AVC_CAPTURE_PATH`に指定し、Robolectric host workflowで明示実行する。
+- SHA-256・ファイル長とpacket境界の同一性、試験1件の成功・ignored0件・実AU計数を検証する。Cargo失敗は`pipefail`で伝達し、試験ログは既存artifactへ保存する。
+- HAL→TISのPSI/SI結合試験、他のRobolectric試験、既存の製品・試験責務境界は変更しない。新規HAL/AVC parser・本番API・試験用状態ownerは追加しない。
+- CI実行結果は該当HEADのActionsで確認する。実Codec/MediaSync/最終描画、Soong/atest、CTS/VTS、チューナー実機はこのhost追加だけでは検証されない。
+
+
+# 2026-10-30 固定TSのSection受付回帰
+
+- 既存16件上限と実HAL/SI JNIを使い、並行burst、喪失、再送完成、Filter交換、候補切替を検査する。容量変更・製品の試験専用入口は追加しない。
