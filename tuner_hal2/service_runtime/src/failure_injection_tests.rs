@@ -273,7 +273,10 @@ fn dvr_delivery_failure_finish_use_case_records_diagnostic_and_composes_marking_
 
 #[test]
 fn queued_old_dvr_worker_cannot_consume_playback_after_owner_quarantine() {
-    use crate::{quarantine_object_drop_leak_use_case, ObjectMethodUseCase};
+    use crate::{
+        quarantine_object_drop_leak_use_case, ObjectMethodUseCase, WorkerRuntime,
+        WorkerTerminalResult,
+    };
     use maleicacid_tuner_hal2_domain_request::{
         AidlMethodCall, DvrConfigureKind, DvrConfigureRequest, DvrDataFormat, DvrOpenKind,
         OpenDvrRequest,
@@ -361,11 +364,25 @@ fn queued_old_dvr_worker_cannot_consume_playback_after_owner_quarantine() {
     let (ready_tx, ready_rx) = mpsc::sync_channel::<()>(0);
     let (resume_tx, resume_rx) = mpsc::sync_channel::<()>(0);
     let old_runtime = Arc::clone(&runtime);
-    let old_worker = std::thread::spawn(move || {
-        ready_tx.send(()).expect("worker準備");
-        resume_rx.recv().expect("worker再開");
-        TunerServiceRuntime::consume_playback_dvr_for_object(&old_runtime, object_id, generation)
-    });
+    // 実際のWorkerRuntime経由で旧世代を保持する。stop flagに依存せず
+    // 隔離済みobjectへのdata-path受付自体が拒否されることを検査する。
+    let old_worker = WorkerRuntime::spawn(
+        "old-dvr-playback-after-quarantine-test".to_owned(),
+        object_id.0,
+        generation.0,
+        move |_control| {
+            ready_tx.send(()).expect("worker準備");
+            resume_rx.recv().expect("worker再開");
+            TunerServiceRuntime::consume_playback_dvr_for_object(
+                &old_runtime,
+                object_id,
+                generation,
+            )
+            .map(|_| ())
+        },
+        || {},
+    )
+    .expect("旧世代のWorkerRuntime起動");
     ready_rx.recv().expect("workerが旧世代を保持して待機中");
 
     // lifecycleの値を検査するだけでなく、実際のPlayback消費関数を
@@ -374,10 +391,12 @@ fn queued_old_dvr_worker_cannot_consume_playback_after_owner_quarantine() {
         quarantine_object_drop_leak_use_case(&mut runtime.lock().unwrap(), object_id, generation)
             .expect("旧世代の隔離確定");
     resume_tx.send(()).expect("workerを隔離後に再開");
-    let result = old_worker.join().expect("旧世代worker終了");
     assert!(
-        matches!(result, Err(HalError::InvalidState { .. })),
-        "Quarantined後の旧世代Playback消費を拒否する"
+        matches!(
+            old_worker.join(),
+            WorkerTerminalResult::RuntimeFailure(HalError::InvalidState { .. })
+        ),
+        "Quarantined後の旧世代Playback消費はWorkerRuntimeへ失敗を返す"
     );
 }
 
