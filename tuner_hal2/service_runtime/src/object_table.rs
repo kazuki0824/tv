@@ -1324,7 +1324,9 @@ mod qg_object_lifecycle_tests {
                 RuntimeOwnerRelation::Root,
             );
             candidate.generation = generation;
-            table.insert(candidate).expect("旧世代Closed後は次世代を登録可能");
+            table
+                .insert(candidate)
+                .expect("旧世代Closed後は次世代を登録可能");
             let (_, authority) = table
                 .begin_close_cascade_with_cleanup_authority(
                     object_id,
