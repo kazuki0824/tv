@@ -5,13 +5,16 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
 import android.media.MediaCas
+import android.media.MediaCodec
 import android.media.MediaSync
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.filter.Filter
 import android.media.tv.tuner.filter.FilterCallback
 import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.MediaEvent
+import android.os.HandlerThread
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServicePolicyDecision
@@ -20,8 +23,15 @@ import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.common.TunerKeyToken
+import org.junit.After
+import org.junit.Before
 import org.junit.Test
-import sun.misc.Unsafe
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.util.ReflectionHelpers
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -29,18 +39,51 @@ import java.util.concurrent.atomic.AtomicReference
 
 // 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
 @Suppress("TooManyFunctions", "LargeClass")
+@RunWith(RobolectricTestRunner::class)
+@Config(
+    sdk = [35],
+    shadows = [
+        FailureTuner::class,
+        FailureFilter::class,
+        FailureMediaEvent::class,
+        FailureMediaCas::class,
+        FailureCasSession::class,
+        PlaybackMediaSyncReleaseTest.NativeMediaSync::class,
+        FailureCodec::class,
+    ],
+)
 class PlaybackFailureCallbacksTest {
+    private companion object {
+        fun closeOwner(owner: java.util.concurrent.ExecutorService) {
+            try {
+                Fixture.closeAll()
+            } finally {
+                owner.shutdownNow()
+            }
+        }
+    }
+
+    @Before
+    fun initializeApplication() {
+        RuntimeEnvironment.getApplication()
+    }
+
+    @After
+    fun closeFixtures() {
+        Fixture.closeAll()
+    }
+
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun casFilterRejectRollbackKeepsProductionRetryMarker() {
-        MediaCas.Faults.reset()
+        FailureMediaCas.Faults.reset()
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         try {
             val fixture =
                 executor
                     .submitControl<Fixture> { Fixture(false, false, failCleanup = false) }
                     .get(5, TimeUnit.SECONDS)
-            val controller = fixture.allocate(TunerController::class.java)
+            val controller = fixture.create(TunerController::class.java)
             val cas = CasController()
             val emmPid = TsPid(0x120)
 
@@ -60,21 +103,13 @@ class PlaybackFailureCallbacksTest {
             set("tuneGeneration", 7L)
             set("tuner", fixture.tuner)
             set("playbackPipeline", fixture.pipeline)
-            set("dynamicPmtPids", linkedSetOf<TsPid>())
-            set("dynamicEcmPids", linkedSetOf<TsPid>())
-            set("dynamicEmmPids", linkedSetOf<TsPid>())
-            set("failedDynamicPmtPids", linkedSetOf<TsPid>())
-            set("failedDynamicEcmPids", linkedSetOf<TsPid>())
-            set("failedDynamicEmmPids", linkedSetOf<TsPid>())
-            set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
-            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
             controller.setCasController(cas)
 
-            val failingFilter = fixture.allocate(Filter::class.java)
-            Filter::class.java.getField("configureFailure").setInt(failingFilter, 1)
-            Tuner::class.java.getField("nextFilter").set(null, failingFilter)
-            Tuner::class.java.getField("openFilterCalls").setInt(null, 0)
-            Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
+            val failingFilter = fixture.create(Filter::class.java)
+            Shadow.extract<FailureFilter>(failingFilter).configureFailure = 1
+            FailureTuner.nextFilter = failingFilter
+            FailureTuner.openFilterCalls = 0
+            FailureTuner.sectionFilterCount = 16
 
             val metadata =
                 listOf(
@@ -89,21 +124,21 @@ class PlaybackFailureCallbacksTest {
                 )
 
             check(runCatching { controller.updateCasMetadataAndFilters(metadata, emptySet(), 7L, true) }.isFailure)
-            check(Tuner::class.java.getField("openFilterCalls").getInt(null) == 1)
+            check(FailureTuner.openFilterCalls == 1)
 
             check(runCatching { controller.updateCasMetadataAndFilters(metadata, emptySet(), 7L, true) }.isFailure)
-            check(Tuner::class.java.getField("openFilterCalls").getInt(null) == 1)
+            check(FailureTuner.openFilterCalls == 1)
 
-            Tuner::class.java.getField("nextFilter").set(null, null)
+            FailureTuner.nextFilter = null
             cas.close()
         } finally {
-            executor.shutdownNow()
-            MediaCas.Faults.reset()
+            closeOwner(executor)
+            FailureMediaCas.Faults.reset()
         }
     }
 
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun removedFailedPmtRetriesRetainedCleanupBeforeSingleReopen() {
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         try {
@@ -111,7 +146,7 @@ class PlaybackFailureCallbacksTest {
                 executor
                     .submitControl<Fixture> { Fixture(false, false, failCleanup = false) }
                     .get(5, TimeUnit.SECONDS)
-            val controller = fixture.allocate(TunerController::class.java)
+            val controller = fixture.create(TunerController::class.java)
             val pid = TsPid(0x1004)
             val retainedHandle = TestSectionHandle(pid, rejectClose = true)
 
@@ -132,55 +167,52 @@ class PlaybackFailureCallbacksTest {
             set("tuneGeneration", 7L)
             set("tuner", fixture.tuner)
             set("playbackPipeline", fixture.pipeline)
-            set("dynamicPmtPids", linkedSetOf<TsPid>())
-            set("dynamicEcmPids", linkedSetOf<TsPid>())
-            set("dynamicEmmPids", linkedSetOf<TsPid>())
             set("failedDynamicPmtPids", failedPmt)
-            set("failedDynamicEcmPids", linkedSetOf<TsPid>())
-            set("failedDynamicEmmPids", linkedSetOf<TsPid>())
             set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>(pid to retainedHandle))
-            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
 
             check(runCatching { controller.updatePmtFilters(emptySet(), 7L) }.isFailure)
             check(retainedHandle.closes == 1)
             check(failedPmt.isEmpty())
 
             retainedHandle.rejectClose = false
-            val replacement = fixture.allocate(Filter::class.java)
-            Tuner::class.java.getField("nextFilter").set(null, replacement)
-            Tuner::class.java.getField("openFilterCalls").setInt(null, 0)
-            Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
+            val replacement = fixture.create(Filter::class.java)
+            FailureTuner.nextFilter = replacement
+            FailureTuner.openFilterCalls = 0
+            FailureTuner.sectionFilterCount = 16
 
             controller.updatePmtFilters(setOf(pid), 7L)
 
             check(retainedHandle.closes == 2)
-            check(Tuner::class.java.getField("openFilterCalls").getInt(null) == 1)
+            check(FailureTuner.openFilterCalls == 1)
             check(failedPmt.isEmpty())
 
             controller.closeSectionFilters()
-            Tuner::class.java.getField("nextFilter").set(null, null)
+            FailureTuner.nextFilter = null
         } finally {
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
-    @Test fun invalidatedEcmAndEmmStopFiltersAndPlaybackAndNotifyOriginalGeneration() {
+    @Test(timeout = 60_000)
+    fun invalidatedEcmAndEmmStopFiltersAndPlaybackAndNotifyOriginalGeneration() {
         checkCasInvalidation(failCleanup = false)
     }
 
-    @Test fun casAndFilterCleanupFailuresStillStopPlaybackAndNotifyOriginalGeneration() {
+    @Test(timeout = 60_000)
+    fun casAndFilterCleanupFailuresStillStopPlaybackAndNotifyOriginalGeneration() {
         checkCasInvalidation(failCleanup = true)
     }
 
     // 実controllerの通知から失効・独立cleanup・再試行までを同じ受信contextで確認する。
-    @Test fun casFailureAndReclaimPreserveSiWithoutReportingTunerLoss() {
+    @Test(timeout = 60_000)
+    fun casFailureAndReclaimPreserveSiWithoutReportingTunerLoss() {
         for (initializing in listOf(false, true)) checkCasConnectionFailure(initializing)
     }
 
     @Suppress("LongMethod")
     private fun checkCasConnectionFailure(initializing: Boolean) {
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
-        val faults = MediaCas.Faults
+        val faults = FailureMediaCas.Faults
         faults.reset()
         val delegate = FrameworkMediaCasBridgeFactory().create(5).getOrThrow()
         lateinit var connectionListener: CasController.ConnectionListener
@@ -215,7 +247,7 @@ class PlaybackFailureCallbacksTest {
                     executor
                         .submitControl<Fixture> { Fixture(false, false, failCleanup = true) }
                         .get(5, TimeUnit.SECONDS)
-                val controller = fixture.allocate(TunerController::class.java)
+                val controller = fixture.create(TunerController::class.java)
                 val ecm = TestSectionHandle(TsPid(0x123), rejectClose = true)
                 val emm = TestSectionHandle(TsPid(0x120))
                 val pmt = TestSectionHandle(TsPid(0x100))
@@ -236,16 +268,10 @@ class PlaybackFailureCallbacksTest {
                 set("tuneAccepted", true)
                 set("tuneGeneration", 7L)
                 set("playbackPipeline", fixture.pipeline)
-                set("captionLanguagesByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
-                set("superimposeTimingByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
                 set("dynamicPmtPids", linkedSetOf(pmt.pid))
                 set("dynamicEcmPids", linkedSetOf(ecm.pid))
                 set("dynamicEmmPids", linkedSetOf(emm.pid))
-                set("failedDynamicPmtPids", linkedSetOf<TsPid>())
-                set("failedDynamicEcmPids", linkedSetOf<TsPid>())
-                set("failedDynamicEmmPids", linkedSetOf<TsPid>())
                 set("sectionFilterHandles", linkedMapOf(ecm.pid to ecm, emm.pid to emm, pmt.pid to pmt, eit.pid to eit))
-                set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
                 controller.setCasController(cas)
                 controller.setOnTunerResourceLostCallback { lostGeneration = it }
                 faults.pluginFailure = true
@@ -288,7 +314,7 @@ class PlaybackFailureCallbacksTest {
                 check(ecm.closes == 2)
             }
         } finally {
-            executor.shutdownNow()
+            closeOwner(executor)
             faults.reset()
         }
     }
@@ -296,12 +322,12 @@ class PlaybackFailureCallbacksTest {
     // 同じ配送から所有解放・再生通知までの因果関係を一続きに確認する。
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun checkCasInvalidation(failCleanup: Boolean) {
-        val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
-        try {
-            executor
-                .submit {
-                    for (operation in listOf(MediaCas.Operation.ECM, MediaCas.Operation.EMM)) {
-                        val faults = MediaCas.Faults
+        for (operation in listOf(FailureMediaCas.Operation.ECM, FailureMediaCas.Operation.EMM)) {
+            val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
+            try {
+                executor
+                    .submit {
+                        val faults = FailureMediaCas.Faults
                         faults.reset()
                         CasController().use { cas ->
                             val metadata =
@@ -310,7 +336,7 @@ class PlaybackFailureCallbacksTest {
                                 }
                             cas.updateFromCaMetadata(metadata)
                             val fixture = Fixture(false, false, failCleanup)
-                            val controller = fixture.allocate(TunerController::class.java)
+                            val controller = fixture.create(TunerController::class.java)
                             val pmt = TestSectionHandle(TsPid(0x100))
                             val ecm = TestSectionHandle(TsPid(0x123), failCleanup)
                             val emm = TestSectionHandle(TsPid(0x120))
@@ -336,17 +362,11 @@ class PlaybackFailureCallbacksTest {
                             set("dynamicPmtPids", pmtPids)
                             set("dynamicEcmPids", ecmPids)
                             set("dynamicEmmPids", emmPids)
-                            set("failedDynamicPmtPids", linkedSetOf<TsPid>())
-                            set("failedDynamicEcmPids", linkedSetOf<TsPid>())
-                            set("failedDynamicEmmPids", linkedSetOf<TsPid>())
                             set("sectionFilterHandles", linkedMapOf(pmt.pid to pmt, ecm.pid to ecm, emm.pid to emm))
-                            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
-                            // Unsafe生成ではfield initializerが走らないため、診断ownerの初期状態を再現する。
-                            set("casWarningCounts", linkedMapOf<String, Long>())
                             set("casWarningGeneration", -1L)
                             faults.invalidateAt = operation
                             faults.pluginFailure = failCleanup
-                            val pid = if (operation == MediaCas.Operation.ECM) ecm.pid else emm.pid
+                            val pid = if (operation == FailureMediaCas.Operation.ECM) ecm.pid else emm.pid
                             val result = runCatching { controller.onSection(pid, byteArrayOf(1)) }
                             check(result.isFailure == failCleanup)
                             if (failCleanup) check(requireNotNull(result.exceptionOrNull()).suppressed.size == 2)
@@ -373,11 +393,11 @@ class PlaybackFailureCallbacksTest {
                             check(!fixture.cleanup.hasPending)
                             check(cas.updateFromCaMetadata(metadata).diagnostics.isEmpty() && faults.creates == 2)
                         }
-                    }
-                }.get(10, TimeUnit.SECONDS)
-        } finally {
-            executor.shutdownNow()
-            MediaCas.Faults.reset()
+                    }.get(10, TimeUnit.SECONDS)
+            } finally {
+                closeOwner(executor)
+                FailureMediaCas.Faults.reset()
+            }
         }
     }
 
@@ -398,23 +418,23 @@ class PlaybackFailureCallbacksTest {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 候補の処理と入れ子の資源寿命を同じ手順内で確認できる構造を保つ。
     @Suppress("MaxLineLength", "NestedBlockDepth")
-    @Test
+    @Test(timeout = 60_000)
     fun avAndCaptionFilterFactoriesRetainFailedConfigurationAndStartCleanup() {
         for (kind in listOf("video", "audio", "subtitle", "superimpose")) {
             for (phase in listOf("configure", "start")) {
                 for (failure in listOf(1, 2)) {
                     val fixture = Fixture(false, false, failCleanup = false)
-                    val filter = fixture.allocate(Filter::class.java)
+                    val filter = fixture.create(Filter::class.java)
 
                     fun set(
                         name: String,
                         value: Any,
                     ) {
-                        Filter::class.java.getField(name).set(filter, value)
+                        FailureFilter::class.java.getField(name).set(Shadow.extract<FailureFilter>(filter), value)
                     }
 
-                    fun count(name: String) = Filter::class.java.getField(name).getInt(filter)
-                    Tuner::class.java.getField("nextFilter").set(null, filter)
+                    fun count(name: String) = FailureFilter::class.java.getField(name).getInt(Shadow.extract<FailureFilter>(filter))
+                    FailureTuner.nextFilter = filter
                     set("${phase}Failure", failure)
                     set("rejectClose", true)
                     val result =
@@ -451,13 +471,14 @@ class PlaybackFailureCallbacksTest {
                     set("rejectClose", false)
                     fixture.pipeline.stop()
                     check(count("closes") == 2 && !fixture.cleanup.hasPending)
-                    Tuner::class.java.getField("nextFilter").set(null, null)
+                    FailureTuner.nextFilter = null
                 }
             }
         }
     }
 
-    @Test fun mediaSyncAudioFailureRetainsResourcesAndNotifiesOriginalSession() {
+    @Test(timeout = 60_000)
+    fun mediaSyncAudioFailureRetainsResourcesAndNotifiesOriginalSession() {
         for (waiting in listOf(false, true)) {
             for (audioOnly in listOf(false, true)) {
                 val fixture = Fixture(waiting, audioOnly)
@@ -469,14 +490,15 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun audioFailureAndRouteOrFormatRestartShareTerminalCleanupHandling() {
+    @Test(timeout = 60_000)
+    fun audioFailureAndRouteOrFormatRestartShareTerminalCleanupHandling() {
         for (waiting in listOf(false, true)) {
             for (reason in listOf(
                 PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
                 PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM,
             )) {
                 val fixture = Fixture(waiting, false)
-                fixture.invoke("handleAudioFailure", reason, "audio output/configuration/deadline failure", false)
+                fixture.invoke("handleAudioFailure", reason, "音声出力・設定・期限の失敗", false)
                 fixture.checkTerminalCleanupFailure()
             }
             val fixture = Fixture(waiting, false)
@@ -485,7 +507,8 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun requestedStartAndAudioSwitchReturnCleanupFailureToTheirCaller() {
+    @Test(timeout = 60_000)
+    fun requestedStartAndAudioSwitchReturnCleanupFailureToTheirCaller() {
         for (switchAudio in listOf(false, true)) {
             // Surfaceを必要としないaudio-only経路で、音声切替のcleanup失敗伝達を検査する。
             val fixture = Fixture(false, audioOnly = switchAudio)
@@ -505,8 +528,8 @@ class PlaybackFailureCallbacksTest {
             // 開始例外後の回収でも世代を失効させるため、固定増分ではなく返却された現世代を照合する。
             check(generation > 7L && generation == fixture.pipeline.currentPlaybackGenerationForTest())
             // 開始失敗とcatch内再停止の失敗が、別々の診断として呼出元へ返る。
-            check(diagnostics.count { it.contains("injected filter") } == 2) {
-                "switchAudio=$switchAudio diagnostics=$diagnostics"
+            check(diagnostics.count { it.contains("失敗注入対象フィルター") } == 2) {
+                "音声切替=$switchAudio 診断=$diagnostics"
             }
             check(fixture.failures.isEmpty() && fixture.notifications == 0)
             val next =
@@ -526,8 +549,9 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun realCasLinkageReevaluatesLiveAndReachesGenericPlaybackStart() {
-        MediaCas.Faults.reset()
+    @Test(timeout = 60_000)
+    fun realCasLinkageReevaluatesLiveAndReachesGenericPlaybackStart() {
+        FailureMediaCas.Faults.reset()
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         val factory =
             object : CasController.MediaCasBridgeFactory {
@@ -539,7 +563,7 @@ class PlaybackFailureCallbacksTest {
         try {
             CasController(mediaCasFactory = factory).use { cas ->
                 val fixture = executor.submitControl<Fixture> { Fixture(false, false, false) }.get(5, TimeUnit.SECONDS)
-                val controller = fixture.allocate(TunerController::class.java)
+                val controller = fixture.create(TunerController::class.java)
 
                 fun set(
                     name: String,
@@ -557,7 +581,6 @@ class PlaybackFailureCallbacksTest {
                 set("currentTune", fixture.channel)
                 set("tuner", fixture.tuner)
                 set("playbackPipeline", fixture.pipeline)
-                set("superimposeTimingByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
                 controller.setCasController(cas)
                 val decisions = mutableListOf<Boolean>()
                 val policy = ServicePolicyDecision(fixture.channel.serviceKey, true, true, true, emptyList())
@@ -601,17 +624,18 @@ class PlaybackFailureCallbacksTest {
                 check(controller.startPlayback(fixture.selection, requiresCas = true, generation = 7L) == null)
             }
         } finally {
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
-    @Test fun audioFailureStopsBeforeNotifyingOriginalGeneration() {
+    @Test(timeout = 60_000)
+    fun audioFailureStopsBeforeNotifyingOriginalGeneration() {
         for (audioOnly in listOf(false, true)) {
             val fixture = Fixture(false, audioOnly, failCleanup = false)
             fixture.invoke(
                 "handleAudioFailure",
                 PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                "audio output failure",
+                "音声出力失敗",
                 audioOnly,
             )
             check(fixture.notifications == 1 && fixture.state is PlaybackStartState.Failed)
@@ -628,7 +652,8 @@ class PlaybackFailureCallbacksTest {
         }
     }
 
-    @Test fun staleMediaSyncAndRestartCallbacksDoNotTouchCurrentGeneration() {
+    @Test(timeout = 60_000)
+    fun staleMediaSyncAndRestartCallbacksDoNotTouchCurrentGeneration() {
         val fixture = Fixture(false, false)
         val sync = MediaSync()
         fixture.set("mediaSync", sync)
@@ -642,7 +667,7 @@ class PlaybackFailureCallbacksTest {
         fixture.cleanup.requireComplete()
     }
 
-    @Test
+    @Test(timeout = 60_000)
     fun repeatedSiBeyondFormerCollectionLimitKeepsPlaybackControllerGeneration() {
         LiveSiFixture().use { live ->
             live.ingestInitialTables()
@@ -666,15 +691,15 @@ class PlaybackFailureCallbacksTest {
     }
 
     // 実JNIのPAT/SDTから本番session refreshとcontrollerのFilter開始までを通す。
-    @Test
+    @Test(timeout = 60_000)
     fun pendingLiveSiBootstrapsPmtFilterAndBecomesReadyAfterPmtReception() {
         LiveSiFixture().use { live ->
             live.ingestInitialTables()
             check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
             live.refresh()
-            check(Filter::class.java.getField("starts").getInt(live.filter) == 1)
+            check(Shadow.extract<FailureFilter>(live.filter).starts == 1)
             live.refresh()
-            check(Filter::class.java.getField("starts").getInt(live.filter) == 1)
+            check(Shadow.extract<FailureFilter>(live.filter).starts == 1)
             live.ingestPmt()
             val ready = live.decision()
             check(ready.state == com.maleicacid.tvinput.aribsi.ServicePolicyState.READY && ready.casDecisionReady)
@@ -684,7 +709,7 @@ class PlaybackFailureCallbacksTest {
 
     // 同じ実JNI失効からCAS・再生停止・通知までを一つの回帰で観測する。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun conflictingPmtStopsEstablishedPlaybackAndRetiresCasMetadata() {
         for (playing in listOf(true, false)) {
             LiveSiFixture().use { live ->
@@ -709,24 +734,26 @@ class PlaybackFailureCallbacksTest {
                             source = com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT,
                         ),
                     )
-                val emmFilter = live.playback.allocate(Filter::class.java)
-                Tuner::class.java.getField("nextFilter").set(null, emmFilter)
+                val emmFilter = live.playback.create(Filter::class.java)
+                FailureTuner.nextFilter = emmFilter
                 val result = live.controller.updateCasMetadataAndFilters(metadata, setOf(TsPid(0x100)), 7L, true)
                 check(result?.emmPids == setOf(emm))
-                check(MediaCas.Faults.creates == 1 && MediaCas.Faults.pluginCloses == 0)
+                check(FailureMediaCas.Faults.creates == 1 && FailureMediaCas.Faults.pluginCloses == 0)
                 // 同一version・同一番号のPCR PIDだけが矛盾するCRC付きPMT。
                 live.ingest(0x100, "02b0170001c10000e102f0001be101f0000fe102f000a3052165")
                 check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
                 live.refresh()
                 check(live.state() == if (playing) PlaybackStartState.Stopped else PlaybackStartState.Idle)
                 check(live.playback.pipeline.currentPlaybackGenerationForTest() == 8L) {
-                    "playing=$playing actual=${live.playback.pipeline.currentPlaybackGenerationForTest()}"
+                    "再生中=$playing 実際の世代=${live.playback.pipeline.currentPlaybackGenerationForTest()}"
                 }
-                check(MediaCas.Faults.pluginCloses == 1)
+                check(FailureMediaCas.Faults.pluginCloses == 1) {
+                    "再生中=$playing プラグイン閉鎖回数=${FailureMediaCas.Faults.pluginCloses}"
+                }
                 check(live.dynamicPids("dynamicEcmPids").isEmpty() && live.dynamicPids("dynamicEmmPids").isEmpty())
                 check(live.dynamicPids("dynamicPmtPids") == setOf(TsPid(0x100)))
-                check(Filter::class.java.getField("closes").getInt(emmFilter) == 1)
-                check(Filter::class.java.getField("closes").getInt(live.filter) == 0)
+                check(Shadow.extract<FailureFilter>(emmFilter).closes == 1)
+                check(Shadow.extract<FailureFilter>(live.filter).closes == 0)
                 check(live.pendingNotifications.size == if (playing) 1 else 0)
                 live.ingestPmt()
                 check(live.decision().state == com.maleicacid.tvinput.aribsi.ServicePolicyState.PENDING)
@@ -736,41 +763,28 @@ class PlaybackFailureCallbacksTest {
     }
 
     // 既存の初回SI試験と失効試験で同じ実JNI・controller fixtureを共用する。
-    // Androidの通知は未初期化Sessionの保留listで観測し、字幕native/UI資源は既に閉じた境界とする。
+    // Android通知は正規生成したSessionの保留listで観測し、字幕ownerは正常に閉じる。
     private class LiveSiFixture : AutoCloseable {
         private val executor = ControllerSerialExecutor("live SI失効試験")
         val playback = executor.submitControl { Fixture(false, false, failCleanup = false) }.get(5, TimeUnit.SECONDS)
-        val controller = playback.allocate(TunerController::class.java)
-        val session = playback.allocate(MaleicacidLiveSession::class.java)
+        val controller = playback.create(TunerController::class.java)
+        val session = playback.create(MaleicacidLiveSession::class.java)
         val engine =
             com.maleicacid.tvinput.aribsi
                 .AribSiEngine(android.content.ContextWrapper(null))
         val key = ServiceKey(0x22, 0x11, 1)
-        val filter = playback.allocate(Filter::class.java)
+        val filter = playback.create(Filter::class.java)
         val pendingNotifications = mutableListOf<Runnable>()
         private val cas = CasController()
-        private val captionExecutors = mutableListOf<LifecycleSerialExecutor>()
 
         init {
-            MediaCas.Faults.reset()
+            FailureMediaCas.Faults.reset()
             set(controller, "inputId", "test")
             set(controller, "sectionExecutor", executor)
             set(controller, "tuneAccepted", true)
             set(controller, "tuneGeneration", 7L)
             set(controller, "tuner", playback.tuner)
             set(controller, "playbackPipeline", playback.pipeline)
-            for (name in listOf(
-                "dynamicPmtPids",
-                "dynamicEcmPids",
-                "dynamicEmmPids",
-                "failedDynamicPmtPids",
-                "failedDynamicEcmPids",
-                "failedDynamicEmmPids",
-            )) {
-                set(controller, name, linkedSetOf<TsPid>())
-            }
-            set(controller, "sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
-            set(controller, "sectionFilters", linkedMapOf<TsPid, List<Filter>>())
             controller.setCasController(cas)
             set(session, "currentService", key)
             set(session, "currentGeneration", 7L)
@@ -779,22 +793,15 @@ class PlaybackFailureCallbacksTest {
             set(session, "aribSiEngine", engine)
             set(session, "caMapper", PmtCatCaMetadataMapper())
             for (name in listOf("captionController", "superimposeController")) {
-                val caption = playback.allocate(AribCaptionController::class.java)
-                set(caption, "released", AtomicBoolean(true))
-                set(caption, "pesAdmissionLock", Any())
-                val captionExecutor = LifecycleSerialExecutor("closed caption fixture")
-                captionExecutors += captionExecutor
-                set(caption, "executor", captionExecutor)
-                set(session, name, caption)
+                ReflectionHelpers.getField<AribCaptionController>(session, name).close()
             }
             val sessionType = android.media.tv.TvInputService.Session::class.java
-            sessionType.getDeclaredField("mLock").apply { isAccessible = true }.set(session, Any())
             sessionType
                 .getDeclaredField("mPendingActions")
                 .apply { isAccessible = true }
                 .set(session, pendingNotifications)
-            Tuner::class.java.getField("nextFilter").set(null, filter)
-            Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
+            FailureTuner.nextFilter = filter
+            FailureTuner.sectionFilterCount = 16
             engine.setDiscoveryProfile(com.maleicacid.tvinput.aribsi.SiDiscoveryProfile.ISDB_T)
         }
 
@@ -853,28 +860,27 @@ class PlaybackFailureCallbacksTest {
                 controller.closeSectionFilter(TsPid(0x100))
                 executor.submitControl { cas.close() }.get(5, TimeUnit.SECONDS)
             } finally {
-                Tuner::class.java.getField("nextFilter").set(null, null)
+                FailureTuner.nextFilter = null
                 engine.close()
-                executor.shutdownNow()
+                closeOwner(executor)
                 PlaybackPipeline::class.java
                     .getDeclaredField("executor")
                     .apply { isAccessible = true }
                     .get(playback.pipeline)
                     .let { (it as? java.util.concurrent.ExecutorService)?.shutdownNow() }
-                captionExecutors.forEach { it.shutdownNow() }
-                MediaCas.Faults.reset()
+                FailureMediaCas.Faults.reset()
             }
         }
     }
 
     // 恒等写像ではなく、本番候補loop・実tune拒否・typed scan終端を通す。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun synchronousTuneFailureStopsRemainingInitialScanCandidates() {
         val executor = ControllerSerialExecutor("scan同期選局拒否試験")
         val fixture = executor.submitControl { Fixture(false, false, failCleanup = false) }.get(5, TimeUnit.SECONDS)
-        val controller = fixture.allocate(TunerController::class.java)
-        val scan = fixture.allocate(ChannelScanController::class.java)
+        val controller = fixture.create(TunerController::class.java)
+        val scan = fixture.create(ChannelScanController::class.java)
         val engine =
             com.maleicacid.tvinput.aribsi
                 .AribSiEngine(android.content.ContextWrapper(null))
@@ -892,22 +898,7 @@ class PlaybackFailureCallbacksTest {
         set(controller, "sectionExecutor", executor)
         set(controller, "inputId", "input.test")
         set(controller, "playbackPipeline", fixture.pipeline)
-        for (name in listOf(
-            "dynamicPmtPids",
-            "dynamicEcmPids",
-            "dynamicEmmPids",
-            "failedDynamicPmtPids",
-            "failedDynamicEcmPids",
-            "failedDynamicEmmPids",
-        )) {
-            set(controller, name, linkedSetOf<TsPid>())
-        }
-        for (name in listOf("captionLanguagesByPid", "captionFactParsers", "superimposeTimingByPid")) {
-            set(controller, name, java.util.concurrent.ConcurrentHashMap<TsPid, Any>())
-        }
-        set(controller, "sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
-        set(controller, "sectionFilters", linkedMapOf<TsPid, List<Filter>>())
-        // 未初期化のTunerは利用不可を同期返却する。実tuneForScan経路を差し替えない。
+        // Tuner境界は利用不可を同期返却する。実tuneForScan経路を差し替えない。
         set(scan, "engine", engine)
         set(scan, "ingestController", SectionIngestController(engine))
         set(scan, "tunerController", controller)
@@ -942,20 +933,20 @@ class PlaybackFailureCallbacksTest {
             check(result.diagnostics.single().candidate == candidates.first())
         } finally {
             engine.close()
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
     // 同一ownerの初期化・実資源停止・失敗保持を一続きの反例で検査する。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun acceptedTuneFailureFencesOldPlaybackAndRetainsCleanupDespiteNotificationFailure() {
         val controllerExecutor = ControllerSerialExecutor("accepted-tune-controller-test")
         val sessionExecutor = LifecycleSerialExecutor("accepted-tune-session-test")
         val fixture = controllerExecutor.submitControl<Fixture> { Fixture(false, false) }.get(5, TimeUnit.SECONDS)
         try {
-            val controller = fixture.allocate(TunerController::class.java)
-            val session = fixture.allocate(MaleicacidLiveSession::class.java)
+            val controller = fixture.create(TunerController::class.java)
+            val session = fixture.create(MaleicacidLiveSession::class.java)
 
             fun set(
                 target: Any,
@@ -971,21 +962,21 @@ class PlaybackFailureCallbacksTest {
             set(controller, "playbackPipeline", fixture.pipeline)
             set(controller, "tuneAccepted", true)
             set(controller, "currentTune", fixture.channel)
-            for (name in listOf("failedDynamicPmtPids", "failedDynamicEcmPids", "failedDynamicEmmPids")) {
-                set(controller, name, linkedSetOf<TsPid>())
-            }
-            for (name in listOf("captionLanguagesByPid", "captionFactParsers", "superimposeTimingByPid")) {
-                set(controller, name, java.util.concurrent.ConcurrentHashMap<TsPid, Any>())
-            }
-            set(controller, "sectionFilters", linkedMapOf<TsPid, Any>())
-            set(controller, "sectionFilterHandles", linkedMapOf<TsPid, Any>())
-            val released = AtomicBoolean(false)
-            set(session, "releaseOnce", released)
+            val released = ReflectionHelpers.getField<AtomicBoolean>(session, "releaseOnce")
             set(session, "sessionExecutor", sessionExecutor)
-            set(session, "tuneRequestLock", Any())
             set(session, "tunerController", controller)
             set(session, "playbackState", fixture.state)
-            // 字幕ownerとFramework通知を未初期化にし、両方の失敗後も実playback停止を検査する。
+            // Framework通知失敗を注入し、別のplayback解放失敗とともに保持されることを検査する。
+            android.media.tv.TvInputService.Session::class.java
+                .getDeclaredField("mPendingActions")
+                .apply {
+                    isAccessible = true
+                }.set(
+                    session,
+                    object : ArrayList<Runnable>() {
+                        override fun add(element: Runnable): Boolean = error("注入したフレームワーク通知失敗")
+                    },
+                )
             val engine =
                 com.maleicacid.tvinput.aribsi
                     .AribSiEngine(android.content.ContextWrapper(null))
@@ -1027,16 +1018,22 @@ class PlaybackFailureCallbacksTest {
             check(pending.hasPending)
             check(!sessionExecutor.isShutdown)
             check(!session.onTune(android.net.Uri.parse("content://android.media.tv/channel/3")))
+            set(parser, "handle", 0L)
+            android.media.tv.TvInputService.Session::class.java
+                .getDeclaredField("mPendingActions")
+                .apply {
+                    isAccessible = true
+                }.set(session, arrayListOf<Runnable>())
         } finally {
             fixture.rejectRelease = false
             runCatching { fixture.pipeline.release() }
             check(!fixture.cleanup.hasPending)
-            controllerExecutor.shutdownNow()
-            sessionExecutor.shutdownNow()
+            closeOwner(controllerExecutor)
+            closeOwner(sessionExecutor)
         }
     }
 
-    @Test
+    @Test(timeout = 60_000)
     fun releaseRetainsOwnerWhenDiscardedInputReleaseFailsThenCompletesOnRetry() {
         val fixture = Fixture(false, false, false)
         val executor = LifecycleSerialExecutor("未実行event解放試験")
@@ -1083,7 +1080,6 @@ class PlaybackFailureCallbacksTest {
             check(attempts == 1 && fixture.cleanup.hasPending && !executor.isShutdown)
             check(activePipelines.get() == baseline + 1 && registration.getBoolean(fixture.pipeline))
             executor.executeControl {
-                // Unsafe fixtureのcallback threadは未初期化。停止後のNPEは試験対象外。
                 runCatching { fixture.pipeline.release() }
                 retryDone.countDown()
             }
@@ -1093,63 +1089,74 @@ class PlaybackFailureCallbacksTest {
         } finally {
             if (registration.getBoolean(fixture.pipeline)) ChannelScanManager.unregisterPlaybackPipeline(null)
             unblock.countDown()
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
-    @Test
+    @Test(timeout = 60_000)
     fun mediaArrayFailureReleasesOnlyUnprocessedInputsAndRetainsReleaseFailure() {
         val fixture = Fixture(false, false, false)
         val executor = LifecycleSerialExecutor("複数MediaEvent失敗試験")
         fixture.set("executor", executor)
-        val filter = fixture.allocate(Filter::class.java)
-        val events = Array(6) { fixture.allocate(MediaEvent::class.java) }
-        val releases = MediaEvent::class.java.getField("releases")
-        MediaEvent::class.java.getField("rejectRead").setBoolean(events[1], true)
-        events.drop(2).forEach { MediaEvent::class.java.getField("rejectRelease").setBoolean(it, true) }
-        Tuner::class.java.getField("nextFilter").set(null, filter)
+        val filter = fixture.create(Filter::class.java)
+        val events = Array(6) { fixture.create(MediaEvent::class.java) }
+        Shadow.extract<FailureMediaEvent>(events[1]).rejectRead = true
+        events
+            .drop(
+                2,
+            ).forEach { Shadow.extract<FailureMediaEvent>(it).rejectRelease = true }
+        FailureTuner.nextFilter = filter
         try {
             executor.callControl(5_000L) {
                 fixture.invoke("createAndStartAvFilter", fixture.tuner, fixture.selection.audio!!, true)
             }
             fixture.set("audioFilter", filter)
-            Filter::class.java.getField("rejectClose").setBoolean(filter, true)
+            Shadow.extract<FailureFilter>(filter).rejectClose = true
             val failed = java.util.concurrent.CountDownLatch(1)
             fixture.set("onVideoUnavailable", { _: PlaybackPipeline.PlaybackUnavailable -> failed.countDown() })
-            val deliver = Filter::class.java.getMethod("deliver", Array<FilterEvent>::class.java)
-            check(deliver.invoke(filter, Array<FilterEvent>(events.size) { events[it] }) == true)
+            check(Shadow.extract<FailureFilter>(filter).deliver(Array<FilterEvent>(events.size) { events[it] }) == true)
             check(failed.await(5, TimeUnit.SECONDS))
             executor.callControl(5_000L, cleanup = true) {
-                check(events.take(2).all { releases.getInt(it) == 1 })
-                check(events.drop(2).all { releases.getInt(it) >= 1 })
+                check(events.take(2).all { Shadow.extract<FailureMediaEvent>(it).releases == 1 })
+                check(events.drop(2).all { Shadow.extract<FailureMediaEvent>(it).releases >= 1 })
                 check(fixture.cleanup.hasPending)
                 val pending = ResourceCleanup::class.java.getDeclaredField("pending").apply { isAccessible = true }
                 val retained = (pending.get(fixture.cleanup) as List<*>).size
                 check(retained == 5)
                 repeat(100) {
-                    check(deliver.invoke(filter, Array<FilterEvent>(events.size) { events[it] }) == false)
+                    val delivered =
+                        Shadow.extract<FailureFilter>(filter).deliver(Array<FilterEvent>(events.size) { events[it] })
+                    check(!delivered)
                 }
                 check((pending.get(fixture.cleanup) as List<*>).size == retained)
-                events.drop(2).forEach { MediaEvent::class.java.getField("rejectRelease").setBoolean(it, false) }
-                Filter::class.java.getField("rejectClose").setBoolean(filter, false)
+                events
+                    .drop(
+                        2,
+                    ).forEach {
+                        Shadow.extract<FailureMediaEvent>(it).rejectRelease = false
+                    }
+                Shadow.extract<FailureFilter>(filter).rejectClose = false
                 fixture.cleanup.retry()
                 fixture.cleanup.requireComplete()
-                check(releases.getInt(events[0]) == 1 && releases.getInt(events[1]) == 1)
+                check(
+                    Shadow.extract<FailureMediaEvent>(events[0]).releases == 1 &&
+                        Shadow.extract<FailureMediaEvent>(events[1]).releases == 1,
+                )
                 check(!fixture.cleanup.hasPending)
             }
         } finally {
-            Tuner::class.java.getField("nextFilter").set(null, null)
-            executor.shutdownNow()
+            FailureTuner.nextFilter = null
+            closeOwner(executor)
         }
     }
 
     // 実consume入口が旧sync/世代をmap変更より先に拒否することを検査する。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun delayedAudioConsumeCannotReleaseReassignedOutputAndIdsDoNotWrapWithinSync() {
         val fixture = Fixture(false, false, failCleanup = false)
-        val oldSync = fixture.allocate(MediaSync::class.java)
-        val currentSync = fixture.allocate(MediaSync::class.java)
+        val oldSync = fixture.create(MediaSync::class.java)
+        val currentSync = fixture.create(MediaSync::class.java)
         fixture.set("mediaSync", currentSync)
         fixture.set("nextAudioBufferId", Int.MAX_VALUE - 1)
         check(fixture.invoke("allocateAudioBufferId") == Int.MAX_VALUE)
@@ -1159,8 +1166,20 @@ class PlaybackFailureCallbacksTest {
         val id = fixture.invoke("allocateAudioBufferId") as Int
         check(id == 1)
         val outputType = PlaybackPipeline::class.java.declaredClasses.single { it.simpleName == "AudioOutput" }
-        // codec nativeを作らないpoison出力。旧callbackが触れたらcleanup失敗が記録される。
-        val output = fixture.allocate(outputType)
+        // 正規生成した出力に解放拒否を注入し、旧callbackが触れたらcleanup失敗を記録する。
+        val codec = MediaCodec.createByCodecName("failure.codec")
+        val native = Shadow.extract<FailureCodec>(codec)
+        native.rejectOutputRelease = true
+        val output =
+            outputType.declaredConstructors.single().apply { isAccessible = true }.newInstance(
+                codec,
+                0,
+                ReflectionHelpers.callConstructor(MediaCodec.OutputFrame::class.java),
+                ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java),
+                java.nio.ByteBuffer.allocate(1),
+                1,
+                0L,
+            )
         val outstanding = linkedMapOf(id to output)
         fixture.set("outstandingAudioOutputs", outstanding)
         fixture.invoke("onAudioBufferConsumedOnPlaybackExecutor", oldSync, 6L, id)
@@ -1169,11 +1188,15 @@ class PlaybackFailureCallbacksTest {
         fixture.invoke("onAudioBufferConsumedOnPlaybackExecutor", currentSync, 7L, id)
         // 現callbackだけが出力解放を試み、poison codec失敗を既存cleanupへ保持する。
         check(fixture.cleanup.hasPending)
+        native.rejectOutputRelease = false
+        fixture.cleanup.retry()
+        fixture.cleanup.requireComplete()
+        codec.release()
     }
 
     // Android Sessionの通知queueだけを初期化し、実onTune受付と同じownerへの再開を確認する。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun singlePendingTuneResumesAfterCleanupAndFailureNeverEntersTune() {
         val ready =
             ProgramUpgradeCleanup::class.java
@@ -1195,7 +1218,7 @@ class PlaybackFailureCallbacksTest {
                 val unblock = java.util.concurrent.CountDownLatch(1)
                 val executor = LifecycleSerialExecutor("cleanup待機session試験")
                 val fixture = Fixture(false, false, failCleanup = false)
-                val session = fixture.allocate(MaleicacidLiveSession::class.java)
+                val session = fixture.create(MaleicacidLiveSession::class.java)
 
                 fun set(
                     type: Class<*>,
@@ -1209,12 +1232,9 @@ class PlaybackFailureCallbacksTest {
                         override fun getApplicationContext() = this
                     }
                 val notifications = mutableListOf<Runnable>()
-                val released = AtomicBoolean(false)
+                val released = ReflectionHelpers.getField<AtomicBoolean>(session, "releaseOnce")
                 set(MaleicacidLiveSession::class.java, "appContext", context)
-                set(MaleicacidLiveSession::class.java, "releaseOnce", released)
                 set(MaleicacidLiveSession::class.java, "sessionExecutor", executor)
-                set(MaleicacidLiveSession::class.java, "tuneRequestLock", Any())
-                set(android.media.tv.TvInputService.Session::class.java, "mLock", Any())
                 set(android.media.tv.TvInputService.Session::class.java, "mPendingActions", notifications)
                 try {
                     check(
@@ -1230,13 +1250,13 @@ class PlaybackFailureCallbacksTest {
                     unblock.countDown()
                     worker.submit {}.get(5, TimeUnit.SECONDS)
                     executor.callControl(5_000L) {}
-                    // 成功時だけ実tuneのTUNING通知へ進む。その後の未初期化native owner失敗はfixture境界。
+                    // 成功時だけ実tuneのTUNING通知へ進む。その後のProvider照会拒否も通知して閉鎖する。
                     check(notifications.size == if (success) 2 else 1)
                     check(released.get() && ready.get() == success)
                 } finally {
                     unblock.countDown()
                     worker.submit {}.get(5, TimeUnit.SECONDS)
-                    executor.shutdownNow()
+                    closeOwner(executor)
                 }
             }
         } finally {
@@ -1246,11 +1266,11 @@ class PlaybackFailureCallbacksTest {
 
     // 本番callback/readから実JNIまで、正常集合・有限飽和・retune失効を同じfixtureで検査する。
     @Suppress("LongMethod")
-    @Test
+    @Test(timeout = 60_000)
     fun sectionCallbackBurstCompletesSiAndReportsFiniteAdmissionLoss() {
         val executor = ControllerSerialExecutor("section burst試験", maxPendingDataTasks = 16)
         val fixture = executor.submitControl { Fixture(false, false, failCleanup = false) }.get(5, TimeUnit.SECONDS)
-        val controller = fixture.allocate(TunerController::class.java)
+        val controller = fixture.create(TunerController::class.java)
         val engine =
             com.maleicacid.tvinput.aribsi
                 .AribSiEngine(android.content.ContextWrapper(null))
@@ -1293,14 +1313,14 @@ class PlaybackFailureCallbacksTest {
             hex: Array<String>,
         ) {
             val payloads = hex.map { h -> h.chunked(2).map { it.toInt(16).toByte() }.toByteArray() }
-            Filter::class.java.getField("sectionPayloads").set(filter, payloads.toTypedArray())
-            Filter::class.java.getField("reads").setInt(filter, 0)
+            Shadow.extract<FailureFilter>(filter).sectionPayloads = payloads.toTypedArray()
+            Shadow.extract<FailureFilter>(filter).reads = 0
             val events = payloads.map { bytes -> eventConstructor.newInstance(0, 0, 0, bytes.size.toLong()) }
             val before = System.nanoTime()
             check(
-                Filter::class.java
+                FailureFilter::class.java
                     .getMethod("deliver", Array<android.media.tv.tuner.filter.FilterEvent>::class.java)
-                    .invoke(filter, events.toTypedArray()) == true,
+                    .invoke(Shadow.extract<FailureFilter>(filter), events.toTypedArray()) == true,
             )
             check(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before) < 1_000L)
         }
@@ -1314,15 +1334,11 @@ class PlaybackFailureCallbacksTest {
             set("tuneGeneration", 7L)
             set("tuner", fixture.tuner)
             set("sectionIngestController", ingest)
-            set("sectionFilterHandles", linkedMapOf<TsPid, TunerController.SectionFilterHandle>())
-            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
             set("dynamicPmtPids", linkedSetOf(TsPid(0x100)))
-            set("dynamicEcmPids", linkedSetOf<TsPid>())
-            set("dynamicEmmPids", linkedSetOf<TsPid>())
-            Tuner::class.java.getField("sectionFilterCount").setInt(null, 16)
+            FailureTuner.sectionFilterCount = 16
             for (pid in listOf(0, 0x10, 0x11, 0x100)) {
-                val filter = fixture.allocate(Filter::class.java)
-                Tuner::class.java.getField("nextFilter").set(null, filter)
+                val filter = fixture.create(Filter::class.java)
+                FailureTuner.nextFilter = filter
                 check(controller.openSectionFilter(TsPid(pid), 7L).isOpen)
                 filters[pid] = filter
             }
@@ -1364,9 +1380,9 @@ class PlaybackFailureCallbacksTest {
         } finally {
             releaseOwner.countDown()
             filters.keys.forEach { controller.closeSectionFilter(TsPid(it)) }
-            Tuner::class.java.getField("nextFilter").set(null, null)
+            FailureTuner.nextFilter = null
             engine.close()
-            executor.shutdownNow()
+            closeOwner(executor)
         }
     }
 
@@ -1375,15 +1391,13 @@ class PlaybackFailureCallbacksTest {
         audioOnly: Boolean,
         failCleanup: Boolean = true,
     ) {
-        // Androidのthread/native初期化だけを省く。本番の停止・開始・エラー処理を直接実行する。
-        private val unsafe =
-            Unsafe::class.java.getDeclaredField("theUnsafe").run {
-                isAccessible = true
-                get(null) as Unsafe
-            }
-        val pipeline = unsafe.allocateInstance(PlaybackPipeline::class.java) as PlaybackPipeline
-        val cleanup = ResourceCleanup()
-        val tuner = unsafe.allocateInstance(Tuner::class.java) as Tuner
+        private val resources = mutableListOf<AutoCloseable>()
+        private val filters = mutableListOf<Filter>()
+        private val events = mutableListOf<MediaEvent>()
+        private val threads = mutableListOf<HandlerThread>()
+        val pipeline = PlaybackPipeline("test", "failure-test")
+        val cleanup = ReflectionHelpers.getField<ResourceCleanup>(pipeline, "resourceCleanup")
+        val tuner = Tuner(RuntimeEnvironment.getApplication(), null, 0)
         private val key = ServiceKey(4, 0x4010, 101)
         val channel =
             TunerController.ResolvedChannel(
@@ -1427,22 +1441,13 @@ class PlaybackFailureCallbacksTest {
         private var resourceOwned = failCleanup
 
         init {
-            set("inputId", "test")
-            set("executor", LifecycleSerialExecutor("playback-fixture"))
+            activeFixtures += this
+            val initialOwner = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            resources += AutoCloseable { initialOwner.shutdownNow() }
+            threads += ReflectionHelpers.getField<HandlerThread>(pipeline, "codecCallbackThread")
+            threads += ReflectionHelpers.getField<HandlerThread>(pipeline, "videoRenderThread")
             set("playbackGeneration", 7L)
-            set("released", AtomicBoolean(false))
-            // Unsafeによるconstructor省略時も停止前のnative wake参照を初期化する。
-            set("blockedVideoOutputSync", AtomicReference<MediaSync?>())
             set("videoAvailableNotified", AtomicBoolean(!waiting))
-            set("resourceCleanup", cleanup)
-            // Unsafe fixtureはconstructor初期化を省くため、本番の診断専用fieldを明示初期化する。
-            set("dataPathProgress", PlaybackDataPathProgress())
-            set("audioFilterCallbackSequence", AtomicLong(0L))
-            set("lastAudioFilterCallbackNs", AtomicLong(0L))
-            set("outstandingAudioOutputs", linkedMapOf<Int, Any>())
-            set("pendingAudioOutputReleases", mutableSetOf<Int>())
-            val ptsType = field("ptsEpochCoordinator").type
-            set("ptsEpochCoordinator", ptsType.getDeclaredConstructor().apply { isAccessible = true }.newInstance())
             set("activeTuner", tuner)
             set("activeChannel", channel)
             set("activeSelection", selection)
@@ -1462,9 +1467,9 @@ class PlaybackFailureCallbacksTest {
                 }
             })
             if (failCleanup) {
-                cleanup.release("injected filter") {
+                cleanup.release("失敗注入対象フィルター") {
                     releaseAttempts++
-                    if (rejectRelease) error("filter close rejected")
+                    if (rejectRelease) error("フィルター閉鎖拒否")
                     resourceOwned = false
                 }
             }
@@ -1473,7 +1478,7 @@ class PlaybackFailureCallbacksTest {
         fun checkTerminalCleanupFailure() {
             val failure = failures.single()
             check(failure.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
-            check(failure.generation == 7L && failure.detail.contains("injected filter"))
+            check(failure.generation == 7L && failure.detail.contains("失敗注入対象フィルター"))
             check(pipeline.currentPlaybackGenerationForTest() == 8L)
             check(notifications == 1 && state == PlaybackStartState.Failed(signature, 7L))
             check(restarts.isEmpty())
@@ -1482,8 +1487,8 @@ class PlaybackFailureCallbacksTest {
 
         fun checkRetainedThenReleased(expectedFailedAttempts: Int = 2) {
             check(cleanup.hasPending && resourceOwned && releaseAttempts == expectedFailedAttempts) {
-                "pending=${cleanup.hasPending} owned=$resourceOwned " +
-                    "attempts=$releaseAttempts expected=$expectedFailedAttempts"
+                "解放保留=${cleanup.hasPending} 資源所有=$resourceOwned " +
+                    "試行回数=$releaseAttempts 期待失敗回数=$expectedFailedAttempts"
             }
             check(field("activeTuner").get(pipeline) == null && field("activeChannel").get(pipeline) == null)
             rejectRelease = false
@@ -1502,7 +1507,120 @@ class PlaybackFailureCallbacksTest {
         @Suppress("MaxLineLength")
         private fun field(name: String) = PlaybackPipeline::class.java.getDeclaredField(name).apply { isAccessible = true }
 
-        fun <T> allocate(type: Class<T>): T = type.cast(unsafe.allocateInstance(type))
+        // 具体的な所有型ごとの正規生成と解放を同じfixtureに保持する。
+        @Suppress("CyclomaticComplexMethod", "LongMethod")
+        fun <T> create(type: Class<T>): T {
+            val context = RuntimeEnvironment.getApplication()
+            val value: Any =
+                when (type) {
+                    TunerController::class.java -> {
+                        TunerController(context, "failure-test").also {
+                            resources += it
+                            resources += ReflectionHelpers.getField<PlaybackPipeline>(it, "playbackPipeline")
+                            val owner = ReflectionHelpers.getField<ControllerSerialExecutor>(it, "sectionExecutor")
+                            resources += AutoCloseable { owner.shutdownNow() }
+                        }
+                    }
+
+                    MaleicacidLiveSession::class.java -> {
+                        MaleicacidLiveSession(context, context, "failure-test", "failure-test").also {
+                            resources += AutoCloseable { it.onRelease() }
+                            resources += ReflectionHelpers.getField<TunerController>(it, "tunerController")
+                            val engine =
+                                ReflectionHelpers.getField<AribSiEngine>(it, "aribSiEngine")
+                            resources += engine
+                            val owner = ReflectionHelpers.getField<LifecycleSerialExecutor>(it, "sessionExecutor")
+                            resources += AutoCloseable { owner.shutdownNow() }
+                        }
+                    }
+
+                    ChannelScanController::class.java -> {
+                        val engine =
+                            com.maleicacid.tvinput.aribsi
+                                .AribSiEngine(context)
+                        resources += engine
+                        ChannelScanController(context, "failure-test", engine, ScanPurpose.SETUP_SCAN).also {
+                            resources += it
+                            resources += ReflectionHelpers.getField<TunerController>(it, "tunerController")
+                        }
+                    }
+
+                    AribCaptionController::class.java -> {
+                        AribCaptionController(CaptionOverlayView(context), { null }).also {
+                            resources += it
+                        }
+                    }
+
+                    Filter::class.java -> {
+                        ReflectionHelpers.callConstructor(
+                            Filter::class.java,
+                            ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, 1L),
+                        )
+                    }
+
+                    MediaSync::class.java -> {
+                        MediaSync().also { resources += AutoCloseable { it.release() } }
+                    }
+
+                    MediaEvent::class.java -> {
+                        MediaEvent::class.java.declaredConstructors
+                            .single { it.parameterCount == 15 }
+                            .apply { isAccessible = true }
+                            .newInstance(
+                                0,
+                                false,
+                                0L,
+                                false,
+                                0L,
+                                1L,
+                                -1L,
+                                null,
+                                false,
+                                0L,
+                                0,
+                                false,
+                                0,
+                                null,
+                                emptyList<Any>(),
+                            )
+                    }
+
+                    else -> {
+                        error("未対応の試験構成型: ${type.name}")
+                    }
+                }
+            if (value is Filter) filters += value
+            if (value is MediaEvent) events += value
+            return type.cast(value)
+        }
+
+        fun close() {
+            rejectRelease = false
+            FailureMediaCas.Faults.reset()
+            filters.forEach { Shadow.extract<FailureFilter>(it).rejectClose = false }
+            events.forEach { Shadow.extract<FailureMediaEvent>(it).rejectRelease = false }
+            val failures = mutableListOf<Throwable>()
+            (listOf<AutoCloseable>(pipeline) + resources).forEach { resource ->
+                runCatching { resource.close() }.exceptionOrNull()?.let(failures::add)
+            }
+            threads.forEach { it.quitSafely() }
+            threads.forEach { it.join(5_000) }
+            check(threads.none { it.isAlive }) { "試験用コールバックスレッドが終了していません" }
+            check(failures.isEmpty()) { failures.joinToString { it.stackTraceToString() } }
+        }
+
+        companion object {
+            private val activeFixtures = java.util.concurrent.CopyOnWriteArrayList<Fixture>()
+
+            fun closeAll() {
+                val failures = mutableListOf<Throwable>()
+                activeFixtures.asReversed().forEach { fixture ->
+                    runCatching { fixture.close() }.exceptionOrNull()?.let(failures::add)
+                }
+                activeFixtures.clear()
+                check(failures.isEmpty()) { failures.joinToString { it.stackTraceToString() } }
+            }
+        }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")

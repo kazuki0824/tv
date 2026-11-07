@@ -1,3 +1,11 @@
+# 2026-11-07 TIS試験fixtureの正規初期化と資源解放
+
+- ControllerSerialExecutorReviewBoundaryTest、FrameworkFilterCallbackLockTestをRobolectricへ移し、正規生成したControllerとAndroid SDKのFilterで別owner間の待機・callback lock・終了を検査する。SDT配送の待機は同じdata queueの完了を待つ。
+- PlaybackFailureCallbacksTestと試験専用のPlaybackFailureAndroidBoundary、PlaybackFilterAdmissionTest、PlaybackSurfaceWaitTestは正規生成した再生owner・SessionとSDK境界を使う。旧世代の失効、停止・CAS解放、解放失敗からの再試行、Surface待ちを検査し、終了時にfixtureが初期化した資源を解放する。
+- TisReviewBoundaryTest、ProgramCleanupProviderTest、ProgramProviderObserverTestは正規生成のSIエンジン・Provider wrapper・Sessionを使い、snapshot拒否、公開rollback、部分失敗と再試行、通知集約を検査する。TunerFrontendLeaseTransitionTestのfixture境界も追従する。
+- Robolectric CIは実SI JNIをビルドして移設後の7クラスを実行し、各クラスの件数・失敗・skipを確認する。SI engine変更も起動条件に含め、Gradleは試験クラスごとにJVMを分けてJNI classloaderの所有権を分離する。従来のhost CIは残る試験へ実行対象と期待件数を更新する。
+- 検証はCIで実行する。実端末・製品Soong・CTS/VTSは未実施。
+
 # 2026-11-02 MediaSync診断のインスタンス混同を防止
 
 - coverage SQLを既存Perfetto thread.upidとnative pointerごとの集約へ変更し、別インスタンス・別プロセス・pointer再生成のログ合算で4段階成立と判定しない。

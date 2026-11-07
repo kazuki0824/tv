@@ -91,7 +91,7 @@ class PlaybackFilterAdmissionTest {
             ReflectionHelpers.callInstanceMethod<Unit>(
                 session,
                 "holdPreviousParentalAccessState",
-                ReflectionHelpers.ClassParameter.from(String::class.java, "provider query failed after recovery"),
+                ReflectionHelpers.ClassParameter.from(String::class.java, "回復後のプロバイダー照会失敗"),
             )
             assertEquals(allowed, field.get(session))
             assertEquals(PlaybackStartState.Idle, ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState"))
@@ -680,7 +680,7 @@ class PlaybackFilterAdmissionTest {
                     )
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
                 while (inbox.isEmpty() && System.nanoTime() < deadline) Thread.yield()
-                assertTrue(inbox.isNotEmpty(), "Codec input callback must have arrived")
+                assertTrue(inbox.isNotEmpty(), "コーデック入力コールバックが到着している必要があります")
             }
             samples[1].let { second ->
                 Shadow.extract<NativeMediaEvent>(second).onBlockRead = {
@@ -734,7 +734,7 @@ class PlaybackFilterAdmissionTest {
                 if (previous == null) {
                     assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
                 } else {
-                    assertTrue(released.await(5, TimeUnit.SECONDS), "old input must be returned")
+                    assertTrue(released.await(5, TimeUnit.SECONDS), "旧入力が返却される必要があります")
                 }
                 fixture.drain()
                 // Android側callbackによる出力・描画進捗も同じdecoder generationで120件継続させる。
@@ -742,7 +742,7 @@ class PlaybackFilterAdmissionTest {
                 postCodecCallback(codec, 2, frame % 4, MediaCodec.BufferInfo().apply { set(0, 1, ptsUs, 0) })
                 rendered.onFrameRendered(codec, ptsUs, System.nanoTime())
             }
-            assertTrue(outputsReturned.await(5, TimeUnit.SECONDS), "mock Codec must return 120 video outputs")
+            assertTrue(outputsReturned.await(5, TimeUnit.SECONDS), "模擬コーデックが映像出力を120件返却する必要があります")
             returnCodecInputAndAwaitEventRelease(codec, samples.last())
             fixture.drain()
             assertEquals(120L, fixture.progress().count(PlaybackDataPathProgress.Stage.CODEC_INPUT, false))
@@ -1016,7 +1016,7 @@ class PlaybackFilterAdmissionTest {
     fun actualOwnerExecutionFailureNotifiesOnceAndCleansOnSameOwner() {
         Fixture().use { fixture ->
             val video = fixture.avFilter(false)
-            fixture.invoke("enqueuePlaybackAction", { error("actual callback failure") })
+            fixture.invoke("enqueuePlaybackAction", { error("コールバック実行時の失敗") })
             assertTrue(fixture.executor.awaitTermination(5, TimeUnit.SECONDS))
             assertTrue(fixture.released())
             assertEquals(1, fixture.unavailable.size)
@@ -2098,7 +2098,7 @@ class PlaybackFilterAdmissionTest {
         Shadow.extract<NativeMediaEvent>(event).onRelease = { released.countDown() }
         postCodecCallback(codec, 1, 0, null)
         // CodecのHandlerからownerへ届く前に、ownerだけのdrainが完了し得る。
-        assertTrue(released.await(5, TimeUnit.SECONDS), "returned Codec input must release its MediaEvent")
+        assertTrue(released.await(5, TimeUnit.SECONDS), "返却されたコーデック入力はMediaEventを解放する必要があります")
     }
 
     private fun postCodecCallback(
@@ -2149,20 +2149,20 @@ class PlaybackFilterAdmissionTest {
             )
         }
 
-        private val sessionCaptionExecutors = mutableListOf<LifecycleSerialExecutor>()
+        private val audioSessions = mutableListOf<MaleicacidLiveSession>()
 
-        // Android Session通知と本番Session→Controller→Pipelineを通し、字幕native初期化だけを省く。
+        // 正規生成したSessionとControllerへ、試験中のPipelineを接続する。
         // 同じSessionの選択・通知・字幕寿命を一つのfixtureとして初期化する。
         @Suppress("LongMethod")
         fun audioSession(
             selection: TunerController.AvStreamSelection,
             next: TunerController.AvStreamSelection,
         ): MaleicacidLiveSession {
-            val unsafeType = Class.forName("sun.misc.Unsafe")
-            val unsafe = unsafeType.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
-            val allocate = unsafeType.getMethod("allocateInstance", Class::class.java)
-            val session = allocate.invoke(unsafe, MaleicacidLiveSession::class.java) as MaleicacidLiveSession
-            val controller = allocate.invoke(unsafe, TunerController::class.java) as TunerController
+            val context = RuntimeEnvironment.getApplication()
+            val session = MaleicacidLiveSession(context, context, "admission-test", "audio-switch-fixture")
+            audioSessions += session
+            val controller = ReflectionHelpers.getField<TunerController>(session, "tunerController")
+            ReflectionHelpers.getField<PlaybackPipeline>(controller, "playbackPipeline").close()
             ReflectionHelpers.setField(controller, "currentTune", ReflectionHelpers.getField<Any>(pipeline, "activeChannel"))
             ReflectionHelpers.setField(controller, "tuner", tuner)
             ReflectionHelpers.setField(controller, "playbackPipeline", pipeline)
@@ -2224,23 +2224,8 @@ class PlaybackFilterAdmissionTest {
                 )
             ReflectionHelpers.setField(session, "playbackState", PlaybackStartState.Started(signature, 7L))
             for (name in listOf("captionController", "superimposeController")) {
-                val caption = allocate.invoke(unsafe, AribCaptionController::class.java) as AribCaptionController
-                ReflectionHelpers.setField(caption, "released", AtomicBoolean(true))
-                ReflectionHelpers.setField(caption, "pesAdmissionLock", Any())
-                val captionExecutor = LifecycleSerialExecutor("closed audio-switch caption fixture")
-                sessionCaptionExecutors += captionExecutor
-                ReflectionHelpers.setField(caption, "executor", captionExecutor)
-                ReflectionHelpers.setField(session, name, caption)
+                ReflectionHelpers.getField<AribCaptionController>(session, name).close()
             }
-            TvInputService.Session::class.java
-                .getDeclaredField("mLock")
-                .apply { isAccessible = true }
-                .set(session, Any())
-            TvInputService.Session::class.java
-                .getDeclaredField(
-                    "mPendingActions",
-                ).apply { isAccessible = true }
-                .set(session, mutableListOf<Runnable>())
             return session
         }
 
@@ -2292,18 +2277,13 @@ class PlaybackFilterAdmissionTest {
 
         var availabilitySync: MediaSync? = null
 
-        // native初期化だけを省略し、stockでのmode選択とarmは本番処理を通す。
+        // stockでのmode選択とarmは本番処理を通す。
         fun armCompatibilityAvailability(
             generation: Long,
             exact: Boolean = false,
         ): Long {
             val sync =
-                availabilitySync ?: run {
-                    val type = Class.forName("sun.misc.Unsafe")
-                    val unsafe = type.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
-                    (type.getMethod("allocateInstance", Class::class.java).invoke(unsafe, MediaSync::class.java) as MediaSync)
-                        .also { availabilitySync = it }
-                }
+                availabilitySync ?: MediaSync().also { availabilitySync = it }
             return executor.callControl(5_000L) {
                 ReflectionHelpers.setField(pipeline, "surface", requireNotNull(codecSurface))
                 ReflectionHelpers.setField(pipeline, "videoPathExpected", true)
@@ -2467,12 +2447,13 @@ class PlaybackFilterAdmissionTest {
                 .invoke(pipeline, *arguments)
 
         override fun close() {
-            sessionCaptionExecutors.forEach { it.shutdownNow() }
-            // このfixtureのMediaSyncはnative資源を確保していない。
+            audioSessions.forEach { it.onRelease() }
+            // pipelineから切り離したMediaSyncはfixtureが解放する。
             if (availabilitySync != null) ReflectionHelpers.setField(pipeline, "mediaSync", null)
             try {
                 pipeline.close()
             } finally {
+                availabilitySync?.release()
                 codecSurface?.release()
                 codecTexture?.release()
             }
@@ -2650,7 +2631,7 @@ class PlaybackFilterAdmissionTest {
             if (blockAfterClear) pendingBytes.clear()
             reclamationBlock?.let { (started, allow) ->
                 started.countDown()
-                check(allow.await(5, TimeUnit.SECONDS)) { "test reclamation was not released" }
+                check(allow.await(5, TimeUnit.SECONDS)) { "試験用の回収待機が解除されていません" }
                 reclamationBlock = null
             }
             if (!blockAfterClear) pendingBytes.clear()

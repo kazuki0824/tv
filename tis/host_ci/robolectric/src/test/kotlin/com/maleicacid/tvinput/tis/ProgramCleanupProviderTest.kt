@@ -4,11 +4,18 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentInterface
 import android.content.ContentResolver
+import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
 import android.database.MatrixCursor
+import android.media.tv.tuner.Tuner
 import android.net.Uri
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
@@ -18,7 +25,15 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
+@RunWith(RobolectricTestRunner::class)
+@Config(
+    sdk = [35],
+    shadows = [ProgramCleanupProviderTest.RejectedTuner::class, ProgramCleanupProviderTest.WrappedResolver::class],
+)
 class ProgramCleanupProviderTest {
+    @Implements(ContentResolver::class)
+    class WrappedResolver
+
     // 実workerとContentResolverでProvider停止・部分削除・retryを連続して検証する。
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     @Test
@@ -67,17 +82,7 @@ class ProgramCleanupProviderTest {
                     }
                 }
             } as ContentInterface
-        // Android固定jarのwrapperだけを構築し、Binder/native初期化をホスト境界で省く。
-        val unsafe =
-            sun.misc.Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as sun.misc.Unsafe
-        val resolver = unsafe.allocateInstance(Class.forName("android.content.ContentResolver\$1")) as ContentResolver
-        ContentResolver::class.java.getDeclaredField("mWrapped").apply {
-            isAccessible = true
-            set(resolver, provider)
-        }
+        val resolver = ContentResolver.wrap(provider)
         val pendingReads = AtomicInteger()
         val preferences =
             Proxy.newProxyInstance(
@@ -181,7 +186,7 @@ class ProgramCleanupProviderTest {
             check(resumed.await(5, TimeUnit.SECONDS))
             worker.submit {}.get(5, TimeUnit.SECONDS)
             scanWorker.submit {}.get(5, TimeUnit.SECONDS)
-            // cleanup成功後は再要求なしで実scanへ進む。hostのAndroid Tuner constructorは未提供。
+            // cleanup成功後は再要求なしで実scanへ進み、明示注入したTuner接続拒否で終端する。
             val attempted = ChannelScanManager.currentState() as ScanState.Failed
             check(attempted.generation == retriedSetup && attempted.message != "Program cleanupに失敗しました")
             check(rows.isEmpty() && committed && ProgramUpgradeCleanup.ensure(cleanup))
@@ -196,85 +201,6 @@ class ProgramCleanupProviderTest {
             restored.get(5, TimeUnit.SECONDS)
         }
         check(scanFailures.isEmpty()) { "scan ownerの非同期例外: ${scanFailures.joinToString { it.stackTraceToString() }}" }
-    }
-
-    // 実Session observerとowner占有を通し、通知数がtask数へ増幅しないことを検査する。
-    @Suppress("LongMethod")
-    @Test
-    fun providerBurstMarksOneDirtyStateWithoutReleasingSession() {
-        val unsafe =
-            sun.misc.Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as sun.misc.Unsafe
-        val session = unsafe.allocateInstance(MaleicacidLiveSession::class.java) as MaleicacidLiveSession
-
-        fun set(
-            name: String,
-            value: Any,
-        ) {
-            MaleicacidLiveSession::class.java
-                .getDeclaredField(name)
-                .apply { isAccessible = true }
-                .set(session, value)
-        }
-        val executor = LifecycleSerialExecutor("provider-burst-test", 64)
-        val released = AtomicBoolean(false)
-        val dirty = AtomicBoolean(false)
-        set("sessionExecutor", executor)
-        set("releaseOnce", released)
-        set("programProviderDirty", dirty)
-        val context = object : ContextWrapper(null) {}
-        val coordinator = ProgramPublishCoordinator(TvProviderWriter(context, "test"))
-        set("programPublishCoordinator", coordinator)
-        @Suppress("UNCHECKED_CAST")
-        val signatures =
-            ProgramPublishCoordinator::class.java
-                .getDeclaredField("lastInputSignatureByMode")
-                .apply { isAccessible = true }
-                .get(coordinator) as MutableMap<ChannelScanController.PublishMode, String>
-        signatures[ChannelScanController.PublishMode.LIVE_TUNE_REFRESH] = "old"
-        val observer =
-            Class
-                .forName("com.maleicacid.tvinput.tis.MaleicacidLiveSession\$programProviderObserver\$1")
-                .getDeclaredConstructor(MaleicacidLiveSession::class.java)
-                .apply { isAccessible = true }
-                .newInstance(session) as android.database.ContentObserver
-        val entered = CountDownLatch(1)
-        val unblock = CountDownLatch(1)
-        executor.executeControl {
-            entered.countDown()
-            check(unblock.await(5, TimeUnit.SECONDS))
-        }
-        try {
-            check(entered.await(5, TimeUnit.SECONDS))
-            repeat(128) { observer.onChange(false) }
-            check(!released.get() && dirty.get() && signatures.isNotEmpty())
-            unblock.countDown()
-            executor.callControl(5_000L) {
-                val snapshot =
-                    com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot(
-                        discoveryProfile = 0,
-                        ingestSequence = 0L,
-                        events = emptyList(),
-                        updateWindows = emptyList(),
-                        semanticFactsByServiceKey = emptyMap(),
-                        descriptorDiagnostics = emptyList(),
-                        parserDiagnostics = emptyList(),
-                    )
-                MaleicacidLiveSession::class.java
-                    .getDeclaredMethod(
-                        "publishLivePrograms",
-                        List::class.java,
-                        snapshot.javaClass,
-                    ).apply { isAccessible = true }
-                    .invoke(session, emptyList<Any>(), snapshot)
-                check(signatures.isEmpty() && !dirty.get() && !released.get())
-            }
-        } finally {
-            unblock.countDown()
-            executor.shutdownNow()
-        }
     }
 
     // 同一keyの別package行を含む実ContentResolver索引からupdate/insert要求まで一続きで検査する。
@@ -334,20 +260,11 @@ class ProgramCleanupProviderTest {
                     }
 
                     else -> {
-                        error("Unexpected provider call ${method.name}")
+                        error("想定外のプロバイダー呼出し ${method.name}")
                     }
                 }
             } as ContentInterface
-        val unsafe =
-            sun.misc.Unsafe::class.java
-                .getDeclaredField("theUnsafe")
-                .apply { isAccessible = true }
-                .get(null) as sun.misc.Unsafe
-        val resolver = unsafe.allocateInstance(Class.forName("android.content.ContentResolver\$1")) as ContentResolver
-        ContentResolver::class.java
-            .getDeclaredField("mWrapped")
-            .apply { isAccessible = true }
-            .set(resolver, provider)
+        val resolver = ContentResolver.wrap(provider)
         val context =
             object : ContextWrapper(null) {
                 override fun getContentResolver() = resolver
@@ -392,5 +309,18 @@ class ProgramCleanupProviderTest {
         val second = writer.upsertPreparedPrograms(publication)
         check(second.failures.isEmpty() && second.inserted == 1)
         check(operations.single().existingProgramId == null)
+    }
+
+    @Implements(Tuner::class)
+    class RejectedTuner {
+        @Implementation(methodName = "__constructor__")
+        @Suppress("UNUSED_PARAMETER")
+        fun construct(
+            context: Context,
+            tvInputSessionId: String?,
+            useCase: Int,
+        ) {
+            error("注入したチューナー接続拒否")
+        }
     }
 }
