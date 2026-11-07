@@ -53,6 +53,7 @@ fn close_method_for_drop(
 pub(crate) enum DropLeakQuarantineOutcome {
     Completed,
     SupervisedPending,
+    OwnedByExistingCleanup,
 }
 
 pub(crate) fn quarantine_drop_leak_object(
@@ -74,7 +75,11 @@ pub(crate) fn quarantine_drop_leak_object(
         )>,
     > = None;
     match quarantine_result {
-        Ok(plan) => {
+        Ok(None) => {
+            // 同一・祖先・子孫のObjectCloseTxnが処理中。新たな物理cleanupは開始しない。
+            return Ok(DropLeakQuarantineOutcome::OwnedByExistingCleanup);
+        }
+        Ok(Some(plan)) => {
             let terminalization_result = {
                 let mut runtime_executor = AidlObjectCloseRuntimeExecutor::new(context);
                 let mut domain_executor = AidlObjectDomainCleanupExecutor::new(context);
