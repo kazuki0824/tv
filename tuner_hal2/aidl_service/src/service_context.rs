@@ -409,28 +409,33 @@ impl AidlServiceContext {
                         crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup,
                     ) => match self.related_cleanup_recovery_owners(handle) {
                         Ok(owners) => {
+                            let mut all_owners_supervised = !owners.is_empty();
                             for (owner, active) in owners {
                                 match self.cleanup_reaper_queue.has_pending(owner) {
-                                    Ok(true) => return Ok(()),
+                                    Ok(true) => {}
                                     Ok(false) => {
-                                        // active権限の存在は将来のcleanup完了保証ではない。
-                                        // 受付待ちの監督workerを正本reaper所有者に登録する。
-                                        match self.cleanup_reaper_queue.supervise_unqueued_owner(
-                                            Arc::downgrade(self),
-                                            owner,
-                                        ) {
-                                            Ok(()) => return Ok(()),
-                                            Err(watch_error) => {
-                                                log::error!("未予約のcleanup owner監督失敗: owner={owner:?} active={active} error={watch_error:?}");
-                                                break;
-                                            }
+                                        // active権限の存在自体は将来の回収進行保証ではない。
+                                        // 全ての関連ownerを既存reaper受付へ監督付きで引き継ぐ。
+                                        if let Err(watch_error) =
+                                            self.cleanup_reaper_queue.supervise_unqueued_owner(
+                                                Arc::downgrade(self),
+                                                owner,
+                                            )
+                                        {
+                                            log::error!("未予約のcleanup owner監督失敗: owner={owner:?} active={active} error={watch_error:?}");
+                                            all_owners_supervised = false;
+                                            break;
                                         }
                                     }
                                     Err(owner_error) => {
                                         log::error!("関連reaper owner照会失敗: {owner_error:?}");
+                                        all_owners_supervised = false;
                                         break;
                                     }
                                 }
+                            }
+                            if all_owners_supervised {
+                                return Ok(());
                             }
                         }
                         Err(owner_error) => {
