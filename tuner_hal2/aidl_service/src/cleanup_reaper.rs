@@ -191,10 +191,11 @@ impl CleanupReaperQueue {
         {
             maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(&runtime);
         } else {
-            // すでにservice runtimeそのものが破棄された後は状態変更先が存在しない。
+            // service runtimeが先に破棄された場合にも異常joinをログだけで黙殺しない。
             log::error!(
                 "cleanup受付監督workerの異常を通知するservice runtimeが存在しません: {reason}"
             );
+            std::process::abort();
         }
     }
 
