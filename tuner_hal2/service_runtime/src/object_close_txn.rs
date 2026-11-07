@@ -1775,7 +1775,11 @@ mod tests {
                         .unwrap();
                     finish_object_close_use_case(&mut runtime, completion, Ok(())).unwrap();
                     assert_eq!(
-                        runtime.object_table().entry(entry.object_id()).unwrap().lifecycle,
+                        runtime
+                            .object_table()
+                            .entry(entry.object_id())
+                            .unwrap()
+                            .lifecycle,
                         crate::RuntimeObjectLifecycle::Closed
                     );
                 }
@@ -1825,10 +1829,7 @@ mod tests {
             assert!(distinct_ids.insert(entry.object_id()));
             let key = (entry.object_id(), entry.generation());
             reaper
-                .enqueue_reserved(
-                    (entry, completion),
-                    [(key, CleanupStep::ReleaseBackend)],
-                )
+                .enqueue_reserved((entry, completion), [(key, CleanupStep::ReleaseBackend)])
                 .expect("製品容量までは正規reaperへ受付");
             assert_eq!(
                 finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
