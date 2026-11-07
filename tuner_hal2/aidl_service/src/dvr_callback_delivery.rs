@@ -1052,23 +1052,6 @@ fn finish_reaped_dvr_status_notifier(
     enqueue_cleanup_retry_after_notifier_reap(&context, handle);
 }
 
-/// 回収中のDVR通知workerをSupervisorの正本で確認する。
-/// 完了判定はrequest_supervised_stopが返す状態だけを使用し、
-/// Quarantinedやcallback診断記録をworker終了の証明に流用しない。
-pub(crate) fn dvr_notifier_supervised_cleanup_complete(
-    context: &SharedAidlServiceContext,
-    handle: AidlObjectHandle,
-) -> Result<bool, HalError> {
-    match context
-        .dvr_status_notifier_supervisor()
-        .signal_stop(handle)?
-    {
-        DvrStatusNotifierStopDisposition::Complete => Ok(true),
-        DvrStatusNotifierStopDisposition::StartPending
-        | DvrStatusNotifierStopDisposition::ReaperPending => Ok(false),
-    }
-}
-
 fn handle_dvr_status_notifier_reaper_deadline(
     context: Option<SharedAidlServiceContext>,
     handle: AidlObjectHandle,

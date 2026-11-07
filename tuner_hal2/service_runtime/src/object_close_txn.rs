@@ -1631,16 +1631,17 @@ pub fn quarantine_object_drop_leak_use_case(
         // 祖先・子孫の既存cleanup権限を優先し、重複する物理cleanupを開始しない。
         return Ok(None);
     }
-    let cascade_entries = quarantine_object_cascade(runtime, object_id, generation)?;
-    let artifact_cleanup_commands =
-        artifact_cleanup_commands_for_drop_leak_plan(runtime, &cascade_entries);
-    // 世代遮断と同じruntime lock下でcleanup義務を登録し、
-    // artifact executorがworkerをSupervisorへ移管するより前に正本を確定する。
+    // artifact計画は読取り専用。失敗し得る権限発行より先に状態を変更しない。
+    let candidates = runtime
+        .object_table()
+        .quarantine_candidate_entries(object_id, generation)
+        .map_err(object_table_error_to_hal)?;
+    let artifact_cleanup_commands = artifact_cleanup_commands_for_drop_leak_plan(runtime, &candidates);
     let notifier_candidates = artifact_cleanup_commands
         .iter()
         .filter(|command| command.kind == ObjectArtifactCleanupKind::DvrStatusNotifier)
         .map(|command| (command.object_id, command.generation));
-    runtime
+    let cascade_entries = runtime
         .object_table_mut()
         .begin_quarantine_cleanup(object_id, generation, notifier_candidates)
         .map_err(object_table_error_to_hal)?;
