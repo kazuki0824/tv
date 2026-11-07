@@ -1015,6 +1015,7 @@ fn finish_reaped_dvr_status_notifier(
     };
     record_dvr_status_notifier_lifecycle_outcome(&context, handle, record);
 
+    let notifier_join_succeeded = cleanup_result.is_ok();
     match cleanup_result {
         Ok(()) if restart_requested => {
             if let Err(error) = start_dvr_status_notifier(&context, handle) {
@@ -1026,6 +1027,27 @@ fn finish_reaped_dvr_status_notifier(
         Err(error) => {
             record_superseded_dvr_notifier_cleanup_failure(&context, handle, error);
             fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
+        }
+    }
+
+    // Only an actual successful join can satisfy the pending notifier step
+    // held by the original ObjectCloseTxn. Failed joins remain quarantined.
+    if notifier_join_succeeded {
+        let runtime = context.runtime();
+        let completion = TunerServiceRuntime::lock_shared(
+            &runtime,
+            "DVR notifier Supervisor回収完了通知",
+        )
+        .and_then(|mut runtime| {
+            maleicacid_tuner_hal2_service_runtime::notify_supervised_dvr_joined_use_case(
+                &mut runtime,
+                handle.object_id(),
+                handle.generation(),
+            )
+        });
+        if let Err(error) = completion {
+            record_dvr_notifier_cleanup_control_failure(&context, handle, error);
+            mark_dvr_notifier_service_critical(&context);
         }
     }
 
@@ -1418,17 +1440,25 @@ mod tests {
     }
 
     #[test]
-    fn notifier_retry_after_completed_quarantine_does_not_stop_service() {
+    fn notifier_retry_after_quarantine_does_not_stop_service() {
         let (context, runtime, handle) = build_started_playback_dvr_context();
         let failure_state = runtime.lock().unwrap().failure_state();
         // 隔離planの作成だけでは物理cleanupの証明にならない。
         let outcome = crate::object_runtime::quarantine_drop_leak_object(&context, handle)
             .expect("DVRの物理cleanupまで成功する");
-        assert!(matches!(
-            outcome,
-            crate::object_runtime::DropLeakQuarantineOutcome::Completed
-                | crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending
-        ));
+        match outcome {
+            crate::object_runtime::DropLeakQuarantineOutcome::Completed => {
+                assert_eq!(
+                    context.cleanup_retry_disposition(handle),
+                    Ok(
+                        maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed
+                    )
+                );
+            }
+            crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending => {
+                assert!(context.quarantine_cleanup_has_owner(handle).unwrap());
+            }
+        }
         assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));
         enqueue_cleanup_retry_after_notifier_reap(&context, handle);
         // Quarantinedを物理cleanup完了とはみなさないが、fenceのある
