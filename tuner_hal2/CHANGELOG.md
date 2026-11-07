@@ -1,3 +1,11 @@
+# 2026-11-07 PR #227 cleanup委譲・reaper予約容量・完了原子性の是正
+
+- `ObjectCloseTxn`の関連owner探索を対象自身・祖先・子孫へ統一し、削除済み`ancestor_cleanup_owner()`を参照していた回帰テストを改訂。既存権限の実行中／未開始を区別する。
+- bounded reaperに新たな予約枠を要求せず、実行中reaperの同一`WorkerRuntimeReaperPending`グループへ世代付き関連キーを追加し、同じworkerで順次回収する。別グループ所有の同じキーは二重実行しない。
+- owner照会と依存関係取得の間に別のcloseが成功した場合は、同じ世代の終端を再確認し、正常な競合を`ServiceCritical`へ昇格させない。
+- quarantine cleanup report／Supervisor join通知は未完義務を削除する前に対象と子孫のlifecycleを全件preflightする。途中の不整合では未完義務を保持する。
+- `service_runtime`のhost Rust検査とAndroid AIDLの`maleicacid_tuner_hal2_aidl_service_test`は別の証跡とする。Soong／atest、CTS／VTS、HAL PIDの再起動・Binder再接続は実施していない。
+
 # 2026-11-07 PR #227レビュー：親cleanup自律回収・隔離確定順序・未使用入口
 
 - `OwnedByExistingCleanup`で子のreaperジョブを終了する前に、既存親`ObjectCloseTxn`のcleanupが実行中であること、または正規cleanup reaperへの投入が成功したことを確認する。未開始の親close権限だけでは回収進行の証拠とせず、投入不能・委譲先不明は全体停止として報告する。
