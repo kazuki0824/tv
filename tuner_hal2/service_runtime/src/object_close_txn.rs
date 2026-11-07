@@ -801,10 +801,10 @@ impl QuarantineCleanupReport {
         // 物理操作の部分成功を安全に巻き戻せない。現世代の一回実行権限を
         // 消費した報告が失敗した場合は、未完義務を残したまま既存の再起動へ渡す。
         if result.is_err()
-            && runtime.object_table().quarantine_cleanup_is_supervised(
-                self.object_id,
-                self.generation,
-            ) == Some(false)
+            && runtime
+                .object_table()
+                .quarantine_cleanup_is_supervised(self.object_id, self.generation)
+                == Some(false)
         {
             runtime.mark_service_critical();
         }
@@ -2498,7 +2498,10 @@ mod tests {
             aidl_object_cleanup_disposition(runtime, object_id, generation, AidlObjectKind::Demux)
                 .unwrap()
         };
-        assert_eq!(disposition(&runtime), AidlObjectCleanupDisposition::QuarantineAwaitingReport);
+        assert_eq!(
+            disposition(&runtime),
+            AidlObjectCleanupDisposition::QuarantineAwaitingReport
+        );
         assert!(!runtime.failure_state().snapshot().service_critical);
         let mut report = ObjectCleanupExecutionReport::new();
         report.push(ObjectCleanupStepOutcome::Runtime {
@@ -2509,8 +2512,17 @@ mod tests {
                 HalError::cleanup_failed("隔離", "物理回収失敗を注入"),
             )),
         });
-        assert!(QuarantineCleanupReport { object_id, generation, report }.finish(&mut runtime).is_err());
-        assert_eq!(disposition(&runtime), AidlObjectCleanupDisposition::QuarantineAwaitingReport);
+        assert!(QuarantineCleanupReport {
+            object_id,
+            generation,
+            report
+        }
+        .finish(&mut runtime)
+        .is_err());
+        assert_eq!(
+            disposition(&runtime),
+            AidlObjectCleanupDisposition::QuarantineAwaitingReport
+        );
         assert!(runtime.failure_state().snapshot().service_critical);
         assert!(quarantine_object_drop_leak_use_case(&mut runtime, object_id, generation).is_err());
     }
