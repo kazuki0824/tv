@@ -241,6 +241,8 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 
 非同期tuneのsubmit失敗記録は`FrontendTxn::record_frontend_backend_activation_failure_after_commit_context`で世代を照合する。旧世代は`FrontendRuntime::record_completed_backend_submit_failure`へ渡し、現世代のactivation状態変更入口へ渡さない。worker terminal resultは既存`backend_submit_terminal_result`でrollback/記録の実結果とoperation失敗を分離する。論理契約は`../TUNER_HAL_DESIGN_JA.md`の0-S-4を正とする。
 
+AIDL cleanup reaperの容量満杯時、`aidl_service/src/cleanup_reaper.rs::CleanupReaperQueue::supervise_unqueued_owner`は既存`WorkerRuntime::spawn_observed`から受付監督workerを発行し、queue ownerがhandleを保持する。監督対象の未完義務・世代・回収権限は`ObjectCloseTxn`を参照するだけで再所有せず、予約容量回復後に既存reaperへ投入する。従属監督workerの期限切れは局所隔離を再判定し、fence不能を既存`ServiceFailureState`へ伝播する。独立のreaperやdomain固有cleanup状態正本を追加しない。
+
 ワーカー管理部の失敗から終端結果への接続は`control/src/lib.rs::WorkerRuntimeOwnerFailure::into_terminal_result`に置く。device adapterはその終端種別を保持して渡し、診断分類は既存の`WorkerFailureClassifier`へ接続する。
 
 論理契約は`../TUNER_HAL_DESIGN_JA.md`の「0-S-1. 設計原則」、0-S-3Bの`WorkerRuntime`および`WorkerFailureClassifier`、「診断可観測性の固定」を正とする。型付き情報の伝達、ロック操作、回収ワーカーの接続手順は`CODE_CONVENTION.md`の§1・§2・§12・§13を参照する。

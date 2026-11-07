@@ -416,11 +416,9 @@ impl AidlServiceContext {
                                     Ok(false) => {
                                         // active権限の存在自体は将来の回収進行保証ではない。
                                         // 全ての関連ownerを既存reaper受付へ監督付きで引き継ぐ。
-                                        if let Err(watch_error) =
-                                            self.cleanup_reaper_queue.supervise_unqueued_owner(
-                                                Arc::downgrade(self),
-                                                owner,
-                                            )
+                                        if let Err(watch_error) = self
+                                            .cleanup_reaper_queue
+                                            .supervise_unqueued_owner(Arc::downgrade(self), owner)
                                         {
                                             log::error!("未予約のcleanup owner監督失敗: owner={owner:?} active={active} error={watch_error:?}");
                                             all_owners_supervised = false;
