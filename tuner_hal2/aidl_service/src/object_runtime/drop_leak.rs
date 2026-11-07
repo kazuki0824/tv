@@ -48,10 +48,17 @@ fn close_method_for_drop(
     }
 }
 
+/// 対象objectの隔離結果。Supervisor移管は物理cleanupの完了とは異なる。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DropLeakQuarantineOutcome {
+    Completed,
+    SupervisedPending,
+}
+
 pub(crate) fn quarantine_drop_leak_object(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
-) -> BinderResult<()> {
+) -> BinderResult<DropLeakQuarantineOutcome> {
     let runtime_handle = context.runtime();
     let quarantine_result = {
         let mut runtime = TunerServiceRuntime::lock_shared(&runtime_handle, "Drop漏れ隔離")
@@ -60,6 +67,7 @@ pub(crate) fn quarantine_drop_leak_object(
     };
 
     let mut error_collector = FirstErrorCollector::new();
+    let mut supervised_handoff = false;
     match quarantine_result {
         Ok(plan) => {
             let terminalization_result = {
@@ -93,9 +101,10 @@ pub(crate) fn quarantine_drop_leak_object(
                 if let Err(error) = record_result {
                     log::error!("drop-leak cleanupの診断記録に失敗しました: handle={handle:?} error={error:?}");
                 }
-                // Supervisorへ回収済みのDVR workerだけが残る場合は
-                // 物理回収の完了を捏造せず、局所隔離を成功として返す。
+                // 物理回収の成功とSupervisorへの所有権移管を別の値として返す。
+                // 後続reaperはCompletedとSupervisedPendingを混同できない。
                 if supervised_pending {
+                    supervised_handoff = true;
                     Ok(())
                 } else {
                     terminalization_result
@@ -108,7 +117,8 @@ pub(crate) fn quarantine_drop_leak_object(
 
     match error_collector.into_result() {
         Err(error) => Err(status_from_hal_error(error)),
-        Ok(()) => Ok(()),
+        Ok(()) if supervised_handoff => Ok(DropLeakQuarantineOutcome::SupervisedPending),
+        Ok(()) => Ok(DropLeakQuarantineOutcome::Completed),
     }
 }
 

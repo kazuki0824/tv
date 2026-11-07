@@ -347,6 +347,37 @@ mod closeable_lifecycle_tests {
     }
 
     #[test]
+    fn live_dvr_missing_backend_is_not_generation_fenced() {
+        // metadata照会失敗とobject lifecycleの終了は同義ではない。
+        let mut runtime = TunerServiceRuntime::new();
+        runtime
+            .object_table_mut()
+            .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Dvr,
+                object_id: AidlObjectId(707),
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(707),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("DVR objectを登録する");
+        assert!(runtime
+            .dvr_status_metadata_snapshot_for_aidl_object(AidlObjectId(707), AidlObjectGeneration(1))
+            .is_err());
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(707),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Dvr,
+            ),
+            Ok(AidlObjectCleanupDisposition::NoCleanupPending)
+        );
+    }
+
+    #[test]
     fn prepared_object_does_not_have_cleanup_retry_obligation() {
         let mut runtime = TunerServiceRuntime::new();
         runtime
