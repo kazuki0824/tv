@@ -4048,7 +4048,6 @@ fn handle_frontend_worker_reaper_deadline(
     let deadline_error = HalError::cleanup_failed(
         "frontend worker reaper deadline",
         "worker did not exit within 10 seconds after cancellation",
-        terminal_error,
     );
     let result = (|| {
         let mut guard = lock_runtime(
