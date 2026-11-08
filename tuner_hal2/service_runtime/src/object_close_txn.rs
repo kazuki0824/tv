@@ -2025,7 +2025,10 @@ mod tests {
         }
         // 保留は176件でも、実行中の物理cleanupはCPU由来のpool上限に止まる。
         assert_eq!(running.len(), concurrency);
-        assert!(matches!(started_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            started_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
         assert!(matches!(
             reaper.reserve_pending([(capacity, CleanupStep::ReleaseBackend)]),
             Err(maleicacid_tuner_hal2_common::HalError::Busy { .. })
