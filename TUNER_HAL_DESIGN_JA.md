@@ -1802,7 +1802,7 @@ AVCではPPS→SPS参照を確認し、PES内で最初に開始するAUだけを
 
 ### Frontend closeの回収完了
 
-Frontend closeは停止要求・起床後に進行中のbackend I/Oとworkerの終了を待ち、live data・電源を回収してから成功を返す。close専用のwall-clock期限は設けず、個別I/Oや選局の期限をclose失敗へ流用しない。既存stop/replacementのreaper所有も終了を待つ。実際のworker/cleanup失敗はそのまま返す。下位driver I/Oの有限終了が前提であり、driverが終了しない故障ではcloseも待機を継続する。Frameworkのclose失敗後再試行へ依存しない。
+Frontend closeは停止要求と世代fenceを先に確定し、実際のworker終了・terminal受理・live data／Demux-Frontend relationの解放が完了した場合だけ成功を返す。既存stop/replacementのreaper予約解放待ち、およびFrontendのtune/scan workerの終了待ちは、既存の`worker_reaper_deadline_ms`で個別に有界とする。従前の無期限`wait_until_released(None)`、期限なしの同期join、reaperが期限通知後に無期限joinを再開する経路は認めない。期限を超えた場合も物理終了や`Closed`を偽装せず、`ObjectCloseTxn`および`WorkerRuntimeCleanup`の同世代未完義務を維持する。既に終了したworkerのterminal結果は受理し、まだ動作中のworkerのcleanup権限は二重発行しない。worker終了前のlive data unbindとFrontendの再利用は禁止する。物理回収が後から完了した場合は既存のcleanup再受付から完了させる。失敗したcloseは呼出元へ型付き失敗として返し、未完義務を既存の回収監督で管理する。停止不能なdriverのI/Oを根拠としてBinderまたはreaper workerを無期限に占有しない。
 
 
 ### 共通回収laneとFilter遅延配送の異常終了
