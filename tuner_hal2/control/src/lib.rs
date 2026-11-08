@@ -758,9 +758,10 @@ where
                 ),
             });
         }
+        let mut seen = std::collections::BTreeSet::new();
         if reservations
             .iter()
-            .any(|(key, _)| state.entries.contains_key(key))
+            .any(|(key, _)| state.entries.contains_key(key) || !seen.insert(key))
         {
             return Err(maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
@@ -1053,7 +1054,7 @@ pub struct WorkerRuntimeReaperQueue<K, V, J> {
     runner: std::sync::Arc<WorkerReaperRunner<K, V, J>>,
     thread_prefix: &'static str,
     max_lanes: usize,
-    sender: std::sync::mpsc::SyncSender<WorkerRuntimeReaperQueuedJob<J>>,
+    sender: std::sync::mpsc::Sender<WorkerRuntimeReaperQueuedJob<J>>,
     pending: WorkerRuntimeReaperPending<K, V>,
 }
 
@@ -1063,9 +1064,10 @@ struct WorkerRuntimeReaperQueuedJob<J> {
 }
 
 #[must_use = "reaper pending reservation must be released or transferred to the reaper queue"]
-pub struct WorkerRuntimeReaperReservation<K, V> {
+pub struct WorkerRuntimeReaperReservation<K: Ord + Clone, V: Clone> {
     pending: WorkerRuntimeReaperPending<K, V>,
     group_id: u64,
+    transferred: bool,
 }
 
 impl<K, V> WorkerRuntimeReaperReservation<K, V>
@@ -1073,12 +1075,26 @@ where
     K: Ord + Clone,
     V: Clone,
 {
-    fn release(self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+    fn release(mut self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        // 明示的な解放失敗は呼出元へ返し、Dropから二重実行しない。
+        self.transferred = true;
         self.pending.release_group(self.group_id)
     }
 
-    fn transfer(self) {
+    fn transfer(mut self) {
         // canonical pending group と queued job が以後の所有者になる。
+        self.transferred = true;
+    }
+}
+
+impl<K: Ord + Clone, V: Clone> Drop for WorkerRuntimeReaperReservation<K, V> {
+    fn drop(&mut self) {
+        if !self.transferred {
+            if let Err(error) = self.pending.release_group(self.group_id) {
+                self.pending.failure.mark_receiver_unavailable();
+                eprintln!("未投入のワーカー回収予約を解放できません: {error:?}");
+            }
+        }
     }
 }
 
@@ -1116,7 +1132,8 @@ where
         runner: std::sync::Arc<WorkerReaperRunner<K, V, J>>,
     ) -> Result<Self, maleicacid_tuner_hal2_common::HalError> {
         let capacity = capacity.max(1);
-        let (sender, receiver) = std::sync::mpsc::sync_channel(capacity);
+        // 受付数は予約groupが一元管理するため、channelには別の容量上限を設けない。
+        let (sender, receiver) = std::sync::mpsc::channel();
         let pending = WorkerRuntimeReaperPending::new(capacity);
         let receiver = std::sync::Arc::new(PoisonTrackedMutex::new(
             receiver,
@@ -1187,6 +1204,7 @@ where
         Ok(WorkerRuntimeReaperReservation {
             pending: self.pending.clone(),
             group_id,
+            transferred: false,
         })
     }
 
@@ -1240,45 +1258,38 @@ where
         let demanded = self.pending.pending_group_count();
         let provision = demanded.and_then(|count| self.ensure_lanes(count));
         if let Err(spawn_error) = provision {
-            drop(job);
-            return match reservation.release() {
-                Ok(()) => Err(spawn_error),
-                Err(release_error) => Err(
-                    maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                        "ワーカー生成と予約解放がともに失敗しました",
-                        spawn_error,
-                        release_error,
+            if matches!(
+                spawn_error,
+                maleicacid_tuner_hal2_common::HalError::Io {
+                    operation: "スレッド生成",
+                    ..
+                }
+            ) {
+                // 起動時に最低1本を確保済み。追加laneの生成失敗でも既存laneで回収を継続する。
+                eprintln!("cleanup reaper追加workerの生成に失敗し、既存laneへ委譲します: {spawn_error:?}");
+            } else {
+                drop(job);
+                return match reservation.release() {
+                    Ok(()) => Err(spawn_error),
+                    Err(release_error) => Err(
+                        maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                            "ワーカー生成と予約解放がともに失敗しました",
+                            spawn_error,
+                            release_error,
+                        ),
                     ),
-                ),
-            };
+                };
+            }
         }
-        match self
-            .sender
-            .try_send(WorkerRuntimeReaperQueuedJob { job, group_id })
-        {
+        // group予約が容量を保証するため、別のキュー満杯エラーは生じない。
+        match self.sender.send(WorkerRuntimeReaperQueuedJob { job, group_id }) {
             Ok(()) => {
                 reservation.transfer();
                 Ok(())
             }
-            Err(error) => {
-                let send_error = match error {
-                    std::sync::mpsc::TrySendError::Full(queued) => {
-                        drop(queued.job);
-                        maleicacid_tuner_hal2_common::HalError::Busy {
-                            path: None,
-                            detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
-                                "ワーカー回収の容量が不足しています",
-                            ),
-                        }
-                    }
-                    std::sync::mpsc::TrySendError::Disconnected(queued) => {
-                        drop(queued.job);
-                        maleicacid_tuner_hal2_common::HalError::internal(
-                            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                            "ワーカー回収機構を利用できません",
-                        )
-                    }
-                };
+            Err(std::sync::mpsc::SendError(queued)) => {
+                drop(queued.job);
+                let send_error = maleicacid_tuner_hal2_common::HalError::WorkerReaperUnavailable;
                 match reservation.release() {
                     Ok(()) => Err(send_error),
                     Err(release_error) => Err(
@@ -2817,7 +2828,7 @@ mod tests {
         std::sync::mpsc::Receiver<WorkerRuntimeReaperQueuedJob<()>>,
     ) {
         let (sender, receiver) =
-            std::sync::mpsc::sync_channel::<WorkerRuntimeReaperQueuedJob<()>>(capacity.max(1));
+            std::sync::mpsc::channel::<WorkerRuntimeReaperQueuedJob<()>>();
         let (_unused_tx, unused_rx) = std::sync::mpsc::channel();
         (
             WorkerRuntimeReaperQueue {
@@ -2847,6 +2858,57 @@ mod tests {
         queue.release_reservation(reservation).unwrap();
         assert_eq!(queue.pending_value(&7).unwrap(), None);
         assert!(queue.reserve_pending([(7, 13)]).is_ok());
+    }
+
+    #[test]
+    fn unused_reaper_reservation_is_released_when_dropped() {
+        let (queue, _receiver) = reaper_queue_for_test(1);
+        {
+            let reservation = queue.reserve_pending([(7, 70)]).unwrap();
+            assert_eq!(queue.pending_value(&7).unwrap(), Some(70));
+            drop(reservation);
+        }
+        assert_eq!(queue.pending_value(&7).unwrap(), None);
+        assert!(queue.reserve_pending([(8, 80)]).is_ok());
+    }
+
+    #[test]
+    fn reaper_rejects_duplicate_keys_in_one_group_without_side_effects() {
+        let (queue, _receiver) = reaper_queue_for_test(2);
+        let retained = queue.reserve_pending([(1, 10)]).unwrap();
+        assert!(queue.reserve_pending([(2, 20), (2, 21)]).is_err());
+        assert_eq!(queue.pending.pending_group_count().unwrap(), 1);
+        assert_eq!(queue.pending_value(&1).unwrap(), Some(10));
+        assert_eq!(queue.pending_value(&2).unwrap(), None);
+        queue.release_reservation(retained).unwrap();
+        assert!(queue.reserve_pending([(2, 22)]).is_ok());
+    }
+
+    #[test]
+    fn reaper_channel_cannot_exceed_bounded_pending_groups() {
+        let (queue, receiver) = reaper_queue_for_test(2);
+        queue.enqueue_reserved((), [(1, 1)]).unwrap();
+        queue.enqueue_reserved((), [(2, 2)]).unwrap();
+        assert!(matches!(
+            queue.enqueue_reserved((), [(3, 3)]),
+            Err(maleicacid_tuner_hal2_common::HalError::Busy { .. })
+        ));
+        assert!(receiver.try_recv().is_ok());
+        assert!(receiver.try_recv().is_ok());
+        assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        assert_eq!(queue.pending.pending_group_count().unwrap(), 2);
+        let groups: Vec<_> = queue
+            .pending
+            .state
+            .lock()
+            .unwrap()
+            .groups
+            .keys()
+            .copied()
+            .collect();
+        for id in groups {
+            queue.pending.release_group(id).unwrap();
+        }
     }
 
     #[test]
