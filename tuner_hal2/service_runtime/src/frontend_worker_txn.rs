@@ -6006,15 +6006,33 @@ fn close_frontend_workers_and_live_data_with_sink(
     {
         FrontendWorkerStopWaitOutcome::Completed(outcomes) => outcomes,
         FrontendWorkerStopWaitOutcome::TimedOut(tickets) => {
+            // 先に終了したworkerのterminal結果を失わず、未完workerだけ次回へ残す。
+            let terminal = accept_frontend_worker_terminal_outcomes(&runtime, &tickets.completed);
             drop(tickets);
-            return Err(HalError::cleanup_failed(
+            let error = HalError::cleanup_failed(
                 "frontend close cleanup",
                 "frontend worker did not finish within the close deadline",
-            ));
+            );
+            return match terminal {
+                Ok(()) => Err(error),
+                Err(terminal_error) => Err(compose_frontend_cleanup_error(
+                    "frontend worker deadline and terminal acceptance failed",
+                    error,
+                    terminal_error,
+                )),
+            };
         }
         FrontendWorkerStopWaitOutcome::Failed { tickets, error } => {
+            let terminal = accept_frontend_worker_terminal_outcomes(&runtime, &tickets.completed);
             drop(tickets);
-            return Err(error);
+            return match terminal {
+                Ok(()) => Err(error),
+                Err(terminal_error) => Err(compose_frontend_cleanup_error(
+                    "frontend worker wait and terminal acceptance failed",
+                    error,
+                    terminal_error,
+                )),
+            };
         }
     };
     let mut report = FrontendWorkerCleanupExecutionReport::new();
