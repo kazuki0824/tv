@@ -685,8 +685,7 @@ class MaleicacidLiveSession(
             }
 
             ContentAccessDecision.Allow -> {
-                rememberAllowedContent()
-                notifyContentAllowed()
+                notifyAllowedContent()
             }
 
             is ContentAccessDecision.HoldPrevious -> {
@@ -1258,8 +1257,7 @@ class MaleicacidLiveSession(
             }
 
             ContentAccessDecision.Allow -> {
-                rememberAllowedContent()
-                notifyContentAllowed()
+                notifyAllowedContent()
                 notifyVideoAvailable()
             }
 
@@ -1482,9 +1480,11 @@ class MaleicacidLiveSession(
         }
     }
 
-    private fun rememberAllowedContent() {
+    private fun notifyAllowedContent(unblockResponse: Boolean = false) {
+        val changed = lastParentalAccessState != ParentalAccessState.ALLOWED
         lastParentalAccessState = ParentalAccessState.ALLOWED
         lastBlockedContent = null
+        if (changed || unblockResponse) notifyContentAllowed()
     }
 
     private fun rememberBlockedContent(blocked: BlockedContent) {
@@ -1569,7 +1569,7 @@ class MaleicacidLiveSession(
         return false
     }
 
-    private fun reevaluateParentalControls() {
+    private fun reevaluateParentalControls(unblockResponse: Boolean = false) {
         when (val decision = contentAccessDecision()) {
             is ContentAccessDecision.Block -> {
                 rememberBlockedContent(decision.blocked)
@@ -1577,8 +1577,7 @@ class MaleicacidLiveSession(
             }
 
             ContentAccessDecision.Allow -> {
-                rememberAllowedContent()
-                notifyContentAllowed()
+                notifyAllowedContent(unblockResponse)
                 latestService?.let { service ->
                     playbackState = PlaybackStartTransitions.allowRetry(playbackState)
                     maybeStartPlayback(service)
@@ -1795,11 +1794,7 @@ class MaleicacidLiveSession(
             reevaluateParentalControls()
             return
         }
-        notifyContentAllowed()
-        latestService?.let { service ->
-            playbackState = PlaybackStartTransitions.allowRetry(playbackState)
-            maybeStartPlayback(service)
-        }
+        reevaluateParentalControls(unblockResponse = true)
     }
 
     @Synchronized
