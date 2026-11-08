@@ -392,8 +392,7 @@ impl FrontendWorkerReaperJob {
                 }
                 Err(tickets) => self.tickets = tickets,
             }
-            let wait_deadline = (!deadline_elapsed).then_some(terminal_deadline);
-            match self.tickets.wait_for_progress(wait_deadline) {
+            match self.tickets.wait_for_progress(Some(terminal_deadline)) {
                 Ok(Some(index)) => {
                     if let Err(error) = self.tickets.complete_signalled(index) {
                         return Err(Box::new((self, error)));
@@ -406,6 +405,15 @@ impl FrontendWorkerReaperJob {
                     {
                         action(&runtime);
                     }
+                    // 期限到達後は無期限joinへ移行しない。
+                    // ticketの未完義務は既存WorkerRuntimeCleanupが保持する。
+                    return Err(Box::new((
+                        self,
+                        HalError::cleanup_failed(
+                            "frontend reaper",
+                            "worker did not exit before the bounded reaper deadline",
+                        ),
+                    )));
                 }
                 Err(error) => return Err(Box::new((self, error))),
             }
@@ -5947,12 +5955,17 @@ fn close_frontend_workers_and_live_data_with_sink(
     target: FrontendWorkerCleanupTarget,
 ) -> Result<(), HalError> {
     let reaper = ensure_frontend_worker_reaper(&runtime)?;
-    // closeは取消し後の実回収を完了して返す。経過時間を再試行不能なclose失敗へ変換しない。
+    // 既存reaperに所有権がある場合、呼出元は無期限に待たない。
+    // 期限切れでもreaperとObjectCloseTxnの未完義務は削除しない。
+    let budget = {
+        let guard = lock_runtime(&runtime, "frontend cleanup deadline snapshot")?;
+        Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms)
+    };
     let tune_key = (frontend_id, FrontendWorkerKind::Tune);
     let scan_key = (frontend_id, FrontendWorkerKind::Scan);
     reaper
         .runtime
-        .wait_until_released([&tune_key, &scan_key], None)?;
+        .wait_until_released([&tune_key, &scan_key], Some(budget))?;
     let sink = cleanup_diagnostic_sink?;
     let tickets = {
         let mut guard = lock_runtime(
@@ -5984,11 +5997,26 @@ fn close_frontend_workers_and_live_data_with_sink(
         ]
     };
 
-    // 全workerへ停止要求を発行済み。runtime lockを保持せずjoinし、結果を検査する。
-    let outcomes: Vec<_> = tickets
-        .into_iter()
-        .map(|(kind, ticket)| (kind, ticket.complete()))
-        .collect();
+    // 全workerへ停止要求を発行済み。runtime lock外で有限期限まで終了を待つ。
+    // 時間切れの場合は物理cleanup成功とせず、保持済みの未完義務から次の回収を行う。
+    let deadline = Instant::now().checked_add(budget).ok_or_else(|| {
+        HalError::cleanup_failed("frontend close cleanup", "worker close deadline overflow")
+    })?;
+    let outcomes = match FrontendWorkerReaperTicketGroup::new(tickets).wait_until_deadline(deadline)
+    {
+        FrontendWorkerStopWaitOutcome::Completed(outcomes) => outcomes,
+        FrontendWorkerStopWaitOutcome::TimedOut(tickets) => {
+            drop(tickets);
+            return Err(HalError::cleanup_failed(
+                "frontend close cleanup",
+                "frontend worker did not finish within the close deadline",
+            ));
+        }
+        FrontendWorkerStopWaitOutcome::Failed { tickets, error } => {
+            drop(tickets);
+            return Err(error);
+        }
+    };
     let mut report = FrontendWorkerCleanupExecutionReport::new();
     for (kind, outcome) in &outcomes {
         report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
