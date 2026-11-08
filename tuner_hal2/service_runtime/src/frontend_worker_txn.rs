@@ -7302,10 +7302,7 @@ mod scan_contract_tests {
         let job = FrontendWorkerReaperJob {
             keys: vec![(43, FrontendWorkerKind::Tune)],
             continuation_kind: None,
-            tickets: FrontendWorkerReaperTicketGroup::new(vec![(
-                FrontendWorkerKind::Tune,
-                ticket,
-            )]),
+            tickets: FrontendWorkerReaperTicketGroup::new(vec![(FrontendWorkerKind::Tune, ticket)]),
             transferred_at: Instant::now(),
             deadline_action: None,
             completion_action: Box::new(|_, _, _| {
