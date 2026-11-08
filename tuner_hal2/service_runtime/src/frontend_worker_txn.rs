@@ -6195,7 +6195,7 @@ mod scan_contract_tests {
         let frontend_id = 1_000_003;
         let mut capability = crate::CapabilitySnapshot::product_default();
         capability.worker_io_deadline_ms = 20;
-        capability.worker_reaper_deadline_ms = 20;
+        capability.worker_reaper_deadline_ms = 2_000;
         let runtime = Arc::new(Mutex::new(
             TunerServiceRuntime::from_capability_snapshot_for_test(capability),
         ));
@@ -6312,6 +6312,139 @@ mod scan_contract_tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("worker終了後もdemux relationが解除されませんでした: demux={demux_id}");
+    }
+
+    #[test]
+    fn frontend_close_deadline_preserves_pending_worker_and_demux_binding() {
+        let frontend_id = 1_000_006;
+        let mut capability = crate::CapabilitySnapshot::product_default();
+        capability.worker_io_deadline_ms = 20;
+        capability.worker_reaper_deadline_ms = 50;
+        let runtime = Arc::new(Mutex::new(
+            TunerServiceRuntime::from_capability_snapshot_for_test(capability),
+        ));
+        let (demux_id, started_rx, cancel_seen_rx, release_tx) = {
+            let mut service = runtime.lock().unwrap();
+            assert_eq!(
+                service.boot_from_probe_results([FrontendProbeOutcome::Available {
+                    id: FrontendRuntimeId(frontend_id),
+                    backend: FrontendBackendKind::LinuxDvb,
+                    system: FrontendSystem::IsdbT,
+                    path: "/dev/null".into(),
+                    lnb_profile: None,
+                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                    capability: FrontendCapabilitySnapshot {
+                        scalar: FrontendScalarCapability {
+                            min_frequency_hz: 473_142_857,
+                            max_frequency_hz: 473_142_857,
+                            min_symbol_rate: 0,
+                            max_symbol_rate: 0,
+                            acquire_range_hz: 0,
+                        },
+                        exclusive_group_id: 0x2000_0006,
+                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                            is_segment_auto: true,
+                            is_full_segment: true,
+                        }),
+                    },
+                }]),
+                ServiceBootOutcome::Ready,
+            );
+            let demux = service.allocate_demux_runtime().unwrap();
+            service
+                .set_demux_frontend_data_source(demux.id.0, frontend_id)
+                .unwrap();
+
+            let plan = FrontendBackendTunePlan::new(
+                frontend_id,
+                1,
+                FrontendBackendKind::LinuxDvb,
+                FrontendDevicePath::new("/unused-close-timeout-test"),
+                FrontendTuneRequest {
+                    system: FrontendSystem::IsdbT,
+                    frequency: 473_142_857,
+                    end_frequency: None,
+                    stream_id: None,
+                    stream_id_kind: None,
+                    bandwidth_hz: Some(6_000_000),
+                    symbol_rate: None,
+                    isdbt_layer_settings: Vec::new(),
+                    partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+                },
+            );
+            let ticket = service
+                .frontend_txn()
+                .prepare_backend_submit(FrontendWorkerKind::Tune, plan, None)
+                .unwrap();
+            let runtime_for_worker = Arc::clone(&runtime);
+            let demux_id_for_worker = demux.id.0;
+            let (started_tx, started_rx) = mpsc::channel();
+            let (cancel_seen_tx, cancel_seen_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            service
+                .frontend_txn()
+                .start_worker_with_prepared_submit(ticket, move |ctx, ticket| {
+                    assert_eq!(ticket.complete(), FrontendWorkerStopOutcome::NotRunning);
+                    started_tx.send(()).unwrap();
+                    while !ctx.cancel_requested() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    let relation_is_still_bound = runtime_for_worker
+                        .lock()
+                        .unwrap()
+                        .registry()
+                        .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
+                        .contains(&crate::registry::DemuxRuntimeId(demux_id_for_worker));
+                    cancel_seen_tx.send(relation_is_still_bound).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap();
+            (demux.id.0, started_rx, cancel_seen_rx, release_tx)
+        };
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let close_runtime = Arc::clone(&runtime);
+        let close = std::thread::spawn(move || {
+            close_frontend_workers_and_live_data(
+                close_runtime,
+                frontend_id,
+                FrontendWorkerCancelReason::FrontendClosing,
+            )
+        });
+        assert!(cancel_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        assert!(runtime
+            .lock()
+            .unwrap()
+            .registry()
+            .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
+            .contains(&crate::registry::DemuxRuntimeId(demux_id)));
+
+        // 無応答workerを無期限にjoinせず、同じ世代の回収義務を保持する。
+        assert!(matches!(
+            close.join().unwrap(),
+            Err(HalError::CleanupFailed { .. })
+        ));
+        assert!(runtime
+            .lock()
+            .unwrap()
+            .registry()
+            .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
+            .contains(&crate::registry::DemuxRuntimeId(demux_id)));
+
+        release_tx.send(()).unwrap();
+        close_frontend_workers_and_live_data(
+            Arc::clone(&runtime),
+            frontend_id,
+            FrontendWorkerCancelReason::FrontendClosing,
+        )
+        .expect("遅延workerの終了後に同じ未完義務を回収");
+        assert!(runtime
+            .lock()
+            .unwrap()
+            .registry()
+            .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
+            .is_empty());
     }
 
     #[test]
