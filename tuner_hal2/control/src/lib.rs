@@ -1270,7 +1270,9 @@ where
                 }
             ) {
                 // 起動時に最低1本を確保済み。追加laneの生成失敗でも既存laneで回収を継続する。
-                eprintln!("cleanup reaper追加workerの生成に失敗し、既存laneへ委譲します: {spawn_error:?}");
+                eprintln!(
+                    "cleanup reaper追加workerの生成に失敗し、既存laneへ委譲します: {spawn_error:?}"
+                );
             } else {
                 drop(job);
                 return match reservation.release() {
@@ -1286,7 +1288,10 @@ where
             }
         }
         // group予約が容量を保証するため、別のキュー満杯エラーは生じない。
-        match self.sender.send(WorkerRuntimeReaperQueuedJob { job, group_id }) {
+        match self
+            .sender
+            .send(WorkerRuntimeReaperQueuedJob { job, group_id })
+        {
             Ok(()) => {
                 reservation.transfer();
                 Ok(())
@@ -2551,8 +2556,7 @@ mod tests {
             .map_or(1, std::num::NonZeroUsize::get)
             .min(capacity);
         let queue =
-            super::WorkerRuntime::start_reaper_queue(capacity, "test-reaper-lazy", runner)
-                .unwrap();
+            super::WorkerRuntime::start_reaper_queue(capacity, "test-reaper-lazy", runner).unwrap();
         assert_eq!(queue.lane_count(), 1);
         for key in 0..capacity {
             queue.enqueue_reserved(key, [(key, key)]).unwrap();
@@ -2843,8 +2847,7 @@ mod tests {
         WorkerRuntimeReaperQueue<u32, u32, ()>,
         std::sync::mpsc::Receiver<WorkerRuntimeReaperQueuedJob<()>>,
     ) {
-        let (sender, receiver) =
-            std::sync::mpsc::channel::<WorkerRuntimeReaperQueuedJob<()>>();
+        let (sender, receiver) = std::sync::mpsc::channel::<WorkerRuntimeReaperQueuedJob<()>>();
         let (_unused_tx, unused_rx) = std::sync::mpsc::channel();
         (
             WorkerRuntimeReaperQueue {
@@ -2911,7 +2914,10 @@ mod tests {
         ));
         assert!(receiver.try_recv().is_ok());
         assert!(receiver.try_recv().is_ok());
-        assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         assert_eq!(queue.pending.pending_group_count().unwrap(), 2);
         let groups: Vec<_> = queue
             .pending
