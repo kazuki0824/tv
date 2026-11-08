@@ -2559,6 +2559,7 @@ mod tests {
             super::WorkerRuntime::start_reaper_queue(capacity, "test-reaper-lazy", runner).unwrap();
         assert_eq!(queue.lane_count(), 1);
         for key in 0..capacity {
+            let key = u32::try_from(key).unwrap();
             queue.enqueue_reserved(key, [(key, key)]).unwrap();
         }
         let mut started = std::collections::BTreeSet::new();
@@ -2577,8 +2578,9 @@ mod tests {
         for _ in parallelism..capacity {
             started.insert(started_rx.recv_timeout(Duration::from_secs(3)).unwrap());
         }
-        assert_eq!(started, (0..capacity).collect());
+        assert_eq!(started, (0..u32::try_from(capacity).unwrap()).collect());
         for key in 0..capacity {
+            let key = u32::try_from(key).unwrap();
             queue
                 .wait_until_released([&key], Some(Duration::from_secs(3)))
                 .unwrap();
