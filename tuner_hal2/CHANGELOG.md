@@ -24,6 +24,13 @@
 - enqueueとworkerからの再監督要求が競合しても受付要求を失わないよう、予約の存在からの要求削除を除く。状態破損・異常終端・実行済み隔離報告の失敗は既存停止経路へ残す。
 - 旧最終期限後の遅延完了、無応答ownerの義務保持、容量1のlane返却と独立Demux回収、隔離report待ちを既存AIDL試験へ反映する。
 
+# 2026-11-08 Frontend closeとreaperの無期限回収待ちを是正
+
+- Frontend closeで既存reaper予約の解放を`wait_until_released(None)`で無期限に待たず、既存`worker_reaper_deadline_ms`の有界待ちへ変更。workerへの停止要求後も同期`ticket.complete()`の無期限joinではなく、同じ期限で実際の終了を待つ。
+- 期限到達時には完了済みworkerのterminal結果を既存の受理入口へ反映し、未完workerの物理終了とDemux-Frontend relation解除を偽装しない。`ObjectCloseTxn`および`WorkerRuntimeCleanup`の義務を保持し、既存cleanup受付から次の正規回収を行う。
+- Frontend reaperが期限通知後に`wait_for_progress(None)`へ戻る経路を止め、回収未完了として局所隔離・診断へつなぐ。期限後の無期限worker保持をなくす。
+- Frontend closeがworker終了後にrelationを解除する回帰と、期限到達で同じ未完義務を保持し、後着のworker終了後に再び回収できる回帰を追加。Android Soong／atest、実機CTS／VTSとHAL再起動・Binder再接続は未確認。
+
 # 2026-11-08 cleanup reaperの予約権限と物理実行並列度を是正
 
 - `WorkerRuntimeReaperReservation`を未移管時に解放するRAII ownerへ変更し、正常enqueue後だけ正規reaperへ所有権を移す。明示的解放失敗とDrop解放失敗は成功扱いしない。
