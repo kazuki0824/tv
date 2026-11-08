@@ -6335,12 +6335,7 @@ mod scan_contract_tests {
     #[test]
     fn frontend_close_deadline_preserves_pending_worker_and_demux_binding() {
         let frontend_id = 1_000_006;
-        let mut capability = crate::CapabilitySnapshot::product_default();
-        capability.worker_io_deadline_ms = 20;
-        capability.worker_reaper_deadline_ms = 1_000;
-        let runtime = Arc::new(Mutex::new(
-            TunerServiceRuntime::from_capability_snapshot_for_test(capability),
-        ));
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         let (demux_id, started_rx, cancel_seen_rx, release_tx) = {
             let mut service = runtime.lock().unwrap();
             assert_eq!(
@@ -6368,6 +6363,8 @@ mod scan_contract_tests {
                 }]),
                 ServiceBootOutcome::Ready,
             );
+            // 起動時に能力が再構成されるため、確定後の試験環境に期限を設定する。
+            service.set_worker_reaper_deadline_for_test(1_000);
             let demux = service.allocate_demux_runtime().unwrap();
             service
                 .set_demux_frontend_data_source(demux.id.0, frontend_id)
@@ -6431,7 +6428,7 @@ mod scan_contract_tests {
         let close_runtime = Arc::clone(&runtime);
         let (closed_tx, closed_rx) = mpsc::channel();
         let close = std::thread::spawn(move || {
-            close_started_tx.send(()).unwrap();
+            close_started_tx.send(Instant::now()).unwrap();
             let result = close_frontend_workers_and_live_data(
                 close_runtime,
                 frontend_id,
@@ -6439,12 +6436,15 @@ mod scan_contract_tests {
             );
             let _ = closed_tx.send(result);
         });
-        close_started_rx
+        let close_started = close_started_rx
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
-        std::thread::sleep(Duration::from_millis(750));
+        let verification_deadline = close_started + Duration::from_millis(1_500);
+        std::thread::sleep(Duration::from_millis(750).saturating_sub(close_started.elapsed()));
         reaper.runtime.release_reservation(previous).unwrap();
-        assert!(cancel_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        assert!(cancel_seen_rx
+            .recv_timeout(verification_deadline.saturating_duration_since(Instant::now()))
+            .unwrap());
         assert!(runtime
             .lock()
             .unwrap()
@@ -6454,7 +6454,9 @@ mod scan_contract_tests {
 
         // 無応答workerを無期限にjoinせず、同じ世代の回収義務を保持する。
         assert!(matches!(
-            closed_rx.recv_timeout(Duration::from_millis(600)).unwrap(),
+            closed_rx
+                .recv_timeout(verification_deadline.saturating_duration_since(Instant::now()))
+                .unwrap(),
             Err(HalError::CleanupFailed { .. })
         ));
         assert!(runtime
