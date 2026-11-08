@@ -2,6 +2,8 @@ use maleicacid_tuner_hal2_common::WorkerCleanupFailureKind;
 use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 
 const WORKER_REAPER_WAIT_POLL_MS: u64 = 10;
+// 予約容量ではなく、物理cleanupの同時実行を小さいpoolに限定する。
+const WORKER_REAPER_MAX_CONCURRENT_IO: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerRuntimeOwnerFailure {
@@ -1127,7 +1129,7 @@ where
             receiver,
             runner,
             thread_prefix,
-            max_lanes: capacity,
+            max_lanes: capacity.min(WORKER_REAPER_MAX_CONCURRENT_IO),
             sender,
             pending,
         };
@@ -1236,7 +1238,7 @@ where
             };
         }
         let group_id = reservation.group_id;
-        // 保留容量は受付上限であり、OSスレッドの先行生成数ではない。
+        // 未完の予約数と物理同時実行数は異なる。workerは小さい上限までだけ増員する。
         let demanded = self.pending.pending_group_count();
         let provision = demanded.and_then(|count| self.ensure_lanes(count));
         if let Err(spawn_error) = provision {
@@ -2513,43 +2515,55 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_reaper_lanes_start_on_demand_without_reducing_peak_capacity() {
+    fn cleanup_reaper_limits_workers_independently_of_reservation_capacity() {
         use std::sync::{mpsc, Arc, Mutex};
         use std::time::Duration;
-        let (started_tx, started_rx) = mpsc::channel::<u32>();
+
+        let workers = super::WORKER_REAPER_MAX_CONCURRENT_IO;
+        let capacity = workers * 2;
+        let (started_tx, started_rx) = mpsc::channel::<usize>();
         let (resume_tx, resume_rx) = mpsc::channel::<()>();
         let resume_rx = Arc::new(Mutex::new(resume_rx));
         let runner = Arc::new(
-            move |job: u32,
-                  _pending: super::WorkerRuntimeReaperPending<u32, u32>,
+            move |job: usize,
+                  _pending: super::WorkerRuntimeReaperPending<usize, usize>,
                   _worker: super::WorkerContext| {
                 started_tx.send(job).unwrap();
                 resume_rx
                     .lock()
                     .unwrap()
-                    .recv_timeout(Duration::from_secs(5))
+                    .recv_timeout(Duration::from_secs(10))
                     .unwrap();
             },
         );
         let queue =
-            super::WorkerRuntime::start_reaper_queue(4, "test-reaper-lazy", runner).unwrap();
-        // 容量4は受付上限であり、待機中のOSスレッドを4本生成する根拠にはしない。
+            super::WorkerRuntime::start_reaper_queue(capacity, "test-reaper-bounded", runner)
+                .unwrap();
         assert_eq!(queue.lane_count(), 1);
-        for key in 0..4 {
+        for key in 0..capacity {
             queue.enqueue_reserved(key, [(key, key)]).unwrap();
         }
-        let mut started = std::collections::BTreeSet::new();
-        for _ in 0..4 {
-            started.insert(started_rx.recv_timeout(Duration::from_secs(3)).unwrap());
+        let mut completed = std::collections::BTreeSet::new();
+        for _ in 0..workers {
+            completed.insert(started_rx.recv_timeout(Duration::from_secs(3)).unwrap());
         }
-        assert_eq!(started, (0..4).collect());
-        assert_eq!(queue.lane_count(), 4);
-        for _ in 0..4 {
+        assert_eq!(queue.lane_count(), workers);
+        assert!(matches!(started_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        // 予約は8件保持するが、実行中workerは4本だけ。完了時に残りが進行する。
+        for _ in 0..workers {
             resume_tx.send(()).unwrap();
         }
-        for key in 0..4 {
+        for _ in 0..workers {
+            completed.insert(started_rx.recv_timeout(Duration::from_secs(3)).unwrap());
+        }
+        assert_eq!(completed, (0..capacity).collect());
+        assert_eq!(queue.lane_count(), workers);
+        for _ in 0..workers {
+            resume_tx.send(()).unwrap();
+        }
+        for key in 0..capacity {
             queue
-                .wait_until_released([&key], Some(Duration::from_secs(3)))
+                .wait_until_released([&key], Some(Duration::from_secs(10)))
                 .unwrap();
         }
     }
