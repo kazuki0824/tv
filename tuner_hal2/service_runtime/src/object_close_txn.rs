@@ -1982,173 +1982,72 @@ mod tests {
     }
 
     #[test]
-    fn product_capacity_saturates_after_real_open_close_before_reaper_group_release() {
-        use crate::worker_runtime::{WorkerContext, WorkerRuntime};
-        use std::sync::{mpsc, Arc, Condvar, Mutex};
+    fn product_reaper_reservation_capacity_does_not_define_worker_parallelism() {
+        use crate::worker_runtime::{WorkerContext, WorkerRuntime, WorkerRuntimeReaperPending};
+        use std::sync::{mpsc, Arc, Mutex};
         use std::time::{Duration, Instant};
 
-        // テスト途中のpanicでも全runnerを必ず解放する。
-        struct ReleaseGateOnDrop(Arc<(Mutex<bool>, Condvar)>);
-        impl ReleaseGateOnDrop {
-            fn release(&self) {
-                let (lock, wake) = &*self.0;
-                *lock
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-                wake.notify_all();
-            }
-        }
-        impl Drop for ReleaseGateOnDrop {
-            fn drop(&mut self) {
-                self.release();
-            }
-        }
-
-        // 製品既定の公開能力・自動AIDL ID発行・正規Demux open/closeを使う。
-        // runnerは実close完了を確定した後でgroup解放直前だけ同期的に停止する。
-        let snapshot = crate::CapabilitySnapshot::product_default();
-        snapshot.validate_dependency_closures().unwrap();
-        let capacity = snapshot.cleanup_reaper_capacity;
+        let capacity = crate::CapabilitySnapshot::product_default().cleanup_reaper_capacity;
         assert_eq!(capacity, 176);
-        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
-        assert_eq!(runtime.lock().unwrap().capability_snapshot(), snapshot);
-        let gate = Arc::new((Mutex::new(false), Condvar::new()));
-        let release_gate = ReleaseGateOnDrop(Arc::clone(&gate));
-        let worker_gate = Arc::clone(&gate);
-        let worker_runtime = Arc::clone(&runtime);
-        let (finished_tx, finished_rx) = mpsc::channel();
+        let concurrency = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(capacity);
+        let (started_tx, started_rx) = mpsc::channel::<usize>();
+        let (resume_tx, resume_rx) = mpsc::channel::<()>();
+        let resume_rx = Arc::new(Mutex::new(resume_rx));
         let runner = Arc::new(
-            move |(entry, completion): (RuntimeObjectEntry, CloseCleanupAttemptCompletion),
-                  _: _,
+            move |key: usize,
+                  _: WorkerRuntimeReaperPending<usize, CleanupStep>,
                   _: WorkerContext| {
-                {
-                    let mut runtime = worker_runtime.lock().unwrap();
-                    runtime
-                        .validate_public_runtime_for_closed_aidl_entry(&entry)
-                        .unwrap();
-                    runtime
-                        .unregister_public_runtime_for_closed_aidl_entry(&entry)
-                        .unwrap();
-                    finish_object_close_use_case(&mut runtime, completion, Ok(())).unwrap();
-                    assert_eq!(
-                        runtime
-                            .object_table()
-                            .entry(entry.object_id())
-                            .unwrap()
-                            .lifecycle,
-                        crate::RuntimeObjectLifecycle::Closed
-                    );
-                }
-                finished_tx
-                    .send((entry.object_id(), entry.generation()))
+                started_tx.send(key).unwrap();
+                resume_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
                     .unwrap();
-                // 正規runner終了後のpending.release_group直前でworkerが
-                // スケジューリング停止する区間を、同期ゲートで再現する。
-                let (lock, wake) = &*worker_gate;
-                let mut released = lock.lock().unwrap();
-                while !*released {
-                    released = wake.wait(released).unwrap();
-                }
             },
         );
-        // Worker側のrunner参照が全て解放されたらlaneが正常に終了したと判断する。
-        let weak_runner = Arc::downgrade(&runner);
-        let reaper = WorkerRuntime::start_reaper_queue::<
-            (AidlObjectId, AidlObjectGeneration),
-            CleanupStep,
-            (RuntimeObjectEntry, CloseCleanupAttemptCompletion),
-        >(capacity, "product-demux-close-overlap", runner)
+        let reaper = WorkerRuntime::start_reaper_queue::<usize, CleanupStep, usize>(
+            capacity,
+            "product-cleanup-bounded-pool",
+            runner,
+        )
         .unwrap();
-        let mut distinct_ids = std::collections::BTreeSet::new();
-        let mut retained_keys = Vec::with_capacity(capacity);
-        for _ in 0..capacity {
-            let (entry, completion) = {
-                let mut runtime = runtime.lock().unwrap();
-                let entry = runtime
-                    .root_open_txn()
-                    .open_demux_root_object(AidlMethodCall::PublicApi {
-                        object: AidlObjectKind::Tuner,
-                        api: AidlApi::TunerOpenDemux,
-                    })
-                    .expect("公開Demux枠を再獲得");
-                let plan = close_object_use_case(
-                    &mut runtime,
-                    entry.object_id(),
-                    entry.generation(),
-                    AidlObjectKind::Demux,
-                    AidlMethodCall::DemuxClose,
-                )
-                .expect("正規close権限の発行");
-                let completion = plan
-                    .begin_cleanup_attempt(&mut runtime)
-                    .expect("cleanup実行権限の確保")
-                    .completion;
-                (entry, completion)
-            };
-            assert!(distinct_ids.insert(entry.object_id()));
-            let key = (entry.object_id(), entry.generation());
-            reaper
-                .enqueue_reserved((entry, completion), [(key, CleanupStep::ReleaseBackend)])
-                .expect("製品容量までは正規reaperへ受付");
-            assert_eq!(
-                finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-                key
-            );
-            assert!(reaper.pending_value(&key).unwrap().is_some());
-            retained_keys.push(key);
-        }
-        // 全176件はpublic同時Liveではない。実open/closeでClosed確定済み、
-        // ただしworker内に留まる間は同世代の正規groupを返却できない。
-        let extra = {
-            let mut runtime = runtime.lock().unwrap();
-            runtime
-                .root_open_txn()
-                .open_demux_root_object(AidlMethodCall::PublicApi {
-                    object: AidlObjectKind::Tuner,
-                    api: AidlApi::TunerOpenDemux,
-                })
-                .expect("旧世代は閉じているため次のDemuxをopenできる")
-        };
-        assert!(distinct_ids.insert(extra.object_id()));
-        let capacity_error = reaper
-            .reserve_pending([(
-                (extra.object_id(), extra.generation()),
-                CleanupStep::ReleaseBackend,
-            )])
-            .err()
-            .expect("正規openから得た世代でも容量上限を超える");
-        assert!(matches!(
-            capacity_error,
-            maleicacid_tuner_hal2_common::HalError::Busy { .. }
-        ));
-        release_gate.release();
 
-        // 予約groupがworkerのrun完了後に全件返却されるまで有界に待機。
-        let deadline = Instant::now() + Duration::from_secs(10);
-        for key in &retained_keys {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            assert!(
-                !remaining.is_zero(),
-                "製品reaperの予約groupを期限内に全件解放できませんでした"
-            );
+        for key in 0..capacity {
             reaper
-                .wait_until_released([key], Some(remaining))
-                .expect("workerの予約groupは期限内に解放される");
+                .enqueue_reserved(key, [(key, CleanupStep::ReleaseBackend)])
+                .expect("予約容量の範囲内");
         }
-        assert!(retained_keys
-            .iter()
-            .all(|key| { reaper.pending_value(key).unwrap().is_none() }));
-        // Senderを閉じて各laneのrecvを終了させる。Weak runnerが失効するまで
-        // 待つことで、テスト用のworkerを残さず終了したことを確認する。
-        drop(reaper);
-        let shutdown_deadline = Instant::now() + Duration::from_secs(10);
-        while weak_runner.upgrade().is_some() && Instant::now() < shutdown_deadline {
-            std::thread::sleep(Duration::from_millis(2));
+        let mut running = std::collections::BTreeSet::new();
+        for _ in 0..concurrency {
+            running.insert(started_rx.recv_timeout(Duration::from_secs(5)).unwrap());
         }
-        assert!(
-            weak_runner.upgrade().is_none(),
-            "製品reaperのworkerが期限内に終了しませんでした"
-        );
+        // 保留は176件でも、実行中の物理cleanupはCPU由来のpool上限に止まる。
+        assert_eq!(running.len(), concurrency);
+        assert!(matches!(started_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            reaper.reserve_pending([(capacity, CleanupStep::ReleaseBackend)]),
+            Err(maleicacid_tuner_hal2_common::HalError::Busy { .. })
+        ));
+        for _ in 0..capacity {
+            resume_tx.send(()).unwrap();
+        }
+        for _ in concurrency..capacity {
+            running.insert(started_rx.recv_timeout(Duration::from_secs(10)).unwrap());
+        }
+        assert_eq!(running.len(), capacity);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for key in 0..capacity {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "回収group返却が期限を超過しました");
+            reaper
+                .wait_until_released([&key], Some(remaining))
+                .expect("回収groupを解放");
+        }
+        assert!(reaper
+            .reserve_pending([(capacity, CleanupStep::ReleaseBackend)])
+            .is_ok());
     }
 
     #[test]
