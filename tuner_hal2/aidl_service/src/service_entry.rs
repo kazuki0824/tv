@@ -752,16 +752,17 @@ pub fn run_service() {
     }
     let failure_state = {
         let runtime_handle = context.runtime();
-        match TunerServiceRuntime::lock_shared(
+        let runtime = match TunerServiceRuntime::lock_shared(
             runtime_handle.as_ref(),
             "ServiceCritical監視の初期化",
         ) {
-            Ok(runtime) => runtime.failure_state(),
+            Ok(runtime) => runtime,
             Err(error) => {
                 log::error!("ServiceCritical監視の初期化に失敗しました: {error:?}");
                 std::process::exit(1);
             }
-        }
+        };
+        runtime.failure_state()
     };
     let tuner = match TunerAidlService::from_context(context) {
         Ok(tuner) => tuner,
