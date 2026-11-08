@@ -372,7 +372,6 @@ impl FrontendWorkerReaperJob {
         runtime: &Weak<Mutex<TunerServiceRuntime>>,
         deadline: Duration,
     ) -> Result<(), Box<(Self, HalError)>> {
-        let mut deadline_elapsed = false;
         let terminal_deadline = match self.transferred_at.checked_add(deadline) {
             Some(deadline) => deadline,
             None => {
@@ -386,7 +385,7 @@ impl FrontendWorkerReaperJob {
             match self.tickets.try_complete() {
                 Ok(outcomes) => {
                     if let Some(runtime) = runtime.upgrade() {
-                        (self.completion_action)(&runtime, outcomes, deadline_elapsed);
+                        (self.completion_action)(&runtime, outcomes, false);
                     }
                     return Ok(());
                 }
@@ -399,7 +398,6 @@ impl FrontendWorkerReaperJob {
                     }
                 }
                 Ok(None) => {
-                    deadline_elapsed = true;
                     if let (Some(runtime), Some(action)) =
                         (runtime.upgrade(), self.deadline_action.take())
                     {
