@@ -355,6 +355,10 @@ impl CleanupReaperQueue {
                     let Some(context) = context.upgrade() else {
                         return Ok(());
                     };
+                    // 時間超過とは独立に、共有reaperの異常終端・予約正本の破損は検出する。
+                    queue
+                        .pending_snapshot()
+                        .map_err(CleanupReaperQueue::classify_enqueue_error)?;
                     let mut handed_off = false;
                     let tasks: Vec<CleanupJob> = context.cleanup_recovery_requests()?
                         .into_iter()
