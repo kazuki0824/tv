@@ -24,6 +24,12 @@
 - enqueueとworkerからの再監督要求が競合しても受付要求を失わないよう、予約の存在からの要求削除を除く。状態破損・異常終端・実行済み隔離報告の失敗は既存停止経路へ残す。
 - 旧最終期限後の遅延完了、無応答ownerの義務保持、容量1のlane返却と独立Demux回収、隔離report待ちを既存AIDL試験へ反映する。
 
+# 2026-11-08 回収laneとFrontend期限のレビュー是正（#230）
+
+- 回収laneを初期化時に固定し、CPU数・予約数に応じた追加生成を除去した。予約のDrop解放失敗は既存の型付き終端へ伝える。公開数から予約容量の倍数を要求せず、予約待ちと物理実行の開始時刻を区別する。
+- Frontend closeは予約返却とworker終了で一つの期限を共有する。reaper期限で専用処理がある場合は、隔離・診断を共通失敗処理から繰り返さない。
+- lane占有と待機後の進行、正規Demux open/closeと予約返却の境界、期限超過時の未完義務と単一通知を回帰で検査する。
+
 # 2026-11-08 Frontend closeとreaperの無期限回収待ちを是正
 
 - Frontend closeで既存reaper予約の解放を`wait_until_released(None)`で無期限に待たず、既存`worker_reaper_deadline_ms`の有界待ちへ変更。workerへの停止要求後も同期`ticket.complete()`の無期限joinではなく、同じ期限で実際の終了を待つ。

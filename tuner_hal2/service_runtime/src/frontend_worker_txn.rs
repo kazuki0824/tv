@@ -183,7 +183,8 @@ enum FrontendScanWorkerActivation {
     Abort,
 }
 
-type FrontendWorkerReaperDeadlineAction = Box<dyn FnOnce(&SharedRuntime) + Send + 'static>;
+type FrontendWorkerReaperDeadlineAction =
+    Box<dyn FnOnce(&SharedRuntime, Option<HalError>) + Send + 'static>;
 type FrontendWorkerReaperCompletionAction = Box<
     dyn FnOnce(&SharedRuntime, Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>, bool)
         + Send
@@ -294,6 +295,11 @@ struct FrontendWorkerReaperJob {
     completion_action: FrontendWorkerReaperCompletionAction,
 }
 
+enum FrontendWorkerReaperFailure {
+    Deadline,
+    Failed(HalError),
+}
+
 impl FrontendWorkerReaperJob {
     fn run(
         self,
@@ -302,17 +308,30 @@ impl FrontendWorkerReaperJob {
         diagnostics: &SharedFrontendWorkerCleanupDiagnostics,
     ) {
         if let Err(failure) = self.run_until_terminal(runtime, deadline) {
-            let (job, mut error) = *failure;
-            if let Some(runtime) = runtime.upgrade() {
-                if let Err(record_error) =
-                    accept_frontend_worker_terminal_outcomes(&runtime, &job.tickets.completed)
-                {
-                    error = compose_primary_cleanup_failure(
-                        "frontend reaper completed outcome recording",
-                        error,
-                        record_error,
-                    );
+            let (mut job, failure) = *failure;
+            let runtime = runtime.upgrade();
+            let terminal_error = runtime.as_ref().and_then(|runtime| {
+                accept_frontend_worker_terminal_outcomes(runtime, &job.tickets.completed).err()
+            });
+            let mut error = match failure {
+                FrontendWorkerReaperFailure::Deadline => {
+                    if let (Some(runtime), Some(action)) = (&runtime, job.deadline_action.take()) {
+                        action(runtime, terminal_error);
+                        return;
+                    }
+                    HalError::cleanup_failed(
+                        "frontend reaper",
+                        "worker did not exit before the bounded reaper deadline",
+                    )
                 }
+                FrontendWorkerReaperFailure::Failed(error) => error,
+            };
+            if let Some(terminal_error) = terminal_error {
+                error = compose_primary_cleanup_failure(
+                    "frontend reaper completed outcome recording",
+                    error,
+                    terminal_error,
+                );
             }
             for (frontend_id, kind) in &job.keys {
                 let target = FrontendWorkerCleanupTarget::frontend(*frontend_id);
@@ -334,9 +353,9 @@ impl FrontendWorkerReaperJob {
                     .find(|(pending_kind, _)| pending_kind == kind)
                     .and_then(|(_, ticket)| ticket.worker_generation());
                 let mut local_error = error.clone();
-                if let Some(runtime) = runtime.upgrade() {
+                if let Some(runtime) = &runtime {
                     if let Err(quarantine_error) =
-                        quarantine_frontend_reaper_failure(&runtime, *frontend_id, &error)
+                        quarantine_frontend_reaper_failure(runtime, *frontend_id, &error)
                     {
                         local_error = compose_primary_cleanup_failure(
                             "frontend reaper failure and local quarantine",
@@ -371,13 +390,16 @@ impl FrontendWorkerReaperJob {
         mut self,
         runtime: &Weak<Mutex<TunerServiceRuntime>>,
         deadline: Duration,
-    ) -> Result<(), Box<(Self, HalError)>> {
+    ) -> Result<(), Box<(Self, FrontendWorkerReaperFailure)>> {
         let terminal_deadline = match self.transferred_at.checked_add(deadline) {
             Some(deadline) => deadline,
             None => {
                 return Err(Box::new((
                     self,
-                    HalError::cleanup_failed("frontend reaper", "deadline overflow"),
+                    FrontendWorkerReaperFailure::Failed(HalError::cleanup_failed(
+                        "frontend reaper",
+                        "deadline overflow",
+                    )),
                 )))
             }
         };
@@ -394,26 +416,14 @@ impl FrontendWorkerReaperJob {
             match self.tickets.wait_for_progress(Some(terminal_deadline)) {
                 Ok(Some(index)) => {
                     if let Err(error) = self.tickets.complete_signalled(index) {
-                        return Err(Box::new((self, error)));
+                        return Err(Box::new((self, FrontendWorkerReaperFailure::Failed(error))));
                     }
                 }
-                Ok(None) => {
-                    if let (Some(runtime), Some(action)) =
-                        (runtime.upgrade(), self.deadline_action.take())
-                    {
-                        action(&runtime);
-                    }
-                    // 期限到達後は無期限joinへ移行しない。
-                    // ticketの未完義務は既存WorkerRuntimeCleanupが保持する。
-                    return Err(Box::new((
-                        self,
-                        HalError::cleanup_failed(
-                            "frontend reaper",
-                            "worker did not exit before the bounded reaper deadline",
-                        ),
-                    )));
+                // 未完義務は既存WorkerRuntimeCleanupに残し、無期限joinへ移行しない。
+                Ok(None) => return Err(Box::new((self, FrontendWorkerReaperFailure::Deadline))),
+                Err(error) => {
+                    return Err(Box::new((self, FrontendWorkerReaperFailure::Failed(error))))
                 }
-                Err(error) => return Err(Box::new((self, error))),
             }
         }
     }
@@ -724,7 +734,7 @@ fn transfer_frontend_replacement_wait_failure(
         continuation_kind: None,
         tickets,
         transferred_at,
-        deadline_action: Some(Box::new(move |runtime| {
+        deadline_action: Some(Box::new(move |runtime, terminal_error| {
             handle_frontend_worker_reaper_deadline(
                 runtime,
                 target,
@@ -732,6 +742,7 @@ fn transfer_frontend_replacement_wait_failure(
                 generation,
                 fenced_demux_generations,
                 deadline_diagnostic_sink,
+                terminal_error,
             );
         })),
         completion_action: Box::new(move |_runtime, outcomes, deadline_elapsed| {
@@ -4032,10 +4043,12 @@ fn handle_frontend_worker_reaper_deadline(
     fenced_generation: u64,
     expected_demux_generations: BoundDemuxGenerationSnapshot,
     diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
+    terminal_error: Option<HalError>,
 ) {
     let deadline_error = HalError::cleanup_failed(
         "frontend worker reaper deadline",
         "worker did not exit within 10 seconds after cancellation",
+        terminal_error,
     );
     let result = (|| {
         let mut guard = lock_runtime(
@@ -4095,6 +4108,14 @@ fn handle_frontend_worker_reaper_deadline(
     let public_error = match result {
         Ok(()) => deadline_error,
         Err(error) => error,
+    };
+    let public_error = match terminal_error {
+        Some(terminal_error) => compose_primary_cleanup_failure(
+            "frontend reaper deadline and terminal acceptance",
+            public_error,
+            terminal_error,
+        ),
+        None => public_error,
     };
     let record = FrontendWorkerCleanupDiagnosticRecord::new(
         FrontendWorkerCleanupDiagnosticKind::WorkerReaperDeadline,
@@ -5788,7 +5809,7 @@ fn stop_frontend_object_without_join(
                 continuation_kind: None,
                 tickets,
                 transferred_at: Instant::now(),
-                deadline_action: Some(Box::new(move |runtime| {
+                deadline_action: Some(Box::new(move |runtime, terminal_error| {
                     handle_frontend_worker_reaper_deadline(
                         runtime,
                         target,
@@ -5796,6 +5817,7 @@ fn stop_frontend_object_without_join(
                         generation,
                         fenced_demux_generations,
                         deadline_diagnostic_sink,
+                        terminal_error,
                     );
                 })),
                 completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
@@ -5959,11 +5981,13 @@ fn close_frontend_workers_and_live_data_with_sink(
         let guard = lock_runtime(&runtime, "frontend cleanup deadline snapshot")?;
         Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms)
     };
-    let tune_key = (frontend_id, FrontendWorkerKind::Tune);
-    let scan_key = (frontend_id, FrontendWorkerKind::Scan);
-    reaper
-        .runtime
-        .wait_until_released([&tune_key, &scan_key], Some(budget))?;
+    let deadline = Instant::now().checked_add(budget).ok_or_else(|| {
+        HalError::cleanup_failed("frontend close cleanup", "worker close deadline overflow")
+    })?;
+    reaper.wait_until_frontend_released(
+        frontend_id,
+        deadline.saturating_duration_since(Instant::now()),
+    )?;
     let sink = cleanup_diagnostic_sink?;
     let tickets = {
         let mut guard = lock_runtime(
@@ -5997,9 +6021,6 @@ fn close_frontend_workers_and_live_data_with_sink(
 
     // 全workerへ停止要求を発行済み。runtime lock外で有限期限まで終了を待つ。
     // 時間切れの場合は物理cleanup成功とせず、保持済みの未完義務から次の回収を行う。
-    let deadline = Instant::now().checked_add(budget).ok_or_else(|| {
-        HalError::cleanup_failed("frontend close cleanup", "worker close deadline overflow")
-    })?;
     let outcomes = match FrontendWorkerReaperTicketGroup::new(tickets).wait_until_deadline(deadline)
     {
         FrontendWorkerStopWaitOutcome::Completed(outcomes) => outcomes,
@@ -6317,7 +6338,7 @@ mod scan_contract_tests {
         let frontend_id = 1_000_006;
         let mut capability = crate::CapabilitySnapshot::product_default();
         capability.worker_io_deadline_ms = 20;
-        capability.worker_reaper_deadline_ms = 50;
+        capability.worker_reaper_deadline_ms = 1_000;
         let runtime = Arc::new(Mutex::new(
             TunerServiceRuntime::from_capability_snapshot_for_test(capability),
         ));
@@ -6394,7 +6415,7 @@ mod scan_contract_tests {
                         .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
                         .contains(&crate::registry::DemuxRuntimeId(demux_id_for_worker));
                     cancel_seen_tx.send(relation_is_still_bound).unwrap();
-                    release_rx.recv().unwrap();
+                    let _ = release_rx.recv();
                     Ok(())
                 })
                 .unwrap();
@@ -6402,14 +6423,28 @@ mod scan_contract_tests {
         };
 
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let reaper = ensure_frontend_worker_reaper(&runtime).unwrap();
+        let previous = reaper
+            .runtime
+            .reserve_pending([((frontend_id, FrontendWorkerKind::Tune), None)])
+            .unwrap();
+        let (close_started_tx, close_started_rx) = mpsc::channel();
         let close_runtime = Arc::clone(&runtime);
+        let (closed_tx, closed_rx) = mpsc::channel();
         let close = std::thread::spawn(move || {
-            close_frontend_workers_and_live_data(
+            close_started_tx.send(()).unwrap();
+            let result = close_frontend_workers_and_live_data(
                 close_runtime,
                 frontend_id,
                 FrontendWorkerCancelReason::FrontendClosing,
-            )
+            );
+            let _ = closed_tx.send(result);
         });
+        close_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(750));
+        reaper.runtime.release_reservation(previous).unwrap();
         assert!(cancel_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap());
         assert!(runtime
             .lock()
@@ -6420,7 +6455,7 @@ mod scan_contract_tests {
 
         // 無応答workerを無期限にjoinせず、同じ世代の回収義務を保持する。
         assert!(matches!(
-            close.join().unwrap(),
+            closed_rx.recv_timeout(Duration::from_millis(600)).unwrap(),
             Err(HalError::CleanupFailed { .. })
         ));
         assert!(runtime
@@ -6430,6 +6465,7 @@ mod scan_contract_tests {
             .frontend_bound_demux_ids(FrontendRuntimeId(frontend_id))
             .contains(&crate::registry::DemuxRuntimeId(demux_id)));
 
+        close.join().unwrap();
         release_tx.send(()).unwrap();
         close_frontend_workers_and_live_data(
             Arc::clone(&runtime),
@@ -7288,7 +7324,7 @@ mod scan_contract_tests {
         registry
             .start(43, FrontendWorkerKind::Tune, 5, move |_ctx| {
                 started_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
+                let _ = release_rx.recv();
                 Ok(())
             })
             .unwrap();
@@ -7299,25 +7335,36 @@ mod scan_contract_tests {
             FrontendWorkerKind::Tune,
             FrontendWorkerCancelReason::SupersededByNewRequest,
         );
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let runtime_ref = Arc::downgrade(&runtime);
+        let diagnostics = runtime
+            .lock()
+            .unwrap()
+            .frontend_worker_cleanup_diagnostic_sink();
+        let worker_diagnostics = diagnostics.clone();
+        let (deadline_tx, deadline_rx) = mpsc::channel();
         let job = FrontendWorkerReaperJob {
             keys: vec![(43, FrontendWorkerKind::Tune)],
             continuation_kind: None,
             tickets: FrontendWorkerReaperTicketGroup::new(vec![(FrontendWorkerKind::Tune, ticket)]),
             transferred_at: Instant::now(),
-            deadline_action: None,
+            deadline_action: Some(Box::new(move |_, terminal_error| {
+                deadline_tx.send(terminal_error).unwrap();
+            })),
             completion_action: Box::new(|_, _, _| {
                 panic!("期限内の物理終了報告は存在しません");
             }),
         };
-        let runtime: Weak<Mutex<TunerServiceRuntime>> = Weak::new();
-        let started = Instant::now();
-        let (job, error) = *job
-            .run_until_terminal(&runtime, Duration::from_millis(10))
-            .unwrap_err();
-        assert!(matches!(error, HalError::CleanupFailed { .. }));
-        assert!(started.elapsed() < Duration::from_secs(1));
+        let (done_tx, done_rx) = mpsc::channel();
+        let reaper = std::thread::spawn(move || {
+            job.run(&runtime_ref, Duration::from_millis(10), &worker_diagnostics);
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        reaper.join().unwrap();
+        assert!(deadline_rx.try_recv().unwrap().is_none());
+        assert!(diagnostics.snapshot().unwrap().records().is_empty());
         assert!(registry.has_cleanup_obligations());
-        drop(job);
 
         release_tx.send(()).unwrap();
         let retry = registry.request_stop_for_join(
