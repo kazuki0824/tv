@@ -1144,7 +1144,11 @@ where
             receiver,
             runner,
             thread_prefix,
-            max_lanes: capacity,
+            // 待機予約数とは独立した実行上限。実機CPU資源を初期の有界pool目安とする。
+            // backendの実行中断は別の期限監督へ委譲し、worker増殖で解決しない。
+            max_lanes: std::thread::available_parallelism()
+                .map_or(1, std::num::NonZeroUsize::get)
+                .min(capacity),
             sender,
             pending,
         };
@@ -2524,7 +2528,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_reaper_lanes_start_on_demand_without_reducing_peak_capacity() {
+    fn cleanup_reaper_lanes_are_bounded_by_available_parallelism() {
         use std::sync::{mpsc, Arc, Mutex};
         use std::time::Duration;
         let (started_tx, started_rx) = mpsc::channel::<u32>();
@@ -2542,23 +2546,35 @@ mod tests {
                     .unwrap();
             },
         );
+        let capacity = 8;
+        let parallelism = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(capacity);
         let queue =
-            super::WorkerRuntime::start_reaper_queue(4, "test-reaper-lazy", runner).unwrap();
-        // 容量4は受付上限であり、待機中のOSスレッドを4本生成する根拠にはしない。
+            super::WorkerRuntime::start_reaper_queue(capacity, "test-reaper-lazy", runner)
+                .unwrap();
         assert_eq!(queue.lane_count(), 1);
-        for key in 0..4 {
+        for key in 0..capacity {
             queue.enqueue_reserved(key, [(key, key)]).unwrap();
         }
         let mut started = std::collections::BTreeSet::new();
-        for _ in 0..4 {
+        for _ in 0..parallelism {
             started.insert(started_rx.recv_timeout(Duration::from_secs(3)).unwrap());
         }
-        assert_eq!(started, (0..4).collect());
-        assert_eq!(queue.lane_count(), 4);
-        for _ in 0..4 {
+        assert_eq!(started.len(), parallelism);
+        assert_eq!(queue.lane_count(), parallelism);
+        assert!(matches!(
+            started_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        for _ in 0..capacity {
             resume_tx.send(()).unwrap();
         }
-        for key in 0..4 {
+        for _ in parallelism..capacity {
+            started.insert(started_rx.recv_timeout(Duration::from_secs(3)).unwrap());
+        }
+        assert_eq!(started, (0..capacity).collect());
+        for key in 0..capacity {
             queue
                 .wait_until_released([&key], Some(Duration::from_secs(3)))
                 .unwrap();
