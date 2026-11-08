@@ -7279,6 +7279,60 @@ mod scan_contract_tests {
     }
 
     #[test]
+    fn frontend_reaper_deadline_returns_without_abandoning_worker_cleanup() {
+        use maleicacid_tuner_hal2_device::FrontendWorkerRegistry;
+
+        let mut registry = FrontendWorkerRegistry::default();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        registry
+            .start(43, FrontendWorkerKind::Tune, 5, move |_ctx| {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let ticket = registry.request_stop_for_join(
+            43,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::SupersededByNewRequest,
+        );
+        let job = FrontendWorkerReaperJob {
+            keys: vec![(43, FrontendWorkerKind::Tune)],
+            continuation_kind: None,
+            tickets: FrontendWorkerReaperTicketGroup::new(vec![(
+                FrontendWorkerKind::Tune,
+                ticket,
+            )]),
+            transferred_at: Instant::now(),
+            deadline_action: None,
+            completion_action: Box::new(|_, _, _| {
+                panic!("期限内の物理終了報告は存在しません");
+            }),
+        };
+        let runtime: Weak<Mutex<TunerServiceRuntime>> = Weak::new();
+        let started = Instant::now();
+        let (job, error) = *job
+            .run_until_terminal(&runtime, Duration::from_millis(10))
+            .unwrap_err();
+        assert!(matches!(error, HalError::CleanupFailed { .. }));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(registry.has_cleanup_obligations());
+        drop(job);
+
+        release_tx.send(()).unwrap();
+        let retry = registry.request_stop_for_join(
+            43,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::SupersededByNewRequest,
+        );
+        assert!(frontend_worker_stop_failure(&retry.complete()).is_none());
+        assert!(!registry.has_cleanup_obligations());
+    }
+
+    #[test]
     fn pending_stream_id_list_is_reobserved_within_the_same_scan_worker() {
         let mut observations = VecDeque::from([
             FrontendTmccTsidListObservation::Pending,
