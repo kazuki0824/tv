@@ -315,14 +315,18 @@ class PlaybackPipeline(
     ) {
         // payloadとeventごとの保守的な1KiB帳簿予約を同じ既存permitへ課金する。件数64では判定しない。
         val payloadBytes =
-            events.sumOf { event ->
-                when (event) {
-                    is MediaEvent -> event.dataLength.coerceIn(0L, AV_FILTER_BUFFER_BYTES)
-                    is PesEvent -> event.dataLength.toLong().coerceIn(0L, SUBTITLE_FILTER_BUFFER_BYTES)
-                    else -> 0L
-                }
+            events.fold(0L) { total, event ->
+                val length =
+                    when (event) {
+                        is MediaEvent -> event.dataLength.coerceAtLeast(0L)
+                        is PesEvent -> event.dataLength.toLong().coerceIn(0L, SUBTITLE_FILTER_BUFFER_BYTES)
+                        else -> 0L
+                    }
+                // Longに収まらない合計も、既存の容量拒否へ渡す。
+                total + length.coerceAtMost(Long.MAX_VALUE - total)
             }
-        val requestedSlots = 1L + events.size + (payloadBytes + KIB - 1) / KIB
+        val payloadSlots = payloadBytes / KIB + if (payloadBytes % KIB == 0L) 0L else 1L
+        val requestedSlots = 1L + events.size + payloadSlots
         // 単一合法最大eventの会計ヘッダーは本来のpayload予約と同時占有しない。
         // 複数eventをまとめた過大callbackは丸めずに容量拒否する。
         val slots =

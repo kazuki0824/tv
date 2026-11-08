@@ -3,10 +3,28 @@
 - VTS profileの資源検査は既存host crateの本番型とcapability選択を参照する。現行本番ソースの生成Rustをコンパイル・実行する試験を既存CIへ追加し、ホストのCargo依存を統合手順へ記載する。
 - Frontend回収試験で既存executorを実行して完了権限を取得し、別crateのprivate field参照を除く。Android Soong／atestは未実施。
 
+# 2026-11-07 Loom CIのRust toolchainを固定
+
+- Loomの依存generatorが要求するRust 1.95.0を当該jobで使用する。同一toolchainでlockfileを生成し、固定した解決結果を使ってLoomを実行する。製品用Rust toolchainと他jobは従来どおり。
+
 # 2026-10-31 worker終端とwake受付の競合を修正
 
 - 既存WorkerWakeのatomic通知状態へ閉鎖bitを統合し、終端observerより前に受付を閉じる。追加されたcompletion mutexでの通知判定を置き換え、CODE_CONVENTIONの非汚染通知契約を維持する。
 - runtime failure・panicでobserver待機中にもwakeを拒否し、終端前の受付は成功する回帰を既存試験へ追加。テストはCIのみ、実機検証は未実施。
+
+# 2026-10-31 AV payloadの独立1 MiB制限を除去
+
+- AVCの未完AUをPESごとに先頭から再走査せず、同じVideoTimestampAssociationに次回走査位置と未完AUD位置を保持する。drain時に両位置を補正し、既存resetで破棄する。AU長・PES分割長を独立に変え、payload/PTSと走査入力長の線形上限をCI回帰で確認する。
+
+- AVC時刻解析ではfiller等の未使用NALをRBSPへコピーせず、必要なRBSPとSPS/PPS保持の予約失敗を既存AllocationFailedへ返す。SEIはactive SPS確定後に順次解析し、RBSP配列を保管しない。共有RBSP変換の失敗時、任意のrecord slice索引は生成しない。大きなfiller/SEIを含む時刻対応の回帰を追加し、CIへ委ねる。
+
+- AVCの開始コード・NAL・AUD境界を割当不要のiteratorで走査し、境界配列の通常割当を除去する。多数NALの境界保持、異常入力のfail-closedと再anchor復旧の回帰を追加する。検証はCIへ委ねる。
+
+- PES組立破棄の診断にFilter IDを保持し、同じPIDの汎用PES filterの局所上限でAV時刻対応を失効させない。結合試験で両Filterを同時使用する。
+- AVのPES/AU組立・完成payloadコピーを失敗可能な割当へ接続し、割当失敗をOVERFLOWと型付き診断へ伝える。汎用PES filterの固定上限は維持する。
+- event-local DMA-BUFの単一payload上限と、その設定を渡すconstructor・registry fieldを除去する。
+- AVの固定PES byte予約と能力検証を除去し、4つの汎用PES filterだけを固定PES予算へ計上する。関連規範・実装入口と資源台帳の回帰を更新する。
+- CIに符号化AVC TS→実producer→host file割当→配送ESのdecode→TIS SDK callback/Codec入力境界の結合試験を追加する。host file・Robolectricは実DMAヒープ/実decoderの代替証明ではない。CI結果、現行ARIB日本語原文との差分、Soong/atest/VTS・実機確認は未確認。
 
 # 2026-10-31 AV破棄と最終参照終了の回収を修正
 

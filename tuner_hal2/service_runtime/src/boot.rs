@@ -1892,9 +1892,7 @@ impl TunerServiceRuntime {
             capacity_ledger: CapacityLedger::default(),
             release_only_filter_av_backings: BTreeMap::new(),
             release_only_filter_types: BTreeMap::new(),
-            registry: RuntimeRegistry::with_av_runtime_limits(
-                capability_snapshot.av_max_event_bytes,
-            ),
+            registry: RuntimeRegistry::default(),
             object_table: RuntimeObjectTable::default(),
             diagnostics: BoundedDiagnosticStore::default(),
             descrambler_diagnostics: BoundedDiagnosticStore::default(),
@@ -3733,7 +3731,7 @@ impl TunerServiceRuntime {
                 ),
             }
         };
-        let mut registry = RuntimeRegistry::with_av_runtime_limits(snapshot.av_max_event_bytes);
+        let mut registry = RuntimeRegistry::default();
         for entry in entries {
             if !retained_ids.contains(&entry.id.0) {
                 self.diagnostics

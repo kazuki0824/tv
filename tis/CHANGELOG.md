@@ -6,6 +6,14 @@
 - Robolectric CIは実SI JNIをビルドして移設後の7クラスを実行し、各クラスの件数・失敗・skipを確認する。SI engine変更も起動条件に含め、Gradleは試験クラスごとにJVMを分けてJNI classloaderの所有権を分離する。従来のhost CIは残る試験へ実行対象と期待件数を更新する。
 - 検証はCIで実行する。実端末・製品Soong・CTS/VTSは未実施。
 
+# 2026-11-07 AV callbackの実長を受付予算へ反映
+
+- MediaEventの実長を上限へ丸めずに共有permitへ計上し、加算可能範囲を超えるbatchも既存の容量拒否・解放経路へ渡す。単一16 MiBは受付可能とし、17 MiB、複数eventでの予算超過、合算のLong超過を既存Robolectric回帰で検査する。
+
+# 2026-11-07 視聴制限と大型AVの回帰試験を併存
+
+- 親PRの個別レーティング解除回帰と本PRの大型AV受付回帰を保持し、Robolectricの期待件数を58へ更新する。
+
 # 2026-11-07 個別レーティング解除後の視聴制限を再評価
 
 - 一時解除後は既存の現在番組判定を通し、番組全体が許可された場合に視聴許可を通知する。解除後にTvProvider照会が失敗した場合は従前の遮断を保持する。
@@ -23,6 +31,10 @@
 - coverage SQLを既存Perfetto thread.upidとnative pointerごとの集約へ変更し、別インスタンス・別プロセス・pointer再生成のログ合算で4段階成立と判定しない。
 - 区間保持、同一nativeの4段階、対象TIS session/generationとの関連付けを分離。現行ログでは最後の対応が不明なため、総合coverageは未成立とし資料を保存する。製品ownerや台帳は追加しない。
 - SQLite反例と採取スクリプトへの失敗伝播回帰を追加。実機の対応付けとnative実行は未検証で、CI結果とは区別する。
+
+# 2026-11-02 親の正規生成fixture回帰と大型AV回帰の併存
+
+- 親のaudio-only Surface切断回帰と本PRの大型AV受付回帰を保持し、RobolectricのPlaybackFilterAdmissionTest期待件数を55へ追従した。試験はCIで実行し、実機・Soong検証の代用にはしない。
 
 # 2026-11-02 Scan取消しfixtureを正規初期化へ移設
 
@@ -52,6 +64,10 @@
 - 既存のnative入力待機回帰で、投入中1件・未完了・件数超過/byte非超過・generationの診断を追加検査。模擬adbはプロセス別PIDを返して並行backtraceの出力先を分離する。アーカイブ内部の完了済みbacktrace、圧縮失敗時の資料保持、Trace Processor失敗時の非0も検査する。CIの整形指摘も修正。
 - 検証はCIで実行する。platform Soong/native実行、実端末での負荷と症状再現、source/symbol照合は未確認。
 
+# 2026-11-01 親のSurface切断回帰とAV受付回帰の併存
+
+- 親PRのSurface切断試験と本PRの大きなAV受付試験を両方保持し、Robolectricの固定期待件数を54へ更新。テストはCIで実行する。
+
 # 2026-11-01 診断結果の回収と失敗判定を修正
 
 - 模擬adbはprocessごとに異なるPIDを返し、並列snapshotが同じ出力ファイルを競合更新する試験fixtureの不備を修正。実スクリプトの失敗判定は緩和しない。
@@ -71,6 +87,10 @@
 - Live TVの再生不能トーストのアクセシビリティイベントでsnapshotとPerfettoリングバッファを保存する。固定秒数での終了を廃止し、欠落・対象外言語・端末でのイベント不達は成立と扱わない。
 - ホストの模擬adbでイベント受信と終了処理を確認。実端末でのイベント・trace成立は未確認。
 
+# 2026-11-01 rebase後のAV受付試験数を更新
+
+- 親PRの追加試験と本PRの大型AV試験をともに数え、PlaybackFilterAdmissionTestのCI期待値を53件へ更新する。試験削除・除外は行わない。
+
 # 2026-11-01 MPEG固定ヘッダ探索の不一致時コピーを除去
 
 - 既存CodecHeaderProbeの開始コード／同期条件をコピーより先に検査し、一致候補だけ固定長配列として渡す。既存owner・境界保持・accept契約は変更しない。
@@ -80,6 +100,11 @@
 # 2026-10-31 rebase後のライブ選局準備を同じSession内で整理
 
 - 親PRのProvider observer登録を保持したまま、選局前のSession状態初期化をprivate helperへまとめる。Controller ownerでのSI reset callbackと呼出し順序を維持し、抑制・owner・状態を追加しない。既存host回帰と品質検査はCIへ委ねる。
+
+# 2026-10-31 大きなAVイベントの受付回帰を追加
+
+- 既存Robolectric fixtureで1 MiB超のpayloadがSDK callbackからCodec入力境界へ到達する回帰を追加。HAL結合CIでは実producerが出力した符号化ESを同じ試験へ渡す。通常CIの合成byte列は受付長の回帰のみで、規格適合の証拠にはしない。
+- CIの試験件数を更新。実機decoder/DMA-BUF/VTSは未確認。
 
 ## Provider通知の集約とProgram更新の所有元照合
 
