@@ -704,11 +704,7 @@ impl<K, V> Clone for WorkerRuntimeReaperPending<K, V> {
     }
 }
 
-impl<K, V> WorkerRuntimeReaperPending<K, V>
-where
-    K: Ord + Clone,
-    V: Clone,
-{
+impl<K, V> WorkerRuntimeReaperPending<K, V> {
     fn new(capacity: usize) -> Self {
         Self {
             state: std::sync::Arc::new(PoisonTrackedMutex::new(
@@ -735,7 +731,13 @@ where
             .lock()
             .map_err(maleicacid_tuner_hal2_common::HalError::LockPoisoned)
     }
+}
 
+impl<K, V> WorkerRuntimeReaperPending<K, V>
+where
+    K: Ord + Clone,
+    V: Clone,
+{
     fn reserve_group(
         &self,
         reservations: impl IntoIterator<Item = (K, V)>,
@@ -1094,6 +1096,14 @@ impl<K, V, J> Clone for WorkerRuntimeReaperQueue<K, V, J> {
     }
 }
 
+impl<K, V, J> WorkerRuntimeReaperQueue<K, V, J> {
+    /// 共有回収器の失敗と予約正本の汚染を確認し、値やlockを持ち出さない。
+    pub fn check_health(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        drop(self.pending.lock_state()?);
+        Ok(())
+    }
+}
+
 impl<K, V, J> WorkerRuntimeReaperQueue<K, V, J>
 where
     K: Ord + Clone + Send + 'static,
@@ -1296,17 +1306,6 @@ where
             }
         };
         self.enqueue_with_reservation(job, reservation)
-    }
-
-    /// 予約の正本から監視用の値を写し、呼出側へlockを持ち出さない。
-    pub fn pending_snapshot(&self) -> Result<Vec<V>, maleicacid_tuner_hal2_common::HalError> {
-        Ok(self
-            .pending
-            .lock_state()?
-            .entries
-            .values()
-            .cloned()
-            .collect())
     }
 
     pub fn pending_value(
@@ -2436,6 +2435,7 @@ mod tests {
             Err(HalError::WorkerReaperPanicked)
         );
         waiter.join().unwrap();
+        assert_eq!(queue.check_health(), Err(HalError::WorkerReaperPanicked));
         assert_eq!(
             queue.pending.state.lock().unwrap().entries.get(&1),
             Some(&1)
@@ -2904,10 +2904,37 @@ mod tests {
     }
 
     #[test]
+    fn reaper_health_check_preserves_reservation_on_runtime_failure() {
+        let (queue, _receiver) = reaper_queue_for_test(1);
+        let reservation = queue.reserve_pending([(7, 11)]).unwrap();
+        assert_eq!(queue.check_health(), Ok(()));
+        assert_eq!(queue.pending_value(&7).unwrap(), Some(11));
+        let error = maleicacid_tuner_hal2_common::HalError::cleanup_failed(
+            "回収器の試験",
+            "runtime failureを注入",
+        );
+        queue
+            .pending
+            .failure
+            .record_terminal(&WorkerTerminalResult::RuntimeFailure(error.clone()));
+        assert_eq!(queue.check_health(), Err(error));
+        assert_eq!(
+            queue.pending.state.lock().unwrap().entries.get(&7),
+            Some(&11)
+        );
+        drop(reservation);
+        assert_eq!(
+            queue.pending.state.lock().unwrap().entries.get(&7),
+            Some(&11)
+        );
+    }
+
+    #[test]
     fn reaper_pending_poison_preserves_identity_count_and_failed_state() {
         use maleicacid_tuner_hal2_common::{HalError, RuntimeLockKind};
 
-        let pending = WorkerRuntimeReaperPending::new(2);
+        let (queue, _receiver) = reaper_queue_for_test(2);
+        let pending = queue.pending.clone();
         let group = pending.reserve_group([(1, 9)]).unwrap();
         let clone = pending.clone();
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2923,6 +2950,7 @@ mod tests {
             (clone.update_value(&1, 7).unwrap_err(), 4),
             (clone.any_pending([&1, &1]).unwrap_err(), 5),
             (clone.any_pending([]).unwrap_err(), 6),
+            (queue.check_health().unwrap_err(), 7),
         ] {
             assert!(matches!(
                 error,
@@ -2938,7 +2966,8 @@ mod tests {
     fn reaper_receiver_poison_is_visible_to_pending_callers_without_releasing_ownership() {
         use maleicacid_tuner_hal2_common::{HalError, RuntimeLockKind};
 
-        let pending = WorkerRuntimeReaperPending::new(2);
+        let (queue, _receiver) = reaper_queue_for_test(2);
+        let pending = queue.pending.clone();
         pending.reserve_group([(1, 9)]).unwrap();
         let clone = pending.clone();
         let (_sender, receiver) = std::sync::mpsc::channel::<()>();
@@ -2965,6 +2994,7 @@ mod tests {
             clone.reserve_group([(2, 8)]).unwrap_err(),
             HalError::WorkerReaperUnavailable
         );
+        assert_eq!(queue.check_health(), Err(HalError::WorkerReaperUnavailable));
         assert_eq!(pending.state.lock().unwrap().entries.get(&1), Some(&9));
     }
 
