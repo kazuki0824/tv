@@ -2132,7 +2132,7 @@ mod tests {
                 "製品reaperの予約groupを期限内に全件解放できませんでした"
             );
             reaper
-                .wait_until_released([key], Some(remaining))
+                .wait_until_released([key], remaining)
                 .expect("workerの予約groupは期限内に解放される");
         }
         assert!(retained_keys
@@ -2213,7 +2213,7 @@ mod tests {
             let remaining = deadline.saturating_duration_since(Instant::now());
             assert!(!remaining.is_zero(), "回収group返却が期限を超過しました");
             reaper
-                .wait_until_released([&key], Some(remaining))
+                .wait_until_released([&key], remaining)
                 .expect("回収groupを解放");
         }
         assert!(reaper

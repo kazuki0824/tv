@@ -825,15 +825,11 @@ where
     pub fn wait_until_released<const N: usize>(
         &self,
         keys: [&K; N],
-        budget: Option<std::time::Duration>,
+        budget: std::time::Duration,
     ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
         let started = std::time::Instant::now();
         while self.any_pending(keys)? {
-            let remaining = match budget {
-                Some(budget) => budget.checked_sub(started.elapsed()),
-                None => Some(std::time::Duration::from_millis(WORKER_REAPER_WAIT_POLL_MS)),
-            };
-            let Some(remaining) = remaining else {
+            let Some(remaining) = budget.checked_sub(started.elapsed()) else {
                 return Err(maleicacid_tuner_hal2_common::HalError::cleanup_failed(
                     "ワーカー回収の受付待機",
                     "既存の回収期限内に保留所有権が解放されませんでした",
@@ -1294,7 +1290,7 @@ where
     pub fn wait_until_released<const N: usize>(
         &self,
         keys: [&K; N],
-        budget: Option<std::time::Duration>,
+        budget: std::time::Duration,
     ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
         self.pending.wait_until_released(keys, budget)
     }
@@ -2365,7 +2361,7 @@ mod tests {
         for key in [1, 2] {
             let started = Instant::now();
             assert!(matches!(
-                pending.wait_until_released([&key], Some(Duration::from_millis(5))),
+                pending.wait_until_released([&key], Duration::from_millis(5)),
                 Err(maleicacid_tuner_hal2_common::HalError::CleanupFailed { .. })
             ));
             assert!(started.elapsed() < Duration::from_secs(1));
@@ -2374,12 +2370,12 @@ mod tests {
         }
         pending.release_group(group).unwrap();
         assert!(pending
-            .wait_until_released([&1, &2], Some(Duration::ZERO))
+            .wait_until_released([&1, &2], Duration::ZERO)
             .is_ok());
     }
 
     #[test]
-    fn reaper_panic_wakes_unbounded_wait_without_releasing_obligations() {
+    fn reaper_panic_ends_bounded_wait_early_without_releasing_obligations() {
         use maleicacid_tuner_hal2_common::HalError;
         use std::sync::{mpsc, Arc};
         use std::time::Duration;
@@ -2397,7 +2393,8 @@ mod tests {
         let pending = queue.pending.clone();
         let (tx, rx) = mpsc::channel();
         let waiter = std::thread::spawn(move || {
-            tx.send(pending.wait_until_released([&1], None)).unwrap();
+            tx.send(pending.wait_until_released([&1], Duration::from_secs(30)))
+                .unwrap();
         });
         assert_eq!(
             rx.recv_timeout(Duration::from_secs(3)).unwrap(),
