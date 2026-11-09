@@ -475,6 +475,24 @@ impl AidlServiceContext {
         }
     }
 
+    /// 物理処理を実行中の既存ownerを保持し、待機だけのlaneを返す。
+    pub(crate) fn defer_cleanup_to_monitor(
+        self: &Arc<Self>,
+        origin: AidlObjectHandle,
+        target: AidlObjectHandle,
+    ) {
+        for handle in [origin, target] {
+            if let Err(error) = self
+                .cleanup_reaper_queue
+                .supervise_unqueued_owner(Arc::downgrade(self), handle)
+            {
+                log::error!("cleanup監督への引渡し失敗: handle={handle:?} error={error:?}");
+                TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
+                return;
+            }
+        }
+    }
+
     pub fn reset_runtime_from_probe_results<I>(
         &self,
         results: I,
