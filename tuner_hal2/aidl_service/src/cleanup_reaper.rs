@@ -539,24 +539,6 @@ fn mark_cleanup_reaper_critical(context: &AidlServiceContext) {
     );
 }
 
-/// 物理処理を実行中の既存ownerを保持し、待機だけのlaneを返す。
-fn defer_cleanup_to_monitor(
-    context: &Arc<AidlServiceContext>,
-    origin: AidlObjectHandle,
-    target: AidlObjectHandle,
-) {
-    for handle in [origin, target] {
-        if let Err(error) = context
-            .cleanup_reaper_queue
-            .supervise_unqueued_owner(Arc::downgrade(context), handle)
-        {
-            log::error!("cleanup監督への引渡し失敗: handle={handle:?} error={error:?}");
-            mark_cleanup_reaper_critical(context);
-            return;
-        }
-    }
-}
-
 fn run_cleanup_job(
     context: Weak<AidlServiceContext>,
     policy: CleanupReaperPolicy,
@@ -593,7 +575,7 @@ fn run_cleanup_job(
                 continue;
             }
             Ok(AidlObjectCleanupDisposition::QuarantineAwaitingReport) => {
-                defer_cleanup_to_monitor(&context, origin.handle, target.handle);
+                context.defer_cleanup_to_monitor(origin.handle, target.handle);
                 return;
             }
             Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {}
@@ -611,7 +593,7 @@ fn run_cleanup_job(
         }
         match context.related_cleanup_recovery_owners(target.handle) {
             Ok(owners) if owners.iter().any(|(_, active)| *active) => {
-                defer_cleanup_to_monitor(&context, origin.handle, target.handle);
+                context.defer_cleanup_to_monitor(origin.handle, target.handle);
                 return;
             }
             Ok(_) => {}
@@ -692,7 +674,7 @@ fn run_cleanup_job(
                         }
                     }
                 }
-                defer_cleanup_to_monitor(&context, origin.handle, target.handle);
+                context.defer_cleanup_to_monitor(origin.handle, target.handle);
                 return;
             }
             if context.fail_cleanup_if_unsettled(target.handle) == Ok(false) {
@@ -1227,8 +1209,14 @@ mod tests {
         use std::sync::{mpsc, Mutex};
 
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
-        let context = AidlServiceContext::from_shared_runtime_for_test(runtime);
-        let queue = Arc::clone(&context.cleanup_reaper_queue);
+        let queue = Arc::new(CleanupReaperQueue::from_snapshot(
+            runtime.lock().unwrap().capability_snapshot(),
+        ));
+        let context = AidlServiceContext::from_shared_runtime_with_cleanup_reaper_for_test(
+            runtime,
+            Some(Arc::clone(&queue)),
+        );
+        start_cleanup_reaper(Arc::downgrade(&context), Arc::clone(&queue)).unwrap();
         let (signal, reached_idle) = mpsc::channel();
         *queue.idle_park_notice.lock().unwrap() = Some(signal);
         let context_weak = Arc::downgrade(&context);
