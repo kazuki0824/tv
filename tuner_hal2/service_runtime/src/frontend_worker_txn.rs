@@ -583,8 +583,7 @@ impl FrontendWorkerReaperHandle {
     ) -> Result<(), HalError> {
         let tune = (frontend_id, FrontendWorkerKind::Tune);
         let scan = (frontend_id, FrontendWorkerKind::Scan);
-        self.runtime
-            .wait_until_released([&tune, &scan], Some(budget))
+        self.runtime.wait_until_released([&tune, &scan], budget)
     }
 
     fn pending_state(
