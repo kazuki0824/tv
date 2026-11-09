@@ -8,6 +8,11 @@
 - 回収監督への引渡しをAidlServiceContextのメソッドへ移し、別モジュールからのcleanup_reaper_queue直接参照によるE0616を解消する。フィールドの可視性と回収・失敗時の処理は維持する。
 - idle監督の寿命試験も既存のqueue注入入口へ変更し、同じ非公開フィールド参照を除く。設計の実装位置を更新する。試験はCIへ委ね、Android Soong／atestは未実施。
 
+# 2026-11-09 回収予約の待機APIを有限期限に統一
+
+- 製品呼出元のないNone待機を削除し、wait_until_releasedの期限をDuration必須へ縮減する。Frontendの製品経路とobject closeの回帰試験は同じ既存残時間を渡し、期限や回収義務を変えない。
+- panic回帰は30秒の待機予算に対して3秒のrecv_timeout内に元の異常が返ることと、未完予約が保持されることを検査する。既存control試験でCI実行し、Soong／atestと実機は未実施。
+
 # 2026-11-09 回収監督の全件コピーを除去
 
 - pending_snapshotを非割当のcheck_healthへ置換し、共有回収器の失敗と予約正本の汚染を既存lock_stateで確認する。健全性確認にはキー・値のClone制約を課さない。
