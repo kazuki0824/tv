@@ -357,7 +357,7 @@ impl CleanupReaperQueue {
                     };
                     // 時間超過とは独立に、共有reaperの異常終端・予約正本の破損は検出する。
                     queue
-                        .pending_snapshot()
+                        .check_health()
                         .map_err(CleanupReaperQueue::classify_enqueue_error)?;
                     let mut handed_off = false;
                     let tasks: Vec<CleanupJob> = context.cleanup_recovery_requests()?
@@ -1809,7 +1809,16 @@ mod tests {
             context.cleanup_retry_disposition(handle),
             Ok(AidlObjectCleanupDisposition::Closed)
         );
-        assert_eq!(reaper.pending_snapshot().unwrap().len(), capacity);
+        for generation in 1..=capacity {
+            let stale = AidlObjectHandle::new(
+                AidlObjectKind::Demux,
+                AidlObjectId(-1),
+                AidlObjectGeneration(generation as u64),
+            );
+            assert!(reaper
+                .any_pending([&CleanupJobKey::from_handle(stale)])
+                .unwrap());
+        }
         assert!(!failure.snapshot().service_critical);
         drop(old_groups);
     }
