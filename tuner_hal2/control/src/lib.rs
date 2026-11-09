@@ -799,22 +799,12 @@ where
             .map(|state| state.entries.get(key).cloned())
     }
 
-    pub fn pending_values<const N: usize>(
-        &self,
-        keys: [&K; N],
-    ) -> Result<[Option<V>; N], maleicacid_tuner_hal2_common::HalError> {
-        let state = self.lock_state()?;
-        Ok(std::array::from_fn(|index| {
-            state.entries.get(keys[index]).cloned()
-        }))
-    }
-
     pub fn any_pending<const N: usize>(
         &self,
         keys: [&K; N],
     ) -> Result<bool, maleicacid_tuner_hal2_common::HalError> {
-        self.pending_values(keys)
-            .map(|pending| pending.into_iter().any(|value| value.is_some()))
+        let state = self.lock_state()?;
+        Ok(keys.into_iter().any(|key| state.entries.contains_key(key)))
     }
 
     pub fn wait_until_released<const N: usize>(
@@ -2301,6 +2291,24 @@ mod tests {
     }
 
     #[test]
+    fn reaper_presence_query_does_not_clone_values() {
+        struct Value;
+        impl Clone for Value {
+            fn clone(&self) -> Self {
+                panic!("存在確認で値を複製してはいけません");
+            }
+        }
+        let pending = WorkerRuntimeReaperPending::new(1);
+        let group = pending.reserve_group([(1, Value), (2, Value)]).unwrap();
+        assert!(!pending.any_pending([]).unwrap());
+        assert!(!pending.any_pending([&3, &4]).unwrap());
+        assert!(pending.any_pending([&3, &2]).unwrap());
+        assert!(pending.any_pending([&1, &1]).unwrap());
+        pending.release_group(group).unwrap();
+        assert!(!pending.any_pending([&1, &2]).unwrap());
+    }
+
+    #[test]
     fn reaper_admission_timeout_keeps_both_endpoint_reservations() {
         use std::time::{Duration, Instant};
         let pending = super::WorkerRuntimeReaperPending::new(1);
@@ -2832,6 +2840,8 @@ mod tests {
             (pending.release_group(group).unwrap_err(), 2),
             (clone.pending_value(&1).unwrap_err(), 3),
             (clone.update_value(&1, 7).unwrap_err(), 4),
+            (clone.any_pending([&1, &1]).unwrap_err(), 5),
+            (clone.any_pending([]).unwrap_err(), 6),
         ] {
             assert!(matches!(
                 error,
