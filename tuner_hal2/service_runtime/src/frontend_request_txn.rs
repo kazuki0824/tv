@@ -1,11 +1,11 @@
 use crate::registry::{FrontendRegistryEntry, SatellitePowerTopology};
 use crate::TunerServiceRuntime;
-use maleicacid_tuner_hal2_binder_adapter::FrontendRequestedSetting;
 use maleicacid_tuner_hal2_common::{
     is_japan_isdbt_frequency_contract_hz, FrontendBackendKind,
     FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendStreamIdKind,
     FrontendSystem, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
+use maleicacid_tuner_hal2_domain_request::FrontendRequestedSetting;
 
 fn validate_frontend_request_semantics(request: &FrontendTuneRequest) -> Result<(), HalError> {
     if request.system == FrontendSystem::IsdbT && request.isdbt_layer_settings.len() > 3 {

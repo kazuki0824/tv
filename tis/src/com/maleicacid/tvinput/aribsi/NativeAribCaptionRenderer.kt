@@ -42,7 +42,28 @@ class NativeAribCaptionRenderer(
         val height: Int,
         val stride: Int,
         val rgba8888: ByteArray,
-    )
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is RenderedCaptionImage) return false
+            return dstX == other.dstX &&
+                dstY == other.dstY &&
+                width == other.width &&
+                height == other.height &&
+                stride == other.stride &&
+                rgba8888.contentEquals(other.rgba8888)
+        }
+
+        override fun hashCode(): Int {
+            var result = dstX
+            result = 31 * result + dstY
+            result = 31 * result + width
+            result = 31 * result + height
+            result = 31 * result + stride
+            result = 31 * result + rgba8888.contentHashCode()
+            return result
+        }
+    }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
@@ -51,8 +72,7 @@ class NativeAribCaptionRenderer(
         height: Int,
     ): Boolean {
         val current = handle.takeIf { it != 0L } ?: return false
-        if (width <= 0 || height <= 0) return false
-        return nativeSetViewport(current, width, height)
+        return width > 0 && height > 0 && nativeSetViewport(current, width, height)
     }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
@@ -90,8 +110,8 @@ class NativeAribCaptionRenderer(
 
     override fun close() {
         val current = handle
-        handle = 0L
         if (current != 0L) nativeReleaseRenderer(current)
+        handle = 0L
     }
 
     private external fun nativeCreateRenderer(

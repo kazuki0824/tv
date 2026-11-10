@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 import tempfile
@@ -9,6 +11,8 @@ from typing import Any
 from .model import ProfileError, RECORD_FILTER_FMQ_PROBE_VARIANT
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+_HOST_CI = _REPO_ROOT / "tuner_hal2/host_ci"
+_CAPABILITY_SELECTION_SOURCE = _REPO_ROOT / "tuner_hal2/service_runtime/src/capability_selection.rs"
 DEFAULT_CAPABILITY_SOURCE = _REPO_ROOT / "tuner_hal2/service_runtime/src/capability_snapshot.rs"
 DEFAULT_FILTER_CONFIG_SOURCE = _REPO_ROOT / "tuner_hal2/demux/src/config.rs"
 DEFAULT_PES_SOURCE = _REPO_ROOT / "tuner_hal2/demux/src/parser/ts_core.rs"
@@ -164,33 +168,15 @@ def _program(
     filter_config_text = _read_filter_config_source(filter_config_source)
     playback_contract = _playback_processing_contract(playback_source)
     ts_packet_size = _ts_packet_size(common_source)
-    return f'''extern crate self as maleicacid_tuner_hal2_common;
-extern crate self as maleicacid_tuner_hal2_demux;
+    return f'''extern crate self as maleicacid_tuner_hal2_demux;
 
-#[derive(Clone, Debug)]
-pub struct HalError;
-#[derive(Clone, Copy, Debug)]
-pub enum HalInternalKind {{ InvariantViolation }}
-#[derive(Clone, Copy, Debug)]
-pub enum HalInvalidArgumentKind {{ NumericRange }}
-impl HalError {{
-    pub fn internal(_kind: HalInternalKind, _detail: impl Into<String>) -> Self {{ Self }}
-    pub fn unsupported_detail(_domain: impl Into<String>, _detail: impl Into<String>) -> Self {{ Self }}
-    pub fn invalid_argument(_kind: HalInvalidArgumentKind, _detail: impl Into<String>) -> Self {{ Self }}
-    pub fn cleanup_failed(_domain: impl Into<String>, _detail: impl Into<String>) -> Self {{ Self }}
-    pub fn out_of_memory(_domain: impl Into<String>, _detail: impl Into<String>) -> Self {{ Self }}
-}}
+use maleicacid_tuner_hal2_common::HalError;
+pub use profile_demux::*;
+
+#[path = {json.dumps(str(_CAPABILITY_SELECTION_SOURCE), ensure_ascii=False)}]
+mod capability_selection;
 
 pub const TS_PACKET_SIZE: usize = {ts_packet_size};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct TransportStreamPid(i32);
-impl TransportStreamPid {{
-    pub fn validate_i32(value: i32) -> Result<Self, ()> {{
-        if (0..=0x1fff).contains(&value) {{ Ok(Self(value)) }} else {{ Err(()) }}
-    }}
-    pub const fn to_i32_for_aidl_boundary(self) -> i32 {{ self.0 }}
-}}
 
 pub mod packet_pipeline {{
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -208,8 +194,6 @@ mod production_demux_config {{
 }}
 pub use production_demux_config::FilterOpenType;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DvrKind {{ Record, Playback }}
 pub const MAX_PES_BUFFER_BYTES: usize = {pes_max};
 mod playback_consume_txn {{
     use crate::TS_PACKET_SIZE;
@@ -273,7 +257,7 @@ def validate_resource_closure(
     with tempfile.TemporaryDirectory(prefix="tuner-hal2-vts-closure-") as directory:
         directory_path = Path(directory)
         source = directory_path / "main.rs"
-        binary = directory_path / "closure-check"
+        manifest = directory_path / "Cargo.toml"
         source.write_text(
             _program(
                 profile,
@@ -285,13 +269,37 @@ def validate_resource_closure(
             ),
             encoding="utf-8",
         )
-        compiled = subprocess.run(
-            [rustc, "--edition=2021", "-O", str(source), "-o", str(binary)],
-            check=False, capture_output=True, text=True,
+        manifest.write_text(
+            f'''[package]
+name = "closure-check"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "closure-check"
+path = "main.rs"
+
+[dependencies]
+maleicacid_tuner_hal2_common = {{ package = "maleicacid-tuner-hal2-common-host-ci", path = {json.dumps(str(_HOST_CI / "common"), ensure_ascii=False)} }}
+profile_demux = {{ package = "maleicacid-tuner-hal2-demux-host-ci", path = {json.dumps(str(_HOST_CI / "demux"), ensure_ascii=False)} }}
+''',
+            encoding="utf-8",
         )
+        target = directory_path / "target"
+        try:
+            compiled = subprocess.run(
+                ["cargo", "build", "--quiet", "--manifest-path", str(manifest), "--target-dir", str(target)],
+                env={**os.environ, "RUSTC": rustc},
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as exc:
+            raise ProfileError(f"failed to start Cargo for the resource closure checker: {exc}") from exc
         if compiled.returncode != 0:
             detail = (compiled.stderr or compiled.stdout).strip()
             raise ProfileError(f"failed to compile canonical CapabilitySnapshot/CapacityLedger checker: {detail}")
+        binary = target / "debug" / "closure-check"
         checked = subprocess.run([str(binary)], check=False, capture_output=True, text=True)
         if checked.returncode != 0:
             detail = (checked.stderr or checked.stdout).strip()

@@ -38,7 +38,7 @@ pub struct CaDescriptorParseResult {
 }
 
 #[cfg(test)]
-pub fn parse_ca_descriptors(descriptors: &[u8]) -> Vec<CaDescriptor> {
+fn parse_ca_descriptors(descriptors: &[u8]) -> Vec<CaDescriptor> {
     parse_ca_descriptors_with_diagnostics(descriptors, CaDescriptorParseContext::default())
         .descriptors
 }

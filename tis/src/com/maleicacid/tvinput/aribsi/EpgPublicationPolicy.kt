@@ -95,7 +95,7 @@ internal class EpgPublicationPolicy {
             current.filter { isProgramRow(profile, it) }.mapNotNull { event ->
                 runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }
                     .getOrNull()
-                    ?.takeIf { it > event.startTimeMillis && event.startTimeMillis > 0L }
+                    ?.takeIf { event.startTimeMillis in 1L until it }
                     ?.let { event.startTimeMillis to it }
             }
         return (timed + listOfNotNull(previous)).takeIf { it.isNotEmpty() }?.let { ranges ->
@@ -114,11 +114,19 @@ internal class EpgPublicationPolicy {
         fun isProgramRow(
             profile: Int,
             event: AribEvent,
-        ): Boolean = EpgSectionPolicy.accepts(profile, event.source.tableId, event.source.sectionNumber) && event.timingState == "DEFINED"
+        ): Boolean =
+            EpgSectionPolicy.accepts(
+                profile,
+                event.source.tableId,
+                event.source.sectionNumber,
+            ) &&
+                event.timingState == EitTimingState.DEFINED
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
-        private fun preservesIdentity(event: AribEvent): Boolean = event.timingState == "DEFINED" || event.timingState == "UNDEFINED_TIME"
+        private fun preservesIdentity(event: AribEvent): Boolean =
+            event.timingState == EitTimingState.DEFINED ||
+                event.timingState == EitTimingState.UNDEFINED_TIME
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")

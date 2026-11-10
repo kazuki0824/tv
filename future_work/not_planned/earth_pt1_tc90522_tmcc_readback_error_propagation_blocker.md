@@ -6,13 +6,13 @@
 
 ## 背景
 
-`TUNER_HAL_DESIGN_JA.md` は、earth_pt1 / TC90522 の ISDB-T について、明示 `partialReceptionFlag=TRUE/FALSE` と layer `numOfSegment=1..13` を、lock 後に Linux DVB から読み戻した TMCC の partial-reception 状態および layer segment count と照合して要求適合を判定する設計とする。この設計自体は変更しない。
+earth_pt1 / TC90522のISDB-Tで公開するTMCC由来statusと要求適合判定は `TUNER_HAL_DESIGN_JA.md` を正とする。本書は、その正本契約をdriver readbackで成立させるために未解決のエラー伝達blockerだけを記録し、値域・成功条件を再掲しない。
 
 しかし、現行 Linux DVB TC90522 driver の `get_frontend()` は TMCC register の読み出しに失敗した場合でも、その失敗を userspace が確実に識別できる形で返さない経路を持つ。TMCC read に成功した場合だけ `isdbt_partial_reception` と各 layer の `segment_count` が更新されるため、userspace からは今回の選局に対する新しい正常 readback と、read failure 後に残った既存値または初期値とを確実に区別できない。
 
 この状態では tuner_hal2 が、TMCC 未確定、I/O 失敗、または古い readback を明示要求との正常な一致として誤認する可能性を排除できない。
 
-この blocker が未解決の間、earth_pt1 / TC90522 について明示 `partialReceptionFlag=TRUE/FALSE` および layer `numOfSegment=1..13` の readback 検証を実装済み・利用可能な機能として扱ってはならない。これは最終設計の変更ではなく、その設計を現行 driver で安全に実装するための外部依存である。
+earth_pt1 / TC90522 の現行公開capability・readback結果は `TUNER_HAL_DESIGN_JA.md` を正とする。本blockerは、同正本で当該readbackを成功対応へ変更する前に解消すべき外部依存を記録するものであり、現行能力を本書から定義しない。
 
 ## 必要な変更
 

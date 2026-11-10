@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - "tis/**"
+      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-robolectric-ci.yml"
   push:
     branches: [main]
     paths:
       - "tis/**"
+      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-robolectric-ci.yml"
 
 permissions:
@@ -38,9 +40,103 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: 実SI JNI libraryをビルド
+        run: |
+          rustup toolchain install 1.81.0 --profile minimal
+          cargo +1.81.0 build --lib --locked --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
+
       - name: Android依存Kotlin契約をRobolectricで実行
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/arib_si_engine_rs/host_ci/target/debug/deps
         run: |
           gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest \
             --tests com.maleicacid.tvinput.tis.DirectBootGuardR51FixTest \
             --tests com.maleicacid.tvinput.tis.RecordingDisabledR51Test \
-            --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest
+            --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest \
+            --tests com.maleicacid.tvinput.tis.FrameworkTunerScanBoundaryTest \
+            --tests com.maleicacid.tvinput.tis.TunerFrontendLeaseTransitionTest \
+            --tests com.maleicacid.tvinput.tis.TunerScanCleanupTest \
+            --tests com.maleicacid.tvinput.tis.TunerSectionSourceDiagnosticTest \
+            --tests com.maleicacid.tvinput.tis.ProgramBatchIpcBudgetTest \
+            --tests com.maleicacid.tvinput.tis.ProgramUpgradeIdentityTest \
+            --tests com.maleicacid.tvinput.tis.TvProviderVisibilityTransactionTest \
+            --tests com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest \
+            --tests com.maleicacid.tvinput.tis.ControllerSerialExecutorReviewBoundaryTest \
+            --tests com.maleicacid.tvinput.tis.FrameworkFilterCallbackLockTest \
+            --tests com.maleicacid.tvinput.tis.ProgramProviderObserverTest \
+            --tests com.maleicacid.tvinput.tis.ProgramCleanupProviderTest \
+            --tests com.maleicacid.tvinput.tis.TisReviewBoundaryTest \
+            --tests com.maleicacid.tvinput.tis.PlaybackFailureCallbacksTest \
+            --tests com.maleicacid.tvinput.tis.PlaybackSurfaceWaitTest \
+            --tests com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest \
+            --tests com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest \
+            --tests com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest \
+            --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest \
+            --tests com.maleicacid.tvinput.tis.CaptionPresentationCapacityTest \
+            --tests com.maleicacid.tvinput.tis.ScanCancellationProviderTest
+
+      - name: 実SDK scan境界試験の実行結果を確認
+        run: |
+          python3 - <<'PYRESULT'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("tis/host_ci/robolectric/build/test-results/testDebugUnitTest/TEST-com.maleicacid.tvinput.tis.FrameworkTunerScanBoundaryTest.xml")
+          for name, expected in (("ControllerSerialExecutorReviewBoundaryTest", 7), ("FrameworkFilterCallbackLockTest", 2), ("ProgramProviderObserverTest", 1), ("PlaybackSurfaceWaitTest", 2), ("ProgramCleanupProviderTest", 2), ("TisReviewBoundaryTest", 8), ("PlaybackFailureCallbacksTest", 22)):
+              migrated = ET.parse(report.with_name(f"TEST-com.maleicacid.tvinput.tis.{name}.xml")).getroot()
+              assert migrated.get("tests") == str(expected), migrated.attrib
+              assert migrated.get("failures") == "0" and migrated.get("errors") == "0", migrated.attrib
+              assert migrated.get("skipped", "0") == "0", migrated.attrib
+          suite = ET.parse(report).getroot()
+          assert suite.get("tests") == "2", suite.attrib
+          assert suite.get("failures") == "0" and suite.get("errors") == "0", suite.attrib
+          assert suite.get("skipped", "0") == "0", suite.attrib
+          for case in suite.findall("testcase"):
+              print(f"Android 15実SDK境界試験: {case.get('name')} success")
+          source = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.TunerSectionSourceDiagnosticTest.xml")).getroot()
+          assert source.get("tests") == "4", source.attrib
+          assert source.get("failures") == "0" and source.get("errors") == "0", source.attrib
+          assert source.get("skipped", "0") == "0", source.attrib
+          startup = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackStartupCleanupTest.xml")).getroot()
+          assert startup.get("tests") == "3", startup.attrib
+          assert startup.get("failures") == "0" and startup.get("errors") == "0", startup.attrib
+          assert startup.get("skipped", "0") == "0", startup.attrib
+          identity = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.ProgramUpgradeIdentityTest.xml")).getroot()
+          assert identity.get("tests") == "1" and identity.get("failures") == "0" and identity.get("errors") == "0", identity.attrib
+          assert identity.get("skipped", "0") == "0", identity.attrib
+          playback_report = report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest.xml")
+          playback = ET.parse(playback_report).getroot()
+          assert playback.get("tests") == "58", playback.attrib
+          assert playback.get("failures") == "0" and playback.get("errors") == "0", playback.attrib
+          assert playback.get("skipped", "0") == "0", playback.attrib
+          for case in playback.findall("testcase"):
+              print(f"Android 15実SDK playback受付試験: {case.get('name')} success")
+          resolver = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest.xml")).getroot()
+          assert resolver.get("tests") == "2", resolver.attrib
+          assert resolver.get("failures") == "0" and resolver.get("errors") == "0", resolver.attrib
+          assert resolver.get("skipped", "0") == "0", resolver.attrib
+          lease = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.TunerFrontendLeaseTransitionTest.xml")).getroot()
+          assert lease.get("tests") == "16", lease.attrib
+          assert lease.get("failures") == "0" and lease.get("errors") == "0", lease.attrib
+          assert lease.get("skipped", "0") == "0", lease.attrib
+          for case in lease.findall("testcase"):
+              print(f"Android 15実SDK Frontend解放試験: {case.get('name')} success")
+          scan_cleanup = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.TunerScanCleanupTest.xml")).getroot()
+          assert scan_cleanup.get("tests") == "7", scan_cleanup.attrib
+          assert scan_cleanup.get("failures") == "0" and scan_cleanup.get("errors") == "0", scan_cleanup.attrib
+          assert scan_cleanup.get("skipped", "0") == "0", scan_cleanup.attrib
+          sync = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest.xml")).getroot()
+          assert sync.get("tests") == "14", sync.attrib
+          assert sync.get("failures") == "0" and sync.get("errors") == "0", sync.attrib
+          assert sync.get("skipped", "0") == "0", sync.attrib
+          caption = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CaptionInputContinuityTest.xml")).getroot()
+          assert caption.get("tests") == "5", caption.attrib
+          assert caption.get("failures") == "0" and caption.get("errors") == "0", caption.attrib
+          assert caption.get("skipped", "0") == "0", caption.attrib
+          capacity = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CaptionPresentationCapacityTest.xml")).getroot()
+          assert capacity.get("tests") == "4", capacity.attrib
+          assert capacity.get("failures") == "0" and capacity.get("errors") == "0", capacity.attrib
+          assert capacity.get("skipped", "0") == "0", capacity.attrib
+          for case in caption.findall("testcase"):
+              print(f"Android 15字幕入力continuity試験: {case.get('name')} success")
+          PYRESULT

@@ -600,6 +600,7 @@ pub enum PipelineDiagnostic {
     },
     PesAssemblerDrop {
         pid: PacketPid,
+        filter_id: i32,
         reason: PesDropReason,
     },
     ResidualBytesDrop,
@@ -629,6 +630,11 @@ pub enum PipelineDiagnostic {
         filter_id: i32,
         error: DemuxRuntimeError,
     },
+    /// 書込み済みFilter FMQデータのEventFlag通知が失敗し、再試行待ちになった。
+    FilterQueueWakeDeferred {
+        pid: PacketPid,
+        filter_id: i32,
+    },
     AvSharedBackingFailure {
         pid: PacketPid,
         filter_id: i32,
@@ -642,23 +648,11 @@ pub enum PipelineDiagnostic {
         pid: PacketPid,
         filter_id: i32,
     },
-    AvSharedHandleNotExported {
-        pid: PacketPid,
-        filter_id: i32,
-    },
-    AvClientHandleReleased {
-        pid: PacketPid,
-        filter_id: i32,
-    },
     AvPayloadEmpty {
         pid: PacketPid,
         filter_id: i32,
     },
-    AvPayloadOversized {
-        pid: PacketPid,
-        filter_id: i32,
-    },
-    AvNoFreeSlot {
+    AvAssemblyAllocationFailed {
         pid: PacketPid,
         filter_id: i32,
     },
@@ -689,14 +683,12 @@ impl PipelineDiagnostic {
             Self::RecordDvrMirrorFailure { pid, .. }
             | Self::RecordDvrMirrorOverflow { pid, .. }
             | Self::FilterQueuePayloadDeliveryFailure { pid, .. }
+            | Self::FilterQueueWakeDeferred { pid, .. }
             | Self::AvSharedBackingFailure { pid, .. }
             | Self::AvSharedBackingMissing { pid, .. }
             | Self::AvAuthoritativeTimestampUnavailable { pid, .. }
-            | Self::AvSharedHandleNotExported { pid, .. }
-            | Self::AvClientHandleReleased { pid, .. }
             | Self::AvPayloadEmpty { pid, .. }
-            | Self::AvPayloadOversized { pid, .. }
-            | Self::AvNoFreeSlot { pid, .. }
+            | Self::AvAssemblyAllocationFailed { pid, .. }
             | Self::AvDataIdExhausted { pid, .. }
             | Self::TeiAssemblySuppressed { pid }
             | Self::DuplicatePacketAssemblySuppressed { pid }
@@ -796,24 +788,12 @@ impl PipelineDiagnostic {
         Self::AvAuthoritativeTimestampUnavailable { pid, filter_id }
     }
 
-    pub fn av_shared_handle_not_exported(pid: PacketPid, filter_id: i32) -> Self {
-        Self::AvSharedHandleNotExported { pid, filter_id }
-    }
-
-    pub fn av_client_handle_released(pid: PacketPid, filter_id: i32) -> Self {
-        Self::AvClientHandleReleased { pid, filter_id }
-    }
-
     pub fn av_payload_empty(pid: PacketPid, filter_id: i32) -> Self {
         Self::AvPayloadEmpty { pid, filter_id }
     }
 
-    pub fn av_payload_oversized(pid: PacketPid, filter_id: i32) -> Self {
-        Self::AvPayloadOversized { pid, filter_id }
-    }
-
-    pub fn av_no_free_slot(pid: PacketPid, filter_id: i32) -> Self {
-        Self::AvNoFreeSlot { pid, filter_id }
+    pub fn av_assembly_allocation_failed(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvAssemblyAllocationFailed { pid, filter_id }
     }
 
     pub fn av_data_id_exhausted(pid: PacketPid, filter_id: i32) -> Self {
@@ -961,6 +941,8 @@ impl PacketPipeline {
         };
         let view = validated.view();
         let pid = validated.pid();
+        // Nullパケットは詰め物であり、サービスの連続性系列には属さない。Raw/Recordへの配送は維持する。
+        let null_packet = pid.to_i32_for_aidl_boundary() == 0x1fff;
         if view.transport_error_indicator {
             self.diagnostic_counters.note_tei();
             report
@@ -970,7 +952,7 @@ impl PacketPipeline {
                 .diagnostics
                 .push(PipelineDiagnostic::TeiAssemblySuppressed { pid });
         }
-        if view.discontinuity_indicator {
+        if view.discontinuity_indicator && !null_packet {
             self.diagnostic_counters.note_continuity_discontinuity();
             report
                 .diagnostics
@@ -978,13 +960,17 @@ impl PacketPipeline {
             self.reset_continuity_pid(origin, pid);
             self.reset_assembly_for_origin_pid(origin, pid);
         }
-        let continuity = self.check_continuity(
-            origin,
-            pid,
-            view.continuity_counter,
-            view.payload.is_some(),
-            validated.packet_bytes(),
-        );
+        let continuity = if null_packet {
+            crate::ts_core::ContinuityOutcome::InOrder
+        } else {
+            self.check_continuity(
+                origin,
+                pid,
+                view.continuity_counter,
+                view.payload.is_some(),
+                validated.packet_bytes(),
+            )
+        };
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Duplicate) {
             self.diagnostic_counters.note_duplicate();
             report
@@ -1379,6 +1365,9 @@ impl PacketPipeline {
                     pid,
                     view.payload_unit_start,
                     payload,
+                    report.delivery_actions.iter().any(|action| {
+                        matches!(action, PipelineDeliveryAction::AvPayload { filter_id: id } if *id == filter_id)
+                    }),
                 );
                 if let Some((reason, _generation)) = self
                     .pes_assemblers
@@ -1391,7 +1380,19 @@ impl PacketPipeline {
                         .push(PipelineDropReason::PesAssemblerOverflow);
                     report
                         .diagnostics
-                        .push(PipelineDiagnostic::PesAssemblerDrop { pid, reason });
+                        .push(PipelineDiagnostic::PesAssemblerDrop {
+                            pid,
+                            filter_id,
+                            reason,
+                        });
+                    if reason == PesDropReason::AllocationFailed {
+                        report
+                            .generated_events
+                            .push(PipelineGeneratedEvent::FilterStatus {
+                                filter_id,
+                                status: crate::runtime::FilterStatusEvent::Overflow,
+                            });
+                    }
                 }
                 for packet in packets {
                     report
@@ -1603,11 +1604,17 @@ impl PacketPipeline {
         pid: PacketPid,
         payload_unit_start: bool,
         payload: &[u8],
+        av: bool,
     ) -> Vec<crate::ts_core::PesPacket> {
-        self.pes_assemblers
+        let state = self
+            .pes_assemblers
             .entry((origin, pid, filter_id))
-            .or_default()
-            .push(pid, payload_unit_start, payload)
+            .or_default();
+        if av {
+            state.inner.push_av(pid, payload_unit_start, payload)
+        } else {
+            state.push(pid, payload_unit_start, payload)
+        }
     }
 
     pub(crate) fn drop_generations_for_pid_origin(
@@ -3202,6 +3209,30 @@ mod validated_packet_boundary_additional_tests {
             result,
             Err(TsPacketValidationError::MissingSyncByte)
         ));
+    }
+
+    #[test]
+    fn null_packets_skip_continuity_diagnostics_without_dropping_raw_ts() {
+        let packet = payload_packet(0x1fff, 2);
+        let mut pipeline = PacketPipeline::default();
+        for _ in 0..128 {
+            let report = pipeline.push_ts_packet(
+                &packet,
+                PipelineInputKind::Frontend {
+                    frontend_generation: 1,
+                },
+            );
+            assert_eq!(report.accepted_packets, 1);
+            assert!(!report.diagnostics.iter().any(|diagnostic| {
+                matches!(
+                    diagnostic,
+                    PipelineDiagnostic::DuplicatePacketAssemblySuppressed { .. }
+                        | PipelineDiagnostic::ContinuityCounterCollisionAssemblySuppressed { .. }
+                        | PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { .. }
+                )
+            }));
+        }
+        assert_eq!(pipeline.diagnostic_counters().duplicate_packets_observed, 0);
     }
 
     #[test]

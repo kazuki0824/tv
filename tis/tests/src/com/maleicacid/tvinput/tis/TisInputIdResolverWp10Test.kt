@@ -7,7 +7,7 @@ class TisInputIdResolverWp10Test {
         val packageName = "com.maleicacid.tvinput"
         val serviceName = "com.maleicacid.tvinput.tis.MaleicacidTvInputService"
         check(
-            TisInputIdResolver.isOwnInputInfoForTest(
+            TisInputIdResolver.isOwnInputInfo(
                 infoId = "com.maleicacid.tvinput/.tis.MaleicacidTvInputService",
                 servicePackageName = packageName,
                 serviceName = serviceName,
@@ -16,7 +16,7 @@ class TisInputIdResolverWp10Test {
             ),
         )
         check(
-            !TisInputIdResolver.isOwnInputInfoForTest(
+            !TisInputIdResolver.isOwnInputInfo(
                 infoId = "",
                 servicePackageName = packageName,
                 serviceName = serviceName,
@@ -25,7 +25,7 @@ class TisInputIdResolverWp10Test {
             ),
         )
         check(
-            !TisInputIdResolver.isOwnInputInfoForTest(
+            !TisInputIdResolver.isOwnInputInfo(
                 infoId = "other.input",
                 servicePackageName = "other.package",
                 serviceName = serviceName,
@@ -34,7 +34,7 @@ class TisInputIdResolverWp10Test {
             ),
         )
         check(
-            !TisInputIdResolver.isOwnInputInfoForTest(
+            !TisInputIdResolver.isOwnInputInfo(
                 infoId = "other.input",
                 servicePackageName = packageName,
                 serviceName = "other.Service",
