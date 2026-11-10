@@ -331,7 +331,7 @@ impl RuntimeObjectTable {
     }
 
     #[cfg(test)]
-    pub fn begin_close_cascade(
+    pub(crate) fn begin_close_cascade(
         &mut self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,

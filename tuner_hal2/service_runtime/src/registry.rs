@@ -954,7 +954,7 @@ impl RuntimeRegistry {
     }
 
     #[cfg(test)]
-    pub fn allocate_demux(&mut self) -> Result<DemuxRegistryEntry, RegistryCommitError> {
+    pub(crate) fn allocate_demux(&mut self) -> Result<DemuxRegistryEntry, RegistryCommitError> {
         let id = DemuxRuntimeId(self.next_demux_id);
         let next = self
             .next_demux_id
@@ -1123,7 +1123,7 @@ impl RuntimeRegistry {
     }
 
     #[cfg(test)]
-    pub fn lnb_registry(&self) -> &LnbRegistry {
+    pub(crate) fn lnb_registry(&self) -> &LnbRegistry {
         &self.lnb_registry
     }
 
@@ -1139,7 +1139,7 @@ impl RuntimeRegistry {
     }
 
     #[cfg(test)]
-    pub fn lnb_by_name(&self, name: &str) -> Option<&LnbRegistryEntry> {
+    pub(crate) fn lnb_by_name(&self, name: &str) -> Option<&LnbRegistryEntry> {
         self.lnb_registry
             .entries
             .values()

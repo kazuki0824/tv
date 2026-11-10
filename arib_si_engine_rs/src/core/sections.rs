@@ -247,19 +247,19 @@ pub fn crc32_mpeg(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct SectionAssembler {
+struct SectionAssembler {
     expected_len: Option<usize>,
     buf: Vec<u8>,
 }
 
 #[cfg(test)]
 impl SectionAssembler {
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         self.expected_len = None;
         self.buf.clear();
     }
 
-    pub fn push_payload(&mut self, payload_unit_start: bool, payload: &[u8]) -> Vec<Vec<u8>> {
+    fn push_payload(&mut self, payload_unit_start: bool, payload: &[u8]) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         if payload.is_empty() {
             return out;

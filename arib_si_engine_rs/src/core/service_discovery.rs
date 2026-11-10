@@ -238,7 +238,7 @@ impl DiscoveryCollectionState {
     }
 
     #[cfg(test)]
-    pub fn missing_components(&self) -> Vec<&'static str> {
+    fn missing_components(&self) -> Vec<&'static str> {
         let mut missing = self
             .table_requirements
             .iter()
@@ -251,7 +251,7 @@ impl DiscoveryCollectionState {
     }
 
     #[cfg(test)]
-    pub fn missing_components_by_scope(&self) -> Vec<TableRequirementStatus> {
+    fn missing_components_by_scope(&self) -> Vec<TableRequirementStatus> {
         self.table_requirements
             .iter()
             .filter(|status| status.required && !status.complete)
@@ -286,7 +286,7 @@ impl DiscoveryCollectionState {
     }
 
     #[cfg(test)]
-    pub fn partial_snapshot(&self) -> Option<DiscoverySnapshot> {
+    fn partial_snapshot(&self) -> Option<DiscoverySnapshot> {
         (self
             .table_requirements
             .iter()
@@ -295,7 +295,7 @@ impl DiscoveryCollectionState {
     }
 
     #[cfg(test)]
-    pub fn best_available_snapshot(&self) -> Option<DiscoverySnapshotEnvelope> {
+    fn best_available_snapshot(&self) -> Option<DiscoverySnapshotEnvelope> {
         if let Some(snapshot) = self.complete_snapshot() {
             return Some(DiscoverySnapshotEnvelope {
                 stage: DiscoveryPublishStage::Complete,
@@ -310,7 +310,7 @@ impl DiscoveryCollectionState {
     }
 
     #[cfg(test)]
-    pub fn complete_snapshot(&self) -> Option<DiscoverySnapshot> {
+    fn complete_snapshot(&self) -> Option<DiscoverySnapshot> {
         self.is_complete().then(|| self.snapshot.clone())
     }
 }

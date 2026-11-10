@@ -255,7 +255,7 @@ impl AribStringDecoder {
 /// 字幕以外の ARIB SI/EPG 文字列を復号する。
 /// サービス名、番組名、短形式イベント、長形式イベント用であり、字幕描画器ではない。
 #[cfg(test)]
-pub fn decode_arib_string(bytes: &[u8]) -> Result<String, AribStringDecodeError> {
+fn decode_arib_string(bytes: &[u8]) -> Result<String, AribStringDecodeError> {
     AribStringDecoder::default().decode(bytes)
 }
 

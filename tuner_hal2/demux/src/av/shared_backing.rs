@@ -338,7 +338,7 @@ impl AvSharedBacking {
     }
 
     #[cfg(test)]
-    pub fn allocate_payload(&mut self, data_length: usize) -> AvPayloadDeliveryOutcome {
+    pub(crate) fn allocate_payload(&mut self, data_length: usize) -> AvPayloadDeliveryOutcome {
         self.allocate_payload_bytes(&vec![0; data_length], AvMediaEventMetadata::default())
             .expect("test allocation failed")
     }

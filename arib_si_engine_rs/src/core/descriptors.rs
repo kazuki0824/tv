@@ -1505,7 +1505,7 @@ pub struct DescriptorSectionScope {
 }
 
 #[cfg(test)]
-pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
+fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
     let mut fields = Vec::new();
     fields.push("\"schemaVersion\":1".to_string());
     fields.push(format!("\"title\":\"{}\"", json_escape(&desc.title)));

@@ -695,7 +695,7 @@ pub fn extract_program_key_result(raw_bytes: &[u8]) -> Option<ProgramKeyResult> 
 }
 
 #[cfg(test)]
-pub fn extract_program_key(raw_bytes: &[u8]) -> Option<String> {
+fn extract_program_key(raw_bytes: &[u8]) -> Option<String> {
     extract_program_key_result(raw_bytes).map(|v| v.key)
 }
 
