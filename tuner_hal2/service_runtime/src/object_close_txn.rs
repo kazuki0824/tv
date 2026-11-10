@@ -1982,7 +1982,7 @@ mod tests {
     }
 
     #[test]
-    fn product_capacity_saturates_after_real_open_close_before_reaper_group_release() {
+    fn real_open_close_retains_the_group_until_runner_returns() {
         use crate::worker_runtime::{WorkerContext, WorkerRuntime};
         use std::sync::{mpsc, Arc, Condvar, Mutex};
         use std::time::{Duration, Instant};
@@ -2008,8 +2008,8 @@ mod tests {
         // runnerは実close完了を確定した後でgroup解放直前だけ同期的に停止する。
         let snapshot = crate::CapabilitySnapshot::product_default();
         snapshot.validate_dependency_closures().unwrap();
-        let capacity = snapshot.cleanup_reaper_capacity;
-        assert_eq!(capacity, 176);
+        // 予約容量1で同じ境界を検証し、製品容量の飽和は別試験で検査する。
+        let capacity = 1;
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         assert_eq!(runtime.lock().unwrap().capability_snapshot(), snapshot);
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -2097,7 +2097,7 @@ mod tests {
             assert!(reaper.pending_value(&key).unwrap().is_some());
             retained_keys.push(key);
         }
-        // 全176件はpublic同時Liveではない。実open/closeでClosed確定済み、
+        // 実open/closeでClosed確定済み、
         // ただしworker内に留まる間は同世代の正規groupを返却できない。
         let extra = {
             let mut runtime = runtime.lock().unwrap();
@@ -2132,7 +2132,7 @@ mod tests {
                 "製品reaperの予約groupを期限内に全件解放できませんでした"
             );
             reaper
-                .wait_until_released([key], Some(remaining))
+                .wait_until_released([key], remaining)
                 .expect("workerの予約groupは期限内に解放される");
         }
         assert!(retained_keys
@@ -2149,6 +2149,76 @@ mod tests {
             weak_runner.upgrade().is_none(),
             "製品reaperのworkerが期限内に終了しませんでした"
         );
+    }
+
+    #[test]
+    fn product_reaper_reservation_capacity_does_not_define_worker_parallelism() {
+        use crate::worker_runtime::{WorkerContext, WorkerRuntime, WorkerRuntimeReaperPending};
+        use std::sync::{mpsc, Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        let capacity = crate::CapabilitySnapshot::product_default().cleanup_reaper_capacity;
+        assert_eq!(capacity, 176);
+        let concurrency = 2;
+        let (started_tx, started_rx) = mpsc::channel::<usize>();
+        let (resume_tx, resume_rx) = mpsc::channel::<()>();
+        let resume_rx = Arc::new(Mutex::new(resume_rx));
+        let runner = Arc::new(
+            move |key: usize,
+                  _: WorkerRuntimeReaperPending<usize, CleanupStep>,
+                  _: WorkerContext| {
+                started_tx.send(key).unwrap();
+                resume_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+            },
+        );
+        let reaper = WorkerRuntime::start_reaper_queue::<usize, CleanupStep, usize>(
+            capacity,
+            "product-cleanup-bounded-pool",
+            runner,
+        )
+        .unwrap();
+
+        for key in 0..capacity {
+            reaper
+                .enqueue_reserved(key, [(key, CleanupStep::ReleaseBackend)])
+                .expect("予約容量の範囲内");
+        }
+        let mut running = std::collections::BTreeSet::new();
+        for _ in 0..concurrency {
+            running.insert(started_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        }
+        // 保留は176件でも、実行中の物理cleanupは2本のlaneに止まる。
+        assert_eq!(running.len(), concurrency);
+        assert!(matches!(
+            started_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            reaper.reserve_pending([(capacity, CleanupStep::ReleaseBackend)]),
+            Err(maleicacid_tuner_hal2_common::HalError::Busy { .. })
+        ));
+        for _ in 0..capacity {
+            resume_tx.send(()).unwrap();
+        }
+        for _ in concurrency..capacity {
+            running.insert(started_rx.recv_timeout(Duration::from_secs(10)).unwrap());
+        }
+        assert_eq!(running.len(), capacity);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for key in 0..capacity {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "回収group返却が期限を超過しました");
+            reaper
+                .wait_until_released([&key], remaining)
+                .expect("回収groupを解放");
+        }
+        assert!(reaper
+            .reserve_pending([(capacity, CleanupStep::ReleaseBackend)])
+            .is_ok());
     }
 
     #[test]

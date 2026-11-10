@@ -519,41 +519,8 @@ impl CapabilitySnapshot {
                 ));
             }
         }
-        let published_object_count = [
-            i32::try_from(public_demuxes.len()).map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "published demux capability count overflow",
-                )
-            })?,
-            self.num_record,
-            self.num_playback,
-            self.num_ts_filter,
-            self.num_section_filter,
-            self.num_audio_filter,
-            self.num_video_filter,
-            self.num_pes_filter,
-            self.num_pcr_filter,
-        ]
-        .into_iter()
-        .try_fold(0usize, |total, count| {
-            usize::try_from(count)
-                .ok()
-                .and_then(|count| total.checked_add(count))
-        })
-        .ok_or_else(|| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "published object capability count is invalid",
-            )
-        })?;
-        let minimum_reaper_capacity = published_object_count.checked_mul(2).ok_or_else(|| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "cleanup reaper capability closure overflow",
-            )
-        })?;
-        if self.cleanup_reaper_capacity < minimum_reaper_capacity
+        // 受付枠は未完groupの上限。公開中objectの同時上限からは導出しない。
+        if self.cleanup_reaper_capacity == 0
             || self.cleanup_retry_schedule_ms != [0, 10, 100, 1_000]
             || self.cleanup_terminal_deadline_ms != 30_000
             || self.worker_io_deadline_ms != 2_000
@@ -561,7 +528,7 @@ impl CapabilitySnapshot {
         {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "cleanup capability closure is not finite for all published objects",
+                "cleanup admission capacity or deadline is invalid",
             ));
         }
         Ok(())
