@@ -1,10 +1,10 @@
 // テスト専用の観測・fixtureは製品source setへ含めない。
 package com.maleicacid.tvinput.tis
 
-fun PlaybackPipeline.currentPlaybackGenerationForTest(): Long =
+internal fun PlaybackPipeline.currentPlaybackGenerationForTest(): Long =
     javaClass.getDeclaredField("playbackGeneration").apply { isAccessible = true }.getLong(this)
 
-fun PlaybackPipeline.Companion.normalizedPtsTicksForTest(samples: List<Pair<String, Long>>): List<Long> {
+internal fun PlaybackPipeline.Companion.normalizedPtsTicksForTest(samples: List<Pair<String, Long>>): List<Long> {
     val coordinator = PlaybackPipeline.PtsEpochCoordinator()
     return samples.map { (track, rawPts) ->
         coordinator.normalizeTicks(
@@ -20,5 +20,5 @@ fun PlaybackPipeline.Companion.normalizedPtsTicksForTest(samples: List<Pair<Stri
     }
 }
 
-fun h264DimensionsForTest(spsWithStartCode: ByteArray): Pair<Int, Int>? =
+internal fun h264DimensionsForTest(spsWithStartCode: ByteArray): Pair<Int, Int>? =
     PlaybackPipeline.EsHeaderParser.parseAvcSpsDimensions(spsWithStartCode)?.let { it.width to it.height }

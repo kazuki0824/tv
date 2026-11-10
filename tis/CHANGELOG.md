@@ -1,3 +1,9 @@
+# 2026-11-11 テスト補助Kotlin宣言の公開範囲を限定
+
+- PlaybackTestAccessの3関数とPublicationTestAccessの6関数をinternalへ限定する。各試験target内の既存呼出元とテスト専用source setを維持する。
+- 共有fixtureのCasControllerStateTestVectorsをinternalへ限定し、その配下の入力値と生成関数を試験module内へ閉じる。JUnit試験クラス、試験メソッド、Robolectric shadow、製品APIは変更しない。
+- 参照元とSoong・Gradle・host CIのソース集合を静的確認する。コンパイル・既存試験はCIへ委ね、製品Soong／atestは未実施。
+
 # 2026-11-07 TIS試験fixtureの正規初期化と資源解放
 
 - ControllerSerialExecutorReviewBoundaryTest、FrameworkFilterCallbackLockTestをRobolectricへ移し、正規生成したControllerとAndroid SDKのFilterで別owner間の待機・callback lock・終了を検査する。SDT配送の待機は同じdata queueの完了を待つ。

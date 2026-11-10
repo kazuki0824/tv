@@ -9,9 +9,9 @@ import com.maleicacid.tvinput.db.ProgramRecord
 private fun ProgramPublishCoordinator.dirtyWindowsForTest(): Collection<*> =
     (javaClass.getDeclaredField("dirtyWindows").apply { isAccessible = true }.get(this) as Map<*, *>).values
 
-fun ProgramPublishCoordinator.retryWindowCountForTest(): Int = dirtyWindowsForTest().size
+internal fun ProgramPublishCoordinator.retryWindowCountForTest(): Int = dirtyWindowsForTest().size
 
-fun ProgramPublishCoordinator.retryFailureClassesForTest(): Set<String> =
+internal fun ProgramPublishCoordinator.retryFailureClassesForTest(): Set<String> =
     dirtyWindowsForTest()
         .map { window ->
             requireNotNull(window)
@@ -21,7 +21,7 @@ fun ProgramPublishCoordinator.retryFailureClassesForTest(): Set<String> =
                 .get(window) as String
         }.toSet()
 
-fun ProgramPublishCoordinator.retryNotBeforeMillisForTest(): List<Long> =
+internal fun ProgramPublishCoordinator.retryNotBeforeMillisForTest(): List<Long> =
     dirtyWindowsForTest().map { window ->
         requireNotNull(window)
             .javaClass
@@ -30,10 +30,10 @@ fun ProgramPublishCoordinator.retryNotBeforeMillisForTest(): List<Long> =
             .getLong(window)
     }
 
-fun programProviderDataForTest(program: ProgramRecord): String =
+internal fun programProviderDataForTest(program: ProgramRecord): String =
     (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json
 
-fun TvProviderWriter.programValuesForTest(
+internal fun TvProviderWriter.programValuesForTest(
     channelId: Long,
     program: ProgramRecord,
 ): ContentValues =
@@ -44,7 +44,7 @@ fun TvProviderWriter.programValuesForTest(
         providerData = (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).bytes,
     )
 
-fun programSignatureForTest(programs: List<ProgramRecord>): List<String> {
+internal fun programSignatureForTest(programs: List<ProgramRecord>): List<String> {
     val writer =
         TvProviderWriter(
             "test",
