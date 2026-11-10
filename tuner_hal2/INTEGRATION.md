@@ -101,6 +101,16 @@ LineageOS 22.1標準の`init.zygote*.rc`は`onrestart restart --only-if-running 
 
 実機受入れでは`adb shell ls -lZ /system/etc/init/mediatuner-trm-lifecycle.rc`で配置を確認し、通常起動後と`stop && start`前後の`pidof mediatuner`、`getprop init.svc.media.tuner`、`dumpsys tv_tuner_resource_mgr`を照合する。起動中のFrontendResourcesが再生成後に登録され、`Tuner.tune()`がFrontend取得段階を通過することを確認する。これは実機確認が必要であり、rc文字列の検査やVTS profile CIの成功をTRM復旧の実動作証拠とは扱わない。通常起動、反復する`stop && start`、zygote自動再起動、lazy構成の未使用時と最初の利用時を分けて確認する。Codec2 FD利用許可は別の試験とする。
 
+### cleanup期限とHAL再起動の実機受入
+
+停止・隔離の判定は [TUNER_HAL_DESIGN_JA.md](../TUNER_HAL_DESIGN_JA.md) のサービス全体の利用停止契約を参照する。対象製品・backend・driverの版を記録し、複数セッションと並行closeの条件で受付待ち、物理処理、完了またはSupervisor移管までの時間を区別して採取する。
+
+故障注入では、世代fenceを保持した正規ownerを遅らせて完了させる試行と、完了を通知しない試行を分ける。通常の隔離再評価期限、および旧30秒＋30秒の境界を越えても、対象の再利用拒否、未完義務の保持、他セッションの継続、HAL PIDの維持を確認する。遅延完了では同世代の回収確定と資源の再利用を確認する。完了を通知しないownerを別laneが待つ場合は、その待機laneが返され、独立した対象の回収が進むことを確認する。実際に物理I/Oが戻らない場合は、そのlaneと資源が保持されること、全lane占有時には回収が進まないことを記録し、backend・driverの取消し／終了が成立する条件を確認する。
+
+共有回収基盤の異常終端や状態破損を別に注入した試行では、旧PIDの終了、新PIDでの `ITuner/default` 再登録、旧Binderの死亡通知、新BinderからのDemux再取得、および他セッションの再接続後の動作を同一試行で確認する。
+
+Android上のAIDL回帰は既存の `atest maleicacid_tuner_hal2_aidl_service_test` で実施する。Soong／atest、実機の期限測定・再接続、CTS／VTSの結果は区別する。ホストの故障注入やVTS profile検査は、製品期限や実機再接続の成立を示す証拠には使わない。
+
 ## 4.1 CAS descrambler依存
 
 `libmaleicacid_tuner_hal2_descrambler` は `libmaleicacid_cas_key_client` を静的リンクする。共通product入口からCAS pluginと標準MediaCasServiceも製品へ組み込み、CAS側のvendor sepolicyを共通BoardConfig入口から取り込む。Tuner HALだけを単独で配置した構成ではproduction tokenの鍵解決は成立しない。

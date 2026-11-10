@@ -104,8 +104,10 @@ pub use lnb_ops::{
     SharedLnbRuntime,
 };
 pub use object_close_txn::{
-    close_object_use_case, finish_object_close_use_case, quarantine_object_drop_leak_use_case,
-    CloseCleanupAttemptCompletion, CloseCleanupAuthority, ObjectArtifactCleanupCommand,
+    close_object_use_case, drop_leak_cleanup_supervised_targets, finish_object_close_use_case,
+    quarantine_object_drop_leak_use_case, related_cleanup_recovery_owners_use_case,
+    CloseCleanupAttemptCompletion, CloseCleanupAuthority, DvrNotifierJoinCompletion,
+    DvrNotifierStart, DvrNotifierWorker, ObjectArtifactCleanupCommand,
     ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind, ObjectCleanupDiagnosticKind,
     ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot, ObjectCleanupExecutionKind,
     ObjectCleanupExecutionReport, ObjectCleanupObjectTarget, ObjectCleanupStepOutcome,
@@ -117,7 +119,12 @@ pub use object_domain_cleanup::{
     ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectDomainCleanupKind,
     ObjectDomainCleanupOutcome,
 };
-pub use object_lifecycle::{aidl_object_cleanup_dependency, aidl_object_cleanup_is_terminal};
+pub use object_lifecycle::{
+    aidl_cleanup_recovery_requests, aidl_object_cleanup_dependency,
+    aidl_object_cleanup_disposition, aidl_object_cleanup_is_terminal,
+    finish_aidl_cleanup_recovery_admission, request_aidl_cleanup_recovery,
+    AidlObjectCleanupDisposition, CleanupRecoveryRequest,
+};
 pub use object_method_use_case::{
     lnb_profile_supports_voltage_status, ObjectFrontendStatusReadinessValue,
     ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectMethodExecutionToken,
