@@ -64,8 +64,8 @@ internal class BroadcastTimedPesScheduler(
             onDrop("pending予算を使い切りました")
             return
         }
-        val token = nextToken()
         val copied = pesData.copyOf()
+        val token = nextToken()
         pending[token] =
             Pending(
                 trackId = trackId,
