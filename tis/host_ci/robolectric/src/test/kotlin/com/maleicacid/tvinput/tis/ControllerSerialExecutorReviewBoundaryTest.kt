@@ -99,6 +99,39 @@ class ControllerSerialExecutorReviewBoundaryTest {
     }
 
     @Test
+    fun sectionExecutorMetricsTrackRealAdmissionWithoutChangingCapacity() {
+        val executor = ControllerSerialExecutor("section-metrics-boundary", maxPendingDataTasks = 2)
+        val started = CountDownLatch(1)
+        val releaseControl = CountDownLatch(1)
+        val finishedData = CountDownLatch(2)
+        try {
+            executor.executeControl {
+                started.countDown()
+                releaseControl.await()
+            }
+            check(started.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            repeat(2) { executor.executeData { finishedData.countDown() } }
+            check(runCatching { executor.executeData {} }.exceptionOrNull() is DataCapacityExceededException)
+            check(executor.metricsSnapshot().contains("dataInFlightPeak=2 dataCapacityRejections=1"))
+            releaseControl.countDown()
+            check(finishedData.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+            var metrics = executor.metricsSnapshot()
+            while (!metrics.contains("dataTasksFinished=2") && System.nanoTime() < deadline) {
+                Thread.yield()
+                metrics = executor.metricsSnapshot()
+            }
+            check(metrics.contains("dataTasksFinished=2"))
+            check(metrics.contains("controlTasksFinished=1"))
+            check(metrics.contains("dataOwnerTotalUs="))
+            check(metrics.contains("controlOwnerMaxUs="))
+        } finally {
+            releaseControl.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun controllerExecutorShutdownReturnsDiscardedDataPermit() {
         val executor = ControllerSerialExecutor("shutdown-permit-test", maxPendingDataTasks = 1)
         val controlStarted = CountDownLatch(1)

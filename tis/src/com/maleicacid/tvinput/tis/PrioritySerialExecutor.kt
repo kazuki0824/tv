@@ -51,8 +51,14 @@ internal abstract class PrioritySerialExecutor(
     private val ownerThread = AtomicReference<Thread?>()
     private val nextSequence = AtomicLong()
     private val nextCleanupSequence = AtomicLong()
+    private val dataSlotLimit = maxPendingDataTasks
     protected val pendingDataSlots =
         Semaphore(maxPendingDataTasks.also { require(it > 0) { "maxPendingDataTasksは正でなければなりません" } })
+
+    // 容量・配送を変更せず、実機計測者に取得/拒否直前の値だけを通知する。
+    protected open fun onDataSlotsAcquired(inFlight: Int) = Unit
+
+    protected open fun onDataSlotsRejected(inFlight: Int) = Unit
 
     override fun beforeExecute(
         thread: Thread,
@@ -92,9 +98,11 @@ internal abstract class PrioritySerialExecutor(
     ) {
         require(dataSlots > 0)
         if (!pendingDataSlots.tryAcquire(dataSlots)) {
+            onDataSlotsRejected(dataSlotLimit - pendingDataSlots.availablePermits())
             throw DataCapacityExceededException("$ownerName のdata未処理数が上限に達しました")
         }
         try {
+            onDataSlotsAcquired(dataSlotLimit - pendingDataSlots.availablePermits())
             enqueue(DATA_QUEUE_CLASS, command, onFinished, onDiscarded)
         } catch (error: RejectedExecutionException) {
             pendingDataSlots.release(dataSlots)
