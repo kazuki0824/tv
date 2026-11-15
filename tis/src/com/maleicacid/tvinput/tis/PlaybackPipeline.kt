@@ -328,11 +328,11 @@ class PlaybackPipeline(
             }
         val payloadSlots = payloadBytes / KIB + if (payloadBytes % KIB == 0L) 0L else 1L
         val requestedSlots = 1L + events.size + payloadSlots
-        // 単一合法最大eventの会計ヘッダーは本来のpayload予約と同時占有しない。
-        // 複数eventをまとめた過大callbackは丸めずに容量拒否する。
+        // 合法な単一eventの予約は最大payload枠を上限にする。境界付近だけが拒否される逆転を防ぐ。
+        // 上限を超える単一eventと複数eventの超過分は丸めずに拒否する。
         val slots =
-            if (events.size == 1 && payloadBytes == AV_FILTER_BUFFER_BYTES) {
-                (AV_FILTER_BUFFER_BYTES / KIB).toInt()
+            if (events.size == 1 && payloadBytes <= AV_FILTER_BUFFER_BYTES) {
+                requestedSlots.coerceAtMost(AV_FILTER_BUFFER_BYTES / KIB).toInt()
             } else {
                 requestedSlots.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
             }
