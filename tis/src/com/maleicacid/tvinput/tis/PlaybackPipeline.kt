@@ -2576,7 +2576,7 @@ class PlaybackPipeline(
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-        @Suppress("MaxLineLength", "ReturnCount", "TooGenericExceptionCaught")
+        @Suppress("MaxLineLength", "ReturnCount", "TooGenericExceptionCaught", "LongMethod")
         override fun onOutput(
             codec: MediaCodec,
             index: Int,
