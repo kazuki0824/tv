@@ -248,8 +248,11 @@ class ChannelScanController(
                 published += publishResult.changed
                 return true
             } finally {
-                Log.d(LogTags.TIS, "SECTION_EXECUTOR_METRICS candidate=$candidate generation=${tune.generation} " +
-                    tunerController.sectionExecutorMetrics())
+                Log.d(
+                    LogTags.TIS,
+                    "SECTION_EXECUTOR_METRICS candidate=$candidate generation=${tune.generation} " +
+                        tunerController.sectionExecutorMetrics(),
+                )
                 clearActiveScanGeneration(tune.generation)
             }
         }

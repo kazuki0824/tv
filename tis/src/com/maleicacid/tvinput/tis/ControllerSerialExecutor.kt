@@ -22,6 +22,7 @@ internal class ControllerSerialExecutor(
     private val controlTasksFinished = AtomicLong()
     private val controlOwnerNanos = AtomicLong()
     private val controlOwnerMaxNanos = AtomicLong()
+
     // 単一owner workerだけが参照する。snapshot集計値はAtomicで取得する。
     private var ownerStartedAtNanos = 0L
 
@@ -63,11 +64,11 @@ internal class ControllerSerialExecutor(
     // 累積値。peakは実行中taskを含む予約枠数であり、queue内task数ではない。
     fun metricsSnapshot(): String =
         "dataInFlightPeak=${inFlightPeak.get()} dataCapacityRejections=${dataCapacityRejections.get()} " +
-            "dataTasksFinished=${dataTasksFinished.get()} dataOwnerTotalUs=${dataOwnerNanos.get() / 1_000L} " +
-            "dataOwnerMaxUs=${dataOwnerMaxNanos.get() / 1_000L} " +
+            "dataTasksFinished=${dataTasksFinished.get()} dataOwnerTotalUs=${dataOwnerNanos.get() / NANOS_PER_MICROSECOND} " +
+            "dataOwnerMaxUs=${dataOwnerMaxNanos.get() / NANOS_PER_MICROSECOND} " +
             "controlTasksFinished=${controlTasksFinished.get()} " +
-            "controlOwnerTotalUs=${controlOwnerNanos.get() / 1_000L} " +
-            "controlOwnerMaxUs=${controlOwnerMaxNanos.get() / 1_000L}"
+            "controlOwnerTotalUs=${controlOwnerNanos.get() / NANOS_PER_MICROSECOND} " +
+            "controlOwnerMaxUs=${controlOwnerMaxNanos.get() / NANOS_PER_MICROSECOND}"
 
     override fun execute(command: Runnable) = executeData(command)
 
@@ -92,6 +93,7 @@ internal class ControllerSerialExecutor(
     }
 
     private companion object {
+        const val NANOS_PER_MICROSECOND = 1_000L
         const val DEFAULT_MAX_PENDING_DATA_TASKS = 1
     }
 }
