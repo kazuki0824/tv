@@ -1,3 +1,10 @@
+# 2026-11-16 Section受付とPCM拒否の計測、Timing=10 PES受付の不要コピー除去（#116）
+
+- ControllerSerialExecutorの既存16件受付で、data予約数ピーク、容量拒否件数、data/control owner実行件数・時間の累積と最大を取得する。スキャン候補の終了時に同一generationとともに出力し、既存queue・優先順位・容量値を変更しない。
+- BroadcastTimedPesSchedulerは64件・2MiBの拒否をPESの`copyOf()`前に判定し、受理後だけ入力を複製する。拒否結果、token・clock・発行済みPESの所有権は維持する。
+- PCM出力の既存予算超過を、session/generation、拒否累計、出力未消費の件数・byte、適用上限、期限到達の情報で記録する。12MiB/192件の予算や回復方針は変更しない。
+- 実ownerの容量境界とコピー後の入力独立性の回帰試験を追加し、既存のTISホスト/Robolectric試験の期待件数を更新する。GitHub上の9 workflowは成功した。Android Soong・VM実再生/スキャンの計測、PCM音切れの因果、16件の必要十分性は未検証。
+
 # 2026-11-11 テスト補助Kotlin宣言の公開範囲を限定
 
 - PlaybackTestAccessの3関数とPublicationTestAccessの6関数をinternalへ限定する。各試験target内の既存呼出元とテスト専用source setを維持する。
