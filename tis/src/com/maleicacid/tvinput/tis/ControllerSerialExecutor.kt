@@ -64,7 +64,8 @@ internal class ControllerSerialExecutor(
     // 累積値。peakは実行中taskを含む予約枠数であり、queue内task数ではない。
     fun metricsSnapshot(): String =
         "dataInFlightPeak=${inFlightPeak.get()} dataCapacityRejections=${dataCapacityRejections.get()} " +
-            "dataTasksFinished=${dataTasksFinished.get()} dataOwnerTotalUs=${dataOwnerNanos.get() / NANOS_PER_MICROSECOND} " +
+            "dataTasksFinished=${dataTasksFinished.get()} " +
+            "dataOwnerTotalUs=${dataOwnerNanos.get() / NANOS_PER_MICROSECOND} " +
             "dataOwnerMaxUs=${dataOwnerMaxNanos.get() / NANOS_PER_MICROSECOND} " +
             "controlTasksFinished=${controlTasksFinished.get()} " +
             "controlOwnerTotalUs=${controlOwnerNanos.get() / NANOS_PER_MICROSECOND} " +
