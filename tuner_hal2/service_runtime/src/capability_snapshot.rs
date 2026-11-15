@@ -186,9 +186,10 @@ impl CapabilitySnapshot {
             (
                 PlaybackDvr,
                 requested.num_playback,
-                object
-                    .with(FmqBytes, 4 * MIB)
-                    .with(PlaybackBytes, required_playback_processing_bytes(usize::MAX)),
+                object.with(FmqBytes, 4 * MIB).with(
+                    PlaybackBytes,
+                    required_playback_processing_bytes(usize::MAX),
+                ),
                 Some((DemuxBase, 1)),
             ),
             (
