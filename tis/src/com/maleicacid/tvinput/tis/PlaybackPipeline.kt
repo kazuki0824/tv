@@ -101,6 +101,7 @@ class PlaybackPipeline(
     private val pendingAudioOutputReleases = mutableSetOf<Int>()
     private var nextAudioBufferId = 0
     private var audioOutputBackpressureStartedAtMs: Long? = null
+    private var pcmOutputBudgetRejections = 0L
     private val videoAvailableNotified = AtomicBoolean(false)
     private var videoOutputStallTask: Runnable? = null
     private var oversizedSamplesDropped: Int = 0
@@ -2604,6 +2605,16 @@ class PlaybackPipeline(
             val bytes = mapped.slice().asReadOnlyBuffer()
             val outputClaim = claimAudioOutput(info.size, info.presentationTimeUs, budget.pending, budget.steadyBackpressureDeadlineMs)
             if (!outputClaim.accepted) {
+                pcmOutputBudgetRejections++
+                Log.w(
+                    LogTags.TIS,
+                    "PLAYBACK_PCM_OUTPUT_BUDGET_REJECT sessionId=$sessionId generation=$generation " +
+                        "rejectCount=$pcmOutputBudgetRejections incomingBytes=${info.size} " +
+                        "outstandingCount=${outstandingAudioOutputs.size} " +
+                        "outstandingBytes=${outstandingAudioOutputs.values.sumOf { it.size.toLong() }} " +
+                        "limitCount=${budget.pending.maxSamples} limitBytes=${budget.pending.maxBytes} " +
+                        "deadlineReached=${outputClaim.deadlineReached}",
+                )
                 releaseCurrentDecoderOutput { codec.releaseOutputBuffer(index, false) }
                 if (outputClaim.deadlineReached) errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, outputClaim.detail)
                 return

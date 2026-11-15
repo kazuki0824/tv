@@ -54,8 +54,8 @@ internal class BroadcastTimedPesScheduler(
             onDrop("将来時刻の上限を超過しました")
             return
         }
-        val copied = pesData.copyOf()
-        val byteCount = copied.size.toLong()
+        // 拒否するPESを複製せず、既存の容量判定を先に確定する。
+        val byteCount = pesData.size.toLong()
         val budgetExceeded =
             pending.size >= maxPendingItems ||
                 byteCount > maxPendingBytes ||
@@ -65,6 +65,7 @@ internal class BroadcastTimedPesScheduler(
             return
         }
         val token = nextToken()
+        val copied = pesData.copyOf()
         pending[token] =
             Pending(
                 trackId = trackId,

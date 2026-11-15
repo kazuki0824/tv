@@ -145,6 +145,38 @@ class AribBroadcastClockTest {
     }
 
     @Test
+    fun rejectedTimedPesDoesNotConsumePendingCapacityOrRetainSourceData() {
+        val accepted = byteArrayOf(10, 20)
+        val drops = mutableListOf<String>()
+        val due = mutableListOf<ByteArray>()
+        var remainingMs = 1_000L
+        val scheduler =
+            BroadcastTimedPesScheduler(
+                resolveDeadline = { _, _ -> AribBroadcastClock.Deadline(1L, remainingMs) },
+                currentPlaybackGeneration = { 1L },
+                currentTrackId = { "superimpose:1" },
+                dispatch = { action -> action() },
+                postDelayed = { _, _ -> },
+                removeCallbacks = { _ -> },
+                onDue = { _, bytes -> due += bytes },
+                onDrop = drops::add,
+                maxPendingItems = 1,
+                maxPendingBytes = 4L,
+            )
+        val statement = AribBroadcastClock.StatementTime(1L)
+        scheduler.submit("superimpose:1", accepted, statement)
+        accepted[0] = 99
+        // 満杯時の大きなPESは必ず拒否され、追加のtokenも発行しない。
+        scheduler.submit("superimpose:1", ByteArray(1024 * 1024), statement)
+        check(pendingCount(scheduler) == 1)
+        check(drops == listOf("pending予算を使い切りました"))
+        remainingMs = 0L
+        scheduler.onClockChanged()
+        check(pendingCount(scheduler) == 0)
+        check(due.size == 1 && due.single().contentEquals(byteArrayOf(10, 20)))
+    }
+
+    @Test
     fun timing10UsesNearestDayAndMidnightUpdateKeepsGeneration() {
         val first =
             firstAuthority(
