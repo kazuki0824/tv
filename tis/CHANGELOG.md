@@ -34,6 +34,12 @@
 - Semaphore残数の後読みは非原子的であるため瞬間予約ピークの精密値と扱わず、旧世代task混入とともに診断上の制約を明示する。通常controlとcleanupを分類し、実行順・既存permit上限/所有者は変更しない。
 - 2区間の飽和/軽負荷、cleanup単独の回帰試験を追加し、Robolectric CIの期待試験数を更新した。実機Filter到着率、p99、候補別SI完成/喪失の同一試行測定は未実施。
 
+# 2026-11-16 AV callback単一eventの受付単調性とMediaEvent所有予算の明確化（#232）
+
+- 合法な単一MediaEventのpayloadが16MiB以下の場合、実長KiB切上げ＋帳簿ヘッダーの予約を16,384 permit以内に抑え、16MiBの直前だけ拒否される不連続性を解消する。複数eventと16MiBを超える入力の拒否は維持する。
+- Codec未投入のpendingSamples/inputSubmissionに適用するPlaybackBudgetと、Codec投入済みqueuedSamplesの借用寿命を設計正本で分離する。新規queue・owner・会計台帳は作らず、全保持量を証明済みとは扱わない。
+- 実callback経路で16MiB−2048、−2047、−1、ちょうどの受付・単一解放、上限超過の拒否・解放をRobolectric回帰で確認する。ホストCIと実機試験の結果は各実行時点のChecksを参照し、VM実再生と物理メモリ実測は未実施。
+
 # 2026-11-16 Section受付とPCM拒否の計測、Timing=10 PES受付の不要コピー除去（#116）
 
 - ControllerSerialExecutorの既存16件受付で、data予約数ピーク、容量拒否件数、data/control owner実行件数・時間の累積と最大を取得する。スキャン候補の終了時に同一generationとともに出力し、既存queue・優先順位・容量値を変更しない。
