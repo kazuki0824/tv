@@ -770,21 +770,23 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
-    fun singleMaxSizedHevcEventIsAcceptedIntoAnOtherwiseEmptyCallbackQueue() {
-        Fixture().use { fixture ->
-            fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.HEVC)
-            val filter = fixture.avFilter(false)
-            val event = mediaEvent(16L * 1024 * 1024)
-            val processed = CountDownLatch(1)
-            Shadow.extract<NativeMediaEvent>(event).onRelease = { processed.countDown() }
-            fixture.whileOwnerBlocked { deliver(filter, event) }
-            // 全permitを予約済みなので、待機用のdata taskを追加せず完了通知を待つ。
-            assertTrue(processed.await(5, TimeUnit.SECONDS))
-            fixture.executor.callControl(5_000L) { Unit }
-            // 実LinearBlockがないfixtureでも、受付した場合だけgetLinearBlockまで進む。
-            assertEquals(1, Shadow.extract<NativeMediaEvent>(event).blockReads)
-            assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
-            assertFalse(fixture.released())
+    fun nearAndMaxSizedHevcEventsRemainAdmissibleAndReleaseOnce() {
+        val maximum = 16L * 1024 * 1024
+        for (length in listOf(maximum - 2048L, maximum - 2047L, maximum - 1L, maximum)) {
+            Fixture().use { fixture ->
+                fixture.decoder(videoKind = PlaybackPipeline.VideoCodecKind.HEVC)
+                val filter = fixture.avFilter(false)
+                val event = mediaEvent(length)
+                val processed = CountDownLatch(1)
+                Shadow.extract<NativeMediaEvent>(event).onRelease = { processed.countDown() }
+                fixture.whileOwnerBlocked { deliver(filter, event) }
+                // 最大近傍でも拒否されず、ownerが処理した後だけreleaseへ到達する。
+                assertTrue(processed.await(5, TimeUnit.SECONDS))
+                fixture.executor.callControl(5_000L) { Unit }
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(event).blockReads)
+                assertEquals(1, Shadow.extract<NativeMediaEvent>(event).releases)
+                assertFalse(fixture.released())
+            }
         }
     }
 
@@ -793,7 +795,7 @@ class PlaybackFilterAdmissionTest {
         Fixture().use { fixture ->
             val filter = fixture.avFilter(false)
             val mib = 1024L * 1024
-            val oversizedLengths = listOf(listOf(17 * mib), listOf(12 * mib, 12 * mib), listOf(Long.MAX_VALUE, mib))
+            val oversizedLengths = listOf(listOf(16 * mib + 1), listOf(17 * mib), listOf(12 * mib, 12 * mib), listOf(Long.MAX_VALUE, mib))
             for (lengths in oversizedLengths) {
                 val oversized = lengths.map(::mediaEvent).toTypedArray()
                 fixture.whileOwnerBlocked { deliver(filter, oversized) }
