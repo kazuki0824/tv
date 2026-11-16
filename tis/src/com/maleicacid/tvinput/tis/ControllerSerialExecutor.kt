@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicReference
  * TunerControllerの単一所有threadを維持したまま、未実行のsection callbackより
  * lifecycle/control境界を先に実行するserial executor。
  */
+// Section受付の実行・診断を同一ownerに維持するため、関数数だけで別ownerへ分割しない。
+@Suppress("TooManyFunctions")
 internal class ControllerSerialExecutor(
     threadName: String,
     maxPendingDataTasks: Int = DEFAULT_MAX_PENDING_DATA_TASKS,
@@ -38,7 +40,9 @@ internal class ControllerSerialExecutor(
         val cleanupNanos: Long,
     )
 
-    internal class MetricsWindow(val baseline: MetricsTotals) {
+    internal class MetricsWindow(
+        val baseline: MetricsTotals,
+    ) {
         val sampledPeak = AtomicInteger()
     }
 
@@ -113,11 +117,13 @@ internal class ControllerSerialExecutor(
                 dataOwnerNanos.addAndGet(elapsedNanos)
                 dataOwnerMaxNanos.accumulateAndGet(elapsedNanos) { previous, current -> maxOf(previous, current) }
             }
+
             CONTROL_QUEUE_CLASS -> {
                 controlTasksFinished.incrementAndGet()
                 controlOwnerNanos.addAndGet(elapsedNanos)
                 controlOwnerMaxNanos.accumulateAndGet(elapsedNanos) { previous, current -> maxOf(previous, current) }
             }
+
             CLEANUP_QUEUE_CLASS -> {
                 cleanupTasksFinished.incrementAndGet()
                 cleanupOwnerNanos.addAndGet(elapsedNanos)
