@@ -209,7 +209,8 @@ class PlaybackFailureCallbacksTest {
         for (initializing in listOf(false, true)) checkCasConnectionFailure(initializing)
     }
 
-    @Suppress("LongMethod")
+    // 故障注入の資源寿命を一つの試験に保持し、例外時もfixtureの拒否フラグを解除する。
+    @Suppress("LongMethod", "NestedBlockDepth")
     private fun checkCasConnectionFailure(initializing: Boolean) {
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         val faults = FailureMediaCas.Faults
@@ -273,7 +274,10 @@ class PlaybackFailureCallbacksTest {
                     set("dynamicPmtPids", linkedSetOf(pmt.pid))
                     set("dynamicEcmPids", linkedSetOf(ecm.pid))
                     set("dynamicEmmPids", linkedSetOf(emm.pid))
-                    set("sectionFilterHandles", linkedMapOf(ecm.pid to ecm, emm.pid to emm, pmt.pid to pmt, eit.pid to eit))
+                    set(
+                        "sectionFilterHandles",
+                        linkedMapOf(ecm.pid to ecm, emm.pid to emm, pmt.pid to pmt, eit.pid to eit),
+                    )
                     controller.setCasController(cas)
                     controller.setOnTunerResourceLostCallback { lostGeneration = it }
                     faults.pluginFailure = true
