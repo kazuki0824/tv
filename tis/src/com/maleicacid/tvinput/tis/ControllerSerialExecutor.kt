@@ -10,8 +10,8 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * TunerControllerの単一所有threadを維持したまま、未実行のsection callbackより
  * lifecycle/control境界を先に実行するserial executor。
+ * Section受付と診断は同じownerに従属するため、関数数だけで分割しない。
  */
-// Section受付の実行・診断を同一ownerに維持するため、関数数だけで別ownerへ分割しない。
 @Suppress("TooManyFunctions")
 internal class ControllerSerialExecutor(
     threadName: String,

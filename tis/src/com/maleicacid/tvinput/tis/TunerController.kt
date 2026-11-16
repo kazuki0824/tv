@@ -208,8 +208,9 @@ class TunerController(
     private val controllerControlExecutor =
         java.util.concurrent.Executor { task -> sectionExecutor.executeControl(task) }
 
-    internal fun beginSectionMetricsWindow(): ControllerSerialExecutor.MetricsWindow =
-        sectionExecutor.beginMetricsWindow()
+    internal fun beginSectionMetricsWindow(): ControllerSerialExecutor.MetricsWindow {
+        return sectionExecutor.beginMetricsWindow()
+    }
 
     internal fun finishSectionMetricsWindow(window: ControllerSerialExecutor.MetricsWindow): String =
         sectionExecutor.finishMetricsWindow(window)
