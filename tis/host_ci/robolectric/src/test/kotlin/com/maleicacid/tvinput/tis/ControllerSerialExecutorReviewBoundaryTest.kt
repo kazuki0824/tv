@@ -112,7 +112,7 @@ class ControllerSerialExecutorReviewBoundaryTest {
             check(started.await(WAIT_SECONDS, TimeUnit.SECONDS))
             repeat(2) { executor.executeData { finishedData.countDown() } }
             check(runCatching { executor.executeData {} }.exceptionOrNull() is DataCapacityExceededException)
-            check(executor.metricsSnapshot().contains("dataInFlightPeak=2 dataCapacityRejections=1"))
+            check(executor.metricsSnapshot().contains("dataInFlightPeakSampled=2 dataCapacityRejections=1"))
             releaseControl.countDown()
             check(finishedData.await(WAIT_SECONDS, TimeUnit.SECONDS))
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
@@ -127,6 +127,59 @@ class ControllerSerialExecutorReviewBoundaryTest {
             check(metrics.contains("controlOwnerMaxUs="))
         } finally {
             releaseControl.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun scanWindowPeakDoesNotLeakIntoNextCandidate() {
+        val executor = ControllerSerialExecutor("区間別Section試験", maxPendingDataTasks = 2)
+        val controlStarted = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val completed = CountDownLatch(2)
+        try {
+            executor.executeControl {
+                controlStarted.countDown()
+                release.await()
+            }
+            check(controlStarted.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            val first = executor.beginMetricsWindow()
+            repeat(2) { executor.executeData { completed.countDown() } }
+            check(runCatching { executor.executeData {} }.exceptionOrNull() is DataCapacityExceededException)
+            val firstResult = executor.finishMetricsWindow(first)
+            check(firstResult.contains("inFlightPeakSampled=2 capacityRejectionsDelta=1"))
+            release.countDown()
+            check(completed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            executor.submitControl {}.get(WAIT_SECONDS, TimeUnit.SECONDS)
+
+            val second = executor.beginMetricsWindow()
+            val secondDone = CountDownLatch(1)
+            executor.executeData { secondDone.countDown() }
+            val secondResult = executor.finishMetricsWindow(second)
+            check(secondResult.contains("inFlightPeakSampled=1 capacityRejectionsDelta=0"))
+            check(secondDone.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        } finally {
+            release.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun cleanupTaskDoesNotIncreaseControlTaskCount() {
+        val executor = ControllerSerialExecutor("cleanup分類試験")
+        try {
+            val window = executor.beginMetricsWindow()
+            executor.submitControl(cleanup = true) { Unit }.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+            while (!executor.metricsSnapshot().contains("cleanupTasksFinished=1") &&
+                System.nanoTime() < deadline
+            ) {
+                Thread.yield()
+            }
+            val result = executor.finishMetricsWindow(window)
+            check(result.contains("controlFinishedDelta=0"))
+            check(result.contains("cleanupFinishedDelta=1"))
+        } finally {
             executor.shutdownNow()
         }
     }
