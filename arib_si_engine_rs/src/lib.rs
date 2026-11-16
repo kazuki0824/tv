@@ -1572,10 +1572,8 @@ mod tests {
         let mut state = populated_live_parser();
         let before = build_bulk_snapshot(&mut state);
         let mut rejected = false;
-        for extension in 2u16..=8193 {
-            let [high, low] = extension.to_be_bytes();
-            let cat = section_with_crc(vec![1, 0xb0, 9, high, low, 0xc1, 0, 0]);
-            let status = state.ingest_section(1, &cat);
+        for transport_id in 100u16..=8291 {
+            let status = state.ingest_section(0x11, &empty_other_sdt(transport_id, 0));
             if status == STATUS_COLLECTION_LIMIT_EXCEEDED {
                 rejected = true;
                 break;
@@ -1583,6 +1581,20 @@ mod tests {
             assert_eq!(status, STATUS_OK);
         }
         assert!(rejected);
+        let storage = state.collector.section_storage();
+        assert_eq!(storage.1, 8192);
+        assert!(storage.0 < 4 * 1024 * 1024);
+        assert!(build_bulk_snapshot(&mut state)
+            .parser_diagnostics
+            .iter()
+            .any(|d| d.code == "COLLECTION_LIMIT_EXCEEDED"));
+        for version in [0, 1] {
+            assert_eq!(
+                state.ingest_section(0x11, &empty_other_sdt(100, version)),
+                STATUS_OK
+            );
+            assert_eq!(state.collector.section_storage(), storage);
+        }
         assert_eq!(
             build_bulk_snapshot(&mut state).service_semantic_facts,
             before.service_semantic_facts
@@ -1593,6 +1605,14 @@ mod tests {
             build_bulk_snapshot(&mut state).service_semantic_facts,
             before.service_semantic_facts
         );
+    }
+
+    // CATのreserved領域を識別子として変化させず、SDT-otherのTS識別子を使う。
+    fn empty_other_sdt(transport_id: u16, version: u8) -> Vec<u8> {
+        let [high, low] = transport_id.to_be_bytes();
+        section_with_crc(vec![
+            0x46, 0xf0, 0x0c, high, low, 0xc1 | (version << 1), 0, 0, 0, 0x22, 0xff,
+        ])
     }
 
     fn unknown_descriptor_padding(mut size: usize) -> Vec<u8> {
@@ -1719,13 +1739,9 @@ mod tests {
     fn retention_capacity_repeat_and_version_update_workload() {
         for (si_tables, eit_tables) in [(4usize, 1u16), (8192, 8192)] {
             let mut state = populated_live_parser();
-            for extension in 2..(si_tables - 2) as u16 {
-                let [high, low] = extension.to_be_bytes();
+            for offset in 0..(si_tables - 4) as u16 {
                 assert_eq!(
-                    state.ingest_section(
-                        1,
-                        &section_with_crc(vec![1, 0xb0, 9, high, low, 0xc1, 0, 0])
-                    ),
+                    state.ingest_section(0x11, &empty_other_sdt(100 + offset, 0)),
                     STATUS_OK
                 );
             }
