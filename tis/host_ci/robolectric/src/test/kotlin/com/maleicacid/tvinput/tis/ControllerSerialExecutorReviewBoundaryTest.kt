@@ -137,6 +137,7 @@ class ControllerSerialExecutorReviewBoundaryTest {
         val controlStarted = CountDownLatch(1)
         val release = CountDownLatch(1)
         val completed = CountDownLatch(2)
+        val resumeSecond = CountDownLatch(1)
         try {
             executor.executeControl {
                 controlStarted.countDown()
@@ -153,12 +154,16 @@ class ControllerSerialExecutorReviewBoundaryTest {
             executor.submitControl {}.get(WAIT_SECONDS, TimeUnit.SECONDS)
 
             val second = executor.beginMetricsWindow()
-            val secondDone = CountDownLatch(1)
-            executor.executeData { secondDone.countDown() }
+            val secondStarted = CountDownLatch(1)
+            executor.executeData {
+                secondStarted.countDown()
+                resumeSecond.await()
+            }
+            check(secondStarted.await(WAIT_SECONDS, TimeUnit.SECONDS))
             val secondResult = executor.finishMetricsWindow(second)
             check(secondResult.contains("inFlightPeakSampled=1 capacityRejectionsDelta=0"))
-            check(secondDone.await(WAIT_SECONDS, TimeUnit.SECONDS))
         } finally {
+            resumeSecond.countDown()
             release.countDown()
             executor.shutdownNow()
         }
