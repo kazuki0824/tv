@@ -354,7 +354,8 @@ class ProgramPublishCoordinatorBk10CompletionTest {
 
     // 失敗、LRU脱落、同一SI再投影、成功後省略を一続きで検査する。
     @Suppress("LongMethod")
-    @Test fun dirtyWindowQueueHasOneBoundedLruLimit() {
+    @Test
+    fun dirtyWindowQueueHasOneBoundedLruLimit() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         var now = 0L
