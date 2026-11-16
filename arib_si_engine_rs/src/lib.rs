@@ -1611,7 +1611,17 @@ mod tests {
     fn empty_other_sdt(transport_id: u16, version: u8) -> Vec<u8> {
         let [high, low] = transport_id.to_be_bytes();
         section_with_crc(vec![
-            0x46, 0xf0, 0x0c, high, low, 0xc1 | (version << 1), 0, 0, 0, 0x22, 0xff,
+            0x46,
+            0xf0,
+            0x0c,
+            high,
+            low,
+            0xc1 | (version << 1),
+            0,
+            0,
+            0,
+            0x22,
+            0xff,
         ])
     }
 
