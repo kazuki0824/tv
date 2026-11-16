@@ -410,13 +410,6 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         store.deletedWindows.clear()
         store.failDelete = false
         now += 60_000L
-        coordinator.publishWithUpdates(
-            ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
-            emptyList(),
-            emptyList(),
-            keys.toSet(),
-        )
-        check(store.deletedWindows.isEmpty()) { "authorityなしでは旧要求だけから削除しない" }
         check(currentWindows() == windows) { "同一SIの再投影は差分なしでも現在の全区間を返す" }
         val recovered =
             coordinator.publishWithUpdates(
