@@ -79,7 +79,10 @@ class SectionMetricsBoundaryTest {
             }
             check(ownerStarted.await(5, TimeUnit.SECONDS))
             reader.start()
-            check(boundaryReached.await(5, TimeUnit.SECONDS))
+            if (!boundaryReached.await(5, TimeUnit.SECONDS)) {
+                result.get(1, TimeUnit.SECONDS)
+                error("本体の累積読取り境界へ接続できませんでした")
+            }
             repeat(2) { executor.executeData { dataFinished.countDown() } }
             check(runCatching { executor.executeData {} }.exceptionOrNull() is DataCapacityExceededException)
             releaseOwner.countDown()
@@ -238,7 +241,9 @@ class SectionMetricsBoundaryTest {
         var beforeTotals: (() -> Unit)? = null
         var afterTotals: (() -> Unit)? = null
 
-        @Implementation
+        // Robolectricの明示名検索を使い、privateのまま本体呼出しへ接続する。
+        @Implementation(methodName = "totals")
+        @Suppress("UnusedPrivateMember")
         private fun totals(): ControllerSerialExecutor.MetricsTotals {
             beforeTotals?.invoke()
             val result =
