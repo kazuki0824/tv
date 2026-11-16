@@ -24,7 +24,11 @@ Androidの`dumpsys media.audio_flinger`は同一Track ID・session・sample rate
 
 ## Section受付容量の負荷検証（未完了）
 
-`SECTION_EXECUTOR_METRICS`の`scope=candidateWorkInterval`は成功tune後からcandidate終了までの区間を表し、SI収集に加えてProvider公開処理も含み得る。`*Delta`はその区間の累積counter差分であり、過去候補の累積値ではない。`inFlightPeakSampled`は既存SemaphoreのtryAcquire後/拒否後の残数を別途読んだ標本最大値で、解放との競合により予約瞬間の正確なピークを過小評価し得る。旧世代taskが区間へ混入する可能性もある。通常controlとcleanupは別計上する。これらだけで16件の必要十分性・SIの取得率を証明したと扱わず、Filter到着率・世代・候補別損失/完成を同一試行で別途確認する。
+`SECTION_EXECUTOR_METRICS`の`scope=candidateAttemptWorkInterval`は各候補の`tuneForScan`呼出前から候補処理の終了までを観測する。初期Filter起動、選局に伴う旧世代cleanup、失敗選局を含み、成功時はSI収集とProvider公開処理も含み得る。BSの候補展開用stream-ID探索はこの区間に含まれない。`returnedGeneration`は選局が結果を返した場合の世代（例外時はnull）であり、`generationAttribution=mixed`が示すとおり、候補専用世代の会計ではない。通常controlとcleanupは別計上する。
+
+`*Delta`は各累積counterの開始読取りから終了読取りまでの差分で、`deltaPrecision=perCounterNonAtomic`とする。7 counterは逐次読取りのため、互いに単一時刻のsnapshotではない。開始counter読取り後からWindow公開まで、Window解除後から終了counter読取りまでの実行は差分に入り得るが、区間peakには入らない。`boundaryAlignment=notGuaranteed`とし、差分とpeakの測定境界が一致した比較には使用しない。Windowを取得済みのcallbackが解除後にpeakを更新する競合もある。`inFlightPeakSampled`は既存SemaphoreのtryAcquire後/拒否後の残数を別途読んだ標本最大値で、`peakPrecision=sampledNonAtomic`が示すとおり、解放との競合で予約瞬間のピークを過小評価し得る。
+
+初期起動の観測漏れを防いでも、これらの標本だけで16件の必要十分性・SI取得率を証明したと扱わない。Filter到着率・世代・候補別損失/完成を同一試行で別途確認する。
 
 
 

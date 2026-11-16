@@ -186,75 +186,81 @@ class ChannelScanController(
             if (cancelled.get() || terminalResourceLostObserved) return false
             currentCandidate = candidate
             var lossBaseline: SectionTransportLossSnapshot? = null
-            // setup登録にEIT scheduleは不要。EIT入力burstでSDT/PAT/PMTを落とさない。
-            val tune =
-                tunerController.tuneForScan(candidate, eitPfActualOnly = true) {
-                    engine.reset(discoveryProfile(candidate.kind))
-                    lossBaseline = ingestController.transportLossSnapshot()
-                }
-            if (!tune.success) {
-                val message = "選局に失敗しました result=${tune.resultCode} ${tune.message}"
-                diagnostics += ScanDiagnostic(candidate, message)
-                Log.w(LogTags.TIS, "scan tune rejected candidate=$candidate $message")
-                terminalFailure = ScanTerminal(ScanTerminalOutcome.TUNE_REJECTED, message)
-                return false
-            }
-            val candidateLossBaseline = checkNotNull(lossBaseline) { "成功選局でSection解析境界を通過していません" }
-            activateScanGeneration(tune.generation)
+            // 初期Filter起動と失敗選局も観測する。旧世代cleanupを含む作業区間であり世代専用ではない。
             val metricsWindow = tunerController.beginSectionWindow()
+            var metricsGeneration: Long? = null
             try {
-                val collection =
-                    collectSiForCandidate(
-                        candidate,
-                        SiCollectionRequirements(PublishMode.SETUP_SCAN, discoveryProfile(candidate.kind)),
-                        tune.generation,
-                        candidateLossBaseline,
-                    )
-                collection.diagnostic?.let { diagnostics += it }
-                if (!collection.mayPublishChannels) {
-                    Log.w(
-                        LogTags.TIS,
-                        "SI discovery 未完了のため TvProvider channel 登録を省略します candidate=$candidate " +
-                            "outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices} " +
-                            "clearLivePlaybackStaticallyEligible=${collection.clearLivePlaybackStaticallyEligibleServices} " +
-                            "diagnostic=${collection.diagnostic?.message}",
-                    )
-                    return collection.outcome != SiCollectionOutcome.RESOURCE_LOST
-                }
-                val publishResult =
-                    publishScanSnapshotIfCurrent(
-                        tune.generation,
-                        PublishMode.SETUP_SCAN,
-                        registrationSnapshot = collection.finalRegistrationSnapshot,
-                        onChannelInserted = { insertedChannelIds += it },
-                    )
-                if (publishResult == null) {
-                    diagnostics += resourceLostDiagnostic(candidate, tune.generation)
+                // setup登録にEIT scheduleは不要。EIT入力burstでSDT/PAT/PMTを落とさない。
+                val tune =
+                    tunerController.tuneForScan(candidate, eitPfActualOnly = true) {
+                        engine.reset(discoveryProfile(candidate.kind))
+                        lossBaseline = ingestController.transportLossSnapshot()
+                    }
+                metricsGeneration = tune.generation
+                if (!tune.success) {
+                    val message = "選局に失敗しました result=${tune.resultCode} ${tune.message}"
+                    diagnostics += ScanDiagnostic(candidate, message)
+                    Log.w(LogTags.TIS, "scan tune rejected candidate=$candidate $message")
+                    terminalFailure = ScanTerminal(ScanTerminalOutcome.TUNE_REJECTED, message)
                     return false
                 }
-                insertedChannelIds += publishResult.insertedChannelIds
-                initialBrowsablePendingChannelIds += publishResult.initialBrowsablePendingChannelIds
-                val publicationFailure = setupPublicationFailureTerminal(publishResult.failures)
-                if (publicationFailure != null) {
-                    diagnostics += ScanDiagnostic(candidate, publicationFailure.detail)
-                    terminalFailure = publicationFailure
-                    return false
+                val candidateLossBaseline = checkNotNull(lossBaseline) { "成功選局でSection解析境界を通過していません" }
+                activateScanGeneration(tune.generation)
+                try {
+                    val collection =
+                        collectSiForCandidate(
+                            candidate,
+                            SiCollectionRequirements(PublishMode.SETUP_SCAN, discoveryProfile(candidate.kind)),
+                            tune.generation,
+                            candidateLossBaseline,
+                        )
+                    collection.diagnostic?.let { diagnostics += it }
+                    if (!collection.mayPublishChannels) {
+                        Log.w(
+                            LogTags.TIS,
+                            "SI discovery 未完了のため TvProvider channel 登録を省略します candidate=$candidate " +
+                                "outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices} " +
+                                "clearLivePlaybackStaticallyEligible=${collection.clearLivePlaybackStaticallyEligibleServices} " +
+                                "diagnostic=${collection.diagnostic?.message}",
+                        )
+                        return collection.outcome != SiCollectionOutcome.RESOURCE_LOST
+                    }
+                    val publishResult =
+                        publishScanSnapshotIfCurrent(
+                            tune.generation,
+                            PublishMode.SETUP_SCAN,
+                            registrationSnapshot = collection.finalRegistrationSnapshot,
+                            onChannelInserted = { insertedChannelIds += it },
+                        )
+                    if (publishResult == null) {
+                        diagnostics += resourceLostDiagnostic(candidate, tune.generation)
+                        return false
+                    }
+                    insertedChannelIds += publishResult.insertedChannelIds
+                    initialBrowsablePendingChannelIds += publishResult.initialBrowsablePendingChannelIds
+                    val publicationFailure = setupPublicationFailureTerminal(publishResult.failures)
+                    if (publicationFailure != null) {
+                        diagnostics += ScanDiagnostic(candidate, publicationFailure.detail)
+                        terminalFailure = publicationFailure
+                        return false
+                    }
+                    if (
+                        collection.outcome == SiCollectionOutcome.COMPLETE &&
+                        collection.registrationReadyServices > 0
+                    ) {
+                        successfulCandidates++
+                    }
+                    published += publishResult.changed
+                    return true
+                } finally {
+                    clearActiveScanGeneration(tune.generation)
                 }
-                if (
-                    collection.outcome == SiCollectionOutcome.COMPLETE &&
-                    collection.registrationReadyServices > 0
-                ) {
-                    successfulCandidates++
-                }
-                published += publishResult.changed
-                return true
             } finally {
                 Log.d(
                     LogTags.TIS,
-                    "SECTION_EXECUTOR_METRICS candidate=$candidate generation=${tune.generation} " +
+                    "SECTION_EXECUTOR_METRICS candidate=$candidate returnedGeneration=$metricsGeneration " +
                         tunerController.finishSectionMetricsWindow(metricsWindow),
                 )
-                clearActiveScanGeneration(tune.generation)
             }
         }
 
@@ -415,66 +421,72 @@ class ChannelScanController(
             if (cancelled.get() || terminalResourceLostObserved) break
             currentCandidate = candidate
             var lossBaseline: SectionTransportLossSnapshot? = null
-            val tune =
-                tunerController.tuneForScan(candidate) {
-                    engine.reset(discoveryProfile(candidate.kind))
-                    lossBaseline = ingestController.transportLossSnapshot()
-                }
-            if (!tune.success) {
-                diagnostics += ScanDiagnostic(candidate, "${failurePrefix}の選局に失敗しました result=${tune.resultCode} ${tune.message}")
-                continue
-            }
-            val candidateLossBaseline = checkNotNull(lossBaseline) { "成功選局でSection解析境界を通過していません" }
-            activateScanGeneration(tune.generation)
+            // 初期Filter起動と失敗選局も観測する。旧世代cleanupを含む作業区間であり世代専用ではない。
             val metricsWindow = tunerController.beginSectionWindow()
+            var metricsGeneration: Long? = null
             try {
-                val requiredServiceKeys = targetsByTune.getValue(candidate.tuneKey).mapTo(linkedSetOf()) { it.second }
-                val collection =
-                    collectSiForCandidate(
-                        candidate,
-                        SiCollectionRequirements(mode, discoveryProfile(candidate.kind), requiredServiceKeys),
-                        tune.generation,
-                        candidateLossBaseline,
-                    )
-                collection.diagnostic?.let { diagnostics += it }
-                if (!collection.mayPublishChannels) {
-                    Log.w(
-                        LogTags.TIS,
-                        "$failurePrefix SI discovery 未完了のため Programs publish/delete を省略します " +
-                            "candidate=$candidate outcome=${collection.outcome} " +
-                            "registrationReady=${collection.registrationReadyServices}",
-                    )
-                    if (collection.outcome == SiCollectionOutcome.RESOURCE_LOST) break
+                val tune =
+                    tunerController.tuneForScan(candidate) {
+                        engine.reset(discoveryProfile(candidate.kind))
+                        lossBaseline = ingestController.transportLossSnapshot()
+                    }
+                metricsGeneration = tune.generation
+                if (!tune.success) {
+                    diagnostics += ScanDiagnostic(candidate, "${failurePrefix}の選局に失敗しました result=${tune.resultCode} ${tune.message}")
                     continue
                 }
-                val publishResult =
-                    publishScanSnapshotIfCurrent(
-                        tune.generation,
-                        mode,
-                        allowedServiceKeys,
-                        collection.finalRegistrationSnapshot,
-                    )
-                if (publishResult == null) {
-                    diagnostics += resourceLostDiagnostic(candidate, tune.generation)
-                    break
+                val candidateLossBaseline = checkNotNull(lossBaseline) { "成功選局でSection解析境界を通過していません" }
+                activateScanGeneration(tune.generation)
+                try {
+                    val requiredServiceKeys = targetsByTune.getValue(candidate.tuneKey).mapTo(linkedSetOf()) { it.second }
+                    val collection =
+                        collectSiForCandidate(
+                            candidate,
+                            SiCollectionRequirements(mode, discoveryProfile(candidate.kind), requiredServiceKeys),
+                            tune.generation,
+                            candidateLossBaseline,
+                        )
+                    collection.diagnostic?.let { diagnostics += it }
+                    if (!collection.mayPublishChannels) {
+                        Log.w(
+                            LogTags.TIS,
+                            "$failurePrefix SI discovery 未完了のため Programs publish/delete を省略します " +
+                                "candidate=$candidate outcome=${collection.outcome} " +
+                                "registrationReady=${collection.registrationReadyServices}",
+                        )
+                        if (collection.outcome == SiCollectionOutcome.RESOURCE_LOST) break
+                        continue
+                    }
+                    val publishResult =
+                        publishScanSnapshotIfCurrent(
+                            tune.generation,
+                            mode,
+                            allowedServiceKeys,
+                            collection.finalRegistrationSnapshot,
+                        )
+                    if (publishResult == null) {
+                        diagnostics += resourceLostDiagnostic(candidate, tune.generation)
+                        break
+                    }
+                    committedServiceKeys += publishResult.committedServiceKeys
+                    val candidateSuccessfullyPublished =
+                        collection.outcome == SiCollectionOutcome.COMPLETE &&
+                            collection.registrationReadyServices > 0 &&
+                            publishResult.success &&
+                            publishResult.hasCommittedProgramTarget
+                    if (candidateSuccessfullyPublished) {
+                        successfulCandidates++
+                    }
+                    updated += publishResult.changed
+                } finally {
+                    clearActiveScanGeneration(tune.generation)
                 }
-                committedServiceKeys += publishResult.committedServiceKeys
-                val candidateSuccessfullyPublished =
-                    collection.outcome == SiCollectionOutcome.COMPLETE &&
-                        collection.registrationReadyServices > 0 &&
-                        publishResult.success &&
-                        publishResult.hasCommittedProgramTarget
-                if (candidateSuccessfullyPublished) {
-                    successfulCandidates++
-                }
-                updated += publishResult.changed
             } finally {
                 Log.d(
                     LogTags.TIS,
-                    "SECTION_EXECUTOR_METRICS candidate=$candidate generation=${tune.generation} " +
+                    "SECTION_EXECUTOR_METRICS candidate=$candidate returnedGeneration=$metricsGeneration " +
                         tunerController.finishSectionMetricsWindow(metricsWindow),
                 )
-                clearActiveScanGeneration(tune.generation)
             }
         }
         currentCandidate = null

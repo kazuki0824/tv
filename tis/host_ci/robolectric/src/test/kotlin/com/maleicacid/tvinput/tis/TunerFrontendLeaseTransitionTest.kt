@@ -853,6 +853,12 @@ class TunerFrontendLeaseTransitionTest {
 
     @Implements(Filter::class)
     class NativeFilter {
+        @RealObject private lateinit var actual: Filter
+
+        companion object {
+            var onStart: ((Filter) -> Unit)? = null
+        }
+
         var closes = 0
         var rejectClose = false
         private val pending = ArrayDeque<Byte>()
@@ -868,7 +874,10 @@ class TunerFrontendLeaseTransitionTest {
         ): Int = Tuner.RESULT_SUCCESS
 
         @Implementation
-        fun nativeStartFilter(): Int = Tuner.RESULT_SUCCESS
+        fun nativeStartFilter(): Int {
+            onStart?.invoke(actual)
+            return Tuner.RESULT_SUCCESS
+        }
 
         @Implementation
         fun nativeStopFilter(): Int = Tuner.RESULT_SUCCESS
@@ -914,6 +923,13 @@ class TunerFrontendLeaseTransitionTest {
             )
             return SiIngestResult(pid, SiStatus.OK)
         }
+
+        @Implementation
+        @Suppress("UNUSED_PARAMETER")
+        fun reset(discoveryProfile: Int) = Unit
+
+        @Implementation
+        fun pmtPidsForSectionFilters(): Set<TsPid> = emptySet()
 
         @Implementation
         fun close() = Unit

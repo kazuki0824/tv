@@ -57,7 +57,8 @@ internal class ControllerSerialExecutor(
             cleanupNanos = cleanupOwnerNanos.get(),
         )
 
-    // 候補別に累積差分と標本ピークを分ける。旧世代task・Semaphore取得競合は除外できない。
+    // 差分は各counterの読取間、peakはWindow公開中の標本。開始・終了の境界は一致しない。
+    // totalsは逐次読取りであり、単一時刻の整合snapshotでも世代別の会計でもない。
     internal fun beginMetricsWindow(): MetricsWindow {
         val window = MetricsWindow(totals())
         check(activeMetricsWindow.compareAndSet(null, window)) { "Section計測区間が重複しています" }
@@ -68,7 +69,8 @@ internal class ControllerSerialExecutor(
         check(activeMetricsWindow.compareAndSet(window, null)) { "Section計測区間が一致しません" }
         val end = totals()
         val start = window.baseline
-        return "scope=candidateWorkInterval peakPrecision=sampledNonAtomic " +
+        return "scope=candidateAttemptWorkInterval peakPrecision=sampledNonAtomic " +
+            "deltaPrecision=perCounterNonAtomic boundaryAlignment=notGuaranteed generationAttribution=mixed " +
             "inFlightPeakSampled=${window.sampledPeak.get()} " +
             "capacityRejectionsDelta=${end.rejected - start.rejected} " +
             "dataFinishedDelta=${end.dataFinished - start.dataFinished} " +
