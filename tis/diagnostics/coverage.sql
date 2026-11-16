@@ -50,7 +50,7 @@ WITH markers AS (
   FROM markers, trace_bounds, losses
 )
 SELECT
-  -- 現行ログはTIS session/generationとnative pointerの対応を提供しない。
+  -- 本queryはTISのCREATE_BEGIN/ENDとnative CREATEの生成区間を照合しない。
   -- 同一nativeの4段階があっても対象再生を追跡できたという成功にはしない。
   0 AS coverage_ok,
   trace_coverage_ok,
