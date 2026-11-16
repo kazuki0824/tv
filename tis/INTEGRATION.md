@@ -24,6 +24,10 @@ Androidの`dumpsys media.audio_flinger`は同一Track ID・session・sample rate
 
 ## Section受付容量の負荷検証（未完了）
 
+`SECTION_EXECUTOR_METRICS`の`scope=candidateWorkInterval`は成功tune後からcandidate終了までの区間を表し、SI収集に加えてProvider公開処理も含み得る。`*Delta`はその区間の累積counter差分であり、過去候補の累積値ではない。`inFlightPeakSampled`は既存SemaphoreのtryAcquire後/拒否後の残数を別途読んだ標本最大値で、解放との競合により予約瞬間の正確なピークを過小評価し得る。旧世代taskが区間へ混入する可能性もある。通常controlとcleanupは別計上する。これらだけで16件の必要十分性・SIの取得率を証明したと扱わず、Filter到着率・世代・候補別損失/完成を同一試行で別途確認する。
+
+
+
 現行16件の受付上限の位置付けは`DESIGN_JA.md`のController executor契約を正とする。固定TSの回帰証跡は[PR #123](https://github.com/kazuki0824/tv/pull/123)の`realTsBurstLossAndRetransmissionStayWithinCandidate`と同PRのfixture READMEを参照する。既存HAL section処理・SDK callback・SI JNI・候補別喪失snapshot・SI完成判定を実行し、owner占有時の複数Filter入力、喪失保持、再送回復、Filter交換・候補切替を確認する。試験成功は当該固定条件の機能回帰であり、実機の入力率に対する16件の十分性を表さない。
 
 実機の容量判断には次の証跡を同一試行で揃える。未取得の間は容量の必要十分性を確認済みとしない。

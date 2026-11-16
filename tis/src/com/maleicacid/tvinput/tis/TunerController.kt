@@ -208,7 +208,10 @@ class TunerController(
     private val controllerControlExecutor =
         java.util.concurrent.Executor { task -> sectionExecutor.executeControl(task) }
 
-    internal fun sectionExecutorMetrics(): String = sectionExecutor.metricsSnapshot()
+    internal fun beginSectionMetricsWindow(): ControllerSerialExecutor.MetricsWindow = sectionExecutor.beginMetricsWindow()
+
+    internal fun finishSectionMetricsWindow(window: ControllerSerialExecutor.MetricsWindow): String =
+        sectionExecutor.finishMetricsWindow(window)
 
     // Framework callbackはここで即時実行し、SectionEventのpayloadを先にdrainする.
     // parser/state mutationだけをcontroller data classへ非同期に渡して、未読eventをqueueへ残さない。

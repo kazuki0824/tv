@@ -1,3 +1,9 @@
+# 2026-11-16 Section候補の区間差分とcleanup分類を是正（#116）
+
+- candidateの成功tune後から終了までを区間化し、data/control/cleanup owner完了件数・時間、容量拒否の累積差分と候補内の標本peakを記録する。過去候補の最大値・累積を当該候補へ帰属しない。
+- Semaphore残数の後読みは非原子的であるため瞬間予約ピークの精密値と扱わず、旧世代task混入とともに診断上の制約を明示する。通常controlとcleanupを分類し、実行順・既存permit上限/所有者は変更しない。
+- 2区間の飽和/軽負荷、cleanup単独の回帰試験を追加し、Robolectric CIの期待試験数を更新した。実機Filter到着率、p99、候補別SI完成/喪失の同一試行測定は未実施。
+
 # 2026-11-16 Section受付とPCM拒否の計測、Timing=10 PES受付の不要コピー除去（#116）
 
 - ControllerSerialExecutorの既存16件受付で、data予約数ピーク、容量拒否件数、data/control owner実行件数・時間の累積と最大を取得する。スキャン候補の終了時に同一generationとともに出力し、既存queue・優先順位・容量値を変更しない。

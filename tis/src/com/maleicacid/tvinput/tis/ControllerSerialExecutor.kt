@@ -64,7 +64,7 @@ internal class ControllerSerialExecutor(
         check(activeMetricsWindow.compareAndSet(window, null)) { "Section計測区間が一致しません" }
         val end = totals()
         val start = window.baseline
-        return "scope=collectionInterval peakPrecision=sampledNonAtomic " +
+        return "scope=candidateWorkInterval peakPrecision=sampledNonAtomic " +
             "inFlightPeakSampled=${window.sampledPeak.get()} " +
             "capacityRejectionsDelta=${end.rejected - start.rejected} " +
             "dataFinishedDelta=${end.dataFinished - start.dataFinished} " +
@@ -80,13 +80,17 @@ internal class ControllerSerialExecutor(
 
     override fun onDataSlotsAcquired(inFlight: Int) {
         inFlightPeak.accumulateAndGet(inFlight) { previous, current -> maxOf(previous, current) }
-        activeMetricsWindow.get()?.sampledPeak?.accumulateAndGet(inFlight) { previous, current -> maxOf(previous, current) }
+        activeMetricsWindow.get()?.sampledPeak?.accumulateAndGet(inFlight) { previous, current ->
+            maxOf(previous, current)
+        }
     }
 
     override fun onDataSlotsRejected(inFlight: Int) {
         dataCapacityRejections.incrementAndGet()
         inFlightPeak.accumulateAndGet(inFlight) { previous, current -> maxOf(previous, current) }
-        activeMetricsWindow.get()?.sampledPeak?.accumulateAndGet(inFlight) { previous, current -> maxOf(previous, current) }
+        activeMetricsWindow.get()?.sampledPeak?.accumulateAndGet(inFlight) { previous, current ->
+            maxOf(previous, current)
+        }
     }
 
     override fun beforeExecute(

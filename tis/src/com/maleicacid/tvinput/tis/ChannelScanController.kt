@@ -201,6 +201,7 @@ class ChannelScanController(
             }
             val candidateLossBaseline = checkNotNull(lossBaseline) { "成功選局でSection解析境界を通過していません" }
             activateScanGeneration(tune.generation)
+            val metricsWindow = tunerController.beginSectionMetricsWindow()
             try {
                 val collection =
                     collectSiForCandidate(
@@ -251,7 +252,7 @@ class ChannelScanController(
                 Log.d(
                     LogTags.TIS,
                     "SECTION_EXECUTOR_METRICS candidate=$candidate generation=${tune.generation} " +
-                        tunerController.sectionExecutorMetrics(),
+                        tunerController.finishSectionMetricsWindow(metricsWindow),
                 )
                 clearActiveScanGeneration(tune.generation)
             }
@@ -425,6 +426,7 @@ class ChannelScanController(
             }
             val candidateLossBaseline = checkNotNull(lossBaseline) { "成功選局でSection解析境界を通過していません" }
             activateScanGeneration(tune.generation)
+            val metricsWindow = tunerController.beginSectionMetricsWindow()
             try {
                 val requiredServiceKeys = targetsByTune.getValue(candidate.tuneKey).mapTo(linkedSetOf()) { it.second }
                 val collection =
@@ -467,6 +469,11 @@ class ChannelScanController(
                 }
                 updated += publishResult.changed
             } finally {
+                Log.d(
+                    LogTags.TIS,
+                    "SECTION_EXECUTOR_METRICS candidate=$candidate generation=${tune.generation} " +
+                        tunerController.finishSectionMetricsWindow(metricsWindow),
+                )
                 clearActiveScanGeneration(tune.generation)
             }
         }
