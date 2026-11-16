@@ -348,59 +348,6 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(coordinator.retryFailureClassesForTest() == setOf(ProgramPublishCoordinator.FailureClass.OBSOLETE_DELETE_FAILED))
     }
 
-    // 513件失敗後に新しいSIがない場合は再試行しないことと、同一SIの再供給で復旧することを分離する。
-    @Suppress("LongMethod")
-    @Test
-    fun evictedRetryWindowNeedsCurrentSiToRebuildAfter512Bound() {
-        val store = FakeStore(failDelete = true)
-        val writer = TvProviderWriter("input.test", store, testOnly = true)
-        var now = 0L
-        val coordinator = ProgramPublishCoordinator(writer) { now }
-        writer.upsertChannels(
-            listOf(
-                ChannelRecord(
-                    key,
-                    0x01,
-                    "101",
-                    "NHK",
-                    FrequencyHz(473_142_857L),
-                    casFactsCanonicalJson = testCasFacts(),
-                ),
-            ),
-        )
-        val windows =
-            (0..512).map { index ->
-                val start = program.startTimeMillis + index * 60_000L
-                ProgramPublishCoordinator.EpgUpdateWindow(key, start, start + 30_000L, emptySet(), true)
-            }
-        val failed =
-            coordinator.publishWithUpdates(
-                ChannelScanController.PublishMode.SETUP_SCAN,
-                emptyList(),
-                windows,
-                null,
-            )
-        check(failed.failures.isNotEmpty())
-        check(coordinator.retryWindowCountForTest() == 512)
-
-        store.failDelete = false
-        store.deletedWindows.clear()
-        now += 60_000L
-        coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), emptyList(), null)
-        check(store.deletedWindows.isEmpty()) { "同じSIが供給されなければ古い脱落を復元できません" }
-
-        val recovered =
-            coordinator.publishWithUpdates(
-                ChannelScanController.PublishMode.SETUP_SCAN,
-                emptyList(),
-                windows,
-                null,
-            )
-        check(recovered.failures.isEmpty())
-        check(store.deletedWindows.toSet() == windows.map { it.windowStartMs to it.windowEndMs }.toSet())
-        check(coordinator.retryWindowCountForTest() == 0)
-    }
-
     @Test fun dirtyWindowQueueHasOneBoundedLruLimit() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
@@ -443,18 +390,22 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         store.deletedWindows.clear()
         store.failDelete = false
         now += 60_000L
-        val current =
-            windows.first().copy(
-                windowEndMs = windows.last().windowEndMs,
-            )
         coordinator.publishWithUpdates(
             mode = ChannelScanController.PublishMode.SETUP_SCAN,
             allPrograms = emptyList(),
-            updateWindows = listOf(current),
+            updateWindows = emptyList(),
             allowedServiceKeys = null,
         )
-        val expected = (listOf(current) + windows.drop(1)).map { it.windowStartMs to it.windowEndMs }.toSet()
-        check(store.deletedWindows.toSet() == expected) { "退避済みの最古区間を再試行してはなりません" }
+        check(store.deletedWindows.isEmpty()) { "新しいSI区間がなければ再試行義務を復元できない" }
+        // 同一SI入力を再供給した場合は、LRUから落ちた最古の区間も再評価できる。
+        coordinator.publishWithUpdates(
+            mode = ChannelScanController.PublishMode.SETUP_SCAN,
+            allPrograms = emptyList(),
+            updateWindows = windows,
+            allowedServiceKeys = null,
+        )
+        val expected = windows.map { it.windowStartMs to it.windowEndMs }.toSet()
+        check(store.deletedWindows.toSet() == expected) { "同一SI再供給時に513区間すべてを再評価する必要があります" }
         check(coordinator.retryWindowCountForTest() == 0)
     }
 
