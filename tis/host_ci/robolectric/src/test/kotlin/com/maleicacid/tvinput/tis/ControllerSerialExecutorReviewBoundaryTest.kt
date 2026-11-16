@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -185,6 +186,65 @@ class ControllerSerialExecutorReviewBoundaryTest {
             check(result.contains("controlFinishedDelta=0"))
             check(result.contains("cleanupFinishedDelta=1"))
         } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    // 取得と標本読取りの間へ解放を挟み、競合を確率や負荷に依存せず再現する。
+    @Suppress("LongMethod")
+    @Test
+    fun sampledPeakCanMissReservationWhenOwnerReleasesBeforeSampling() {
+        val executor = ControllerSerialExecutor("Section標本競合試験", maxPendingDataTasks = 2)
+        val pauseSample = AtomicBoolean(false)
+        val acquiredSecond = CountDownLatch(1)
+        val resumeSample = CountDownLatch(1)
+        val firstStarted = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val secondFinished = CountDownLatch(1)
+        val submitFailure = AtomicReference<Throwable>()
+        val slots =
+            object : Semaphore(2) {
+                override fun availablePermits(): Int {
+                    if (pauseSample.compareAndSet(true, false)) {
+                        // 一つ目は未解放、二つ目は取得済みなので実占有は2。
+                        check(super.availablePermits() == 0)
+                        acquiredSecond.countDown()
+                        check(resumeSample.await(WAIT_SECONDS, TimeUnit.SECONDS))
+                    }
+                    return super.availablePermits()
+                }
+            }
+        ReflectionHelpers.setField(executor, "pendingDataSlots", slots)
+        val submitter =
+            Thread {
+                submitFailure.set(
+                    runCatching { executor.executeData { secondFinished.countDown() } }.exceptionOrNull(),
+                )
+            }
+        try {
+            executor.executeData {
+                firstStarted.countDown()
+                releaseFirst.await()
+            }
+            check(firstStarted.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            pauseSample.set(true)
+            submitter.start()
+            check(acquiredSecond.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            releaseFirst.countDown()
+            executor.submitControl {}.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            check(slots.availablePermits() == 1)
+            resumeSample.countDown()
+            submitter.join(JOIN_WAIT_MS)
+            check(!submitter.isAlive && submitFailure.get() == null)
+            check(secondFinished.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            executor.submitControl {}.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            check(slots.availablePermits() == 2)
+            check(executor.metricsSnapshot().contains("dataInFlightPeakSampled=1 dataCapacityRejections=0"))
+        } finally {
+            releaseFirst.countDown()
+            resumeSample.countDown()
+            submitter.interrupt()
+            submitter.join(JOIN_WAIT_MS)
             executor.shutdownNow()
         }
     }

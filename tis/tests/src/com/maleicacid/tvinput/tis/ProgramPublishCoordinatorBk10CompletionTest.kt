@@ -5,7 +5,11 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
 import android.media.tv.TvContract
+import com.maleicacid.tvinput.aribsi.AribEvent
+import com.maleicacid.tvinput.aribsi.EitInstanceState
+import com.maleicacid.tvinput.aribsi.EpgPublicationPolicy
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
+import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
@@ -348,65 +352,91 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(coordinator.retryFailureClassesForTest() == setOf(ProgramPublishCoordinator.FailureClass.OBSOLETE_DELETE_FAILED))
     }
 
+    // 失敗、LRU脱落、同一SI再投影、成功後省略を一続きで検査する。
+    @Suppress("LongMethod")
     @Test fun dirtyWindowQueueHasOneBoundedLruLimit() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         var now = 0L
         val coordinator = ProgramPublishCoordinator(writer) { now }
+        val keys = (1..513).map { ServiceKey(4, 16625, it) }
         writer.upsertChannels(
-            listOf(
+            keys.map {
                 ChannelRecord(
-                    key,
-                    0x01,
+                    it,
+                    1,
                     "101",
                     "NHK",
                     FrequencyHz(473_142_857L),
-                    casFactsCanonicalJson =
-                        com.maleicacid.tvinput.tis
-                            .testCasFacts(false),
-                ),
-            ),
+                    casFactsCanonicalJson = testCasFacts(false),
+                )
+            },
         )
-
-        val windows =
-            (0 until (512 + 1)).map { i ->
-                ProgramPublishCoordinator.EpgUpdateWindow(
-                    serviceKey = key,
-                    windowStartMs = program.startTimeMillis + i * 60_000L,
-                    windowEndMs = program.startTimeMillis + i * 60_000L + 30_000L,
-                    validProgramKeys = emptySet(),
-                    deletionAuthoritative = true,
+        val events =
+            keys.mapIndexed { index, service ->
+                AribEvent(
+                    serviceKey = service,
+                    stableIdentity = null,
+                    eventId = 10,
+                    startTimeMillis = program.startTimeMillis + index * 60_000L,
+                    durationMillis = 30_000L,
+                    title = "番組",
+                    description = "",
                 )
             }
-        coordinator.publishWithUpdates(
-            mode = ChannelScanController.PublishMode.SETUP_SCAN,
-            allPrograms = emptyList(),
-            updateWindows = windows,
-            allowedServiceKeys = null,
-        )
-        check(coordinator.retryWindowCountForTest() == 512) {
-            "再試行区間は単一の有界LRUに収める必要があります"
-        }
+        val instances =
+            keys.map { EitInstanceState(it, 0x4e, 0, true, 0, listOf(0), emptyList(), listOf(0), true, false) }
+        val policy = EpgPublicationPolicy()
+
+        // NativeAribSiParserと同じ投影入口を毎回呼び、version/generation/入力eventを変えない。
+        fun currentWindows() =
+            policy
+                .project(SiDiscoveryProfile.ISDB_T, 1, events, instances)
+                .windows
+                .map(ProgramPublishCoordinator::EpgUpdateWindow)
+
+        val windows = currentWindows()
+        check(windows.size == 513 && windows.all { it.deletionAuthoritative })
+        val failed =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                emptyList(),
+                windows,
+                keys.toSet(),
+            )
+        check(failed.failures.isNotEmpty())
+        check(coordinator.retryWindowCountForTest() == 512)
         store.deletedWindows.clear()
         store.failDelete = false
         now += 60_000L
         coordinator.publishWithUpdates(
-            mode = ChannelScanController.PublishMode.SETUP_SCAN,
-            allPrograms = emptyList(),
-            updateWindows = emptyList(),
-            allowedServiceKeys = null,
+            ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+            emptyList(),
+            emptyList(),
+            keys.toSet(),
         )
-        check(store.deletedWindows.isEmpty()) { "新しいSI区間がなければ再試行義務を復元できない" }
-        // 同一SI入力を再供給した場合は、LRUから落ちた最古の区間も再評価できる。
-        coordinator.publishWithUpdates(
-            mode = ChannelScanController.PublishMode.SETUP_SCAN,
-            allPrograms = emptyList(),
-            updateWindows = windows,
-            allowedServiceKeys = null,
-        )
+        check(store.deletedWindows.isEmpty()) { "authorityなしでは旧要求だけから削除しない" }
+        check(currentWindows() == windows) { "同一SIの再投影は差分なしでも現在の全区間を返す" }
+        val recovered =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                emptyList(),
+                currentWindows(),
+                keys.toSet(),
+            )
+        check(recovered.hasCommittedTarget && recovered.committedServiceCount == 513)
         val expected = windows.map { it.windowStartMs to it.windowEndMs }.toSet()
-        check(store.deletedWindows.toSet() == expected) { "同一SI再供給時に513区間すべてを再評価する必要があります" }
+        check(store.deletedWindows.toSet() == expected) { "LRU脱落区間を含む513区間すべてを再評価する" }
         check(coordinator.retryWindowCountForTest() == 0)
+        val calls = store.deleteCalls
+        val unchanged =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                emptyList(),
+                currentWindows(),
+                keys.toSet(),
+            )
+        check(unchanged.skippedUnchanged == 513 && store.deleteCalls == calls)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

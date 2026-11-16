@@ -55,7 +55,8 @@ internal abstract class PrioritySerialExecutor(
     protected val pendingDataSlots =
         Semaphore(maxPendingDataTasks.also { require(it > 0) { "maxPendingDataTasksは正でなければなりません" } })
 
-    // 容量・配送を変更せず、実機計測者に取得/拒否直前の値だけを通知する。
+    // 容量・配送を変更せず、取得/拒否後に別操作で読んだ残数の標本を通知する。
+    // 並走する解放・取得を含み得るため、判定瞬間の占有数とは限らない。
     protected open fun onDataSlotsAcquired(inFlight: Int) = Unit
 
     protected open fun onDataSlotsRejected(inFlight: Int) = Unit
