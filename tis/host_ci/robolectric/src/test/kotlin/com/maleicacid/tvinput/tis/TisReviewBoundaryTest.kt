@@ -185,6 +185,55 @@ class TisReviewBoundaryTest {
         check(store.channels.isEmpty())
     }
 
+    @Test fun bsSetupScanWaitsForNitTransmissionWithoutWeakeningPublication() {
+        val bs = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_S_BS)
+        val uhf = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_T_UHF)
+        val catv = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_T_CATV)
+        val cs = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_S_110CS)
+
+        check(bs.maxWaitMs == 44_000L)
+        check(bs.minWaitMs == 2_000L && bs.stableWaitMs == 1_200L)
+        check(uhf.maxWaitMs == 12_000L && catv.maxWaitMs == 12_000L && cs.maxWaitMs == 12_000L)
+        check(ChannelScanController.shouldStartSiSnapshot(12_000L, bs))
+        check(!ChannelScanController.shouldStartSiSnapshot(44_000L, bs))
+        check(
+            ChannelScanController.collectionOutcome(
+                discoveryComplete = false,
+                elapsedMs = 12_000L,
+                stableForMs = 12_000L,
+                registrationReadyServices = 0,
+                policy = bs,
+            ) == null,
+        )
+        check(
+            ChannelScanController.collectionOutcome(
+                discoveryComplete = true,
+                elapsedMs = 23_000L,
+                stableForMs = 1_200L,
+                registrationReadyServices = 1,
+                policy = bs,
+            ) == ChannelScanController.SiCollectionOutcome.COMPLETE,
+        )
+        check(
+            ChannelScanController.collectionOutcome(
+                discoveryComplete = false,
+                elapsedMs = 44_000L,
+                stableForMs = 44_000L,
+                registrationReadyServices = 0,
+                policy = bs,
+            ) == ChannelScanController.SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE,
+        )
+        check(
+            ChannelScanController.collectionOutcome(
+                discoveryComplete = false,
+                elapsedMs = 2_000L,
+                stableForMs = 1_200L,
+                registrationReadyServices = 1,
+                policy = bs,
+            ) == ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL,
+        )
+    }
+
     @Test fun liveTuneWithoutCurrentServiceFactsRemainsPending() {
         val pending =
             com.maleicacid.tvinput.aribsi.ServicePolicyDecision(

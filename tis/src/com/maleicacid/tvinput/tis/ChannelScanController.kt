@@ -213,6 +213,7 @@ class ChannelScanController(
                             SiCollectionRequirements(PublishMode.SETUP_SCAN, discoveryProfile(candidate.kind)),
                             tune.generation,
                             candidateLossBaseline,
+                            setupScanCollectionPolicy(candidate.kind),
                         )
                     collection.diagnostic?.let { diagnostics += it }
                     if (!collection.mayPublishChannels) {
@@ -771,8 +772,8 @@ class ChannelScanController(
         requirements: SiCollectionRequirements,
         tuneGeneration: Long,
         lossBaseline: SectionTransportLossSnapshot,
+        policy: SiCollectionPolicy = DEFAULT_SI_POLICY,
     ): SiCollectionResult {
-        val policy = DEFAULT_SI_POLICY
         val startedAt = android.os.SystemClock.elapsedRealtime()
         var lastCounts: ServiceCounts? = null
         var stableSince = startedAt
@@ -1107,6 +1108,16 @@ class ChannelScanController(
         }
 
         private val DEFAULT_SI_POLICY = SiCollectionPolicy()
+
+        // TR-B15 PSI/SIのBS NIT運用では最大20秒の再送周期に対し、
+        // セクション最大2周期と10%の送出揺らぎを見込む。
+        // 初回BS設定スキャンのみ延長し、他モードの待機予算は維持する。
+        internal fun setupScanCollectionPolicy(kind: ScanCandidateKind): SiCollectionPolicy =
+            if (kind == ScanCandidateKind.ISDB_S_BS) {
+                DEFAULT_SI_POLICY.copy(maxWaitMs = 44_000L)
+            } else {
+                DEFAULT_SI_POLICY
+            }
 
         private fun setupPublicationFailureTerminal(failures: List<TvProviderWriter.Diagnostic>): ScanTerminal? =
             if (failures.isEmpty()) {
