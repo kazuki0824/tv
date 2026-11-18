@@ -1132,6 +1132,7 @@ class ChannelScanController(
                 ScanTerminalOutcome.INTERNAL_FAILURE,
                 "setup scan内部処理に失敗しました: ${error.message ?: error::class.java.simpleName}",
             )
+
         private val DEFAULT_SI_POLICY = SiCollectionPolicy()
 
         // ARIB TR-B15 4.6-E1 第2分冊 表12-6、§12.5/12.6：

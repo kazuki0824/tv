@@ -300,9 +300,11 @@ class TisReviewBoundaryTest {
                 cancelled = true,
                 resourceLost = false,
                 terminalFailure = failure,
-            ).outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED,
+            )
+                .outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED,
         )
     }
+
     @Test fun liveTuneWithoutCurrentServiceFactsRemainsPending() {
         val pending =
             com.maleicacid.tvinput.aribsi.ServicePolicyDecision(
