@@ -13,9 +13,9 @@ import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SectionTransportLossSnapshot
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
-import com.maleicacid.tvinput.aribsi.SmdSemanticFacts
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
+import com.maleicacid.tvinput.aribsi.SmdSemanticFacts
 import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.aribsi.WellKnownSectionPid
 import com.maleicacid.tvinput.common.LogTags
@@ -1122,8 +1122,7 @@ class ChannelScanController(
                 .filter { (key, complete) -> key.component == "NIT" || !complete }
                 .map { (key, complete) ->
                     "component=${key.component} onid=${key.onid} tsid=${key.tsid} sid=${key.sid} complete=$complete"
-                }
-                .sorted()
+                }.sorted()
 
         internal fun scanServiceSmdRecord(
             key: ServiceKey,
@@ -1136,7 +1135,10 @@ class ChannelScanController(
 
         // logcatのUTF-8 bytes上限に対して、4-byte Unicodeでも一片768 bytes以下にする。
         // 結合で原文へ復元可能にし、欠落を伴う先頭文字列の切捨ては行わない。
-        internal fun scanLogFragments(text: String): List<String> = text.chunked(192)
+        private const val SCAN_LOG_FRAGMENT_LENGTH = 192
+
+        internal fun scanLogFragments(text: String): List<String> = text.chunked(SCAN_LOG_FRAGMENT_LENGTH)
+
         internal fun shouldRefreshPmtFiltersForSection(pid: TsPid?): Boolean = pid == WellKnownSectionPid.PAT
 
         // 候補開始時のsnapshotからの増分のみを候補の喪失として扱い、前候補分を混入させない。
