@@ -13,6 +13,7 @@ import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SectionTransportLossSnapshot
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
+import com.maleicacid.tvinput.aribsi.SmdSemanticFacts
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.TransportKey
@@ -876,7 +877,8 @@ class ChannelScanController(
                 finalRegistrationReadyServices = finalCounts.registrationReady,
             )
         val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
-        val candidateLoss = candidateTransportLossDetail(lossBaseline, ingestController.transportLossSnapshot())
+        val lossAtEnd = ingestController.transportLossSnapshot()
+        val candidateLoss = candidateTransportLossDetail(lossBaseline, lossAtEnd)
         val message =
             when (outcome) {
                 SiCollectionOutcome.COMPLETE -> {
@@ -898,7 +900,51 @@ class ChannelScanController(
                         "scanTotalSections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
                 }
             }
-        Log.i(LogTags.TIS, "scan 候補の SI 収集結果 candidate=$candidate outcome=$outcome complete=$complete counts=$finalCounts message=$message")
+        // logcatの単一record上限で原因情報を失わないよう、候補・scope・SMDを独立行へ分離する。
+        val inputLossDelta = (lossAtEnd.inputDeliveryLoss - lossBaseline.inputDeliveryLoss).coerceAtLeast(0)
+        val overflowDelta = (lossAtEnd.filterOverflow - lossBaseline.filterOverflow).coerceAtLeast(0)
+        Log.i(
+            LogTags.TIS,
+            "scan 候補の SI 収集結果 candidate=$candidate outcome=$outcome complete=$complete " +
+                "generation=$tuneGeneration stage=${finalCounts.discoveryStage} services=${finalCounts.total} " +
+                "registrationReadyServices=${finalCounts.registrationReady} elapsedMs=$elapsed " +
+                "candidateInputDeliveryLoss=$inputLossDelta candidateFilterOverflow=$overflowDelta",
+        )
+        for (record in scanRequiredTableRecords(finalCounts.collectionStatus)) {
+            Log.i(LogTags.TIS, "SCAN_TABLE_STATUS candidate=$candidate generation=$tuneGeneration $record")
+        }
+        for ((serviceKey, facts) in finalSnapshot.semanticFactsByServiceKey) {
+            Log.i(
+                LogTags.TIS,
+                "SCAN_SMD_STATUS candidate=$candidate generation=$tuneGeneration " +
+                    scanServiceSmdRecord(serviceKey, facts.smd),
+            )
+        }
+        for ((serviceKey, reasons) in finalCounts.incompleteReasons) {
+            for (reason in reasons) {
+                val parts = scanLogFragments(reason)
+                for ((index, part) in parts.withIndex()) {
+                    Log.i(
+                        LogTags.TIS,
+                        "SCAN_SERVICE_REASON candidate=$candidate generation=$tuneGeneration " +
+                            "onid=${serviceKey.originalNetworkId} tsid=${serviceKey.transportStreamId} " +
+                            "sid=${serviceKey.serviceId} part=${index + 1}/${parts.size} text=$part",
+                    )
+                }
+            }
+        }
+        // 正常成立しなかった候補だけ、PID別の既存累積診断を分割して保全する。
+        // この値は候補差分ではなくcollectorの累積値である。
+        if (outcome != SiCollectionOutcome.COMPLETE && outcome != SiCollectionOutcome.SIGNAL_UNAVAILABLE) {
+            val parts = scanLogFragments(ingestController.diagnosticSummary())
+            for ((index, part) in parts.withIndex()) {
+                Log.i(
+                    LogTags.TIS,
+                    "SCAN_SECTION_COUNTERS candidate=$candidate generation=$tuneGeneration " +
+                        "scope=collectorLifetime part=${index + 1}/${parts.size} text=$part",
+                )
+            }
+        }
         return SiCollectionResult(
             outcome = outcome,
             diagnostic = message?.let { ScanDiagnostic(candidate, it) },
@@ -1070,6 +1116,27 @@ class ChannelScanController(
 
     companion object {
         // PMT PID集合の根拠はPAT。非PAT SIやCAS接続変更では再計算しない。
+        // NITは成立・不成立とも記録し、他の必要表は不成立scopeだけ記録する。
+        internal fun scanRequiredTableRecords(status: SiCollectionRequirements.Status): List<String> =
+            status.requirements.entries
+                .filter { (key, complete) -> key.component == "NIT" || !complete }
+                .map { (key, complete) ->
+                    "component=${key.component} onid=${key.onid} tsid=${key.tsid} sid=${key.sid} complete=$complete"
+                }
+                .sorted()
+
+        internal fun scanServiceSmdRecord(
+            key: ServiceKey,
+            smd: SmdSemanticFacts,
+        ): String =
+            "onid=${key.originalNetworkId} tsid=${key.transportStreamId} sid=${key.serviceId} " +
+                "smdPresent=${smd.descriptorPresent} smdSyntaxValid=${smd.syntaxValid} " +
+                "smdState=${smd.semanticState.wireValue} smdSystem=${smd.broadcastSystem} " +
+                "smdSystemManagementId=${smd.systemManagementId}"
+
+        // logcatのUTF-8 bytes上限に対して、4-byte Unicodeでも一片768 bytes以下にする。
+        // 結合で原文へ復元可能にし、欠落を伴う先頭文字列の切捨ては行わない。
+        internal fun scanLogFragments(text: String): List<String> = text.chunked(192)
         internal fun shouldRefreshPmtFiltersForSection(pid: TsPid?): Boolean = pid == WellKnownSectionPid.PAT
 
         // 候補開始時のsnapshotからの増分のみを候補の喪失として扱い、前候補分を混入させない。
