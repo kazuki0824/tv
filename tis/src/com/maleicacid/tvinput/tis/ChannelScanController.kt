@@ -748,8 +748,11 @@ class ChannelScanController(
             nowMs = { android.os.SystemClock.elapsedRealtime() },
             attempt = { engine.tryServiceRegistrationSnapshot() },
             sleep = { milliseconds ->
-                runCatching { Thread.sleep(milliseconds) }
-                Unit
+                try {
+                    Thread.sleep(milliseconds)
+                } catch (_: InterruptedException) {
+                    // 取消し状態は再試行ループの先頭で確認する。
+                }
             },
         )
 
