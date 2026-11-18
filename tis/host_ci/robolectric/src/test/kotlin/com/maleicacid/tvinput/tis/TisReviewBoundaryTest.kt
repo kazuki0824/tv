@@ -295,14 +295,13 @@ class TisReviewBoundaryTest {
             )
         check(snapshot == null && attempts == 1 && nowMs == 44_200L)
         val failure = ChannelScanController.setupScanInternalFailure(IllegalStateException("snapshot unavailable"))
-        check(
+        val terminal =
             ChannelScanController.initialScanTerminal(
                 cancelled = true,
                 resourceLost = false,
                 terminalFailure = failure,
             )
-                .outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED,
-        )
+        check(terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED)
     }
 
     @Test fun liveTuneWithoutCurrentServiceFactsRemainsPending() {
