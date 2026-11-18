@@ -92,6 +92,7 @@ class ChannelScanController(
         val maxWaitMs: Long = 12_000L,
         val stableWaitMs: Long = 1_200L,
         val pollIntervalMs: Long = 200L,
+        val finalSnapshotWaitMs: Long = maxWaitMs,
     )
 
     enum class PublishMode {
@@ -740,7 +741,7 @@ class ChannelScanController(
         policy: SiCollectionPolicy,
         finalizationStartedAt: Long,
     ): com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? {
-        val finalDeadline = finalizationStartedAt + policy.maxWaitMs
+        val finalDeadline = finalizationStartedAt + policy.finalSnapshotWaitMs
         return acquireFinalSnapshotUnlessCancelled(
             cancelled,
             attempt = {
@@ -1109,9 +1110,11 @@ class ChannelScanController(
 
         private val DEFAULT_SI_POLICY = SiCollectionPolicy()
 
-        // TR-B15 PSI/SIのBS NIT運用では最大20秒の再送周期に対し、
-        // セクション最大2周期と10%の送出揺らぎを見込む。
-        // 初回BS設定スキャンのみ延長し、他モードの待機予算は維持する。
+        // ARIB TR-B15 4.6-E1 第2分冊 表12-6、§12.5/12.6：
+        // NIT再送周期上限20秒×調整1.1×Section間隔上限2＝44秒。
+        // 旧版のSection送出上限から導いた収集上限であり、
+        // 現行8.10版の同条文照合・実機での原因確定は別途必要。
+        // 初回BS設定スキャンのみ適用し、最終snapshot待機予算は維持する。
         internal fun setupScanCollectionPolicy(kind: ScanCandidateKind): SiCollectionPolicy =
             if (kind == ScanCandidateKind.ISDB_S_BS) {
                 DEFAULT_SI_POLICY.copy(maxWaitMs = 44_000L)

@@ -192,8 +192,10 @@ class TisReviewBoundaryTest {
         val cs = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_S_110CS)
 
         check(bs.maxWaitMs == 44_000L)
+        check(bs.finalSnapshotWaitMs == 12_000L)
         check(bs.minWaitMs == 2_000L && bs.stableWaitMs == 1_200L)
         check(uhf.maxWaitMs == 12_000L && catv.maxWaitMs == 12_000L && cs.maxWaitMs == 12_000L)
+        check(uhf.finalSnapshotWaitMs == 12_000L && catv.finalSnapshotWaitMs == 12_000L && cs.finalSnapshotWaitMs == 12_000L)
         check(ChannelScanController.shouldStartSiSnapshot(12_000L, bs))
         check(!ChannelScanController.shouldStartSiSnapshot(44_000L, bs))
         check(
