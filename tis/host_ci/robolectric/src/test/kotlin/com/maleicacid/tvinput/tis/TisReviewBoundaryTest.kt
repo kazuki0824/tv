@@ -245,7 +245,6 @@ class TisReviewBoundaryTest {
         )
     }
 
-
     private fun assertSplitScanDiagnosticRecords() {
         // BS対象TSのNIT不成立が長大なSI出力の後半で失われないことを固定する。
         val requirements =
