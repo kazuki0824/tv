@@ -196,28 +196,7 @@ class TisReviewBoundaryTest {
         val uhf = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_T_UHF)
         val catv = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_T_CATV)
         val cs = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_S_110CS)
-        // BS対象TSのNIT不成立が長大なSI出力の後半で失われないことを固定する。
-        val requirements =
-            SiCollectionRequirements.Status(
-                linkedMapOf(
-                    SiCollectionRequirements.Key("PAT", null, null, null) to true,
-                    SiCollectionRequirements.Key("NIT", 4, 17970, null) to false,
-                    SiCollectionRequirements.Key("NIT", 4, 16528, null) to true,
-                    SiCollectionRequirements.Key("PMT", 4, 17970, 251) to false,
-                ),
-            )
-        val rows = ChannelScanController.scanRequiredTableRecords(requirements)
-        check(rows.size == 3)
-        check(rows.any { it == "component=NIT onid=4 tsid=17970 sid=null complete=false" })
-        check(rows.any { it == "component=NIT onid=4 tsid=16528 sid=null complete=true" })
-        check(rows.any { it == "component=PMT onid=4 tsid=17970 sid=251 complete=false" })
-        check(rows.none { it.startsWith("component=PAT") })
-        check(rows.all { it.toByteArray(Charsets.UTF_8).size < 1_024 })
-        val diagnostic = "loss=" + "missing-NIT-原因".repeat(500)
-        val parts = ChannelScanController.scanLogFragments(diagnostic)
-        check(parts.size > 1 && parts.joinToString("") == diagnostic)
-        check(parts.all { it.toByteArray(Charsets.UTF_8).size <= 768 })
-
+        assertSplitScanDiagnosticRecords()
 
         check(bs.maxWaitMs == 44_000L)
         check(bs.finalSnapshotWaitMs == 12_000L)
@@ -264,6 +243,31 @@ class TisReviewBoundaryTest {
                 policy = bs,
             ) == ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL,
         )
+    }
+
+
+    private fun assertSplitScanDiagnosticRecords() {
+        // BS対象TSのNIT不成立が長大なSI出力の後半で失われないことを固定する。
+        val requirements =
+            SiCollectionRequirements.Status(
+                linkedMapOf(
+                    SiCollectionRequirements.Key("PAT", null, null, null) to true,
+                    SiCollectionRequirements.Key("NIT", 4, 17970, null) to false,
+                    SiCollectionRequirements.Key("NIT", 4, 16528, null) to true,
+                    SiCollectionRequirements.Key("PMT", 4, 17970, 251) to false,
+                ),
+            )
+        val rows = ChannelScanController.scanRequiredTableRecords(requirements)
+        check(rows.size == 3)
+        check(rows.any { it == "component=NIT onid=4 tsid=17970 sid=null complete=false" })
+        check(rows.any { it == "component=NIT onid=4 tsid=16528 sid=null complete=true" })
+        check(rows.any { it == "component=PMT onid=4 tsid=17970 sid=251 complete=false" })
+        check(rows.none { it.startsWith("component=PAT") })
+        check(rows.all { it.toByteArray(Charsets.UTF_8).size < 1_024 })
+        val diagnostic = "loss=" + "missing-NIT-原因".repeat(500)
+        val parts = ChannelScanController.scanLogFragments(diagnostic)
+        check(parts.size > 1 && parts.joinToString("") == diagnostic)
+        check(parts.all { it.toByteArray(Charsets.UTF_8).size <= 768 })
     }
 
     @Test fun bsFinalSnapshotTimeoutIsLimitedToTwelveSecondsAfterCollection() {
