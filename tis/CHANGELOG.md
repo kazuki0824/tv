@@ -1,3 +1,9 @@
+# 2026-11-18 スキャン候補のNIT・SMD診断を短いレコードへ分割（#116）
+
+- 設定・保守scanのTune/Filter/公開ゲートを変更せず、候補の長いlogcat結果を従来タグ・outcome・completeを保持した短い要約へ変更。NIT必要scope・SMD・未登録理由を独立した行に保存する。
+- SectionのPID別累積診断は未完了候補で分割記録し、候補差分であると誤認させない。長い原因文字列は欠落なく結合できる分割記録とし、UI向けScanDiagnosticは変更しない。
+- 既存RobolectricのSI公開試験とBS収集境界試験へ診断形式・長いUnicodeの分割／復元検査を追加。テスト件数・CIワークフローは変更しない。実機NIT section取得・BS13候補改善は未検証。
+
 # 2026-11-16 Section計測の開始・終了境界を是正（#116）
 
 - 初期scanと保守scanの計測Windowを選局呼出前へ移し、初期Filter起動・失敗選局も既存のfinallyで記録する。世代fence、Filter解放、受付容量と優先順位は変更しない。
