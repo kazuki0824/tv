@@ -32,6 +32,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implements
 import org.robolectric.util.ReflectionHelpers
+import java.util.concurrent.atomic.AtomicBoolean
 
 // 実TIS境界の失敗注入と資源寿命を、正規生成した所有者で検査する。
 @Suppress("TooManyFunctions")
@@ -183,6 +184,124 @@ class TisReviewBoundaryTest {
         check(rollbackIds == setOf(1L) && store.channels.keys == rollbackIds)
         check(writer.finalizeSetupChannels(false, rollbackIds, emptySet()).isSuccess)
         check(store.channels.isEmpty())
+    }
+
+    @Test fun bsSetupScanWaitsForNitTransmissionWithoutWeakeningPublication() {
+        val bs = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_S_BS)
+        val uhf = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_T_UHF)
+        val catv = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_T_CATV)
+        val cs = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_S_110CS)
+
+        check(bs.maxWaitMs == 44_000L)
+        check(bs.finalSnapshotWaitMs == 12_000L)
+        check(bs.minWaitMs == 2_000L && bs.stableWaitMs == 1_200L)
+        check(uhf.maxWaitMs == 12_000L && catv.maxWaitMs == 12_000L && cs.maxWaitMs == 12_000L)
+        check(uhf.finalSnapshotWaitMs == 12_000L)
+        check(catv.finalSnapshotWaitMs == 12_000L)
+        check(cs.finalSnapshotWaitMs == 12_000L)
+        check(ChannelScanController.shouldStartSiSnapshot(12_000L, bs))
+        check(!ChannelScanController.shouldStartSiSnapshot(44_000L, bs))
+        check(
+            ChannelScanController.collectionOutcome(
+                discoveryComplete = false,
+                elapsedMs = 12_000L,
+                stableForMs = 12_000L,
+                registrationReadyServices = 0,
+                policy = bs,
+            ) == null,
+        )
+        check(
+            ChannelScanController.collectionOutcome(
+                discoveryComplete = true,
+                elapsedMs = 23_000L,
+                stableForMs = 1_200L,
+                registrationReadyServices = 1,
+                policy = bs,
+            ) == ChannelScanController.SiCollectionOutcome.COMPLETE,
+        )
+        check(
+            ChannelScanController.collectionOutcome(
+                discoveryComplete = false,
+                elapsedMs = 44_000L,
+                stableForMs = 44_000L,
+                registrationReadyServices = 0,
+                policy = bs,
+            ) == ChannelScanController.SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE,
+        )
+        check(
+            ChannelScanController.collectionOutcome(
+                discoveryComplete = false,
+                elapsedMs = 2_000L,
+                stableForMs = 1_200L,
+                registrationReadyServices = 1,
+                policy = bs,
+            ) == ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL,
+        )
+    }
+
+    @Test fun bsFinalSnapshotTimeoutIsLimitedToTwelveSecondsAfterCollection() {
+        val policy = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_S_BS)
+        var nowMs = policy.maxWaitMs
+        var attempts = 0
+        val failure =
+            runCatching {
+                ChannelScanController.acquireFinalSnapshotWithinPolicy<Any>(
+                    policy = policy,
+                    finalizationStartedAt = policy.maxWaitMs,
+                    cancelled = AtomicBoolean(false),
+                    nowMs = { nowMs },
+                    attempt = {
+                        attempts++
+                        null
+                    },
+                    sleep = { delayMs -> nowMs += delayMs },
+                )
+            }.exceptionOrNull()
+        check(failure is IllegalStateException)
+        check(failure.message == "section filter停止後の最終SI snapshotを有限期限内に取得できません")
+        // 44秒の収集窓と12秒の最終snapshot窓を区別する。実機でのcleanup実行時間は含まない。
+        check(nowMs == 56_000L && attempts == 60)
+        val terminal = ChannelScanController.setupScanInternalFailure(failure)
+        check(terminal.outcome == ChannelScanController.ScanTerminalOutcome.INTERNAL_FAILURE)
+        check(terminal.detail.contains("最終SI snapshot"))
+        check(
+            ChannelScanController.initialScanTerminal(
+                cancelled = false,
+                resourceLost = false,
+                terminalFailure = terminal,
+            ) == terminal,
+        )
+    }
+
+    @Test fun bsFinalSnapshotCancellationTakesPriorityOverSnapshotFailure() {
+        val policy = ChannelScanController.setupScanCollectionPolicy(ScanCandidateKind.ISDB_S_BS)
+        val cancelled = AtomicBoolean(false)
+        var nowMs = policy.maxWaitMs
+        var attempts = 0
+        val snapshot =
+            ChannelScanController.acquireFinalSnapshotWithinPolicy<Any>(
+                policy = policy,
+                finalizationStartedAt = policy.maxWaitMs,
+                cancelled = cancelled,
+                nowMs = { nowMs },
+                attempt = {
+                    attempts++
+                    null
+                },
+                sleep = { delayMs ->
+                    nowMs += delayMs
+                    cancelled.set(true)
+                },
+            )
+        check(snapshot == null && attempts == 1 && nowMs == 44_200L)
+        val failure = ChannelScanController.setupScanInternalFailure(IllegalStateException("snapshot unavailable"))
+        val terminal =
+            ChannelScanController.initialScanTerminal(
+                cancelled = true,
+                resourceLost = false,
+                terminalFailure = failure,
+            )
+        check(terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED)
     }
 
     @Test fun liveTuneWithoutCurrentServiceFactsRemainsPending() {

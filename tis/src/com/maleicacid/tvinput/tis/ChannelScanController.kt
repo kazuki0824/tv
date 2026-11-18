@@ -92,6 +92,7 @@ class ChannelScanController(
         val maxWaitMs: Long = 12_000L,
         val stableWaitMs: Long = 1_200L,
         val pollIntervalMs: Long = 200L,
+        val finalSnapshotWaitMs: Long = maxWaitMs,
     )
 
     enum class PublishMode {
@@ -213,6 +214,7 @@ class ChannelScanController(
                             SiCollectionRequirements(PublishMode.SETUP_SCAN, discoveryProfile(candidate.kind)),
                             tune.generation,
                             candidateLossBaseline,
+                            setupScanCollectionPolicy(candidate.kind),
                         )
                     collection.diagnostic?.let { diagnostics += it }
                     if (!collection.mayPublishChannels) {
@@ -332,10 +334,10 @@ class ChannelScanController(
                 }
             }
         } catch (error: Exception) {
-            val message = "setup scan内部処理に失敗しました: ${error.message ?: error::class.java.simpleName}"
-            currentCandidate?.let { diagnostics += ScanDiagnostic(it, message) }
-            Log.w(LogTags.TIS, message, error)
-            terminalFailure = ScanTerminal(ScanTerminalOutcome.INTERNAL_FAILURE, message)
+            val failure = setupScanInternalFailure(error)
+            currentCandidate?.let { diagnostics += ScanDiagnostic(it, failure.detail) }
+            Log.w(LogTags.TIS, failure.detail, error)
+            terminalFailure = failure
         } finally {
             currentCandidate = null
         }
@@ -738,30 +740,21 @@ class ChannelScanController(
     private fun acquireFinalRegistrationSnapshot(
         policy: SiCollectionPolicy,
         finalizationStartedAt: Long,
-    ): com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? {
-        val finalDeadline = finalizationStartedAt + policy.maxWaitMs
-        return acquireFinalSnapshotUnlessCancelled(
-            cancelled,
-            attempt = {
-                check(shouldStartFinalSiSnapshot(android.os.SystemClock.elapsedRealtime(), finalDeadline)) {
-                    "section filter停止後の最終SI snapshotを有限期限内に取得できません"
+    ): com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot? =
+        acquireFinalSnapshotWithinPolicy(
+            policy = policy,
+            finalizationStartedAt = finalizationStartedAt,
+            cancelled = cancelled,
+            nowMs = { android.os.SystemClock.elapsedRealtime() },
+            attempt = { engine.tryServiceRegistrationSnapshot() },
+            sleep = { milliseconds ->
+                try {
+                    Thread.sleep(milliseconds)
+                } catch (_: InterruptedException) {
+                    // 取消し状態は再試行ループの先頭で確認する。
                 }
-                engine.tryServiceRegistrationSnapshot()
-            },
-            waitForRetry = {
-                val sleepMs =
-                    finalSiSnapshotRetrySleepMs(
-                        android.os.SystemClock.elapsedRealtime(),
-                        finalDeadline,
-                        policy.pollIntervalMs,
-                    )
-                check(sleepMs != null) {
-                    "section filter停止後の最終SI snapshotを有限期限内に取得できません"
-                }
-                runCatching { Thread.sleep(sleepMs) }
             },
         )
-    }
 
     // 安定待ち・期限・取消し・資源喪失の優先順位と、終了後のfilter解放を同じ収集処理で保持する。
     // 各breakは異なる終了理由を確定する。部分完了の4条件はEIT不要・最短待機・登録可能・安定待機の全てを要求する。
@@ -771,8 +764,8 @@ class ChannelScanController(
         requirements: SiCollectionRequirements,
         tuneGeneration: Long,
         lossBaseline: SectionTransportLossSnapshot,
+        policy: SiCollectionPolicy = DEFAULT_SI_POLICY,
     ): SiCollectionResult {
-        val policy = DEFAULT_SI_POLICY
         val startedAt = android.os.SystemClock.elapsedRealtime()
         var lastCounts: ServiceCounts? = null
         var stableSince = startedAt
@@ -1106,7 +1099,56 @@ class ChannelScanController(
             return null
         }
 
+        // 実運用と境界試験で最終snapshot再試行の同一経路を使用する。
+        // 時計とsnapshot応答だけを注入し、実行時の状態・workerは追加しない。
+        @Suppress("LongParameterList")
+        internal fun <T> acquireFinalSnapshotWithinPolicy(
+            policy: SiCollectionPolicy,
+            finalizationStartedAt: Long,
+            cancelled: AtomicBoolean,
+            nowMs: () -> Long,
+            attempt: () -> T?,
+            sleep: (Long) -> Unit,
+        ): T? {
+            val finalDeadline = finalizationStartedAt + policy.finalSnapshotWaitMs
+            return acquireFinalSnapshotUnlessCancelled(
+                cancelled,
+                attempt = {
+                    check(shouldStartFinalSiSnapshot(nowMs(), finalDeadline)) {
+                        "section filter停止後の最終SI snapshotを有限期限内に取得できません"
+                    }
+                    attempt()
+                },
+                waitForRetry = {
+                    val sleepMs = finalSiSnapshotRetrySleepMs(nowMs(), finalDeadline, policy.pollIntervalMs)
+                    check(sleepMs != null) {
+                        "section filter停止後の最終SI snapshotを有限期限内に取得できません"
+                    }
+                    sleep(sleepMs)
+                },
+            )
+        }
+
+        // setup scanのcatch経路と境界試験で同じ終端理由を共有する。
+        internal fun setupScanInternalFailure(error: Exception): ScanTerminal =
+            ScanTerminal(
+                ScanTerminalOutcome.INTERNAL_FAILURE,
+                "setup scan内部処理に失敗しました: ${error.message ?: error::class.java.simpleName}",
+            )
+
         private val DEFAULT_SI_POLICY = SiCollectionPolicy()
+
+        // ARIB TR-B15 4.6-E1 第2分冊 表12-6、§12.5/12.6：
+        // NIT再送周期上限20秒×調整1.1×Section間隔上限2＝44秒。
+        // 旧版のSection送出上限から導いた収集上限であり、
+        // 現行8.10版の同条文照合・実機での原因確定は別途必要。
+        // 初回BS設定スキャンのみ適用し、最終snapshot待機予算は維持する。
+        internal fun setupScanCollectionPolicy(kind: ScanCandidateKind): SiCollectionPolicy =
+            if (kind == ScanCandidateKind.ISDB_S_BS) {
+                DEFAULT_SI_POLICY.copy(maxWaitMs = 44_000L)
+            } else {
+                DEFAULT_SI_POLICY
+            }
 
         private fun setupPublicationFailureTerminal(failures: List<TvProviderWriter.Diagnostic>): ScanTerminal? =
             if (failures.isEmpty()) {
@@ -1118,7 +1160,7 @@ class ChannelScanController(
                 )
             }
 
-        private fun initialScanTerminal(
+        internal fun initialScanTerminal(
             cancelled: Boolean,
             resourceLost: Boolean,
             terminalFailure: ScanTerminal?,
