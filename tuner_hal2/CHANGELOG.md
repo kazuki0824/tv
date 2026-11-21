@@ -8,6 +8,11 @@
 - 回収監督への引渡しをAidlServiceContextのメソッドへ移し、別モジュールからのcleanup_reaper_queue直接参照によるE0616を解消する。フィールドの可視性と回収・失敗時の処理は維持する。
 - idle監督の寿命試験も既存のqueue注入入口へ変更し、同じ非公開フィールド参照を除く。設計の実装位置を更新する。試験はCIへ委ね、Android Soong／atestは未実施。
 
+# 2026-11-09 回収予約の待機APIを有限期限に統一
+
+- 製品呼出元のないNone待機を削除し、wait_until_releasedの期限をDuration必須へ縮減する。Frontendの製品経路とobject closeの回帰試験は同じ既存残時間を渡し、期限や回収義務を変えない。
+- panic回帰は30秒の待機予算に対して3秒のrecv_timeout内に元の異常が返ることと、未完予約が保持されることを検査する。既存control試験でCI実行し、Soong／atestと実機は未実施。
+
 # 2026-11-09 回収監督の全件コピーを除去
 
 - pending_snapshotを非割当のcheck_healthへ置換し、共有回収器の失敗と予約正本の汚染を既存lock_stateで確認する。健全性確認にはキー・値のClone制約を課さない。
@@ -23,6 +28,30 @@
 - 実行中ownerと隔離report待ちは既存ObjectCloseTxnの受付監督に保持し、待機だけのlaneを返す。物理処理の完了・移管を経過時間で偽装せず、30秒＋30秒による全体停止を除く。
 - enqueueとworkerからの再監督要求が競合しても受付要求を失わないよう、予約の存在からの要求削除を除く。状態破損・異常終端・実行済み隔離報告の失敗は既存停止経路へ残す。
 - 旧最終期限後の遅延完了、無応答ownerの義務保持、容量1のlane返却と独立Demux回収、隔離report待ちを既存AIDL試験へ反映する。
+
+# 2026-11-08 回収laneとFrontend期限のレビュー是正（#230）
+
+- 回収laneを初期化時に固定し、CPU数・予約数に応じた追加生成を除去した。予約のDrop解放失敗は既存の型付き終端へ伝える。公開数から予約容量の倍数を要求せず、予約待ちと物理実行の開始時刻を区別する。
+- Frontend closeは予約返却とworker終了で一つの期限を共有する。reaper期限で専用処理がある場合は、隔離・診断を共通失敗処理から繰り返さない。
+- lane占有と待機後の進行、正規Demux open/closeと予約返却の境界、期限超過時の未完義務と単一通知を回帰で検査する。
+
+# 2026-11-08 Frontend closeとreaperの無期限回収待ちを是正
+
+- Frontend closeで既存reaper予約の解放を`wait_until_released(None)`で無期限に待たず、既存`worker_reaper_deadline_ms`の有界待ちへ変更。workerへの停止要求後も同期`ticket.complete()`の無期限joinではなく、同じ期限で実際の終了を待つ。
+- 期限到達時には完了済みworkerのterminal結果を既存の受理入口へ反映し、未完workerの物理終了とDemux-Frontend relation解除を偽装しない。`ObjectCloseTxn`および`WorkerRuntimeCleanup`の義務を保持し、既存cleanup受付から次の正規回収を行う。
+- Frontend reaperが期限通知後に`wait_for_progress(None)`へ戻る経路を止め、回収未完了として局所隔離・診断へつなぐ。期限後の無期限worker保持をなくす。
+- Frontend closeがworker終了後にrelationを解除する回帰と、期限到達で同じ未完義務を保持し、後着のworker終了後に再び回収できる回帰を追加。Android Soong／atest、実機CTS／VTSとHAL再起動・Binder再接続は未確認。
+
+# 2026-11-08 cleanup reaperの予約権限と物理実行並列度を是正
+
+- `WorkerRuntimeReaperReservation`を未移管時に解放するRAII ownerへ変更し、正常enqueue後だけ正規reaperへ所有権を移す。明示的解放失敗とDrop解放失敗は成功扱いしない。
+- 同一バッチ内の重複予約キーを受付前に拒否し、既存のgroupと世代付きキーを変更しない。
+- 予約groupが受付件数を有界に保持するため、重複していた`sync_channel(capacity)`の容量制御をなくし、予約group上限だけでbackpressureする。
+- 既存laneが動作可能な場合に追加laneの生成失敗だけを理由として有効な受付を捨てない。共有reaperのlock失陥や物理cleanupの未確認終了とは区別する。
+- 物理workerの実行上限を予約件数連動の176本から切り離し、実行環境が報告する並列度を有界poolの初期値として使う。これは実測で最適化済みのI/O並列度を意味せず、ブロックするbackendの期限監督は引き続き独立させる。
+- worker上限と予約容量の独立性、予約キーの重複拒否、未投入予約の自動解放、容量満杯時の受付制約、既存予約の原子性をhost回帰へ追加する。以前の176 laneを同時停止させる試験は、予約176・物理実行上限は独立という契約に沿う試験へ置き換える。
+- 同一groupの親子キーは既存`RuntimeObjectTable`で関連が確認されたものだけを保持する。単一workerのpanicによって途中の物理cleanup結果とgroup解放が不明になる場合は共有reaperの失陥として安全側へ停止する方針を維持し、既存の局所cleanup失敗と区別する。
+- Android Soong／atest、実HALの再起動・Binder再接続、CTS/VTSの実機実行結果は未取得。ホストCIの結果とは区別して記録する。
 
 # 2026-11-08 cleanup受付を呼出元から非同期化
 

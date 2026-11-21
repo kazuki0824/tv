@@ -473,7 +473,7 @@ Frontend停止phaseの観測は既存`FrontendWorkerContext`とslotに従属し�
 
 TS AVCのAU framingとHRD時刻対応は`demux/src/av/video_timestamp.rs::VideoTimestampAssociation`とその従属`avc_timing.rs::AvcTiming`を`FilterRuntime`が所有する。構文のbit readerはrecord indexと同じ`demux/src/parser/bitstream.rs`を使用する。snapshot、stream type変更、queue cleanup、packet gap、origin境界は既存filter ownerのAV reset入口へ接続する。TIS、AIDL façade、別workerへ解析状態を置かない。公開意味は正本のpresentation timestamp契約を参照する。
 
-Frontend closeの待機は`frontend_worker_txn::close_frontend_workers_and_live_data_with_sink`が既存reaperの待機とworker joinを接続する。期限の意味は`../TUNER_HAL_DESIGN_JA.md`の「Frontend closeの回収完了」に従う。
+Frontend closeの待機は`frontend_worker_txn::close_frontend_workers_and_live_data_with_sink`が既存reaperの待機とworker joinを接続する。予約解放待機の`WorkerRuntimeReaperPending::wait_until_released`は有限の`Duration`を必須とし、Frontend closeの製品呼出元は既存期限の残時間を渡す。期限の意味は`../TUNER_HAL_DESIGN_JA.md`の「Frontend closeの回収完了」に従う。
 
 
 Filter遅延配送の終端observerはaidl_service/src/filter_callback_delivery.rsが所有し、既存WorkerFailureClassifierとTunerServiceRuntime::mark_shared_service_criticalへ接続する。汎用workerのcatch_unwind・terminal生成を複製しない。共通reaperのlane終端observerは既存WorkerReaperFailureStateへ最初の失敗を保存し、pendingの照会・受付・待機が同じ失敗を参照する。異常時の公開意味はTUNER_HAL_DESIGN_JA.md「共通回収laneとFilter遅延配送の異常終了」を正とする。
