@@ -84,8 +84,10 @@ impl DemuxFrontendSourceFailureDiagnostic {
             frontend_state: frontend.as_ref().map(|(state, _)| *state),
             frontend_generation: frontend.map(|(_, generation)| generation),
             frontend_object_id: frontend_object.map(RuntimeObjectDiagnosticSnapshot::object_id),
-            frontend_object_generation: frontend_object.map(RuntimeObjectDiagnosticSnapshot::generation),
-            frontend_object_lifecycle: frontend_object.map(RuntimeObjectDiagnosticSnapshot::lifecycle),
+            frontend_object_generation: frontend_object
+                .map(RuntimeObjectDiagnosticSnapshot::generation),
+            frontend_object_lifecycle: frontend_object
+                .map(RuntimeObjectDiagnosticSnapshot::lifecycle),
             demux_id: demux_id.0,
             demux_object_id: demux_object.map(RuntimeObjectDiagnosticSnapshot::object_id),
             demux_object_generation: demux_object.map(RuntimeObjectDiagnosticSnapshot::generation),
