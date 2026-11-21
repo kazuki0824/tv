@@ -25,6 +25,13 @@ pub(crate) fn demux_runtime_error_to_hal(
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidDvrFilter
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceLifecycle
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SinkLifecycle => {
+            // Keep the typed demux failure and its runtime ID observable before
+            // multiple variants are projected to the same public HAL status.
+            log::error!(
+                "demux runtime lifecycle error before HAL projection: kind={:?} id={:?}",
+                error.kind,
+                error.id
+            );
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "demux runtimeのライフサイクルが不正です",
@@ -218,4 +225,29 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn lifecycle_error_projection_keeps_public_contract_for_all_demux_variants() {
+        use maleicacid_tuner_hal2_common::HalInvalidStateKind;
+        use maleicacid_tuner_hal2_demux::{DemuxRuntimeError, DemuxRuntimeErrorKind};
+
+        let expected = HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "demux runtimeのライフサイクルが不正です",
+        );
+        for id in [Some(1126), None] {
+            for kind in [
+                DemuxRuntimeErrorKind::InvalidState,
+                DemuxRuntimeErrorKind::InvalidDvrFilter,
+                DemuxRuntimeErrorKind::SourceLifecycle,
+                DemuxRuntimeErrorKind::SinkLifecycle,
+            ] {
+                assert_eq!(
+                    super::demux_runtime_error_to_hal(DemuxRuntimeError { kind, id }),
+                    expected,
+                    "public projection changed for {kind:?} id={id:?}"
+                );
+            }
+        }
+    }
+
 }
