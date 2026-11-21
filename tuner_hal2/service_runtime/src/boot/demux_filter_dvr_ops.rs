@@ -82,6 +82,27 @@ impl DemuxFrontendSourceFailureDiagnostic {
             error_id: error.id,
         }
     }
+
+    fn as_log_fields(&self) -> String {
+        format!(
+            "phase={} frontend_id={} frontend_state={:?} frontend_generation={:?} \
+             frontend_object_id={:?} frontend_object_generation={:?} \
+             frontend_object_lifecycle={:?} demux_id={} demux_state={:?} \
+             demux_generation={:?} error_kind={:?} error_id={:?}",
+            self.phase,
+            self.frontend_id,
+            self.frontend_state,
+            self.frontend_generation,
+            self.frontend_object_id,
+            self.frontend_object_generation,
+            self.frontend_object_lifecycle,
+            self.demux_id,
+            self.demux_state,
+            self.demux_generation,
+            self.error_kind,
+            self.error_id,
+        )
+    }
 }
 
 fn map_demux_frontend_source_failure(
@@ -93,10 +114,11 @@ fn map_demux_frontend_source_failure(
 ) -> HalError {
     let diagnostic =
         DemuxFrontendSourceFailureDiagnostic::capture(runtime, demux_id, frontend_id, phase, error);
+    let fields = diagnostic.as_log_fields();
     #[cfg(target_os = "android")]
-    log::error!("HAL_DEMUX_FRONTEND_SOURCE_FAILURE {diagnostic:?}");
+    log::error!("HAL_DEMUX_FRONTEND_SOURCE_FAILURE {fields}");
     #[cfg(not(target_os = "android"))]
-    eprintln!("HAL_DEMUX_FRONTEND_SOURCE_FAILURE {diagnostic:?}");
+    eprintln!("HAL_DEMUX_FRONTEND_SOURCE_FAILURE {fields}");
     super::demux_runtime_error_to_hal(error)
 }
 
@@ -1316,8 +1338,8 @@ mod demux_frontend_source_diagnostic_tests {
         FrontendBackendKind, FrontendSystem, HalError, HalInvalidStateKind,
     };
     use maleicacid_tuner_hal2_demux::{
-        DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeQuarantineRequest,
-        DemuxRuntimeState, DemuxStreamBoundaryRequest, PipelineBoundaryReason,
+        DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeQuarantineRequest, DemuxRuntimeState,
+        DemuxStreamBoundaryRequest, PipelineBoundaryReason,
     };
     use maleicacid_tuner_hal2_domain_request::{
         AidlObjectGeneration, AidlObjectId, AidlObjectKind,
@@ -1396,27 +1418,41 @@ mod demux_frontend_source_diagnostic_tests {
             ))
             .expect_err("quarantined demux cannot prepare boundary");
         let diag = DemuxFrontendSourceFailureDiagnostic::capture(
-            &runtime, demux_id, FrontendRuntimeId(1_000_000), "prepare", error,
+            &runtime,
+            demux_id,
+            FrontendRuntimeId(1_000_000),
+            "prepare",
+            error,
         );
         assert_eq!(diag.phase, "prepare");
         assert_eq!(diag.frontend_id, 1_000_000);
         assert_eq!(diag.frontend_generation, Some(frontend_generation));
         assert_eq!(diag.frontend_object_id, Some(AidlObjectId(1126)));
-        assert_eq!(diag.frontend_object_generation, Some(AidlObjectGeneration(7)));
-        assert_eq!(diag.frontend_object_lifecycle, Some(RuntimeObjectLifecycleSnapshot::Live));
+        assert_eq!(
+            diag.frontend_object_generation,
+            Some(AidlObjectGeneration(7))
+        );
+        assert_eq!(
+            diag.frontend_object_lifecycle,
+            Some(RuntimeObjectLifecycleSnapshot::Live)
+        );
         assert_eq!(diag.demux_id, demux_id.0);
         assert_eq!(diag.demux_generation, Some(demux_generation));
         assert_eq!(diag.demux_state, Some(DemuxRuntimeState::Quarantined));
         assert_eq!(diag.error_kind, DemuxRuntimeErrorKind::InvalidState);
         assert_eq!(diag.error_id, Some(demux_id.0));
-        let rendered = format!("{diag:?}");
-        assert!(rendered.contains("Quarantined"));
-        assert!(rendered.contains("AidlObjectId(1126)"));
-        assert!(rendered.contains("AidlObjectGeneration(7)"));
+        let rendered = diag.as_log_fields();
+        assert!(rendered.contains("demux_state=Some(Quarantined)"));
+        assert!(rendered.contains("frontend_object_id=Some(AidlObjectId(1126))"));
+        assert!(rendered.contains("frontend_object_generation=Some(AidlObjectGeneration(7))"));
+        assert!(rendered.contains("error_kind=InvalidState"));
         assert!(matches!(
             DemuxFrontendSourceTxn::unbind(
-                demux_id.0, 1_000_000, PipelineBoundaryReason::FrontendClose,
-            ).execute(&mut runtime),
+                demux_id.0,
+                1_000_000,
+                PipelineBoundaryReason::FrontendClose,
+            )
+            .execute(&mut runtime),
             Err(HalError::InvalidState { .. })
         ));
         assert_eq!(
