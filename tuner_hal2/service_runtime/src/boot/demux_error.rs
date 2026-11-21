@@ -27,7 +27,14 @@ pub(crate) fn demux_runtime_error_to_hal(
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SinkLifecycle => {
             // Keep the typed demux failure and its runtime ID observable before
             // multiple variants are projected to the same public HAL status.
+            #[cfg(target_os = "android")]
             log::error!(
+                "demux runtime lifecycle error before HAL projection: kind={:?} id={:?}",
+                error.kind,
+                error.id
+            );
+            #[cfg(not(target_os = "android"))]
+            eprintln!(
                 "demux runtime lifecycle error before HAL projection: kind={:?} id={:?}",
                 error.kind,
                 error.id
