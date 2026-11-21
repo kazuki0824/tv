@@ -75,5 +75,10 @@
   },
   "shortEvents": [],
   "extendedTexts": [],
-  "casFacts": null
+  "casFacts": {
+    "pmtPid": null,
+    "parseStatus": "PMT_UNRESOLVED",
+    "sdtFreeCaMode": null,
+    "descriptors": []
+  }
 }

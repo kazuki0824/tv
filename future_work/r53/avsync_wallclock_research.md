@@ -22,7 +22,7 @@ wallclock 補間は、最後に観測した PCR と、その PCR を観測した
 estimated_90khz = last_pcr_90khz + elapsed_monotonic_ns * 90000 / 1_000_000_000
 ```
 
-現行設計では、PCR 由来の source clock が存在しない段階で valid A/V sync ID を先出ししない。valid A/V sync ID を返す場合は、対応する `getAvSyncTime(id)` が有効 timestamp を返せる状態に限る。この現行契約は `TUNER_HAL_DESIGN_JA.md` の A/V sync 節を正とし、本ファイルでは再定義しない。
+現行の `getAvSyncHwId()` / `getAvSyncTime()` の状態・戻り値・clock source契約は `TUNER_HAL_DESIGN_JA.md` のA/V sync節だけを正本とする。本ファイルは、その契約を変更する候補となる高度clock disciplineの調査だけを扱う。
 
 ## 先行例
 
@@ -32,7 +32,7 @@ GStreamer の `mpegtslivesrc` は、MPEG-TS live source を wrap し、stream �
 
 Centricular の開発記事では、`mpegtslivesrc` が in-stream PCR を使って sender clock time と local receive time を相関させ、linear regression で sender clock と local system clock の相対 rate を計算すると説明している。
 
-これは現行の最小補間より高度である。本製品の現行設計は「最後の PCR + monotonic 経過時間」だけを扱い、linear regression による drift 推定は採用しない。
+これは正本設計より高度な候補であり、linear regressionによるdrift推定を追加する場合の比較材料として扱う。現行の補間方式そのものは `TUNER_HAL_DESIGN_JA.md` を参照する。
 
 ### GStreamer `mpegtsdemux` / `MpegTSBase`
 
@@ -86,30 +86,17 @@ Apache-2.0 であり Android 親和性は高いが、これは Java/Kotlin 側�
 
 `mpegts` や `mpeg2ts-reader` のような Rust crate は、MPEG-TS packet / adaptation field / PCR parse の参考にはなる。ただし、Android platform build / Soong / vendor HAL へ外部 crate を追加するコスト、保守性、既存 soft_demux との重複を考えると、as-is 採用する利点は小さい。
 
-現行実装に必要なのは PCR 6 byte の抽出、33-bit extension、monotonic 補間であり、既存 soft_demux 内の小さな自前実装を維持する方がよい。
+既存実装との比較では、外部library導入が必要な機能差を生むかを評価する。現行実装が要求するPCR処理内容は `TUNER_HAL_DESIGN_JA.md` の正本契約から導出し、本調査文書では固定しない。
 
 ### libdvbpsi
 
 libdvbpsi は MPEG TS / DVB PSI の decode / generation library で、PSI/SI 解析には有用である。ただし、PCR→local wallclock clock discipline の as-is 部品ではない。
 
-## 本ファイルで扱う非採用範囲
+## 再評価対象
 
-次は本製品の現行対応宣言・実装済み範囲に含めない。
+将来この項目を再評価する場合の候補は、PCR jitter smoothing、linear regressionによるclock drift推定、PLL / clock discipline、複数clock sourceの品質評価、長時間視聴時のdrift補正、discontinuityとclock resetを組み合わせた高度なservice clock modelである。
 
-```text
-- PCR jitter smoothing
-- linear regression による clock drift 推定
-- PLL / clock discipline
-- 複数 clock source の品質評価
-- 長時間視聴時の drift 補正
-- discontinuity indicator と clock reset を組み合わせた高度な service clock model
-```
-
-## 非採用理由
-
-AOSP Tuner HAL の `getAvSyncTime()` は current A/V sync timestamp を要求するが、上記の高度な clock discipline は非スクランブル平文ライブ視聴、VTS 接続確認、最小 A/V sync 契約を成立させるための必須条件ではない。
-
-これらを実装済み扱いにする場合は、`TUNER_HAL_DESIGN_JA.md` に clock source、PCR PID、jitter、drift、reset 条件、戻り値、診断、実機確認条件を吸収してから扱う。本ファイルを根拠に現行リリースで対応宣言してはならない。
+これらは本ファイルだけで採否・公開契約・実装済み範囲を決めない。採用する場合は、先に `TUNER_HAL_DESIGN_JA.md` へclock source、PCR PID、jitter / drift / reset条件、戻り値、診断、検証条件を設計正本として反映し、その後に実装・統合へ進む。
 
 ## 参照 URL
 

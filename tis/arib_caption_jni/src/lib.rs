@@ -190,13 +190,13 @@ struct CaptionEngine {
     superimpose: bool,
 }
 
-// 安全性: 3つのC pointerはCaptionEngineだけが所有し、JNI handleごとのoperationでは
+// SAFETY: 3つのC pointerはCaptionEngineだけが所有し、JNI handleごとのoperationでは
 // EngineSlotから所有権ごと取り出すため、複数threadから同時に参照・FFI操作されない。
 unsafe impl Send for CaptionEngine {}
 
 impl Drop for CaptionEngine {
     fn drop(&mut self) {
-        // 事前条件: 非null pointerはこのCaptionEngineが単独所有し、registry/slot lockは保持していない。
+        // SAFETY: 非null pointerはこのCaptionEngineが単独所有し、registry/slot lockは保持していない。
         // libaribcaptionの依存順序に従いrenderer→decoder→contextの順に破棄する。
         unsafe {
             if !self.renderer.is_null() {
@@ -232,7 +232,7 @@ impl CaptionEngine {
             ARIBCC_PROFILE_A
         };
 
-        // 事前条件: alloc前なのでRust側にlibaribcaption資源の所有権はない。
+        // SAFETY: alloc前なのでRust側にlibaribcaption資源の所有権はない。
         // 各alloc結果は使用前にnon-nullを確認し、初期化失敗時は取得済み資源だけを逆依存順に解放する。
         let engine = unsafe {
             'allocate: {
@@ -296,7 +296,7 @@ impl CaptionEngine {
         {
             return false;
         }
-        // 事前条件: rendererは初期化済みnon-nullで、width/heightは正値かつ上限以内である。
+        // SAFETY: rendererは初期化済みnon-nullで、width/heightは正値かつ上限以内である。
         let success = unsafe { aribcc_renderer_set_frame_size(self.renderer, width, height) };
         // 事後条件: 成功時だけRust側viewportをC rendererへ適用済みの同一寸法へcommitする。
         if success {
@@ -306,7 +306,7 @@ impl CaptionEngine {
     }
 
     fn flush(&mut self) {
-        // 事前条件: renderer/decoderは初期化済みnon-nullで、このCaptionEngineを現在の呼出しだけが所有する。
+        // SAFETY: renderer/decoderは初期化済みnon-nullで、このCaptionEngineを現在の呼出しだけが所有する。
         unsafe {
             aribcc_renderer_flush(self.renderer);
             aribcc_decoder_flush(self.decoder);
@@ -319,7 +319,7 @@ impl CaptionEngine {
             return None;
         }
         let mut result = AribccRenderResult::default();
-        // 事前条件: rendererはこのengineが単独所有する初期化済みpointerで、viewportは設定済み。
+        // SAFETY: rendererはこのengineが単独所有する初期化済みpointerで、viewportは設定済み。
         // 再描画ではdecoderへPESを再投入せず、rendererが保持するcaptionだけを現在時刻で照会する。
         let status =
             unsafe { aribcc_renderer_render(self.renderer, media_time_millis, &mut result) };
@@ -345,7 +345,7 @@ impl CaptionEngine {
             return None;
         }
 
-        // 事前条件: pesは呼出し中有効なnon-empty slice、ptsは有効値、decoder/rendererは初期化済み、
+        // SAFETY: pesは呼出し中有効なnon-empty slice、ptsは有効値、decoder/rendererは初期化済み、
         // viewport設定済みであり、このCaptionEngineを現在の呼出しだけが所有する。
         // out structはDefaultでnull/0初期化し、C APIが所有資源を設定した場合は全return経路でcleanupする。
         let frame = unsafe {
@@ -448,7 +448,7 @@ fn validate_decoded_caption_timing(
 
 fn cleanup_render_result_if_owned(result: &mut AribccRenderResult) {
     if !result.images.is_null() || result.image_count != 0 {
-        // 事前条件: resultはaribcc_renderer_renderが初期化したout structで、非空のimages/countは
+        // SAFETY: resultはaribcc_renderer_renderが初期化したout structで、非空のimages/countは
         // libaribcaptionがcleanup対象として返した同一resultの所有資源を表す。
         unsafe {
             aribcc_render_result_cleanup(result);
@@ -505,7 +505,7 @@ fn copy_render_result(
     if image_count > MAX_IMAGES_PER_FRAME {
         return None;
     }
-    // 事前条件: libaribcaptionがresult.imagesをimage_count要素の連続配列として返し、
+    // SAFETY: libaribcaptionがresult.imagesをimage_count要素の連続配列として返し、
     // result cleanupまでallocation/alignment/lifetimeが有効である。non-nullと上限は上で検査済みである。
     let native_images = unsafe { slice::from_raw_parts(result.images, image_count) };
     // 事後条件: このborrowはcopy_render_result内だけで使用し、result cleanup後へ持ち出さない。
@@ -530,7 +530,7 @@ fn copy_render_result(
         {
             return None;
         }
-        // 事前条件: bitmapはnon-null、requiredはstride*heightのchecked結果で0より大きく、
+        // SAFETY: bitmapはnon-null、requiredはstride*heightのchecked結果で0より大きく、
         // C APIが申告したbitmap_size以下で、result cleanupまでallocationが有効である。
         let rgba8888 = unsafe { slice::from_raw_parts(image.bitmap, required) }.to_vec();
         // 事後条件: 必要byteはRust-owned Vecへcopy済みで、C bitmapの借用はここで終了する。

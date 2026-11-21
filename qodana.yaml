@@ -1,0 +1,20 @@
+version: "1.0"
+linter: qodana-jvm-android
+projectJDK: 17
+
+# Soongが製品buildを所有する。RobolectricのGradle modelでAndroidの
+# manifestとframeworkの入口を解決する。
+rootJavaProjects:
+  - "./tis/host_ci/robolectric"
+
+# 検査対象はTIS製品Kotlinとし、ホスト試験とstubは対象外にする。
+onlyDirectory: tis/src
+
+profile:
+  # 推奨profileの全検査を実施し、未使用宣言はERRORとして扱う。
+  base:
+    name: qodana.recommended
+  inspections:
+    - inspection: UnusedSymbol
+      enabled: true
+      severity: ERROR

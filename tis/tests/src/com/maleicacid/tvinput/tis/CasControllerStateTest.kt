@@ -15,6 +15,13 @@ import org.junit.Test
 /** AndroidJUnitRunner から実行する CasController 状態遷移テスト。 */
 @Suppress("TooManyFunctions")
 class CasControllerStateTest {
+    @Test fun casWarningMilestonesAreBoundedWithoutHidingFirstFailure() {
+        val accepted = listOf(1L, 2L, 4L, 8L, 1024L, 1L shl 40)
+        val rejected = listOf(-1L, 0L, 3L, 5L, 7L, 1023L, 1025L, Long.MAX_VALUE)
+        accepted.forEach { check(shouldLogCasDiagnosticOccurrence(it)) }
+        rejected.forEach { check(!shouldLogCasDiagnosticOccurrence(it)) }
+    }
+
     private val serviceKey = ServiceKey(originalNetworkId = 4, transportStreamId = 16625, serviceId = 101)
 
     @Test fun resourceLossClosesOwnedDescramblerAndRetainsFailuresForRetry() {
@@ -26,7 +33,7 @@ class CasControllerStateTest {
             var accepted = true
             var notifications = 0
             var creates = 0
-            val fence = ChannelScanController.ResourceLossFence().apply { activate(1L) }
+            val fence = ChannelScanController.ScanGenerationFence().apply { activate(1L) }
             controller.updateFromCaMetadata(metadata) {
                 creates++
                 old

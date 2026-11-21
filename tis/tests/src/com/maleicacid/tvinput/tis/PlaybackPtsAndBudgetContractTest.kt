@@ -120,7 +120,7 @@ class PlaybackPtsAndBudgetContractTest {
                 null,
                 null,
                 codec = "MPEG-4-ALS",
-                codecKind = "AUDIO",
+                codecKind = com.maleicacid.tvinput.aribsi.ElementaryStreamKind.AUDIO,
             )
         check(TunerSelectionPolicy.selectAudio(listOf(stream)) == null)
         check(TunerSelectionPolicy.selectAudio(listOf(stream.copy(codec = "AAC-LC"))) != null)
@@ -179,9 +179,9 @@ class PlaybackPtsAndBudgetContractTest {
     }
 
     @Test fun backpressureFailureRequiresContinuousDeadlineExpiry() {
-        check(!PlaybackPipeline.backpressureDeadlineReachedForTest(1_000L, 2_999L, 2_000L))
-        check(PlaybackPipeline.backpressureDeadlineReachedForTest(1_000L, 3_000L, 2_000L))
-        check(!PlaybackPipeline.backpressureDeadlineReachedForTest(3_000L, 2_000L, 2_000L))
-        check(!PlaybackPipeline.backpressureDeadlineReachedForTest(1_000L, 10_000L, 0L))
+        check(!PlaybackPipeline.backpressureDeadlineReached(1_000L, 2_999L, 2_000L))
+        check(PlaybackPipeline.backpressureDeadlineReached(1_000L, 3_000L, 2_000L))
+        check(!PlaybackPipeline.backpressureDeadlineReached(3_000L, 2_000L, 2_000L))
+        check(!PlaybackPipeline.backpressureDeadlineReached(1_000L, 10_000L, 0L))
     }
 }

@@ -3,9 +3,8 @@ use crate::config::FilterDelayReadiness;
 use crate::packet_pipeline::PipelineGeneratedEvent;
 
 impl DemuxRuntime {
-    /// Releases only callback events whose existing FilterDelayHint state says
-    /// they are ready. FilterRuntime and FilterProducerDrainGate remain the
-    /// canonical owners of delay state and pending events respectively.
+    /// 既存のFilterDelayHint状態で配送可能になったcallback eventだけを取り出す。
+    /// 遅延状態の正本はFilterRuntime、保留eventの正本はFilterProducerDrainGateに置く。
     pub fn take_ready_filter_events(
         &mut self,
     ) -> Result<Vec<PipelineGeneratedEvent>, DemuxRuntimeError> {
@@ -36,9 +35,9 @@ impl DemuxRuntime {
         Ok(events)
     }
 
-    /// Returns the earliest canonical FilterRuntime deadline. No independent
-    /// scheduler state is created here; callers only use this to decide how
-    /// long the delivery executor may sleep before re-evaluating the owners.
+    /// FilterRuntimeが保持する正本deadlineのうち、最も早い時刻を返す。
+    /// 独立したscheduler状態は生成せず、呼出し元は正本を再評価するまでに
+    /// 配送executorが待機できる時間の判断にのみ使用する。
     pub fn next_filter_delivery_deadline(&self) -> Option<std::time::Instant> {
         self.filters
             .values()

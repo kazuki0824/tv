@@ -174,7 +174,7 @@ class _AgentSession:
             raise
         if ready.get("status") != "ready" or int(ready.get("frequency_hz", 0)) != frequency:
             self._terminate()
-            raise ProfileError("VTS device agent did not establish the requested tune session")
+            raise ProfileError("VTS device agentが要求されたdevice sessionを確立できませんでした")
 
     def _read_stdout(self) -> None:
         assert self._process.stdout is not None
@@ -238,15 +238,19 @@ class _AgentSession:
         return pid, section_payload
 
     def close(self) -> None:
-        if self._process.poll() is None:
-            try:
-                response = self._request({"op": "close"})
-                if response.get("status") != "closed":
-                    raise ProfileError("VTS device agent returned an unexpected close response")
-                self._process.wait(timeout=2.0)
-            except (ProfileError, subprocess.TimeoutExpired):
-                pass
-        self._terminate()
+        try:
+            if self._process.poll() is not None:
+                raise ProfileError(f"VTS device agent exited before close: {self._stderr()}")
+            response = self._request({"op": "close"})
+            if response.get("status") != "closed":
+                raise ProfileError("VTS device agent returned an unexpected close response")
+            status = self._process.wait(timeout=self._timeout)
+            if status != 0:
+                raise ProfileError(f"VTS device agent cleanup failed (exit {status}): {self._stderr()}")
+        except subprocess.TimeoutExpired as exc:
+            raise ProfileError("VTS device agent cleanup timed out") from exc
+        finally:
+            self._terminate()
 
     def _terminate(self) -> None:
         if self._process.poll() is None:
@@ -261,7 +265,12 @@ class _AgentSession:
         return self
 
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
-        self.close()
+        try:
+            self.close()
+        except ProfileError as cleanup:
+            if _exc is not None:
+                raise ProfileError(f"{_exc}; cleanup failed: {cleanup}") from _exc
+            raise
 
 
 def _si_query(host: str, sections: list[tuple[int, bytes]]) -> dict[str, Any]:

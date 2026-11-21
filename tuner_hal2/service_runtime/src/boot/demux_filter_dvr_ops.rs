@@ -8,6 +8,10 @@ use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_device::FrontendRuntimeState;
+use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_resource_ledger::LedgerId;
+
+use crate::object_table::{RuntimeObjectDiagnosticSnapshot, RuntimeObjectLifecycleSnapshot};
 
 use crate::queue_cleanup_use_case::QueueCleanupUseCase;
 #[cfg(test)]
@@ -23,11 +27,125 @@ use maleicacid_tuner_hal2_domain_request::{
     DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest,
 };
 
+// The source-boundary owner can observe both lifecycles at the failure point.
+// The generic DemuxRuntimeError only contains the kind and an optional target ID.
+#[derive(Debug)]
+pub(crate) struct DemuxFrontendSourceFailureDiagnostic {
+    phase: &'static str,
+    frontend_id: i32,
+    frontend_state: Option<FrontendRuntimeState>,
+    frontend_generation: Option<u64>,
+    frontend_object_id: Option<AidlObjectId>,
+    frontend_object_generation: Option<AidlObjectGeneration>,
+    frontend_object_lifecycle: Option<RuntimeObjectLifecycleSnapshot>,
+    demux_id: i32,
+    demux_object_id: Option<AidlObjectId>,
+    demux_object_generation: Option<AidlObjectGeneration>,
+    demux_object_lifecycle: Option<RuntimeObjectLifecycleSnapshot>,
+    demux_state: Option<maleicacid_tuner_hal2_demux::DemuxRuntimeState>,
+    demux_generation: Option<u64>,
+    error_kind: maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind,
+    error_id: Option<i32>,
+}
+
+impl DemuxFrontendSourceFailureDiagnostic {
+    pub(crate) fn capture(
+        runtime: &TunerServiceRuntime,
+        demux_id: DemuxRuntimeId,
+        frontend_id: FrontendRuntimeId,
+        phase: &'static str,
+        error: DemuxRuntimeError,
+    ) -> Self {
+        let frontend = runtime
+            .registry
+            .frontend_runtime(frontend_id)
+            .map(|frontend| {
+                let state = frontend.snapshot().state;
+                (state, frontend.generation())
+            });
+        // Include quarantined AIDL wrappers in the snapshot when still present.
+        // "None" means the source had no corresponding record at failure time.
+        let objects = runtime.object_table().active_diagnostic_snapshots();
+        let frontend_object = objects.iter().find(|entry| {
+            entry.object_kind() == AidlObjectKind::Frontend
+                && entry.public_runtime_id() == LedgerId(i64::from(frontend_id.0))
+        });
+        let demux_object = objects.iter().find(|entry| {
+            entry.object_kind() == AidlObjectKind::Demux
+                && entry.public_runtime_id() == LedgerId(i64::from(demux_id.0))
+        });
+        let demux = runtime
+            .registry
+            .demux_runtime(demux_id)
+            .map(|demux| (demux.state(), demux.generation()));
+        Self {
+            phase,
+            frontend_id: frontend_id.0,
+            frontend_state: frontend.as_ref().map(|(state, _)| *state),
+            frontend_generation: frontend.map(|(_, generation)| generation),
+            frontend_object_id: frontend_object.map(RuntimeObjectDiagnosticSnapshot::object_id),
+            frontend_object_generation: frontend_object
+                .map(RuntimeObjectDiagnosticSnapshot::generation),
+            frontend_object_lifecycle: frontend_object
+                .map(RuntimeObjectDiagnosticSnapshot::lifecycle),
+            demux_id: demux_id.0,
+            demux_object_id: demux_object.map(RuntimeObjectDiagnosticSnapshot::object_id),
+            demux_object_generation: demux_object.map(RuntimeObjectDiagnosticSnapshot::generation),
+            demux_object_lifecycle: demux_object.map(RuntimeObjectDiagnosticSnapshot::lifecycle),
+            demux_state: demux.map(|(state, _)| state),
+            demux_generation: demux.map(|(_, generation)| generation),
+            error_kind: error.kind,
+            error_id: error.id,
+        }
+    }
+
+    fn as_log_fields(&self) -> String {
+        format!(
+            "phase={} frontend_id={} frontend_state={:?} frontend_generation={:?} \
+             frontend_object_id={:?} frontend_object_generation={:?} \
+             frontend_object_lifecycle={:?} demux_id={} demux_object_id={:?} \
+             demux_object_generation={:?} demux_object_lifecycle={:?} demux_state={:?} \
+             demux_generation={:?} error_kind={:?} error_id={:?}",
+            self.phase,
+            self.frontend_id,
+            self.frontend_state,
+            self.frontend_generation,
+            self.frontend_object_id,
+            self.frontend_object_generation,
+            self.frontend_object_lifecycle,
+            self.demux_id,
+            self.demux_object_id,
+            self.demux_object_generation,
+            self.demux_object_lifecycle,
+            self.demux_state,
+            self.demux_generation,
+            self.error_kind,
+            self.error_id,
+        )
+    }
+}
+
+fn map_demux_frontend_source_failure(
+    runtime: &TunerServiceRuntime,
+    demux_id: DemuxRuntimeId,
+    frontend_id: FrontendRuntimeId,
+    phase: &'static str,
+    error: DemuxRuntimeError,
+) -> HalError {
+    let diagnostic =
+        DemuxFrontendSourceFailureDiagnostic::capture(runtime, demux_id, frontend_id, phase, error);
+    let fields = diagnostic.as_log_fields();
+    #[cfg(target_os = "android")]
+    log::error!("HAL_DEMUX_FRONTEND_SOURCE_FAILURE {fields}");
+    #[cfg(not(target_os = "android"))]
+    eprintln!("HAL_DEMUX_FRONTEND_SOURCE_FAILURE {fields}");
+    super::demux_runtime_error_to_hal(error)
+}
+
 pub(crate) struct DemuxFrontendSourceTxn {
     demux_id: DemuxRuntimeId,
     mutation: DemuxFrontendSourceMutation,
 }
-
 enum DemuxFrontendSourceMutation {
     Bind(FrontendRuntimeId),
     Unbind {
@@ -62,6 +180,13 @@ impl DemuxFrontendSourceTxn {
         self,
         runtime: &mut TunerServiceRuntime,
     ) -> Result<StreamBoundaryReport, HalError> {
+        let related_frontend_id = match &self.mutation {
+            DemuxFrontendSourceMutation::Bind(frontend_id) => *frontend_id,
+            DemuxFrontendSourceMutation::Unbind {
+                expected_frontend_id,
+                ..
+            } => *expected_frontend_id,
+        };
         let (next_frontend_id, reason) = match self.mutation {
             DemuxFrontendSourceMutation::Bind(next_frontend_id) => {
                 let Some(frontend_runtime) = runtime.registry.frontend_runtime(next_frontend_id)
@@ -93,6 +218,12 @@ impl DemuxFrontendSourceTxn {
                 }
                 if runtime.registry.frontend_bound_to_demux(self.demux_id) == Some(next_frontend_id)
                 {
+                    #[cfg(target_os = "android")]
+                    log::debug!(
+                        "HAL_DEMUX_FRONTEND_BIND_UNCHANGED demux={} frontend={}",
+                        self.demux_id.0,
+                        next_frontend_id.0,
+                    );
                     let generation = runtime
                         .registry
                         .demux_runtime(self.demux_id)
@@ -127,7 +258,13 @@ impl DemuxFrontendSourceTxn {
             }
         };
 
-        let prepared = runtime
+        #[cfg(target_os = "android")]
+        let previous_frontend = runtime.registry.frontend_bound_to_demux(self.demux_id);
+        let prepared_binding_change = runtime
+            .registry
+            .prepare_demux_frontend_binding_change(self.demux_id, next_frontend_id)?;
+
+        let prepared_result = runtime
             .registry
             .demux_runtime_mut(self.demux_id)
             .ok_or_else(|| {
@@ -136,9 +273,17 @@ impl DemuxFrontendSourceTxn {
                     "demux runtime is missing",
                 )
             })?
-            .prepare_stream_boundary_from_typed_request(DemuxStreamBoundaryRequest::new(reason))
-            .map_err(super::demux_runtime_error_to_hal)?;
-        let report = runtime
+            .prepare_stream_boundary_from_typed_request(DemuxStreamBoundaryRequest::new(reason));
+        let prepared = prepared_result.map_err(|error| {
+            map_demux_frontend_source_failure(
+                runtime,
+                self.demux_id,
+                related_frontend_id,
+                "prepare",
+                error,
+            )
+        })?;
+        let committed_result = runtime
             .registry
             .demux_runtime_mut(self.demux_id)
             .ok_or_else(|| {
@@ -147,14 +292,27 @@ impl DemuxFrontendSourceTxn {
                     "demux runtime disappeared after stream-boundary prepare",
                 )
             })?
-            .commit_stream_boundary_from_typed_request(prepared)
-            .map_err(super::demux_runtime_error_to_hal)?;
-        match next_frontend_id {
-            Some(frontend_id) => runtime
-                .registry
-                .bind_demux_frontend(self.demux_id, frontend_id),
-            None => runtime.registry.unbind_demux_frontend(self.demux_id),
-        }
+            .commit_stream_boundary_from_typed_request(prepared);
+        let report = committed_result.map_err(|error| {
+            map_demux_frontend_source_failure(
+                runtime,
+                self.demux_id,
+                related_frontend_id,
+                "commit",
+                error,
+            )
+        })?;
+        runtime
+            .registry
+            .commit_prepared_demux_frontend_binding_change(prepared_binding_change)?;
+        #[cfg(target_os = "android")]
+        log::info!(
+            "HAL_DEMUX_FRONTEND_BIND demux={} previous_frontend={:?} next_frontend={:?} demux_generation={:?}",
+            self.demux_id.0,
+            previous_frontend.map(|frontend| frontend.0),
+            next_frontend_id.map(|frontend| frontend.0),
+            report.next_generation,
+        );
         Ok(report)
     }
 }
@@ -776,12 +934,10 @@ impl TunerServiceRuntime {
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
     ) -> Result<Vec<super::FilterEventDeliverySnapshot>, HalError> {
         let lock = || {
-            runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while consuming playback DVR data",
-                )
-            })
+            TunerServiceRuntime::lock_shared(
+                runtime.as_ref(),
+                "playback DVRデータ消費中にservice runtimeのロックが汚染されました",
+            )
         };
         {
             let mut runtime = lock()?;
@@ -859,9 +1015,9 @@ impl TunerServiceRuntime {
                 })?;
             for report in &mut consumed.packet_reports {
                 report.diagnostics.extend(decision.diagnostics.clone());
-                runtime.record_descrambler_packet_diagnostics(demux_id, demux_generation, report);
+                runtime.record_packet_pipeline_diagnostics(demux_id, demux_generation, report);
             }
-            events.extend(runtime.filter_event_delivery_snapshots_for_playback_report(&consumed));
+            events.extend(runtime.filter_event_delivery_snapshots_for_playback_report(&consumed)?);
         }
         Ok(events)
     }
@@ -1180,5 +1336,195 @@ impl TunerServiceRuntime {
             sink_entry.public_id(),
             source_entry.public_id(),
         )
+    }
+}
+
+#[cfg(test)]
+mod demux_frontend_source_diagnostic_tests {
+    use super::{
+        DemuxFrontendSourceFailureDiagnostic, DemuxFrontendSourceTxn, DemuxRuntimeId,
+        FrontendRuntimeId,
+    };
+    use crate::boot::{FrontendProbeOutcome, TunerServiceRuntime};
+    use crate::object_table::{
+        RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectLifecycleSnapshot,
+        RuntimeOwnerRelation,
+    };
+    use crate::registry::{
+        FrontendCapabilitySnapshot, FrontendScalarCapability, IsdbtSegmentCapability,
+        SatellitePowerTopology,
+    };
+    use maleicacid_tuner_hal2_common::{
+        FrontendBackendKind, FrontendSystem, HalError, HalInvalidStateKind,
+    };
+    use maleicacid_tuner_hal2_demux::{
+        DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeQuarantineRequest, DemuxRuntimeState,
+        DemuxStreamBoundaryRequest, PipelineBoundaryReason,
+    };
+    use maleicacid_tuner_hal2_domain_request::{
+        AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+    };
+    use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
+    use std::path::PathBuf;
+
+    fn runtime_with_bound_frontend() -> (TunerServiceRuntime, DemuxRuntimeId) {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+            id: FrontendRuntimeId(1_000_000),
+            backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbT,
+            path: PathBuf::from("/dev/px4video0"),
+            lnb_profile: None,
+            satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+            capability: FrontendCapabilitySnapshot {
+                scalar: FrontendScalarCapability {
+                    min_frequency_hz: 110_642_857,
+                    max_frequency_hz: 767_642_857,
+                    min_symbol_rate: 0,
+                    max_symbol_rate: 0,
+                    acquire_range_hz: 0,
+                },
+                exclusive_group_id: 0x1000_0000,
+                isdbt_segment: Some(IsdbtSegmentCapability {
+                    is_segment_auto: true,
+                    is_full_segment: true,
+                }),
+            },
+        }]);
+        runtime
+            .object_table_mut()
+            .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Frontend,
+                object_id: AidlObjectId(1126),
+                generation: AidlObjectGeneration(7),
+                ledger_id: LedgerId(1_000_000),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("frontend object registered for diagnostics");
+        let demux = runtime.allocate_demux_runtime().expect("demux allocation");
+        runtime
+            .object_table_mut()
+            .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Demux,
+                object_id: AidlObjectId(2200),
+                generation: AidlObjectGeneration(9),
+                ledger_id: LedgerId(i64::from(demux.id.0)),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("demux object registered for diagnostics");
+        runtime
+            .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+            .expect("frontend bind");
+        (runtime, demux.id)
+    }
+
+    #[test]
+    fn quarantined_demux_unbind_preserves_failure_context_and_public_error() {
+        let (mut runtime, demux_id) = runtime_with_bound_frontend();
+        let frontend_generation = runtime
+            .registry
+            .frontend_runtime(FrontendRuntimeId(1_000_000))
+            .unwrap()
+            .generation();
+        let demux_generation = runtime
+            .registry
+            .demux_runtime(demux_id)
+            .unwrap()
+            .generation();
+        runtime
+            .registry
+            .demux_runtime_mut(demux_id)
+            .unwrap()
+            .quarantine_runtime_from_typed_request(DemuxRuntimeQuarantineRequest::new());
+        let error = runtime
+            .registry
+            .demux_runtime_mut(demux_id)
+            .unwrap()
+            .prepare_stream_boundary_from_typed_request(DemuxStreamBoundaryRequest::new(
+                PipelineBoundaryReason::FrontendClose,
+            ))
+            .expect_err("quarantined demux cannot prepare boundary");
+        let diag = DemuxFrontendSourceFailureDiagnostic::capture(
+            &runtime,
+            demux_id,
+            FrontendRuntimeId(1_000_000),
+            "prepare",
+            error,
+        );
+        assert_eq!(diag.phase, "prepare");
+        assert_eq!(diag.frontend_id, 1_000_000);
+        assert_eq!(diag.frontend_generation, Some(frontend_generation));
+        assert_eq!(diag.frontend_object_id, Some(AidlObjectId(1126)));
+        assert_eq!(
+            diag.frontend_object_generation,
+            Some(AidlObjectGeneration(7))
+        );
+        assert_eq!(
+            diag.frontend_object_lifecycle,
+            Some(RuntimeObjectLifecycleSnapshot::Live)
+        );
+        assert_eq!(diag.demux_id, demux_id.0);
+        assert_eq!(diag.demux_object_id, Some(AidlObjectId(2200)));
+        assert_eq!(diag.demux_object_generation, Some(AidlObjectGeneration(9)));
+        assert_eq!(
+            diag.demux_object_lifecycle,
+            Some(RuntimeObjectLifecycleSnapshot::Live)
+        );
+        assert_eq!(diag.demux_generation, Some(demux_generation));
+        assert_eq!(diag.demux_state, Some(DemuxRuntimeState::Quarantined));
+        assert_eq!(diag.error_kind, DemuxRuntimeErrorKind::InvalidState);
+        assert_eq!(diag.error_id, Some(demux_id.0));
+        let rendered = diag.as_log_fields();
+        assert!(rendered.contains("demux_state=Some(Quarantined)"));
+        assert!(rendered.contains("frontend_object_id=Some(AidlObjectId(1126))"));
+        assert!(rendered.contains("frontend_object_generation=Some(AidlObjectGeneration(7))"));
+        assert!(rendered.contains("demux_object_id=Some(AidlObjectId(2200))"));
+        assert!(rendered.contains("demux_object_generation=Some(AidlObjectGeneration(9))"));
+        assert!(rendered.contains("error_kind=InvalidState"));
+        assert!(matches!(
+            DemuxFrontendSourceTxn::unbind(
+                demux_id.0,
+                1_000_000,
+                PipelineBoundaryReason::FrontendClose,
+            )
+            .execute(&mut runtime),
+            Err(HalError::InvalidState { .. })
+        ));
+        assert_eq!(
+            super::super::demux_runtime_error_to_hal(error),
+            HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "demux runtimeのライフサイクルが不正です"
+            ),
+        );
+    }
+
+    #[test]
+    fn missing_state_is_reported_as_unavailable_not_fabricated() {
+        let runtime = TunerServiceRuntime::new();
+        let diagnostic = DemuxFrontendSourceFailureDiagnostic::capture(
+            &runtime,
+            DemuxRuntimeId(77),
+            FrontendRuntimeId(88),
+            "prepare",
+            DemuxRuntimeError::invalid_state(77),
+        );
+        assert_eq!(diagnostic.frontend_state, None);
+        assert_eq!(diagnostic.frontend_generation, None);
+        assert_eq!(diagnostic.frontend_object_id, None);
+        assert_eq!(diagnostic.frontend_object_generation, None);
+        assert_eq!(diagnostic.frontend_object_lifecycle, None);
+        assert_eq!(diagnostic.demux_object_id, None);
+        assert_eq!(diagnostic.demux_object_generation, None);
+        assert_eq!(diagnostic.demux_object_lifecycle, None);
+        assert_eq!(diagnostic.demux_state, None);
+        assert_eq!(diagnostic.demux_generation, None);
+        assert_eq!(diagnostic.error_id, Some(77));
     }
 }

@@ -3,5 +3,5 @@
 [vendor/etc/maleicacid/bcas_keys]
 mode: 0640
 user: AID_ROOT
-group: AID_MEDIA
+group: AID_MEDIA_DRM
 caps: 0

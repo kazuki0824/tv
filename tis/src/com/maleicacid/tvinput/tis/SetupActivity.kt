@@ -6,6 +6,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.maleicacid.tvinput.R
 
 class SetupActivity :
     Activity(),
@@ -22,7 +23,7 @@ class SetupActivity :
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         inputId = resolveInputId()
-        invalidInputId = inputId.isNullOrBlank() || !TisInputIdResolver.isOwnInputId(this, inputId)
+        invalidInputId = !scanStartAllowed(inputId, TisInputIdResolver.isOwnInputId(this, inputId))
         setupGeneration = savedInstanceState?.getInt(STATE_SETUP_GENERATION)?.takeIf { it > 0 }
         val layout =
             LinearLayout(this).apply {
@@ -46,11 +47,17 @@ class SetupActivity :
                 isEnabled = !invalidInputId
                 setOnClickListener {
                     val resolved = inputId
-                    if (resolved.isNullOrBlank() || !TisInputIdResolver.isOwnInputId(this@SetupActivity, resolved)) {
-                        statusView.text = "不正な設定要求です。inputIdがないか、このTvInputServiceに属していません。"
+                    if (!scanStartAllowed(resolved, TisInputIdResolver.isOwnInputId(this@SetupActivity, resolved))) {
+                        statusView.setText(R.string.invalid_setup_request)
                         setResult(RESULT_CANCELED)
                     } else {
-                        setupGeneration = ChannelScanManager.startIfIdle(this@SetupActivity, resolved)
+                        val accepted =
+                            ChannelScanManager.startIfIdle(
+                                this@SetupActivity,
+                                requireNotNull(resolved),
+                                this@SetupActivity::onScanStartRejected,
+                            )
+                        if (accepted != null) setupGeneration = accepted
                     }
                 }
             }
@@ -71,6 +78,15 @@ class SetupActivity :
         }
     }
 
+    private fun onScanStartRejected(failure: ScanState.Failed?) {
+        statusView.text =
+            if (failure != null) {
+                scanStatusText(failure)
+            } else {
+                "前のスキャンを終了中です。少し待ってから再度開始してください。"
+            }
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         setupGeneration?.let { outState.putInt(STATE_SETUP_GENERATION, it) }
         super.onSaveInstanceState(outState)
@@ -85,13 +101,14 @@ class SetupActivity :
 
     override fun onScanStateChanged(state: ScanState) {
         runOnUiThread {
+            if (ChannelScanManager.currentState() !== state) return@runOnUiThread
             val running = state is ScanState.Running
             scanButton.isEnabled = !invalidInputId && !running
             cancelButton.isEnabled = running
             statusView.text = scanStatusText(state)
             when (state) {
                 is ScanState.Completed -> {
-                    if (shouldFinishSetupForStateForTest(state, setupGeneration, invalidInputId)) {
+                    if (shouldFinishSetupForState(state, setupGeneration, invalidInputId)) {
                         setResult(RESULT_OK)
                         finish()
                     }
@@ -112,7 +129,7 @@ class SetupActivity :
                 is ScanState.Idle,
                 is ScanState.Running,
                 -> {
-                    Unit
+                    // 完了前の状態では通知しない。
                 }
             }
         }
@@ -163,9 +180,9 @@ class SetupActivity :
         }
 
     private fun drainDirectBootPending(source: String) {
-        val state = DirectBootGuard.pendingStateForTest(applicationContext)
+        val state = DirectBootGuard.pendingState(applicationContext)
         if (state.pending) {
-            statusView.text = "${statusView.text}\n起動後EPG同期は保留中です。設定画面の外で処理します。source=$source"
+            statusView.text = getString(R.string.boot_epg_sync_pending_status, statusView.text, source)
         }
     }
 
@@ -174,18 +191,12 @@ class SetupActivity :
         private const val STATUS_TEXT_SIZE_SP = 18f
         private const val STATE_SETUP_GENERATION = "maleicacid.setupGeneration"
 
-        fun scanStartAllowedForTest(
+        internal fun scanStartAllowed(
             candidateInputId: String?,
             isOwnInputId: Boolean,
         ): Boolean = !candidateInputId.isNullOrBlank() && isOwnInputId
 
-        fun shouldFinishSetupForStateForTest(
-            state: ScanState,
-            activeSetupGeneration: Int?,
-            invalidInputId: Boolean,
-        ): Boolean = shouldFinishSetupForState(state, activeSetupGeneration, invalidInputId)
-
-        private fun shouldFinishSetupForState(
+        internal fun shouldFinishSetupForState(
             state: ScanState,
             activeSetupGeneration: Int?,
             invalidInputId: Boolean,

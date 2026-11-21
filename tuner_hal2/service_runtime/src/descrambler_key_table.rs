@@ -82,7 +82,7 @@ impl Default for DescramblerKeyTable {
 
 impl DescramblerKeyTable {
     #[cfg(test)]
-    pub fn has_token_resolution_state(&self) -> bool {
+    pub(crate) fn has_token_resolution_state(&self) -> bool {
         !self.slots.is_empty() || !self.expired.is_empty()
     }
 
@@ -219,7 +219,7 @@ pub(crate) mod tests {
     use maleicacid_tuner_hal2_descrambler::CasKeyResolveError;
 
     #[derive(Debug, Default)]
-    pub(crate) struct TestKeyReference(pub std::sync::Mutex<Option<DescramblerKeySlot>>);
+    pub(crate) struct TestKeyReference(pub(crate) std::sync::Mutex<Option<DescramblerKeySlot>>);
 
     impl CasKeyReference for TestKeyReference {
         fn snapshot(&self) -> Result<DescramblerKeySlot, CasKeyResolveError> {

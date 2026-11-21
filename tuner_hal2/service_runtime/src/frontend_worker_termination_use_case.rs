@@ -9,7 +9,8 @@ use crate::frontend_ops::{
     FrontendWorkerTerminalEvent, FrontendWorkerTerminalEventAcceptance, SharedFrontendRuntime,
 };
 use crate::frontend_worker_txn::{
-    cleanup_frontend_object_after_close_begin, FrontendCloseCleanupReport,
+    cleanup_frontend_object_after_close_begin, record_frontend_worker_terminal_failure,
+    FrontendCloseCleanupReport,
 };
 use crate::worker_failure_classifier::WorkerFailureClassifier;
 
@@ -32,17 +33,29 @@ impl FrontendWorkerTerminationUseCase {
         let frontend_id = event.frontend_id();
         let owner_generation = event.owner_generation();
         let worker_kind = event.worker_kind();
-        let terminal_error = WorkerFailureClassifier::classify_terminal(
+        let terminal_failure = WorkerFailureClassifier::classify_terminal(
             event.into_terminal_result(),
             "frontend worker panicked or could not be joined",
         )
-        .into_failure()
-        .map(|(_, error)| error);
+        .into_failure();
+
+        if let Some((category, error)) = terminal_failure.as_ref() {
+            // 診断store失敗はcounterへ残るが、正本state受理やcleanup資源寿命へ昇格させない。
+            let _diagnostic_result = record_frontend_worker_terminal_failure(
+                runtime,
+                frontend_id,
+                worker_kind,
+                owner_generation,
+                *category,
+                error.clone(),
+            );
+        }
+
         if matches!(
             snapshot.state,
             FrontendRuntimeState::Tuning { .. } | FrontendRuntimeState::Scanning { .. }
         ) {
-            if let Some(error) = terminal_error {
+            if let Some((_, error)) = terminal_failure {
                 match worker_kind {
                     FrontendWorkerKind::Tune => runtime
                         .frontend_txn()
@@ -53,6 +66,7 @@ impl FrontendWorkerTerminationUseCase {
                 }
             }
         }
+
         Ok(FrontendWorkerTerminalEventAcceptance::Accepted)
     }
 

@@ -19,8 +19,8 @@ object AribComponentProjectionPolicy {
         val subtitle = mutableListOf<AribComponentEntry>()
         val data = mutableListOf<AribComponentEntry>()
         streams.forEach { stream ->
-            val videoCodec = stream.codec.takeIf { stream.codecKind == "VIDEO" }
-            val audioCodec = stream.codec.takeIf { stream.codecKind == "AUDIO" }
+            val videoCodec = stream.codec.takeIf { stream.codecKind == ElementaryStreamKind.VIDEO }
+            val audioCodec = stream.codec.takeIf { stream.codecKind == ElementaryStreamKind.AUDIO }
             when {
                 videoCodec != null -> {
                     video += codecComponent(stream, videoCodec)
@@ -115,7 +115,7 @@ object AribComponentProjectionPolicy {
                 stream.codecFacts.audioConfigHeader?.let { header ->
                     "samplingFrequency=${header.samplingFrequency};extensionSamplingFrequency=${header.extensionSamplingFrequency}"
                 },
-            parseStatus = if (stream.codecFacts.resolved) "OK" else "UNRESOLVED",
+            parseStatus = if (stream.codecFacts.resolved) SiParseStatus.OK else SiParseStatus.UNRESOLVED,
         )
 
     private fun mergeComponentEntries(
@@ -156,6 +156,11 @@ object AribComponentProjectionPolicy {
             secondLanguage = eventEntry.secondLanguage ?: serviceEntry.secondLanguage,
             channelConfiguration = eventEntry.channelConfiguration ?: serviceEntry.channelConfiguration,
             samplingInfo = eventEntry.samplingInfo ?: serviceEntry.samplingInfo,
+            channelCount = eventEntry.channelCount ?: serviceEntry.channelCount,
+            sampleRateHz = eventEntry.sampleRateHz ?: serviceEntry.sampleRateHz,
+            audioDescription = eventEntry.audioDescription ?: serviceEntry.audioDescription,
+            hardOfHearing = eventEntry.hardOfHearing ?: serviceEntry.hardOfHearing,
+            dualMono = eventEntry.dualMono ?: serviceEntry.dualMono,
             // 診断表示用の文字列であり、分割してcodecやdescriptor事実を復元する入力ではない。
             sourceDescriptor =
                 when {
@@ -170,6 +175,11 @@ object AribComponentProjectionPolicy {
             main = eventEntry.main ?: serviceEntry.main,
             multiLingual = eventEntry.multiLingual ?: serviceEntry.multiLingual,
             qualityIndicator = eventEntry.qualityIndicator ?: serviceEntry.qualityIndicator,
-            parseStatus = if (eventEntry.parseStatus != "OK") eventEntry.parseStatus else serviceEntry.parseStatus,
+            parseStatus =
+                if (eventEntry.parseStatus != SiParseStatus.OK) {
+                    eventEntry.parseStatus
+                } else {
+                    serviceEntry.parseStatus
+                },
         )
 }

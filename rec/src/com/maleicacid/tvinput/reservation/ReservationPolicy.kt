@@ -3,7 +3,7 @@ package com.maleicacid.tvinput.reservation
 import com.maleicacid.tvinput.db.ReservationRecord
 
 class ReservationPolicy {
-    fun comparePriority(
+    internal fun comparePriority(
         left: ReservationRecord,
         right: ReservationRecord,
     ): Int = right.priority.compareTo(left.priority)
