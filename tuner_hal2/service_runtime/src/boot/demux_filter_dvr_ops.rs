@@ -8,6 +8,10 @@ use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_device::FrontendRuntimeState;
+use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_resource_ledger::LedgerId;
+
+use crate::object_table::RuntimeObjectLifecycleSnapshot;
 
 use crate::queue_cleanup_use_case::QueueCleanupUseCase;
 #[cfg(test)]
@@ -22,6 +26,77 @@ use maleicacid_tuner_hal2_domain_request::OpenDvrRequest;
 use maleicacid_tuner_hal2_domain_request::{
     DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest,
 };
+
+// The source-boundary owner can observe both lifecycles at the failure point.
+// The generic DemuxRuntimeError only contains the kind and an optional target ID.
+#[derive(Debug)]
+pub(crate) struct DemuxFrontendSourceFailureDiagnostic {
+    phase: &'static str,
+    frontend_id: i32,
+    frontend_state: Option<FrontendRuntimeState>,
+    frontend_generation: Option<u64>,
+    frontend_object_id: Option<AidlObjectId>,
+    frontend_object_generation: Option<AidlObjectGeneration>,
+    frontend_object_lifecycle: Option<RuntimeObjectLifecycleSnapshot>,
+    demux_id: i32,
+    demux_state: Option<maleicacid_tuner_hal2_demux::DemuxRuntimeState>,
+    demux_generation: Option<u64>,
+    error_kind: maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind,
+    error_id: Option<i32>,
+}
+
+impl DemuxFrontendSourceFailureDiagnostic {
+    pub(crate) fn capture(
+        runtime: &TunerServiceRuntime,
+        demux_id: DemuxRuntimeId,
+        frontend_id: FrontendRuntimeId,
+        phase: &'static str,
+        error: DemuxRuntimeError,
+    ) -> Self {
+        let frontend = runtime.registry.frontend_runtime(frontend_id).map(|frontend| {
+            let state = frontend.snapshot().state;
+            (state, frontend.generation())
+        });
+        let frontend_object = runtime
+            .object_table()
+            .active_entry_for_runtime(AidlObjectKind::Frontend, LedgerId(i64::from(frontend_id.0)));
+        let demux = runtime
+            .registry
+            .demux_runtime(demux_id)
+            .map(|demux| (demux.state(), demux.generation()));
+        Self {
+            phase,
+            frontend_id: frontend_id.0,
+            frontend_state: frontend.as_ref().map(|(state, _)| *state),
+            frontend_generation: frontend.map(|(_, generation)| generation),
+            frontend_object_id: frontend_object.as_ref().map(|entry| entry.object_id),
+            frontend_object_generation: frontend_object.as_ref().map(|entry| entry.generation),
+            frontend_object_lifecycle: frontend_object.map(|entry| entry.lifecycle.into()),
+            demux_id: demux_id.0,
+            demux_state: demux.map(|(state, _)| state),
+            demux_generation: demux.map(|(_, generation)| generation),
+            error_kind: error.kind,
+            error_id: error.id,
+        }
+    }
+}
+
+fn map_demux_frontend_source_failure(
+    runtime: &TunerServiceRuntime,
+    demux_id: DemuxRuntimeId,
+    frontend_id: FrontendRuntimeId,
+    phase: &'static str,
+    error: DemuxRuntimeError,
+) -> HalError {
+    let diagnostic = DemuxFrontendSourceFailureDiagnostic::capture(
+        runtime, demux_id, frontend_id, phase, error,
+    );
+    #[cfg(target_os = "android")]
+    log::error!("HAL_DEMUX_FRONTEND_SOURCE_FAILURE {diagnostic:?}");
+    #[cfg(not(target_os = "android"))]
+    eprintln!("HAL_DEMUX_FRONTEND_SOURCE_FAILURE {diagnostic:?}");
+    super::demux_runtime_error_to_hal(error)
+}
 
 pub(crate) struct DemuxFrontendSourceTxn {
     demux_id: DemuxRuntimeId,
@@ -61,6 +136,12 @@ impl DemuxFrontendSourceTxn {
         self,
         runtime: &mut TunerServiceRuntime,
     ) -> Result<StreamBoundaryReport, HalError> {
+        let related_frontend_id = match &self.mutation {
+            DemuxFrontendSourceMutation::Bind(frontend_id) => *frontend_id,
+            DemuxFrontendSourceMutation::Unbind {
+                expected_frontend_id, ..
+            } => *expected_frontend_id,
+        };
         let (next_frontend_id, reason) = match self.mutation {
             DemuxFrontendSourceMutation::Bind(next_frontend_id) => {
                 let Some(frontend_runtime) = runtime.registry.frontend_runtime(next_frontend_id)
@@ -138,7 +219,7 @@ impl DemuxFrontendSourceTxn {
             .registry
             .prepare_demux_frontend_binding_change(self.demux_id, next_frontend_id)?;
 
-        let prepared = runtime
+        let prepared_result = runtime
             .registry
             .demux_runtime_mut(self.demux_id)
             .ok_or_else(|| {
@@ -147,9 +228,13 @@ impl DemuxFrontendSourceTxn {
                     "demux runtime is missing",
                 )
             })?
-            .prepare_stream_boundary_from_typed_request(DemuxStreamBoundaryRequest::new(reason))
-            .map_err(super::demux_runtime_error_to_hal)?;
-        let report = runtime
+            .prepare_stream_boundary_from_typed_request(DemuxStreamBoundaryRequest::new(reason));
+        let prepared = prepared_result.map_err(|error| {
+            map_demux_frontend_source_failure(
+                runtime, self.demux_id, related_frontend_id, "prepare", error,
+            )
+        })?;
+        let committed_result = runtime
             .registry
             .demux_runtime_mut(self.demux_id)
             .ok_or_else(|| {
@@ -158,8 +243,12 @@ impl DemuxFrontendSourceTxn {
                     "demux runtime disappeared after stream-boundary prepare",
                 )
             })?
-            .commit_stream_boundary_from_typed_request(prepared)
-            .map_err(super::demux_runtime_error_to_hal)?;
+            .commit_stream_boundary_from_typed_request(prepared);
+        let report = committed_result.map_err(|error| {
+            map_demux_frontend_source_failure(
+                runtime, self.demux_id, related_frontend_id, "commit", error,
+            )
+        })?;
         runtime
             .registry
             .commit_prepared_demux_frontend_binding_change(prepared_binding_change)?;
