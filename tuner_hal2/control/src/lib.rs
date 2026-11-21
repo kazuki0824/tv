@@ -599,17 +599,23 @@ impl<T> WorkerRuntime<T> {
         }
     }
 
-    pub fn join(mut self) -> WorkerTerminalResult<T> {
+    pub fn join(self) -> WorkerTerminalResult<T> {
+        match self.join_with_result() {
+            Ok(terminal) => terminal,
+            Err(failure) => failure.into_terminal_result("WorkerRuntime"),
+        }
+    }
+
+    pub fn join_with_result(
+        mut self,
+    ) -> Result<WorkerTerminalResult<T>, WorkerRuntimeOwnerFailure> {
         let Some(handle) = self.handle.take() else {
-            return WorkerRuntimeOwnerFailure::ResultAlreadyCollected
-                .into_terminal_result("WorkerRuntime");
+            return Err(WorkerRuntimeOwnerFailure::ResultAlreadyCollected);
         };
         match handle.join_after_stop() {
-            Ok(Ok(result)) => result,
-            Err(failure) => failure.into_terminal_result("WorkerRuntime"),
-            Ok(Err(())) => {
-                WorkerRuntimeOwnerFailure::MissingReport.into_terminal_result("WorkerRuntime")
-            }
+            Ok(Ok(result)) => Ok(result),
+            Err(failure) => Err(failure),
+            Ok(Err(())) => Err(WorkerRuntimeOwnerFailure::MissingReport),
         }
     }
 }
@@ -698,11 +704,7 @@ impl<K, V> Clone for WorkerRuntimeReaperPending<K, V> {
     }
 }
 
-impl<K, V> WorkerRuntimeReaperPending<K, V>
-where
-    K: Ord + Clone,
-    V: Clone,
-{
+impl<K, V> WorkerRuntimeReaperPending<K, V> {
     fn new(capacity: usize) -> Self {
         Self {
             state: std::sync::Arc::new(PoisonTrackedMutex::new(
@@ -729,7 +731,13 @@ where
             .lock()
             .map_err(maleicacid_tuner_hal2_common::HalError::LockPoisoned)
     }
+}
 
+impl<K, V> WorkerRuntimeReaperPending<K, V>
+where
+    K: Ord + Clone,
+    V: Clone,
+{
     fn reserve_group(
         &self,
         reservations: impl IntoIterator<Item = (K, V)>,
@@ -743,10 +751,12 @@ where
         }
         let mut state = self.lock_state()?;
         if state.groups.len() >= state.capacity {
-            return Err(maleicacid_tuner_hal2_common::HalError::internal(
-                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "ワーカー回収予約の容量が不足しています",
-            ));
+            return Err(maleicacid_tuner_hal2_common::HalError::Busy {
+                path: None,
+                detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
+                    "ワーカー回収予約の容量が不足しています",
+                ),
+            });
         }
         if reservations
             .iter()
@@ -829,6 +839,39 @@ where
             );
         }
         Ok(())
+    }
+
+    /// 同じ回収グループに親子objectのキーを追加し、容量を再予約しない。
+    /// 既に別グループが保持しているキーは実行権限を重複させない。
+    pub fn attach_to_group(
+        &self,
+        anchor: &K,
+        key: K,
+        value: V,
+    ) -> Result<bool, maleicacid_tuner_hal2_common::HalError> {
+        let mut state = self.lock_state()?;
+        if state.entries.contains_key(&key) {
+            return Ok(false);
+        }
+        let group_id = state
+            .groups
+            .iter()
+            .find_map(|(id, keys)| keys.contains(anchor).then_some(*id))
+            .ok_or_else(|| {
+                maleicacid_tuner_hal2_common::HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "回収委譲元の予約グループが見つかりません",
+                )
+            })?;
+        let group = state.groups.get_mut(&group_id).ok_or_else(|| {
+            maleicacid_tuner_hal2_common::HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "回収委譲先の予約グループが消失しました",
+            )
+        })?;
+        group.push(key.clone());
+        state.entries.insert(key, value);
+        Ok(true)
     }
 
     pub fn update_value(
@@ -1053,6 +1096,14 @@ impl<K, V, J> Clone for WorkerRuntimeReaperQueue<K, V, J> {
     }
 }
 
+impl<K, V, J> WorkerRuntimeReaperQueue<K, V, J> {
+    /// 共有回収器の失敗と予約正本の汚染を確認し、値やlockを持ち出さない。
+    pub fn check_health(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        drop(self.pending.lock_state()?);
+        Ok(())
+    }
+}
+
 impl<K, V, J> WorkerRuntimeReaperQueue<K, V, J>
 where
     K: Ord + Clone + Send + 'static,
@@ -1213,10 +1264,12 @@ where
                 let send_error = match error {
                     std::sync::mpsc::TrySendError::Full(queued) => {
                         drop(queued.job);
-                        maleicacid_tuner_hal2_common::HalError::internal(
-                            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                            "ワーカー回収の容量が不足しています",
-                        )
+                        maleicacid_tuner_hal2_common::HalError::Busy {
+                            path: None,
+                            detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
+                                "ワーカー回収の容量が不足しています",
+                            ),
+                        }
                     }
                     std::sync::mpsc::TrySendError::Disconnected(queued) => {
                         drop(queued.job);
@@ -2309,6 +2362,33 @@ mod tests {
     }
 
     #[test]
+    fn reaper_handoff_uses_one_reserved_group() {
+        let pending = super::WorkerRuntimeReaperPending::new(1);
+        let group = pending.reserve_group([(1u32, 10u32)]).unwrap();
+        assert!(pending.attach_to_group(&1, 2, 20).unwrap());
+        assert_eq!(pending.pending_value(&2).unwrap(), Some(20));
+        assert!(!pending.attach_to_group(&1, 2, 21).unwrap());
+        assert!(pending.reserve_group([(3, 30)]).is_err());
+        pending.release_group(group).unwrap();
+        assert_eq!(pending.pending_value(&1).unwrap(), None);
+        assert_eq!(pending.pending_value(&2).unwrap(), None);
+    }
+
+    #[test]
+    fn full_reaper_reservation_reports_busy_not_invariant_violation() {
+        let pending = super::WorkerRuntimeReaperPending::new(1);
+        let group = pending.reserve_group([(1u32, 1u32)]).unwrap();
+        let error = pending.reserve_group([(2, 2)]).unwrap_err();
+        assert!(matches!(
+            error,
+            maleicacid_tuner_hal2_common::HalError::Busy { .. }
+        ));
+        assert_eq!(pending.pending_value(&1).unwrap(), Some(1));
+        pending.release_group(group).unwrap();
+        assert!(pending.reserve_group([(2, 2)]).is_ok());
+    }
+
+    #[test]
     fn reaper_admission_timeout_keeps_both_endpoint_reservations() {
         use std::time::{Duration, Instant};
         let pending = super::WorkerRuntimeReaperPending::new(1);
@@ -2355,6 +2435,7 @@ mod tests {
             Err(HalError::WorkerReaperPanicked)
         );
         waiter.join().unwrap();
+        assert_eq!(queue.check_health(), Err(HalError::WorkerReaperPanicked));
         assert_eq!(
             queue.pending.state.lock().unwrap().entries.get(&1),
             Some(&1)
@@ -2823,10 +2904,37 @@ mod tests {
     }
 
     #[test]
+    fn reaper_health_check_preserves_reservation_on_runtime_failure() {
+        let (queue, _receiver) = reaper_queue_for_test(1);
+        let reservation = queue.reserve_pending([(7, 11)]).unwrap();
+        assert_eq!(queue.check_health(), Ok(()));
+        assert_eq!(queue.pending_value(&7).unwrap(), Some(11));
+        let error = maleicacid_tuner_hal2_common::HalError::cleanup_failed(
+            "回収器の試験",
+            "runtime failureを注入",
+        );
+        queue
+            .pending
+            .failure
+            .record_terminal(&WorkerTerminalResult::RuntimeFailure(error.clone()));
+        assert_eq!(queue.check_health(), Err(error));
+        assert_eq!(
+            queue.pending.state.lock().unwrap().entries.get(&7),
+            Some(&11)
+        );
+        drop(reservation);
+        assert_eq!(
+            queue.pending.state.lock().unwrap().entries.get(&7),
+            Some(&11)
+        );
+    }
+
+    #[test]
     fn reaper_pending_poison_preserves_identity_count_and_failed_state() {
         use maleicacid_tuner_hal2_common::{HalError, RuntimeLockKind};
 
-        let pending = WorkerRuntimeReaperPending::new(2);
+        let (queue, _receiver) = reaper_queue_for_test(2);
+        let pending = queue.pending.clone();
         let group = pending.reserve_group([(1, 9)]).unwrap();
         let clone = pending.clone();
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2842,6 +2950,7 @@ mod tests {
             (clone.update_value(&1, 7).unwrap_err(), 4),
             (clone.any_pending([&1, &1]).unwrap_err(), 5),
             (clone.any_pending([]).unwrap_err(), 6),
+            (queue.check_health().unwrap_err(), 7),
         ] {
             assert!(matches!(
                 error,
@@ -2857,7 +2966,8 @@ mod tests {
     fn reaper_receiver_poison_is_visible_to_pending_callers_without_releasing_ownership() {
         use maleicacid_tuner_hal2_common::{HalError, RuntimeLockKind};
 
-        let pending = WorkerRuntimeReaperPending::new(2);
+        let (queue, _receiver) = reaper_queue_for_test(2);
+        let pending = queue.pending.clone();
         pending.reserve_group([(1, 9)]).unwrap();
         let clone = pending.clone();
         let (_sender, receiver) = std::sync::mpsc::channel::<()>();
@@ -2884,6 +2994,7 @@ mod tests {
             clone.reserve_group([(2, 8)]).unwrap_err(),
             HalError::WorkerReaperUnavailable
         );
+        assert_eq!(queue.check_health(), Err(HalError::WorkerReaperUnavailable));
         assert_eq!(pending.state.lock().unwrap().entries.get(&1), Some(&9));
     }
 

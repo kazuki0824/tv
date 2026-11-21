@@ -1,4 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Weak};
+use std::time::Instant;
 
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInvalidStateKind,
@@ -463,6 +465,64 @@ impl CleanupExecutionStepOutcome for ObjectCleanupStepOutcome {
 pub type ObjectCleanupExecutionReport =
     CleanupExecutionReport<ObjectCleanupStepOutcome, ObjectCloseCleanupFailure>;
 
+/// DVR通知workerの回収権限がSupervisorへ移管済みで、他のcleanup工程と
+/// 対象runtime登録解除が成功した場合だけ、局所的な回収待ちを許す。
+/// 完全な物理cleanup成功ではなく、未完義務を保持した隔離の証拠である。
+pub fn drop_leak_cleanup_supervised_targets(
+    report: &ObjectCleanupExecutionReport,
+) -> Option<Vec<(AidlObjectId, AidlObjectGeneration)>> {
+    let mut pending_owners = Vec::new();
+    let mut unregistered = None;
+    for outcome in report.outcomes() {
+        match outcome {
+            ObjectCleanupStepOutcome::Artifact {
+                kind: ObjectArtifactCleanupKind::DvrStatusNotifier,
+                target,
+                result: Err(failure),
+                ..
+            } if matches!(
+                failure.error(),
+                HalError::WorkerCleanupFailed {
+                    kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Executing
+                }
+            ) =>
+            {
+                pending_owners.push(*target);
+            }
+            ObjectCleanupStepOutcome::Runtime {
+                kind: ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
+                cascade_entries,
+                result: Ok(()),
+            } => {
+                unregistered = Some(cascade_entries.as_slice());
+            }
+            other if other.result().is_err() => return None,
+            _ => {}
+        }
+    }
+    if pending_owners.is_empty()
+        || !unregistered.is_some_and(|entries| {
+            pending_owners.iter().all(|target| {
+                entries.iter().any(|entry| {
+                    entry.object_kind == target.object_kind()
+                        && entry.object_id == target.object_id()
+                        && entry.generation == target.generation()
+                })
+            })
+        })
+    {
+        return None;
+    }
+    let mut targets = pending_owners
+        .into_iter()
+        .map(|target| (target.object_id(), target.generation()))
+        .collect::<Vec<_>>();
+    targets.sort_unstable();
+    targets.dedup();
+    Some(targets)
+}
+
+/// 元の真偽判定を確認する単体テスト専用の入口。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectCleanupDiagnosticKind {
     Close,
@@ -542,11 +602,21 @@ pub struct CloseCleanupAuthority {
     key: CloseCleanupAuthorityKey,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// 通知workerをSupervisorへ移管した後も、完了義務は既存ObjectCloseTxnが保持する。
+/// 別の所有台帳は設けない。
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum QuarantinedCleanupProgress {
+    AwaitingReport(BTreeMap<(AidlObjectId, AidlObjectGeneration), bool>),
+    AwaitingJoins(BTreeSet<(AidlObjectId, AidlObjectGeneration)>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct CloseCleanupObligation {
     generation: AidlObjectGeneration,
     obligation_id: u64,
     active_attempt: Option<u64>,
+    recovery_requested_at: Option<Instant>,
+    quarantine: Option<QuarantinedCleanupProgress>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -690,9 +760,58 @@ impl ObjectCloseCleanupAttempt {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ObjectDropLeakQuarantinePlan {
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
     cascade_entries: Vec<RuntimeObjectEntry>,
     artifact_cleanup_commands: Vec<ObjectArtifactCleanupCommand>,
     domain_cleanup_commands: Vec<ObjectDomainCleanupCommand>,
+}
+
+#[must_use]
+pub struct QuarantineCleanupReport {
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    report: ObjectCleanupExecutionReport,
+}
+
+impl QuarantineCleanupReport {
+    pub fn report(&self) -> &ObjectCleanupExecutionReport {
+        &self.report
+    }
+
+    /// report受領後もSupervisorのjoin待ちが残る場合だけtrueを返す。
+    pub fn finish(self, runtime: &mut TunerServiceRuntime) -> Result<bool, HalError> {
+        let supervised = drop_leak_cleanup_supervised_targets(&self.report);
+        let result = if supervised.is_none() {
+            self.report
+                .into_result()
+                .map_err(ObjectCloseCleanupFailure::into_error)
+        } else {
+            Ok(())
+        }
+        .and_then(|()| {
+            runtime
+                .object_table_mut()
+                .finish_quarantined_cleanup_report(
+                    self.object_id,
+                    self.generation,
+                    supervised.as_deref().unwrap_or(&[]),
+                )
+                .map(|completed| !completed)
+                .map_err(object_table_error_to_hal)
+        });
+        // 物理操作の部分成功を安全に巻き戻せない。現世代の一回実行権限を
+        // 消費した報告が失敗した場合は、未完義務を残したまま既存の再起動へ渡す。
+        if result.is_err()
+            && runtime
+                .object_table()
+                .quarantine_cleanup_is_supervised(self.object_id, self.generation)
+                == Some(false)
+        {
+            runtime.mark_service_critical();
+        }
+        result
+    }
 }
 
 impl ObjectDropLeakQuarantinePlan {
@@ -701,13 +820,15 @@ impl ObjectDropLeakQuarantinePlan {
         runtime_executor: &mut R,
         domain_executor: &mut D,
         artifact_executor: &mut A,
-    ) -> ObjectCleanupExecutionReport
+    ) -> QuarantineCleanupReport
     where
         R: ObjectCloseRuntimeExecutor,
         D: ObjectDomainCleanupExecutor,
         A: ObjectArtifactCleanupExecutor,
     {
         let Self {
+            object_id,
+            generation,
             cascade_entries,
             artifact_cleanup_commands,
             domain_cleanup_commands,
@@ -730,7 +851,11 @@ impl ObjectDropLeakQuarantinePlan {
             )
             .execute_outcome_with(runtime_executor),
         );
-        report
+        QuarantineCleanupReport {
+            object_id,
+            generation,
+            report,
+        }
     }
 }
 
@@ -962,6 +1087,8 @@ fn unregister_public_runtime_entries_for_drop_leak(
 #[derive(Debug)]
 pub struct ObjectCloseTxn {
     obligations: BTreeMap<AidlObjectId, CloseCleanupObligation>,
+    // workerの生存状態はSupervisorが保持する。ここではjoin証明の同一性だけを照合する。
+    dvr_notifier_registrations: BTreeMap<AidlObjectId, Weak<()>>,
     next_obligation_id: u64,
     next_attempt_id: u64,
 }
@@ -970,6 +1097,7 @@ impl ObjectCloseTxn {
     pub(crate) fn new() -> Self {
         Self {
             obligations: BTreeMap::new(),
+            dvr_notifier_registrations: BTreeMap::new(),
             next_obligation_id: 0,
             next_attempt_id: 0,
         }
@@ -977,12 +1105,239 @@ impl ObjectCloseTxn {
 
     pub(crate) fn clear(&mut self) {
         self.obligations.clear();
+        self.dvr_notifier_registrations.clear();
         self.next_obligation_id = 0;
         self.next_attempt_id = 0;
     }
 
     pub(crate) fn clear_obligation(&mut self, object_id: AidlObjectId) {
         self.obligations.remove(&object_id);
+        self.clear_dvr_notifier_registration(object_id);
+    }
+
+    pub(crate) fn clear_dvr_notifier_registration(&mut self, object_id: AidlObjectId) {
+        self.dvr_notifier_registrations.remove(&object_id);
+    }
+
+    pub(crate) fn register_dvr_notifier(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<DvrNotifierStart, HalError> {
+        if self
+            .dvr_notifier_registrations
+            .get(&object_id)
+            .and_then(Weak::upgrade)
+            .is_some()
+        {
+            return Err(HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "同一DVR ownerの通知workerが既に登録されています",
+            ));
+        }
+        let identity = Arc::new(());
+        self.dvr_notifier_registrations
+            .insert(object_id, Arc::downgrade(&identity));
+        Ok(DvrNotifierStart {
+            object_id,
+            generation,
+            identity,
+        })
+    }
+
+    pub(crate) fn matches_dvr_notifier(&self, registration: &DvrNotifierStart) -> bool {
+        self.dvr_notifier_registrations
+            .get(&registration.object_id)
+            .is_some_and(|identity| identity.ptr_eq(&Arc::downgrade(&registration.identity)))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exhaust_cleanup_ids_for_test(&mut self) {
+        self.next_obligation_id = u64::MAX;
+    }
+
+    pub(crate) fn request_recovery(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        requested_at: Instant,
+    ) -> bool {
+        let Some(obligation) = self.obligations.get_mut(&object_id) else {
+            return false;
+        };
+        if obligation.generation != generation {
+            return false;
+        }
+        obligation.recovery_requested_at.get_or_insert(requested_at);
+        true
+    }
+
+    pub(crate) fn finish_recovery_admission(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) {
+        if let Some(obligation) = self.obligations.get_mut(&object_id) {
+            if obligation.generation == generation {
+                obligation.recovery_requested_at = None;
+            }
+        }
+    }
+
+    pub(crate) fn recovery_requests(
+        &self,
+    ) -> impl Iterator<Item = (AidlObjectId, AidlObjectGeneration, Instant)> + '_ {
+        self.obligations.iter().filter_map(|(id, obligation)| {
+            Some((
+                *id,
+                obligation.generation,
+                obligation.recovery_requested_at?,
+            ))
+        })
+    }
+
+    pub(crate) fn has_outstanding_obligation(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> bool {
+        self.obligations
+            .get(&object_id)
+            .is_some_and(|obligation| obligation.generation == generation)
+    }
+
+    /// Noneは隔離義務なし。報告未受理とSupervisor移管済みを区別する。
+    pub(crate) fn quarantine_cleanup_is_supervised(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Option<bool> {
+        let obligation = self.obligations.get(&object_id)?;
+        if obligation.generation != generation {
+            return None;
+        }
+        obligation
+            .quarantine
+            .as_ref()
+            .map(|progress| matches!(progress, QuarantinedCleanupProgress::AwaitingJoins(_)))
+    }
+
+    pub(crate) fn begin_quarantined_cleanup(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        notifier_candidates: impl IntoIterator<Item = (AidlObjectId, AidlObjectGeneration)>,
+    ) -> Result<(), ObjectCloseTxnStateError> {
+        // 物理cleanupより前に正本へ義務を登録する。
+        // 通知workerの回収がreportより先に終了しても完了通知を失わない。
+        if self
+            .obligations
+            .get(&object_id)
+            .is_some_and(|obligation| obligation.quarantine.is_some())
+        {
+            return Err(ObjectCloseTxnStateError::InvalidAuthority);
+        }
+        let authority = self.issue_cleanup_authority(object_id, generation)?;
+        let obligation = self
+            .obligations
+            .get_mut(&object_id)
+            .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
+        if obligation.obligation_id != authority.obligation_id {
+            return Err(ObjectCloseTxnStateError::InvalidAuthority);
+        }
+        obligation.quarantine = Some(QuarantinedCleanupProgress::AwaitingReport(
+            notifier_candidates
+                .into_iter()
+                .map(|key| (key, false))
+                .collect(),
+        ));
+        Ok(())
+    }
+
+    /// Supervisorに移管した通知worker以外の物理cleanupが成功した場合だけ呼ぶ。
+    /// 全通知workerの回収終了後に限り完了を返す。
+    pub(crate) fn accept_quarantine_cleanup_report(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        pending: &[(AidlObjectId, AidlObjectGeneration)],
+    ) -> Result<bool, ObjectCloseTxnStateError> {
+        let obligation = self
+            .obligations
+            .get_mut(&object_id)
+            .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
+        if obligation.generation != generation || obligation.active_attempt.is_some() {
+            return Err(ObjectCloseTxnStateError::InvalidAuthority);
+        }
+        let Some(QuarantinedCleanupProgress::AwaitingReport(candidates)) =
+            obligation.quarantine.as_ref()
+        else {
+            return Err(ObjectCloseTxnStateError::InvalidAuthority);
+        };
+        let mut outstanding = BTreeSet::new();
+        for key in pending {
+            let joined = candidates
+                .get(key)
+                .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
+            if !*joined {
+                outstanding.insert(*key);
+            }
+        }
+        let finished = outstanding.is_empty();
+        if finished {
+            self.obligations.remove(&object_id);
+        } else {
+            obligation.quarantine = Some(QuarantinedCleanupProgress::AwaitingJoins(outstanding));
+        }
+        Ok(finished)
+    }
+
+    /// join通知で未完義務が消えるownerを、破壊的変更の前に列挙する。
+    /// ObjectTableはこの集合の全lifecycleを検証してから通知をcommitする。
+    pub(crate) fn quarantine_roots_completing_on_join(
+        &self,
+        notifier: (AidlObjectId, AidlObjectGeneration),
+    ) -> Vec<(AidlObjectId, AidlObjectGeneration)> {
+        self.obligations
+            .iter()
+            .filter_map(|(object_id, obligation)| {
+                let QuarantinedCleanupProgress::AwaitingJoins(pending) =
+                    obligation.quarantine.as_ref()?
+                else {
+                    return None;
+                };
+                (pending.len() == 1 && pending.contains(&notifier))
+                    .then_some((*object_id, obligation.generation))
+            })
+            .collect()
+    }
+
+    /// WorkerRuntimeSupervisorが対象workerをjoinした後だけ通知する。
+    /// 同じ世代への重複通知から新たなcleanup義務を生成しない。
+    pub(crate) fn notifier_joined(
+        &mut self,
+        notifier: (AidlObjectId, AidlObjectGeneration),
+    ) -> Vec<(AidlObjectId, AidlObjectGeneration)> {
+        let mut finished = Vec::new();
+        for (object_id, obligation) in &mut self.obligations {
+            match obligation.quarantine.as_mut() {
+                Some(QuarantinedCleanupProgress::AwaitingReport(candidates)) => {
+                    if let Some(joined) = candidates.get_mut(&notifier) {
+                        *joined = true;
+                    }
+                }
+                Some(QuarantinedCleanupProgress::AwaitingJoins(pending)) => {
+                    if pending.remove(&notifier) && pending.is_empty() {
+                        finished.push((*object_id, obligation.generation));
+                    }
+                }
+                None => {}
+            }
+        }
+        for (object_id, _) in &finished {
+            self.obligations.remove(object_id);
+        }
+        finished
     }
 
     pub(crate) fn issue_cleanup_authority(
@@ -991,7 +1346,10 @@ impl ObjectCloseTxn {
         generation: AidlObjectGeneration,
     ) -> Result<CloseCleanupAuthorityKey, ObjectCloseTxnStateError> {
         if let Some(obligation) = self.obligations.get(&object_id) {
-            if obligation.generation != generation || obligation.active_attempt.is_some() {
+            if obligation.generation != generation
+                || obligation.active_attempt.is_some()
+                || obligation.quarantine.is_some()
+            {
                 return Err(ObjectCloseTxnStateError::InvalidAuthority);
             }
             return Ok(CloseCleanupAuthorityKey {
@@ -1011,6 +1369,8 @@ impl ObjectCloseTxn {
                 generation,
                 obligation_id,
                 active_attempt: None,
+                recovery_requested_at: None,
+                quarantine: None,
             },
         );
         Ok(CloseCleanupAuthorityKey { obligation_id })
@@ -1025,11 +1385,12 @@ impl ObjectCloseTxn {
         let obligation = self
             .obligations
             .get(&object_id)
-            .copied()
+            .cloned()
             .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
         if obligation.generation != generation
             || obligation.obligation_id != authority.obligation_id
             || obligation.active_attempt.is_some()
+            || obligation.quarantine.is_some()
         {
             return Err(ObjectCloseTxnStateError::InvalidAuthority);
         }
@@ -1047,6 +1408,17 @@ impl ObjectCloseTxn {
         Ok(CloseCleanupAttemptKey {
             obligation_id: authority.obligation_id,
             attempt_id,
+        })
+    }
+
+    /// 現在進行中の物理cleanup実行権限を読み取る。世代を跨いだ一致は許可しない。
+    pub(crate) fn has_active_cleanup_attempt(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> bool {
+        self.obligations.get(&object_id).is_some_and(|obligation| {
+            obligation.generation == generation && obligation.active_attempt.is_some()
         })
     }
 
@@ -1398,23 +1770,168 @@ fn artifact_cleanup_commands_for_drop_leak_plan(
     commands
 }
 
+/// 新たなcleanup権限を作らず、既存の回収責務を所有する対象を取得する。
+pub fn related_cleanup_recovery_owners_use_case(
+    runtime: &TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+) -> Result<Vec<(AidlObjectKind, AidlObjectId, AidlObjectGeneration, bool)>, HalError> {
+    runtime
+        .object_table()
+        .related_cleanup_owners(object_id, generation)
+        .map(|owners| {
+            owners
+                .into_iter()
+                .map(|(entry, active)| {
+                    (entry.object_kind, entry.object_id, entry.generation, active)
+                })
+                .collect()
+        })
+        .map_err(object_table_error_to_hal)
+}
+
 pub fn quarantine_object_drop_leak_use_case(
     runtime: &mut TunerServiceRuntime,
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
-) -> Result<ObjectDropLeakQuarantinePlan, HalError> {
-    let cascade_entries = quarantine_object_cascade(runtime, object_id, generation)?;
+) -> Result<Option<ObjectDropLeakQuarantinePlan>, HalError> {
+    // 通常closeはruntime lock外で物理cleanupを行う。ここで進行中の
+    // ObjectCloseTxnの実行権限を奪って別のcleanupを走らせてはならない。
+    // 確認とquarantine遷移は同じruntime lock内で実行される。
+    if runtime
+        .object_table()
+        .has_active_cleanup_attempt_in_cascade(object_id, generation)
+        .map_err(object_table_error_to_hal)?
+    {
+        // 競合を全体障害として報告しない。既存権限だけが物理cleanupを進める。
+        return Ok(None);
+    }
+    if runtime
+        .object_table()
+        .has_related_outstanding_cleanup(object_id, generation)
+        .map_err(object_table_error_to_hal)?
+    {
+        // 祖先・子孫の既存cleanup権限を優先し、重複する物理cleanupを開始しない。
+        return Ok(None);
+    }
+    // artifact計画は読取り専用。失敗し得る権限発行より先に状態を変更しない。
+    let candidates = runtime
+        .object_table()
+        .quarantine_candidate_entries(object_id, generation)
+        .map_err(object_table_error_to_hal)?;
     let artifact_cleanup_commands =
-        artifact_cleanup_commands_for_drop_leak_plan(runtime, &cascade_entries);
+        artifact_cleanup_commands_for_drop_leak_plan(runtime, &candidates);
+    let notifier_candidates = artifact_cleanup_commands
+        .iter()
+        .filter(|command| command.kind == ObjectArtifactCleanupKind::DvrStatusNotifier)
+        .map(|command| (command.object_id, command.generation));
+    let cascade_entries = runtime
+        .object_table_mut()
+        .begin_quarantine_cleanup(object_id, generation, notifier_candidates)
+        .map_err(object_table_error_to_hal)?;
     let domain_cleanup_commands = cascade_entries
         .iter()
         .filter_map(drop_leak_domain_cleanup_command_for_entry)
         .collect();
-    Ok(ObjectDropLeakQuarantinePlan {
+    Ok(Some(ObjectDropLeakQuarantinePlan {
+        object_id,
+        generation,
         cascade_entries,
         artifact_cleanup_commands,
         domain_cleanup_commands,
-    })
+    }))
+}
+
+/// 生存DVRに対してruntimeが一度だけ発行する通知workerの起動権限。
+#[must_use]
+pub struct DvrNotifierStart {
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    identity: Arc<()>,
+}
+
+impl DvrNotifierStart {
+    pub fn register(
+        runtime: &mut TunerServiceRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Self, HalError> {
+        runtime
+            .object_table_mut()
+            .register_dvr_notifier(object_id, generation)
+    }
+
+    pub(crate) fn key(&self) -> (AidlObjectId, AidlObjectGeneration) {
+        (self.object_id, self.generation)
+    }
+
+    pub fn spawn(
+        self,
+        name: String,
+        run: impl FnOnce(crate::WorkerContext) -> Result<(), HalError> + Send + 'static,
+        wake_supervisor: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<DvrNotifierWorker> {
+        let worker = crate::WorkerRuntime::spawn(
+            name,
+            self.object_id.0,
+            self.generation.0,
+            run,
+            wake_supervisor,
+        )?;
+        Ok(DvrNotifierWorker {
+            worker,
+            registration: self,
+        })
+    }
+}
+
+/// 起動権限を消費して起動した実workerだけをSupervisorへ渡す。
+#[must_use]
+pub struct DvrNotifierWorker {
+    worker: crate::WorkerRuntime<()>,
+    registration: DvrNotifierStart,
+}
+
+impl DvrNotifierWorker {
+    pub fn is_finished(&self) -> bool {
+        self.worker.is_finished()
+    }
+
+    pub fn request_stop(&self) {
+        self.worker.request_stop();
+    }
+
+    pub fn join(
+        self,
+    ) -> (
+        crate::ClassifiedWorkerTerminalResult<()>,
+        Option<DvrNotifierJoinCompletion>,
+    ) {
+        let (terminal, completion) = match self.worker.join_with_result() {
+            Ok(terminal) => (terminal, Some(DvrNotifierJoinCompletion(self.registration))),
+            Err(error) => (error.into_terminal_result("DVR notifier"), None),
+        };
+        (
+            crate::WorkerFailureClassifier::classify_terminal(
+                terminal,
+                "DVR通知workerをjoinできませんでした",
+            ),
+            completion,
+        )
+    }
+}
+
+/// 登録したworkerの実join成功からだけ発行する、消費型の回収証明。
+#[must_use]
+pub struct DvrNotifierJoinCompletion(DvrNotifierStart);
+
+impl DvrNotifierJoinCompletion {
+    pub fn finish(self, runtime: &mut TunerServiceRuntime) -> Result<(), HalError> {
+        runtime
+            .object_table_mut()
+            .finish_dvr_notifier_join(&self.0)
+            .map_err(object_table_error_to_hal)
+    }
 }
 
 pub(crate) fn quarantine_object_cascade(
@@ -1434,6 +1951,205 @@ mod tests {
     use crate::{RuntimeObjectEntry, RuntimeOwnerRelation};
     use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlObjectKind, CommandPlan};
     use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
+
+    #[test]
+    fn failed_dvr_worker_can_prove_successful_join() {
+        let mut txn = ObjectCloseTxn::new();
+        let object_id = AidlObjectId(17);
+        let generation = AidlObjectGeneration(2);
+        let mut other_txn = ObjectCloseTxn::new();
+        let foreign = other_txn
+            .register_dvr_notifier(object_id, generation)
+            .unwrap();
+        let registration = txn.register_dvr_notifier(object_id, generation).unwrap();
+        assert!(txn.register_dvr_notifier(object_id, generation).is_err());
+        let worker = registration
+            .spawn(
+                "dvr-join-regression".to_string(),
+                |_| Err(HalError::cleanup_failed("DVR通知", "異常終了を注入")),
+                || {},
+            )
+            .unwrap();
+        let (terminal, completion) = worker.join();
+        assert!(matches!(
+            terminal,
+            crate::ClassifiedWorkerTerminalResult::Failure { .. }
+        ));
+        let completion = completion.expect("業務結果が失敗でもjoinは完了する");
+        assert!(txn.matches_dvr_notifier(&completion.0));
+        assert!(!other_txn.matches_dvr_notifier(&completion.0));
+        assert!(!txn.matches_dvr_notifier(&foreign));
+    }
+
+    #[test]
+    fn product_capacity_saturates_after_real_open_close_before_reaper_group_release() {
+        use crate::worker_runtime::{WorkerContext, WorkerRuntime};
+        use std::sync::{mpsc, Arc, Condvar, Mutex};
+        use std::time::{Duration, Instant};
+
+        // テスト途中のpanicでも全runnerを必ず解放する。
+        struct ReleaseGateOnDrop(Arc<(Mutex<bool>, Condvar)>);
+        impl ReleaseGateOnDrop {
+            fn release(&self) {
+                let (lock, wake) = &*self.0;
+                *lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                wake.notify_all();
+            }
+        }
+        impl Drop for ReleaseGateOnDrop {
+            fn drop(&mut self) {
+                self.release();
+            }
+        }
+
+        // 製品既定の公開能力・自動AIDL ID発行・正規Demux open/closeを使う。
+        // runnerは実close完了を確定した後でgroup解放直前だけ同期的に停止する。
+        let snapshot = crate::CapabilitySnapshot::product_default();
+        snapshot.validate_dependency_closures().unwrap();
+        let capacity = snapshot.cleanup_reaper_capacity;
+        assert_eq!(capacity, 176);
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        assert_eq!(runtime.lock().unwrap().capability_snapshot(), snapshot);
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let release_gate = ReleaseGateOnDrop(Arc::clone(&gate));
+        let worker_gate = Arc::clone(&gate);
+        let worker_runtime = Arc::clone(&runtime);
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let runner = Arc::new(
+            move |(entry, completion): (RuntimeObjectEntry, CloseCleanupAttemptCompletion),
+                  _: _,
+                  _: WorkerContext| {
+                {
+                    let mut runtime = worker_runtime.lock().unwrap();
+                    runtime
+                        .validate_public_runtime_for_closed_aidl_entry(&entry)
+                        .unwrap();
+                    runtime
+                        .unregister_public_runtime_for_closed_aidl_entry(&entry)
+                        .unwrap();
+                    finish_object_close_use_case(&mut runtime, completion, Ok(())).unwrap();
+                    assert_eq!(
+                        runtime
+                            .object_table()
+                            .entry(entry.object_id())
+                            .unwrap()
+                            .lifecycle,
+                        crate::RuntimeObjectLifecycle::Closed
+                    );
+                }
+                finished_tx
+                    .send((entry.object_id(), entry.generation()))
+                    .unwrap();
+                // 正規runner終了後のpending.release_group直前でworkerが
+                // スケジューリング停止する区間を、同期ゲートで再現する。
+                let (lock, wake) = &*worker_gate;
+                let mut released = lock.lock().unwrap();
+                while !*released {
+                    released = wake.wait(released).unwrap();
+                }
+            },
+        );
+        // Worker側のrunner参照が全て解放されたらlaneが正常に終了したと判断する。
+        let weak_runner = Arc::downgrade(&runner);
+        let reaper = WorkerRuntime::start_reaper_queue::<
+            (AidlObjectId, AidlObjectGeneration),
+            CleanupStep,
+            (RuntimeObjectEntry, CloseCleanupAttemptCompletion),
+        >(capacity, "product-demux-close-overlap", runner)
+        .unwrap();
+        let mut distinct_ids = std::collections::BTreeSet::new();
+        let mut retained_keys = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            let (entry, completion) = {
+                let mut runtime = runtime.lock().unwrap();
+                let entry = runtime
+                    .root_open_txn()
+                    .open_demux_root_object(AidlMethodCall::PublicApi {
+                        object: AidlObjectKind::Tuner,
+                        api: AidlApi::TunerOpenDemux,
+                    })
+                    .expect("公開Demux枠を再獲得");
+                let plan = close_object_use_case(
+                    &mut runtime,
+                    entry.object_id(),
+                    entry.generation(),
+                    AidlObjectKind::Demux,
+                    AidlMethodCall::DemuxClose,
+                )
+                .expect("正規close権限の発行");
+                let completion = plan
+                    .begin_cleanup_attempt(&mut runtime)
+                    .expect("cleanup実行権限の確保")
+                    .completion;
+                (entry, completion)
+            };
+            assert!(distinct_ids.insert(entry.object_id()));
+            let key = (entry.object_id(), entry.generation());
+            reaper
+                .enqueue_reserved((entry, completion), [(key, CleanupStep::ReleaseBackend)])
+                .expect("製品容量までは正規reaperへ受付");
+            assert_eq!(
+                finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                key
+            );
+            assert!(reaper.pending_value(&key).unwrap().is_some());
+            retained_keys.push(key);
+        }
+        // 全176件はpublic同時Liveではない。実open/closeでClosed確定済み、
+        // ただしworker内に留まる間は同世代の正規groupを返却できない。
+        let extra = {
+            let mut runtime = runtime.lock().unwrap();
+            runtime
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .expect("旧世代は閉じているため次のDemuxをopenできる")
+        };
+        assert!(distinct_ids.insert(extra.object_id()));
+        let capacity_error = reaper
+            .reserve_pending([(
+                (extra.object_id(), extra.generation()),
+                CleanupStep::ReleaseBackend,
+            )])
+            .err()
+            .expect("正規openから得た世代でも容量上限を超える");
+        assert!(matches!(
+            capacity_error,
+            maleicacid_tuner_hal2_common::HalError::Busy { .. }
+        ));
+        release_gate.release();
+
+        // 予約groupがworkerのrun完了後に全件返却されるまで有界に待機。
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for key in &retained_keys {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "製品reaperの予約groupを期限内に全件解放できませんでした"
+            );
+            reaper
+                .wait_until_released([key], Some(remaining))
+                .expect("workerの予約groupは期限内に解放される");
+        }
+        assert!(retained_keys
+            .iter()
+            .all(|key| { reaper.pending_value(key).unwrap().is_none() }));
+        // Senderを閉じて各laneのrecvを終了させる。Weak runnerが失効するまで
+        // 待つことで、テスト用のworkerを残さず終了したことを確認する。
+        drop(reaper);
+        let shutdown_deadline = Instant::now() + Duration::from_secs(10);
+        while weak_runner.upgrade().is_some() && Instant::now() < shutdown_deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            weak_runner.upgrade().is_none(),
+            "製品reaperのworkerが期限内に終了しませんでした"
+        );
+    }
 
     #[test]
     fn begin_close_cascade_moves_live_object_to_closing() {
@@ -1687,6 +2403,255 @@ mod tests {
         let _attempt = retry
             .begin_cleanup_attempt(&mut runtime)
             .expect("dropped authority leaves the obligation reissuable");
+    }
+
+    #[test]
+    fn drop_leak_quarantine_cannot_preempt_an_active_close_cleanup() {
+        let mut runtime = runtime_with_filter_for_close_attempt(30);
+        let first = begin_filter_close_plan(&mut runtime, 30)
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("既存closeがcleanup実行権限を獲得する");
+        let failure_state = runtime.failure_state();
+        assert!(quarantine_object_drop_leak_use_case(
+            &mut runtime,
+            AidlObjectId(30),
+            AidlObjectGeneration(1)
+        )
+        .expect("既存cleanupの権限競合は異常ではない")
+        .is_none());
+        assert!(!failure_state.snapshot().service_critical);
+        assert!(matches!(
+            runtime
+                .object_table()
+                .entry(AidlObjectId(30))
+                .unwrap()
+                .lifecycle,
+            crate::RuntimeObjectLifecycle::Closing { .. }
+        ));
+
+        let result = finish_object_close_use_case(
+            &mut runtime,
+            first.completion,
+            Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::ReleaseBackend,
+                HalError::cleanup_failed("テスト", "先行cleanup失敗"),
+            )),
+        );
+        assert!(result.is_err());
+        quarantine_object_drop_leak_use_case(
+            &mut runtime,
+            AidlObjectId(30),
+            AidlObjectGeneration(1),
+        )
+        .expect("先行cleanup実行権限解放後は隔離できる")
+        .expect("隔離planが発行される");
+        assert_eq!(
+            runtime
+                .object_table()
+                .entry(AidlObjectId(30))
+                .unwrap()
+                .lifecycle,
+            crate::RuntimeObjectLifecycle::Quarantined
+        );
+    }
+
+    #[test]
+    fn issued_close_authority_cannot_start_after_quarantine_handoff() {
+        let object_id = AidlObjectId(450);
+        let generation = AidlObjectGeneration(1);
+        let mut txn = ObjectCloseTxn::new();
+        let authority = txn
+            .issue_cleanup_authority(object_id, generation)
+            .expect("close権限を取得する");
+        txn.begin_quarantined_cleanup(object_id, generation, [])
+            .expect("外部cleanup開始前に隔離権限へ移管する");
+        assert!(
+            txn.begin_cleanup_attempt(object_id, generation, authority)
+                .is_err(),
+            "隔離後に古いclose権限で物理cleanupを再開始してはならない"
+        );
+        assert!(txn.has_outstanding_obligation(object_id, generation));
+    }
+
+    #[test]
+    fn quarantine_handoff_completion_is_order_independent() {
+        let root = AidlObjectId(430);
+        let generation = AidlObjectGeneration(1);
+        let notifier = (AidlObjectId(431), generation);
+        let mut txn = ObjectCloseTxn::new();
+        txn.begin_quarantined_cleanup(root, generation, [notifier])
+            .expect("回収対象を一度だけ登録");
+        assert!(!txn
+            .accept_quarantine_cleanup_report(root, generation, &[notifier])
+            .expect("後片付けreportを登録"));
+        assert!(txn.has_outstanding_obligation(root, generation));
+        assert!(txn.issue_cleanup_authority(root, generation).is_err());
+        assert_eq!(txn.notifier_joined(notifier), vec![(root, generation)]);
+        assert!(!txn.has_outstanding_obligation(root, generation));
+        assert!(txn.notifier_joined(notifier).is_empty());
+
+        // Supervisorの回収完了通知が物理cleanup reportより先に到着する場合。
+        let mut txn = ObjectCloseTxn::new();
+        txn.begin_quarantined_cleanup(root, generation, [notifier])
+            .expect("次のテストownerを登録");
+        assert!(txn.notifier_joined(notifier).is_empty());
+        assert!(txn.has_outstanding_obligation(root, generation));
+        assert!(txn
+            .accept_quarantine_cleanup_report(root, generation, &[notifier])
+            .expect("先に届いたjoinを保持して完了を認める"));
+        assert!(!txn.has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
+    fn quarantine_handoff_cannot_be_finished_by_a_different_generation() {
+        let root = AidlObjectId(440);
+        let generation = AidlObjectGeneration(1);
+        let notifier = (AidlObjectId(441), generation);
+        let mut txn = ObjectCloseTxn::new();
+        txn.begin_quarantined_cleanup(root, generation, [notifier])
+            .expect("後片付けowner登録");
+        assert!(!txn
+            .accept_quarantine_cleanup_report(root, generation, &[notifier])
+            .expect("Worker回収を待つ"));
+        assert!(txn
+            .notifier_joined((AidlObjectId(441), AidlObjectGeneration(2)))
+            .is_empty());
+        assert!(txn.has_outstanding_obligation(root, generation));
+        assert_eq!(txn.notifier_joined(notifier), vec![(root, generation)]);
+        assert!(!txn.has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
+    fn recovery_request_preserves_the_first_time_and_same_generation() {
+        let mut txn = ObjectCloseTxn::new();
+        let id = AidlObjectId(438);
+        let generation = AidlObjectGeneration(2);
+        let stale = AidlObjectGeneration(1);
+        let first = Instant::now();
+        let later = first + std::time::Duration::from_secs(1);
+
+        assert!(!txn.request_recovery(id, generation, first));
+        let authority = txn.issue_cleanup_authority(id, generation).unwrap();
+        assert!(!txn.request_recovery(id, stale, first));
+        assert!(txn.request_recovery(id, generation, first));
+        assert!(txn.request_recovery(id, generation, later));
+        txn.finish_recovery_admission(id, stale);
+        assert_eq!(
+            txn.recovery_requests().collect::<Vec<_>>(),
+            [(id, generation, first)]
+        );
+        let attempt = txn
+            .begin_cleanup_attempt(id, generation, authority)
+            .unwrap();
+        txn.finish_cleanup_attempt(id, generation, attempt, true)
+            .unwrap();
+        assert!(txn.recovery_requests().next().is_none());
+    }
+
+    #[test]
+    fn failed_physical_quarantine_report_preserves_fence_and_requests_fail_stop() {
+        use crate::{aidl_object_cleanup_disposition, AidlObjectCleanupDisposition};
+
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .unwrap();
+        let (object_id, generation) = (demux.object_id(), demux.generation());
+        let _plan = quarantine_object_drop_leak_use_case(&mut runtime, object_id, generation)
+            .unwrap()
+            .unwrap();
+        let disposition = |runtime: &TunerServiceRuntime| {
+            aidl_object_cleanup_disposition(runtime, object_id, generation, AidlObjectKind::Demux)
+                .unwrap()
+        };
+        assert_eq!(
+            disposition(&runtime),
+            AidlObjectCleanupDisposition::QuarantineAwaitingReport
+        );
+        assert!(!runtime.failure_state().snapshot().service_critical);
+        let mut report = ObjectCleanupExecutionReport::new();
+        report.push(ObjectCleanupStepOutcome::Runtime {
+            kind: ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
+            cascade_entries: vec![],
+            result: Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::UnregisterRuntime,
+                HalError::cleanup_failed("隔離", "物理回収失敗を注入"),
+            )),
+        });
+        assert!(QuarantineCleanupReport {
+            object_id,
+            generation,
+            report
+        }
+        .finish(&mut runtime)
+        .is_err());
+        assert_eq!(
+            disposition(&runtime),
+            AidlObjectCleanupDisposition::QuarantineAwaitingReport
+        );
+        assert!(runtime.failure_state().snapshot().service_critical);
+        assert!(quarantine_object_drop_leak_use_case(&mut runtime, object_id, generation).is_err());
+    }
+
+    #[test]
+    fn supervised_notifier_handoff_requires_matching_unregister_and_no_other_failures() {
+        let pending = ObjectCleanupStepOutcome::Artifact {
+            kind: ObjectArtifactCleanupKind::DvrStatusNotifier,
+            target: ObjectCleanupObjectTarget::new(
+                AidlObjectKind::Dvr,
+                AidlObjectId(17),
+                AidlObjectGeneration(2),
+            ),
+            step: CleanupStep::StopWorker,
+            result: Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::StopWorker,
+                HalError::WorkerCleanupFailed {
+                    kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Executing,
+                },
+            )),
+        };
+        let mut report = ObjectCleanupExecutionReport::new();
+        report.push(pending);
+        assert_eq!(drop_leak_cleanup_supervised_targets(&report), None);
+
+        let mut safe = ObjectCleanupExecutionReport::new();
+        safe.push(report.outcomes()[0].clone());
+        safe.push(ObjectCleanupStepOutcome::Runtime {
+            kind: ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
+            cascade_entries: vec![RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Dvr,
+                object_id: AidlObjectId(17),
+                generation: AidlObjectGeneration(2),
+                ledger_id: LedgerId(17),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: crate::RuntimeObjectLifecycle::Quarantined,
+            }],
+            result: Ok(()),
+        });
+        assert_eq!(
+            drop_leak_cleanup_supervised_targets(&safe),
+            Some(vec![(AidlObjectId(17), AidlObjectGeneration(2))])
+        );
+        safe.push(ObjectCleanupStepOutcome::Artifact {
+            kind: ObjectArtifactCleanupKind::OwnerCallbackRegistration,
+            target: ObjectCleanupObjectTarget::new(
+                AidlObjectKind::Dvr,
+                AidlObjectId(17),
+                AidlObjectGeneration(2),
+            ),
+            step: CleanupStep::UnregisterRuntime,
+            result: Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::UnregisterRuntime,
+                HalError::cleanup_failed("callback store", "解除失敗"),
+            )),
+        });
+        assert_eq!(drop_leak_cleanup_supervised_targets(&safe), None);
     }
 
     #[test]
