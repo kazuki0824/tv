@@ -3,6 +3,13 @@ plugins {
     kotlin("android") version "1.9.22"
 }
 
+val qodanaConsumerSources =
+    if (System.getenv("QODANA_INCLUDE_REC_CONSUMERS") == "1") {
+        listOf("../../../rec/src")
+    } else {
+        emptyList()
+    }
+
 android {
     namespace = "com.maleicacid.tvinput"
     compileSdk = 35
@@ -14,7 +21,7 @@ android {
     sourceSets {
         getByName("main") {
             manifest.srcFile("../../AndroidManifest.xml")
-            java.setSrcDirs(listOf("../../src"))
+            java.setSrcDirs(listOf("../../src") + qodanaConsumerSources)
             res.setSrcDirs(listOf("../../res"))
             assets.setSrcDirs(listOf("../../tests/assets"))
         }
