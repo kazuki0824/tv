@@ -36,8 +36,7 @@ pub(crate) fn demux_runtime_error_to_hal(
             #[cfg(not(target_os = "android"))]
             eprintln!(
                 "demux runtime lifecycle error before HAL projection: kind={:?} id={:?}",
-                error.kind,
-                error.id
+                error.kind, error.id
             );
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
