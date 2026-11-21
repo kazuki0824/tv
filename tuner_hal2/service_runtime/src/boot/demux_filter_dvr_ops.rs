@@ -11,7 +11,7 @@ use maleicacid_tuner_hal2_device::FrontendRuntimeState;
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 use maleicacid_tuner_hal2_resource_ledger::LedgerId;
 
-use crate::object_table::RuntimeObjectLifecycleSnapshot;
+use crate::object_table::{RuntimeObjectDiagnosticSnapshot, RuntimeObjectLifecycleSnapshot};
 
 use crate::queue_cleanup_use_case::QueueCleanupUseCase;
 #[cfg(test)]
@@ -39,6 +39,9 @@ pub(crate) struct DemuxFrontendSourceFailureDiagnostic {
     frontend_object_generation: Option<AidlObjectGeneration>,
     frontend_object_lifecycle: Option<RuntimeObjectLifecycleSnapshot>,
     demux_id: i32,
+    demux_object_id: Option<AidlObjectId>,
+    demux_object_generation: Option<AidlObjectGeneration>,
+    demux_object_lifecycle: Option<RuntimeObjectLifecycleSnapshot>,
     demux_state: Option<maleicacid_tuner_hal2_demux::DemuxRuntimeState>,
     demux_generation: Option<u64>,
     error_kind: maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind,
@@ -60,9 +63,17 @@ impl DemuxFrontendSourceFailureDiagnostic {
                 let state = frontend.snapshot().state;
                 (state, frontend.generation())
             });
-        let frontend_object = runtime
-            .object_table()
-            .active_entry_for_runtime(AidlObjectKind::Frontend, LedgerId(i64::from(frontend_id.0)));
+        // Include quarantined AIDL wrappers in the snapshot when still present.
+        // "None" means the source had no corresponding record at failure time.
+        let objects = runtime.object_table().active_diagnostic_snapshots();
+        let frontend_object = objects.iter().find(|entry| {
+            entry.object_kind() == AidlObjectKind::Frontend
+                && entry.public_runtime_id() == LedgerId(i64::from(frontend_id.0))
+        });
+        let demux_object = objects.iter().find(|entry| {
+            entry.object_kind() == AidlObjectKind::Demux
+                && entry.public_runtime_id() == LedgerId(i64::from(demux_id.0))
+        });
         let demux = runtime
             .registry
             .demux_runtime(demux_id)
@@ -72,10 +83,13 @@ impl DemuxFrontendSourceFailureDiagnostic {
             frontend_id: frontend_id.0,
             frontend_state: frontend.as_ref().map(|(state, _)| *state),
             frontend_generation: frontend.map(|(_, generation)| generation),
-            frontend_object_id: frontend_object.as_ref().map(|entry| entry.object_id),
-            frontend_object_generation: frontend_object.as_ref().map(|entry| entry.generation),
-            frontend_object_lifecycle: frontend_object.map(|entry| entry.lifecycle.into()),
+            frontend_object_id: frontend_object.map(RuntimeObjectDiagnosticSnapshot::object_id),
+            frontend_object_generation: frontend_object.map(RuntimeObjectDiagnosticSnapshot::generation),
+            frontend_object_lifecycle: frontend_object.map(RuntimeObjectDiagnosticSnapshot::lifecycle),
             demux_id: demux_id.0,
+            demux_object_id: demux_object.map(RuntimeObjectDiagnosticSnapshot::object_id),
+            demux_object_generation: demux_object.map(RuntimeObjectDiagnosticSnapshot::generation),
+            demux_object_lifecycle: demux_object.map(RuntimeObjectDiagnosticSnapshot::lifecycle),
             demux_state: demux.map(|(state, _)| state),
             demux_generation: demux.map(|(_, generation)| generation),
             error_kind: error.kind,
@@ -87,7 +101,8 @@ impl DemuxFrontendSourceFailureDiagnostic {
         format!(
             "phase={} frontend_id={} frontend_state={:?} frontend_generation={:?} \
              frontend_object_id={:?} frontend_object_generation={:?} \
-             frontend_object_lifecycle={:?} demux_id={} demux_state={:?} \
+             frontend_object_lifecycle={:?} demux_id={} demux_object_id={:?} \
+             demux_object_generation={:?} demux_object_lifecycle={:?} demux_state={:?} \
              demux_generation={:?} error_kind={:?} error_id={:?}",
             self.phase,
             self.frontend_id,
@@ -97,6 +112,9 @@ impl DemuxFrontendSourceFailureDiagnostic {
             self.frontend_object_generation,
             self.frontend_object_lifecycle,
             self.demux_id,
+            self.demux_object_id,
+            self.demux_object_generation,
+            self.demux_object_lifecycle,
             self.demux_state,
             self.demux_generation,
             self.error_kind,
@@ -1386,6 +1404,19 @@ mod demux_frontend_source_diagnostic_tests {
             .expect("frontend object registered for diagnostics");
         let demux = runtime.allocate_demux_runtime().expect("demux allocation");
         runtime
+            .object_table_mut()
+            .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Demux,
+                object_id: AidlObjectId(2200),
+                generation: AidlObjectGeneration(9),
+                ledger_id: LedgerId(i64::from(demux.id.0)),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("demux object registered for diagnostics");
+        runtime
             .set_demux_frontend_data_source(demux.id.0, 1_000_000)
             .expect("frontend bind");
         (runtime, demux.id)
@@ -1437,6 +1468,12 @@ mod demux_frontend_source_diagnostic_tests {
             Some(RuntimeObjectLifecycleSnapshot::Live)
         );
         assert_eq!(diag.demux_id, demux_id.0);
+        assert_eq!(diag.demux_object_id, Some(AidlObjectId(2200)));
+        assert_eq!(diag.demux_object_generation, Some(AidlObjectGeneration(9)));
+        assert_eq!(
+            diag.demux_object_lifecycle,
+            Some(RuntimeObjectLifecycleSnapshot::Live)
+        );
         assert_eq!(diag.demux_generation, Some(demux_generation));
         assert_eq!(diag.demux_state, Some(DemuxRuntimeState::Quarantined));
         assert_eq!(diag.error_kind, DemuxRuntimeErrorKind::InvalidState);
@@ -1445,6 +1482,8 @@ mod demux_frontend_source_diagnostic_tests {
         assert!(rendered.contains("demux_state=Some(Quarantined)"));
         assert!(rendered.contains("frontend_object_id=Some(AidlObjectId(1126))"));
         assert!(rendered.contains("frontend_object_generation=Some(AidlObjectGeneration(7))"));
+        assert!(rendered.contains("demux_object_id=Some(AidlObjectId(2200))"));
+        assert!(rendered.contains("demux_object_generation=Some(AidlObjectGeneration(9))"));
         assert!(rendered.contains("error_kind=InvalidState"));
         assert!(matches!(
             DemuxFrontendSourceTxn::unbind(
@@ -1479,6 +1518,9 @@ mod demux_frontend_source_diagnostic_tests {
         assert_eq!(diagnostic.frontend_object_id, None);
         assert_eq!(diagnostic.frontend_object_generation, None);
         assert_eq!(diagnostic.frontend_object_lifecycle, None);
+        assert_eq!(diagnostic.demux_object_id, None);
+        assert_eq!(diagnostic.demux_object_generation, None);
+        assert_eq!(diagnostic.demux_object_lifecycle, None);
         assert_eq!(diagnostic.demux_state, None);
         assert_eq!(diagnostic.demux_generation, None);
         assert_eq!(diagnostic.error_id, Some(77));
