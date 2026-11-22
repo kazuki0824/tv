@@ -166,6 +166,42 @@ class LifecycleControlDeadlineTest {
     }
 
     @Test
+    fun queuedAudioDataWaitsForReplenishedControl() {
+        val executor = LifecycleSerialExecutor("playback callback order test", maxPendingDataTasks = 1)
+        val entered = CountDownLatch(1)
+        val unblock = CountDownLatch(1)
+        val audioRan = CountDownLatch(1)
+        val order = Collections.synchronizedList(mutableListOf<String>())
+        try {
+            executor.executeControl {
+                entered.countDown()
+                check(unblock.await(5, TimeUnit.SECONDS))
+            }
+            check(entered.await(5, TimeUnit.SECONDS))
+            executor.executeCallback(control = false, isReleased = { false }, onFailure = { throw it }) {
+                order += "audio"
+                audioRan.countDown()
+            }
+            executor.executeCallback(control = true, isReleased = { false }, onFailure = { throw it }) {
+                order += "control-1"
+                executor.executeCallback(control = true, isReleased = { false }, onFailure = { throw it }) {
+                    order += "control-2"
+                }
+            }
+            executor.executeControl { order += "stop" }
+            executor.executeCleanupControl { order += "release" }
+            unblock.countDown()
+            check(audioRan.await(5, TimeUnit.SECONDS))
+            check(order == listOf("release", "control-1", "stop", "control-2", "audio")) {
+                order.toString()
+            }
+        } finally {
+            unblock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun cleanupCommandsRemainFifoAfterNormalIdentityExhaustion() {
         val executor = LifecycleSerialExecutor("cleanup FIFO試験")
         val entered = CountDownLatch(1)
