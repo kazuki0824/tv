@@ -655,7 +655,12 @@ impl RuntimeObjectTable {
         // 既存ObjectCloseTxnの義務だけを起点に関係を調べ、子孫→自身→祖先を返す。
         let mut owners = Vec::new();
         for (id, gen) in self.object_close_txn.outstanding_obligation_keys() {
-            let entry = self.entry_checked_any(id, gen)?;
+            // この探索の対象外にある旧ownerの欠落・再世代化で、
+            // 現行対象のcleanup判定を失敗させない。
+            let Some(entry) = self.entries.get(&id).filter(|entry| entry.generation == gen)
+            else {
+                continue;
+            };
             let order = if (id, gen) == (object_id, generation) {
                 Some(0_i64)
             } else if let Some(index) = ancestors.iter().position(|key| *key == (id, gen)) {
