@@ -146,12 +146,13 @@ pub use root_method_txn::{
 pub use root_object_ops::RootOpenTxn;
 pub use worker_failure_classifier::WorkerFailureClassifier;
 pub use worker_runtime::{
-    join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeWakeHandle, WorkerRuntimeReaperPending,
+    join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperPending,
     WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction,
     WorkerRuntimeSupervisorActiveEntry, WorkerRuntimeSupervisorReapingEntry,
     WorkerRuntimeSupervisorStartDisposition, WorkerRuntimeSupervisorStartOperation,
-    WorkerRuntimeSupervisorStopDisposition, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
-    CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
+    WorkerRuntimeSupervisorStopDisposition, WorkerRuntimeWakeHandle, WorkerTerminalResult,
+    CLEANUP_RETRY_SCHEDULE_MS, CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS,
+    WORKER_REAPER_DEADLINE_MS,
 };
 #[cfg(test)]
 mod failure_injection_tests;
