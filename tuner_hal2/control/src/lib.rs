@@ -2447,6 +2447,46 @@ mod tests {
     }
 
     #[test]
+    fn continuing_reaper_reuses_reservation_and_releases_after_completion() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let (first_tx, first_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let gate = Arc::new(std::sync::Mutex::new(resume_rx));
+        let runner = Arc::new(
+            move |attempt: u32,
+                  _pending: WorkerRuntimeReaperPending<u32, u32>,
+                  _context: WorkerContext| {
+                if attempt == 0 {
+                    first_tx.send(()).unwrap();
+                    Some(1)
+                } else {
+                    let result = gate.lock().unwrap().recv_timeout(Duration::from_secs(2));
+                    completed_tx.send(result.is_ok()).unwrap();
+                    None
+                }
+            },
+        );
+        let queue = WorkerRuntime::start_reaper_queue_with_continuations(
+            1,
+            "test-reaper-continuation",
+            runner,
+        )
+        .unwrap();
+        queue.enqueue_reserved(0, [(7, 7)]).unwrap();
+        first_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(queue.pending_value(&7).unwrap(), Some(7));
+        resume_tx.send(()).unwrap();
+        assert!(completed_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        queue
+            .wait_until_released([&7], Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(queue.pending_value(&7).unwrap(), None);
+    }
+
+    #[test]
     fn reaper_panic_ends_bounded_wait_early_without_releasing_obligations() {
         use maleicacid_tuner_hal2_common::HalError;
         use std::sync::{mpsc, Arc};
