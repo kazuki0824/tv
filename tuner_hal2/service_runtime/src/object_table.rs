@@ -1482,6 +1482,66 @@ mod qg_object_lifecycle_tests {
     }
 
     #[test]
+    fn related_cleanup_owner_search_ignores_closed_historical_children() {
+        let mut table = RuntimeObjectTable::default();
+        let demux = AidlObjectId(5000);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                5000,
+                5000,
+                RuntimeOwnerRelation::Root,
+            ))
+            .expect("親Demuxを登録");
+        for id in 5001..5129 {
+            table
+                .insert(entry(
+                    AidlObjectKind::Filter,
+                    id,
+                    id,
+                    RuntimeOwnerRelation::Demux { demux, generation },
+                ))
+                .expect("過去の子Filterを登録");
+            table.entries
+                .get_mut(&AidlObjectId(id))
+                .expect("登録した子Filter")
+                .lifecycle = RuntimeObjectLifecycle::Closed;
+        }
+        let active = AidlObjectId(5200);
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                5200,
+                5200,
+                RuntimeOwnerRelation::Demux { demux, generation },
+            ))
+            .expect("現行の子Filterを登録");
+        let (_, authority) = table
+            .begin_close_cascade_with_cleanup_authority(
+                active,
+                generation,
+                CleanupStep::StopWorker,
+            )
+            .expect("現行世代の回収義務を発行");
+        let owners = table
+            .related_cleanup_owners(demux, generation)
+            .expect("親から未完義務のみを列挙");
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].0.object_id, active);
+        assert!(!owners[0].1);
+        table
+            .begin_close_cleanup_attempt(active, generation, authority)
+            .expect("物理回収を開始");
+        let owners = table
+            .related_cleanup_owners(demux, generation)
+            .expect("進行中の子ownerを再取得");
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].0.object_id, active);
+        assert!(owners[0].1);
+    }
+
+    #[test]
     fn issued_parent_cleanup_is_selected_for_autonomous_retry() {
         let mut table = RuntimeObjectTable::default();
         let parent = AidlObjectId(993);
