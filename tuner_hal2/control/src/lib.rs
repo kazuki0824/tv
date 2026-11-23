@@ -584,7 +584,9 @@ pub struct WorkerRuntime<T = ()> {
 }
 
 impl<T> WorkerRuntime<T> {
-    pub fn wake_handle(&self) -> Result<WorkerRuntimeWakeHandle, maleicacid_tuner_hal2_common::HalError> {
+    pub fn wake_handle(
+        &self,
+    ) -> Result<WorkerRuntimeWakeHandle, maleicacid_tuner_hal2_common::HalError> {
         let handle =
             self.handle
                 .as_ref()
