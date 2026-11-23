@@ -186,8 +186,11 @@ enum FrontendScanWorkerActivation {
 type FrontendWorkerReaperDeadlineAction =
     Box<dyn FnOnce(&SharedRuntime, Option<HalError>) + Send + 'static>;
 type FrontendWorkerReaperCompletionAction = Box<
-    dyn FnOnce(&SharedRuntime, Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>)
-        + Send
+    dyn FnOnce(
+            &SharedRuntime,
+            Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
+            Result<(), HalError>,
+        ) + Send
         + 'static,
 >;
 
@@ -290,6 +293,8 @@ struct FrontendWorkerReaperJob {
     keys: Vec<(i32, FrontendWorkerKind)>,
     continuation_kind: Option<FrontendWorkerKind>,
     tickets: FrontendWorkerReaperTicketGroup,
+    accepted_completed: usize,
+    acceptance_failure: Option<HalError>,
     transferred_at: Instant,
     deadline_action: Option<FrontendWorkerReaperDeadlineAction>,
     completion_action: FrontendWorkerReaperCompletionAction,
@@ -301,6 +306,29 @@ enum FrontendWorkerReaperFailure {
 }
 
 impl FrontendWorkerReaperJob {
+    /// 各ticketの終端は一度だけ正規入口へ渡す。期限後の再投入でも既受理分を再送しない。
+    fn accept_new_completed(&mut self, runtime: &SharedRuntime) -> Result<(), HalError> {
+        let result = accept_frontend_worker_terminal_outcomes(
+            runtime,
+            &self.tickets.completed[self.accepted_completed..],
+        );
+        self.accepted_completed = self.tickets.completed.len();
+        result
+    }
+
+    fn retain_acceptance_failure(&mut self, result: Result<(), HalError>) {
+        if let Err(error) = result {
+            self.acceptance_failure = Some(match self.acceptance_failure.take() {
+                Some(previous) => compose_frontend_cleanup_error(
+                    "frontend worker terminal acceptance failures",
+                    previous,
+                    error,
+                ),
+                None => error,
+            });
+        }
+    }
+
     fn run(
         self,
         runtime: &Weak<Mutex<TunerServiceRuntime>>,
@@ -311,19 +339,22 @@ impl FrontendWorkerReaperJob {
             let (mut job, failure) = *failure;
             let runtime = runtime.upgrade();
             // 期限時はlaneを返し、同じpending group・同じreaperへ再投入する。
-            // 完了済みticketのterminal eventは最終完了時に一度だけ受理する。
+            // 先に終了したworkerは残りのworkerの期限を待たずに受理する。
+            let terminal_error = runtime.as_ref().and_then(|runtime| {
+                let result = job.accept_new_completed(runtime);
+                let error = result.as_ref().err().cloned();
+                job.retain_acceptance_failure(result);
+                error
+            });
             if matches!(&failure, FrontendWorkerReaperFailure::Deadline) {
                 if let Some(runtime) = &runtime {
                     if let Some(action) = job.deadline_action.take() {
-                        action(runtime, None);
+                        action(runtime, terminal_error);
                     }
                     job.transferred_at = Instant::now();
                     return Some(job);
                 }
             }
-            let terminal_error = runtime.as_ref().and_then(|runtime| {
-                accept_frontend_worker_terminal_outcomes(runtime, &job.tickets.completed).err()
-            });
             let mut error = match failure {
                 FrontendWorkerReaperFailure::Deadline => HalError::cleanup_failed(
                     "frontend reaper",
@@ -413,7 +444,20 @@ impl FrontendWorkerReaperJob {
             match self.tickets.try_complete() {
                 Ok(outcomes) => {
                     if let Some(runtime) = runtime.upgrade() {
-                        (self.completion_action)(&runtime, outcomes);
+                        let new_result = accept_frontend_worker_terminal_outcomes(
+                            &runtime,
+                            &outcomes[self.accepted_completed..],
+                        );
+                        let acceptance = match (self.acceptance_failure.take(), new_result) {
+                            (None, result) => result,
+                            (Some(previous), Ok(())) => Err(previous),
+                            (Some(previous), Err(error)) => Err(compose_frontend_cleanup_error(
+                                "frontend worker terminal acceptance failures",
+                                previous,
+                                error,
+                            )),
+                        };
+                        (self.completion_action)(&runtime, outcomes, acceptance);
                     }
                     return Ok(());
                 }
@@ -5504,7 +5548,6 @@ fn record_frontend_stop_reaper_completion(
     kind: FrontendWorkerKind,
     outcomes: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
 ) {
-    let terminal_acceptance_result = accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
     let outcome = outcomes
         .iter()
         .find(|(outcome_kind, _)| *outcome_kind == kind)
