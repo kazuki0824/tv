@@ -306,24 +306,29 @@ impl FrontendWorkerReaperJob {
         runtime: &Weak<Mutex<TunerServiceRuntime>>,
         deadline: Duration,
         diagnostics: &SharedFrontendWorkerCleanupDiagnostics,
-    ) {
+    ) -> Option<Self> {
         if let Err(failure) = self.run_until_terminal(runtime, deadline) {
             let (mut job, failure) = *failure;
             let runtime = runtime.upgrade();
+            // 期限時はlaneを返し、同じpending group・同じreaperへ再投入する。
+            // 完了済みticketのterminal eventは最終完了時に一度だけ受理する。
+            if matches!(&failure, FrontendWorkerReaperFailure::Deadline) {
+                if let Some(runtime) = &runtime {
+                    if let Some(action) = job.deadline_action.take() {
+                        action(runtime, None);
+                    }
+                    job.transferred_at = Instant::now();
+                    return Some(job);
+                }
+            }
             let terminal_error = runtime.as_ref().and_then(|runtime| {
                 accept_frontend_worker_terminal_outcomes(runtime, &job.tickets.completed).err()
             });
             let mut error = match failure {
-                FrontendWorkerReaperFailure::Deadline => {
-                    if let (Some(runtime), Some(action)) = (&runtime, job.deadline_action.take()) {
-                        action(runtime, terminal_error);
-                        return;
-                    }
-                    HalError::cleanup_failed(
-                        "frontend reaper",
-                        "worker did not exit before the bounded reaper deadline",
-                    )
-                }
+                FrontendWorkerReaperFailure::Deadline => HalError::cleanup_failed(
+                    "frontend reaper",
+                    "worker did not exit before the bounded reaper deadline",
+                ),
                 FrontendWorkerReaperFailure::Failed(error) => error,
             };
             if let Some(terminal_error) = terminal_error {
@@ -384,6 +389,7 @@ impl FrontendWorkerReaperJob {
             }
             // jobは実行権限だけを持つ。失敗時もregistryの未完義務は保持される。
         }
+        None
     }
 
     fn run_until_terminal(
@@ -515,11 +521,11 @@ impl FrontendWorkerReaperHandle {
                 Option<FrontendWorkerKind>,
             >,
                   _worker: crate::worker_runtime::WorkerContext| {
-                job.run(&runtime, deadline, &diagnostics);
+                job.run(&runtime, deadline, &diagnostics)
             },
         );
         Ok(Self {
-            runtime: WorkerRuntime::start_reaper_queue(
+            runtime: WorkerRuntime::start_reaper_queue_with_continuations(
                 capacity,
                 "maleicacid-frontend-reaper",
                 runner,
