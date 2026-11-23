@@ -79,9 +79,8 @@ pub(crate) struct CleanupReaperQueue {
     policy: CleanupReaperPolicy,
     runtime: PoisonTrackedMutex<CleanupReaperQueueOwner>,
     /// 起動済みの同一workerの起床権限だけを保持し、通知側ではowner lockを取得しない。
-    monitor_wake: std::sync::OnceLock<
-        maleicacid_tuner_hal2_service_runtime::WorkerRuntimeWakeHandle,
-    >,
+    monitor_wake:
+        std::sync::OnceLock<maleicacid_tuner_hal2_service_runtime::WorkerRuntimeWakeHandle>,
     /// 元サービス状態のWeak参照。Drop中のtyped worker異常を第二正本を作らず通知する。
     service_runtime: std::sync::OnceLock<
         std::sync::Weak<
@@ -1318,7 +1317,10 @@ mod tests {
         let result = rx.recv_timeout(Duration::from_secs(1));
         drop(owner);
         thread.join().unwrap();
-        assert!(matches!(&result, Ok(Ok(()))), "起床通知がowner lockを待っています: {result:?}");
+        assert!(
+            matches!(&result, Ok(Ok(()))),
+            "起床通知がowner lockを待っています: {result:?}"
+        );
     }
 
     #[test]
