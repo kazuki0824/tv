@@ -679,7 +679,10 @@ impl RuntimeObjectTable {
                         break;
                     }
                     visited.push((parent_id, parent_gen));
-                    let Some(next) = self.entries.get(&parent_id).filter(|e| e.generation == parent_gen)
+                    let Some(next) = self
+                        .entries
+                        .get(&parent_id)
+                        .filter(|e| e.generation == parent_gen)
                     else {
                         break;
                     };
@@ -698,7 +701,10 @@ impl RuntimeObjectTable {
         }
         // 深い子孫から処理し、同じ深さは既存BTreeMapのID順を保つ。
         owners.sort_by(|a, b| b.0.cmp(&a.0));
-        Ok(owners.into_iter().map(|(_, entry, active)| (entry, active)).collect())
+        Ok(owners
+            .into_iter()
+            .map(|(_, entry, active)| (entry, active))
+            .collect())
     }
 
     /// 隔離対象を変更せず全件検証する。後続の権限発行が失敗しても状態を変えない。
@@ -1508,7 +1514,8 @@ mod qg_object_lifecycle_tests {
                     RuntimeOwnerRelation::Demux { demux, generation },
                 ))
                 .expect("過去の子Filterを登録");
-            table.entries
+            table
+                .entries
                 .get_mut(&AidlObjectId(id))
                 .expect("登録した子Filter")
                 .lifecycle = RuntimeObjectLifecycle::Closed;
@@ -1523,11 +1530,7 @@ mod qg_object_lifecycle_tests {
             ))
             .expect("現行の子Filterを登録");
         let (_, authority) = table
-            .begin_close_cascade_with_cleanup_authority(
-                active,
-                generation,
-                CleanupStep::StopWorker,
-            )
+            .begin_close_cascade_with_cleanup_authority(active, generation, CleanupStep::StopWorker)
             .expect("現行世代の回収義務を発行");
         let owners = table
             .related_cleanup_owners(demux, generation)
