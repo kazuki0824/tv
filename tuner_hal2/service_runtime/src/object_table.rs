@@ -657,7 +657,10 @@ impl RuntimeObjectTable {
         for (id, gen) in self.object_close_txn.outstanding_obligation_keys() {
             // この探索の対象外にある旧ownerの欠落・再世代化で、
             // 現行対象のcleanup判定を失敗させない。
-            let Some(entry) = self.entries.get(&id).filter(|entry| entry.generation == gen)
+            let Some(entry) = self
+                .entries
+                .get(&id)
+                .filter(|entry| entry.generation == gen)
             else {
                 continue;
             };
