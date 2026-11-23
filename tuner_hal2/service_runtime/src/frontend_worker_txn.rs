@@ -7406,11 +7406,7 @@ mod scan_contract_tests {
                 deadline_tx.send(terminal_error).unwrap();
             })),
             completion_action: Box::new(move |_, outcomes, acceptance| {
-                assert!(
-                    acceptance.is_ok(),
-                    "terminal acceptance failed: {acceptance:?}"
-                );
-                completed_tx.send(outcomes).unwrap();
+                completed_tx.send((outcomes, acceptance)).unwrap();
             }),
         };
         reaper.enqueue(job).unwrap();
@@ -7430,7 +7426,11 @@ mod scan_contract_tests {
         assert!(diagnostics.snapshot().unwrap().records().is_empty());
 
         release_tx.send(()).unwrap();
-        let outcomes = completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (outcomes, terminal_acceptance) =
+            completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        // この低層試験は独立registryだけを生成しており、製品のFrontend runtimeは
+        // 存在しない。終端受理の製品成功は別の正規入口試験で検証する。
+        assert!(terminal_acceptance.is_err());
         assert_eq!(outcomes.len(), 1);
         assert!(frontend_worker_stop_failure(&outcomes[0].1).is_none());
         assert!(
