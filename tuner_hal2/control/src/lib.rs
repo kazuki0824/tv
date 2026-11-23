@@ -1218,7 +1218,9 @@ where
                                     job: continuation,
                                     group_id,
                                 })
-                                .map_err(|_| maleicacid_tuner_hal2_common::HalError::WorkerReaperUnavailable)?;
+                                .map_err(|_| {
+                                    maleicacid_tuner_hal2_common::HalError::WorkerReaperUnavailable
+                                })?;
                         } else {
                             // 最後のqueue ownerが消滅した。worker自体を追加せず終了する。
                             pending.release_group(group_id)?;
