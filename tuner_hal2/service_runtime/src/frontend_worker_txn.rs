@@ -5842,7 +5842,7 @@ fn stop_frontend_object_without_join(
                 outcomes,
                 terminal_acceptance,
             )
-        },
+        }
         Err(tickets) => {
             let completion_sink = cleanup_diagnostic_sink.clone();
             let deadline_diagnostic_sink = cleanup_diagnostic_sink.clone();
@@ -7406,7 +7406,10 @@ mod scan_contract_tests {
                 deadline_tx.send(terminal_error).unwrap();
             })),
             completion_action: Box::new(move |_, outcomes, acceptance| {
-                assert!(acceptance.is_ok(), "terminal acceptance failed: {acceptance:?}");
+                assert!(
+                    acceptance.is_ok(),
+                    "terminal acceptance failed: {acceptance:?}"
+                );
                 completed_tx.send(outcomes).unwrap();
             }),
         };
