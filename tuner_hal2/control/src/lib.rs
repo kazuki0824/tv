@@ -919,6 +919,8 @@ where
 
 type WorkerReaperRunner<K, V, J> =
     dyn Fn(J, WorkerRuntimeReaperPending<K, V>, WorkerContext) + Send + Sync + 'static;
+type WorkerReaperContinuationRunner<K, V, J> =
+    dyn Fn(J, WorkerRuntimeReaperPending<K, V>, WorkerContext) -> Option<J> + Send + Sync + 'static;
 
 impl WorkerRuntime<()> {
     pub fn retain_cleanup<T>(value: T) -> WorkerRuntimeCleanup<T> {
@@ -1055,6 +1057,25 @@ impl WorkerRuntime<()> {
         WorkerRuntimeReaperQueue::start(capacity, capacity.clamp(1, 2), thread_prefix, runner)
     }
 
+    /// 期限後も未完の回収義務を同じ予約グループ・既存laneへ再投入する。
+    pub fn start_reaper_queue_with_continuations<K, V, J>(
+        capacity: usize,
+        thread_prefix: &'static str,
+        runner: std::sync::Arc<WorkerReaperContinuationRunner<K, V, J>>,
+    ) -> Result<WorkerRuntimeReaperQueue<K, V, J>, maleicacid_tuner_hal2_common::HalError>
+    where
+        K: Ord + Clone + Send + 'static,
+        V: Clone + Send + 'static,
+        J: Send + 'static,
+    {
+        WorkerRuntimeReaperQueue::start_continuing(
+            capacity,
+            capacity.clamp(1, 2),
+            thread_prefix,
+            runner,
+        )
+    }
+
     pub fn supervisor<K, A, R>(
         capacity: usize,
         deadline: std::time::Duration,
@@ -1070,7 +1091,7 @@ impl WorkerRuntime<()> {
 /// `WorkerRuntime`が発行するopaqueなbounded reaper handle。
 pub struct WorkerRuntimeReaperQueue<K, V, J> {
     lanes: std::sync::Arc<Vec<WorkerRuntime<()>>>,
-    sender: std::sync::mpsc::Sender<WorkerRuntimeReaperQueuedJob<J>>,
+    sender: std::sync::Arc<std::sync::mpsc::Sender<WorkerRuntimeReaperQueuedJob<J>>>,
     pending: WorkerRuntimeReaperPending<K, V>,
 }
 
@@ -1149,8 +1170,24 @@ where
         thread_prefix: &'static str,
         runner: std::sync::Arc<WorkerReaperRunner<K, V, J>>,
     ) -> Result<Self, maleicacid_tuner_hal2_common::HalError> {
-        // 受付数は予約groupが一元管理する。
+        let runner: std::sync::Arc<WorkerReaperContinuationRunner<K, V, J>> =
+            std::sync::Arc::new(move |job, pending, context| {
+                runner(job, pending, context);
+                None
+            });
+        Self::start_continuing(capacity, lane_count, thread_prefix, runner)
+    }
+
+    fn start_continuing(
+        capacity: usize,
+        lane_count: usize,
+        thread_prefix: &'static str,
+        runner: std::sync::Arc<WorkerReaperContinuationRunner<K, V, J>>,
+    ) -> Result<Self, maleicacid_tuner_hal2_common::HalError> {
+        // 受付数は予約groupが一元管理する。継続時は同じgroupを保持する。
         let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = std::sync::Arc::new(sender);
+        let weak_sender = std::sync::Arc::downgrade(&sender);
         let pending = WorkerRuntimeReaperPending::new(capacity.max(1));
         let receiver = std::sync::Arc::new(PoisonTrackedMutex::new(
             receiver,
@@ -1160,6 +1197,7 @@ where
         for lane_index in 0..lane_count {
             let receiver = std::sync::Arc::clone(&receiver);
             let runner = std::sync::Arc::clone(&runner);
+            let weak_sender = weak_sender.clone();
             let pending = pending.clone();
             let failure = std::sync::Arc::clone(&pending.failure);
             let lane = WorkerRuntime::spawn_observed(
@@ -1173,8 +1211,22 @@ where
                         Ok(queued) => queued,
                         Err(_) => return Ok(()),
                     };
-                    runner(job, pending.clone(), context.clone());
-                    pending.release_group(group_id)?;
+                    if let Some(continuation) = runner(job, pending.clone(), context.clone()) {
+                        if let Some(sender) = weak_sender.upgrade() {
+                            sender
+                                .send(WorkerRuntimeReaperQueuedJob {
+                                    job: continuation,
+                                    group_id,
+                                })
+                                .map_err(|_| maleicacid_tuner_hal2_common::HalError::WorkerReaperUnavailable)?;
+                        } else {
+                            // 最後のqueue ownerが消滅した。worker自体を追加せず終了する。
+                            pending.release_group(group_id)?;
+                            return Ok(());
+                        }
+                    } else {
+                        pending.release_group(group_id)?;
+                    }
                 },
                 move |terminal| failure.record_terminal(terminal),
             )
