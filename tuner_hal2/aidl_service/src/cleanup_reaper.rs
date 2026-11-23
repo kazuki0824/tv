@@ -78,6 +78,10 @@ struct CleanupReaperQueueOwner {
 pub(crate) struct CleanupReaperQueue {
     policy: CleanupReaperPolicy,
     runtime: PoisonTrackedMutex<CleanupReaperQueueOwner>,
+    /// 起動済みの同一workerの起床権限だけを保持し、通知側ではowner lockを取得しない。
+    monitor_wake: std::sync::OnceLock<
+        maleicacid_tuner_hal2_service_runtime::WorkerRuntimeWakeHandle,
+    >,
     /// 元サービス状態のWeak参照。Drop中のtyped worker異常を第二正本を作らず通知する。
     service_runtime: std::sync::OnceLock<
         std::sync::Weak<
@@ -153,6 +157,7 @@ impl CleanupReaperQueue {
                 RuntimeLockKind::CleanupReaperOwner,
             ),
             service_runtime: std::sync::OnceLock::new(),
+            monitor_wake: std::sync::OnceLock::new(),
             #[cfg(test)]
             idle_park_notice: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -266,11 +271,10 @@ impl CleanupReaperQueue {
     }
 
     fn wake_monitor(&self) -> Result<(), HalError> {
-        let owner = self.runtime.lock().map_err(HalError::LockPoisoned)?;
-        if let Some(worker) = owner.admission_worker.as_ref() {
-            worker.wake()?;
+        match self.monitor_wake.get() {
+            Some(wake) => wake.wake(),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// 受付の空き待ちは既存義務に委譲し、呼出元では待たない。
@@ -299,7 +303,16 @@ impl CleanupReaperQueue {
         {
             if let Some(finished) = owner.admission_worker.take() {
                 match finished.join() {
-                    WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested => {}
+                    WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested => {
+                        // 生存中のserviceで監督workerが終了した場合、過去の起床先を
+                        // 別workerへ付け替えず、現行workerの異常終端として扱う。
+                        if let Some(context) = context.upgrade() {
+                            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(
+                                &context.runtime(),
+                            );
+                        }
+                        return Err(HalError::WorkerReaperUnavailable);
+                    }
                     WorkerTerminalResult::RuntimeFailure(error) => {
                         log::error!("cleanup受付監督workerのjoinが異常: {error:?}");
                         if let Some(context) = context.upgrade() {
@@ -322,6 +335,9 @@ impl CleanupReaperQueue {
         }
         if owner.admission_worker.is_some() {
             return Ok(());
+        }
+        if self.monitor_wake.get().is_some() {
+            return Err(HalError::WorkerReaperUnavailable);
         }
         let queue = owner
             .queue
@@ -495,6 +511,12 @@ impl CleanupReaperQueue {
             path: None,
             errno: error.raw_os_error(),
             detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(error.to_string()),
+        })?;
+        self.monitor_wake.set(worker.wake_handle()?).map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "cleanup受付監督の起床先が重複登録されました",
+            )
         })?;
         owner.admission_worker = Some(worker);
         Ok(())
