@@ -782,6 +782,8 @@ fn transfer_frontend_replacement_wait_failure(
         ],
         continuation_kind: None,
         tickets,
+        accepted_completed: 0,
+        acceptance_failure: None,
         transferred_at,
         deadline_action: Some(Box::new(move |runtime, terminal_error| {
             handle_frontend_worker_reaper_deadline(
@@ -794,8 +796,15 @@ fn transfer_frontend_replacement_wait_failure(
                 terminal_error,
             );
         })),
-        completion_action: Box::new(move |_runtime, outcomes| {
-            let completion_error = completion_public_error.clone();
+        completion_action: Box::new(move |_runtime, outcomes, terminal_acceptance| {
+            let completion_error = match terminal_acceptance {
+                Ok(()) => completion_public_error.clone(),
+                Err(terminal_error) => compose_frontend_cleanup_error(
+                    "frontend replacement failed and terminal acceptance failed",
+                    completion_public_error.clone(),
+                    terminal_error,
+                ),
+            };
             if let Err(error) = record_aborted_frontend_replacement_after_reap(
                 cleanup_diagnostic_sink,
                 target,
@@ -5547,6 +5556,7 @@ fn record_frontend_stop_reaper_completion(
     target: FrontendWorkerCleanupTarget,
     kind: FrontendWorkerKind,
     outcomes: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
+    terminal_acceptance_result: Result<(), HalError>,
 ) {
     let outcome = outcomes
         .iter()
@@ -5822,13 +5832,17 @@ fn stop_frontend_object_without_join(
     drop(guard);
 
     match tickets {
-        Ok(outcomes) => record_frontend_stop_reaper_completion(
-            &runtime,
-            cleanup_diagnostic_sink,
-            target,
-            kind,
-            outcomes,
-        ),
+        Ok(outcomes) => {
+            let terminal_acceptance = accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
+            record_frontend_stop_reaper_completion(
+                &runtime,
+                cleanup_diagnostic_sink,
+                target,
+                kind,
+                outcomes,
+                terminal_acceptance,
+            )
+        },
         Err(tickets) => {
             let completion_sink = cleanup_diagnostic_sink.clone();
             let deadline_diagnostic_sink = cleanup_diagnostic_sink.clone();
@@ -5836,6 +5850,8 @@ fn stop_frontend_object_without_join(
                 keys: vec![(frontend_id, kind)],
                 continuation_kind: None,
                 tickets,
+                accepted_completed: 0,
+                acceptance_failure: None,
                 transferred_at: Instant::now(),
                 deadline_action: Some(Box::new(move |runtime, terminal_error| {
                     handle_frontend_worker_reaper_deadline(
@@ -5848,13 +5864,14 @@ fn stop_frontend_object_without_join(
                         terminal_error,
                     );
                 })),
-                completion_action: Box::new(move |runtime, outcomes| {
+                completion_action: Box::new(move |runtime, outcomes, terminal_acceptance| {
                     record_frontend_stop_reaper_completion(
                         runtime,
                         completion_sink,
                         target,
                         kind,
                         outcomes,
+                        terminal_acceptance,
                     );
                 }),
             };
@@ -7382,11 +7399,14 @@ mod scan_contract_tests {
             keys: vec![(43, FrontendWorkerKind::Tune)],
             continuation_kind: None,
             tickets: FrontendWorkerReaperTicketGroup::new(vec![(FrontendWorkerKind::Tune, ticket)]),
+            accepted_completed: 0,
+            acceptance_failure: None,
             transferred_at: Instant::now(),
             deadline_action: Some(Box::new(move |_, terminal_error| {
                 deadline_tx.send(terminal_error).unwrap();
             })),
-            completion_action: Box::new(move |_, outcomes| {
+            completion_action: Box::new(move |_, outcomes, acceptance| {
+                assert!(acceptance.is_ok(), "terminal acceptance failed: {acceptance:?}");
                 completed_tx.send(outcomes).unwrap();
             }),
         };
