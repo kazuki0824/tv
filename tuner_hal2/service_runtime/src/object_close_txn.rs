@@ -1196,6 +1196,15 @@ impl ObjectCloseTxn {
         })
     }
 
+    /// 回収義務の正本だけを列挙する。閉じた子オブジェクト全体の再探索は不要。
+    pub(crate) fn outstanding_obligation_keys(
+        &self,
+    ) -> impl Iterator<Item = (AidlObjectId, AidlObjectGeneration)> + '_ {
+        self.obligations
+            .iter()
+            .map(|(id, obligation)| (*id, obligation.generation))
+    }
+
     pub(crate) fn has_outstanding_obligation(
         &self,
         object_id: AidlObjectId,
