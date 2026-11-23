@@ -285,10 +285,21 @@ impl CleanupReaperQueue {
         let Some(service) = context.upgrade() else {
             return Ok(());
         };
-        self.start_monitor(context)?;
+        // 起動済み監督への受付通知ではowner mutexを取得しない。
+        // 初回起動の排他と異常終端の判定はstart_monitorの正規入口を維持する。
+        if self.monitor_wake.get().is_none() {
+            self.start_monitor(context)?;
+        }
         // 予約が残る間にlaneから引き渡された要求も、同じ義務へ保持する。
         service.request_cleanup_recovery(handle)?;
-        self.wake_monitor()
+        let notified = self.wake_monitor();
+        if notified.is_err() {
+            // 起動後のworker異常終端はwakeのCLOSED bitで検出する。
+            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(
+                &service.runtime(),
+            );
+        }
+        notified
     }
 
     fn start_monitor(self: &Arc<Self>, context: Weak<AidlServiceContext>) -> Result<(), HalError> {
