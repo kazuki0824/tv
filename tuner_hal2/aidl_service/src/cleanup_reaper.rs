@@ -1318,7 +1318,7 @@ mod tests {
         let result = rx.recv_timeout(Duration::from_secs(1));
         drop(owner);
         thread.join().unwrap();
-        assert!(matches!(result, Ok(Ok(()))), "起床通知がowner lockを待っています: {result:?}");
+        assert!(matches!(&result, Ok(Ok(()))), "起床通知がowner lockを待っています: {result:?}");
     }
 
     #[test]
