@@ -556,6 +556,25 @@ impl WorkerContext {
     }
 }
 
+/// 既存workerの起床権限だけを共有する。join/stopの所有権は移動しない。
+#[derive(Clone, Debug)]
+pub struct WorkerRuntimeWakeHandle {
+    wake: WorkerWake,
+}
+
+impl WorkerRuntimeWakeHandle {
+    pub fn wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        if self.wake.notify() {
+            Ok(())
+        } else {
+            Err(maleicacid_tuner_hal2_common::HalError::cleanup_failed(
+                "ワーカー起床",
+                "終了済みワーカーへ起床を要求できません",
+            ))
+        }
+    }
+}
+
 /// device層とservice層が共有するgeneric worker lifecycleの正規owner。
 /// 全thread生成と従属reaper/supervisor handleはここから発行する。
 pub struct WorkerRuntime<T = ()> {
@@ -565,21 +584,20 @@ pub struct WorkerRuntime<T = ()> {
 }
 
 impl<T> WorkerRuntime<T> {
-    pub fn wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+    pub fn wake_handle(&self) -> Result<WorkerRuntimeWakeHandle, maleicacid_tuner_hal2_common::HalError> {
         let handle =
             self.handle
                 .as_ref()
                 .ok_or(maleicacid_tuner_hal2_common::HalError::NotInitialized {
                     resource: "ワーカーハンドル",
                 })?;
-        if handle.context.wake.notify() {
-            Ok(())
-        } else {
-            Err(maleicacid_tuner_hal2_common::HalError::cleanup_failed(
-                "ワーカー起床",
-                "終了済みワーカーへ起床を要求できません",
-            ))
-        }
+        Ok(WorkerRuntimeWakeHandle {
+            wake: handle.context.wake.clone(),
+        })
+    }
+
+    pub fn wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        self.wake_handle()?.wake()
     }
     pub const fn owner_id(&self) -> i64 {
         self.owner_id
