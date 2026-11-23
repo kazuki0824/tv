@@ -7348,9 +7348,15 @@ mod scan_contract_tests {
             }),
         };
         reaper.enqueue(job).unwrap();
-        assert!(deadline_rx.recv_timeout(Duration::from_secs(2)).unwrap().is_none());
+        assert!(deadline_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .is_none());
         assert_eq!(
-            reaper.runtime.pending_value(&(43, FrontendWorkerKind::Tune)).unwrap(),
+            reaper
+                .runtime
+                .pending_value(&(43, FrontendWorkerKind::Tune))
+                .unwrap(),
             Some(None),
             "期限超過後も元の回収予約を保持する"
         );
@@ -7361,7 +7367,10 @@ mod scan_contract_tests {
         let outcomes = completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(outcomes.len(), 1);
         assert!(frontend_worker_stop_failure(&outcomes[0].1).is_none());
-        assert!(!registry.has_cleanup_obligations(), "試験側の再受付なしで最終回収する");
+        assert!(
+            !registry.has_cleanup_obligations(),
+            "試験側の再受付なしで最終回収する"
+        );
         reaper
             .runtime
             .wait_until_released([&(43, FrontendWorkerKind::Tune)], Duration::from_secs(2))
