@@ -132,6 +132,51 @@ class PlaybackMediaSyncReleaseTest {
     }
 
     @Test
+    fun queuedAudioRunsBeforeNewPlaybackCallbacksWhileLifecycleKeepsPriority() {
+        withAttachedSync { pipeline, _, _ ->
+            val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
+            val entered = CountDownLatch(1)
+            val unblock = CountDownLatch(1)
+            val finished = CountDownLatch(2)
+            val order = Collections.synchronizedList(mutableListOf<String>())
+
+            fun submitPlaybackCallback(action: () -> Unit) {
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    pipeline,
+                    "enqueuePlaybackAction",
+                    ReflectionHelpers.ClassParameter.from(Function0::class.java, action),
+                )
+            }
+
+            try {
+                executor.executeControl {
+                    entered.countDown()
+                    check(unblock.await(5, TimeUnit.SECONDS))
+                }
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                executor.executeCallback(isReleased = { false }, onFailure = { throw it }) {
+                    order += "audio"
+                    finished.countDown()
+                }
+                submitPlaybackCallback {
+                    order += "playback-1"
+                    submitPlaybackCallback {
+                        order += "playback-2"
+                        finished.countDown()
+                    }
+                }
+                executor.executeControl { order += "stop" }
+                executor.executeCleanupControl { order += "release" }
+                unblock.countDown()
+                assertTrue(finished.await(5, TimeUnit.SECONDS))
+                assertEquals(listOf("release", "stop", "audio", "playback-1", "playback-2"), order)
+            } finally {
+                unblock.countDown()
+            }
+        }
+    }
+
+    @Test
     fun pausedVideoOutputDoesNotBlockStop() {
         withAttachedSync { pipeline, native, surface ->
             val decoder = attachVideoDecoder(pipeline, native, surface)
