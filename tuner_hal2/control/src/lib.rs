@@ -2900,7 +2900,7 @@ mod tests {
         (
             WorkerRuntimeReaperQueue {
                 lanes: std::sync::Arc::new(Vec::new()),
-                sender,
+                sender: std::sync::Arc::new(sender),
                 pending: WorkerRuntimeReaperPending::new(capacity.max(1)),
             },
             receiver,
