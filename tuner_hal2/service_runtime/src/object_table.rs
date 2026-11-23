@@ -639,16 +639,61 @@ impl RuntimeObjectTable {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<Vec<(RuntimeObjectEntry, bool)>, RuntimeObjectTableError> {
-        self.related_cleanup_keys(object_id, generation, true)?
-            .into_iter()
-            .filter(|(id, gen)| self.object_close_txn.has_outstanding_obligation(*id, *gen))
-            .map(|(id, gen)| {
-                Ok((
-                    self.entry_checked_any(id, gen)?.clone(),
+        let root = self.entry_checked_any(object_id, generation)?;
+        // 親方向は現在の世代付き関係だけをたどる。
+        let mut ancestors = Vec::new();
+        let mut parent = root.owner;
+        while let Some((_, id, gen)) = parent.referenced_object() {
+            if (id, gen) == (object_id, generation) || ancestors.contains(&(id, gen)) {
+                break;
+            }
+            parent = self.entry_checked_any(id, gen)?.owner;
+            ancestors.push((id, gen));
+        }
+
+        // 毎回全子孫をDFSすると、回収義務のない過去のClosed子も走査する。
+        // 既存ObjectCloseTxnの義務だけを起点に関係を調べ、子孫→自身→祖先を返す。
+        let mut owners = Vec::new();
+        for (id, gen) in self.object_close_txn.outstanding_obligation_keys() {
+            let entry = self.entry_checked_any(id, gen)?;
+            let order = if (id, gen) == (object_id, generation) {
+                Some(0_i64)
+            } else if let Some(index) = ancestors.iter().position(|key| *key == (id, gen)) {
+                Some(-((index as i64) + 1))
+            } else {
+                let mut parent = entry.owner;
+                let mut distance = 1_i64;
+                let mut visited = Vec::new();
+                let mut found = None;
+                while let Some((_, parent_id, parent_gen)) = parent.referenced_object() {
+                    if (parent_id, parent_gen) == (object_id, generation) {
+                        found = Some(distance);
+                        break;
+                    }
+                    if visited.contains(&(parent_id, parent_gen)) {
+                        break;
+                    }
+                    visited.push((parent_id, parent_gen));
+                    let Some(next) = self.entries.get(&parent_id).filter(|e| e.generation == parent_gen)
+                    else {
+                        break;
+                    };
+                    parent = next.owner;
+                    distance += 1;
+                }
+                found
+            };
+            if let Some(order) = order {
+                owners.push((
+                    order,
+                    entry.clone(),
                     self.object_close_txn.has_active_cleanup_attempt(id, gen),
-                ))
-            })
-            .collect()
+                ));
+            }
+        }
+        // 深い子孫から処理し、同じ深さは既存BTreeMapのID順を保つ。
+        owners.sort_by(|a, b| b.0.cmp(&a.0));
+        Ok(owners.into_iter().map(|(_, entry, active)| (entry, active)).collect())
     }
 
     /// 隔離対象を変更せず全件検証する。後続の権限発行が失敗しても状態を変えない。
