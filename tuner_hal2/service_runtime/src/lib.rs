@@ -146,7 +146,7 @@ pub use root_method_txn::{
 pub use root_object_ops::RootOpenTxn;
 pub use worker_failure_classifier::WorkerFailureClassifier;
 pub use worker_runtime::{
-    join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperPending,
+    join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeWakeHandle, WorkerRuntimeReaperPending,
     WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction,
     WorkerRuntimeSupervisorActiveEntry, WorkerRuntimeSupervisorReapingEntry,
     WorkerRuntimeSupervisorStartDisposition, WorkerRuntimeSupervisorStartOperation,
