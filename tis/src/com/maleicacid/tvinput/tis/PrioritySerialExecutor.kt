@@ -143,6 +143,7 @@ internal abstract class PrioritySerialExecutor(
         const val CLEANUP_QUEUE_CLASS = -1
         const val CONTROL_QUEUE_CLASS = 0
         const val DATA_QUEUE_CLASS = 1
+
         // 通常callbackはdataと同順位。停止時のFilter callback回収では別のclassとして扱う。
         const val ORDERED_CALLBACK_QUEUE_CLASS = 2
         private const val INITIAL_QUEUE_CAPACITY = 11
