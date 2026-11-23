@@ -410,7 +410,11 @@ class PlaybackPipeline(
     }
 
     private fun enqueuePlaybackAction(action: () -> Unit) {
-        enqueuePlaybackControl(action)
+        executor.executeOrderedCallback(
+            isReleased = released::get,
+            onFailure = ::handleSubmissionFailure,
+            action = action,
+        )
     }
 
     private fun enqueuePlaybackControl(action: () -> Unit) {
@@ -980,10 +984,10 @@ class PlaybackPipeline(
                         ) {
                             if (!sourceIsCurrent(filter) || status and Filter.STATUS_OVERFLOW == 0) return
                             if (!overflowRecoveryActive.compareAndSet(false, true)) return
-                            enqueuePlaybackAction {
+                            enqueuePlaybackControl {
                                 if (!sourceIsCurrent(filter)) {
                                     overflowRecoveryActive.set(false)
-                                    return@enqueuePlaybackAction
+                                    return@enqueuePlaybackControl
                                 }
                                 Log.d(
                                     LogTags.TIS,
@@ -997,7 +1001,7 @@ class PlaybackPipeline(
                                         filterGeneration,
                                         "FILTER_OVERFLOW isAudio=$isAudio pid=$pidValue status=$status",
                                     )
-                                    return@enqueuePlaybackAction
+                                    return@enqueuePlaybackControl
                                 }
                                 target?.discardPendingInput()
                                 val result = filter.flush()
@@ -1157,7 +1161,7 @@ class PlaybackPipeline(
                             status: Int,
                         ) {
                             if (!sourceIsCurrent(filter) || status and Filter.STATUS_OVERFLOW == 0) return
-                            enqueuePlaybackAction {
+                            enqueuePlaybackControl {
                                 Log.d(
                                     LogTags.TIS,
                                     "caption PES filter 状態 inputId=$inputId pid=$pid superimpose=$superimpose status=$status",
@@ -1249,7 +1253,7 @@ class PlaybackPipeline(
             )
             sync.setOnErrorListener(
                 { callbackSync, what, extra ->
-                    enqueuePlaybackAction { handleMediaSyncError(callbackSync, generation, what, extra) }
+                    enqueuePlaybackControl { handleMediaSyncError(callbackSync, generation, what, extra) }
                 },
                 codecCallbackHandler,
             )
@@ -1449,8 +1453,8 @@ class PlaybackPipeline(
         val gate = AudioRouteChangeGate(generation, track, track.routedDevice?.id)
         val listener =
             android.media.AudioRouting.OnRoutingChangedListener { source ->
-                enqueuePlaybackAction {
-                    if (source !== track || !gate.accepts(playbackGeneration, audioTrack)) return@enqueuePlaybackAction
+                enqueuePlaybackControl {
+                    if (source !== track || !gate.accepts(playbackGeneration, audioTrack)) return@enqueuePlaybackControl
                     gate.onRouteChanged(playbackGeneration, audioTrack, track.routedDevice?.id) {
                         restartCurrentPlaybackGeneration(generation)
                     }
@@ -1994,7 +1998,7 @@ class PlaybackPipeline(
                             codec: MediaCodec,
                             error: MediaCodec.CodecException,
                         ) {
-                            enqueuePlaybackAction {
+                            enqueuePlaybackControl {
                                 if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) {
                                     handleCodecError(error, generation, this@DecoderPipeline is AudioDecoderPipeline)
                                 }
@@ -2444,7 +2448,7 @@ class PlaybackPipeline(
                             if (sync != null) blockedVideoOutputSync.compareAndSet(sync, null)
                         }
                     submission.completed.complete(failure)
-                    enqueuePlaybackControl {
+                    enqueuePlaybackAction {
                         consumeRenderSubmission(submission, stopping = false)
                         if (Log.isLoggable(LogTags.TIS, Log.DEBUG)) {
                             Log.d(

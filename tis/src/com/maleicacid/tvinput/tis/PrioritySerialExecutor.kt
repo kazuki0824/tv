@@ -143,12 +143,16 @@ internal abstract class PrioritySerialExecutor(
         const val CLEANUP_QUEUE_CLASS = -1
         const val CONTROL_QUEUE_CLASS = 0
         const val DATA_QUEUE_CLASS = 1
+        // 通常callbackはdataと同順位。停止時のFilter callback回収では別のclassとして扱う。
+        const val ORDERED_CALLBACK_QUEUE_CLASS = 2
         private const val INITIAL_QUEUE_CAPACITY = 11
         private val TASK_ORDER: Comparator<Runnable> =
             Comparator { left, right ->
                 val leftTask = left as QueuedTask
                 val rightTask = right as QueuedTask
-                val classOrder = leftTask.queueClass.compareTo(rightTask.queueClass)
+                val leftPriority = minOf(leftTask.queueClass, DATA_QUEUE_CLASS)
+                val rightPriority = minOf(rightTask.queueClass, DATA_QUEUE_CLASS)
+                val classOrder = leftPriority.compareTo(rightPriority)
                 if (classOrder != 0) classOrder else leftTask.sequence.compareTo(rightTask.sequence)
             }
     }

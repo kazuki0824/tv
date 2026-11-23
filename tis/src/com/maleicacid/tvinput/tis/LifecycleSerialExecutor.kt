@@ -139,13 +139,34 @@ internal class LifecycleSerialExecutor(
         onCapacity: (() -> Unit)? = null,
         action: () -> Unit,
     ) {
+        val task = CallbackTask(isReleased, onFailure, action, onDiscard, dataSlots, onCapacity)
+        submitCallback(isReleased, task) {
+            if (control) executeControl(task) else executeData(task)
+        }
+    }
+
+    fun executeOrderedCallback(
+        isReleased: () -> Boolean,
+        onFailure: (RuntimeException) -> Unit,
+        action: () -> Unit,
+    ) {
+        val task = CallbackTask(isReleased, onFailure, action, {}, 0, null)
+        submitCallback(isReleased, task) {
+            enqueue(ORDERED_CALLBACK_QUEUE_CLASS, task, { finishOwnerTask(dataSlots = 0) }, task::discard)
+        }
+    }
+
+    private inline fun submitCallback(
+        isReleased: () -> Boolean,
+        task: CallbackTask,
+        submit: () -> Unit,
+    ) {
         if (isReleased()) {
-            onDiscard()
+            task.discard()
             return
         }
-        val task = CallbackTask(isReleased, onFailure, action, onDiscard, dataSlots, onCapacity)
         try {
-            if (control) executeControl(task) else executeData(task)
+            submit()
         } catch (error: RejectedExecutionException) {
             if (isShutdown) task.discard() else task.fail(error)
         } catch (error: IllegalStateException) {
