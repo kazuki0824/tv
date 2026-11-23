@@ -1296,6 +1296,32 @@ mod tests {
     }
 
     #[test]
+    fn monitor_wake_does_not_wait_for_owner_mutex() {
+        use maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime;
+        use std::sync::{mpsc, Mutex};
+
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let queue = Arc::new(CleanupReaperQueue::from_snapshot(
+            runtime.lock().unwrap().capability_snapshot(),
+        ));
+        let context = AidlServiceContext::from_shared_runtime_with_cleanup_reaper_for_test(
+            runtime,
+            Some(Arc::clone(&queue)),
+        );
+        start_cleanup_reaper(Arc::downgrade(&context), Arc::clone(&queue)).unwrap();
+        let owner = queue.runtime.lock().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let notifier = Arc::clone(&queue);
+        let thread = std::thread::spawn(move || {
+            let _ = tx.send(notifier.wake_monitor());
+        });
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        drop(owner);
+        thread.join().unwrap();
+        assert!(matches!(result, Ok(Ok(()))), "起床通知がowner lockを待っています: {result:?}");
+    }
+
+    #[test]
     fn admission_failure_after_service_owner_drop_does_not_abort() {
         let runtime = Arc::new(std::sync::Mutex::new(
             maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::new(),
