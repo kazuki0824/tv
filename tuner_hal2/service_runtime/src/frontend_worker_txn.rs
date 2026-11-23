@@ -186,7 +186,7 @@ enum FrontendScanWorkerActivation {
 type FrontendWorkerReaperDeadlineAction =
     Box<dyn FnOnce(&SharedRuntime, Option<HalError>) + Send + 'static>;
 type FrontendWorkerReaperCompletionAction = Box<
-    dyn FnOnce(&SharedRuntime, Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>, bool)
+    dyn FnOnce(&SharedRuntime, Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>)
         + Send
         + 'static,
 >;
@@ -407,7 +407,7 @@ impl FrontendWorkerReaperJob {
             match self.tickets.try_complete() {
                 Ok(outcomes) => {
                     if let Some(runtime) = runtime.upgrade() {
-                        (self.completion_action)(&runtime, outcomes, false);
+                        (self.completion_action)(&runtime, outcomes);
                     }
                     return Ok(());
                 }
@@ -744,19 +744,8 @@ fn transfer_frontend_replacement_wait_failure(
                 terminal_error,
             );
         })),
-        completion_action: Box::new(move |_runtime, outcomes, deadline_elapsed| {
-            let completion_error = if deadline_elapsed {
-                compose_frontend_cleanup_error(
-                    "frontend replacement reaper deadline elapsed",
-                    completion_public_error.clone(),
-                    HalError::cleanup_failed(
-                        "frontend replacement reaper",
-                        "old worker did not exit before the reaper deadline",
-                    ),
-                )
-            } else {
-                completion_public_error.clone()
-            };
+        completion_action: Box::new(move |_runtime, outcomes| {
+            let completion_error = completion_public_error.clone();
             if let Err(error) = record_aborted_frontend_replacement_after_reap(
                 cleanup_diagnostic_sink,
                 target,
@@ -5508,7 +5497,6 @@ fn record_frontend_stop_reaper_completion(
     target: FrontendWorkerCleanupTarget,
     kind: FrontendWorkerKind,
     outcomes: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
-    deadline_elapsed: bool,
 ) {
     let terminal_acceptance_result = accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
     let outcome = outcomes
@@ -5522,12 +5510,6 @@ fn record_frontend_stop_reaper_completion(
             "frontend reaper completion omitted the requested worker kind",
         )),
     };
-    if deadline_elapsed && result.is_ok() {
-        result = Err(HalError::cleanup_failed(
-            "frontend worker reaper deadline",
-            "worker exit was observed only after the reaper deadline",
-        ));
-    }
     if let Err(cleanup) = terminal_acceptance_result {
         result = match result {
             Ok(()) => Err(cleanup),
@@ -5538,7 +5520,7 @@ fn record_frontend_stop_reaper_completion(
             )),
         };
     }
-    if deadline_elapsed || result.is_err() {
+    if result.is_err() {
         if let (Some(object_id), Some(object_generation)) =
             (target.object_id(), target.object_generation())
         {
@@ -5797,7 +5779,6 @@ fn stop_frontend_object_without_join(
             target,
             kind,
             outcomes,
-            false,
         ),
         Err(tickets) => {
             let completion_sink = cleanup_diagnostic_sink.clone();
@@ -5818,14 +5799,13 @@ fn stop_frontend_object_without_join(
                         terminal_error,
                     );
                 })),
-                completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
+                completion_action: Box::new(move |runtime, outcomes| {
                     record_frontend_stop_reaper_completion(
                         runtime,
                         completion_sink,
                         target,
                         kind,
                         outcomes,
-                        deadline_elapsed,
                     );
                 }),
             };
@@ -7351,7 +7331,7 @@ mod scan_contract_tests {
             deadline_action: Some(Box::new(move |_, terminal_error| {
                 deadline_tx.send(terminal_error).unwrap();
             })),
-            completion_action: Box::new(|_, _, _| {
+            completion_action: Box::new(|_, _| {
                 panic!("期限内の物理終了報告は存在しません");
             }),
         };
