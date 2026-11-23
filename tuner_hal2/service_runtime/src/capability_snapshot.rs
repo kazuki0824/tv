@@ -80,7 +80,7 @@ impl CapabilitySnapshot {
             pes_max_bytes_per_filter: MAX_PES_BUFFER_BYTES,
             // 固定PES予算はTsPes専用。AV payloadは実割当の成否で扱う。
             pes_runtime_budget_bytes: 4 * MIB,
-            // 実processing bufferは1 DVRにつき最大188 TS packet分。実行時ledgerと同じ算定式を使う。
+            // 実processing bufferは1 DVRにつき最大256 TSパケット分（256 × 188バイト）。実行時ledgerと同じ算定式を使う。
             playback_processing_budget_bytes: 8 * required_playback_processing_bytes(usize::MAX),
             cleanup_reaper_capacity: 176,
             cleanup_retry_schedule_ms: [0, 10, 100, 1_000],
