@@ -127,7 +127,7 @@ jobs:
           assert scan_cleanup.get("failures") == "0" and scan_cleanup.get("errors") == "0", scan_cleanup.attrib
           assert scan_cleanup.get("skipped", "0") == "0", scan_cleanup.attrib
           sync = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackMediaSyncReleaseTest.xml")).getroot()
-          assert sync.get("tests") == "14", sync.attrib
+          assert sync.get("tests") == "15", sync.attrib
           assert sync.get("failures") == "0" and sync.get("errors") == "0", sync.attrib
           assert sync.get("skipped", "0") == "0", sync.attrib
           caption = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CaptionInputContinuityTest.xml")).getroot()
