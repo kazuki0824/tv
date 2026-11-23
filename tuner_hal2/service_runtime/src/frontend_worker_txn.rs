@@ -7322,13 +7322,19 @@ mod scan_contract_tests {
             FrontendWorkerCancelReason::SupersededByNewRequest,
         );
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
-        let runtime_ref = Arc::downgrade(&runtime);
         let diagnostics = runtime
             .lock()
             .unwrap()
             .frontend_worker_cleanup_diagnostic_sink();
-        let worker_diagnostics = diagnostics.clone();
+        let reaper = FrontendWorkerReaperHandle::start(
+            Arc::downgrade(&runtime),
+            1,
+            Duration::from_millis(10),
+            diagnostics.clone(),
+        )
+        .unwrap();
         let (deadline_tx, deadline_rx) = mpsc::channel();
+        let (completed_tx, completed_rx) = mpsc::channel();
         let job = FrontendWorkerReaperJob {
             keys: vec![(43, FrontendWorkerKind::Tune)],
             continuation_kind: None,
@@ -7337,29 +7343,29 @@ mod scan_contract_tests {
             deadline_action: Some(Box::new(move |_, terminal_error| {
                 deadline_tx.send(terminal_error).unwrap();
             })),
-            completion_action: Box::new(|_, _| {
-                panic!("期限内の物理終了報告は存在しません");
+            completion_action: Box::new(move |_, outcomes| {
+                completed_tx.send(outcomes).unwrap();
             }),
         };
-        let (done_tx, done_rx) = mpsc::channel();
-        let reaper = std::thread::spawn(move || {
-            job.run(&runtime_ref, Duration::from_millis(10), &worker_diagnostics);
-            let _ = done_tx.send(());
-        });
-        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        reaper.join().unwrap();
-        assert!(deadline_rx.try_recv().unwrap().is_none());
-        assert!(diagnostics.snapshot().unwrap().records().is_empty());
+        reaper.enqueue(job).unwrap();
+        assert!(deadline_rx.recv_timeout(Duration::from_secs(2)).unwrap().is_none());
+        assert_eq!(
+            reaper.runtime.pending_value(&(43, FrontendWorkerKind::Tune)).unwrap(),
+            Some(None),
+            "期限超過後も元の回収予約を保持する"
+        );
         assert!(registry.has_cleanup_obligations());
+        assert!(diagnostics.snapshot().unwrap().records().is_empty());
 
         release_tx.send(()).unwrap();
-        let retry = registry.request_stop_for_join(
-            43,
-            FrontendWorkerKind::Tune,
-            FrontendWorkerCancelReason::SupersededByNewRequest,
-        );
-        assert!(frontend_worker_stop_failure(&retry.complete()).is_none());
-        assert!(!registry.has_cleanup_obligations());
+        let outcomes = completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert!(frontend_worker_stop_failure(&outcomes[0].1).is_none());
+        assert!(!registry.has_cleanup_obligations(), "試験側の再受付なしで最終回収する");
+        reaper
+            .runtime
+            .wait_until_released([&(43, FrontendWorkerKind::Tune)], Duration::from_secs(2))
+            .unwrap();
     }
 
     #[test]
