@@ -4119,28 +4119,10 @@ fn handle_frontend_worker_reaper_deadline(
                 "frontend worker remained live without a valid generation fence",
             ));
         }
-        if let (Some(object_id), Some(object_generation)) =
-            (target.object_id(), target.object_generation())
-        {
-            let owner_generation_is_present = guard
-                .object_table()
-                .entry(object_id)
-                .is_some_and(|entry| entry.generation == object_generation);
-            if owner_generation_is_present
-                && crate::object_close_txn::quarantine_object_cascade(
-                    &mut guard,
-                    object_id,
-                    object_generation,
-                )
-                .is_err()
-            {
-                guard.mark_service_critical();
-                return Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend worker deadline quarantine failed",
-                ));
-            }
-        }
+        // fence済みのstop/置換期限は物理workerの終了未確認を意味するだけで、
+        // オブジェクトの恒久隔離を確定する根拠ではない。
+        // 未完ticketと再利用禁止は既存reaper予約が所有し、遅延終端時に解除する。
+        // 不正なfenceは上記のServiceCritical経路へ送る。
         Ok(())
     })();
     let mut report = FrontendWorkerCleanupExecutionReport::new();
