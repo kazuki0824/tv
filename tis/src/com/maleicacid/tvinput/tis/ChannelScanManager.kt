@@ -280,6 +280,7 @@ object ChannelScanManager {
         val targetSnapshot = targetChannels.toList()
         val requiredServiceKeys = targetSnapshot.map { it.serviceKey }.toSet()
         val appContext = context.applicationContext
+
         fun deferBootRefresh(reason: String) {
             if (!periodic) markBootEpgSyncDeferred(appContext, reason)
         }
@@ -679,15 +680,16 @@ object ChannelScanManager {
         sessionCreationInProgress: Boolean = false,
         playbackPipelineRunning: Boolean = false,
         periodic: Boolean = false,
-    ): BootEpgSyncStartDecision =
-        when {
-            sessionCreationInProgress || (!periodic && activeLiveSessionCount > 0) ->
-                BootEpgSyncStartDecision(false, "LIVE_SESSION_STARTING_OR_ACTIVE")
+    ): BootEpgSyncStartDecision {
+        val liveBlocked = sessionCreationInProgress || (!periodic && activeLiveSessionCount > 0)
+        return when {
+            liveBlocked -> BootEpgSyncStartDecision(false, "LIVE_SESSION_STARTING_OR_ACTIVE")
 
             !periodic && playbackPipelineRunning -> BootEpgSyncStartDecision(false, "PLAYBACK_PIPELINE_RUNNING")
             scanRunning -> BootEpgSyncStartDecision(false, "SCAN_RUNNING")
             else -> BootEpgSyncStartDecision(true, null)
         }
+    }
 
     private fun markBootEpgSyncDeferred(
         context: Context,

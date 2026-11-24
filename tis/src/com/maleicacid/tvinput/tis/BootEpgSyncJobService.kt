@@ -64,7 +64,9 @@ open class BootEpgSyncJobService : JobService() {
                 false
             }
 
-            DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> true
+            DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> {
+                true
+            }
         }
 
     // periodic jobは次の定期枠で再試行し、Direct Bootの保留情報に触れない。
