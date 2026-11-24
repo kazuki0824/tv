@@ -18,11 +18,21 @@ class CaptionPresentationCapacityTest {
     @Test
     fun audioOnlyCaptionUsesOverlayAsViewportWithoutInventingVideoGeometry() {
         val controller = createController({ null }) { }
-        fun set(name: String, value: Any) {
-            AribCaptionController::class.java.getDeclaredField(name).apply { isAccessible = true }.set(controller, value)
+
+        fun set(
+            name: String,
+            value: Any,
+        ) {
+            AribCaptionController::class.java
+                .getDeclaredField(name)
+                .apply { isAccessible = true }
+                .set(controller, value)
         }
-        val viewportField = AribCaptionController::class.java.getDeclaredField("viewport").apply { isAccessible = true }
-        val update = AribCaptionController::class.java.getDeclaredMethod("updateViewport").apply { isAccessible = true }
+
+        val viewportField =
+            AribCaptionController::class.java.getDeclaredField("viewport").apply { isAccessible = true }
+        val update =
+            AribCaptionController::class.java.getDeclaredMethod("updateViewport").apply { isAccessible = true }
         set("playbackGeneration", 7L)
         set("overlayWidth", 1280)
         set("overlayHeight", 720)

@@ -349,8 +349,12 @@ class AribCaptionController(
     @Suppress("ReturnCount")
     private fun updateViewport() {
         val next =
-            if (!videoPathExpected && playbackGeneration >= 0L && overlayWidth > 0 && overlayHeight > 0) {
-                CaptionViewport(overlayWidth, overlayHeight, 0, 0, overlayWidth, overlayHeight)
+            if (!videoPathExpected && playbackGeneration >= 0L) {
+                if (overlayWidth > 0 && overlayHeight > 0) {
+                    CaptionViewport(overlayWidth, overlayHeight, 0, 0, overlayWidth, overlayHeight)
+                } else {
+                    null
+                }
             } else {
                 calculateViewport(
                     overlayWidth,

@@ -4,8 +4,8 @@ package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.AribService
-import com.maleicacid.tvinput.aribsi.NativeAribCaptionFactParser
 import com.maleicacid.tvinput.aribsi.BroadcastSystem
+import com.maleicacid.tvinput.aribsi.NativeAribCaptionFactParser
 import com.maleicacid.tvinput.aribsi.ServiceSemanticFacts
 import com.maleicacid.tvinput.aribsi.SmdSemanticFacts
 import com.maleicacid.tvinput.aribsi.SmdSemanticState
@@ -24,22 +24,33 @@ import org.robolectric.annotation.Config
     shadows = [TunerFrontendLeaseTransitionTest.SiEngineBoundary::class],
 )
 class PlaybackSurfaceWaitTest {
-    @Test fun audioOnlyServiceAdvertisesAndSelectsItsCaptionLanguage() {
+    @Test
+    fun audioOnlyServiceAdvertisesAndSelectsItsCaptionLanguage() {
         withSurfaceWaitSession(audioOnly = true, caption = true) { session, service ->
             val controller =
-                session.javaClass.getDeclaredField("tunerController").apply { isAccessible = true }
+                session.javaClass
+                    .getDeclaredField("tunerController")
+                    .apply { isAccessible = true }
                     .get(session) as TunerController
             val caption = service.streams.first { it.isCaption }
+
             @Suppress("UNCHECKED_CAST")
             val languages =
-                TunerController::class.java.getDeclaredField("captionLanguagesByPid").apply { isAccessible = true }
+                TunerController::class.java
+                    .getDeclaredField("captionLanguagesByPid")
+                    .apply { isAccessible = true }
                     .get(controller) as java.util.concurrent.ConcurrentHashMap<TsPid, List<NativeAribCaptionFactParser.Language>>
             languages[caption.elementaryPid] =
                 listOf(NativeAribCaptionFactParser.Language(0, "jpn", 0, true, null, 0, 0, 0))
-            session.javaClass.getDeclaredMethod("updateTracks", AribService::class.java)
-                .apply { isAccessible = true }.invoke(session, service)
-            val selected = session.javaClass.getDeclaredField("selectedSubtitleTrackId")
-                .apply { isAccessible = true }.get(session)
+            session.javaClass
+                .getDeclaredMethod("updateTracks", AribService::class.java)
+                .apply { isAccessible = true }
+                .invoke(session, service)
+            val selected =
+                session.javaClass
+                    .getDeclaredField("selectedSubtitleTrackId")
+                    .apply { isAccessible = true }
+                    .get(session)
             check(selected == TunerSelectionPolicy.trackIdForSubtitle(caption))
         }
     }
@@ -111,14 +122,18 @@ class PlaybackSurfaceWaitTest {
             val key = ServiceKey(4, 1, 1)
             val stream = AribElementaryStream(TsPid(0x101), if (audioOnly) 0x03 else 0x02, null, null, null)
             val captionStreams =
-                if (caption) listOf(AribElementaryStream(TsPid(0x130), 0x06, null, null, null, isCaption = true))
-                else emptyList()
-            val streams =
-                (if (audioOnly) {
+                if (caption) {
+                    listOf(AribElementaryStream(TsPid(0x130), 0x06, null, null, null, isCaption = true))
+                } else {
+                    emptyList()
+                }
+            val avStreams =
+                if (audioOnly) {
                     listOf(stream)
                 } else {
                     listOf(stream, AribElementaryStream(TsPid(0x102), 0x03, null, null, null))
-                }) + captionStreams
+                }
+            val streams = avStreams + captionStreams
             val service =
                 AribService(
                     serviceKey = key,

@@ -155,17 +155,25 @@ class CurrentProgramRatingResolver internal constructor(
         nowMillis: Long,
     ): AribEvent? =
         when (val authority = eitAuthority(snapshot, key)) {
-            is EitAuthority.PresentObserved -> authority.event
-            EitAuthority.AuthoritativeEmpty -> null
-            EitAuthority.Unconfirmed ->
-                snapshot?.events.orEmpty()
+            is EitAuthority.PresentObserved -> {
+                authority.event
+            }
+
+            EitAuthority.AuthoritativeEmpty -> {
+                null
+            }
+
+            EitAuthority.Unconfirmed -> {
+                snapshot
+                    ?.events
+                    .orEmpty()
                     .asSequence()
                     .filter { event ->
                         event.serviceKey == key && event.source.tableId == 0x4e &&
                             event.source.sectionNumber == 0 && event.durationMillis > 0L
-                    }
-                    .filter { event -> nowMillis >= event.startTimeMillis && nowMillis < event.startTimeMillis + event.durationMillis }
+                    }.filter { event -> nowMillis >= event.startTimeMillis && nowMillis < event.startTimeMillis + event.durationMillis }
                     .minByOrNull { it.startTimeMillis }
+            }
         }
 
     // 独立した既存入力を明示し、引数数だけを理由に別の状態保持型を導入しない。
