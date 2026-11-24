@@ -1931,6 +1931,11 @@ impl TunerServiceRuntime {
         Self::from_capability_snapshot(capability_snapshot)
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_worker_reaper_deadline_for_test(&mut self, deadline_ms: u64) {
+        self.capability_snapshot.worker_reaper_deadline_ms = deadline_ms;
+    }
+
     pub fn state(&self) -> ServiceState {
         if self.failure_state.snapshot().service_critical {
             ServiceState::ServiceCritical
