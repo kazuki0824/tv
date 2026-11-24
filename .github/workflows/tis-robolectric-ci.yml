@@ -49,6 +49,7 @@ jobs:
         run: |
           cargo build --manifest-path tuner_hal2/host_ci/Cargo.toml --locked -p maleicacid-tuner-hal2-demux-host-ci --bin real_ts_sections
           cargo build --manifest-path arib_si_engine_rs/host_ci/Cargo.toml --locked --lib
+          cargo build --manifest-path tis/host_ci/caption/Cargo.toml --locked --lib
 
       - name: 実TS AVC AU・PTS試験を明示実行
         shell: bash
@@ -115,6 +116,7 @@ jobs:
             --tests com.maleicacid.tvinput.tis.CaptionInputContinuityTest \
             --tests com.maleicacid.tvinput.tis.CaptionPresentationCapacityTest \
             --tests com.maleicacid.tvinput.tis.ScanCancellationProviderTest \
+            --tests com.maleicacid.tvinput.tis.RealTsCaptionFactTest \
             --tests com.maleicacid.tvinput.tis.RealTsHalSiIntegrationTest
 
       - name: 実SDK scan境界試験の実行結果を確認
@@ -190,7 +192,7 @@ jobs:
           import xml.etree.ElementTree as ET
           root = Path("tis/host_ci/robolectric/build/test-results/testDebugUnitTest")
           classes = ["DirectBootGuardR51FixTest", "RecordingDisabledR51Test",
-                     "TvProviderWriterDescriptorSchemaTest", "RealTsHalSiIntegrationTest"]
+                     "TvProviderWriterDescriptorSchemaTest", "RealTsHalSiIntegrationTest", "RealTsCaptionFactTest"]
           for name in classes:
               suite = ET.parse(root / f"TEST-com.maleicacid.tvinput.tis.{name}.xml").getroot()
               cases = suite.findall("testcase")

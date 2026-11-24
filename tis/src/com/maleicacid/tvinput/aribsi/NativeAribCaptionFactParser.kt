@@ -91,6 +91,7 @@ class NativeAribCaptionFactParser(
             if (packet.size < 3) return null
             val buffer = ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN)
             if ((buffer.get().toInt() and 0xff) != PACKET_VERSION) return null
+            val flags = buffer.get().toInt() and 0xff
             val disposition =
                 when (buffer.get().toInt() and 0xff) {
                     0 -> Disposition.NONE
@@ -101,9 +102,8 @@ class NativeAribCaptionFactParser(
                     5 -> Disposition.INVALID
                     else -> return null
                 }
-            val flags = buffer.get().toInt() and 0xff
-            val management = if ((flags and FLAG_MANAGEMENT) != 0) decodeManagement(buffer) else null
-            val statement = if ((flags and FLAG_STATEMENT_TIME) != 0) decodeStatementTime(buffer) else null
+            val statement = if ((flags and FLAG_STATEMENT_TIME) != 0) decodeStatementTime(buffer) ?: return null else null
+            val management = if ((flags and FLAG_MANAGEMENT) != 0) decodeManagement(buffer) ?: return null else null
             if (buffer.hasRemaining()) return null
             return FactBatch(disposition, management, statement)
         }
@@ -123,12 +123,12 @@ class NativeAribCaptionFactParser(
                         val dmf = buffer.get().toInt() and 0xff
                         val automatic = (buffer.get().toInt() and 0xff) != 0
                         val displayRaw = buffer.get().toInt() and 0xff
-                        val languageBytes = ByteArray(3)
-                        buffer.get(languageBytes)
-                        val iso639 = languageBytes.toString(Charsets.US_ASCII)
                         val format = buffer.get().toInt() and 0xff
                         val tcs = buffer.get().toInt() and 0xff
                         val rollup = buffer.get().toInt() and 0xff
+                        val languageBytes = ByteArray(3)
+                        buffer.get(languageBytes)
+                        val iso639 = languageBytes.toString(Charsets.US_ASCII)
                         add(
                             Language(
                                 languageTag = tag,
@@ -149,9 +149,9 @@ class NativeAribCaptionFactParser(
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         private fun decodeStatementTime(buffer: ByteBuffer): StatementTime? {
-            if (buffer.remaining() < 9) return null
+            if (buffer.remaining() < 5) return null
             val tmd = buffer.get().toInt() and 0xff
-            val millis = buffer.long
+            val millis = Integer.toUnsignedLong(buffer.int)
             return StatementTime(tmd, millis)
         }
     }

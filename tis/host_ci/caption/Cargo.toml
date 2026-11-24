@@ -8,7 +8,7 @@ build = "build.rs"
 [lib]
 name = "maleicacid_arib_caption_jni"
 path = "../../arib_caption_jni/src/lib.rs"
-crate-type = ["rlib"]
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 jni = "=0.21.1"
