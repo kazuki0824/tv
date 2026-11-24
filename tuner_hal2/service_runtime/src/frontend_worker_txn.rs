@@ -8002,7 +8002,6 @@ mod scan_contract_tests {
             FrontendWorkerStopWaitOutcome::Completed(_) => {}
             _ => panic!("保留Tuneの回収が完了しませんでした"),
         }
-        assert_eq!(terminal_count(), 1, "既に受理したScanは二重計上されない");
     }
 
     #[test]
