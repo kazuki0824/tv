@@ -968,16 +968,17 @@ fn enqueue_cleanup_retry_after_notifier_reap(
             | AidlObjectCleanupDisposition::QuarantineAwaitingReport
             | AidlObjectCleanupDisposition::QuarantineSupervised,
         ) => {
-            // 論理隔離は物理回収の完了証拠ではない。
-            record_dvr_notifier_cleanup_control_failure(
-                context,
-                handle,
-                HalError::cleanup_failed(
-                    "DVR notifier cleanup",
-                    "隔離済みobjectの物理回収完了を証明できません",
-                ),
-            );
+            // 未完の物理回収義務は既存の隔離ownerが保持する。
+            // 報告待ち・Supervisor移管中は回収失敗ではない。
             if !dvr_notifier_owner_generation_is_fenced(context, handle) {
+                record_dvr_notifier_cleanup_control_failure(
+                    context,
+                    handle,
+                    HalError::cleanup_failed(
+                        "DVR notifier cleanup",
+                        "隔離済みobjectのowner世代をfenceできません",
+                    ),
+                );
                 mark_dvr_notifier_service_critical(context);
             }
         }
