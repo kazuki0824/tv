@@ -442,27 +442,9 @@ impl FrontendWorkerReaperJob {
                 )))
             }
         };
-        loop {
+        let outcomes = loop {
             match self.tickets.try_complete() {
-                Ok(outcomes) => {
-                    if let Some(runtime) = runtime.upgrade() {
-                        let new_result = accept_frontend_worker_terminal_outcomes(
-                            &runtime,
-                            &outcomes[self.accepted_completed..],
-                        );
-                        let acceptance = match (self.acceptance_failure.take(), new_result) {
-                            (None, result) => result,
-                            (Some(previous), Ok(())) => Err(previous),
-                            (Some(previous), Err(error)) => Err(compose_frontend_cleanup_error(
-                                "frontend worker terminal acceptance failures",
-                                previous,
-                                error,
-                            )),
-                        };
-                        (self.completion_action)(&runtime, outcomes, acceptance);
-                    }
-                    return Ok(());
-                }
+                Ok(outcomes) => break outcomes,
                 Err(tickets) => self.tickets = tickets,
             }
             match self.tickets.wait_for_progress(Some(terminal_deadline)) {
@@ -471,13 +453,38 @@ impl FrontendWorkerReaperJob {
                         return Err(Box::new((self, FrontendWorkerReaperFailure::Failed(error))));
                     }
                 }
-                // 未完義務は既存WorkerRuntimeCleanupに残し、無期限joinへ移行しない。
-                Ok(None) => return Err(Box::new((self, FrontendWorkerReaperFailure::Deadline))),
+                Ok(None) => {
+                    // 先頭ticketの期限待機中に後続ticketが終了する場合がある。
+                    // 期限を確定する直前に全未完を非ブロッキング再観測する。
+                    match self.tickets.try_complete() {
+                        Ok(outcomes) => break outcomes,
+                        Err(tickets) => self.tickets = tickets,
+                    }
+                    // 未完義務は既存WorkerRuntimeCleanupに残し、無期限joinへ移行しない。
+                    return Err(Box::new((self, FrontendWorkerReaperFailure::Deadline)));
+                }
                 Err(error) => {
-                    return Err(Box::new((self, FrontendWorkerReaperFailure::Failed(error))))
+                    return Err(Box::new((self, FrontendWorkerReaperFailure::Failed(error))));
                 }
             }
+        };
+        if let Some(runtime) = runtime.upgrade() {
+            let new_result = accept_frontend_worker_terminal_outcomes(
+                &runtime,
+                &outcomes[self.accepted_completed..],
+            );
+            let acceptance = match (self.acceptance_failure.take(), new_result) {
+                (None, result) => result,
+                (Some(previous), Ok(())) => Err(previous),
+                (Some(previous), Err(error)) => Err(compose_frontend_cleanup_error(
+                    "frontend worker terminal acceptance failures",
+                    previous,
+                    error,
+                )),
+            };
+            (self.completion_action)(&runtime, outcomes, acceptance);
         }
+        Ok(())
     }
 }
 
