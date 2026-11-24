@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.IBinder
 import android.os.Parcel
 import android.util.Log
+import com.maleicacid.tvinput.aribsi.EpgSectionPolicy
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
@@ -63,6 +64,7 @@ class TvProviderWriter private constructor(
         val startTimeMillis: Long,
         val endTimeMillis: Long,
         val values: ContentValues? = null,
+        val sourceTableId: Int = -1,
     )
 
     data class ProgramUpsertRequest(
@@ -437,6 +439,7 @@ class TvProviderWriter private constructor(
                     val values: ContentValues,
                     val existingId: Long?,
                 )
+                val pfRows = existingPrograms.values.flatten().filter { it.sourceTableId == EIT_PF_ACTUAL }
                 val publicationKeys = linkedSetOf<String>()
                 val writes =
                     sortedPrograms.mapNotNull { (program, values) ->
@@ -446,6 +449,11 @@ class TvProviderWriter private constructor(
                             return@mapNotNull null
                         }
                         val programEnd = checkNotNull(checkedProgramEndTimeMillis(program))
+                        if (EpgSectionPolicy.isSchedule(program.source.tableId) &&
+                            pfRows.any { it.startTimeMillis < programEnd && program.startTimeMillis < it.endTimeMillis }
+                        ) {
+                            return@mapNotNull null
+                        }
                         val guardStart =
                             runCatching { Math.subtractExact(program.startTimeMillis, EVENT_ID_REUSE_GUARD_MS) }
                                 .getOrDefault(Long.MIN_VALUE)
@@ -823,6 +831,7 @@ class TvProviderWriter private constructor(
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
     @Suppress("TooManyFunctions")
     companion object {
+        private const val EIT_PF_ACTUAL = 0x4e
         private const val PROGRAM_PROVIDER_BATCH_SIZE = 64
         private const val SLOW_PROVIDER_OPERATION_MS = 5_000L
 
@@ -1261,7 +1270,8 @@ class TvProviderWriter private constructor(
                     while (rows.moveToNext()) {
                         val key =
                             if (rows.getString(ownerIndex) == context.packageName) {
-                                parseProgramKey(providerDataBytes(rows, PROGRAM_PROVIDER_DATA_COLUMN_INDEX))
+                                val data = providerDataBytes(rows, PROGRAM_PROVIDER_DATA_COLUMN_INDEX)
+                                ProviderDataBridge.extractProgramKeyResult(data)
                             } else {
                                 null
                             }
@@ -1273,9 +1283,10 @@ class TvProviderWriter private constructor(
                             "TvProvider program index rowの時刻が未定義です " +
                                 "id=${rows.getLong(PROGRAM_ID_COLUMN_INDEX)}"
                         }
-                        out.getOrPut(key) { mutableListOf() } +=
+                        out.getOrPut(key.key) { mutableListOf() } +=
                             ExistingProgramIndexEntry(
                                 programId = rows.getLong(PROGRAM_ID_COLUMN_INDEX),
+                                sourceTableId = key.tableId,
                                 startTimeMillis = rows.getLong(PROGRAM_START_TIME_COLUMN_INDEX),
                                 endTimeMillis = rows.getLong(PROGRAM_END_TIME_COLUMN_INDEX),
                                 values =

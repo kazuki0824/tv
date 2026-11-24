@@ -43,10 +43,16 @@ internal object DailyEpgSchedule {
         }
     }
 
-    fun arm(context: Context) {
+    fun arm(
+        context: Context,
+        onlyIfAbsent: Boolean = false,
+    ) {
         val alarm = context.getSystemService(AlarmManager::class.java) ?: return
         val intent = Intent(context, EpgBootSyncReceiver::class.java).setAction(ACTION)
-        val pending = PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_ONE_SHOT
+        val lookupFlags = flags or PendingIntent.FLAG_NO_CREATE
+        if (onlyIfAbsent && PendingIntent.getBroadcast(context, 0, intent, lookupFlags) != null) return
+        val pending = PendingIntent.getBroadcast(context, 0, intent, flags)
         val nextRun = next(ZonedDateTime.now(), time(context)).toInstant()
         alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextRun.toEpochMilli(), pending)
     }

@@ -28,6 +28,7 @@ pub struct ProgramKeyResult {
     pub service_id: i64,
     pub event_id: i64,
     pub key: String,
+    pub table_id: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -691,6 +692,7 @@ pub fn extract_program_key_result(raw_bytes: &[u8]) -> Option<ProgramKeyResult> 
         service_id: data.program_key.service_id,
         event_id: data.program_key.event_id,
         key: serde_json::to_string(&data.program_key).unwrap_or_default(),
+        table_id: data.source.table_id,
     })
 }
 

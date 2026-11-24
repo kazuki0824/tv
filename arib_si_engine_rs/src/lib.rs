@@ -985,11 +985,12 @@ fn provider_jni_failure(error: jni::errors::Error) -> provider_data_api::Provide
 
 fn program_key_result_json(result: provider_data_api::ProgramKeyResult) -> String {
     format!(
-        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"eventId\":{},\"key\":{}}}",
+        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"eventId\":{},\"tableId\":{},\"key\":{}}}",
         result.original_network_id,
         result.transport_stream_id,
         result.service_id,
         result.event_id,
+        result.table_id,
         json_string(&result.key),
     )
 }

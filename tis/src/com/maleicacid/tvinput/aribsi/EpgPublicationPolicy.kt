@@ -30,7 +30,7 @@ internal class EpgPublicationPolicy {
             observedBounds.clear()
             collection = profile to generation
         }
-        val selected = events.filter { selectedForPublication(profile, it, instances) }
+        val selected = safeEvents(profile, events, instances)
         val presentFollowing = selected.filter { it.source.tableId == EIT_PRESENT_FOLLOWING_ACTUAL_TABLE_ID }
         val byService = presentFollowing.groupBy { it.serviceKey }
         val authoritative = linkedMapOf<ServiceKey, Set<String>>()
@@ -77,17 +77,23 @@ internal class EpgPublicationPolicy {
         return Publication(presentFollowing + schedule, windows, authoritative)
     }
 
-    private fun selectedForPublication(
+    private fun safeEvents(
         profile: Int,
-        event: AribEvent,
+        events: List<AribEvent>,
         instances: List<EitInstanceState>,
-    ): Boolean =
-        EpgSectionPolicy.accepts(profile, event.source.tableId, event.source.sectionNumber) &&
-            instances.any {
-                it.currentNextIndicator && !it.inconsistent &&
-                    it.tableId == event.source.tableId && it.serviceKey == event.serviceKey &&
-                    it.version == event.source.version && event.source.sectionNumber in it.safeSections
-            }
+    ): List<AribEvent> {
+        val active =
+            instances
+                .filter { it.currentNextIndicator && !it.inconsistent }
+                .associateBy { it.serviceKey to it.tableId }
+        return events.filter { event ->
+            val source = event.source
+            val instance = active[event.serviceKey to source.tableId]
+            instance != null && source.version == instance.version &&
+                source.sectionNumber in instance.safeSections &&
+                EpgSectionPolicy.accepts(profile, source.tableId, source.sectionNumber)
+        }
+    }
 
     private fun deletionIsSafe(
         profile: Int,

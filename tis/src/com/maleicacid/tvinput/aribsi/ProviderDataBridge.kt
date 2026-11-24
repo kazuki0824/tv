@@ -49,6 +49,7 @@ object ProviderDataBridge {
         val serviceKey: ServiceKey,
         val eventId: Int,
         val key: String,
+        val tableId: Int = -1,
     )
 
     data class ChannelTune(
@@ -229,7 +230,7 @@ object ProviderDataBridge {
         val invalidProgramKey =
             onid < 0 || tsid < 0 || sid < 0 || eventId < 0 || key.isBlank()
         if (invalidProgramKey) return null
-        return ProgramKeyResult(ServiceKey(onid, tsid, sid), eventId, key)
+        return ProgramKeyResult(ServiceKey(onid, tsid, sid), eventId, key, obj.optInt("tableId", -1))
     }
 
     fun extractProgramKey(providerData: ByteArray?): String? = extractProgramKeyResult(providerData)?.key

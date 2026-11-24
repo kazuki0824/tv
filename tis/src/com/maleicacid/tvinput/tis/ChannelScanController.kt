@@ -874,13 +874,7 @@ class ChannelScanController(
         val complete = finalCounts.collectionStatus.complete
         outcome =
             finalizeSiCollectionOutcome(
-                outcome =
-                    if (requirements.requiresEit && outcome == SiCollectionOutcome.TIMEOUT_PARTIAL && complete) {
-                        // Finite schedule dwell elapsed. Boot completion still uses its p/f contract.
-                        SiCollectionOutcome.COMPLETE
-                    } else {
-                        outcome
-                    },
+                outcome = outcome,
                 finalSnapshotComplete = complete,
                 finalRegistrationReadyServices = finalCounts.registrationReady,
             )

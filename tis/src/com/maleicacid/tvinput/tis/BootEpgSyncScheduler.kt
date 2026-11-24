@@ -15,7 +15,7 @@ object BootEpgSyncScheduler {
     fun scheduleDailyRefresh(context: Context) {
         val scheduler = context.getSystemService(JobScheduler::class.java) ?: return
         if (scheduler.getPendingJob(PERIODIC_JOB_ID)?.isPeriodic == true) scheduler.cancel(PERIODIC_JOB_ID)
-        DailyEpgSchedule.arm(context)
+        DailyEpgSchedule.arm(context, onlyIfAbsent = true)
     }
 
     fun enqueueDailyRefresh(context: Context) {

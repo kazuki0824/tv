@@ -112,6 +112,10 @@ class TvProviderWriterProgramsTest {
         val result = writer.upsertPrograms(listOf(first, second))
         check(result.inserted == 2) { result.toString() }
         check(store.programWindowQueryCount == 1) { "queries=${store.programWindowQueryCount}" }
+        val schedule = first.copy(title = "older schedule", source = first.source.copy(tableId = 0x60))
+        val replay = writer.upsertProgramsForWindows(listOf(schedule), emptyList())
+        check(replay.failures.isEmpty() && replay.updated == 0 && replay.inserted == 0)
+        check(store.programs.values.any { it.getAsString(TvContract.Programs.COLUMN_TITLE) == "first" })
     }
 
     @Test
@@ -1043,11 +1047,11 @@ class TvProviderWriterProgramsTest {
                 val end = values.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
                 if (end <= windowStartMs || start >= windowEndMs) return@forEach
                 val key =
-                    TvProviderWriter.parseProgramKey(
+                    ProviderDataBridge.extractProgramKeyResult(
                         values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
                     ) ?: return@forEach
-                out.getOrPut(key) { mutableListOf() } +=
-                    TvProviderWriter.ExistingProgramIndexEntry(id, start, end)
+                out.getOrPut(key.key) { mutableListOf() } +=
+                    TvProviderWriter.ExistingProgramIndexEntry(id, start, end, sourceTableId = key.tableId)
             }
             return Result.success(out)
         }
