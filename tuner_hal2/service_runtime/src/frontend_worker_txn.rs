@@ -7539,7 +7539,7 @@ mod scan_contract_tests {
 
     #[test]
     fn replacement_failure_records_delayed_backend_submit_terminal() {
-        use maleicacid_tuner_hal2_device::BackendTuneStep;
+        use maleicacid_tuner_hal2_device::{BackendTuneStep, FrontendWorkerRegistry};
 
         let frontend_id = 1_000_015;
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
@@ -7589,35 +7589,100 @@ mod scan_contract_tests {
                 rollback_failure: None,
             },
         };
-        let outcomes = vec![(FrontendWorkerKind::Tune, outcome)];
-        let acceptance = accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
+
+        // Tuneの型付き終端を注入し、Scan側だけを有界期限の後まで保持する。
+        // 試験自身は受理/診断を呼ばず、製品のtransferが投入する実Reaper jobへ渡す。
+        let mut registry = FrontendWorkerRegistry::default();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        registry
+            .start(frontend_id, FrontendWorkerKind::Scan, generation, move |_ctx| {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let scan_ticket = registry.request_stop_for_join(
+            frontend_id,
+            FrontendWorkerKind::Scan,
+            FrontendWorkerCancelReason::StopRequested,
+        );
+        let tickets = FrontendWorkerReaperTicketGroup {
+            pending: vec![(FrontendWorkerKind::Scan, scan_ticket)],
+            completed: vec![(FrontendWorkerKind::Tune, outcome)],
+        };
         let sink = runtime
             .lock()
             .unwrap()
             .frontend_worker_cleanup_diagnostic_sink();
-        record_aborted_replacement_terminal_completion(
+        let reaper = FrontendWorkerReaperHandle::start(
+            Arc::downgrade(&runtime),
+            2,
+            Duration::from_millis(20),
             sink.clone(),
+        )
+        .unwrap();
+        let reservation = reaper
+            .reserve_replacement(frontend_id, FrontendWorkerKind::Tune)
+            .unwrap();
+        let replacement_error = HalError::Unsupported("replacement was already rejected");
+        let result = transfer_frontend_replacement_wait_failure(
+            &runtime,
+            &reaper,
+            reservation,
             FrontendWorkerCleanupTarget::frontend(frontend_id),
             FrontendWorkerKind::Tune,
             generation,
-            &outcomes,
-            acceptance,
-            HalError::Unsupported("replacement was already rejected"),
-        )
-        .unwrap();
-        let records = sink.snapshot().unwrap();
-        assert!(records.records().iter().any(|record| record.kind()
-            == FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion
-            && record.frontend_id() == frontend_id
-            && record.public_error().is_some()));
-        let guard = runtime.lock().unwrap();
-        let backends = guard.frontend_backend_diagnostic_snapshots().unwrap();
-        assert!(backends
+            Vec::new(),
+            tickets,
+            sink.clone(),
+            Instant::now(),
+            replacement_error.clone(),
+        );
+        assert_eq!(result, replacement_error);
+
+        // 既存ReaperがScanの終了前にTuneのBackendSubmitFailedを一度受理する。
+        let mut backend_observed = false;
+        for _ in 0..200 {
+            let backends = runtime
+                .lock()
+                .unwrap()
+                .frontend_backend_diagnostic_snapshots()
+                .unwrap();
+            backend_observed = backends.iter().any(|snapshot| {
+                snapshot.backend == FrontendBackendKind::LinuxDvb
+                    && snapshot.records.iter().any(|record| {
+                        record.generation == generation && record.primary_error == primary
+                    })
+            });
+            if backend_observed {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(backend_observed, "Scan未完了中のbackend失敗受理が欠落しています");
+        assert!(reaper.has_pending_frontend(frontend_id).unwrap());
+
+        release_tx.send(()).unwrap();
+        reaper
+            .wait_until_frontend_released(frontend_id, Duration::from_secs(2))
+            .unwrap();
+        let diagnostics = sink.snapshot().unwrap();
+        let completed = diagnostics
+            .records()
             .iter()
-            .any(|snapshot| snapshot.backend == FrontendBackendKind::LinuxDvb
-                && snapshot.records.iter().any(
-                    |record| record.generation == generation && record.primary_error == primary
-                )));
+            .filter(|record| {
+                record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion
+                    && record.frontend_id() == frontend_id
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(completed.len(), 1, "置換失敗の正規completionで一度だけ診断する");
+        assert_eq!(
+            completed[0].public_error(),
+            Some(&replacement_error),
+            "backend失敗を受理した後も元の置換エラーを保持する"
+        );
     }
 
     #[test]
