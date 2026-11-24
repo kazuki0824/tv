@@ -7538,6 +7538,77 @@ mod scan_contract_tests {
     }
 
     #[test]
+    fn replacement_failure_records_delayed_backend_submit_terminal() {
+        let frontend_id = 1_000_015;
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let generation = {
+            let mut guard = runtime.lock().unwrap();
+            assert_eq!(
+                guard.boot_from_probe_results([FrontendProbeOutcome::Available {
+                    id: FrontendRuntimeId(frontend_id),
+                    backend: FrontendBackendKind::LinuxDvb,
+                    system: FrontendSystem::IsdbT,
+                    path: "/dev/null".into(),
+                    lnb_profile: None,
+                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                    capability: FrontendCapabilitySnapshot {
+                        scalar: FrontendScalarCapability {
+                            min_frequency_hz: 473_142_857,
+                            max_frequency_hz: 473_142_857,
+                            min_symbol_rate: 0,
+                            max_symbol_rate: 0,
+                            acquire_range_hz: 0,
+                        },
+                        exclusive_group_id: 0x2000_0015,
+                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                            is_segment_auto: true,
+                            is_full_segment: true,
+                        }),
+                    },
+                }]),
+                ServiceBootOutcome::Ready
+            );
+            guard.query().frontend_runtime_snapshot(frontend_id).unwrap().generation
+        };
+        let primary = HalError::Unsupported("delayed backend submit failure");
+        let outcome = FrontendWorkerStopOutcome::BackendSubmitFailed {
+            frontend_id,
+            kind: FrontendWorkerKind::Tune,
+            generation,
+            failure: FrontendBackendSubmitFailure {
+                generation,
+                error: primary.clone(),
+                rollback_succeeded: false,
+                step: Some(BackendTuneStep::ApplyChannel),
+                rollback_failure: None,
+            },
+        };
+        let outcomes = vec![(FrontendWorkerKind::Tune, outcome)];
+        let acceptance = accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
+        let sink = runtime.lock().unwrap().frontend_worker_cleanup_diagnostic_sink();
+        record_aborted_replacement_terminal_completion(
+            sink.clone(),
+            FrontendWorkerCleanupTarget::frontend(frontend_id),
+            FrontendWorkerKind::Tune,
+            generation,
+            &outcomes,
+            acceptance,
+            HalError::Unsupported("replacement was already rejected"),
+        ).unwrap();
+        let records = sink.snapshot().unwrap();
+        assert!(records.records().iter().any(|record|
+            record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion
+                && record.frontend_id() == frontend_id
+                && record.public_error().is_some()));
+        let guard = runtime.lock().unwrap();
+        let backends = guard.frontend_backend_diagnostic_snapshots().unwrap();
+        assert!(backends.iter().any(|snapshot|
+            snapshot.backend == FrontendBackendKind::LinuxDvb
+                && snapshot.records.iter().any(|record|
+                    record.generation == generation && record.primary_error == primary)));
+    }
+
+    #[test]
     fn reaper_accepts_completed_ticket_while_second_worker_is_blocked() {
         use maleicacid_tuner_hal2_device::FrontendWorkerRegistry;
         let frontend_id = 1_000_014;
