@@ -31,7 +31,8 @@ internal class EpgPublicationPolicy {
             collection = profile to generation
         }
         val selected = events.filter { selectedForPublication(profile, it, instances) }
-        val byService = selected.groupBy { it.serviceKey }
+        val presentFollowing = selected.filter { it.source.tableId == EIT_PRESENT_FOLLOWING_ACTUAL_TABLE_ID }
+        val byService = presentFollowing.groupBy { it.serviceKey }
         val authoritative = linkedMapOf<ServiceKey, Set<String>>()
         val windows = mutableListOf<AribEpgUpdateWindow>()
         instances.filter(::isActualPresentFollowing).forEach { instance ->
@@ -59,7 +60,21 @@ internal class EpgPublicationPolicy {
                     )
             }
         }
-        return Publication(selected, windows, authoritative)
+        val occupied = presentFollowing.mapTo(hashSetOf()) { it.serviceKey to it.eventId }
+        val schedule =
+            selected
+                .filter { event ->
+                    EpgSectionPolicy.isSchedule(event.source.tableId) && event.title.isNotBlank() &&
+                        isProgramRow(profile, event)
+                }.sortedBy { it.source.tableId }
+                .filter { occupied.add(it.serviceKey to it.eventId) }
+                .filter { event ->
+                    byService[event.serviceKey].orEmpty().none { pf ->
+                        pf.startTimeMillis < event.startTimeMillis + event.durationMillis &&
+                            event.startTimeMillis < pf.startTimeMillis + pf.durationMillis
+                    }
+                }
+        return Publication(presentFollowing + schedule, windows, authoritative)
     }
 
     private fun selectedForPublication(

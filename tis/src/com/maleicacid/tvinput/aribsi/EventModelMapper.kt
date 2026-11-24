@@ -20,7 +20,9 @@ class EventModelMapper {
             if (!EpgPublicationPolicy.isProgramRow(profile, event)) return@mapNotNull null
             val stableIdentity = event.stableIdentity ?: return@mapNotNull null
             val semanticFacts = semanticFactsByServiceKey[event.serviceKey]
-            if (semanticFactsByServiceKey.isNotEmpty() && semanticFacts == null) return@mapNotNull null
+            if (semanticFactsByServiceKey.isNotEmpty() && semanticFacts == null && !EpgSectionPolicy.isSchedule(event.source.tableId)) {
+                return@mapNotNull null
+            }
             val end =
                 runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }
                     .getOrElse { return@mapNotNull null }

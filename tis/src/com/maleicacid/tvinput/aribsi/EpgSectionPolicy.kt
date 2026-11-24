@@ -8,7 +8,10 @@ internal object EpgSectionPolicy {
         profile: Int,
         tableId: Int,
         sectionNumber: Int,
-    ): Boolean = tableId == 0x4e && (profile == 0 || sectionNumber in 0..1)
+    ): Boolean = (tableId == 0x4e && (profile == 0 || sectionNumber in 0..1)) || isSchedule(tableId)
+
+    @Suppress("MagicNumber")
+    fun isSchedule(tableId: Int): Boolean = tableId in 0x50..0x6f
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")

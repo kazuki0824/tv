@@ -107,6 +107,7 @@ class ChannelScanController(
     private data class ServiceCounts(
         val discoveryStage: Int,
         val collectionStatus: SiCollectionRequirements.Status,
+        val scheduleReady: Boolean,
         val total: Int,
         val clearLivePlaybackStaticallyEligible: Int,
         val registrationReady: Int,
@@ -719,6 +720,7 @@ class ChannelScanController(
         return ServiceCounts(
             discoveryStage = transaction.discoveryStage,
             collectionStatus = requirements.evaluate(transaction),
+            scheduleReady = requirements.scheduleReady(transaction),
             total = summary.total,
             clearLivePlaybackStaticallyEligible = summary.clearLivePlaybackStaticallyEligible,
             registrationReady = summary.registrationReady,
@@ -824,7 +826,7 @@ class ChannelScanController(
                         val stableFor = now - stableSince
                         val completedOutcome =
                             collectionOutcome(
-                                counts.collectionStatus.complete,
+                                counts.collectionStatus.complete && counts.scheduleReady,
                                 elapsed,
                                 stableFor,
                                 counts.registrationReady,
@@ -872,7 +874,13 @@ class ChannelScanController(
         val complete = finalCounts.collectionStatus.complete
         outcome =
             finalizeSiCollectionOutcome(
-                outcome = outcome,
+                outcome =
+                    if (requirements.requiresEit && outcome == SiCollectionOutcome.TIMEOUT_PARTIAL && complete) {
+                        // Finite schedule dwell elapsed. Boot completion still uses its p/f contract.
+                        SiCollectionOutcome.COMPLETE
+                    } else {
+                        outcome
+                    },
                 finalSnapshotComplete = complete,
                 finalRegistrationReadyServices = finalCounts.registrationReady,
             )

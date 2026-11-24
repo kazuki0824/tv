@@ -1920,6 +1920,31 @@ class TisR51FixedPlanAcceptanceTest {
         )
     }
 
+    @Test fun partialSchedulePublishesFutureEventsWithoutExtendingPfDeletionAuthority() {
+        val policy =
+            com.maleicacid.tvinput.aribsi
+                .EpgPublicationPolicy()
+        val pf = aribEvent().let { it.copy(source = it.source.copy(version = 1)) }
+        val duplicate = pf.copy(title = "schedule", source = pf.source.copy(tableId = 0x50))
+        val future = duplicate.copy(eventId = 2, startTimeMillis = pf.startTimeMillis + pf.durationMillis)
+        val instance = eitInstance(key)
+        val received = listOf(0)
+        val partial =
+            instance.copy(
+                tableId = 0x50,
+                complete = false,
+                receivedSections = received,
+                safeSections = received,
+            )
+        val events = listOf(future, duplicate, pf)
+        val published = policy.project(SiDiscoveryProfile.ISDB_T, 1, events, listOf(partial, instance))
+        check(published.events == listOf(pf, future))
+        check(published.windows.single().windowEndMillis == future.startTimeMillis)
+        val other = future.copy(source = future.source.copy(tableId = 0x60))
+        val otherOnly = policy.project(SiDiscoveryProfile.BS, 2, listOf(other), listOf(partial.copy(tableId = 0x60)))
+        check(otherOnly.events == listOf(other) && otherOnly.windows.isEmpty())
+    }
+
     @Test fun epgDeletionWindowContainsOnlyPreviousAndCurrentCompletedVersions() {
         val policy =
             com.maleicacid.tvinput.aribsi

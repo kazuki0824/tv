@@ -765,6 +765,14 @@ fn program_data_from_request(
             }]
         }
     };
+    // Other-TS schedule may arrive before any PMT facts for that service.
+    let cas_facts = match request.cas_facts_canonical_json.as_deref() {
+        Some(raw) => serde_json::from_str(raw).ok()?,
+        None if (0x50..=0x6f).contains(&request.source.table_id) => {
+            CasFactsV1::from(&crate::service_discovery::ServiceSemanticFacts::default())
+        }
+        None => return None,
+    };
     let data = ProgramProviderDataV1 {
         schema: PROGRAM_SCHEMA_NAME.to_string(),
         schema_version: PROVIDER_SCHEMA_VERSION,
@@ -775,7 +783,7 @@ fn program_data_from_request(
         },
         source: request.source,
         cas: request.cas,
-        cas_facts: Some(serde_json::from_str(request.cas_facts_canonical_json.as_deref()?).ok()?),
+        cas_facts: Some(cas_facts),
         ratings: request.ratings,
         genres: request.genres,
         series: request.series,

@@ -17,6 +17,7 @@ import android.view.View
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
+import com.maleicacid.tvinput.aribsi.EpgSectionPolicy
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
@@ -1679,7 +1680,10 @@ class MaleicacidLiveSession(
         val records =
             eventModelMapper.toProgramRecords(
                 profile = transaction.discoveryProfile,
-                events = transaction.events.filter { it.serviceKey == key },
+                events =
+                    transaction.events.filter {
+                        it.serviceKey == key || EpgSectionPolicy.isSchedule(it.source.tableId)
+                    },
                 semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
                 malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
                 ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
@@ -1714,7 +1718,7 @@ class MaleicacidLiveSession(
                     snapshot.updateWindows
                         .filter { it.serviceKey == key }
                         .map(ProgramPublishCoordinator::EpgUpdateWindow),
-                allowedServiceKeys = setOf(key),
+                allowedServiceKeys = records.mapTo(linkedSetOf(key)) { it.serviceKey },
             )
         if (result.failures.isNotEmpty()) {
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "live Programs 更新失敗=${result.failures}")

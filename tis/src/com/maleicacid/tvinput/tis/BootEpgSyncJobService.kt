@@ -4,6 +4,7 @@ import android.app.job.JobParameters
 import android.app.job.JobService
 import android.os.Handler
 import android.os.Looper
+import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -91,7 +92,8 @@ open class BootEpgSyncJobService : JobService() {
             deferBootWork("TV_PROVIDER_CHANNEL_QUERY_FAILED")
             return finish(run, needsReschedule = true)
         }
-        val targetChannels = existingChannels.getOrThrow()
+        val channels = existingChannels.getOrThrow()
+        val targetChannels = targets(channels)
         if (targetChannels.isEmpty()) {
             if (!periodic) DirectBootGuard.clearPending(applicationContext)
             activeRun.compareAndSet(run, null)
@@ -114,6 +116,8 @@ open class BootEpgSyncJobService : JobService() {
         }
         return true
     }
+
+    protected open fun targets(channels: List<ChannelRecord>): List<ChannelRecord> = channels
 
     override fun onStopJob(params: JobParameters): Boolean {
         val run = activeRun.get()
@@ -152,4 +156,6 @@ open class BootEpgSyncJobService : JobService() {
 
 class PeriodicEpgRefreshJobService : BootEpgSyncJobService() {
     override val periodic: Boolean = true
+
+    override fun targets(channels: List<ChannelRecord>) = DailyEpgSchedule.targets(applicationContext, channels)
 }

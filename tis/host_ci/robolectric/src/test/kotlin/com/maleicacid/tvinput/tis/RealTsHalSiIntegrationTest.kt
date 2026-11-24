@@ -38,6 +38,7 @@ import org.robolectric.shadows.ShadowContentResolver
 import org.robolectric.util.ReflectionHelpers
 import java.io.DataInputStream
 import java.io.File
+import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
@@ -128,10 +129,51 @@ class RealTsHalSiIntegrationTest {
             assertEquals(end, current.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS).toLong())
             // 元section 0のshort_event_descriptorに含まれる固定の番組名。
             assertTrue(current.getAsString(TvContract.Programs.COLUMN_TITLE).orEmpty().contains("名古屋"))
+            executor.callControl(15_000L) {
+                val engine = ReflectionHelpers.getField<AribSiEngine>(session, "aribSiEngine")
+                val schedule = otherTransportSchedule(sections)
+                assertEquals(SiStatus.OK, SectionIngestController(engine).onSection(TsPid.EIT, schedule).status)
+                ReflectionHelpers.setField(session, "latestLiveSnapshot", engine.livePlaybackSnapshot())
+                ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramsForCurrentService")
+            }
+            val tomorrow = provider.rows.single { it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 9L }
+            assertEquals(0xba01, tomorrow.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID).toInt())
+            val tomorrowStart = tomorrow.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS).toLong()
+            assertEquals(start + TimeUnit.DAYS.toMillis(1), tomorrowStart)
+            val titleColumn = TvContract.Programs.COLUMN_TITLE
+            assertEquals(current.getAsString(titleColumn), tomorrow.getAsString(titleColumn))
         } finally {
             session.onRelease()
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
+    }
+
+    // fixtureのp/f sectionを基に、別TSの翌日の部分scheduleを生成する。放送実測のscheduleとは区別する。
+    private fun otherTransportSchedule(sections: List<Section>): ByteArray {
+        val bytes =
+            sections
+                .first { section ->
+                    val data = ByteBuffer.wrap(section.bytes)
+                    section.pid == TsPid.EIT.value && data.get(0).toInt() == 0x4e &&
+                        data.getShort(3).toInt() == 1048 && data.get(6).toInt() == 0
+                }.bytes
+                .copyOf()
+        val data = ByteBuffer.wrap(bytes)
+        data.put(0, 0x60)
+        data.put(13, 0x60)
+        data.putShort(3, 1049)
+        data.putShort(8, 0x7777)
+        data.put(7, 1)
+        data.put(12, 1)
+        data.putShort(14, 0xba01.toShort())
+        data.putShort(16, (data.getShort(16) + 1).toShort())
+        var crc = -1
+        for (i in 0 until bytes.size - 4) {
+            crc = crc xor ((bytes[i].toInt() and 255) shl 24)
+            repeat(8) { crc = if (crc < 0) (crc shl 1) xor 0x04c11db7 else crc shl 1 }
+        }
+        data.putInt(bytes.size - 4, crc)
+        return bytes
     }
 
     private class LiveProgramProvider(
@@ -152,6 +194,7 @@ class RealTsHalSiIntegrationTest {
                 if (uri.pathSegments.first() == "channel") {
                     addRow(arrayOf(7L, key.originalNetworkId, key.transportStreamId, key.serviceId))
                     addRow(arrayOf(8L, key.originalNetworkId, key.transportStreamId, 1049))
+                    addRow(arrayOf(9L, key.originalNetworkId, 0x7777, 1049))
                 }
             }
 

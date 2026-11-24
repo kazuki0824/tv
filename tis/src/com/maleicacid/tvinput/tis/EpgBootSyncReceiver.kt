@@ -20,7 +20,17 @@ class EpgBootSyncReceiver : BroadcastReceiver() {
                 DirectBootGuard.onLockedBootCompleted(context.applicationContext, System.currentTimeMillis(), intent.action.orEmpty())
             }
 
+            DailyEpgSchedule.ACTION -> {
+                BootEpgSyncScheduler.enqueueDailyRefresh(context)
+                DailyEpgSchedule.arm(context)
+            }
+
+            Intent.ACTION_TIME_CHANGED, Intent.ACTION_TIMEZONE_CHANGED -> {
+                DailyEpgSchedule.arm(context)
+            }
+
             Intent.ACTION_BOOT_COMPLETED -> {
+                BootEpgSyncScheduler.scheduleDailyRefresh(context)
                 DirectBootGuard.markBootEpgSyncRequested(context.applicationContext, intent.action.orEmpty())
                 BootEpgSyncScheduler.scheduleIfEligible(context.applicationContext, "BOOT_COMPLETED")
             }

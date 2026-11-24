@@ -70,6 +70,7 @@ class SetupActivity :
         layout.addView(statusView)
         layout.addView(scanButton)
         layout.addView(cancelButton)
+        if (!invalidInputId) DailyEpgSchedule.addSettings(this, layout, requireNotNull(inputId))
         setContentView(layout)
         ChannelScanManager.addListener(this)
         drainDirectBootPending("SetupActivity.onCreate")

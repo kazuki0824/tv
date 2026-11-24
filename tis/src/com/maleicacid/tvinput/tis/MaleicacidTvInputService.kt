@@ -16,7 +16,7 @@ class MaleicacidTvInputService : TvInputService() {
     override fun onCreate() {
         super.onCreate()
         registerUserUnlockDrainReceiver()
-        BootEpgSyncScheduler.schedulePeriodicRefresh(applicationContext)
+        BootEpgSyncScheduler.scheduleDailyRefresh(applicationContext)
         if (!ProgramUpgradeCleanup.ensure(applicationContext)) {
             Log.w(LogTags.TIS, "Program upgrade cleanupは未完了です。利用直前に再試行します")
         }
