@@ -69,5 +69,9 @@ class RealTsCaptionFactTest {
 
     private fun unsigned(value: Byte): Int = value.toInt() and 0xff
 
-    private fun hex(value: String): ByteArray = ByteArray(value.length / 2) { value.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+    private fun hex(value: String): ByteArray =
+        value
+            .chunked(2)
+            .map { it.toInt(16).toByte() }
+            .toByteArray()
 }
