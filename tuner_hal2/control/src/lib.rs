@@ -2495,7 +2495,9 @@ mod tests {
             176,
             "test-product-reaper-lanes",
             Arc::new(
-                |_: u32, _: super::WorkerRuntimeReaperPending<u32, u32>, _: super::WorkerContext| {},
+                |_: u32,
+                 _: super::WorkerRuntimeReaperPending<u32, u32>,
+                 _: super::WorkerContext| {},
             ),
         )
         .unwrap();
