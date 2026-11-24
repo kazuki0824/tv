@@ -2494,7 +2494,9 @@ mod tests {
         let queue = super::WorkerRuntime::start_reaper_queue(
             176,
             "test-product-reaper-lanes",
-            Arc::new(|_: u32, _: super::WorkerRuntimeReaperPending<u32, u32>, _: super::WorkerContext| {}),
+            Arc::new(
+                |_: u32, _: super::WorkerRuntimeReaperPending<u32, u32>, _: super::WorkerContext| {},
+            ),
         )
         .unwrap();
         assert_eq!(queue.lanes.len(), 2);
