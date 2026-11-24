@@ -7568,7 +7568,11 @@ mod scan_contract_tests {
                 }]),
                 ServiceBootOutcome::Ready
             );
-            guard.query().frontend_runtime_snapshot(frontend_id).unwrap().generation
+            guard
+                .query()
+                .frontend_runtime_snapshot(frontend_id)
+                .unwrap()
+                .generation
         };
         let primary = HalError::Unsupported("delayed backend submit failure");
         let outcome = FrontendWorkerStopOutcome::BackendSubmitFailed {
@@ -7585,7 +7589,10 @@ mod scan_contract_tests {
         };
         let outcomes = vec![(FrontendWorkerKind::Tune, outcome)];
         let acceptance = accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
-        let sink = runtime.lock().unwrap().frontend_worker_cleanup_diagnostic_sink();
+        let sink = runtime
+            .lock()
+            .unwrap()
+            .frontend_worker_cleanup_diagnostic_sink();
         record_aborted_replacement_terminal_completion(
             sink.clone(),
             FrontendWorkerCleanupTarget::frontend(frontend_id),
@@ -7594,18 +7601,21 @@ mod scan_contract_tests {
             &outcomes,
             acceptance,
             HalError::Unsupported("replacement was already rejected"),
-        ).unwrap();
+        )
+        .unwrap();
         let records = sink.snapshot().unwrap();
-        assert!(records.records().iter().any(|record|
-            record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion
-                && record.frontend_id() == frontend_id
-                && record.public_error().is_some()));
+        assert!(records.records().iter().any(|record| record.kind()
+            == FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion
+            && record.frontend_id() == frontend_id
+            && record.public_error().is_some()));
         let guard = runtime.lock().unwrap();
         let backends = guard.frontend_backend_diagnostic_snapshots().unwrap();
-        assert!(backends.iter().any(|snapshot|
-            snapshot.backend == FrontendBackendKind::LinuxDvb
-                && snapshot.records.iter().any(|record|
-                    record.generation == generation && record.primary_error == primary)));
+        assert!(backends
+            .iter()
+            .any(|snapshot| snapshot.backend == FrontendBackendKind::LinuxDvb
+                && snapshot.records.iter().any(
+                    |record| record.generation == generation && record.primary_error == primary
+                )));
     }
 
     #[test]
