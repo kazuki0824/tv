@@ -1306,6 +1306,48 @@ mod tests {
             .unwrap();
     }
 
+    fn open_dvr_for_test(
+        runtime: &SharedTunerRuntime,
+        demux: AidlObjectHandle,
+        kind: DvrOpenKind,
+    ) -> AidlObjectHandle {
+        let dvr_open = ObjectMethodUseCase::execute_after_live(
+            runtime,
+            demux.object_id(),
+            demux.generation(),
+            AidlObjectKind::Demux,
+            || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
+                let request = OpenDvrRequest {
+                    kind,
+                    buffer_size: 188,
+                };
+                Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
+            },
+            |runtime, dispatch, request| {
+                runtime
+                    .child_open_txn()
+                    .open_dvr_child_runtime_for_demux_object(
+                        demux.object_id(),
+                        demux.generation(),
+                        request,
+                        dispatch,
+                    )
+            },
+        )
+        .unwrap();
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Dvr,
+            dvr_open.runtime_entry.object_id(),
+            dvr_open.runtime_entry.generation(),
+        );
+        runtime
+            .lock()
+            .unwrap()
+            .commit_prepared_child_object(handle.object_id(), handle.generation())
+            .expect("DVRを公開確定する");
+        handle
+    }
+
     fn build_started_playback_dvr_context() -> (
         SharedAidlServiceContext,
         SharedTunerRuntime,
@@ -1327,40 +1369,12 @@ mod tests {
                 })
                 .unwrap()
         };
-        let dvr_open = ObjectMethodUseCase::execute_after_live(
-            &runtime,
+        let demux = AidlObjectHandle::new(
+            AidlObjectKind::Demux,
             demux_entry.object_id(),
             demux_entry.generation(),
-            AidlObjectKind::Demux,
-            || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
-                let request = OpenDvrRequest {
-                    kind: DvrOpenKind::Playback,
-                    buffer_size: 188,
-                };
-                Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
-            },
-            |runtime, dispatch, request| {
-                runtime
-                    .child_open_txn()
-                    .open_dvr_child_runtime_for_demux_object(
-                        demux_entry.object_id(),
-                        demux_entry.generation(),
-                        request,
-                        dispatch,
-                    )
-            },
-        )
-        .unwrap();
-        let handle = AidlObjectHandle::new(
-            AidlObjectKind::Dvr,
-            dvr_open.runtime_entry.object_id(),
-            dvr_open.runtime_entry.generation(),
         );
-        runtime
-            .lock()
-            .unwrap()
-            .commit_prepared_child_object(handle.object_id(), handle.generation())
-            .expect("DVRを公開確定する");
+        let handle = open_dvr_for_test(&runtime, demux, DvrOpenKind::Playback);
         ObjectMethodUseCase::execute_after_live(
             &runtime,
             handle.object_id(),
@@ -1466,6 +1480,166 @@ mod tests {
         assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));
         fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
         assert!(!failure_state.snapshot().service_critical);
+    }
+
+    #[test]
+    fn partial_notifier_join_keeps_quarantine_without_cleanup_failure_diagnostic() {
+        use maleicacid_tuner_hal2_common::WorkerCleanupFailureKind;
+        use maleicacid_tuner_hal2_service_runtime::{
+            quarantine_object_drop_leak_use_case, AidlObjectCleanupDisposition,
+            ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCloseCleanupFailure,
+            ObjectCloseRuntimeExecutor, ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor,
+            ObjectRuntimeCleanupCommand,
+        };
+
+        // 物理joinの順序だけを制御し、隔離の正本とjoin後処理は製品入口を使う。
+        struct RuntimeExecutor<'a>(&'a SharedTunerRuntime);
+        impl ObjectCloseRuntimeExecutor for RuntimeExecutor<'_> {
+            fn execute_runtime_cleanup(
+                &mut self,
+                command: ObjectRuntimeCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                command.execute(&mut self.0.lock().unwrap())
+            }
+        }
+        struct PendingNotifiers;
+        impl ObjectArtifactCleanupExecutor for PendingNotifiers {
+            fn execute_owner_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                panic!("callbackを登録していません")
+            }
+
+            fn execute_descendant_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                panic!("callbackを登録していません")
+            }
+
+            fn execute_lnb_owner_loss_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                panic!("LNBを使用していません")
+            }
+
+            fn execute_dvr_status_notifier_cleanup(
+                &mut self,
+                command: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                Err(ObjectCloseCleanupFailure::new(
+                    command.step(),
+                    HalError::WorkerCleanupFailed {
+                        kind: WorkerCleanupFailureKind::Executing,
+                    },
+                ))
+            }
+        }
+        struct NoDomainCleanup;
+        impl ObjectDomainCleanupExecutor for NoDomainCleanup {
+            fn execute_frontend_cleanup(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
+                panic!("Frontendを使用していません")
+            }
+
+            fn execute_lnb_cleanup(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
+                panic!("LNBを使用していません")
+            }
+
+            fn execute_lnb_drop_leak_record(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
+                panic!("LNBを使用していません")
+            }
+        }
+
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let context = crate::service_context::AidlServiceContext::from_shared_runtime_for_test(
+            runtime.clone(),
+        );
+        let entry = runtime
+            .lock()
+            .unwrap()
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .unwrap();
+        let demux = AidlObjectHandle::new(
+            AidlObjectKind::Demux,
+            entry.object_id(),
+            entry.generation(),
+        );
+        let first = open_dvr_for_test(&runtime, demux, DvrOpenKind::Playback);
+        let second = open_dvr_for_test(&runtime, demux, DvrOpenKind::Record);
+        let spawn = |handle: AidlObjectHandle| {
+            let registration = DvrNotifierStart::register(
+                &mut runtime.lock().unwrap(),
+                handle.object_id(),
+                handle.generation(),
+            )
+            .unwrap();
+            DvrStatusNotifierReaperJob::from_supervisor_transfer(
+                DvrStatusNotifierKey::new(handle),
+                DvrStatusNotifier {
+                    worker: registration
+                        .spawn("partial-notifier-join".to_string(), |_| Ok(()), || {})
+                        .unwrap(),
+                },
+                DvrStatusNotifierTransferReason::Stop,
+            )
+        };
+        let first_job = spawn(first);
+        let second_job = spawn(second);
+        let plan = quarantine_object_drop_leak_use_case(
+            &mut runtime.lock().unwrap(),
+            demux.object_id(),
+            demux.generation(),
+        )
+        .unwrap()
+        .unwrap();
+        let report = plan.execute_terminalization_report_with_executor(
+            &mut RuntimeExecutor(&runtime),
+            &mut NoDomainCleanup,
+            &mut PendingNotifiers,
+        );
+        assert!(report.finish(&mut runtime.lock().unwrap()).unwrap());
+
+        let diagnostic_count = || {
+            let snapshot = context.diagnostic_snapshot().dvr_post_commit.unwrap();
+            assert_eq!(snapshot.dropped_count(), 0);
+            assert_eq!(snapshot.record_failure_count(), 0);
+            snapshot
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.failure_kind == DvrPostCommitNotificationFailureKind::NotifierCleanup
+                })
+                .count()
+        };
+        let before = diagnostic_count();
+        finish_reaped_dvr_status_notifier(Some(context.clone()), first_job);
+        assert_eq!(
+            context.cleanup_retry_disposition(second),
+            Ok(AidlObjectCleanupDisposition::QuarantineSupervised)
+        );
+        assert_eq!(diagnostic_count(), before);
+
+        finish_reaped_dvr_status_notifier(Some(context.clone()), second_job);
+        assert_eq!(
+            context.cleanup_retry_disposition(demux),
+            Ok(AidlObjectCleanupDisposition::Closed)
+        );
+        assert_eq!(diagnostic_count(), before);
     }
 
     #[test]
