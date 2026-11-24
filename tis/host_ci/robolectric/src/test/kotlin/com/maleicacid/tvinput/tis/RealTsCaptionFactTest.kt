@@ -36,7 +36,8 @@ class RealTsCaptionFactTest {
             parser.reset()
             val both = checkNotNull(parser.ingest(hex("81ff00" + management + statement)))
             check(both.statementTime == timeOnly.statementTime)
-            check(both.management?.languages?.single()?.iso639LanguageCode == "jpn")
+            val language = checkNotNull(both.management).languages.single()
+            check(language.iso639LanguageCode == "jpn")
         }
     }
 
@@ -44,6 +45,7 @@ class RealTsCaptionFactTest {
     private fun captionPayloads(ts: ByteArray): List<ByteArray> {
         val result = mutableListOf<ByteArray>()
         val pes = ByteArrayOutputStream()
+
         fun collect() {
             val bytes = pes.toByteArray()
             if (bytes.isEmpty()) return
@@ -67,6 +69,5 @@ class RealTsCaptionFactTest {
 
     private fun unsigned(value: Byte): Int = value.toInt() and 0xff
 
-    private fun hex(value: String): ByteArray =
-        ByteArray(value.length / 2) { value.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+    private fun hex(value: String): ByteArray = ByteArray(value.length / 2) { value.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
 }

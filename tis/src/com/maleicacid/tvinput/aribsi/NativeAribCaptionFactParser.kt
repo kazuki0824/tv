@@ -92,18 +92,11 @@ class NativeAribCaptionFactParser(
             val buffer = ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN)
             if ((buffer.get().toInt() and 0xff) != PACKET_VERSION) return null
             val flags = buffer.get().toInt() and 0xff
-            val disposition =
-                when (buffer.get().toInt() and 0xff) {
-                    0 -> Disposition.NONE
-                    1 -> Disposition.FRAGMENT_PENDING
-                    2 -> Disposition.MANAGEMENT
-                    3 -> Disposition.STATEMENT_TIMED
-                    4 -> Disposition.STATEMENT_INVALID
-                    5 -> Disposition.INVALID
-                    else -> return null
-                }
-            val statement = if ((flags and FLAG_STATEMENT_TIME) != 0) decodeStatementTime(buffer) ?: return null else null
-            val management = if ((flags and FLAG_MANAGEMENT) != 0) decodeManagement(buffer) ?: return null else null
+            val disposition = Disposition.entries.getOrNull(buffer.get().toInt() and 0xff) ?: return null
+            val statement =
+                if ((flags and FLAG_STATEMENT_TIME) != 0) decodeStatementTime(buffer) ?: return null else null
+            val management =
+                if ((flags and FLAG_MANAGEMENT) != 0) decodeManagement(buffer) ?: return null else null
             if (buffer.hasRemaining()) return null
             return FactBatch(disposition, management, statement)
         }
