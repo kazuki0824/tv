@@ -6299,7 +6299,8 @@ mod scan_contract_tests {
                 .iter()
                 .any(|record| {
                     record.frontend_id() == frontend_id
-                        && record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerReaperDeadline
+                        && record.kind()
+                            == FrontendWorkerCleanupDiagnosticKind::WorkerReaperDeadline
                 })
             {
                 observed_deadline = true;
@@ -6307,7 +6308,10 @@ mod scan_contract_tests {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert!(observed_deadline, "worker解放前に期限処理が実行されていません");
+        assert!(
+            observed_deadline,
+            "worker解放前に期限処理が実行されていません"
+        );
         assert!(reaper.has_pending_frontend(frontend_id).unwrap());
         assert_eq!(
             runtime
@@ -7545,66 +7549,123 @@ mod scan_contract_tests {
                 }]),
                 ServiceBootOutcome::Ready,
             );
-            service.query().frontend_runtime_snapshot(frontend_id).unwrap().generation
+            service
+                .query()
+                .frontend_runtime_snapshot(frontend_id)
+                .unwrap()
+                .generation
         };
         let mut registry = FrontendWorkerRegistry::default();
         let (tune_started_tx, tune_started_rx) = mpsc::channel();
-        registry.start(frontend_id, FrontendWorkerKind::Tune, generation, move |ctx| {
-            tune_started_tx.send(()).unwrap();
-            while !ctx.cancel_requested() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            Err(HalError::Unsupported("terminal failure during partial reaper completion"))
-        }).unwrap();
+        registry
+            .start(
+                frontend_id,
+                FrontendWorkerKind::Tune,
+                generation,
+                move |ctx| {
+                    tune_started_tx.send(()).unwrap();
+                    while !ctx.cancel_requested() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(HalError::Unsupported(
+                        "terminal failure during partial reaper completion",
+                    ))
+                },
+            )
+            .unwrap();
         let (scan_started_tx, scan_started_rx) = mpsc::channel();
         let (scan_release_tx, scan_release_rx) = mpsc::channel();
-        registry.start(frontend_id, FrontendWorkerKind::Scan, generation, move |_ctx| {
-            scan_started_tx.send(()).unwrap();
-            scan_release_rx.recv().unwrap();
-            Ok(())
-        }).unwrap();
-        tune_started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        scan_started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        registry
+            .start(
+                frontend_id,
+                FrontendWorkerKind::Scan,
+                generation,
+                move |_ctx| {
+                    scan_started_tx.send(()).unwrap();
+                    scan_release_rx.recv().unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
+        tune_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        scan_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
         let tune = registry.request_stop_for_join(
-            frontend_id, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested,
+            frontend_id,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
         );
         let scan = registry.request_stop_for_join(
-            frontend_id, FrontendWorkerKind::Scan, FrontendWorkerCancelReason::StopRequested,
+            frontend_id,
+            FrontendWorkerKind::Scan,
+            FrontendWorkerCancelReason::StopRequested,
         );
-        let diagnostics = runtime.lock().unwrap().frontend_worker_cleanup_diagnostic_sink();
+        let diagnostics = runtime
+            .lock()
+            .unwrap()
+            .frontend_worker_cleanup_diagnostic_sink();
         let reaper = FrontendWorkerReaperHandle::start(
-            Arc::downgrade(&runtime), 2, Duration::from_millis(20), diagnostics.clone(),
-        ).unwrap();
+            Arc::downgrade(&runtime),
+            2,
+            Duration::from_millis(20),
+            diagnostics.clone(),
+        )
+        .unwrap();
         let (deadline_tx, deadline_rx) = mpsc::channel();
         let (completion_tx, completion_rx) = mpsc::channel();
-        reaper.enqueue(FrontendWorkerReaperJob {
-            keys: vec![(frontend_id, FrontendWorkerKind::Tune), (frontend_id, FrontendWorkerKind::Scan)],
-            continuation_kind: None,
-            tickets: FrontendWorkerReaperTicketGroup::new(vec![
-                (FrontendWorkerKind::Tune, tune),
-                (FrontendWorkerKind::Scan, scan),
-            ]),
-            accepted_completed: 0,
-            acceptance_failure: None,
-            transferred_at: Instant::now(),
-            deadline_action: Some(Box::new(move |_, error| {
-                deadline_tx.send(error).unwrap();
-            })),
-            completion_action: Box::new(move |_, _, acceptance| {
-                completion_tx.send(acceptance).unwrap();
-            }),
-        }).unwrap();
+        reaper
+            .enqueue(FrontendWorkerReaperJob {
+                keys: vec![
+                    (frontend_id, FrontendWorkerKind::Tune),
+                    (frontend_id, FrontendWorkerKind::Scan),
+                ],
+                continuation_kind: None,
+                tickets: FrontendWorkerReaperTicketGroup::new(vec![
+                    (FrontendWorkerKind::Tune, tune),
+                    (FrontendWorkerKind::Scan, scan),
+                ]),
+                accepted_completed: 0,
+                acceptance_failure: None,
+                transferred_at: Instant::now(),
+                deadline_action: Some(Box::new(move |_, error| {
+                    deadline_tx.send(error).unwrap();
+                })),
+                completion_action: Box::new(move |_, _, acceptance| {
+                    completion_tx.send(acceptance).unwrap();
+                }),
+            })
+            .unwrap();
         deadline_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        let terminal_count = || diagnostics.snapshot().unwrap().records().iter()
-            .filter(|record| record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerTerminal
-                && record.frontend_id() == frontend_id)
-            .count();
+        let terminal_count = || {
+            diagnostics
+                .snapshot()
+                .unwrap()
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerTerminal
+                        && record.frontend_id() == frontend_id
+                })
+                .count()
+        };
         assert_eq!(terminal_count(), 1, "残りのscan終了前にTune終端を受理する");
         assert!(reaper.has_pending_frontend(frontend_id).unwrap());
         scan_release_tx.send(()).unwrap();
-        assert!(completion_rx.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
-        reaper.wait_until_frontend_released(frontend_id, Duration::from_secs(2)).unwrap();
-        assert_eq!(terminal_count(), 1, "継続後にTuneの終端を二重受理してはならない");
+        assert!(completion_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .is_ok());
+        reaper
+            .wait_until_frontend_released(frontend_id, Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(
+            terminal_count(),
+            1,
+            "継続後にTuneの終端を二重受理してはならない"
+        );
     }
 
     #[test]
