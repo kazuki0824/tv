@@ -2489,6 +2489,18 @@ mod tests {
     }
 
     #[test]
+    fn product_reaper_starts_exactly_two_lanes() {
+        use std::sync::Arc;
+        let queue = super::WorkerRuntime::start_reaper_queue(
+            176,
+            "test-product-reaper-lanes",
+            Arc::new(|_: u32, _: super::WorkerRuntimeReaperPending<u32, u32>, _: super::WorkerContext| {}),
+        )
+        .unwrap();
+        assert_eq!(queue.lanes.len(), 2);
+    }
+
+    #[test]
     fn reaper_panic_ends_bounded_wait_early_without_releasing_obligations() {
         use maleicacid_tuner_hal2_common::HalError;
         use std::sync::{mpsc, Arc};
