@@ -7539,6 +7539,8 @@ mod scan_contract_tests {
 
     #[test]
     fn replacement_failure_records_delayed_backend_submit_terminal() {
+        use maleicacid_tuner_hal2_device::BackendTuneStep;
+
         let frontend_id = 1_000_015;
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         let generation = {
