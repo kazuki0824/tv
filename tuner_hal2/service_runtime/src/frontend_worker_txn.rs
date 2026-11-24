@@ -7596,11 +7596,16 @@ mod scan_contract_tests {
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         registry
-            .start(frontend_id, FrontendWorkerKind::Scan, generation, move |_ctx| {
-                started_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-                Ok(())
-            })
+            .start(
+                frontend_id,
+                FrontendWorkerKind::Scan,
+                generation,
+                move |_ctx| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                },
+            )
             .unwrap();
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let scan_ticket = registry.request_stop_for_join(
@@ -7661,7 +7666,10 @@ mod scan_contract_tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(backend_observed, "Scan未完了中のbackend失敗受理が欠落しています");
+        assert!(
+            backend_observed,
+            "Scan未完了中のbackend失敗受理が欠落しています"
+        );
         assert!(reaper.has_pending_frontend(frontend_id).unwrap());
 
         release_tx.send(()).unwrap();
@@ -7677,7 +7685,11 @@ mod scan_contract_tests {
                     && record.frontend_id() == frontend_id
             })
             .collect::<Vec<_>>();
-        assert_eq!(completed.len(), 1, "置換失敗の正規completionで一度だけ診断する");
+        assert_eq!(
+            completed.len(),
+            1,
+            "置換失敗の正規completionで一度だけ診断する"
+        );
         assert_eq!(
             completed[0].public_error(),
             Some(&replacement_error),
