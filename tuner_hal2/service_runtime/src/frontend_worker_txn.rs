@@ -7903,23 +7903,37 @@ mod scan_contract_tests {
         let (tune_started_tx, tune_started_rx) = mpsc::channel();
         let (tune_release_tx, tune_release_rx) = mpsc::channel();
         registry
-            .start(frontend_id, FrontendWorkerKind::Tune, generation, move |_ctx| {
-                tune_started_tx.send(()).unwrap();
-                let _ = tune_release_rx.recv_timeout(Duration::from_secs(4));
-                Ok(())
-            })
+            .start(
+                frontend_id,
+                FrontendWorkerKind::Tune,
+                generation,
+                move |_ctx| {
+                    tune_started_tx.send(()).unwrap();
+                    let _ = tune_release_rx.recv_timeout(Duration::from_secs(4));
+                    Ok(())
+                },
+            )
             .unwrap();
         let (scan_started_tx, scan_started_rx) = mpsc::channel();
         let (scan_release_tx, scan_release_rx) = mpsc::channel();
         registry
-            .start(frontend_id, FrontendWorkerKind::Scan, generation, move |_ctx| {
-                scan_started_tx.send(()).unwrap();
-                let _ = scan_release_rx.recv_timeout(Duration::from_secs(4));
-                Err(HalError::Unsupported("scan failed after first close poll"))
-            })
+            .start(
+                frontend_id,
+                FrontendWorkerKind::Scan,
+                generation,
+                move |_ctx| {
+                    scan_started_tx.send(()).unwrap();
+                    let _ = scan_release_rx.recv_timeout(Duration::from_secs(4));
+                    Err(HalError::Unsupported("scan failed after first close poll"))
+                },
+            )
             .unwrap();
-        tune_started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        scan_started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        tune_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        scan_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
         let tune = registry.request_stop_for_join(
             frontend_id,
             FrontendWorkerKind::Tune,
@@ -7948,26 +7962,39 @@ mod scan_contract_tests {
                 "期限の再観測前にScanが実際に終了していません"
             );
         }));
-        let tickets = match tickets.wait_until_deadline(Instant::now() + Duration::from_millis(30)) {
+        let tickets = match tickets.wait_until_deadline(Instant::now() + Duration::from_millis(30))
+        {
             FrontendWorkerStopWaitOutcome::TimedOut(tickets) => tickets,
-            other => panic!("Tuneが保留中なのに異なる結果: {:?}", match other {
-                FrontendWorkerStopWaitOutcome::Completed(_) => "Completed",
-                FrontendWorkerStopWaitOutcome::TimedOut(_) => "TimedOut",
-                FrontendWorkerStopWaitOutcome::Failed { .. } => "Failed",
-            }),
+            other => panic!(
+                "Tuneが保留中なのに異なる結果: {:?}",
+                match other {
+                    FrontendWorkerStopWaitOutcome::Completed(_) => "Completed",
+                    FrontendWorkerStopWaitOutcome::TimedOut(_) => "TimedOut",
+                    FrontendWorkerStopWaitOutcome::Failed { .. } => "Failed",
+                }
+            ),
         };
         assert_eq!(tickets.pending.len(), 1, "未完のTune義務だけを保持する");
         assert_eq!(tickets.pending[0].0, FrontendWorkerKind::Tune);
         assert_eq!(tickets.completed.len(), 1, "同一期限でScan完了を採取する");
         assert_eq!(tickets.completed[0].0, FrontendWorkerKind::Scan);
         accept_frontend_worker_terminal_outcomes(&runtime, &tickets.completed).unwrap();
-        let diagnostics = runtime.lock().unwrap().frontend_worker_cleanup_diagnostic_sink();
-        let terminal_count = || diagnostics.snapshot().unwrap().records().iter()
-            .filter(|record| {
-                record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerTerminal
-                    && record.frontend_id() == frontend_id
-            })
-            .count();
+        let diagnostics = runtime
+            .lock()
+            .unwrap()
+            .frontend_worker_cleanup_diagnostic_sink();
+        let terminal_count = || {
+            diagnostics
+                .snapshot()
+                .unwrap()
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerTerminal
+                        && record.frontend_id() == frontend_id
+                })
+                .count()
+        };
         assert_eq!(terminal_count(), 1, "closeの期限処理でScanの終端を受理する");
 
         tune_release_tx.send(()).unwrap();
@@ -8120,7 +8147,9 @@ mod scan_contract_tests {
                                 && record.frontend_id() == frontend_id
                         })
                         .count();
-                    deadline_tx.send((error, accepted_at_first_deadline)).unwrap();
+                    deadline_tx
+                        .send((error, accepted_at_first_deadline))
+                        .unwrap();
                 })),
                 completion_action: Box::new(move |_, _, result| {
                     completion_tx.send(result).unwrap();
@@ -8130,7 +8159,10 @@ mod scan_contract_tests {
 
         let (terminal_error, first_deadline_count) =
             deadline_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-        assert!(terminal_error.is_none(), "初回期限でterminal受理に失敗: {terminal_error:?}");
+        assert!(
+            terminal_error.is_none(),
+            "初回期限でterminal受理に失敗: {terminal_error:?}"
+        );
         assert_eq!(
             first_deadline_count, 1,
             "後続Tuneの終了結果が初回期限callbackまでに受理されていません"
