@@ -7945,12 +7945,25 @@ mod scan_contract_tests {
             FrontendWorkerKind::Tune,
             FrontendWorkerCancelReason::StopRequested,
         );
-        let (wait_started_tx, wait_started_rx) = mpsc::channel();
         let mut tickets = FrontendWorkerReaperTicketGroup::new(vec![
             (FrontendWorkerKind::Scan, scan),
             (FrontendWorkerKind::Tune, tune),
         ]);
-        tickets.wait_started = Some(wait_started_tx);
+        tickets.before_wait_hook = Some(Box::new(move |tickets| {
+            // 初回try_completeでは両方未終了。先頭Scanの期限待機前に
+            // 後続Tuneを解放し、実際のスレッド終端まで有界に確認する。
+            tune_release_tx.send(()).unwrap();
+            let (_, tune) = tickets
+                .pending
+                .iter()
+                .find(|(kind, _)| *kind == FrontendWorkerKind::Tune)
+                .expect("Tuneは初回観測時点でpending");
+            assert!(
+                tune.wait_until_finished(Some(Instant::now() + Duration::from_secs(2)))
+                    .unwrap(),
+                "後続Tuneの実際の終了を確認できませんでした"
+            );
+        }));
 
         let diagnostics = runtime
             .lock()
@@ -7959,11 +7972,12 @@ mod scan_contract_tests {
         let reaper = FrontendWorkerReaperHandle::start(
             Arc::downgrade(&runtime),
             2,
-            Duration::from_millis(700),
+            Duration::from_millis(30),
             diagnostics.clone(),
         )
         .unwrap();
         let (deadline_tx, deadline_rx) = mpsc::channel();
+        let deadline_diagnostics = diagnostics.clone();
         let (completion_tx, completion_rx) = mpsc::channel();
         reaper
             .enqueue(FrontendWorkerReaperJob {
@@ -7977,7 +7991,18 @@ mod scan_contract_tests {
                 acceptance_failure: None,
                 transferred_at: Instant::now(),
                 deadline_action: Some(Box::new(move |_, error| {
-                    deadline_tx.send(error).unwrap();
+                    // 再投入後ではなく、初回期限callback内で受理済み結果を確定する。
+                    let accepted_at_first_deadline = deadline_diagnostics
+                        .snapshot()
+                        .unwrap()
+                        .records()
+                        .iter()
+                        .filter(|record| {
+                            record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerTerminal
+                                && record.frontend_id() == frontend_id
+                        })
+                        .count();
+                    deadline_tx.send((error, accepted_at_first_deadline)).unwrap();
                 })),
                 completion_action: Box::new(move |_, _, result| {
                     completion_tx.send(result).unwrap();
@@ -7985,13 +8010,13 @@ mod scan_contract_tests {
             })
             .unwrap();
 
-        // 初回try_completeでは両方未終了。先頭Scan待機開始後に後続Tuneを終了させる。
-        wait_started_rx
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap();
-        tune_release_tx.send(()).unwrap();
-        // Scanはまだブロック中。初回期限の直前の再観測でTuneを受理する必要がある。
-        deadline_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let (terminal_error, first_deadline_count) =
+            deadline_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(terminal_error.is_none(), "初回期限でterminal受理に失敗: {terminal_error:?}");
+        assert_eq!(
+            first_deadline_count, 1,
+            "後続Tuneの終了結果が初回期限callbackまでに受理されていません"
+        );
         let terminal_count = || {
             diagnostics
                 .snapshot()
