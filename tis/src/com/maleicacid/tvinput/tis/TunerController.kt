@@ -97,7 +97,6 @@ class TunerController(
         val video: AribElementaryStream?,
         val audio: AribElementaryStream?,
         val subtitle: AribElementaryStream? = null,
-        val subtitleLanguageId: Int? = null,
         val superimpose: AribElementaryStream? = null,
         val audioChannelConfiguration: String? = null,
         val audioDualMono: Boolean? = null,
@@ -1844,7 +1843,6 @@ class TunerController(
             video,
             audio,
             subtitle,
-            selectedCaptionTrack?.captionLanguageId,
             superimpose,
             null,
             null,
@@ -2056,6 +2054,8 @@ class TunerController(
             latestBroadcastClockAuthority,
             expectedClockGeneration,
         )
+
+    fun isCurrentPlaybackGeneration(generation: Long): Boolean = playbackPipeline.playbackGeneration == generation
 
     fun currentGeneration(): Long = callOnController { tuneGeneration }
 

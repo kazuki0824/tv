@@ -76,10 +76,10 @@ object TunerSelectionPolicy {
     fun trackIdForSubtitle(
         stream: AribElementaryStream,
         languageId: Int = 1,
-    ): String {
-        val base = stream.componentTag?.let { "subtitle:${stream.elementaryPid}:$it" } ?: "subtitle:${stream.elementaryPid}"
-        return "$base:lang$languageId"
-    }
+    ): String = "${subtitleSourceId(stream)}:lang$languageId"
+
+    fun subtitleSourceId(stream: AribElementaryStream): String =
+        stream.componentTag?.let { "subtitle:${stream.elementaryPid}:$it" } ?: "subtitle:${stream.elementaryPid}"
 
     fun trackIdForSuperimpose(stream: AribElementaryStream): String =
         stream.componentTag?.let { "superimpose:${stream.elementaryPid}:$it" } ?: "superimpose:${stream.elementaryPid}"

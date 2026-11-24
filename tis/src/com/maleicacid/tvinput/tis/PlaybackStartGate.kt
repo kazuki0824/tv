@@ -46,7 +46,6 @@ data class AvPlaybackSignature(
     val keyTokenAvailable: Boolean,
     val subtitlePid: TsPid? = null,
     val subtitleDataComponentId: Int? = null,
-    val subtitleLanguageId: Int? = null,
     val superimposePid: TsPid? = null,
     val superimposeDataComponentId: Int? = null,
     val videoConfiguration: DecoderConfigurationIdentity? = null,

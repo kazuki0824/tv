@@ -817,7 +817,6 @@ class MaleicacidLiveSession(
                 },
             subtitlePid = selection.subtitle?.elementaryPid,
             subtitleDataComponentId = selection.subtitle?.dataComponentId,
-            subtitleLanguageId = selection.subtitleLanguageId,
             superimposePid = selection.superimpose?.elementaryPid,
             superimposeDataComponentId = selection.superimpose?.dataComponentId,
             clear = !currentServicePolicy().requiresCas,
@@ -1245,7 +1244,7 @@ class MaleicacidLiveSession(
     @Suppress("ReturnCount")
     private fun handleFirstFrameAvailable(generation: Long) {
         val state = playbackState as? PlaybackStartState.WaitingFirstOutput ?: return
-        if (state.pipelineGeneration != generation) return
+        if (state.pipelineGeneration != generation || !tunerController.isCurrentPlaybackGeneration(generation)) return
         playbackState = PlaybackStartState.Started(state.signature, state.pipelineGeneration)
         tracePlaybackGate("FIRST_FRAME_AVAILABLE pipelineGeneration=$generation")
         onCaptionPlaybackClockChanged()
@@ -1382,8 +1381,14 @@ class MaleicacidLiveSession(
                     )
             }
         }
-        notifyVideoUnavailable(mapUnavailableReason(reason))
-        scheduleRecoverablePlaybackRetry(reason)
+        val retryScheduled = scheduleRecoverablePlaybackRetry(reason)
+        val unavailableReason =
+            if (retryScheduled && reason.reason == PlaybackPipeline.PlaybackUnavailableReason.COMPRESSED_INPUT_LOSS) {
+                TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING
+            } else {
+                mapUnavailableReason(reason)
+            }
+        notifyVideoUnavailable(unavailableReason)
     }
 
     private fun cancelPlaybackRetry() {
@@ -1393,15 +1398,15 @@ class MaleicacidLiveSession(
 
     // 同じ再生世代と回復権限の照合を一つの境界で完結する。
     @Suppress("ComplexCondition", "ReturnCount")
-    private fun scheduleRecoverablePlaybackRetry(reason: PlaybackPipeline.PlaybackUnavailable) {
-        val failed = playbackState as? PlaybackStartState.Failed ?: return
+    private fun scheduleRecoverablePlaybackRetry(reason: PlaybackPipeline.PlaybackUnavailable): Boolean {
+        val failed = playbackState as? PlaybackStartState.Failed ?: return false
         // 映像Surfaceは失敗した再生世代に映像がある場合だけ再試行の前提とする。
         if (!isRecoverablePlaybackFailure(reason.reason) || releaseOnce.get() ||
             frontendSignalUnavailable || (failed.signature.videoPid != null && surface?.isValid != true)
         ) {
-            return
+            return false
         }
-        if (failed.pipelineGeneration != reason.generation || playbackRetryTask != null) return
+        if (failed.pipelineGeneration != reason.generation || playbackRetryTask != null) return false
         val tuneGeneration = currentGeneration
         // 予約を消費してから通常の開始入口へ戻る。過去の復旧回数は開始条件にしない。
         val task =
@@ -1426,7 +1431,9 @@ class MaleicacidLiveSession(
         if (!unblockTimerHandler.postDelayed(task, RECOVERABLE_PLAYBACK_RETRY_DELAY_MS)) {
             playbackRetryTask = null
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "再生再試行timerの投入に失敗しました")
+            return false
         }
+        return true
     }
 
     private fun stopPlaybackForBlockedContent(blocked: BlockedContent) {

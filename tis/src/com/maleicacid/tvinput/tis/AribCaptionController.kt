@@ -723,7 +723,7 @@ class AribCaptionController(
             enabled: Boolean,
             selectedTrackId: String?,
             incomingTrackId: String,
-        ): Boolean = enabled && selectedTrackId != null && selectedTrackId == incomingTrackId
+        ): Boolean = enabled && selectedTrackId?.substringBeforeLast(":lang") == incomingTrackId
 
         // 独立した既存入力を明示し、引数数だけを理由に別の状態保持型を導入しない。
         @Suppress("LongParameterList")

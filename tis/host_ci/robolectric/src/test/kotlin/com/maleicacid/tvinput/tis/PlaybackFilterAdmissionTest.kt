@@ -99,11 +99,17 @@ class PlaybackFilterAdmissionTest {
                     "playbackState",
                     PlaybackStartState.WaitingFirstOutput(fixture.signature, 7L),
                 )
-                ReflectionHelpers.callInstanceMethod<Unit>(
-                    fixture.session,
-                    "handleFirstFrameAvailable",
-                    ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, 7L),
-                )
+                val controller = ReflectionHelpers.getField<TunerController>(fixture.session, "tunerController")
+                val pipeline = ReflectionHelpers.getField<PlaybackPipeline>(controller, "playbackPipeline")
+                for (currentGeneration in listOf(8L, 7L)) {
+                    ReflectionHelpers.setField(pipeline, "playbackGeneration", currentGeneration)
+                    ReflectionHelpers.callInstanceMethod<Unit>(
+                        fixture.session,
+                        "handleFirstFrameAvailable",
+                        ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, 7L),
+                    )
+                    assertEquals(currentGeneration == 7L, fixture.state() is PlaybackStartState.Started)
+                }
             }
             Shadows.shadowOf(Looper.getMainLooper()).idle()
             assertEquals(1, notifications.count { it == "onContentAllowed" })
@@ -249,11 +255,13 @@ class PlaybackFilterAdmissionTest {
     private fun captureSessionNotifications(
         session: MaleicacidLiveSession,
         notifications: MutableList<String>,
+        onUnavailable: (Int) -> Unit = {},
     ) {
         val callbackType = Class.forName("android.media.tv.ITvInputSessionCallback")
         val callback =
-            java.lang.reflect.Proxy.newProxyInstance(callbackType.classLoader, arrayOf(callbackType)) { _, method, _ ->
+            java.lang.reflect.Proxy.newProxyInstance(callbackType.classLoader, arrayOf(callbackType)) { _, method, args ->
                 notifications += method.name
+                if (method.name == "onVideoUnavailable") onUnavailable(args[0] as Int)
                 null
             }
         ReflectionHelpers.setField(session, "mSessionCallback", callback)
@@ -277,6 +285,35 @@ class PlaybackFilterAdmissionTest {
             )
             assertEquals(allowed, field.get(session))
             assertEquals(PlaybackStartState.Idle, ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState"))
+        }
+    }
+
+    @Test
+    fun compressedInputLossReportsBufferingOnlyWithScheduledRetry() {
+        for (surfaceReady in listOf(false, true)) {
+            RetryFixture(surfaceReady = surfaceReady).use { fixture ->
+                val reasons = mutableListOf<Int>()
+                captureSessionNotifications(fixture.session, mutableListOf()) { reasons.add(it) }
+                fixture.executor.callControl(5_000L) {
+                    ReflectionHelpers.setField(fixture.session, "playbackState", PlaybackStartState.Started(fixture.signature, 7L))
+                    val loss =
+                        PlaybackPipeline.PlaybackUnavailable(
+                            PlaybackPipeline.PlaybackUnavailableReason.COMPRESSED_INPUT_LOSS,
+                            "full",
+                            7L,
+                        )
+                    ReflectionHelpers.callInstanceMethod<Unit>(
+                        fixture.session,
+                        "handlePlaybackUnavailable",
+                        ReflectionHelpers.ClassParameter.from(PlaybackPipeline.PlaybackUnavailable::class.java, loss),
+                    )
+                }
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                assertEquals(surfaceReady, fixture.hasReservation())
+                val expected =
+                    if (surfaceReady) TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING else TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN
+                assertEquals(listOf(expected), reasons)
+            }
         }
     }
 

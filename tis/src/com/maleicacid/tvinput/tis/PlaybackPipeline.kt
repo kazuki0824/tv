@@ -62,7 +62,8 @@ class PlaybackPipeline(
     private var surface: Surface? = null
     private var streamVolume: Float = 1.0f
 
-    @Volatile private var playbackGeneration: Long = 0L
+    @Volatile var playbackGeneration: Long = 0L
+        private set
     private var onVideoAvailable: (Long) -> Unit = {}
     private var onVideoUnavailable: (PlaybackUnavailable) -> Unit = {}
     private var onVideoFormatDiscovered: (Long, VideoFormatInfo) -> Unit = { _, _ -> }
@@ -746,7 +747,7 @@ class PlaybackPipeline(
         }
         val subtitle = selection.subtitle
         if (subtitle != null) {
-            val trackId = TunerSelectionPolicy.trackIdForSubtitle(subtitle, selection.subtitleLanguageId ?: 1)
+            val trackId = TunerSelectionPolicy.subtitleSourceId(subtitle)
             val openedSubtitle =
                 createAndStartCaptionPesFilter(tuner, subtitle, trackId, superimpose = false)
                     .onFailure { error -> diagnostics += "字幕PES filterの開始に失敗しました: ${error.message}" }
