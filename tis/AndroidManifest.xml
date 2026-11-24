@@ -37,6 +37,12 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
+        <service
+            android:name=".tis.PeriodicEpgRefreshJobService"
+            android:directBootAware="false"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <activity
             android:name=".tis.SetupActivity"
             android:exported="true"

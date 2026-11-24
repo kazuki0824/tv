@@ -379,7 +379,7 @@ class ChannelScanController(
         runMaintenanceScan(
             targetChannels = targetChannels,
             mode = PublishMode.BOOT_EPG_SYNC,
-            failurePrefix = "boot後EPG同期",
+            failurePrefix = "登録済みチャンネルのEPG同期",
         )
 
     fun startBackgroundChannelMaintenance(): ScanResult {
@@ -1361,6 +1361,7 @@ internal fun tunerPriorityHintUseCase(purpose: ScanPurpose): Int =
         ScanPurpose.SETUP_SCAN -> TvInputService.PRIORITY_HINT_USE_CASE_TYPE_SCAN
 
         ScanPurpose.BOOT_EPG_SYNC,
+        ScanPurpose.PERIODIC_EPG_REFRESH,
         ScanPurpose.BACKGROUND_MAINTENANCE,
         -> TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND
     }

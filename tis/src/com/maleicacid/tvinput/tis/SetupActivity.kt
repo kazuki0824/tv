@@ -149,6 +149,7 @@ class SetupActivity :
                 when (state.purpose) {
                     ScanPurpose.SETUP_SCAN -> "チャンネルスキャン中です。"
                     ScanPurpose.BOOT_EPG_SYNC -> "起動後EPG同期を実行中です。"
+                    ScanPurpose.PERIODIC_EPG_REFRESH -> "番組表を更新中です。"
                     ScanPurpose.BACKGROUND_MAINTENANCE -> "バックグラウンドチャンネル保守を実行中です。"
                 }
             }
@@ -176,6 +177,7 @@ class SetupActivity :
         when (purpose) {
             ScanPurpose.SETUP_SCAN -> "設定スキャン"
             ScanPurpose.BOOT_EPG_SYNC -> "起動後EPG同期"
+            ScanPurpose.PERIODIC_EPG_REFRESH -> "番組表更新"
             ScanPurpose.BACKGROUND_MAINTENANCE -> "バックグラウンドチャンネル保守"
         }
 

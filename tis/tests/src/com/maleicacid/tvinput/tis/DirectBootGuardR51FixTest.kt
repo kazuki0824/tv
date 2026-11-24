@@ -4,6 +4,7 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.Intent
+import android.media.tv.TvInputService
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Test
@@ -19,5 +20,36 @@ class DirectBootGuardR51FixTest {
         check(state.lastLockedBootReceivedAt == 1234L)
         check(state.bootReason == Intent.ACTION_LOCKED_BOOT_COMPLETED)
         check(state.lastSkippedReason == "LOCKED_BOOT_DEFERRED")
+    }
+
+    @Test
+    fun periodicEpgRefreshCanRunAlongsidePlaybackAtBackgroundPriority() {
+        val decision =
+            ChannelScanManager.bootEpgSyncStartDecision(
+                activeLiveSessionCount = 1,
+                scanRunning = false,
+                playbackPipelineRunning = true,
+                periodic = true,
+            )
+        check(decision.allowed)
+        check(
+            tunerPriorityHintUseCase(ScanPurpose.PERIODIC_EPG_REFRESH) ==
+                TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND,
+        )
+    }
+
+    @Test
+    fun periodicEpgRefreshYieldsToSessionCreationAndOtherScans() {
+        val duringCreation =
+            ChannelScanManager.bootEpgSyncStartDecision(
+                activeLiveSessionCount = 1,
+                scanRunning = false,
+                sessionCreationInProgress = true,
+                periodic = true,
+            )
+        check(!duringCreation.allowed)
+        check(!ChannelScanManager.bootEpgSyncStartDecision(1, true, periodic = true).allowed)
+        val preemption = ChannelScanManager.liveSessionPreemptDecision(true, ScanPurpose.PERIODIC_EPG_REFRESH)
+        check(preemption.shouldCancel && !preemption.deferBootEpgSync)
     }
 }
