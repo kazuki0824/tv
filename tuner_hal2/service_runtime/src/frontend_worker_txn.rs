@@ -362,7 +362,9 @@ impl FrontendWorkerReaperJob {
                 ),
                 FrontendWorkerReaperFailure::Failed(error) => error,
             };
-            if let Some(terminal_error) = terminal_error {
+            // 過去の継続試行で保存した受理失敗も、異常終端の最終診断へ合成する。
+            // 今回の受理失敗は retain_acceptance_failure() 済みなので二重合成しない。
+            if let Some(terminal_error) = job.acceptance_failure.take() {
                 error = compose_primary_cleanup_failure(
                     "frontend reaper completed outcome recording",
                     error,
