@@ -684,7 +684,6 @@ object ChannelScanManager {
         val liveBlocked = sessionCreationInProgress || (!periodic && activeLiveSessionCount > 0)
         return when {
             liveBlocked -> BootEpgSyncStartDecision(false, "LIVE_SESSION_STARTING_OR_ACTIVE")
-
             !periodic && playbackPipelineRunning -> BootEpgSyncStartDecision(false, "PLAYBACK_PIPELINE_RUNNING")
             scanRunning -> BootEpgSyncStartDecision(false, "SCAN_RUNNING")
             else -> BootEpgSyncStartDecision(true, null)
