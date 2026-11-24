@@ -7888,31 +7888,57 @@ mod scan_contract_tests {
                 }]),
                 ServiceBootOutcome::Ready,
             );
-            service.query().frontend_runtime_snapshot(frontend_id).unwrap().generation
+            service
+                .query()
+                .frontend_runtime_snapshot(frontend_id)
+                .unwrap()
+                .generation
         };
         let mut registry = FrontendWorkerRegistry::default();
         let (scan_started_tx, scan_started_rx) = mpsc::channel();
         let (scan_release_tx, scan_release_rx) = mpsc::channel();
-        registry.start(frontend_id, FrontendWorkerKind::Scan, generation, move |_ctx| {
-            scan_started_tx.send(()).unwrap();
-            let _ = scan_release_rx.recv_timeout(Duration::from_secs(4));
-            Ok(())
-        }).unwrap();
+        registry
+            .start(
+                frontend_id,
+                FrontendWorkerKind::Scan,
+                generation,
+                move |_ctx| {
+                    scan_started_tx.send(()).unwrap();
+                    let _ = scan_release_rx.recv_timeout(Duration::from_secs(4));
+                    Ok(())
+                },
+            )
+            .unwrap();
         let (tune_started_tx, tune_started_rx) = mpsc::channel();
         let (tune_release_tx, tune_release_rx) = mpsc::channel();
-        registry.start(frontend_id, FrontendWorkerKind::Tune, generation, move |_ctx| {
-            tune_started_tx.send(()).unwrap();
-            let _ = tune_release_rx.recv_timeout(Duration::from_secs(4));
-            Err(HalError::Unsupported("late worker terminal failure"))
-        }).unwrap();
-        scan_started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        tune_started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        registry
+            .start(
+                frontend_id,
+                FrontendWorkerKind::Tune,
+                generation,
+                move |_ctx| {
+                    tune_started_tx.send(()).unwrap();
+                    let _ = tune_release_rx.recv_timeout(Duration::from_secs(4));
+                    Err(HalError::Unsupported("late worker terminal failure"))
+                },
+            )
+            .unwrap();
+        scan_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        tune_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
 
         let scan = registry.request_stop_for_join(
-            frontend_id, FrontendWorkerKind::Scan, FrontendWorkerCancelReason::StopRequested,
+            frontend_id,
+            FrontendWorkerKind::Scan,
+            FrontendWorkerCancelReason::StopRequested,
         );
         let tune = registry.request_stop_for_join(
-            frontend_id, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested,
+            frontend_id,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
         );
         let (wait_started_tx, wait_started_rx) = mpsc::channel();
         let mut tickets = FrontendWorkerReaperTicketGroup::new(vec![
@@ -7921,47 +7947,77 @@ mod scan_contract_tests {
         ]);
         tickets.wait_started = Some(wait_started_tx);
 
-        let diagnostics = runtime.lock().unwrap().frontend_worker_cleanup_diagnostic_sink();
+        let diagnostics = runtime
+            .lock()
+            .unwrap()
+            .frontend_worker_cleanup_diagnostic_sink();
         let reaper = FrontendWorkerReaperHandle::start(
-            Arc::downgrade(&runtime), 2, Duration::from_millis(700), diagnostics.clone(),
-        ).unwrap();
+            Arc::downgrade(&runtime),
+            2,
+            Duration::from_millis(700),
+            diagnostics.clone(),
+        )
+        .unwrap();
         let (deadline_tx, deadline_rx) = mpsc::channel();
         let (completion_tx, completion_rx) = mpsc::channel();
-        reaper.enqueue(FrontendWorkerReaperJob {
-            keys: vec![
-                (frontend_id, FrontendWorkerKind::Scan),
-                (frontend_id, FrontendWorkerKind::Tune),
-            ],
-            continuation_kind: None,
-            tickets,
-            accepted_completed: 0,
-            acceptance_failure: None,
-            transferred_at: Instant::now(),
-            deadline_action: Some(Box::new(move |_, error| {
-                deadline_tx.send(error).unwrap();
-            })),
-            completion_action: Box::new(move |_, _, result| {
-                completion_tx.send(result).unwrap();
-            }),
-        }).unwrap();
+        reaper
+            .enqueue(FrontendWorkerReaperJob {
+                keys: vec![
+                    (frontend_id, FrontendWorkerKind::Scan),
+                    (frontend_id, FrontendWorkerKind::Tune),
+                ],
+                continuation_kind: None,
+                tickets,
+                accepted_completed: 0,
+                acceptance_failure: None,
+                transferred_at: Instant::now(),
+                deadline_action: Some(Box::new(move |_, error| {
+                    deadline_tx.send(error).unwrap();
+                })),
+                completion_action: Box::new(move |_, _, result| {
+                    completion_tx.send(result).unwrap();
+                }),
+            })
+            .unwrap();
 
         // 初回try_completeでは両方未終了。先頭Scan待機開始後に後続Tuneを終了させる。
-        wait_started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
         tune_release_tx.send(()).unwrap();
         // Scanはまだブロック中。初回期限の直前の再観測でTuneを受理する必要がある。
         deadline_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-        let terminal_count = || diagnostics.snapshot().unwrap().records().iter()
-            .filter(|record| {
-                record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerTerminal
-                    && record.frontend_id() == frontend_id
-            })
-            .count();
-        assert_eq!(terminal_count(), 1, "後続Tuneの終端が初回期限時に受理されていません");
+        let terminal_count = || {
+            diagnostics
+                .snapshot()
+                .unwrap()
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerTerminal
+                        && record.frontend_id() == frontend_id
+                })
+                .count()
+        };
+        assert_eq!(
+            terminal_count(),
+            1,
+            "後続Tuneの終端が初回期限時に受理されていません"
+        );
         assert!(reaper.has_pending_frontend(frontend_id).unwrap());
         scan_release_tx.send(()).unwrap();
-        assert!(completion_rx.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
-        reaper.wait_until_frontend_released(frontend_id, Duration::from_secs(2)).unwrap();
-        assert_eq!(terminal_count(), 1, "後続Tuneが継続試行で二重受理されています");
+        assert!(completion_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .is_ok());
+        reaper
+            .wait_until_frontend_released(frontend_id, Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(
+            terminal_count(),
+            1,
+            "後続Tuneが継続試行で二重受理されています"
+        );
     }
 
     #[test]
