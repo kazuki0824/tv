@@ -71,7 +71,9 @@ open class BootEpgSyncJobService : JobService() {
     @Suppress("ReturnCount")
     private fun startRefresh(run: RunContext): Boolean {
         if (!ProgramUpgradeCleanup.ensure(applicationContext) { success ->
-                if (success && !periodic) BootEpgSyncScheduler.scheduleIfEligible(applicationContext, "PROGRAM_CLEANUP_COMPLETED")
+                if (success && !periodic) {
+                    BootEpgSyncScheduler.scheduleIfEligible(applicationContext, "PROGRAM_CLEANUP_COMPLETED")
+                }
             }
         ) {
             deferBootWork("PROGRAM_UPGRADE_CLEANUP_PENDING")
