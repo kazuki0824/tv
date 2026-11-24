@@ -198,7 +198,7 @@ struct FrontendWorkerReaperTicketGroup {
     pending: Vec<(FrontendWorkerKind, FrontendWorkerStopTicket)>,
     completed: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
     #[cfg(test)]
-    deadline_repoll_hook: Option<Box<dyn FnOnce(&FrontendWorkerReaperTicketGroup) + Send>>,
+    before_wait_hook: Option<Box<dyn FnOnce(&FrontendWorkerReaperTicketGroup) + Send>>,
 }
 
 impl FrontendWorkerReaperTicketGroup {
@@ -208,7 +208,7 @@ impl FrontendWorkerReaperTicketGroup {
             pending: tickets,
             completed: Vec::with_capacity(capacity),
             #[cfg(test)]
-            deadline_repoll_hook: None,
+            before_wait_hook: None,
         }
     }
 
@@ -230,16 +230,12 @@ impl FrontendWorkerReaperTicketGroup {
         }
     }
 
-    /// 期限を宣言する前に、先頭の待機中に終了した後続ticketを再確認する。
-    fn repoll_at_deadline(mut self) -> Result<Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>, Self> {
+    fn wait_for_progress(&mut self, deadline: Option<Instant>) -> Result<Option<usize>, HalError> {
+        // 最初の非ブロッキング検査が済み、先頭の期限待機に入る直前の試験同期点。
         #[cfg(test)]
-        if let Some(hook) = self.deadline_repoll_hook.take() {
-            hook(&self);
+        if let Some(hook) = self.before_wait_hook.take() {
+            hook(self);
         }
-        self.try_complete()
-    }
-
-    fn wait_for_progress(&self, deadline: Option<Instant>) -> Result<Option<usize>, HalError> {
         for (index, (_, ticket)) in self.pending.iter().enumerate() {
             if ticket.wait_until_finished(deadline)? {
                 return Ok(Some(index));
@@ -282,7 +278,7 @@ impl FrontendWorkerReaperTicketGroup {
                     }
                 }
                 Ok(None) => {
-                    return match self.repoll_at_deadline() {
+                    return match self.try_complete() {
                         Ok(outcomes) => FrontendWorkerStopWaitOutcome::Completed(outcomes),
                         Err(tickets) => FrontendWorkerStopWaitOutcome::TimedOut(tickets),
                     };
@@ -474,7 +470,7 @@ impl FrontendWorkerReaperJob {
                 Ok(None) => {
                     // 先頭ticketの期限待機中に後続ticketが終了する場合がある。
                     // 期限を確定する直前に全未完を非ブロッキング再観測する。
-                    match self.tickets.repoll_at_deadline() {
+                    match self.tickets.try_complete() {
                         Ok(outcomes) => break outcomes,
                         Err(tickets) => self.tickets = tickets,
                     }
@@ -7624,7 +7620,7 @@ mod scan_contract_tests {
             pending: vec![(FrontendWorkerKind::Scan, scan_ticket)],
             completed: vec![(FrontendWorkerKind::Tune, outcome)],
             #[cfg(test)]
-            deadline_repoll_hook: None,
+            before_wait_hook: None,
         };
         let sink = runtime
             .lock()
