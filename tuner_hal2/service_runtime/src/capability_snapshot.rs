@@ -80,7 +80,8 @@ impl CapabilitySnapshot {
             pes_max_bytes_per_filter: MAX_PES_BUFFER_BYTES,
             // 固定PES予算はTsPes専用。AV payloadは実割当の成否で扱う。
             pes_runtime_budget_bytes: 4 * MIB,
-            playback_processing_budget_bytes: 64 * MIB,
+            // 実processing bufferは1 DVRにつき最大256 TSパケット分（256 × 188バイト）。実行時ledgerと同じ算定式を使う。
+            playback_processing_budget_bytes: 8 * required_playback_processing_bytes(usize::MAX),
             cleanup_reaper_capacity: 176,
             cleanup_retry_schedule_ms: [0, 10, 100, 1_000],
             cleanup_terminal_deadline_ms: 30_000,
@@ -185,7 +186,10 @@ impl CapabilitySnapshot {
             (
                 PlaybackDvr,
                 requested.num_playback,
-                object.with(FmqBytes, 4 * MIB).with(PlaybackBytes, 8 * MIB),
+                object.with(FmqBytes, 4 * MIB).with(
+                    PlaybackBytes,
+                    required_playback_processing_bytes(usize::MAX),
+                ),
                 Some((DemuxBase, 1)),
             ),
             (
@@ -876,6 +880,30 @@ mod tests {
             .reserve_playback_processing(snapshot, 7, DvrKind::Playback, 4096)
             .unwrap();
         ledger.release_dvr(7).unwrap();
+    }
+
+    #[test]
+    fn product_playback_selection_claim_matches_maximum_runtime_buffer() {
+        let bytes_per_dvr = required_playback_processing_bytes(usize::MAX);
+        let expected = bytes_per_dvr * 8;
+        let requested = CapabilitySnapshot::product_default();
+        assert_eq!(bytes_per_dvr, 48_128);
+        assert_eq!(requested.playback_processing_budget_bytes, expected);
+        let (selected, _) = CapabilitySnapshot::compose_for_frontends(&[]).unwrap();
+        assert_eq!(selected.num_playback, 8);
+        assert_eq!(selected.playback_processing_budget_bytes, expected);
+        let mut ledger = CapacityLedger::default();
+        for id in 1..=8 {
+            ledger.reserve_dvr(selected, id, 4 * MIB as i32).unwrap();
+            ledger
+                .reserve_playback_processing(selected, id, DvrKind::Playback, 4 * MIB as i32)
+                .unwrap();
+        }
+        assert_eq!(ledger.playback_processing_used, expected);
+        for id in 1..=8 {
+            ledger.release_dvr(id).unwrap();
+        }
+        assert_eq!(ledger.playback_processing_used, 0);
     }
 
     #[test]

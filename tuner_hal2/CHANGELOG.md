@@ -1,3 +1,9 @@
+# 2026-11-16 Playback DVRの能力選択と処理バッファ実確保量の照合（#232）
+
+- 能力選択のPlaybackBytesは1件8MiBの固定仮定をやめ、PlaybackConsumeTxnが実行時に予約するprocessing bufferの最大48,128 bytes/件とする。product-default最大8件の共有予算も同算式で385,024 bytesとし、FMQ本体の予算は別のFmqBytesで保持する。
+- 実行時のreserve_playback_processing()はconfigure済みFMQ容量に従う既存必要量計算・rollback・releaseを維持する。容量claim自体は実処理バッファ用であり、他の動的メモリ全量を上限化したと主張しない。
+- 最大8 Playback DVRについて能力選択・実予約・解放を検査する回帰試験を追加する。Android Soong・実機DVRのメモリ／同時能力確認は未実施。
+
 # 2026-11-11 テスト専用宣言の公開範囲を縮小
 
 - テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。

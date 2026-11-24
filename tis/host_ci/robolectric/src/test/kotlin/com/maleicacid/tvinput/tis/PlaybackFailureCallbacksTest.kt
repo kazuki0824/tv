@@ -298,7 +298,10 @@ class PlaybackFailureCallbacksTest {
                     check(fixture.failures.single().generation == 7L)
                     check(ecm.closes == 1 && emm.closes == 1)
                     val attempts = if (initializing) 2 else 1
-                    check(faults.sessionCloses == 0 && faults.pluginCloses == attempts)
+                    check(faults.sessionCloses == 0 && faults.pluginCloses == attempts) {
+                        "initializing=$initializing sessionCloses=${faults.sessionCloses} " +
+                            "pluginCloses=${faults.pluginCloses} expectedPluginCloses=$attempts"
+                    }
                     val expectedError =
                         if (initializing) {
                             CasController.ErrorCode.PLUGIN_UNAVAILABLE

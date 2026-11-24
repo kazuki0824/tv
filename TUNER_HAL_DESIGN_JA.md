@@ -96,6 +96,8 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 
 product-default の能力閉包は、16件の Section Filter を公開したまま既存の非Section能力を縮退させないことを要件とする。そのため `CapabilitySnapshot` の共有資源候補は Section tracker 16件、FMQ runtime budget **288 MiB**、cleanup/reaper の基礎capacity **176** を一体で確保する。8 frontend を公開する構成では TS=32、SECTION=16、PCR=4、PES=4、AUDIO=1、VIDEO=1、Playback DVR=8、Record DVR=6 を同時に閉じる。frontend が少ない構成では解放された共有枠に応じて Record DVR は6を超えてよく、frontend 0件では Record DVR=8 を許容する。SECTION能力の拡張だけを理由に、同じfrontend構成で従来確保できていた非Section能力を追加で縮退させない。
 
+Playback DVRの能力選択における`PlaybackBytes` claimは、実行時`PlaybackConsumeTxn`のprocessing bufferと同じ`min(FMQ容量, 188×256)` bytesを対象とする。能力選択ではFMQ容量未確定のため上限48,128 bytes/Playback DVRを使用し、product-default最大8件に対する共有予算は385,024 bytesとする。実行時の`CapacityLedger.reserve_playback_processing()`はconfigure後の実FMQ容量に応じた必要量だけを予約する。旧1件8MiBの固定課金は実際のprocessing buffer割当に対応しないため使用せず、DVR FMQ本体の予算は従来どおり別の`FmqBytes`で扱う。
+
 Section Filter の使用数が公開 `numSectionFilter` に達した後の追加 `openFilter(TYPE_TS, SUBTYPE_SECTION, ...)` は `UNAVAILABLE` とし、既存filterを破壊せず過剰予約しない。TIS の dynamic filter preflight / retry は `tis/DESIGN_JA.md`、B1 の ECM-only 契約は `開発規則.md` を正とし、本書では再定義しない。
 
 #### `DemuxCapabilities.linkCaps` / `numBytesInSectionFilter` 固定契約
