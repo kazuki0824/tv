@@ -1574,11 +1574,8 @@ mod tests {
                 api: AidlApi::TunerOpenDemux,
             })
             .unwrap();
-        let demux = AidlObjectHandle::new(
-            AidlObjectKind::Demux,
-            entry.object_id(),
-            entry.generation(),
-        );
+        let demux =
+            AidlObjectHandle::new(AidlObjectKind::Demux, entry.object_id(), entry.generation());
         let first = open_dvr_for_test(&runtime, demux, DvrOpenKind::Playback);
         let second = open_dvr_for_test(&runtime, demux, DvrOpenKind::Record);
         let spawn = |handle: AidlObjectHandle| {
