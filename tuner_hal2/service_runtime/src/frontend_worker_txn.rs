@@ -6287,6 +6287,7 @@ mod scan_contract_tests {
         stop().unwrap();
         cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let reaper = ensure_frontend_worker_reaper(&runtime).unwrap();
+        let mut observed_deadline = false;
         for _ in 0..100 {
             if runtime
                 .lock()
@@ -6297,13 +6298,16 @@ mod scan_contract_tests {
                 .records()
                 .iter()
                 .any(|record| {
-                    record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerReaperDeadline
+                    record.frontend_id() == frontend_id
+                        && record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerReaperDeadline
                 })
             {
+                observed_deadline = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+        assert!(observed_deadline, "worker解放前に期限処理が実行されていません");
         assert!(reaper.has_pending_frontend(frontend_id).unwrap());
         assert_eq!(
             runtime
