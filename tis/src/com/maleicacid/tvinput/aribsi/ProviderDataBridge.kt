@@ -150,9 +150,23 @@ object ProviderDataBridge {
             eventId,
         )
 
-    fun buildProgramProviderData(program: ProgramRecord): ProviderDataResult {
+    fun buildProgramProviderData(
+        program: ProgramRecord,
+        existing: ByteArray? = null,
+        updateOnlyExtended: Boolean = false,
+    ): ProviderDataResult {
         val request =
-            runCatching { programRequest(program) }.getOrElse { error ->
+            runCatching {
+                val request = programRequest(program)
+                if (existing == null) {
+                    request
+                } else {
+                    JSONObject(request)
+                        .put("existing", JSONObject(existing.toString(Charsets.UTF_8)))
+                        .put("updateOnlyExtended", updateOnlyExtended)
+                        .toString()
+                }
+            }.getOrElse { error ->
                 return Failure("PROGRAM_REQUEST_INVALID", error.message ?: "Invalid program request")
             }
         return parseResult(native.buildProgramProviderData(request))

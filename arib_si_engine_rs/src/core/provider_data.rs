@@ -519,6 +519,9 @@ struct ProgramRequestDiagnosticsV1 {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProgramProviderDataRequestV1 {
+    existing: Option<ProgramProviderDataV1>,
+    #[serde(default)]
+    update_only_extended: bool,
     schema: String,
     schema_version: i64,
     program_key: ProgramKeyV1,
@@ -648,13 +651,26 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
             )
         }
     };
-    let Some(data) = program_data_from_request(request) else {
+    let mut request = request;
+    let existing = request.existing.take();
+    let update_only_extended = request.update_only_extended;
+    let Some(mut data) = program_data_from_request(request) else {
         return failure_result(
             "PROGRAM_REQUEST_INVALID",
             "Program provider-data requestがschema v1の不変条件を満たしません".to_string(),
             PROVIDER_SCHEMA_VERSION,
         );
     };
+    if let Some(mut previous) = existing {
+        if update_only_extended {
+            previous.extended_texts = data.extended_texts;
+            previous.extended_items = data.extended_items;
+            data = previous;
+        } else if data.extended_texts.is_empty() && data.extended_items.is_empty() {
+            data.extended_texts = previous.extended_texts;
+            data.extended_items = previous.extended_items;
+        }
+    }
     finalize_program(data)
 }
 
@@ -767,10 +783,10 @@ fn program_data_from_request(
             }]
         }
     };
-    // Other-TS schedule may arrive before any PMT facts for that service.
+    // Other-TS EIT may arrive before any PMT facts for that service.
     let cas_facts = match request.cas_facts_canonical_json.as_deref() {
         Some(raw) => serde_json::from_str(raw).ok()?,
-        None if (0x50..=0x6f).contains(&request.source.table_id) => {
+        None if (0x4f..=0x6f).contains(&request.source.table_id) => {
             CasFactsV1::from(&crate::service_discovery::ServiceSemanticFacts::default())
         }
         None => return None,

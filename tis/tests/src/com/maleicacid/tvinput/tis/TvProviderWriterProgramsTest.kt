@@ -116,6 +116,18 @@ class TvProviderWriterProgramsTest {
         val replay = writer.upsertProgramsForWindows(listOf(schedule), emptyList())
         check(replay.failures.isEmpty() && replay.updated == 0 && replay.inserted == 0)
         check(store.programs.values.any { it.getAsString(TvContract.Programs.COLUMN_TITLE) == "first" })
+        val detail =
+            schedule.copy(
+                title = "",
+                description = "出演者の詳細",
+                descriptors = ProgramDescriptors(extendedTexts = listOf(AribExtendedEventText("jpn", "出演者の詳細"))),
+                source = schedule.source.copy(tableId = 0x68),
+            )
+        check(writer.upsertProgramsForWindows(listOf(detail), emptyList()).updated == 1)
+        check(writer.upsertProgramsForWindows(listOf(first.copy(title = "改題")), emptyList()).updated == 1)
+        val row = store.programs.values.single { it.getAsString(TvContract.Programs.COLUMN_TITLE) == "改題" }
+        check(row.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "出演者の詳細")
+        check(row.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).utf8Contains("出演者の詳細"))
     }
 
     @Test
@@ -1051,7 +1063,7 @@ class TvProviderWriterProgramsTest {
                         values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
                     ) ?: return@forEach
                 out.getOrPut(key.key) { mutableListOf() } +=
-                    TvProviderWriter.ExistingProgramIndexEntry(id, start, end, sourceTableId = key.tableId)
+                    TvProviderWriter.ExistingProgramIndexEntry(id, start, end, values, key.tableId)
             }
             return Result.success(out)
         }

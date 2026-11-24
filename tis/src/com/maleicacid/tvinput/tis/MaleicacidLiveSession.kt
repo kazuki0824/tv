@@ -1682,7 +1682,8 @@ class MaleicacidLiveSession(
                 profile = transaction.discoveryProfile,
                 events =
                     transaction.events.filter {
-                        it.serviceKey == key || EpgSectionPolicy.isSchedule(it.source.tableId)
+                        it.serviceKey == key || it.source.tableId == EpgSectionPolicy.PF_OTHER ||
+                            EpgSectionPolicy.isSchedule(it.source.tableId)
                     },
                 semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
                 malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,

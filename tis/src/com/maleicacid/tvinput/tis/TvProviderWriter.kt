@@ -439,7 +439,7 @@ class TvProviderWriter private constructor(
                     val values: ContentValues,
                     val existingId: Long?,
                 )
-                val pfRows = existingPrograms.values.flatten().filter { it.sourceTableId == EIT_PF_ACTUAL }
+                val pfRows = existingPrograms.values.flatten().filter { it.sourceTableId in EIT_PF_ACTUAL..EpgSectionPolicy.PF_OTHER }
                 val publicationKeys = linkedSetOf<String>()
                 val writes =
                     sortedPrograms.mapNotNull { (program, values) ->
@@ -449,11 +449,6 @@ class TvProviderWriter private constructor(
                             return@mapNotNull null
                         }
                         val programEnd = checkNotNull(checkedProgramEndTimeMillis(program))
-                        if (EpgSectionPolicy.isSchedule(program.source.tableId) &&
-                            pfRows.any { it.startTimeMillis < programEnd && program.startTimeMillis < it.endTimeMillis }
-                        ) {
-                            return@mapNotNull null
-                        }
                         val guardStart =
                             runCatching { Math.subtractExact(program.startTimeMillis, EVENT_ID_REUSE_GUARD_MS) }
                                 .getOrDefault(Long.MIN_VALUE)
@@ -466,11 +461,47 @@ class TvProviderWriter private constructor(
                                 .filter { entry ->
                                     entry.endTimeMillis > guardStart && entry.startTimeMillis < guardEnd
                                 }.maxByOrNull { it.programId }
+                        val sameOccurrence = existingEntry?.takeIf { it.startTimeMillis == program.startTimeMillis }
+                        val blocked =
+                            pfRows.any {
+                                it.sourceTableId < program.source.tableId && it.startTimeMillis < programEnd &&
+                                    program.startTimeMillis < it.endTimeMillis
+                            }
+                        val hasExtended = program.descriptors.extendedTexts.isNotEmpty() || program.descriptors.extendedItems.isNotEmpty()
+                        val detailOnly = blocked || EpgSectionPolicy.isExtendedSchedule(program.source.tableId)
+                        if (blocked && sameOccurrence == null) return@mapNotNull null
+                        if (detailOnly && existingEntry != null && sameOccurrence == null) return@mapNotNull null
+                        if (detailOnly && !hasExtended) return@mapNotNull null
+                        val oldValues = sameOccurrence?.values
+                        val oldData = oldValues?.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
+                        val retainDetail =
+                            !hasExtended && oldData != null &&
+                                org.json.JSONObject(oldData.toString(Charsets.UTF_8)).let { stored ->
+                                    listOf("extendedTexts", "extendedItems").any { (stored.optJSONArray(it)?.length() ?: 0) > 0 }
+                                }
+                        val writeValues =
+                            if (oldData != null && (detailOnly || retainDetail)) {
+                                val merged = ProviderDataBridge.buildProgramProviderData(program, oldData, detailOnly)
+                                if (merged !is ProviderDataBridge.Success) {
+                                    failures += Diagnostic(serviceKey, "program-provider-data", merged.toString())
+                                    return@mapNotNull null
+                                }
+                                (if (detailOnly) ContentValues() else ContentValues(values)).apply {
+                                    put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, merged.bytes)
+                                    if (detailOnly) {
+                                        put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, program.description)
+                                    } else {
+                                        remove(TvContract.Programs.COLUMN_LONG_DESCRIPTION)
+                                    }
+                                }
+                            } else {
+                                values
+                            }
                         // Provider通知後も実際の保存値が同じなら再書込みせず、自己通知の連鎖を止める。
-                        if (skipUnchangedRows && existingEntry?.values?.let { programValuesMatch(values, it) } == true) {
+                        if (skipUnchangedRows && existingEntry?.values?.let { programValuesMatch(writeValues, it) } == true) {
                             return@mapNotNull null
                         }
-                        PendingWrite(values, existingEntry?.programId)
+                        PendingWrite(writeValues, existingEntry?.programId)
                     }
                 if (failures.size == failureCountBeforeService) {
                     val batchStartedAtNs = System.nanoTime()

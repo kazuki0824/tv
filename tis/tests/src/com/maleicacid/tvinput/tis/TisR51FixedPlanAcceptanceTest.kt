@@ -1943,6 +1943,24 @@ class TisR51FixedPlanAcceptanceTest {
         val other = future.copy(source = future.source.copy(tableId = 0x60))
         val otherOnly = policy.project(SiDiscoveryProfile.BS, 2, listOf(other), listOf(partial.copy(tableId = 0x60)))
         check(otherOnly.events == listOf(other) && otherOnly.windows.isEmpty())
+        val otherPf = pf.copy(source = pf.source.copy(tableId = 0x4f))
+        val detailSource = duplicate.source.copy(tableId = 0x68)
+        val extended = duplicate.copy(title = "", extendedDescription = "詳細", source = detailSource)
+        val supplemental =
+            policy.project(
+                SiDiscoveryProfile.BS,
+                3,
+                listOf(extended, otherPf),
+                listOf(partial.copy(tableId = 0x68), partial.copy(tableId = 0x4f)),
+            )
+        check(supplemental.events.single() == otherPf.copy(extendedDescription = "詳細"))
+        check(supplemental.windows.isEmpty() && supplemental.authoritativeProgramKeysByService.isEmpty())
+        val otherTables = listOf(instance.copy(tableId = 0x4f), instance.copy(tableId = 0x60))
+        val coverage = com.maleicacid.tvinput.aribsi.EpgSectionPolicy
+        check(coverage.coversOtherTransport(otherTables))
+        check(!coverage.coversOtherTransport(otherTables.take(1)))
+        check(!coverage.coversOtherTransport(otherTables.map { it.copy(complete = false) }))
+        check(!coverage.coversOtherTransport(otherTables.map { it.copy(safeSections = emptyList()) }))
     }
 
     @Test fun epgDeletionWindowContainsOnlyPreviousAndCurrentCompletedVersions() {

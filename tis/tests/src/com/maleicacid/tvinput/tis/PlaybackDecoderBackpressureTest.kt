@@ -14,7 +14,7 @@ class PlaybackDecoderBackpressureTest {
         check(!policy.accepts(2, 0x4e, 2))
         check(policy.accepts(0, 0x50, 0))
         check(policy.accepts(1, 0x60, 8))
-        check(!policy.accepts(0, 0x4f, 0))
+        check(policy.accepts(0, 0x4f, 0))
         check(!policy.accepts(0, 0x70, 0))
     }
 

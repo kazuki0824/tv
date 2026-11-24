@@ -9,6 +9,7 @@ import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.BroadcastSystem
+import com.maleicacid.tvinput.aribsi.EpgSectionPolicy
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SectionTransportLossSnapshot
@@ -120,6 +121,7 @@ class ChannelScanController(
         val failures: List<TvProviderWriter.Diagnostic> = emptyList(),
         val hasCommittedProgramTarget: Boolean = false,
         val committedServiceKeys: Set<ServiceKey> = emptySet(),
+        val coveredOtherServices: Set<ServiceKey> = emptySet(),
         val insertedChannelIds: Set<Long> = emptySet(),
         val initialBrowsablePendingChannelIds: Set<Long> = emptySet(),
     ) {
@@ -413,6 +415,8 @@ class ChannelScanController(
                 .mapNotNull { channel ->
                     scanCandidateFromChannel(channel)?.let { it to channel.serviceKey }
                 }.groupBy { it.first.tuneKey }
+        val coveredOtherServices = mutableSetOf<ServiceKey>()
+        var scannedCandidates = 0
         val candidates = targetsByTune.values.map { it.first().first }
         terminalCancelObserved = cancelled.get()
         resetResourceLostState()
@@ -423,6 +427,13 @@ class ChannelScanController(
         var successfulCandidates = 0
         for (candidate in candidates) {
             if (cancelled.get() || terminalResourceLostObserved) break
+            val requiredServiceKeys = targetsByTune.getValue(candidate.tuneKey).mapTo(linkedSetOf()) { it.second }
+            if (candidate.kind in setOf(ScanCandidateKind.ISDB_S_BS, ScanCandidateKind.ISDB_S_110CS) &&
+                coveredOtherServices.containsAll(requiredServiceKeys)
+            ) {
+                continue
+            }
+            scannedCandidates++
             currentCandidate = candidate
             var lossBaseline: SectionTransportLossSnapshot? = null
             // 初期Filter起動と失敗選局も観測する。旧世代cleanupを含む作業区間であり世代専用ではない。
@@ -442,7 +453,6 @@ class ChannelScanController(
                 val candidateLossBaseline = checkNotNull(lossBaseline) { "成功選局でSection解析境界を通過していません" }
                 activateScanGeneration(tune.generation)
                 try {
-                    val requiredServiceKeys = targetsByTune.getValue(candidate.tuneKey).mapTo(linkedSetOf()) { it.second }
                     val collection =
                         collectSiForCandidate(
                             candidate,
@@ -472,6 +482,9 @@ class ChannelScanController(
                         diagnostics += resourceLostDiagnostic(candidate, tune.generation)
                         break
                     }
+                    if (candidate.kind == ScanCandidateKind.ISDB_S_BS || candidate.kind == ScanCandidateKind.ISDB_S_110CS) {
+                        coveredOtherServices += publishResult.coveredOtherServices
+                    }
                     committedServiceKeys += publishResult.committedServiceKeys
                     val candidateSuccessfullyPublished =
                         collection.outcome == SiCollectionOutcome.COMPLETE &&
@@ -497,7 +510,7 @@ class ChannelScanController(
         return scanGenerationFence.finishScan {
             terminalCancelObserved = terminalCancelObserved || cancelled.get()
             ScanResult(
-                candidates.size,
+                scannedCandidates,
                 updated,
                 diagnostics,
                 successfulCandidates = successfulCandidates,
@@ -540,18 +553,7 @@ class ChannelScanController(
         if (mode == PublishMode.LIVE_TUNE_REFRESH || mode == PublishMode.BOOT_EPG_SYNC ||
             mode == PublishMode.BACKGROUND_CHANNEL_MAINTENANCE
         ) {
-            val result = publishProgramsForRegisteredServices(mode, allowedServiceKeys)
-            Log.d(
-                LogTags.TIS,
-                "$mode では新規 channel row を追加しません changed=${result.changed} " +
-                    "skippedNoChannel=${result.skippedNoChannel} skippedUnchanged=${result.skippedUnchanged}",
-            )
-            return PublishSnapshotResult(
-                changed = result.changed,
-                failures = result.failures,
-                hasCommittedProgramTarget = result.hasCommittedTarget,
-                committedServiceKeys = result.committedServiceKeys,
-            )
+            return publishProgramsForRegisteredServices(mode, allowedServiceKeys)
         }
         val candidate = currentCandidate ?: return PublishSnapshotResult(0)
         val transaction = registrationSnapshot ?: engine.serviceRegistrationSnapshot()
@@ -654,7 +656,7 @@ class ChannelScanController(
     private fun publishProgramsForRegisteredServices(
         mode: PublishMode,
         allowedServiceKeys: Set<ServiceKey>?,
-    ): ProgramPublishCoordinator.ProgramPublishResult {
+    ): PublishSnapshotResult {
         val transaction = engine.takeProgramPublishSnapshot()
         val allPrograms =
             EventModelMapper().toProgramRecords(
@@ -689,7 +691,19 @@ class ChannelScanController(
             )
         if (result.skippedNoChannel > 0) Log.d(LogTags.TIS, "$mode で未登録channelのeventをskipしました skipped=${result.skippedNoChannel}")
         if (result.failures.isNotEmpty()) Log.w(LogTags.TIS, "TvProvider program 登録失敗=${result.failures}")
-        return result
+        val otherTables = transaction.eitInstances.groupBy { it.serviceKey }
+        val otherPfKeys = allPrograms.filter { it.source.tableId == EpgSectionPolicy.PF_OTHER }.mapTo(mutableSetOf()) { it.serviceKey }
+        val covered =
+            result.committedServiceKeys.intersect(otherPfKeys).filterTo(mutableSetOf()) {
+                EpgSectionPolicy.coversOtherTransport(otherTables[it].orEmpty())
+            }
+        return PublishSnapshotResult(
+            result.changed,
+            result.failures,
+            result.hasCommittedTarget,
+            result.committedServiceKeys,
+            covered,
+        )
     }
 
     private fun expectedSmdBroadcastSystem(candidate: ScanCandidate): BroadcastSystem =

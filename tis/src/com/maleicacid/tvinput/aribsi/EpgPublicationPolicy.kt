@@ -60,21 +60,62 @@ internal class EpgPublicationPolicy {
                     )
             }
         }
-        val occupied = presentFollowing.mapTo(hashSetOf()) { it.serviceKey to it.eventId }
-        val schedule =
-            selected
-                .filter { event ->
-                    EpgSectionPolicy.isSchedule(event.source.tableId) && event.title.isNotBlank() &&
-                        isProgramRow(profile, event)
-                }.sortedBy { it.source.tableId }
-                .filter { occupied.add(it.serviceKey to it.eventId) }
-                .filter { event ->
-                    byService[event.serviceKey].orEmpty().none { pf ->
-                        pf.startTimeMillis < event.startTimeMillis + event.durationMillis &&
-                            event.startTimeMillis < pf.startTimeMillis + pf.durationMillis
-                    }
+        val supplemental = supplementalEvents(profile, selected, presentFollowing)
+        return Publication(mergeExtended(presentFollowing + supplemental, selected), windows, authoritative)
+    }
+
+    private fun supplementalEvents(
+        profile: Int,
+        selected: List<AribEvent>,
+        actual: List<AribEvent>,
+    ): List<AribEvent> {
+        val occupied = actual.mapTo(hashSetOf()) { it.serviceKey to it.eventId }
+        val pfByService = actual.groupBy { it.serviceKey }.mapValues { it.value.toMutableList() }.toMutableMap()
+        val candidates =
+            selected.filter {
+                it.source.tableId != EIT_PRESENT_FOLLOWING_ACTUAL_TABLE_ID && isProgramRow(profile, it) &&
+                    (it.title.isNotBlank() || hasExtended(it))
+            }
+        val priority = compareBy<AribEvent> { EpgSectionPolicy.isExtendedSchedule(it.source.tableId) }
+        val sorted = candidates.sortedWith(priority.thenBy { it.source.tableId })
+        return sorted.filter { event ->
+            val overlaps =
+                pfByService[event.serviceKey].orEmpty().any { pf ->
+                    pf.startTimeMillis < event.startTimeMillis + event.durationMillis &&
+                        event.startTimeMillis < pf.startTimeMillis + pf.durationMillis
                 }
-        return Publication(presentFollowing + schedule, windows, authoritative)
+            val accept = !overlaps && occupied.add(event.serviceKey to event.eventId)
+            if (accept && event.source.tableId == EpgSectionPolicy.PF_OTHER) {
+                pfByService.getOrPut(event.serviceKey) { mutableListOf() }.add(event)
+            }
+            accept
+        }
+    }
+
+    private fun mergeExtended(
+        basics: List<AribEvent>,
+        selected: List<AribEvent>,
+    ): List<AribEvent> {
+        val details =
+            selected
+                .filter(::hasExtended)
+                .sortedBy { EpgSectionPolicy.isExtendedSchedule(it.source.tableId) }
+                .associateBy { Triple(it.serviceKey, it.eventId, it.startTimeMillis) }
+        return basics.map { basic ->
+            val detail = details[Triple(basic.serviceKey, basic.eventId, basic.startTimeMillis)]
+            if (detail == null || detail === basic) {
+                basic
+            } else {
+                basic.copy(
+                    extendedDescription = detail.extendedDescription,
+                    descriptors =
+                        basic.descriptors.copy(
+                            extendedItems = detail.descriptors.extendedItems,
+                            extendedTexts = detail.descriptors.extendedTexts,
+                        ),
+                )
+            }
+        }
     }
 
     private fun safeEvents(
@@ -126,6 +167,10 @@ internal class EpgPublicationPolicy {
 
     companion object {
         private const val EIT_PRESENT_FOLLOWING_ACTUAL_TABLE_ID = 0x4e
+
+        private fun hasExtended(event: AribEvent): Boolean =
+            event.descriptors.extendedItems.isNotEmpty() || event.descriptors.extendedTexts.isNotEmpty() ||
+                event.extendedDescription.isNotBlank()
 
         private fun isActualPresentFollowing(instance: EitInstanceState): Boolean =
             instance.tableId == EIT_PRESENT_FOLLOWING_ACTUAL_TABLE_ID && instance.currentNextIndicator
