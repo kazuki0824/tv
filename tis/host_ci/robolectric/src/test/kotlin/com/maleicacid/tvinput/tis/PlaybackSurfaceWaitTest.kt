@@ -34,7 +34,7 @@ class PlaybackSurfaceWaitTest {
                     .get(session) as TunerController
             val caption = service.streams.first { it.isCaption }
 
-            @Suppress("UNCHECKED_CAST")
+            @Suppress("UNCHECKED_CAST", "MaxLineLength")
             val languages =
                 TunerController::class.java
                     .getDeclaredField("captionLanguagesByPid")
