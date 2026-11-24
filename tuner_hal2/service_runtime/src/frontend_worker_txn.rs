@@ -6170,8 +6170,8 @@ mod scan_contract_tests {
 
     #[test]
     fn product_stop_tune_recovers_after_deadline_without_second_client_request() {
-        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall, AidlObjectKind};
         use crate::object_method_use_case::ObjectMethodUseCase;
+        use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall, AidlObjectKind};
         let frontend_id = 1_000_013;
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         let (object_id, object_generation, started_rx, cancelled_rx, release_tx) = {
@@ -6202,13 +6202,21 @@ mod scan_contract_tests {
                 ServiceBootOutcome::Ready,
             );
             service.set_worker_reaper_deadline_for_test(20);
-            let object = service.root_open_txn()
-                .open_frontend_root_object_for_id(frontend_id, AidlMethodCall::PublicApi {
-                    object: AidlObjectKind::Tuner,
-                    api: AidlApi::TunerOpenFrontendById,
-                })
+            let object = service
+                .root_open_txn()
+                .open_frontend_root_object_for_id(
+                    frontend_id,
+                    AidlMethodCall::PublicApi {
+                        object: AidlObjectKind::Tuner,
+                        api: AidlApi::TunerOpenFrontendById,
+                    },
+                )
                 .unwrap();
-            let generation = service.query().frontend_runtime_snapshot(frontend_id).unwrap().generation;
+            let generation = service
+                .query()
+                .frontend_runtime_snapshot(frontend_id)
+                .unwrap()
+                .generation;
             let plan = FrontendBackendTunePlan::new(
                 frontend_id,
                 generation,
@@ -6226,12 +6234,15 @@ mod scan_contract_tests {
                     partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
                 },
             );
-            let ticket = service.frontend_txn()
-                .prepare_backend_submit(FrontendWorkerKind::Tune, plan, None).unwrap();
+            let ticket = service
+                .frontend_txn()
+                .prepare_backend_submit(FrontendWorkerKind::Tune, plan, None)
+                .unwrap();
             let (started_tx, started_rx) = mpsc::channel();
             let (cancelled_tx, cancelled_rx) = mpsc::channel();
             let (release_tx, release_rx) = mpsc::channel();
-            service.frontend_txn()
+            service
+                .frontend_txn()
                 .start_worker_with_prepared_submit(ticket, move |ctx, ticket| {
                     assert_eq!(ticket.complete(), FrontendWorkerStopOutcome::NotRunning);
                     started_tx.send(()).unwrap();
@@ -6243,31 +6254,49 @@ mod scan_contract_tests {
                     Ok(())
                 })
                 .unwrap();
-            (object.object_id(), object.generation(), started_rx, cancelled_rx, release_tx)
+            (
+                object.object_id(),
+                object.generation(),
+                started_rx,
+                cancelled_rx,
+                release_tx,
+            )
         };
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
 
-        let stop = || ObjectMethodUseCase::execute_shared_after_live(
-            &runtime,
-            object_id,
-            object_generation,
-            AidlObjectKind::Frontend,
-            || Ok::<_, HalError>((AidlMethodCall::FrontendStopTune, ())),
-            |shared, token, ()| FrontendTuneScanTxn::stop_tune(
-                shared,
+        let stop = || {
+            ObjectMethodUseCase::execute_shared_after_live(
+                &runtime,
                 object_id,
                 object_generation,
-                FrontendWorkerCancelReason::SupersededByNewRequest,
-                token,
-            ),
-        );
+                AidlObjectKind::Frontend,
+                || Ok::<_, HalError>((AidlMethodCall::FrontendStopTune, ())),
+                |shared, token, ()| {
+                    FrontendTuneScanTxn::stop_tune(
+                        shared,
+                        object_id,
+                        object_generation,
+                        FrontendWorkerCancelReason::SupersededByNewRequest,
+                        token,
+                    )
+                },
+            )
+        };
         stop().unwrap();
         cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let reaper = ensure_frontend_worker_reaper(&runtime).unwrap();
         for _ in 0..100 {
-            if runtime.lock().unwrap().frontend_worker_cleanup_diagnostic_sink()
-                .snapshot().unwrap().records().iter()
-                .any(|record| record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerReaperDeadline)
+            if runtime
+                .lock()
+                .unwrap()
+                .frontend_worker_cleanup_diagnostic_sink()
+                .snapshot()
+                .unwrap()
+                .records()
+                .iter()
+                .any(|record| {
+                    record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerReaperDeadline
+                })
             {
                 break;
             }
@@ -6275,15 +6304,29 @@ mod scan_contract_tests {
         }
         assert!(reaper.has_pending_frontend(frontend_id).unwrap());
         assert_eq!(
-            runtime.lock().unwrap().object_table().entry(object_id).unwrap().lifecycle,
+            runtime
+                .lock()
+                .unwrap()
+                .object_table()
+                .entry(object_id)
+                .unwrap()
+                .lifecycle,
             crate::RuntimeObjectLifecycle::Live,
             "fence済みの停止期限はAIDL objectを永久隔離してはならない"
         );
 
         release_tx.send(()).unwrap();
-        reaper.wait_until_frontend_released(frontend_id, Duration::from_secs(2)).unwrap();
+        reaper
+            .wait_until_frontend_released(frontend_id, Duration::from_secs(2))
+            .unwrap();
         assert_eq!(
-            runtime.lock().unwrap().object_table().entry(object_id).unwrap().lifecycle,
+            runtime
+                .lock()
+                .unwrap()
+                .object_table()
+                .entry(object_id)
+                .unwrap()
+                .lifecycle,
             crate::RuntimeObjectLifecycle::Live,
         );
         // 同じ公開Frontend objectの正規stop入口が再び受付可能になる。
