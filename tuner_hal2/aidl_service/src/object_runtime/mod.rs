@@ -1051,6 +1051,7 @@ fn finish_object_close_plan(
 mod drop_leak;
 pub(crate) use drop_leak::{
     drop_leak_object, drop_leak_object_from_drop, quarantine_drop_leak_object,
+    DropLeakQuarantineOutcome,
 };
 
 pub fn close_object_after_close_preflight(

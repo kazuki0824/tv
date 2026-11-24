@@ -13,14 +13,15 @@ use maleicacid_tuner_hal2_common::{
 };
 use maleicacid_tuner_hal2_demux::DvrStatusEvent;
 use maleicacid_tuner_hal2_service_runtime::{
-    join_worker_classified, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
-    CapabilitySnapshot, ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
-    DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
-    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerFailureClassifier,
-    WorkerRuntime, WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction,
-    WorkerRuntimeSupervisorActiveEntry, WorkerRuntimeSupervisorReapingEntry,
-    WorkerRuntimeSupervisorStartDisposition, WorkerRuntimeSupervisorStartOperation,
-    WorkerRuntimeSupervisorStopDisposition, WorkerTerminalResult,
+    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, CapabilitySnapshot,
+    ClassifiedWorkerTerminalResult, DvrNotifierStart, DvrNotifierWorker,
+    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationFailureKind,
+    DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
+    DvrStatusPollSnapshot, TunerServiceRuntime, WorkerFailureClassifier, WorkerRuntime,
+    WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction, WorkerRuntimeSupervisorActiveEntry,
+    WorkerRuntimeSupervisorReapingEntry, WorkerRuntimeSupervisorStartDisposition,
+    WorkerRuntimeSupervisorStartOperation, WorkerRuntimeSupervisorStopDisposition,
+    WorkerTerminalResult,
 };
 
 use crate::filter_callback_delivery::dispatch_filter_event_snapshots;
@@ -43,7 +44,7 @@ impl DvrStatusNotifierKey {
 }
 
 pub(crate) struct DvrStatusNotifier {
-    worker: WorkerRuntime<()>,
+    worker: DvrNotifierWorker,
 }
 
 struct DvrStatusNotifierReaperJob {
@@ -822,31 +823,35 @@ fn spawn_dvr_status_notifier(
     handle: AidlObjectHandle,
     supervisor: Weak<DvrStatusNotifierSupervisor>,
 ) -> Result<DvrStatusNotifier, HalError> {
+    let runtime = context.runtime();
+    let registration = {
+        let mut runtime = TunerServiceRuntime::lock_shared(&runtime, "DVR通知workerの登録")?;
+        DvrNotifierStart::register(&mut runtime, handle.object_id(), handle.generation())?
+    };
     let thread_context = Arc::clone(context);
-    let worker = WorkerRuntime::spawn(
-        format!(
-            "tuner-hal2-dvr-status-{}-{}",
-            handle.object_id().0,
-            handle.generation().0
-        ),
-        handle.object_id().0,
-        handle.generation().0,
-        move |cancel| {
-            run_dvr_status_notifier_with_terminal_diagnostic(thread_context, handle, cancel)
-        },
-        move || {
-            if let Some(supervisor) = supervisor.upgrade() {
-                supervisor.runtime.notify_worker();
-            }
-        },
-    )
-    .map_err(|error| HalError::Io {
-        backend: "DVR状態通知",
-        operation: "スレッド生成",
-        path: None,
-        errno: error.raw_os_error(),
-        detail: HalErrorDetail::new(error.to_string()),
-    })?;
+    let worker = registration
+        .spawn(
+            format!(
+                "tuner-hal2-dvr-status-{}-{}",
+                handle.object_id().0,
+                handle.generation().0
+            ),
+            move |cancel| {
+                run_dvr_status_notifier_with_terminal_diagnostic(thread_context, handle, cancel)
+            },
+            move || {
+                if let Some(supervisor) = supervisor.upgrade() {
+                    supervisor.runtime.notify_worker();
+                }
+            },
+        )
+        .map_err(|error| HalError::Io {
+            backend: "DVR状態通知",
+            operation: "スレッド生成",
+            path: None,
+            errno: error.raw_os_error(),
+            detail: HalErrorDetail::new(error.to_string()),
+        })?;
     Ok(DvrStatusNotifier { worker })
 }
 
@@ -861,9 +866,33 @@ fn dvr_notifier_owner_generation_is_fenced(
     ) else {
         return false;
     };
-    runtime
-        .dvr_status_metadata_snapshot_for_aidl_object(handle.object_id(), handle.generation())
-        .is_err()
+    // metadata照会の失敗はDVR backend欠損やregistry不整合でも起きる。
+    // ownerの世代/lifecycleだけを正本として、非Liveを明示的に確認する。
+    use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+    match maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_disposition(
+        &runtime,
+        handle.object_id(),
+        handle.generation(),
+        handle.object_kind(),
+    ) {
+        Ok(
+            AidlObjectCleanupDisposition::Stale
+            | AidlObjectCleanupDisposition::Closed
+            | AidlObjectCleanupDisposition::Quarantined
+            | AidlObjectCleanupDisposition::QuarantineAwaitingReport
+            | AidlObjectCleanupDisposition::QuarantineSupervised,
+        ) => true,
+        Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
+            // 進行中のcloseが既に世代を遮断している。物理回収の結果はそのownerが確定する。
+            maleicacid_tuner_hal2_service_runtime::related_cleanup_recovery_owners_use_case(
+                &runtime,
+                handle.object_id(),
+                handle.generation(),
+            )
+            .is_ok_and(|owners| owners.into_iter().any(|(_, _, _, active)| active))
+        }
+        Ok(AidlObjectCleanupDisposition::NoCleanupPending) | Err(_) => false,
+    }
 }
 
 fn mark_dvr_notifier_service_critical(context: &SharedAidlServiceContext) {
@@ -878,8 +907,9 @@ fn record_dvr_notifier_cleanup_control_failure(
     handle: AidlObjectHandle,
     error: HalError,
 ) {
+    // この入口は診断専用。ownerのfence不成立とcleanup enqueue失敗は
+    // 各正本入口が別途判定する。
     record_superseded_dvr_notifier_cleanup_failure(context, handle, error);
-    mark_dvr_notifier_service_critical(context);
 }
 
 fn fence_dvr_notifier_owner_after_cleanup_failure(
@@ -898,6 +928,9 @@ fn fence_dvr_notifier_owner_after_cleanup_failure(
                 format!("Drop漏れ検出後の後片付けに失敗しました: {status:?}"),
             ),
         );
+        if !dvr_notifier_owner_generation_is_fenced(context, handle) {
+            mark_dvr_notifier_service_critical(context);
+        }
         return;
     }
     if !dvr_notifier_owner_generation_is_fenced(context, handle) {
@@ -909,6 +942,7 @@ fn fence_dvr_notifier_owner_after_cleanup_failure(
                 "Drop後の後片付け後もowner世代が有効です",
             ),
         );
+        mark_dvr_notifier_service_critical(context);
     }
 }
 
@@ -916,29 +950,55 @@ fn enqueue_cleanup_retry_after_notifier_reap(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) {
-    match context.cleanup_dependency_for_handle(handle) {
-        Ok(_) => {
+    use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+    match context.cleanup_retry_disposition(handle) {
+        Ok(AidlObjectCleanupDisposition::RequiresIsolation) => {
             if let Err(error) = context.enqueue_cleanup_retry(handle) {
+                // enqueueの正本所有者が既に全体停止の必要性を判定する。
                 record_dvr_notifier_cleanup_control_failure(context, handle, error);
             }
         }
-        Err(dependency_error) => match context.cleanup_is_terminal_for_handle(handle) {
-            Ok(true) => {}
-            Ok(false) => {
-                record_dvr_notifier_cleanup_control_failure(context, handle, dependency_error);
+        Ok(
+            AidlObjectCleanupDisposition::Stale
+            | AidlObjectCleanupDisposition::Closed
+            | AidlObjectCleanupDisposition::NoCleanupPending,
+        ) => {}
+        Ok(AidlObjectCleanupDisposition::Quarantined) => {
+            // 世代fenceだけでは物理回収義務の所在を証明できない。
+            record_dvr_notifier_cleanup_control_failure(
+                context,
+                handle,
+                HalError::cleanup_failed(
+                    "DVR notifier cleanup",
+                    "隔離済みobjectの物理回収完了を証明できません",
+                ),
+            );
+            if !dvr_notifier_owner_generation_is_fenced(context, handle) {
+                mark_dvr_notifier_service_critical(context);
             }
-            Err(terminal_error) => {
+        }
+        Ok(
+            AidlObjectCleanupDisposition::QuarantineAwaitingReport
+            | AidlObjectCleanupDisposition::QuarantineSupervised,
+        ) => {
+            // 未完の物理回収義務は既存の隔離ownerが保持する。
+            // 報告待ち・Supervisor移管中は回収失敗ではない。
+            if !dvr_notifier_owner_generation_is_fenced(context, handle) {
                 record_dvr_notifier_cleanup_control_failure(
                     context,
                     handle,
-                    compose_primary_cleanup_failure(
-                        "DVR notifierの後片付け依存関係を解決できません",
-                        dependency_error,
-                        terminal_error,
+                    HalError::cleanup_failed(
+                        "DVR notifier cleanup",
+                        "隔離済みobjectのowner世代をfenceできません",
                     ),
                 );
+                mark_dvr_notifier_service_critical(context);
             }
-        },
+        }
+        Err(error) => {
+            record_dvr_notifier_cleanup_control_failure(context, handle, error);
+            mark_dvr_notifier_service_critical(context);
+        }
     }
 }
 
@@ -948,7 +1008,7 @@ fn finish_reaped_dvr_status_notifier(
 ) {
     let handle = job.handle;
     let restart_requested = job.restart_requested;
-    let terminal = join_worker_classified(job.notifier.worker);
+    let (terminal, join_completion) = job.notifier.worker.join();
     let cleanup_result = match &terminal {
         ClassifiedWorkerTerminalResult::Normal(())
         | ClassifiedWorkerTerminalResult::StopRequested => Ok(()),
@@ -990,20 +1050,31 @@ fn finish_reaped_dvr_status_notifier(
     };
     record_dvr_status_notifier_lifecycle_outcome(&context, handle, record);
 
-    match cleanup_result {
-        Ok(()) if restart_requested => {
-            if let Err(error) = start_dvr_status_notifier(&context, handle) {
-                record_superseded_dvr_notifier_cleanup_failure(&context, handle, error);
-                mark_dvr_notifier_service_critical(&context);
-            }
+    let restart = restart_requested && cleanup_result.is_ok();
+    if let Err(error) = cleanup_result {
+        record_superseded_dvr_notifier_cleanup_failure(&context, handle, error);
+        fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
+    }
+
+    // 実際のjoin成功だけがObjectCloseTxnの通知worker回収義務を満たす。
+    // join失敗なら未完義務と隔離状態を維持する。
+    if let Some(join_completion) = join_completion {
+        let runtime = context.runtime();
+        let completion =
+            TunerServiceRuntime::lock_shared(&runtime, "DVR notifier Supervisor回収完了通知")
+                .and_then(|mut runtime| join_completion.finish(&mut runtime));
+        if let Err(error) = completion {
+            record_dvr_notifier_cleanup_control_failure(&context, handle, error);
+            mark_dvr_notifier_service_critical(&context);
         }
-        Ok(()) => {}
-        Err(error) => {
+    }
+
+    if restart {
+        if let Err(error) = start_dvr_status_notifier(&context, handle) {
             record_superseded_dvr_notifier_cleanup_failure(&context, handle, error);
             fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
         }
     }
-
     enqueue_cleanup_retry_after_notifier_reap(&context, handle);
 }
 
@@ -1135,10 +1206,9 @@ pub(crate) fn finish_dvr_status_notifier_cleanup(
             "DVR状態通知ワーカーの後片付け",
             "ワーカー開始処理の完了待ちです",
         )),
-        DvrStatusNotifierStopDisposition::ReaperPending => Err(HalError::cleanup_failed(
-            "DVR状態通知ワーカーの後片付け",
-            "ワーカー所有権をDVR通知回収処理へ移管しました",
-        )),
+        DvrStatusNotifierStopDisposition::ReaperPending => Err(HalError::WorkerCleanupFailed {
+            kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Executing,
+        }),
     }
 }
 
@@ -1236,6 +1306,48 @@ mod tests {
             .unwrap();
     }
 
+    fn open_dvr_for_test(
+        runtime: &SharedTunerRuntime,
+        demux: AidlObjectHandle,
+        kind: DvrOpenKind,
+    ) -> AidlObjectHandle {
+        let dvr_open = ObjectMethodUseCase::execute_after_live(
+            runtime,
+            demux.object_id(),
+            demux.generation(),
+            AidlObjectKind::Demux,
+            || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
+                let request = OpenDvrRequest {
+                    kind,
+                    buffer_size: 188,
+                };
+                Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
+            },
+            |runtime, dispatch, request| {
+                runtime
+                    .child_open_txn()
+                    .open_dvr_child_runtime_for_demux_object(
+                        demux.object_id(),
+                        demux.generation(),
+                        request,
+                        dispatch,
+                    )
+            },
+        )
+        .unwrap();
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Dvr,
+            dvr_open.runtime_entry.object_id(),
+            dvr_open.runtime_entry.generation(),
+        );
+        runtime
+            .lock()
+            .unwrap()
+            .commit_prepared_child_object(handle.object_id(), handle.generation())
+            .expect("DVRを公開確定する");
+        handle
+    }
+
     fn build_started_playback_dvr_context() -> (
         SharedAidlServiceContext,
         SharedTunerRuntime,
@@ -1257,35 +1369,12 @@ mod tests {
                 })
                 .unwrap()
         };
-        let dvr_open = ObjectMethodUseCase::execute_after_live(
-            &runtime,
+        let demux = AidlObjectHandle::new(
+            AidlObjectKind::Demux,
             demux_entry.object_id(),
             demux_entry.generation(),
-            AidlObjectKind::Demux,
-            || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
-                let request = OpenDvrRequest {
-                    kind: DvrOpenKind::Playback,
-                    buffer_size: 188,
-                };
-                Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
-            },
-            |runtime, dispatch, request| {
-                runtime
-                    .child_open_txn()
-                    .open_dvr_child_runtime_for_demux_object(
-                        demux_entry.object_id(),
-                        demux_entry.generation(),
-                        request,
-                        dispatch,
-                    )
-            },
-        )
-        .unwrap();
-        let handle = AidlObjectHandle::new(
-            AidlObjectKind::Dvr,
-            dvr_open.runtime_entry.object_id(),
-            dvr_open.runtime_entry.generation(),
         );
+        let handle = open_dvr_for_test(&runtime, demux, DvrOpenKind::Playback);
         ObjectMethodUseCase::execute_after_live(
             &runtime,
             handle.object_id(),
@@ -1344,6 +1433,293 @@ mod tests {
         assert_eq!(
             *state.playback_statuses.lock().unwrap(),
             vec![PlaybackStatus::SPACE_ALMOST_EMPTY]
+        );
+    }
+
+    #[test]
+    fn notifier_diagnostic_record_does_not_disable_healthy_dvr() {
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        record_dvr_notifier_cleanup_control_failure(
+            &context,
+            handle,
+            HalError::cleanup_failed("DVR notifier", "診断のみの失敗"),
+        );
+        assert!(!failure_state.snapshot().service_critical);
+        assert_eq!(
+            context.cleanup_retry_disposition(handle),
+            Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::NoCleanupPending)
+        );
+    }
+
+    #[test]
+    fn notifier_reap_without_cleanup_obligation_keeps_service_ready() {
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        enqueue_cleanup_retry_after_notifier_reap(&context, handle);
+        assert!(!failure_state.snapshot().service_critical);
+    }
+
+    #[test]
+    fn notifier_failure_during_owned_close_keeps_service_ready() {
+        use maleicacid_tuner_hal2_domain_request::AidlMethodCall;
+        use maleicacid_tuner_hal2_service_runtime::close_object_use_case;
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let mut guard = runtime.lock().unwrap();
+        let plan = close_object_use_case(
+            &mut guard,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+            AidlMethodCall::DvrClose,
+        )
+        .unwrap();
+        let _attempt = plan.begin_cleanup_attempt(&mut guard).unwrap();
+        let failure_state = guard.failure_state();
+        drop(guard);
+        assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));
+        fence_dvr_notifier_owner_after_cleanup_failure(&context, handle);
+        assert!(!failure_state.snapshot().service_critical);
+    }
+
+    #[test]
+    fn partial_notifier_join_keeps_quarantine_without_cleanup_failure_diagnostic() {
+        use maleicacid_tuner_hal2_common::WorkerCleanupFailureKind;
+        use maleicacid_tuner_hal2_service_runtime::{
+            quarantine_object_drop_leak_use_case, AidlObjectCleanupDisposition,
+            ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCloseCleanupFailure,
+            ObjectCloseRuntimeExecutor, ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor,
+            ObjectRuntimeCleanupCommand,
+        };
+
+        // 物理joinの順序だけを制御し、隔離の正本とjoin後処理は製品入口を使う。
+        struct RuntimeExecutor<'a>(&'a SharedTunerRuntime);
+        impl ObjectCloseRuntimeExecutor for RuntimeExecutor<'_> {
+            fn execute_runtime_cleanup(
+                &mut self,
+                command: ObjectRuntimeCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                command.execute(&mut self.0.lock().unwrap())
+            }
+        }
+        struct PendingNotifiers;
+        impl ObjectArtifactCleanupExecutor for PendingNotifiers {
+            fn execute_owner_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                panic!("callbackを登録していません")
+            }
+
+            fn execute_descendant_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                panic!("callbackを登録していません")
+            }
+
+            fn execute_lnb_owner_loss_callback_cleanup(
+                &mut self,
+                _: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                panic!("LNBを使用していません")
+            }
+
+            fn execute_dvr_status_notifier_cleanup(
+                &mut self,
+                command: ObjectArtifactCleanupCommand,
+            ) -> Result<(), ObjectCloseCleanupFailure> {
+                Err(ObjectCloseCleanupFailure::new(
+                    command.step(),
+                    HalError::WorkerCleanupFailed {
+                        kind: WorkerCleanupFailureKind::Executing,
+                    },
+                ))
+            }
+        }
+        struct NoDomainCleanup;
+        impl ObjectDomainCleanupExecutor for NoDomainCleanup {
+            fn execute_frontend_cleanup(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
+                panic!("Frontendを使用していません")
+            }
+
+            fn execute_lnb_cleanup(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
+                panic!("LNBを使用していません")
+            }
+
+            fn execute_lnb_drop_leak_record(
+                &mut self,
+                _: ObjectDomainCleanupCommand,
+            ) -> Result<(), HalError> {
+                panic!("LNBを使用していません")
+            }
+        }
+
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let context = crate::service_context::AidlServiceContext::from_shared_runtime_for_test(
+            runtime.clone(),
+        );
+        let entry = runtime
+            .lock()
+            .unwrap()
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .unwrap();
+        let demux =
+            AidlObjectHandle::new(AidlObjectKind::Demux, entry.object_id(), entry.generation());
+        let first = open_dvr_for_test(&runtime, demux, DvrOpenKind::Playback);
+        let second = open_dvr_for_test(&runtime, demux, DvrOpenKind::Record);
+        let spawn = |handle: AidlObjectHandle| {
+            let registration = DvrNotifierStart::register(
+                &mut runtime.lock().unwrap(),
+                handle.object_id(),
+                handle.generation(),
+            )
+            .unwrap();
+            DvrStatusNotifierReaperJob::from_supervisor_transfer(
+                DvrStatusNotifierKey::new(handle),
+                DvrStatusNotifier {
+                    worker: registration
+                        .spawn("partial-notifier-join".to_string(), |_| Ok(()), || {})
+                        .unwrap(),
+                },
+                DvrStatusNotifierTransferReason::Stop,
+            )
+        };
+        let first_job = spawn(first);
+        let second_job = spawn(second);
+        let plan = quarantine_object_drop_leak_use_case(
+            &mut runtime.lock().unwrap(),
+            demux.object_id(),
+            demux.generation(),
+        )
+        .unwrap()
+        .unwrap();
+        let report = plan.execute_terminalization_report_with_executor(
+            &mut RuntimeExecutor(&runtime),
+            &mut NoDomainCleanup,
+            &mut PendingNotifiers,
+        );
+        assert!(report.finish(&mut runtime.lock().unwrap()).unwrap());
+
+        let diagnostic_count = || {
+            let snapshot = context.diagnostic_snapshot().dvr_post_commit.unwrap();
+            assert_eq!(snapshot.dropped_count(), 0);
+            assert_eq!(snapshot.record_failure_count(), 0);
+            snapshot
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.failure_kind == DvrPostCommitNotificationFailureKind::NotifierCleanup
+                })
+                .count()
+        };
+        let before = diagnostic_count();
+        finish_reaped_dvr_status_notifier(Some(context.clone()), first_job);
+        assert_eq!(
+            context.cleanup_retry_disposition(second),
+            Ok(AidlObjectCleanupDisposition::QuarantineSupervised)
+        );
+        assert_eq!(diagnostic_count(), before);
+
+        finish_reaped_dvr_status_notifier(Some(context.clone()), second_job);
+        assert_eq!(
+            context.cleanup_retry_disposition(demux),
+            Ok(AidlObjectCleanupDisposition::Closed)
+        );
+        assert_eq!(diagnostic_count(), before);
+    }
+
+    #[test]
+    fn notifier_retry_after_quarantine_does_not_stop_service() {
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        // 隔離planの作成だけでは物理cleanupの証明にならない。
+        let outcome = crate::object_runtime::quarantine_drop_leak_object(&context, handle)
+            .expect("DVRの物理cleanupまで成功する");
+        match outcome {
+            crate::object_runtime::DropLeakQuarantineOutcome::Completed => {
+                assert_eq!(
+                    context.cleanup_retry_disposition(handle),
+                    Ok(maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition::Closed)
+                );
+            }
+            crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending => {
+                use maleicacid_tuner_hal2_service_runtime::AidlObjectCleanupDisposition;
+                assert!(matches!(
+                    context.cleanup_retry_disposition(handle),
+                    Ok(AidlObjectCleanupDisposition::QuarantineSupervised
+                        | AidlObjectCleanupDisposition::Closed)
+                ));
+            }
+            crate::object_runtime::DropLeakQuarantineOutcome::OwnedByExistingCleanup => {
+                panic!("競合ownerのない隔離が既存cleanupへ委譲されました");
+            }
+        }
+        assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));
+        enqueue_cleanup_retry_after_notifier_reap(&context, handle);
+        // Quarantinedを物理cleanup完了とはみなさないが、fenceのある
+        // owner固有の異常だけでサービス全体を停止しない。
+        assert!(!failure_state.snapshot().service_critical);
+    }
+
+    #[test]
+    fn old_dvr_worker_after_quarantine_cannot_consume_or_deliver_callback() {
+        // 本番のPlayback消費・IDvrCallback配送入口を通す。
+        // 通常の隔離前にはcallbackが配送可能であることも確認する。
+        let (context, runtime, handle) = build_started_playback_dvr_context();
+        let state = Arc::new(CallbackState::default());
+        let callback = new_test_callback(Arc::clone(&state));
+        context
+            .retain_dvr_callback_for_test(handle, &callback)
+            .expect("DVR callback登録");
+        record_dvr_callback_registration_for_test(&runtime, handle);
+        deliver_started_dvr_status(&context, handle).expect("隔離前の通知成功");
+        assert_eq!(
+            state.playback_statuses.lock().unwrap().as_slice(),
+            &[PlaybackStatus::SPACE_EMPTY]
+        );
+
+        // ワーカーが世代を保持した後、実際のdata-path入口へ進む直前で停止する。
+        // sleepやポーリングに依存せず、隔離確定後にだけ旧世代の実処理を再開する。
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(0);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel::<()>(0);
+        let worker_context = Arc::clone(&context);
+        let old_worker = std::thread::spawn(move || {
+            ready_tx.send(()).expect("旧世代ワーカー準備");
+            resume_rx.recv().expect("旧世代ワーカー再開");
+            (
+                consume_playback_dvr_once(&worker_context, handle),
+                deliver_started_dvr_status(&worker_context, handle),
+            )
+        });
+        ready_rx.recv().expect("旧世代ワーカーが待機中");
+        let outcome = crate::object_runtime::quarantine_drop_leak_object(&context, handle)
+            .expect("対象DVRを物理cleanup付きで隔離");
+        assert!(matches!(
+            outcome,
+            crate::object_runtime::DropLeakQuarantineOutcome::Completed
+                | crate::object_runtime::DropLeakQuarantineOutcome::SupervisedPending
+        ));
+        assert!(dvr_notifier_owner_generation_is_fenced(&context, handle));
+
+        resume_tx.send(()).expect("旧世代ワーカー実行");
+        let (playback_result, delivery_result) = old_worker.join().expect("ワーカー回収");
+        assert!(playback_result.is_err(), "隔離後の旧世代Playback消費は禁止");
+        assert!(delivery_result.is_err(), "隔離後の旧世代callback配送は禁止");
+        assert_eq!(
+            state.playback_statuses.lock().unwrap().as_slice(),
+            &[PlaybackStatus::SPACE_EMPTY],
+            "隔離前の配送結果は保持され、隔離後の配送は追加されない"
         );
     }
 
