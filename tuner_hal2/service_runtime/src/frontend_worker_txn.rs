@@ -799,7 +799,7 @@ fn transfer_frontend_replacement_wait_failure(
             );
         })),
         completion_action: Box::new(move |_runtime, outcomes, terminal_acceptance| {
-            if let Err(error) = record_aborted_replacement_terminal_completion(
+            if let Err(error) = record_aborted_frontend_replacement_after_reap(
                 cleanup_diagnostic_sink,
                 target,
                 kind,
@@ -4043,7 +4043,7 @@ fn record_frontend_reaper_completion(
     }
 }
 
-fn record_aborted_replacement_terminal_completion(
+fn record_aborted_frontend_replacement_after_reap(
     sink: SharedFrontendWorkerCleanupDiagnostics,
     target: FrontendWorkerCleanupTarget,
     replacement_kind: FrontendWorkerKind,
@@ -4052,7 +4052,7 @@ fn record_aborted_replacement_terminal_completion(
     terminal_acceptance: Result<(), HalError>,
     public_error: HalError,
 ) -> Result<(), HalError> {
-    let completion_error = match terminal_acceptance {
+    let public_error = match terminal_acceptance {
         Ok(()) => public_error,
         Err(terminal_error) => compose_frontend_cleanup_error(
             "frontend replacement failed and terminal acceptance failed",
@@ -4060,24 +4060,6 @@ fn record_aborted_replacement_terminal_completion(
             terminal_error,
         ),
     };
-    record_aborted_frontend_replacement_after_reap(
-        sink,
-        target,
-        replacement_kind,
-        new_generation,
-        outcomes,
-        completion_error,
-    )
-}
-
-fn record_aborted_frontend_replacement_after_reap(
-    sink: SharedFrontendWorkerCleanupDiagnostics,
-    target: FrontendWorkerCleanupTarget,
-    replacement_kind: FrontendWorkerKind,
-    new_generation: u64,
-    outcomes: &[(FrontendWorkerKind, FrontendWorkerStopOutcome)],
-    public_error: HalError,
-) -> Result<(), HalError> {
     let mut report = FrontendWorkerCleanupExecutionReport::new();
     for (kind, outcome) in outcomes {
         report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
