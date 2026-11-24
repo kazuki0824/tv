@@ -7514,6 +7514,100 @@ mod scan_contract_tests {
     }
 
     #[test]
+    fn reaper_accepts_completed_ticket_while_second_worker_is_blocked() {
+        use maleicacid_tuner_hal2_device::FrontendWorkerRegistry;
+        let frontend_id = 1_000_014;
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let generation = {
+            let mut service = runtime.lock().unwrap();
+            assert_eq!(
+                service.boot_from_probe_results([FrontendProbeOutcome::Available {
+                    id: FrontendRuntimeId(frontend_id),
+                    backend: FrontendBackendKind::LinuxDvb,
+                    system: FrontendSystem::IsdbT,
+                    path: "/dev/null".into(),
+                    lnb_profile: None,
+                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                    capability: FrontendCapabilitySnapshot {
+                        scalar: FrontendScalarCapability {
+                            min_frequency_hz: 473_142_857,
+                            max_frequency_hz: 473_142_857,
+                            min_symbol_rate: 0,
+                            max_symbol_rate: 0,
+                            acquire_range_hz: 0,
+                        },
+                        exclusive_group_id: 0x2000_0014,
+                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                            is_segment_auto: true,
+                            is_full_segment: true,
+                        }),
+                    },
+                }]),
+                ServiceBootOutcome::Ready,
+            );
+            service.query().frontend_runtime_snapshot(frontend_id).unwrap().generation
+        };
+        let mut registry = FrontendWorkerRegistry::default();
+        let (tune_started_tx, tune_started_rx) = mpsc::channel();
+        registry.start(frontend_id, FrontendWorkerKind::Tune, generation, move |ctx| {
+            tune_started_tx.send(()).unwrap();
+            while !ctx.cancel_requested() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(HalError::Unsupported("terminal failure during partial reaper completion"))
+        }).unwrap();
+        let (scan_started_tx, scan_started_rx) = mpsc::channel();
+        let (scan_release_tx, scan_release_rx) = mpsc::channel();
+        registry.start(frontend_id, FrontendWorkerKind::Scan, generation, move |_ctx| {
+            scan_started_tx.send(()).unwrap();
+            scan_release_rx.recv().unwrap();
+            Ok(())
+        }).unwrap();
+        tune_started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        scan_started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let tune = registry.request_stop_for_join(
+            frontend_id, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested,
+        );
+        let scan = registry.request_stop_for_join(
+            frontend_id, FrontendWorkerKind::Scan, FrontendWorkerCancelReason::StopRequested,
+        );
+        let diagnostics = runtime.lock().unwrap().frontend_worker_cleanup_diagnostic_sink();
+        let reaper = FrontendWorkerReaperHandle::start(
+            Arc::downgrade(&runtime), 2, Duration::from_millis(20), diagnostics.clone(),
+        ).unwrap();
+        let (deadline_tx, deadline_rx) = mpsc::channel();
+        let (completion_tx, completion_rx) = mpsc::channel();
+        reaper.enqueue(FrontendWorkerReaperJob {
+            keys: vec![(frontend_id, FrontendWorkerKind::Tune), (frontend_id, FrontendWorkerKind::Scan)],
+            continuation_kind: None,
+            tickets: FrontendWorkerReaperTicketGroup::new(vec![
+                (FrontendWorkerKind::Tune, tune),
+                (FrontendWorkerKind::Scan, scan),
+            ]),
+            accepted_completed: 0,
+            acceptance_failure: None,
+            transferred_at: Instant::now(),
+            deadline_action: Some(Box::new(move |_, error| {
+                deadline_tx.send(error).unwrap();
+            })),
+            completion_action: Box::new(move |_, _, acceptance| {
+                completion_tx.send(acceptance).unwrap();
+            }),
+        }).unwrap();
+        deadline_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let terminal_count = || diagnostics.snapshot().unwrap().records().iter()
+            .filter(|record| record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerTerminal
+                && record.frontend_id() == frontend_id)
+            .count();
+        assert_eq!(terminal_count(), 1, "残りのscan終了前にTune終端を受理する");
+        assert!(reaper.has_pending_frontend(frontend_id).unwrap());
+        scan_release_tx.send(()).unwrap();
+        assert!(completion_rx.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+        reaper.wait_until_frontend_released(frontend_id, Duration::from_secs(2)).unwrap();
+        assert_eq!(terminal_count(), 1, "継続後にTuneの終端を二重受理してはならない");
+    }
+
+    #[test]
     fn frontend_reaper_deadline_returns_without_abandoning_worker_cleanup() {
         use maleicacid_tuner_hal2_device::FrontendWorkerRegistry;
 
