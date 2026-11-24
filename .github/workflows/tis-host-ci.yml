@@ -118,6 +118,10 @@ jobs:
               object string {
                   const val invalid_setup_request = 1
                   const val boot_epg_sync_pending_status = 2
+                  const val daily_epg_time = 3
+                  const val daily_epg_targets = 4
+                  const val daily_epg_all_services = 5
+                  const val daily_epg_channels_unavailable = 6
               }
           }
           EOF
@@ -193,6 +197,10 @@ jobs:
               object string {
                   const val invalid_setup_request = 1
                   const val boot_epg_sync_pending_status = 2
+                  const val daily_epg_time = 3
+                  const val daily_epg_targets = 4
+                  const val daily_epg_all_services = 5
+                  const val daily_epg_channels_unavailable = 6
               }
           }
           EOF

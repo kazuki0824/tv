@@ -4,4 +4,8 @@
     <string name="setup_label">チャンネル設定</string>
     <string name="invalid_setup_request">不正な設定要求です。inputIdがないか、このTvInputServiceに属していません。</string>
     <string name="boot_epg_sync_pending_status">%1$s\n起動後EPG同期は保留中です。設定画面の外で処理します。source=%2$s</string>
+    <string name="daily_epg_time">番組表の取得時刻 %1$s</string>
+    <string name="daily_epg_targets">指定時刻に取得する局</string>
+    <string name="daily_epg_all_services">全登録局（追加局を含む）</string>
+    <string name="daily_epg_channels_unavailable">登録局を読み込めませんでした</string>
 </resources>

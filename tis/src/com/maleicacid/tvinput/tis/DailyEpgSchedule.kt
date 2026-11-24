@@ -10,6 +10,7 @@ import android.content.Intent
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.Toast
+import com.maleicacid.tvinput.R
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.time.LocalTime
 import java.time.ZonedDateTime
@@ -78,7 +79,8 @@ internal object DailyEpgSchedule {
         val clock = Button(activity)
 
         fun updateLabel() {
-            clock.text = "番組表の取得時刻 " + time(activity).format(DateTimeFormatter.ofPattern("HH:mm"))
+            val displayTime = time(activity).format(DateTimeFormatter.ofPattern("HH:mm"))
+            clock.text = activity.getString(R.string.daily_epg_time, displayTime)
         }
         updateLabel()
         clock.setOnClickListener {
@@ -92,7 +94,7 @@ internal object DailyEpgSchedule {
         layout.addView(clock)
         layout.addView(
             Button(activity).apply {
-                text = "指定時刻に取得する局"
+                setText(R.string.daily_epg_targets)
                 setOnClickListener { chooseChannels(activity, inputId) }
             },
         )
@@ -107,7 +109,7 @@ internal object DailyEpgSchedule {
             activity.runOnUiThread {
                 if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                 result.onSuccess { showSelection(activity, it) }.onFailure {
-                    Toast.makeText(activity, "登録局を読み込めませんでした", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(activity, R.string.daily_epg_channels_unavailable, Toast.LENGTH_SHORT).show()
                 }
             }
         }.start()
@@ -123,13 +125,13 @@ internal object DailyEpgSchedule {
         val names = channels.map { "${it.displayNumber} ${it.displayName}" }.toTypedArray()
         AlertDialog
             .Builder(activity)
-            .setTitle("指定時刻に取得する局")
+            .setTitle(R.string.daily_epg_targets)
             .setMultiChoiceItems(names, checked) { _, i, value ->
                 checked[i] = value
             }.setPositiveButton(android.R.string.ok) { _, _ ->
                 val keys = channels.filterIndexed { i, _ -> checked[i] }.map(::identity).toSet()
                 prefs.edit().putStringSet("services", keys).apply()
-            }.setNeutralButton("全登録局（追加局を含む）") { _, _ -> prefs.edit().remove("services").apply() }
+            }.setNeutralButton(R.string.daily_epg_all_services) { _, _ -> prefs.edit().remove("services").apply() }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
