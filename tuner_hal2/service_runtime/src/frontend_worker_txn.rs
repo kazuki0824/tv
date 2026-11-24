@@ -799,21 +799,14 @@ fn transfer_frontend_replacement_wait_failure(
             );
         })),
         completion_action: Box::new(move |_runtime, outcomes, terminal_acceptance| {
-            let completion_error = match terminal_acceptance {
-                Ok(()) => completion_public_error.clone(),
-                Err(terminal_error) => compose_frontend_cleanup_error(
-                    "frontend replacement failed and terminal acceptance failed",
-                    completion_public_error.clone(),
-                    terminal_error,
-                ),
-            };
-            if let Err(error) = record_aborted_frontend_replacement_after_reap(
+            if let Err(error) = record_aborted_replacement_terminal_completion(
                 cleanup_diagnostic_sink,
                 target,
                 kind,
                 generation,
                 &outcomes,
-                completion_error,
+                terminal_acceptance,
+                completion_public_error.clone(),
             ) {
                 // 診断ストアが保持する失敗counterとは独立に、errorも観測可能に残す。
                 eprintln!("frontend reaper終了診断の記録に失敗しました: {error:?}");
@@ -4048,6 +4041,33 @@ fn record_frontend_reaper_completion(
         Some(error) => Err(error),
         None => Ok(()),
     }
+}
+
+fn record_aborted_replacement_terminal_completion(
+    sink: SharedFrontendWorkerCleanupDiagnostics,
+    target: FrontendWorkerCleanupTarget,
+    replacement_kind: FrontendWorkerKind,
+    new_generation: u64,
+    outcomes: &[(FrontendWorkerKind, FrontendWorkerStopOutcome)],
+    terminal_acceptance: Result<(), HalError>,
+    public_error: HalError,
+) -> Result<(), HalError> {
+    let completion_error = match terminal_acceptance {
+        Ok(()) => public_error,
+        Err(terminal_error) => compose_frontend_cleanup_error(
+            "frontend replacement failed and terminal acceptance failed",
+            public_error,
+            terminal_error,
+        ),
+    };
+    record_aborted_frontend_replacement_after_reap(
+        sink,
+        target,
+        replacement_kind,
+        new_generation,
+        outcomes,
+        completion_error,
+    )
 }
 
 fn record_aborted_frontend_replacement_after_reap(
