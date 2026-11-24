@@ -7706,6 +7706,13 @@ mod scan_contract_tests {
             FrontendWorkerKind::Scan,
             FrontendWorkerCancelReason::StopRequested,
         );
+        // 完了の観測だけを行い、ticketの回収・終端受理はreaperの正規経路に任せる。
+        // ScanをブロックしたままTuneの終了を確定し、実行スケジューリング依存を除く。
+        assert!(
+            tune.wait_until_finished(Some(Instant::now() + Duration::from_secs(1)))
+                .unwrap(),
+            "reaper投入前にTune workerの終端が確定していません"
+        );
         let diagnostics = runtime
             .lock()
             .unwrap()
