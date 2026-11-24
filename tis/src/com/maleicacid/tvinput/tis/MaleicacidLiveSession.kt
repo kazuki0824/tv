@@ -1003,14 +1003,7 @@ class MaleicacidLiveSession(
     private fun currentProgramEvent(
         serviceKey: ServiceKey,
         nowMillis: Long = System.currentTimeMillis(),
-    ) = latestLiveSnapshot
-        ?.programs
-        ?.events
-        .orEmpty()
-        .asSequence()
-        .filter { event -> event.serviceKey == serviceKey && event.durationMillis > 0L }
-        .filter { event -> nowMillis >= event.startTimeMillis && nowMillis < event.startTimeMillis + event.durationMillis }
-        .minByOrNull { it.startTimeMillis }
+    ) = currentProgramRatingResolver.currentEvent(latestLiveSnapshot?.programs, serviceKey, nowMillis)
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
@@ -1069,10 +1062,7 @@ class MaleicacidLiveSession(
     @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength")
     private fun updateTracks(service: AribService) {
         val defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey)
-        val tracks =
-            displayTracksFor(service, defaultComponentGroupTags).filterNot { track ->
-                PlaybackPolicy.isAudioOnlyService(service.serviceType) && track.type == TvTrackInfo.TYPE_SUBTITLE
-            }
+        val tracks = displayTracksFor(service, defaultComponentGroupTags)
         val audioMetadataByTrackId =
             tracks
                 .filter { it.type == TvTrackInfo.TYPE_AUDIO }
@@ -1183,12 +1173,6 @@ class MaleicacidLiveSession(
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     private fun updateSubtitleSelection(tracks: List<TunerController.TisTrack>) {
-        if (PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)) {
-            selectedSubtitleTrackId = null
-            captionController.selectTrack(null)
-            notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, null)
-            return
-        }
         if (subtitleExplicitlyDisabled) {
             selectedSubtitleTrackId = null
             captionController.selectTrack(null)

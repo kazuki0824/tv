@@ -16,6 +16,25 @@ import java.util.PriorityQueue
 @Config(sdk = [35])
 class CaptionPresentationCapacityTest {
     @Test
+    fun audioOnlyCaptionUsesOverlayAsViewportWithoutInventingVideoGeometry() {
+        val controller = createController({ null }) { }
+        fun set(name: String, value: Any) {
+            AribCaptionController::class.java.getDeclaredField(name).apply { isAccessible = true }.set(controller, value)
+        }
+        val viewportField = AribCaptionController::class.java.getDeclaredField("viewport").apply { isAccessible = true }
+        val update = AribCaptionController::class.java.getDeclaredMethod("updateViewport").apply { isAccessible = true }
+        set("playbackGeneration", 7L)
+        set("overlayWidth", 1280)
+        set("overlayHeight", 720)
+        update.invoke(controller)
+        check(viewportField.get(controller) == AribCaptionController.CaptionViewport(1280, 720, 0, 0, 1280, 720))
+
+        set("videoPathExpected", true)
+        update.invoke(controller)
+        check(viewportField.get(controller) == null)
+    }
+
+    @Test
     fun captionPresentationEpochExhaustionRemainsStableAcrossRepeatedAttempts() {
         val controller = createController({ null }) { }
         val counter =

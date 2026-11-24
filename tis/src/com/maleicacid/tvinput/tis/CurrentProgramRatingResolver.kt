@@ -147,6 +147,27 @@ class CurrentProgramRatingResolver internal constructor(
         )
     }
 
+    /** Prefer the received p/f actual present event, including broadcasts with undefined time. */
+    @Suppress("MagicNumber", "MaxLineLength")
+    fun currentEvent(
+        snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot?,
+        key: ServiceKey,
+        nowMillis: Long,
+    ): AribEvent? =
+        when (val authority = eitAuthority(snapshot, key)) {
+            is EitAuthority.PresentObserved -> authority.event
+            EitAuthority.AuthoritativeEmpty -> null
+            EitAuthority.Unconfirmed ->
+                snapshot?.events.orEmpty()
+                    .asSequence()
+                    .filter { event ->
+                        event.serviceKey == key && event.source.tableId == 0x4e &&
+                            event.source.sectionNumber == 0 && event.durationMillis > 0L
+                    }
+                    .filter { event -> nowMillis >= event.startTimeMillis && nowMillis < event.startTimeMillis + event.durationMillis }
+                    .minByOrNull { it.startTimeMillis }
+        }
+
     // 独立した既存入力を明示し、引数数だけを理由に別の状態保持型を導入しない。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("LongParameterList", "ReturnCount")

@@ -3,6 +3,13 @@ package com.maleicacid.tvinput.tis
 import android.database.MatrixCursor
 import android.media.tv.TvContract
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
+import com.maleicacid.tvinput.aribsi.AribEvent
+import com.maleicacid.tvinput.aribsi.AribProgramSource
+import com.maleicacid.tvinput.aribsi.EitInstanceState
+import com.maleicacid.tvinput.aribsi.EitTimingState
+import com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot
+import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
+import com.maleicacid.tvinput.common.ServiceKey
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -13,6 +20,37 @@ import kotlin.test.assertTrue
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class CurrentProgramRatingResolverTest {
+    @Test
+    fun liveTrackMetadataUsesPresentEventBeforeOverlappingTimedEvent() {
+        val key = ServiceKey(4, 1, 1)
+        val present =
+            AribEvent(
+                key, null, 11, timingState = EitTimingState.UNDEFINED_TIME,
+                startTimeMillis = 0L, durationMillis = 0L, title = "present", description = "",
+                source = AribProgramSource(version = 2, sectionNumber = 0),
+            )
+        val timed =
+            present.copy(
+                eventId = 12, timingState = EitTimingState.DEFINED,
+                startTimeMillis = 500L, durationMillis = 1_000L,
+                source = present.source.copy(version = 1),
+            )
+        val instance =
+            EitInstanceState(key, 0x4e, 2, true, 1, listOf(0, 1), emptyList(), listOf(0, 1), true, false)
+        val snapshot =
+            ProgramPublishSnapshot(
+                SiDiscoveryProfile.ISDB_T, ingestSequence = 1L,
+                events = listOf(timed, present), updateWindows = emptyList(),
+                semanticFactsByServiceKey = emptyMap(), descriptorDiagnostics = emptyList(),
+                parserDiagnostics = emptyList(), eitInstances = listOf(instance),
+            )
+        val resolver = CurrentProgramRatingResolver { _, _, _, _, _ -> null }
+
+        assertEquals(present, resolver.currentEvent(snapshot, key, 1_000L))
+        assertEquals(null, resolver.currentEvent(snapshot.copy(events = listOf(timed)), key, 1_000L))
+        assertEquals(timed, resolver.currentEvent(snapshot.copy(eitInstances = emptyList()), key, 1_000L))
+    }
+
     private fun candidateCursor(): MatrixCursor =
         MatrixCursor(
             arrayOf(

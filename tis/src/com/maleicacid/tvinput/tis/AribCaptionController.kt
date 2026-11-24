@@ -241,6 +241,7 @@ class AribCaptionController(
         videoHeight = 0
         videoDisplayAspectRatio = null
         viewport = null
+        if (!hasVideo) updateViewport()
         true
     }
 
@@ -348,14 +349,18 @@ class AribCaptionController(
     @Suppress("ReturnCount")
     private fun updateViewport() {
         val next =
-            calculateViewport(
-                overlayWidth,
-                overlayHeight,
-                videoWidth,
-                videoHeight,
-                playbackGeneration,
-                videoDisplayAspectRatio,
-            )
+            if (!videoPathExpected && playbackGeneration >= 0L && overlayWidth > 0 && overlayHeight > 0) {
+                CaptionViewport(overlayWidth, overlayHeight, 0, 0, overlayWidth, overlayHeight)
+            } else {
+                calculateViewport(
+                    overlayWidth,
+                    overlayHeight,
+                    videoWidth,
+                    videoHeight,
+                    playbackGeneration,
+                    videoDisplayAspectRatio,
+                )
+            }
         if (next == viewport) return
         cancelScheduledBoundary()
         displayedFrameToken = null
@@ -384,7 +389,7 @@ class AribCaptionController(
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
     private fun renderCurrentFrame(): NativeAribCaptionRenderer.RenderedCaptionFrame? {
-        if (!enabled || !videoPathExpected || viewport == null) return null
+        if (!enabled || viewport == null) return null
         val clock = mediaClock() ?: return null
         return runCatching { renderer?.renderAt(currentMediaMillis(clock)) }
             .onFailure { error -> Log.w(LogTags.TIS, "字幕の現在画像を再描画できません", error) }
@@ -406,7 +411,7 @@ class AribCaptionController(
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
     private fun ensureRenderer() {
-        if (!enabled || !videoPathExpected) return
+        if (!enabled || viewport == null) return
         val track = selectedTrack ?: return
         val currentViewport = viewport ?: return
         if (renderer != null) return
