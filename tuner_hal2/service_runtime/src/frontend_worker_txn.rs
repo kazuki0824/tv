@@ -197,6 +197,8 @@ type FrontendWorkerReaperCompletionAction = Box<
 struct FrontendWorkerReaperTicketGroup {
     pending: Vec<(FrontendWorkerKind, FrontendWorkerStopTicket)>,
     completed: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
+    #[cfg(test)]
+    wait_started: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl FrontendWorkerReaperTicketGroup {
@@ -205,6 +207,8 @@ impl FrontendWorkerReaperTicketGroup {
         Self {
             pending: tickets,
             completed: Vec::with_capacity(capacity),
+            #[cfg(test)]
+            wait_started: None,
         }
     }
 
@@ -226,7 +230,12 @@ impl FrontendWorkerReaperTicketGroup {
         }
     }
 
-    fn wait_for_progress(&self, deadline: Option<Instant>) -> Result<Option<usize>, HalError> {
+    fn wait_for_progress(&mut self, deadline: Option<Instant>) -> Result<Option<usize>, HalError> {
+        // 試験では初回non-blocking観測後から待機へ入る順序だけを通知する。
+        #[cfg(test)]
+        if let Some(notice) = self.wait_started.take() {
+            let _ = notice.send(());
+        }
         for (index, (_, ticket)) in self.pending.iter().enumerate() {
             if ticket.wait_until_finished(deadline)? {
                 return Ok(Some(index));
@@ -7605,6 +7614,8 @@ mod scan_contract_tests {
         let tickets = FrontendWorkerReaperTicketGroup {
             pending: vec![(FrontendWorkerKind::Scan, scan_ticket)],
             completed: vec![(FrontendWorkerKind::Tune, outcome)],
+            #[cfg(test)]
+            wait_started: None,
         };
         let sink = runtime
             .lock()
