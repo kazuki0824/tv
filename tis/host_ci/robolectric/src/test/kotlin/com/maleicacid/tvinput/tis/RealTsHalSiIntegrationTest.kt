@@ -111,7 +111,9 @@ class RealTsHalSiIntegrationTest {
                 ReflectionHelpers.setField(session, "latestLiveSnapshot", ready)
                 ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramsForCurrentService")
             }
-            val present = objects(expected.getJSONArray("selected_service_pf_events")).minBy { it.getLong("start_time_unix_ms") }
+            val present =
+                objects(expected.getJSONArray("selected_service_pf_events"))
+                    .minBy { it.getLong("start_time_unix_ms") }
             val start = present.getLong("start_time_unix_ms")
             val end = start + present.getLong("duration_ms")
             val fixtureNow = start + 1
