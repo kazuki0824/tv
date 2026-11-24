@@ -2512,6 +2512,29 @@ mod tests {
     }
 
     #[test]
+    fn quarantine_handoff_retains_obligation_until_both_notifiers_join() {
+        let root = AidlObjectId(460);
+        let generation = AidlObjectGeneration(1);
+        let first = (AidlObjectId(461), generation);
+        let second = (AidlObjectId(462), generation);
+        let mut txn = ObjectCloseTxn::new();
+        txn.begin_quarantined_cleanup(root, generation, [first, second])
+            .unwrap();
+        assert!(!txn
+            .accept_quarantine_cleanup_report(root, generation, &[first, second])
+            .unwrap());
+        assert!(txn.notifier_joined(first).is_empty());
+        assert!(txn.has_outstanding_obligation(root, generation));
+        assert_eq!(
+            txn.quarantine_cleanup_is_supervised(root, generation),
+            Some(true)
+        );
+        assert!(txn.notifier_joined(first).is_empty());
+        assert_eq!(txn.notifier_joined(second), vec![(root, generation)]);
+        assert!(!txn.has_outstanding_obligation(root, generation));
+    }
+
+    #[test]
     fn quarantine_handoff_cannot_be_finished_by_a_different_generation() {
         let root = AidlObjectId(440);
         let generation = AidlObjectGeneration(1);
