@@ -129,15 +129,29 @@ class RealTsHalSiIntegrationTest {
             assertEquals(end, current.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS).toLong())
             // 元section 0のshort_event_descriptorに含まれる固定の番組名。
             assertTrue(current.getAsString(TvContract.Programs.COLUMN_TITLE).orEmpty().contains("名古屋"))
+            val scheduleStart = start + TimeUnit.MINUTES.toMillis(390)
+            // 別局には前回取得したp/fの2枠だけが保存されている状態から始める。
+            seedPriorProgram(context, 101, "別局の現在番組", start, end)
+            seedPriorProgram(context, 102, "別局の次番組", end, scheduleStart)
+            assertEquals(null, queryCurrentProgram(context, scheduleStart + 1))
             executor.callControl(15_000L) {
                 val engine = ReflectionHelpers.getField<AribSiEngine>(session, "aribSiEngine")
-                val schedule = otherTransportSchedule(sections)
-                assertEquals(SiStatus.OK, SectionIngestController(engine).onSection(TsPid.EIT, schedule).status)
+                val ingest = SectionIngestController(engine)
+                for (nextDay in listOf(false, true)) {
+                    val schedule = otherTransportSchedule(sections, nextDay)
+                    assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, schedule).status)
+                }
                 ReflectionHelpers.setField(session, "latestLiveSnapshot", engine.livePlaybackSnapshot())
                 ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramsForCurrentService")
             }
-            val tomorrow = provider.rows.single { it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 9L }
-            assertEquals(0xba01, tomorrow.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID).toInt())
+            // 同一session・同一選局のまま照会時刻を進める。この間の再受信・再公開はない。
+            assertEquals(101 to "別局の現在番組", queryCurrentProgram(context, start + 1))
+            assertEquals(102 to "別局の次番組", queryCurrentProgram(context, scheduleStart - 1))
+            val title = current.getAsString(TvContract.Programs.COLUMN_TITLE)
+            assertEquals(0xba00 to title, queryCurrentProgram(context, scheduleStart + TimeUnit.MINUTES.toMillis(30)))
+            assertEquals(null, queryCurrentProgram(context, scheduleStart + present.getLong("duration_ms") + 1))
+            val tomorrow = provider.rows.single { it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == 0xba01 }
+            assertEquals(9L, tomorrow.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID).toLong())
             val tomorrowStart = tomorrow.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS).toLong()
             assertEquals(start + TimeUnit.DAYS.toMillis(1), tomorrowStart)
             val titleColumn = TvContract.Programs.COLUMN_TITLE
@@ -148,8 +162,44 @@ class RealTsHalSiIntegrationTest {
         }
     }
 
-    // fixtureのp/f sectionを基に、別TSの翌日の部分scheduleを生成する。放送実測のscheduleとは区別する。
-    private fun otherTransportSchedule(sections: List<Section>): ByteArray {
+    private fun seedPriorProgram(
+        context: Context,
+        event: Int,
+        title: String,
+        start: Long,
+        end: Long,
+    ) {
+        val values =
+            ContentValues().apply {
+                put(TvContract.Programs.COLUMN_CHANNEL_ID, 9L)
+                put(TvContract.Programs.COLUMN_EVENT_ID, event)
+                put(TvContract.Programs.COLUMN_TITLE, title)
+                put(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS, start)
+                put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, end)
+            }
+        checkNotNull(context.contentResolver.insert(TvContract.Programs.CONTENT_URI, values))
+    }
+
+    // Live TVのProgramDataManagerと同じchannel/time/time URIで、Providerが返す現在枠を読む。
+    private fun queryCurrentProgram(
+        context: Context,
+        time: Long,
+    ): Pair<Int, String>? {
+        val uri = TvContract.buildProgramsUriForChannel(9L, time, time)
+        val columns = arrayOf(TvContract.Programs.COLUMN_EVENT_ID, TvContract.Programs.COLUMN_TITLE)
+        return checkNotNull(context.contentResolver.query(uri, columns, null, null, null)).use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val program = cursor.getInt(0) to cursor.getString(1)
+            check(!cursor.moveToNext()) { "非視聴局の現在枠が重複しています" }
+            program
+        }
+    }
+
+    // fixtureのp/f sectionを基に、別TSの当日夜と翌日の部分scheduleを生成する。放送実測のscheduleとは区別する。
+    private fun otherTransportSchedule(
+        sections: List<Section>,
+        nextDay: Boolean,
+    ): ByteArray {
         val bytes =
             sections
                 .first { section ->
@@ -163,10 +213,18 @@ class RealTsHalSiIntegrationTest {
         data.put(13, 0x60)
         data.putShort(3, 1049)
         data.putShort(8, 0x7777)
-        data.put(7, 1)
-        data.put(12, 1)
-        data.putShort(14, 0xba01.toShort())
-        data.putShort(16, (data.getShort(16) + 1).toShort())
+        val sectionNumber: Byte = if (nextDay) 104 else 56
+        data.put(6, sectionNumber)
+        data.put(7, 104)
+        data.put(12, sectionNumber)
+        if (nextDay) {
+            data.putShort(14, 0xba01.toShort())
+            data.putShort(16, (data.getShort(16) + 1).toShort())
+        } else {
+            data.putShort(14, 0xba00.toShort())
+            data.put(18, 0x23)
+            data.put(19, 0x30)
+        }
         var crc = -1
         for (i in 0 until bytes.size - 4) {
             crc = crc xor ((bytes[i].toInt() and 255) shl 24)
@@ -195,8 +253,25 @@ class RealTsHalSiIntegrationTest {
                     addRow(arrayOf(7L, key.originalNetworkId, key.transportStreamId, key.serviceId))
                     addRow(arrayOf(8L, key.originalNetworkId, key.transportStreamId, 1049))
                     addRow(arrayOf(9L, key.originalNetworkId, 0x7777, 1049))
+                } else if (uri.pathSegments.first() == "program") {
+                    addCurrentPrograms(uri, this)
                 }
             }
+
+        private fun addCurrentPrograms(
+            uri: Uri,
+            cursor: MatrixCursor,
+        ) {
+            val start = uri.getQueryParameter("start_time")?.toLong() ?: return
+            if (start != uri.getQueryParameter("end_time")?.toLong()) return
+            val channel = uri.getQueryParameter("channel")?.toLong()
+            rows
+                .filter { row ->
+                    row.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channel &&
+                        row.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) <= start &&
+                        start < row.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                }.forEach { row -> cursor.addRow(cursor.columnNames.map { row.get(it) }.toTypedArray()) }
+        }
 
         override fun getType(uri: Uri): String? = null
 
