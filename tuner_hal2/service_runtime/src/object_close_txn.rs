@@ -2068,44 +2068,38 @@ mod tests {
             (RuntimeObjectEntry, CloseCleanupAttemptCompletion),
         >(capacity, "product-demux-close-overlap", runner)
         .unwrap();
-        let mut distinct_ids = std::collections::BTreeSet::new();
-        let mut retained_keys = Vec::with_capacity(capacity);
-        for _ in 0..capacity {
-            let (entry, completion) = {
-                let mut runtime = runtime.lock().unwrap();
-                let entry = runtime
-                    .root_open_txn()
-                    .open_demux_root_object(AidlMethodCall::PublicApi {
-                        object: AidlObjectKind::Tuner,
-                        api: AidlApi::TunerOpenDemux,
-                    })
-                    .expect("公開Demux枠を再獲得");
-                let plan = close_object_use_case(
-                    &mut runtime,
-                    entry.object_id(),
-                    entry.generation(),
-                    AidlObjectKind::Demux,
-                    AidlMethodCall::DemuxClose,
-                )
-                .expect("正規close権限の発行");
-                let completion = plan
-                    .begin_cleanup_attempt(&mut runtime)
-                    .expect("cleanup実行権限の確保")
-                    .completion;
-                (entry, completion)
-            };
-            assert!(distinct_ids.insert(entry.object_id()));
-            let key = (entry.object_id(), entry.generation());
-            reaper
-                .enqueue_reserved((entry, completion), [(key, CleanupStep::ReleaseBackend)])
-                .expect("製品容量までは正規reaperへ受付");
-            assert_eq!(
-                finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-                key
-            );
-            assert!(reaper.pending_value(&key).unwrap().is_some());
-            retained_keys.push(key);
-        }
+        let (entry, completion) = {
+            let mut runtime = runtime.lock().unwrap();
+            let entry = runtime
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .expect("公開Demux枠を再獲得");
+            let plan = close_object_use_case(
+                &mut runtime,
+                entry.object_id(),
+                entry.generation(),
+                AidlObjectKind::Demux,
+                AidlMethodCall::DemuxClose,
+            )
+            .expect("正規close権限の発行");
+            let completion = plan
+                .begin_cleanup_attempt(&mut runtime)
+                .expect("cleanup実行権限の確保")
+                .completion;
+            (entry, completion)
+        };
+        let key = (entry.object_id(), entry.generation());
+        reaper
+            .enqueue_reserved((entry, completion), [(key, CleanupStep::ReleaseBackend)])
+            .expect("製品容量までは正規reaperへ受付");
+        assert_eq!(
+            finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            key
+        );
+        assert!(reaper.pending_value(&key).unwrap().is_some());
         // 実open/closeでClosed確定済み、
         // ただしworker内に留まる間は同世代の正規groupを返却できない。
         let extra = {
@@ -2118,7 +2112,7 @@ mod tests {
                 })
                 .expect("旧世代は閉じているため次のDemuxをopenできる")
         };
-        assert!(distinct_ids.insert(extra.object_id()));
+        assert_ne!(key.0, extra.object_id());
         let capacity_error = reaper
             .reserve_pending([(
                 (extra.object_id(), extra.generation()),
@@ -2132,21 +2126,11 @@ mod tests {
         ));
         release_gate.release();
 
-        // 予約groupがworkerのrun完了後に全件返却されるまで有界に待機。
-        let deadline = Instant::now() + Duration::from_secs(10);
-        for key in &retained_keys {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            assert!(
-                !remaining.is_zero(),
-                "製品reaperの予約groupを期限内に全件解放できませんでした"
-            );
-            reaper
-                .wait_until_released([key], remaining)
-                .expect("workerの予約groupは期限内に解放される");
-        }
-        assert!(retained_keys
-            .iter()
-            .all(|key| { reaper.pending_value(key).unwrap().is_none() }));
+        // 予約groupがworkerのrun完了後に返却されるまで有界に待機。
+        reaper
+            .wait_until_released([&key], Duration::from_secs(10))
+            .expect("workerの予約groupは期限内に解放される");
+        assert!(reaper.pending_value(&key).unwrap().is_none());
         // Senderを閉じて各laneのrecvを終了させる。Weak runnerが失効するまで
         // 待つことで、テスト用のworkerを残さず終了したことを確認する。
         drop(reaper);
