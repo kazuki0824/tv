@@ -7861,6 +7861,124 @@ mod scan_contract_tests {
     }
 
     #[test]
+    fn synchronous_frontend_close_rechecks_later_finished_scan_at_deadline() {
+        use maleicacid_tuner_hal2_device::FrontendWorkerRegistry;
+
+        let frontend_id = 1_000_018;
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let generation = {
+            let mut service = runtime.lock().unwrap();
+            assert_eq!(
+                service.boot_from_probe_results([FrontendProbeOutcome::Available {
+                    id: FrontendRuntimeId(frontend_id),
+                    backend: FrontendBackendKind::LinuxDvb,
+                    system: FrontendSystem::IsdbT,
+                    path: "/dev/null".into(),
+                    lnb_profile: None,
+                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                    capability: FrontendCapabilitySnapshot {
+                        scalar: FrontendScalarCapability {
+                            min_frequency_hz: 473_142_857,
+                            max_frequency_hz: 473_142_857,
+                            min_symbol_rate: 0,
+                            max_symbol_rate: 0,
+                            acquire_range_hz: 0,
+                        },
+                        exclusive_group_id: 0x2000_0018,
+                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                            is_segment_auto: true,
+                            is_full_segment: true,
+                        }),
+                    },
+                }]),
+                ServiceBootOutcome::Ready,
+            );
+            service
+                .query()
+                .frontend_runtime_snapshot(frontend_id)
+                .unwrap()
+                .generation
+        };
+        let mut registry = FrontendWorkerRegistry::default();
+        let (tune_started_tx, tune_started_rx) = mpsc::channel();
+        let (tune_release_tx, tune_release_rx) = mpsc::channel();
+        registry
+            .start(frontend_id, FrontendWorkerKind::Tune, generation, move |_ctx| {
+                tune_started_tx.send(()).unwrap();
+                let _ = tune_release_rx.recv_timeout(Duration::from_secs(4));
+                Ok(())
+            })
+            .unwrap();
+        let (scan_started_tx, scan_started_rx) = mpsc::channel();
+        let (scan_release_tx, scan_release_rx) = mpsc::channel();
+        registry
+            .start(frontend_id, FrontendWorkerKind::Scan, generation, move |_ctx| {
+                scan_started_tx.send(()).unwrap();
+                let _ = scan_release_rx.recv_timeout(Duration::from_secs(4));
+                Err(HalError::Unsupported("scan failed after first close poll"))
+            })
+            .unwrap();
+        tune_started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        scan_started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let tune = registry.request_stop_for_join(
+            frontend_id,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::FrontendClosing,
+        );
+        let scan = registry.request_stop_for_join(
+            frontend_id,
+            FrontendWorkerKind::Scan,
+            FrontendWorkerCancelReason::FrontendClosing,
+        );
+        let mut tickets = FrontendWorkerReaperTicketGroup::new(vec![
+            (FrontendWorkerKind::Tune, tune),
+            (FrontendWorkerKind::Scan, scan),
+        ]);
+        tickets.before_wait_hook = Some(Box::new(move |group| {
+            // 初回の両未完観測後、先頭Tune待機前に後続Scanだけ終了を確定する。
+            scan_release_tx.send(()).unwrap();
+            let (_, scan) = group
+                .pending
+                .iter()
+                .find(|(kind, _)| *kind == FrontendWorkerKind::Scan)
+                .expect("後続Scanは初回観測で未完");
+            assert!(
+                scan.wait_until_finished(Some(Instant::now() + Duration::from_secs(2)))
+                    .unwrap(),
+                "期限の再観測前にScanが実際に終了していません"
+            );
+        }));
+        let tickets = match tickets.wait_until_deadline(Instant::now() + Duration::from_millis(30)) {
+            FrontendWorkerStopWaitOutcome::TimedOut(tickets) => tickets,
+            other => panic!("Tuneが保留中なのに異なる結果: {:?}", match other {
+                FrontendWorkerStopWaitOutcome::Completed(_) => "Completed",
+                FrontendWorkerStopWaitOutcome::TimedOut(_) => "TimedOut",
+                FrontendWorkerStopWaitOutcome::Failed { .. } => "Failed",
+            }),
+        };
+        assert_eq!(tickets.pending.len(), 1, "未完のTune義務だけを保持する");
+        assert_eq!(tickets.pending[0].0, FrontendWorkerKind::Tune);
+        assert_eq!(tickets.completed.len(), 1, "同一期限でScan完了を採取する");
+        assert_eq!(tickets.completed[0].0, FrontendWorkerKind::Scan);
+        accept_frontend_worker_terminal_outcomes(&runtime, &tickets.completed).unwrap();
+        let diagnostics = runtime.lock().unwrap().frontend_worker_cleanup_diagnostic_sink();
+        let terminal_count = || diagnostics.snapshot().unwrap().records().iter()
+            .filter(|record| {
+                record.kind() == FrontendWorkerCleanupDiagnosticKind::WorkerTerminal
+                    && record.frontend_id() == frontend_id
+            })
+            .count();
+        assert_eq!(terminal_count(), 1, "closeの期限処理でScanの終端を受理する");
+
+        tune_release_tx.send(()).unwrap();
+        match tickets.wait_until_deadline(Instant::now() + Duration::from_secs(2)) {
+            FrontendWorkerStopWaitOutcome::Completed(_) => {}
+            _ => panic!("保留Tuneの回収が完了しませんでした"),
+        }
+        assert_eq!(terminal_count(), 1, "既に受理したScanは二重計上されない");
+    }
+
+    #[test]
     fn later_worker_completion_during_first_wait_is_accepted_at_first_deadline() {
         use maleicacid_tuner_hal2_device::FrontendWorkerRegistry;
 
