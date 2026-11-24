@@ -3,9 +3,18 @@
 
 package com.maleicacid.tvinput.tis
 
+import android.content.ContentProvider
+import android.content.ContentUris
+import android.content.ContentValues
+import android.content.Context
+import android.content.pm.ProviderInfo
+import android.database.MatrixCursor
+import android.media.tv.TvContract
 import android.media.tv.tuner.filter.Filter
 import android.media.tv.tuner.filter.SectionEvent
+import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
+import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.CaDescriptorScope
@@ -14,6 +23,7 @@ import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.SiStatus
+import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,6 +34,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.ShadowContentResolver
 import org.robolectric.util.ReflectionHelpers
 import java.io.DataInputStream
 import java.io.File
@@ -61,12 +72,110 @@ class RealTsHalSiIntegrationTest {
         val references = objects(expected.getJSONArray("section_reference"))
         val sections = runHal(input, expected, references)
         verifySections(sections, references)
-        AribSiEngine(ApplicationProvider.getApplicationContext()).use { engine ->
-            engine.setDiscoveryProfile(SiDiscoveryProfile.ISDB_T)
-            verifyIngest(engine, sections)
-            verifyServices(engine, expected)
-            verifyPrograms(engine, expected)
+        verifyLiveProgramPublication(sections, expected)
+    }
+
+    // 実TS取得を既存試験と共用し、製品Sessionの公開入口からProvider境界まで検査する。
+    @Suppress("LongMethod")
+    private fun verifyLiveProgramPublication(
+        sections: List<Section>,
+        expected: JSONObject,
+    ) {
+        val key =
+            ServiceKey(
+                expected.getInt("original_network_id"),
+                expected.getInt("transport_stream_id"),
+                expected.getInt("selected_service_id"),
+            )
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val provider = LiveProgramProvider(key)
+        provider.attachInfo(context, ProviderInfo().apply { authority = TvContract.AUTHORITY })
+        ShadowContentResolver.registerProviderInternal(TvContract.AUTHORITY, provider)
+        val session = MaleicacidLiveSession(context, context, "real-ts-test-input", "real-ts-program")
+        val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(session, "sessionExecutor")
+        try {
+            executor.callControl(15_000L) {
+                val engine = ReflectionHelpers.getField<AribSiEngine>(session, "aribSiEngine")
+                engine.setDiscoveryProfile(SiDiscoveryProfile.ISDB_T)
+                verifyIngest(engine, sections)
+                verifyServices(engine, expected)
+                verifyPrograms(engine, expected)
+                ReflectionHelpers.setField(session, "currentService", key)
+                ReflectionHelpers.setField(
+                    session,
+                    "currentRatingProfile",
+                    AribRatingMapper.profileForDeliverySystem("ISDB_T"),
+                )
+                val ready = engine.livePlaybackSnapshot()
+                assertTrue(ServicePolicyEvaluator.evaluateLive(ready, key).registrationReady)
+                ReflectionHelpers.setField(session, "latestLiveSnapshot", ready)
+                ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramsForCurrentService")
+            }
+            val present = objects(expected.getJSONArray("selected_service_pf_events")).minBy { it.getLong("start_time_unix_ms") }
+            val start = present.getLong("start_time_unix_ms")
+            val end = start + present.getLong("duration_ms")
+            val fixtureNow = start + 1
+            assertTrue(provider.rows.all { it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 7L })
+            val current =
+                provider.rows.single {
+                    it.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) <= fixtureNow &&
+                        fixtureNow < it.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                }
+            assertEquals(present.getInt("event_id"), current.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID).toInt())
+            assertEquals(start, current.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS).toLong())
+            assertEquals(end, current.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS).toLong())
+            // 元section 0のshort_event_descriptorに含まれる固定の番組名。
+            assertTrue(current.getAsString(TvContract.Programs.COLUMN_TITLE).orEmpty().contains("名古屋"))
+        } finally {
+            session.onRelease()
+            check(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
+    }
+
+    private class LiveProgramProvider(
+        private val key: ServiceKey,
+    ) : ContentProvider() {
+        val rows = mutableListOf<ContentValues>()
+
+        override fun onCreate() = true
+
+        override fun query(
+            uri: Uri,
+            projection: Array<out String>?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+            sortOrder: String?,
+        ): MatrixCursor =
+            MatrixCursor(checkNotNull(projection)).apply {
+                if (uri.pathSegments.first() == "channel") {
+                    addRow(arrayOf(7L, key.originalNetworkId, key.transportStreamId, key.serviceId))
+                    addRow(arrayOf(8L, key.originalNetworkId, key.transportStreamId, 1049))
+                }
+            }
+
+        override fun getType(uri: Uri): String? = null
+
+        override fun insert(
+            uri: Uri,
+            values: ContentValues?,
+        ): Uri {
+            assertEquals(TvContract.Programs.CONTENT_URI, uri)
+            rows += ContentValues(checkNotNull(values))
+            return ContentUris.withAppendedId(uri, rows.size.toLong())
+        }
+
+        override fun update(
+            uri: Uri,
+            values: ContentValues?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ) = 0
+
+        override fun delete(
+            uri: Uri,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ) = 0
     }
 
     // 実TS/HAL/JNIを共用し、SDKのnative I/Oだけを既存Shadowへ接続する。
