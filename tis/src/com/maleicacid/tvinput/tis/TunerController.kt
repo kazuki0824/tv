@@ -421,6 +421,14 @@ class TunerController(
         playbackPipeline.setCallbacks(onVideoAvailable, onVideoUnavailable)
     }
 
+    fun setOnAudioPresentationChanged(callback: (Long) -> Unit) = playbackPipeline.setOnAudioPresentationChanged(callback)
+
+    fun audioPresentationOutput(
+        service: ServiceKey,
+        track: TisTrack,
+        eit: Boolean?,
+    ) = playbackPipeline.audioPresentationOutput(service, track, eit)
+
     fun setOnVideoFormatDiscoveredCallback(callback: (Long, PlaybackPipeline.VideoFormatInfo) -> Unit) {
         playbackPipeline.setOnVideoFormatDiscoveredCallback(callback)
     }

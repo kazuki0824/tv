@@ -327,6 +327,10 @@ class NativeAribSiParser : AutoCloseable {
             }
         }
 
+        @JvmStatic private external fun probeDualMono(frame: ByteArray): Boolean?
+
+        internal fun adtsDualMono(frame: ByteArray): Boolean? = probeDualMono(frame)
+
         @JvmStatic private external fun nativeProbeAacConfiguration(
             adts: ByteArray,
             asc: ByteArray?,

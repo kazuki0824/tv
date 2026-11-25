@@ -366,7 +366,7 @@ class TisReviewBoundaryTest {
                 componentType = null,
                 language = "jpn",
             )
-        val unchanged = TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) { null }
+        val unchanged = TunerSelectionPolicy.withDualMonoPresentations(listOf(base), { _, fact -> fact?.dualMono == true }) { null }
         check(unchanged == listOf(base))
         val descriptor =
             AribComponentEntry(
@@ -376,7 +376,7 @@ class TisReviewBoundaryTest {
                 secondLanguage = "eng",
                 dualMono = true,
             )
-        val advertised = TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) { descriptor }
+        val advertised = TunerSelectionPolicy.withDualMonoPresentations(listOf(base), { _, fact -> fact?.dualMono == true }) { descriptor }
         check(advertised.map { it.id } == listOf("audio:274:16:main", "audio:274:16:sub", "audio:274:16:main_sub"))
         val expectedPresentations =
             listOf(
@@ -389,7 +389,10 @@ class TisReviewBoundaryTest {
         check(advertised.all { TunerSelectionPolicy.physicalAudioTrackId(it) == base.id })
         check(advertised[1].language == "eng")
         val nonDualMono =
-            TunerSelectionPolicy.withDualMonoPresentations(listOf(base)) { descriptor.copy(dualMono = false) }
+            TunerSelectionPolicy.withDualMonoPresentations(
+                listOf(base),
+                { _, fact -> fact?.dualMono == true },
+            ) { descriptor.copy(dualMono = false) }
         check(nonDualMono == listOf(base))
     }
 

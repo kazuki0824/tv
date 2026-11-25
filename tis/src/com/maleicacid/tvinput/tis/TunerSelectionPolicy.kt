@@ -155,12 +155,13 @@ object TunerSelectionPolicy {
      */
     fun withDualMonoPresentations(
         tracks: List<TunerController.TisTrack>,
+        selectable: (TunerController.TisTrack, AribComponentEntry?) -> Boolean,
         currentAudioComponent: (Int?) -> AribComponentEntry?,
     ): List<TunerController.TisTrack> =
         tracks.flatMap { track ->
             if (track.type != TvTrackInfo.TYPE_AUDIO) return@flatMap listOf(track)
             val component = currentAudioComponent(track.componentTag)
-            if (component?.parseStatus != SiParseStatus.OK || component.dualMono != true) {
+            if (!selectable(track, component)) {
                 return@flatMap listOf(track)
             }
             listOf(
@@ -170,7 +171,7 @@ object TunerSelectionPolicy {
                 ),
                 track.copy(
                     id = "${track.id}:sub",
-                    language = component.secondLanguage?.takeIf { it.isNotBlank() } ?: track.language,
+                    language = component?.secondLanguage?.takeIf { it.isNotBlank() } ?: track.language,
                     audioPresentation = PlaybackPipeline.DualMonoPresentation.SUB,
                 ),
                 track.copy(

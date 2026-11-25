@@ -8,8 +8,7 @@ data class DecoderConfigurationIdentity(
     val avc: com.maleicacid.tvinput.aribsi.AribAvcSignaling?,
     val audioConfigHex: String?,
     val audioConfigHeader: com.maleicacid.tvinput.aribsi.AribAudioConfigHeader?,
-    val audioChannelConfiguration: String?,
-    val audioDualMono: Boolean?,
+    val audioChannelMask: Int?,
 ) {
     companion object {
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -17,7 +16,6 @@ data class DecoderConfigurationIdentity(
         fun from(
             stream: com.maleicacid.tvinput.aribsi.AribElementaryStream,
             audioChannelConfiguration: String? = null,
-            audioDualMono: Boolean? = null,
         ): DecoderConfigurationIdentity {
             val audio = TunerSelectionPolicy.isSupportedAudioStreamType(stream.streamType)
             return DecoderConfigurationIdentity(
@@ -28,8 +26,7 @@ data class DecoderConfigurationIdentity(
                         ?.lowercase()
                         .takeIf { stream.streamType == 0x0f },
                 audioConfigHeader = stream.codecFacts.audioConfigHeader.takeIf { stream.streamType == 0x0f },
-                audioChannelConfiguration = audioChannelConfiguration.takeIf { audio },
-                audioDualMono = audioDualMono.takeIf { audio },
+                audioChannelMask = PlaybackPipeline.PcmChannelMaskPolicy.multichannelMask(audioChannelConfiguration).takeIf { audio },
             )
         }
     }

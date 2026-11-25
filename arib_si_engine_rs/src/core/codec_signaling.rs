@@ -437,6 +437,46 @@ pub fn probe_adts_configuration(
                     if frame_end > bytes.len() {
                         return AacConfigurationProbe::Pending;
                     }
+                    if let Some((AacPresentation::DualMono, tags)) =
+                        aac_elements::parse_frame(&bytes[cursor..frame_end])
+                    {
+                        // 確認した順序の2 SCEを前方要素としてPCEに記録する。
+                        let mut config = prefix.to_vec();
+                        let mut index = 0;
+                        for (value, width) in [
+                            (0, 4),
+                            (1, 2),
+                            (frequency_index, 4),
+                            (2, 4),
+                            (0, 4),
+                            (0, 4),
+                            (0, 2),
+                            (0, 3),
+                            (0, 4),
+                            (0, 3),
+                            (tags[0], 5),
+                            (tags[1], 5),
+                        ] {
+                            for bit in (0..width).rev() {
+                                if index % 8 == 0 {
+                                    config.push(0);
+                                }
+                                config[2 + index / 8] |= ((value >> bit) & 1) << (7 - index % 8);
+                                index += 1;
+                            }
+                        }
+                        config.push(0);
+                        return AacConfigurationProbe::Ready {
+                            configuration: AacAdtsConfiguration {
+                                audio_object_type: object_type,
+                                sampling_frequency: frequency,
+                                extension_sampling_frequency: None,
+                                channel_configuration: 0,
+                                channel_count: 2,
+                                audio_specific_config_hex: hex(&config),
+                            },
+                        };
+                    }
                     cursor = frame_end;
                     continue;
                 }
@@ -481,6 +521,12 @@ pub fn probe_adts_configuration(
     }
     AacConfigurationProbe::Pending
 }
+
+#[path = "codec_signaling/aac_elements.rs"]
+mod aac_elements;
+#[path = "codec_signaling/aac_tables.rs"]
+mod aac_tables;
+pub use aac_elements::{adts_presentation, AacPresentation};
 
 struct AudioConfigBits<'a> {
     bytes: &'a [u8],

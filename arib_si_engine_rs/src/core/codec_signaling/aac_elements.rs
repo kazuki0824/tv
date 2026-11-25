@@ -1,0 +1,371 @@
+//! MPEG-2 AAC LCの構文要素を終端まで読む。係数・PCMは展開しない。
+use super::{aac_tables::*, parse_program_config, AudioConfigBits};
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AacPresentation {
+    DualMono,
+    Other,
+    Unknown,
+}
+
+pub fn adts_presentation(frame: &[u8]) -> AacPresentation {
+    parse_frame(frame).map_or(AacPresentation::Unknown, |(fact, _)| fact)
+}
+
+pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
+    let h = frame.get(..7)?;
+    let frequency = (h[2] >> 2) & 15;
+    let configuration = ((h[2] & 1) << 2) | (h[3] >> 6);
+    let length = ((h[3] as usize & 3) << 11) | ((h[4] as usize) << 3) | (h[5] as usize >> 5);
+    if h[0] != 255
+        || h[1] & 0xfe != 0xf8
+        || h[2] >> 6 != 1
+        || frequency >= 12
+        || length != frame.len()
+        || h[6] & 3 != 0
+    {
+        return None;
+    }
+    let mut bits = AudioConfigBits {
+        bytes: frame.get(if h[1] & 1 != 0 { 7 } else { 9 }..)?,
+        offset: 0,
+    };
+    let mut tags = [0u16; 4];
+    let mut channels = 0;
+    let mut single_tags = [0; 2];
+    let mut pce_channels = None;
+    loop {
+        let element = bits.read(3)? as usize;
+        match element {
+            0 | 1 | 3 => {
+                let instance = bits.read(4)?;
+                let tag = 1 << instance;
+                if element == 0 && channels < 2 {
+                    single_tags[channels] = instance as u8;
+                }
+                if tags[element] & tag != 0 {
+                    return None;
+                }
+                tags[element] |= tag;
+                let shared = if element == 1 && bits.read(1)? != 0 {
+                    let window = Window::read(&mut bits, frequency)?;
+                    match bits.read(2)? {
+                        1 => bits.skip(window.groups.len() * window.bands)?,
+                        3 => return None,
+                        _ => {}
+                    }
+                    Some(window)
+                } else {
+                    None
+                };
+                for _ in 0..if element == 1 { 2 } else { 1 } {
+                    channel(&mut bits, frequency, shared.as_ref())?;
+                    channels += 1;
+                }
+            }
+            4 => {
+                bits.skip(4)?;
+                let align = bits.read(1)? != 0;
+                let mut size = bits.read(8)?;
+                if size == 255 {
+                    size += bits.read(8)?;
+                }
+                if align {
+                    bits.align()?;
+                }
+                bits.skip(size as usize * 8)?;
+            }
+            5 => {
+                let pce = parse_program_config(&mut bits)?;
+                if pce.object_type != 2
+                    || pce.frequency_index != frequency
+                    || pce_channels.replace(pce.channel_count).is_some()
+                {
+                    return None;
+                }
+            }
+            6 => {
+                let mut count = bits.read(4)?;
+                if count == 15 {
+                    count = 14 + bits.read(8)?;
+                }
+                bits.skip(count as usize * 8)?;
+            }
+            7 => break,
+            _ => return None,
+        }
+    }
+    bits.align()?;
+    if bits.offset != bits.bytes.len() * 8
+        || channels == 0
+        || pce_channels.is_some_and(|n| usize::from(n) != channels)
+    {
+        return None;
+    }
+    let sce = tags[0].count_ones();
+    let cpe = tags[1].count_ones();
+    let lfe = tags[3].count_ones();
+    if configuration != 0 {
+        let expected = [
+            (0, 0, 0),
+            (1, 0, 0),
+            (0, 1, 0),
+            (1, 1, 0),
+            (2, 1, 0),
+            (1, 2, 0),
+            (1, 2, 1),
+            (1, 3, 1),
+        ];
+        if expected[configuration as usize] != (sce, cpe, lfe) {
+            return None;
+        }
+    }
+    Some((
+        if configuration == 0 && sce == 2 && channels == 2 {
+            AacPresentation::DualMono
+        } else {
+            AacPresentation::Other
+        },
+        single_tags,
+    ))
+}
+
+impl AudioConfigBits<'_> {
+    fn skip(&mut self, count: usize) -> Option<()> {
+        let end = self.offset.checked_add(count)?;
+        if end > self.bytes.len() * 8 {
+            return None;
+        }
+        self.offset = end;
+        Some(())
+    }
+    fn align(&mut self) -> Option<()> {
+        self.skip((8 - self.offset % 8) % 8)
+    }
+    fn symbol(&mut self, book: usize) -> Option<usize> {
+        let tree = HUFFMAN[book];
+        let mut node = 0;
+        loop {
+            let next = tree[node][self.read(1)? as usize];
+            if next < 0 {
+                return Some((-1 - next) as usize);
+            }
+            node = next as usize;
+        }
+    }
+}
+
+struct Window {
+    short: bool,
+    bands: usize,
+    offsets: &'static [usize],
+    groups: Vec<usize>,
+}
+
+impl Window {
+    fn read(bits: &mut AudioConfigBits<'_>, frequency: u8) -> Option<Self> {
+        if bits.read(1)? != 0 {
+            return None;
+        }
+        let short = bits.read(2)? == 2;
+        bits.skip(1)?;
+        let bands = bits.read(if short { 4 } else { 6 })? as usize;
+        let mut groups = vec![1];
+        if short {
+            for _ in 1..8 {
+                if bits.read(1)? != 0 {
+                    *groups.last_mut()? += 1;
+                } else {
+                    groups.push(1);
+                }
+            }
+        } else if bits.read(1)? != 0 {
+            return None;
+        }
+        let (long, small) = match frequency {
+            0 | 1 => (LONG_96K, SHORT_64K),
+            2 => (LONG_64K, SHORT_64K),
+            3 | 4 => (LONG_48K, SHORT_48K),
+            5 => (LONG_32K, SHORT_48K),
+            6 | 7 => (LONG_24K, SHORT_24K),
+            8..=10 => (LONG_16K, SHORT_16K),
+            11 => (LONG_8K, SHORT_8K),
+            _ => return None,
+        };
+        let offsets = if short { small } else { long };
+        offsets.get(bands)?;
+        Some(Self {
+            short,
+            bands,
+            offsets,
+            groups,
+        })
+    }
+}
+
+fn channel(bits: &mut AudioConfigBits<'_>, frequency: u8, shared: Option<&Window>) -> Option<()> {
+    let gain = bits.read(8)? as i32;
+    let own;
+    let window = if let Some(w) = shared {
+        w
+    } else {
+        own = Window::read(bits, frequency)?;
+        &own
+    };
+    let width = if window.short { 3 } else { 5 };
+    let escape = (1 << width) - 1;
+    let mut books = Vec::with_capacity(window.groups.len() * window.bands);
+    for _ in &window.groups {
+        let mut band = 0;
+        while band < window.bands {
+            let book = bits.read(4)? as usize;
+            if book == 12 || book == 13 {
+                return None;
+            }
+            let mut length = 0;
+            loop {
+                let part = bits.read(width)?;
+                length += part as usize;
+                if band + length > window.bands {
+                    return None;
+                }
+                if part != escape {
+                    break;
+                }
+            }
+            if length == 0 {
+                return None;
+            }
+            books.resize(books.len() + length, book);
+            band += length;
+        }
+    }
+    let mut scale = gain;
+    for &book in &books {
+        if book != 0 {
+            let delta = bits.symbol(0)? as i32 - 60;
+            if book <= 11 {
+                scale += delta;
+                if !(0..=255).contains(&scale) {
+                    return None;
+                }
+            }
+        }
+    }
+    if bits.read(1)? != 0 {
+        if window.short {
+            return None;
+        }
+        let count = bits.read(2)? + 1;
+        let start = bits.read(6)? as usize;
+        let mut pos = *window.offsets.get(start)?;
+        for _ in 0..count {
+            pos += bits.read(5)? as usize;
+            if pos >= 1024 {
+                return None;
+            }
+            bits.skip(4)?;
+        }
+    }
+    if bits.read(1)? != 0 {
+        for _ in 0..if window.short { 8 } else { 1 } {
+            let filters = bits.read(if window.short { 1 } else { 2 })?;
+            if filters == 0 {
+                continue;
+            }
+            let resolution = 3 + bits.read(1)?;
+            for _ in 0..filters {
+                bits.skip(if window.short { 4 } else { 6 })?;
+                let order = bits.read(if window.short { 3 } else { 5 })?;
+                if order > if window.short { 7 } else { 12 } {
+                    return None;
+                }
+                if order > 0 {
+                    bits.skip(1)?;
+                    let compressed = bits.read(1)?;
+                    bits.skip((order * (resolution - compressed)) as usize)?;
+                }
+            }
+        }
+    }
+    if bits.read(1)? != 0 {
+        return None;
+    }
+    let mut books = books.into_iter();
+    for &windows in &window.groups {
+        for band in 0..window.bands {
+            let book = books.next()?;
+            if !(1..=11).contains(&book) {
+                continue;
+            }
+            let dimension = if book <= 4 { 4 } else { 2 };
+            let lines = (window.offsets[band + 1] - window.offsets[band]) * windows;
+            for _ in 0..lines / dimension {
+                let mut symbol = bits.symbol(book)?;
+                let radix = match book {
+                    3 | 4 => 3,
+                    7 | 8 => 8,
+                    9 | 10 => 13,
+                    11 => 17,
+                    _ => continue,
+                };
+                let mut escapes = 0;
+                for _ in 0..dimension {
+                    let magnitude = symbol % radix;
+                    symbol /= radix;
+                    if magnitude != 0 {
+                        bits.skip(1)?;
+                    }
+                    if magnitude == 16 {
+                        escapes += 1;
+                    }
+                }
+                for _ in 0..escapes {
+                    let mut size = 4;
+                    while bits.read(1)? != 0 {
+                        size += 1;
+                        if size > 12 {
+                            return None;
+                        }
+                    }
+                    bits.skip(size)?;
+                }
+            }
+        }
+    }
+    Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec_signaling::{probe_adts_configuration, AacConfigurationProbe};
+    #[test]
+    fn complete_elements_determine_presentation_and_decoder_config() {
+        let dual = &[255, 249, 76, 0, 1, 255, 252, 0, 200, 0, 0, 22, 64, 0, 56];
+        let stereo = &[255, 249, 76, 128, 1, 223, 252, 32, 100, 0, 1, 144, 0, 14];
+        assert_eq!(adts_presentation(dual), AacPresentation::DualMono);
+        assert_eq!(adts_presentation(stereo), AacPresentation::Other);
+        let AacConfigurationProbe::Ready { configuration } = probe_adts_configuration(dual, None)
+        else {
+            panic!("2 SCEの構成が必要");
+        };
+        assert_eq!(configuration.channel_count, 2);
+        let asc: Vec<_> = configuration
+            .audio_specific_config_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert!(matches!(
+            probe_adts_configuration(dual, Some(&asc)),
+            AacConfigurationProbe::Ready { .. }
+        ));
+        for end in 0..dual.len() {
+            assert_eq!(adts_presentation(&dual[..end]), AacPresentation::Unknown);
+        }
+        let mut invalid = *dual;
+        *invalid.last_mut().unwrap() = 0;
+        assert_eq!(adts_presentation(&invalid), AacPresentation::Unknown);
+    }
+}

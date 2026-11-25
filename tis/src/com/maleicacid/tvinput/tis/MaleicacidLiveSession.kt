@@ -101,6 +101,7 @@ class MaleicacidLiveSession(
     private var frontendSignalUnavailable: Boolean = false
     private var selectedSubtitleTrackId: String? = null
     private var subtitleExplicitlyDisabled: Boolean = false
+    private var notifiedAudioTrackId: String? = null
     private var currentTrackSignature: Set<String> = emptySet()
     private val captionOverlayView = CaptionOverlayView(appContext)
     private val captionController =
@@ -162,6 +163,13 @@ class MaleicacidLiveSession(
             onVideoAvailable = { generation -> enqueueSessionAction { handleFirstFrameAvailable(generation) } },
             onVideoUnavailable = { reason -> enqueueSessionAction { handlePlaybackUnavailable(reason) } },
         )
+        tunerController.setOnAudioPresentationChanged { generation ->
+            enqueueSessionAction {
+                if (PlaybackStartTransitions.acceptsGeneration(playbackState, generation)) {
+                    latestService?.let(::updateTracks)
+                }
+            }
+        }
         tunerController.setOnVideoFormatDiscoveredCallback { generation, info ->
             enqueueSessionAction { updateCurrentProgramVideoMetadata(generation, info) }
         }
@@ -512,6 +520,7 @@ class MaleicacidLiveSession(
         captionController.selectTrack(null)
         superimposeController.setEnabled(true)
         superimposeController.selectTrack(null)
+        notifiedAudioTrackId = null
         currentTrackSignature = emptySet()
     }
 
@@ -812,7 +821,6 @@ class MaleicacidLiveSession(
                     DecoderConfigurationIdentity.from(
                         it,
                         selection.audioChannelConfiguration,
-                        selection.audioDualMono,
                     )
                 },
             subtitlePid = selection.subtitle?.elementaryPid,
@@ -891,8 +899,7 @@ class MaleicacidLiveSession(
                     preferredAudioTrackId = physicalTrackId
                     dualMonoPresentation = presentation
                     audioFallbackDisabled = false
-                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
-                    return true
+                    return requested.audioPresentation == null
                 }
                 if (playbackState !is PlaybackStartState.Started) return false
                 if (physicalTrackId == preferredAudioTrackId && requested.audioPresentation != null) {
@@ -902,7 +909,7 @@ class MaleicacidLiveSession(
                         if (!applied) return false
                         dualMonoPresentation = presentation
                         audioFallbackDisabled = false
-                        notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
+                        publishAudioSelection(requested.id)
                         return true
                     }
                 }
@@ -956,8 +963,8 @@ class MaleicacidLiveSession(
                             updatePlaybackStartState(current.copy(signature = signature))
                         }
                     }
-                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
-                    true
+                    updateTracks(service)
+                    requested.audioPresentation == null || notifiedAudioTrackId == requested.id
                 } else {
                     preferredAudioTrackId = previousAudioTrackId
                     audioFallbackDisabled = previousAudioFallbackDisabled
@@ -1055,12 +1062,22 @@ class MaleicacidLiveSession(
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    private fun publishAudioSelection(id: String?) {
+        if (notifiedAudioTrackId == id) return
+        notifiedAudioTrackId = id
+        notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, id)
+    }
+
     private fun displayTracksFor(
         service: AribService,
         defaultComponentGroupTags: Set<Int>? = currentDefaultComponentGroupTags(service.serviceKey),
     ): List<TunerController.TisTrack> =
         TunerSelectionPolicy.withDualMonoPresentations(
             tunerController.tracksFor(service.streams, defaultComponentGroupTags),
+            { track, component ->
+                tunerController.audioPresentationOutput(service.serviceKey, track, component?.dualMono)?.selectable ==
+                    true
+            },
         ) { componentTag -> currentAudioComponent(service.serviceKey, componentTag) }
 
     @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength")
@@ -1155,22 +1172,17 @@ class MaleicacidLiveSession(
             // トラック集合が変わらないSI更新では、選択通知も繰り返さない。
             // 明示的な選択操作はonSelectTrackで別途通知する。
             tracks.firstOrNull { it.type == TvTrackInfo.TYPE_VIDEO }?.let { notifyTrackSelected(TvTrackInfo.TYPE_VIDEO, it.id) }
-            val selectedAudio =
-                preferredAudioTrackId?.let { wanted ->
-                    tracks.firstOrNull { track ->
-                        track.type == TvTrackInfo.TYPE_AUDIO &&
-                            TunerSelectionPolicy.physicalAudioTrackId(track) == wanted &&
-                            (track.audioPresentation == null || track.audioPresentation == dualMonoPresentation)
-                    }
-                } ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO }
-            selectedAudio?.let {
-                preferredAudioTrackId = TunerSelectionPolicy.physicalAudioTrackId(it)
-                // EITから論理選択肢が消えても、物理PIDの通知だけで実音声modeを変更したことにしない。
-                it.audioPresentation?.let { presentation -> dualMonoPresentation = presentation }
-                notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id)
-            }
             updateSubtitleSelection(tracks)
         }
+        val applied =
+            tracks.firstOrNull { track ->
+                if (track.type != TvTrackInfo.TYPE_AUDIO) return@firstOrNull false
+                val eit = currentAudioComponent(service.serviceKey, track.componentTag)
+                val output = tunerController.audioPresentationOutput(service.serviceKey, track, eit?.dualMono)
+                output != null && track.audioPresentation == output.applied
+            }
+        if (applied != null) preferredAudioTrackId = TunerSelectionPolicy.physicalAudioTrackId(applied)
+        publishAudioSelection(applied?.id)
         updateSuperimposeSelection(service)
     }
 
