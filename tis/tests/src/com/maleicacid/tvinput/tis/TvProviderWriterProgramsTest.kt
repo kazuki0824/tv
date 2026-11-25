@@ -30,6 +30,7 @@ import com.maleicacid.tvinput.db.ProgramDescriptors
 import com.maleicacid.tvinput.db.ProgramRecord
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.time.Instant
 
 // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
 @Suppress("LargeClass", "TooManyFunctions")
@@ -145,7 +146,8 @@ class TvProviderWriterProgramsTest {
         store: FakeStore,
         first: ProgramRecord,
     ) {
-        val ten = java.time.Instant.parse("2023-11-15T10:00:00+09:00").toEpochMilli()
+        val start = Instant.parse("2023-11-15T10:00:00+09:00")
+        val ten = start.toEpochMilli()
         val hour = 3_600_000L
         val news = first.copy(startTimeMillis = ten, durationMillis = hour, title = "ニュース")
         check(writer.upsertPrograms(listOf(news)).updated == 1)
