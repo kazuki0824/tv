@@ -77,10 +77,7 @@ class TvProviderWriterProgramsTest {
     }
 
     @Suppress("MaxLineLength")
-    @Test
-    fun multipleProgramsUseOneProviderIndexQueryPerService() {
-        val store = FakeStore()
-        val writer = TvProviderWriter("input.test", store, testOnly = true)
+    private fun seedPresentFollowing(writer: TvProviderWriter): Pair<ProgramRecord, ProgramRecord> {
         writer.upsertChannels(
             listOf(
                 ChannelRecord(
@@ -114,11 +111,15 @@ class TvProviderWriterProgramsTest {
             )
         val result = writer.upsertPrograms(listOf(first, second))
         check(result.inserted == 2) { result.toString() }
+        return first to second
+    }
+
+    @Test
+    fun multipleProgramsUseOneProviderIndexQueryPerService() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val (first, _) = seedPresentFollowing(writer)
         check(store.programWindowQueryCount == 1) { "queries=${store.programWindowQueryCount}" }
-        val other = second.copy(eventId = 12, title = "他TS番組", source = second.source.copy(tableId = 0x4f))
-        val blocked = writer.upsertProgramsForWindows(listOf(other), emptyList())
-        check(blocked.failures.isEmpty() && key !in blocked.succeededServiceKeys)
-        check(store.programs.size == 2)
         val schedule = first.copy(title = "older schedule", source = first.source.copy(tableId = 0x60))
         val replay = writer.upsertProgramsForWindows(listOf(schedule), emptyList())
         check(replay.failures.isEmpty() && replay.updated == 0 && replay.inserted == 0)
@@ -136,6 +137,17 @@ class TvProviderWriterProgramsTest {
         check(row.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "出演者の詳細")
         check(row.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).utf8Contains("出演者の詳細"))
         check(ProviderDataBridge.buildProgramProviderData(first, "{}".toByteArray()) is ProviderDataBridge.Failure)
+    }
+
+    @Test
+    fun obsoletePfBlocksOtherUntilAuthoritativeReplacement() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val (first, second) = seedPresentFollowing(writer)
+        val other = second.copy(eventId = 12, title = "他TS番組", source = second.source.copy(tableId = 0x4f))
+        val blocked = writer.upsertProgramsForWindows(listOf(other), emptyList())
+        check(blocked.failures.isEmpty() && key !in blocked.succeededServiceKeys)
+        check(store.programs.size == 2)
         val replacement = other.copy(source = other.source.copy(tableId = 0x50))
         val window =
             ProgramPublishCoordinator.EpgUpdateWindow(

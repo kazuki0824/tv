@@ -489,9 +489,11 @@ class TvProviderWriter private constructor(
                                 }
                         val hasExtended = program.descriptors.extendedTexts.isNotEmpty() || program.descriptors.extendedItems.isNotEmpty()
                         val detailOnly = blocked || EpgSectionPolicy.isExtendedSchedule(program.source.tableId)
-                        if (blocked || (detailOnly && (!hasExtended || (existingEntry != null && sameOccurrence == null)))) {
+                        if (blocked) allProgramsStored = false
+                        val missingDetailTarget = sameOccurrence == null && (blocked || existingEntry != null)
+                        if (detailOnly && (!hasExtended || missingDetailTarget)) {
                             allProgramsStored = false
-                            if (!hasExtended || sameOccurrence == null) return@mapNotNull null
+                            return@mapNotNull null
                         }
                         if (!blocked && program.source.tableId != EIT_PF_ACTUAL) supplementalKeys += key
                         val oldValues = sameOccurrence?.values
