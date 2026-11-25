@@ -1771,6 +1771,8 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(PlaybackPipeline.DualMonoPresentation.SUB, ReflectionHelpers.getField<Any>(session, "dualMonoPresentation"))
             }
             ReflectionHelpers.setField(session, "playbackState", started)
+            ReflectionHelpers.setField(fixture.pipeline, "activeSelection", selection)
+            fixture.avFilter(true)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
             ReflectionHelpers.setField(decoder, "isDualMonoStream", true)
             val track =
@@ -1865,6 +1867,19 @@ class PlaybackFilterAdmissionTest {
             assertEquals(notifications, selected.size)
             assertEquals(PlaybackPipeline.DualMonoPresentation.MAIN, ReflectionHelpers.getField<Any>(session, "dualMonoPresentation"))
             assertEquals(PlaybackPipeline.DualMonoPresentation.MAIN, ReflectionHelpers.getField<Any>(decoder, "dualMonoPresentation"))
+            // 同じ選択意図が残っていても、実Filterを失った場合は通常のPID再取得を行う。
+            nativeTrack.accept = true
+            val lostFilter = ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter")
+            lostFilter.close()
+            ReflectionHelpers.setField(fixture.pipeline, "audioFilter", null)
+            val modeCalls = nativeTrack.modes.size
+            assertNull(fixture.pipeline.setDualMonoPresentation(PlaybackPipeline.DualMonoPresentation.SUB, physical))
+            assertTrue(fixture.selectAudio(session, "$physical:main"))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("$physical:main", selected.last())
+            assertTrue(ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter") !== lostFilter)
+            assertEquals(modeCalls, nativeTrack.modes.size)
+            assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
         }
     }
 

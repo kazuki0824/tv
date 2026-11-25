@@ -2036,8 +2036,10 @@ class TunerController(
         return playbackPipeline.switchAudio(tunerInstance, selection)
     }
 
-    fun setDualMonoPresentation(presentation: PlaybackPipeline.DualMonoPresentation): Boolean =
-        playbackPipeline.setDualMonoPresentation(presentation)
+    fun setDualMonoPresentation(
+        presentation: PlaybackPipeline.DualMonoPresentation,
+        expectedAudioTrackId: String? = null,
+    ): Boolean? = playbackPipeline.setDualMonoPresentation(presentation, expectedAudioTrackId)
 
     fun stopPlayback() {
         playbackPipeline.stop()

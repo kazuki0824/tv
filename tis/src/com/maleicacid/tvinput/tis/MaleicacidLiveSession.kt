@@ -837,7 +837,7 @@ class MaleicacidLiveSession(
                     DUAL_MONO_MAIN_SUB -> PlaybackPipeline.DualMonoPresentation.MAIN_SUB
                     else -> return@enqueueSessionAction
                 }
-            if (tunerController.setDualMonoPresentation(presentation)) {
+            if (tunerController.setDualMonoPresentation(presentation) == true) {
                 dualMonoPresentation = presentation
                 latestService?.let { service ->
                     displayTracksFor(service)
@@ -896,11 +896,15 @@ class MaleicacidLiveSession(
                 }
                 if (playbackState !is PlaybackStartState.Started) return false
                 if (physicalTrackId == preferredAudioTrackId && requested.audioPresentation != null) {
-                    if (!tunerController.setDualMonoPresentation(presentation)) return false
-                    dualMonoPresentation = presentation
-                    audioFallbackDisabled = false
-                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
-                    return true
+                    val applied = tunerController.setDualMonoPresentation(presentation, physicalTrackId)
+                    // 選択意図と実音声経路は別物。経路不在時は通常の音声再取得へ進む。
+                    if (applied != null) {
+                        if (!applied) return false
+                        dualMonoPresentation = presentation
+                        audioFallbackDisabled = false
+                        notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
+                        return true
+                    }
                 }
                 val previousAudioTrackId = preferredAudioTrackId
                 val previousAudioFallbackDisabled = audioFallbackDisabled

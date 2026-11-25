@@ -478,9 +478,20 @@ class PlaybackPipeline(
         enqueuePlaybackControl { setVolumeOnPlaybackExecutor(volume) }
     }
 
-    fun setDualMonoPresentation(presentation: DualMonoPresentation): Boolean =
+    // null: 対象の稼働音声経路なし。false: 経路は存在するがmode変更を拒否。
+    fun setDualMonoPresentation(
+        presentation: DualMonoPresentation,
+        expectedAudioTrackId: String? = null,
+    ): Boolean? =
         runOnPlaybackExecutorBlocking {
-            val applied = audioDecoder?.setDualMonoPresentation(presentation) == true
+            if (audioFilter == null) return@runOnPlaybackExecutorBlocking null
+            val decoder = audioDecoder ?: return@runOnPlaybackExecutorBlocking null
+            if (expectedAudioTrackId != null &&
+                activeSelection?.audio?.let(TunerSelectionPolicy::trackIdForAudio) != expectedAudioTrackId
+            ) {
+                return@runOnPlaybackExecutorBlocking null
+            }
+            val applied = decoder.setDualMonoPresentation(presentation)
             if (applied) activeSelection = activeSelection?.copy(dualMonoPresentation = presentation)
             applied
         }
