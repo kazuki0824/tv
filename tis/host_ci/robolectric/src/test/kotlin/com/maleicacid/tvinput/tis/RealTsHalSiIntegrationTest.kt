@@ -308,8 +308,16 @@ class RealTsHalSiIntegrationTest {
         val input = File(directory, expected.getString("fixture"))
         assertEquals(expected.getString("sha256"), sha256(input.readBytes()))
         val references = objects(expected.getJSONArray("section_reference"))
-        val sections = runHal(input, expected, references)
-        verifySections(sections, references)
+        // 同じ実TS内のCRC正常なscheduleを含め、製品HALの出力を放送順に受け取る。
+        val scheduleCounts = mapOf(0x50 to 38, 0x51 to 11, 0x58 to 40, 0x59 to 5)
+        val scheduleReferences =
+            scheduleCounts.map { (table, count) ->
+                JSONObject().put("pid", 18).put("table_id", table).put("section_count", count)
+            }
+        val sections = runHal(input, expected, references + scheduleReferences)
+        val (schedule, original) = sections.partition { it.pid == 18 && it.bytes.first().toInt() in scheduleCounts }
+        assertEquals(scheduleCounts, schedule.groupingBy { it.bytes.first().toInt() }.eachCount())
+        verifySections(original, references)
         AribSiEngine(ApplicationProvider.getApplicationContext()).use { engine ->
             val tuner = TunerFrontendLeaseTransitionTest.controller()
             val ingest = SectionIngestController(engine)
@@ -333,8 +341,7 @@ class RealTsHalSiIntegrationTest {
                 try {
                     check(entered.await(5, TimeUnit.SECONDS))
                     // EIT先行で既存16枠を占有し、他FilterのPAT/PMT/SDT/NITを含むburstを同時配送する。
-                    val eit = sections.first { it.pid == 18 }
-                    repeat(16) { deliver(tuner, eit) }
+                    schedule.take(16).forEach { deliver(tuner, it) }
                     assertEquals(16, owner.queue.size)
                     val groups = sections.groupBy { it.pid }
                     val callbacks = Executors.newFixedThreadPool(groups.size)
@@ -399,12 +406,38 @@ class RealTsHalSiIntegrationTest {
                     "sha256=${expected.getString(
                         "sha256",
                     )} sections=${sections.size} filters=${sections.map { it.pid }.distinct().size}\n" +
+                        "scheduleCounts=$scheduleCounts metrics=${owner.metricsSnapshot()}\n" +
                         "assertedExpectations: peakPending=16 rejected=${sections.size} filterOverflow=0\n" +
                         "observedHostWallTime: blockedAndDrainNs=$blockedNanos replayNs=$replayNanos\n" +
                         "assertedExpectations: beforeReplayComplete=false afterReplayComplete=true " +
                         "nextCandidateLoss=0 nextCandidateComplete=true\n" +
                         "scope=syntheticOwnerSaturationAndManualReplay; realScanDeadlineAndAutonomousRecovery=notTested\n",
                 )
+                // ownerを停止せず放送順に連続配送し、p/f限定とschedule混在を同じ入力で比較する。
+                for ((label, stream) in listOf("pf" to original, "mixed" to sections)) {
+                    check(
+                        tuner
+                            .tuneForScan(TunerFrontendLeaseTransitionTest.terrestrial()) {
+                                engine.reset(SiDiscoveryProfile.ISDB_T)
+                                ingest.resetForTune()
+                            }.success,
+                    )
+                    deliver(tuner, pat)
+                    awaitIdle(owner)
+                    tuner.updatePmtFilters(engine.pmtPidsForSectionFilters(), tuner.currentGeneration())
+                    val window = tuner.beginSectionWindow()
+                    try {
+                        stream.forEach { deliver(tuner, it) }
+                        awaitIdle(owner)
+                    } finally {
+                        report.appendText("$label ${tuner.finishSectionMetricsWindow(window)}\n")
+                    }
+                    val completeBeforeReplay = collectionComplete(engine)
+                    report.appendText("$label loss=${ingest.transportLossSnapshot()} completeBeforeReplay=$completeBeforeReplay\n")
+                    replay(tuner, owner, stream)
+                    assertTrue(collectionComplete(engine))
+                    report.appendText("$label completeAfterReplay=true\n")
+                }
             } finally {
                 tuner.release()
             }

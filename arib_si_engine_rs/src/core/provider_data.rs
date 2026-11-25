@@ -31,7 +31,7 @@ pub struct ProgramKeyResult {
     pub table_id: i64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProgramKeyV1 {
     kind: String,
@@ -662,6 +662,13 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
         );
     };
     if let Some(mut previous) = existing {
+        if !valid_program_provider_data(&previous) || previous.program_key != data.program_key {
+            return failure_result(
+                "PROGRAM_REQUEST_INVALID",
+                "保存済みの番組情報が不正か、番組キーが一致しません".to_string(),
+                PROVIDER_SCHEMA_VERSION,
+            );
+        }
         if update_only_extended {
             previous.extended_texts = data.extended_texts;
             previous.extended_items = data.extended_items;
@@ -783,7 +790,7 @@ fn program_data_from_request(
             }]
         }
     };
-    // Other-TS EIT may arrive before any PMT facts for that service.
+    // 他TSのEITは、対象サービスのPMTを受信する前に届くことがある。
     let cas_facts = match request.cas_facts_canonical_json.as_deref() {
         Some(raw) => serde_json::from_str(raw).ok()?,
         None if (0x4f..=0x6f).contains(&request.source.table_id) => {

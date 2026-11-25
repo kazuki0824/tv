@@ -5,6 +5,7 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
 import android.media.tv.TvContract
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.maleicacid.tvinput.aribsi.AribComponentEntry
 import com.maleicacid.tvinput.aribsi.AribComponents
 import com.maleicacid.tvinput.aribsi.AribContentGenre
@@ -28,9 +29,11 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramDescriptors
 import com.maleicacid.tvinput.db.ProgramRecord
 import org.junit.Test
+import org.junit.runner.RunWith
 
 // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
 @Suppress("LargeClass", "TooManyFunctions")
+@RunWith(AndroidJUnit4::class)
 class TvProviderWriterProgramsTest {
     @Test
     fun testStoreBatchFailureDoesNotCommitEarlierOperations() {
@@ -112,6 +115,10 @@ class TvProviderWriterProgramsTest {
         val result = writer.upsertPrograms(listOf(first, second))
         check(result.inserted == 2) { result.toString() }
         check(store.programWindowQueryCount == 1) { "queries=${store.programWindowQueryCount}" }
+        val other = second.copy(eventId = 12, title = "他TS番組", source = second.source.copy(tableId = 0x4f))
+        val blocked = writer.upsertProgramsForWindows(listOf(other), emptyList())
+        check(blocked.failures.isEmpty() && key !in blocked.succeededServiceKeys)
+        check(store.programs.size == 2)
         val schedule = first.copy(title = "older schedule", source = first.source.copy(tableId = 0x60))
         val replay = writer.upsertProgramsForWindows(listOf(schedule), emptyList())
         check(replay.failures.isEmpty() && replay.updated == 0 && replay.inserted == 0)
@@ -128,6 +135,23 @@ class TvProviderWriterProgramsTest {
         val row = store.programs.values.single { it.getAsString(TvContract.Programs.COLUMN_TITLE) == "改題" }
         check(row.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "出演者の詳細")
         check(row.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).utf8Contains("出演者の詳細"))
+        check(ProviderDataBridge.buildProgramProviderData(first, "{}".toByteArray()) is ProviderDataBridge.Failure)
+        val replacement = other.copy(source = other.source.copy(tableId = 0x50))
+        val window =
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                key,
+                first.startTimeMillis,
+                second.startTimeMillis + second.durationMillis,
+                setOf(ProviderDataBridge.buildProgramKey(first)),
+                true,
+            )
+        val replaced = writer.upsertProgramsForWindows(listOf(first, replacement), listOf(window))
+        check(replaced.failures.isEmpty() && replaced.inserted == 1 && replaced.deleted == 1)
+        check(
+            store.programs.values
+                .map { it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) }
+                .toSet() == setOf(10, 12),
+        )
     }
 
     @Test

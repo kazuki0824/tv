@@ -397,6 +397,8 @@ class TvProviderWriter private constructor(
             val channelId = service.channelId
             val failureCountBeforeService = failures.size
             val preparationFailed = publication.failures.any { it.serviceKey == serviceKey }
+            var allProgramsStored = true
+            val supplementalKeys = mutableSetOf<String>()
             val serviceWindows = service.windows
             if (!preparationFailed && service.programs.isEmpty() && serviceWindows.isEmpty()) {
                 val existingPrograms = channelStore.indexExistingProgramsForService(channelId)
@@ -439,7 +441,21 @@ class TvProviderWriter private constructor(
                     val values: ContentValues,
                     val existingId: Long?,
                 )
-                val pfRows = existingPrograms.values.flatten().filter { it.sourceTableId in EIT_PF_ACTUAL..EpgSectionPolicy.PF_OTHER }
+                val incomingPf = sortedPrograms.map { it.first }.filter { it.source.tableId in EIT_PF_ACTUAL..EpgSectionPolicy.PF_OTHER }
+                val incomingPfByKey = incomingPf.associateBy(::programIdentity)
+                val pfRows =
+                    existingPrograms.flatMap { (key, entries) ->
+                        entries.filter { entry ->
+                            entry.sourceTableId in EIT_PF_ACTUAL..EpgSectionPolicy.PF_OTHER &&
+                                incomingPfByKey[key]?.let { program ->
+                                    program.source.tableId <= entry.sourceTableId && program.startTimeMillis == entry.startTimeMillis
+                                } != true &&
+                                serviceWindows.none { window ->
+                                    window.deletionAuthoritative && key !in window.validProgramKeys &&
+                                        entry.startTimeMillis < window.windowEndMs && window.windowStartMs < entry.endTimeMillis
+                                }
+                        }
+                    }
                 val publicationKeys = linkedSetOf<String>()
                 val writes =
                     sortedPrograms.mapNotNull { (program, values) ->
@@ -466,21 +482,22 @@ class TvProviderWriter private constructor(
                             pfRows.any {
                                 it.sourceTableId < program.source.tableId && it.startTimeMillis < programEnd &&
                                     program.startTimeMillis < it.endTimeMillis
-                            }
+                            } ||
+                                incomingPf.any {
+                                    it.source.tableId < program.source.tableId && it.startTimeMillis < programEnd &&
+                                        program.startTimeMillis < checkNotNull(checkedProgramEndTimeMillis(it))
+                                }
                         val hasExtended = program.descriptors.extendedTexts.isNotEmpty() || program.descriptors.extendedItems.isNotEmpty()
                         val detailOnly = blocked || EpgSectionPolicy.isExtendedSchedule(program.source.tableId)
-                        if (blocked && sameOccurrence == null) return@mapNotNull null
-                        if (detailOnly && existingEntry != null && sameOccurrence == null) return@mapNotNull null
-                        if (detailOnly && !hasExtended) return@mapNotNull null
+                        if (blocked || (detailOnly && (!hasExtended || (existingEntry != null && sameOccurrence == null)))) {
+                            allProgramsStored = false
+                            if (!hasExtended || sameOccurrence == null) return@mapNotNull null
+                        }
+                        if (!blocked && program.source.tableId != EIT_PF_ACTUAL) supplementalKeys += key
                         val oldValues = sameOccurrence?.values
                         val oldData = oldValues?.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
-                        val retainDetail =
-                            !hasExtended && oldData != null &&
-                                org.json.JSONObject(oldData.toString(Charsets.UTF_8)).let { stored ->
-                                    listOf("extendedTexts", "extendedItems").any { (stored.optJSONArray(it)?.length() ?: 0) > 0 }
-                                }
                         val writeValues =
-                            if (oldData != null && (detailOnly || retainDetail)) {
+                            if (oldData != null && (detailOnly || !hasExtended)) {
                                 val merged = ProviderDataBridge.buildProgramProviderData(program, oldData, detailOnly)
                                 if (merged !is ProviderDataBridge.Success) {
                                     failures += Diagnostic(serviceKey, "program-provider-data", merged.toString())
@@ -490,7 +507,10 @@ class TvProviderWriter private constructor(
                                     put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, merged.bytes)
                                     if (detailOnly) {
                                         put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, program.description)
-                                    } else {
+                                    } else if (!merged.bytes.contentEquals(
+                                            values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
+                                        )
+                                    ) {
                                         remove(TvContract.Programs.COLUMN_LONG_DESCRIPTION)
                                     }
                                 }
@@ -568,7 +588,7 @@ class TvProviderWriter private constructor(
                     val deleteResult =
                         channelStore.deleteObsoletePrograms(
                             channelId,
-                            window.validProgramKeys,
+                            window.validProgramKeys + supplementalKeys,
                             window.windowStartMs,
                             window.windowEndMs,
                         )
@@ -579,7 +599,7 @@ class TvProviderWriter private constructor(
                     }
                 }
             }
-            if (!preparationFailed && failures.size == failureCountBeforeService) {
+            if (allProgramsStored && !preparationFailed && failures.size == failureCountBeforeService) {
                 succeededServiceKeys += serviceKey
             }
             val serviceElapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - serviceStartedAtNs)

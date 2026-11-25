@@ -231,10 +231,12 @@ class ProgramPublishCoordinator(
                 }
             }
         removeRetryWindows(succeededWindows)
-        if (result.failures.isEmpty() && signature != null) {
+        if (result.failures.isEmpty() && committedEligibleServiceKeys == eligibleTargetServiceKeys && signature != null) {
             lastProgramSignatureByMode[mode] = signature
             lastInputSignatureByMode[mode] = inputSignature
         } else {
+            lastProgramSignatureByMode.remove(mode)
+            lastInputSignatureByMode.remove(mode)
             enqueueFailedWindows(failedWindows, result.failures)
         }
         return ProgramPublishResult(
