@@ -124,6 +124,11 @@ class TvProviderWriterProgramsTest {
         val replay = writer.upsertProgramsForWindows(listOf(schedule), emptyList())
         check(replay.failures.isEmpty() && replay.updated == 0 && replay.inserted == 0)
         check(store.programs.values.any { it.getAsString(TvContract.Programs.COLUMN_TITLE) == "first" })
+        val shifted = schedule.copy(startTimeMillis = first.startTimeMillis + 4 * first.durationMillis)
+        val actualBefore = store.programs.mapValues { ContentValues(it.value) }
+        val shiftedResult = writer.upsertProgramsForWindows(listOf(shifted), emptyList())
+        check(shiftedResult.failures.isEmpty() && shiftedResult.updated == 0 && shiftedResult.inserted == 0)
+        check(store.programs == actualBefore && key !in shiftedResult.succeededServiceKeys)
         val detail =
             schedule.copy(
                 title = "",

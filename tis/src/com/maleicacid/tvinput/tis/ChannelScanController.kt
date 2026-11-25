@@ -108,7 +108,6 @@ class ChannelScanController(
     private data class ServiceCounts(
         val discoveryStage: Int,
         val collectionStatus: SiCollectionRequirements.Status,
-        val scheduleReady: Boolean,
         val total: Int,
         val clearLivePlaybackStaticallyEligible: Int,
         val registrationReady: Int,
@@ -734,7 +733,6 @@ class ChannelScanController(
         return ServiceCounts(
             discoveryStage = transaction.discoveryStage,
             collectionStatus = requirements.evaluate(transaction),
-            scheduleReady = requirements.scheduleReady(transaction),
             total = summary.total,
             clearLivePlaybackStaticallyEligible = summary.clearLivePlaybackStaticallyEligible,
             registrationReady = summary.registrationReady,
@@ -840,7 +838,7 @@ class ChannelScanController(
                         val stableFor = now - stableSince
                         val completedOutcome =
                             collectionOutcome(
-                                counts.collectionStatus.complete && counts.scheduleReady,
+                                counts.collectionStatus.complete,
                                 elapsed,
                                 stableFor,
                                 counts.registrationReady,

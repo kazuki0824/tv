@@ -30,16 +30,6 @@ internal class SiCollectionRequirements(
         mode == ChannelScanController.PublishMode.BOOT_EPG_SYNC ||
             mode == ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE
 
-    @Suppress("MagicNumber")
-    fun scheduleReady(snapshot: ServiceRegistrationSnapshot): Boolean =
-        !requiresEit ||
-            fixedServiceKeys.all { key ->
-                snapshot.eitInstances.any {
-                    it.serviceKey == key && it.tableId == 0x50 && it.currentNextIndicator &&
-                        it.complete && !it.inconsistent && it.safeSections.containsAll(it.receivedSections)
-                }
-            }
-
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -123,6 +113,13 @@ internal class SiCollectionRequirements(
                 require(
                     Key("EIT_PF_ACTUAL", key.originalNetworkId, key.transportStreamId, key.serviceId),
                     instances.isNotEmpty() && instances.all { EpgSectionPolicy.isComplete(profile, it) },
+                )
+                require(
+                    Key("EIT_SCHEDULE_ACTUAL", key.originalNetworkId, key.transportStreamId, key.serviceId),
+                    snapshot.eitInstances.any {
+                        it.serviceKey == key && it.tableId == 0x50 && it.currentNextIndicator &&
+                            it.complete && !it.inconsistent && it.safeSections.containsAll(it.receivedSections)
+                    },
                 )
             }
         }

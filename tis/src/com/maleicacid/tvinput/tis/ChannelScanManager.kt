@@ -45,6 +45,8 @@ object ChannelScanManager {
             Thread(runnable, "maleicacid-channel-scan-manager").apply { isDaemon = true }
         }
 
+    internal fun prepareEpgRefresh(work: () -> Unit) = executor.execute(work)
+
     internal class ActiveScanTask(
         val generation: Int,
         val purpose: ScanPurpose,

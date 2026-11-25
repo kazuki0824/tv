@@ -87,17 +87,41 @@ open class BootEpgSyncJobService : JobService() {
             deferBootWork("TV_INPUT_ID_UNRESOLVED")
             return finish(run, needsReschedule = true)
         }
-        val existingChannels = TvProviderWriter(applicationContext, inputId).existingChannelsResult()
+        readTargets(run, inputId, TvProviderWriter(applicationContext, inputId)::existingChannelsResult)
+        return true
+    }
+
+    private fun readTargets(
+        run: RunContext,
+        inputId: String,
+        readChannels: () -> Result<List<ChannelRecord>>,
+    ) {
+        ChannelScanManager.prepareEpgRefresh {
+            if (activeRun.get() !== run || run.stopped.get()) return@prepareEpgRefresh
+            val channels = readChannels()
+            mainHandler.post {
+                if (activeRun.get() === run && !run.stopped.get()) startScan(run, inputId, channels)
+            }
+        }
+    }
+
+    @Suppress("ReturnCount")
+    private fun startScan(
+        run: RunContext,
+        inputId: String,
+        existingChannels: Result<List<ChannelRecord>>,
+    ) {
         if (existingChannels.isFailure) {
             deferBootWork("TV_PROVIDER_CHANNEL_QUERY_FAILED")
-            return finish(run, needsReschedule = true)
+            finish(run, needsReschedule = true)
+            return
         }
         val channels = existingChannels.getOrThrow()
         val targetChannels = targets(channels)
         if (targetChannels.isEmpty()) {
             if (!periodic) DirectBootGuard.clearPending(applicationContext)
-            activeRun.compareAndSet(run, null)
-            return false
+            finish(run, needsReschedule = false)
+            return
         }
         val generation =
             ChannelScanManager.startEpgRefreshIfIdle(
@@ -109,12 +133,15 @@ open class BootEpgSyncJobService : JobService() {
                 if (activeRun.get() !== run || run.stopped.get()) return@startEpgRefreshIfIdle
                 val shouldFinish = run.acceptCompletion(ScanCompletion(completedGeneration, needsReschedule))
                 if (shouldFinish) finish(run, needsReschedule)
-            } ?: return finish(run, needsReschedule = true)
+            }
+        if (generation == null) {
+            finish(run, needsReschedule = true)
+            return
+        }
         val earlyCompletion = run.bindGeneration(generation)
         earlyCompletion?.takeIf { it.generation == generation }?.let { completion ->
             if (run.scanGeneration.compareAndSet(generation, 0)) finish(run, completion.needsReschedule)
         }
-        return true
     }
 
     protected open fun targets(channels: List<ChannelRecord>): List<ChannelRecord> = channels

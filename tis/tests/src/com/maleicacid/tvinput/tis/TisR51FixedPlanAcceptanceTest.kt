@@ -827,19 +827,31 @@ class TisR51FixedPlanAcceptanceTest {
                 SiDiscoveryProfile.ISDB_T,
                 setOf(key, otherKey),
             )
-        val snapshot = collectionSnapshot(listOf(key, otherKey))
-        check(!requirements.evaluate(snapshot.copy(eitInstances = listOf(eitInstance(key)))).complete)
+        val pf = collectionSnapshot(listOf(key, otherKey))
+        val schedules = pf.eitInstances.map { it.copy(tableId = 0x50) }
+        val snapshot = pf.copy(eitInstances = pf.eitInstances + schedules)
+        val newVersion = schedules.last().copy(version = 2, complete = false, receivedSections = listOf(0), missingSections = listOf(1))
+        val finalStatus = requirements.evaluate(snapshot.copy(eitInstances = pf.eitInstances + schedules.first() + newVersion))
+        check(finalStatus.missing.single().component == "EIT_SCHEDULE_ACTUAL")
+        check(
+            ChannelScanController.finalizeSiCollectionOutcome(
+                ChannelScanController.SiCollectionOutcome.COMPLETE,
+                finalStatus.complete,
+                2,
+            ) == ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL,
+        )
+        check(!requirements.evaluate(snapshot.copy(eitInstances = schedules + eitInstance(key))).complete)
         check(requirements.evaluate(snapshot).complete)
         check(
             !requirements
                 .evaluate(
-                    snapshot.copy(eitInstances = listOf(eitInstance(key), eitInstance(otherKey).copy(inconsistent = true))),
+                    snapshot.copy(eitInstances = schedules + listOf(eitInstance(key), eitInstance(otherKey).copy(inconsistent = true))),
                 ).complete,
         )
         check(
             !requirements
                 .evaluate(
-                    snapshot.copy(eitInstances = listOf(eitInstance(key), eitInstance(otherKey).copy(currentNextIndicator = false))),
+                    snapshot.copy(eitInstances = schedules + listOf(eitInstance(key), eitInstance(otherKey).copy(currentNextIndicator = false))),
                 ).complete,
         )
     }

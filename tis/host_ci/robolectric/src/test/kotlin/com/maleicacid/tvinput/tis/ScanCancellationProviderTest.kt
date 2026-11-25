@@ -5,6 +5,7 @@ package com.maleicacid.tvinput.tis
 import android.app.job.JobParameters
 import android.os.Looper
 import com.maleicacid.tvinput.aribsi.AribSiEngine
+import com.maleicacid.tvinput.db.ChannelRecord
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
@@ -77,7 +78,39 @@ class ScanCancellationProviderTest {
                 )
             finish.isAccessible = true
             finish.invoke(service, run, false)
-            assertFalse(service.onStopJob(stop))
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val drained = CountDownLatch(1)
+            val consumed = AtomicBoolean()
+            val channels =
+                object : AbstractList<ChannelRecord>() {
+                    override val size: Int
+                        get() {
+                            consumed.set(true)
+                            return 0
+                        }
+
+                    override fun get(index: Int): ChannelRecord = throw IndexOutOfBoundsException()
+                }
+            val query: () -> Result<List<ChannelRecord>> = {
+                check(Looper.myLooper() !== Looper.getMainLooper())
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                Result.success(channels)
+            }
+            val readTargets = BootEpgSyncJobService::class.java.declaredMethods.single { it.name == "readTargets" }
+            readTargets.isAccessible = true
+            readTargets.invoke(service, run, "input.test", query)
+            try {
+                assertTrue(entered.await(1, TimeUnit.SECONDS))
+                assertFalse(service.onStopJob(stop))
+            } finally {
+                release.countDown()
+            }
+            ChannelScanManager.prepareEpgRefresh { drained.countDown() }
+            assertTrue(drained.await(1, TimeUnit.SECONDS))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertFalse(consumed.get())
             check(stopped.get() && task.cancelRequested.get() && owner.get() == null)
             val next = ChannelScanManager.ActiveScanTask(10, ScanPurpose.PERIODIC_EPG_REFRESH, service)
             taskOwner.set(next)
