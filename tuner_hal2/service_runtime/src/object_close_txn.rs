@@ -682,6 +682,20 @@ impl ObjectCloseUseCasePlan {
             artifact_cleanup_commands,
             domain_cleanup_commands,
         } = self;
+        // 発行後に独立した子のcleanupが完了した場合、古いcascadeで副作用を
+        // 再実行しない。既存のretry入口で現在の対象から計画を再作成する。
+        let current =
+            object_close_cascade_entries(runtime, authority.object_id, authority.generation)?;
+        if !current.iter().map(|entry| (entry.object_id, entry.generation)).eq(
+            cascade_entries
+                .iter()
+                .map(|entry| (entry.object_id, entry.generation)),
+        ) {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "object close cascade changed before cleanup attempt",
+            ));
+        }
         let key = runtime
             .object_table_mut()
             .begin_close_cleanup_attempt(authority.object_id, authority.generation, authority.key)
@@ -1820,7 +1834,7 @@ pub fn quarantine_object_drop_leak_use_case(
         .has_related_outstanding_cleanup(object_id, generation)
         .map_err(object_table_error_to_hal)?
     {
-        // 祖先・子孫の既存cleanup権限を優先し、重複する物理cleanupを開始しない。
+        // 子孫の独立義務を先に処理する。自身に義務がなければ既存の親cascadeへ委譲する。
         return Ok(None);
     }
     // artifact計画は読取り専用。失敗し得る権限発行より先に状態を変更しない。

@@ -405,6 +405,14 @@ impl RuntimeObjectTable {
                 .entry_checked_any(target_id, target_generation)?
                 .clone();
             let is_root = target_id == object_id && target_generation == generation;
+            // 独立した子の回収義務を親のclose準備で書き換えない。
+            if !is_root
+                && self
+                    .object_close_txn
+                    .has_outstanding_obligation(target_id, target_generation)
+            {
+                continue;
+            }
             match entry.lifecycle {
                 RuntimeObjectLifecycle::Live
                 | RuntimeObjectLifecycle::Closing { .. }
@@ -443,6 +451,15 @@ impl RuntimeObjectTable {
             lifecycle,
             RuntimeObjectLifecycle::Closing { .. } | RuntimeObjectLifecycle::CleanupPending { .. }
         ) {
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle,
+            });
+        }
+        // 親子の物理cleanupは重複させず、独立した子の未完義務を先に完了する。
+        if self.has_active_cleanup_attempt_in_cascade(object_id, generation)?
+            || self.has_descendant_outstanding_cleanup(object_id, generation)
+        {
             return Err(RuntimeObjectTableError::InvalidLifecycle {
                 object_id,
                 lifecycle,
@@ -623,11 +640,31 @@ impl RuntimeObjectTable {
             .any(|(id, gen)| self.object_close_txn.has_active_cleanup_attempt(id, gen)))
     }
 
+    fn has_descendant_outstanding_cleanup(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> bool {
+        self.descendant_object_keys(object_id, generation)
+            .into_iter()
+            .any(|(id, gen)| self.object_close_txn.has_outstanding_obligation(id, gen))
+    }
+
     pub(crate) fn has_related_outstanding_cleanup(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<bool, RuntimeObjectTableError> {
+        self.entry_checked_any(object_id, generation)?;
+        // 独立した義務がある子は未実行の祖先を待たない。祖先の物理実行との
+        // 競合は別途同じruntime lockで検査する。子自身の義務がない場合だけ
+        // 既存の親cascadeへ委譲する。
+        if self
+            .object_close_txn
+            .has_outstanding_obligation(object_id, generation)
+        {
+            return Ok(self.has_descendant_outstanding_cleanup(object_id, generation));
+        }
         Ok(self
             .related_cleanup_keys(object_id, generation, false)?
             .into_iter()
@@ -1750,6 +1787,92 @@ mod qg_object_lifecycle_tests {
             RuntimeObjectLifecycle::Closing {
                 step: CleanupStep::StopWorker
             }
+        );
+    }
+
+    #[test]
+    fn independent_pending_child_isolates_before_pending_parent() {
+        let mut table = RuntimeObjectTable::default();
+        let parent = AidlObjectId(160);
+        let child = AidlObjectId(161);
+        let generation = AidlObjectGeneration(1);
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                160,
+                160,
+                RuntimeOwnerRelation::Root,
+            ))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                161,
+                161,
+                RuntimeOwnerRelation::Demux {
+                    demux: parent,
+                    generation,
+                },
+            ))
+            .unwrap();
+        let (_, child_authority) = table
+            .begin_close_cascade_with_cleanup_authority(child, generation, CleanupStep::StopWorker)
+            .unwrap();
+        let attempt = table
+            .begin_close_cleanup_attempt(child, generation, child_authority)
+            .unwrap();
+        table
+            .finish_close_cleanup_attempt(
+                child,
+                generation,
+                attempt,
+                CloseCleanupAttemptOutcome::Pending {
+                    step: CleanupStep::ReleaseBackend,
+                },
+            )
+            .unwrap();
+        let (_, parent_authority) = table
+            .begin_close_cascade_with_cleanup_authority(parent, generation, CleanupStep::StopWorker)
+            .unwrap();
+        assert!(table
+            .begin_close_cleanup_attempt(parent, generation, parent_authority)
+            .is_err());
+        assert!(table
+            .has_related_outstanding_cleanup(parent, generation)
+            .unwrap());
+        assert!(!table
+            .has_related_outstanding_cleanup(child, generation)
+            .unwrap());
+        assert!(!table
+            .has_active_cleanup_attempt_in_cascade(child, generation)
+            .unwrap());
+        table
+            .begin_quarantine_cleanup(child, generation, [])
+            .unwrap();
+        assert!(table
+            .begin_close_cleanup_attempt(parent, generation, parent_authority)
+            .is_err());
+        assert!(table
+            .finish_quarantined_cleanup_report(child, generation, &[])
+            .unwrap());
+        assert_eq!(
+            table.entry(child).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+        let attempt = table
+            .begin_close_cleanup_attempt(parent, generation, parent_authority)
+            .unwrap();
+        table
+            .finish_close_cleanup_attempt(
+                parent,
+                generation,
+                attempt,
+                CloseCleanupAttemptOutcome::Complete,
+            )
+            .unwrap();
+        assert_eq!(
+            table.entry(parent).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closed
         );
     }
 
