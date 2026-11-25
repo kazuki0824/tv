@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.common.LogTags
+import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CopyOnWriteArraySet
@@ -44,6 +45,22 @@ object ChannelScanManager {
         Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "maleicacid-channel-scan-manager").apply { isDaemon = true }
         }
+
+    internal fun finishBootTargets(
+        context: Context,
+        targets: Set<ServiceKey>,
+        result: ChannelScanController.ScanResult,
+    ): Boolean {
+        val reason =
+            when {
+                result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED -> "BOOT_EPG_CANCELLED"
+                result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST -> TUNER_RESOURCE_LOST
+                targets.isEmpty() || !result.committedServiceKeys.containsAll(targets) -> "BOOT_EPG_INCOMPLETE_TARGET_SET"
+                else -> null
+            }
+        if (reason == null) DirectBootGuard.clearPending(context) else DirectBootGuard.deferPending(context, reason)
+        return reason == null
+    }
 
     internal fun prepareEpgRefresh(work: () -> Unit) = executor.execute(work)
 
@@ -353,24 +370,9 @@ object ChannelScanManager {
                             scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED
                         val terminalResourceLost =
                             scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST
-                        val allRequiredTargetsCommitted =
-                            requiredServiceKeys.isNotEmpty() &&
-                                scanResult.committedServiceKeys.containsAll(requiredServiceKeys) &&
-                                !terminalCancel &&
-                                !terminalResourceLost
-                        if (!periodic && allRequiredTargetsCommitted) {
-                            DirectBootGuard.clearPending(appContext)
+                        if (!periodic && finishBootTargets(appContext, requiredServiceKeys, scanResult)) {
                             shouldScheduleBackgroundMaintenance = true
                             needsReschedule = false
-                        } else if (!periodic) {
-                            DirectBootGuard.deferPending(
-                                appContext,
-                                when {
-                                    terminalCancel -> "BOOT_EPG_CANCELLED"
-                                    terminalResourceLost -> TUNER_RESOURCE_LOST
-                                    else -> "BOOT_EPG_INCOMPLETE_TARGET_SET"
-                                },
-                            )
                         }
                         if (terminalCancel) {
                             setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, purpose))

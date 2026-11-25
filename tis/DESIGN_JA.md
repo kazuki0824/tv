@@ -523,7 +523,7 @@ EIT 更新時の update/削除区間は、追加・変更・削除された even
 
 policyはcollection内で観測した完成版の旧・新時刻境界だけをServiceKey別に保持する。windowはそのunionを使い、キー集合・deletionAuthoritativeは毎回current instanceから作り直す。collectionGeneration/profile変更時に旧境界を破棄し、未完成版ではwindowを返さない。時刻未定義は旧区間を保護するキーとして保持し、正常空EITはcurrent完全状態として扱うが、区間がないときに削除区間を捏造しない。`ProgramPublishSnapshot.authoritativeProgramKeysByService`は同じ判定を通った現在のキー集合で、正常空EITの確認に使う。再試行の根拠は、旧要求区間全体を覆う現在のauthoritativeな`updateWindows`とする。
 
-Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBootGuard`がdevice-protected storage上のこの状態を唯一所有し、boot EPG sync要求を受理した時点または未完了・失敗終了時に設定する。`ChannelScanManager`はJobSchedulerのschedule/cancelだけを担当し、pending、inputId、Contextのshadow stateを持たない。JobServiceは開始時に自TISのinputIdを再解決する。状態はprocess restartとuser unlockをまたいで保持し、background maintenanceは設定・解除しない。
+Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBootGuard`がdevice-protected storage上のこの状態を唯一所有し、boot EPG sync要求を受理した時点または未完了・失敗終了時に設定する。`ChannelScanManager`はJobSchedulerのschedule/cancelだけを担当し、pending、inputId、Contextのshadow stateを持たない。JobServiceは開始時に自TISのinputIdを再解決する。起動時のTvProvider準備照会と登録局の読取りは既存のscan executorで行い、各結果をメインLooperへ戻した時点で同じジョブが有効な場合にだけ巡回を進める。状態はprocess restartとuser unlockをまたいで保持し、background maintenanceは設定・解除しない。
 
 `BootEpgSyncCoordinator` は Tuner や SI collection を開始する前に、解決済みの自 TIS `inputId` を使って既存 `TvContract.Channels` を必須問い合わせとして取得し、今回の boot EPG sync の authoritative target channel 集合を確定する。この必須問い合わせ自体が失敗した場合は channel なしとは扱わず `DirectBootEpgPending` を維持して再試行対象にする。問い合わせが正常終了し、自 TIS 所有の既存 channel が 0 件だった場合は、boot EPG sync に更新対象が存在しない `NO_WORK` 正常終了とする。この場合は Tuner、SI collection、Programs publish/delete を開始せず `DirectBootEpgPending` を解除し、JobScheduler の再試行を要求しない。setup / explicit rescan はこの `NO_WORK` 判定とは独立した channel 登録経路であり、boot EPG sync は 0 件状態から channel を作成しない。
 
@@ -531,7 +531,7 @@ Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBoot
 
 正常な空EITは受信失敗と区別する。同一taskで、required ServiceKeyの現在の登録可能事実と、矛盾・不正のない完成したp/f actual instanceを確認し、そのinstanceにeventが一件もない場合は、そのServiceKeyを検証済み空対象として扱う。以前の有効更新区間があれば通常のauthoritative削除を実行する。更新区間がない初回の空EITでは区間を捏造せず、所有channelとそのchannelの既存Programsの必須問い合わせが両方成功した後、書込み不要の確認済み対象としてcompletion ledgerへ記録する。既存Program行は区間なしの空EITだけでは削除しない。問い合わせ失敗・不完全なEIT・不正event・時刻未定eventを空成功へ丸めない。開始時channel 0件の`NO_WORK`とは異なり、対象ごとの受信とprovider確認を必要とする。boot時は同じ正常空EITの再確認にも現在taskのprovider問い合わせを省略しない。
 
-最低試験は、(1) authoritative channel query failure では Tuner を開始せず pending を維持して再試行すること、(2) query 成功かつ自TIS所有channel 0件では Tuner / SI collection / Programs publish-delete を開始せず `NO_WORK` として pending を解除し再試行しないこと、(3) target channel が1件以上あるが全candidate失敗、またはpublish可能Program・検証済み正常空EITの両方がない場合はpendingを維持すること、(4) target channel が1件以上ありpublish transactionが正常commitした場合だけ通常成功としてpendingを解除すること、を含める。
+最低試験は、(1) authoritative channel query failure では Tuner を開始せず pending を維持して再試行すること、(2) query 成功かつ自TIS所有channel 0件では Tuner / SI collection / Programs publish-delete を開始せず `NO_WORK` として pending を解除し再試行しないこと、(3) target channel が1件以上あるが全candidate失敗、またはpublish可能Program・検証済み正常空EITの両方がない場合はpendingを維持すること、(4) target channel が1件以上ありpublish transactionが正常commitした場合だけ通常成功としてpendingを解除すること、を含める。 衛星の別TSから取得した番組は部分公開できる。起動時同期の対象局として完了に数えるには、その局を直接選局して公開するか、別TSからの取得が直接選局を省略できる条件を満たす必要がある。
 
 登録可能サービスは、`ServiceKey`、物理選局情報へ戻せるchannel provider-data、`Channels.COLUMN_INPUT_ID`として保存する自TISのinputId、表示名が揃い、TvProvider channel insert/update に進めるサービスとする。input ownershipのSSOTはprovider-dataではなく`Channels.COLUMN_INPUT_ID`とする。表示名は `ChannelRecord.displayName` が nonblank ならそれを使い、なければ SDT service_name、さらに無ければ `service-<onid>-<tsid>-<sid>` を使う。この代替表示名は登録可能判定上の有効な表示名と扱う。
 

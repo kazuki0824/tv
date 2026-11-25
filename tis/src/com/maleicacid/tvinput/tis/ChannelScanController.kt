@@ -115,7 +115,7 @@ class ChannelScanController(
         val incompleteReasons: Map<ServiceKey, List<String>>,
     )
 
-    private data class PublishSnapshotResult(
+    internal data class PublishSnapshotResult(
         val changed: Int,
         val failures: List<TvProviderWriter.Diagnostic> = emptyList(),
         val hasCommittedProgramTarget: Boolean = false,
@@ -125,6 +125,14 @@ class ChannelScanController(
         val initialBrowsablePendingChannelIds: Set<Long> = emptySet(),
     ) {
         val success: Boolean get() = failures.isEmpty()
+
+        fun completedOnTune(
+            targets: Set<ServiceKey>,
+            satellite: Boolean,
+        ): Set<ServiceKey> {
+            val direct = committedServiceKeys.intersect(targets)
+            return if (satellite) direct + coveredOtherServices else direct
+        }
     }
 
     private val tunerController =
@@ -481,10 +489,9 @@ class ChannelScanController(
                         diagnostics += resourceLostDiagnostic(candidate, tune.generation)
                         break
                     }
-                    if (candidate.kind == ScanCandidateKind.ISDB_S_BS || candidate.kind == ScanCandidateKind.ISDB_S_110CS) {
-                        coveredOtherServices += publishResult.coveredOtherServices
-                    }
-                    committedServiceKeys += publishResult.committedServiceKeys
+                    val satellite = candidate.kind == ScanCandidateKind.ISDB_S_BS || candidate.kind == ScanCandidateKind.ISDB_S_110CS
+                    if (satellite) coveredOtherServices += publishResult.coveredOtherServices
+                    committedServiceKeys += publishResult.completedOnTune(requiredServiceKeys, satellite)
                     val candidateSuccessfullyPublished =
                         collection.outcome == SiCollectionOutcome.COMPLETE &&
                             collection.registrationReadyServices > 0 &&

@@ -3,7 +3,12 @@
 package com.maleicacid.tvinput.tis
 
 import android.app.job.JobParameters
+import android.content.pm.ProviderInfo
+import android.database.MatrixCursor
+import android.media.tv.TvContract
+import android.net.Uri
 import android.os.Looper
+import android.os.UserManager
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.db.ChannelRecord
 import org.junit.runner.RunWith
@@ -13,6 +18,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.ShadowContentResolver
 import org.robolectric.shadows.ShadowJobService
 import org.robolectric.util.ReflectionHelpers
 import java.util.concurrent.CountDownLatch
@@ -33,6 +39,48 @@ import kotlin.test.assertTrue
     shadows = [TunerFrontendLeaseTransitionTest.SiEngineBoundary::class],
 )
 class ScanCancellationProviderTest {
+    @Test
+    fun stoppedBootJobDiscardsProviderReadinessResult() {
+        val service = Robolectric.buildService(BootEpgSyncJobService::class.java).create().get()
+        shadowOf(checkNotNull(service.getSystemService(UserManager::class.java))).setUserUnlocked(true)
+        DirectBootGuard.markBootEpgSyncRequested(service, "test")
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val provider =
+            object : TvProviderVisibilityTransactionTest.VisibilityProvider() {
+                override fun query(
+                    uri: Uri,
+                    projection: Array<out String>?,
+                    selection: String?,
+                    selectionArgs: Array<out String>?,
+                    sortOrder: String?,
+                ): MatrixCursor {
+                    check(Looper.myLooper() !== Looper.getMainLooper())
+                    entered.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                    return MatrixCursor(checkNotNull(projection))
+                }
+            }
+        provider.attachInfo(service, ProviderInfo().apply { authority = TvContract.AUTHORITY })
+        ShadowContentResolver.registerProviderInternal(TvContract.AUTHORITY, provider)
+        val params = Shadow.newInstanceOf(JobParameters::class.java)
+        try {
+            assertTrue(service.onStartJob(params))
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertTrue(service.onStopJob(params))
+        } finally {
+            release.countDown()
+        }
+        val drained = CountDownLatch(1)
+        ChannelScanManager.prepareEpgRefresh { drained.countDown() }
+        assertTrue(drained.await(5, TimeUnit.SECONDS))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(DirectBootGuard.isPending(service))
+        assertEquals("BOOT_EPG_JOB_STOPPED", DirectBootGuard.pendingState(service).lastSkippedReason)
+        assertFalse(Shadow.extract<ShadowJobService>(service).getIsJobFinished())
+        provider.database.close()
+    }
+
     @Test
     fun stopWithRedeliveredParametersCancelsOnlyTheCurrentPeriodicRun() {
         val service = Robolectric.buildService(PeriodicEpgRefreshJobService::class.java).create().get()

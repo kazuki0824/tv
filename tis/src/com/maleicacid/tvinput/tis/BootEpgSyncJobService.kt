@@ -47,28 +47,23 @@ open class BootEpgSyncJobService : JobService() {
     override fun onStartJob(params: JobParameters): Boolean {
         val run = RunContext(params)
         activeRun.set(run)
-        if (!periodic && !drainBootWork(run)) return activeRun.get() === run
-        return startRefresh(run)
-    }
-
-    private fun drainBootWork(run: RunContext): Boolean =
-        when (DirectBootGuard.drainIfUserUnlocked(applicationContext, "JOB_START", System.currentTimeMillis())) {
-            DirectBootGuard.DrainDecision.SKIP_NO_PENDING -> {
-                activeRun.compareAndSet(run, null)
-                false
-            }
-
-            DirectBootGuard.DrainDecision.SKIP_LOCKED,
-            DirectBootGuard.DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE,
-            -> {
-                finish(run, needsReschedule = true)
-                false
-            }
-
-            DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> {
-                true
+        if (periodic) return startRefresh(run)
+        ChannelScanManager.prepareEpgRefresh {
+            if (activeRun.get() !== run || run.stopped.get()) return@prepareEpgRefresh
+            val decision = DirectBootGuard.drainIfUserUnlocked(applicationContext, "JOB_START", System.currentTimeMillis())
+            mainHandler.post {
+                if (activeRun.get() !== run || run.stopped.get()) return@post
+                when (decision) {
+                    DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> startRefresh(run)
+                    DirectBootGuard.DrainDecision.SKIP_NO_PENDING -> finish(run, needsReschedule = false)
+                    DirectBootGuard.DrainDecision.SKIP_LOCKED,
+                    DirectBootGuard.DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE,
+                    -> finish(run, needsReschedule = true)
+                }
             }
         }
+        return true
+    }
 
     // periodic jobは次の定期枠で再試行し、Direct Bootの保留情報に触れない。
     @Suppress("ReturnCount")
