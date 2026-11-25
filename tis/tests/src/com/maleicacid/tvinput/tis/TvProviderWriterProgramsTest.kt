@@ -124,11 +124,6 @@ class TvProviderWriterProgramsTest {
         val replay = writer.upsertProgramsForWindows(listOf(schedule), emptyList())
         check(replay.failures.isEmpty() && replay.updated == 0 && replay.inserted == 0)
         check(store.programs.values.any { it.getAsString(TvContract.Programs.COLUMN_TITLE) == "first" })
-        val shifted = schedule.copy(startTimeMillis = first.startTimeMillis + 4 * first.durationMillis)
-        val actualBefore = store.programs.mapValues { ContentValues(it.value) }
-        val shiftedResult = writer.upsertProgramsForWindows(listOf(shifted), emptyList())
-        check(shiftedResult.failures.isEmpty() && shiftedResult.updated == 0 && shiftedResult.inserted == 0)
-        check(store.programs == actualBefore && key !in shiftedResult.succeededServiceKeys)
         val detail =
             schedule.copy(
                 title = "",
@@ -142,6 +137,35 @@ class TvProviderWriterProgramsTest {
         check(row.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "出演者の詳細")
         check(row.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).utf8Contains("出演者の詳細"))
         check(ProviderDataBridge.buildProgramProviderData(first, "{}".toByteArray()) is ProviderDataBridge.Failure)
+        verifyCurrentActualTimeChange(writer, store, first)
+    }
+
+    private fun verifyCurrentActualTimeChange(
+        writer: TvProviderWriter,
+        store: FakeStore,
+        first: ProgramRecord,
+    ) {
+        val ten = java.time.Instant.parse("2023-11-15T10:00:00+09:00").toEpochMilli()
+        val hour = 3_600_000L
+        val news = first.copy(startTimeMillis = ten, durationMillis = hour, title = "ニュース")
+        check(writer.upsertPrograms(listOf(news)).updated == 1)
+        val channelId = store.channels.keys.single()
+
+        fun programAt(time: Long) =
+            store.indexExistingProgramEntriesForWindow(channelId, time, time + 1).getOrThrow().values.flatten().singleOrNull()
+
+        val fiveMinutes = 300_000L
+        val originalId = checkNotNull(programAt(ten + fiveMinutes)).programId
+        val movie = news.copy(startTimeMillis = ten + 2 * hour, title = "映画", source = news.source.copy(tableId = 0x60))
+        val received = writer.upsertProgramsForWindows(listOf(movie), emptyList())
+        check(received.failures.isEmpty() && received.updated == 0 && received.inserted == 0)
+        val current = checkNotNull(programAt(ten + fiveMinutes))
+        check(current.programId == originalId && current.values?.getAsString(TvContract.Programs.COLUMN_TITLE) == "ニュース")
+        val revised = movie.copy(source = news.source)
+        check(writer.upsertPrograms(listOf(revised)).updated == 1)
+        check(programAt(ten + fiveMinutes) == null)
+        val moved = checkNotNull(programAt(revised.startTimeMillis + fiveMinutes))
+        check(moved.programId == originalId && moved.values?.getAsString(TvContract.Programs.COLUMN_TITLE) == "映画")
     }
 
     @Test
