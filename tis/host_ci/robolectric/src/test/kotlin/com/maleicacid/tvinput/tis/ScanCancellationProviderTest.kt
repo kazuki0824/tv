@@ -36,18 +36,32 @@ class ScanCancellationProviderTest {
     fun stopWithRedeliveredParametersCancelsOnlyTheCurrentPeriodicRun() {
         val service = Robolectric.buildService(PeriodicEpgRefreshJobService::class.java).create().get()
 
-        fun params(id: Int) = Shadow.newInstanceOf(JobParameters::class.java).also { ReflectionHelpers.setField(it, "jobId", id) }
+        fun params(id: Int): JobParameters {
+            val value = Shadow.newInstanceOf(JobParameters::class.java)
+            ReflectionHelpers.setField(value, "jobId", id)
+            return value
+        }
         val original = params(17)
         val stop = params(17)
         check(original !== stop)
         val task = ChannelScanManager.ActiveScanTask(9, ScanPurpose.PERIODIC_EPG_REFRESH, service)
         val taskOwner =
-            ReflectionHelpers.getField<AtomicReference<ChannelScanManager.ActiveScanTask?>>(ChannelScanManager, "activeTask")
+            ReflectionHelpers.getField<AtomicReference<ChannelScanManager.ActiveScanTask?>>(
+                ChannelScanManager,
+                "activeTask",
+            )
         val previousState = ChannelScanManager.currentState()
         val runClass = BootEpgSyncJobService::class.java.declaredClasses.single { it.simpleName == "RunContext" }
         val ctor = runClass.declaredConstructors.single { it.parameterCount == 5 }.apply { isAccessible = true }
         val stopped = AtomicBoolean()
-        val run = ctor.newInstance(original, AtomicBoolean(), stopped, AtomicInteger(task.generation), AtomicReference<Any?>())
+        val run =
+            ctor.newInstance(
+                original,
+                AtomicBoolean(),
+                stopped,
+                AtomicInteger(task.generation),
+                AtomicReference<Any?>(),
+            )
         val owner = ReflectionHelpers.getField<AtomicReference<Any?>>(service, "activeRun")
         owner.set(run)
         check(taskOwner.compareAndSet(null, task))
@@ -55,7 +69,12 @@ class ScanCancellationProviderTest {
             service.onStopJob(params(18))
             check(owner.get() === run && !task.cancelRequested.get())
             // 完了通知がメインスレッドに届く前に、同じジョブの停止が届く。
-            val finish = BootEpgSyncJobService::class.java.getDeclaredMethod("finish", runClass, Boolean::class.javaPrimitiveType)
+            val finish =
+                BootEpgSyncJobService::class.java.getDeclaredMethod(
+                    "finish",
+                    runClass,
+                    Boolean::class.javaPrimitiveType,
+                )
             finish.isAccessible = true
             finish.invoke(service, run, false)
             assertFalse(service.onStopJob(stop))
