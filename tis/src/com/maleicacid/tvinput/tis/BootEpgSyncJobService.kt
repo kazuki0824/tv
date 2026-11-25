@@ -45,6 +45,7 @@ open class BootEpgSyncJobService : JobService() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onStartJob(params: JobParameters): Boolean {
+        if (!periodic && !DirectBootGuard.isPending(applicationContext)) return false
         val run = RunContext(params)
         activeRun.set(run)
         if (periodic) return startRefresh(run)
@@ -151,17 +152,18 @@ open class BootEpgSyncJobService : JobService() {
 
     override fun onStopJob(params: JobParameters): Boolean {
         val run = activeRun.get()
-        if (run == null || run.params.jobId != params.jobId) return !periodic
+        val retry = !periodic && DirectBootGuard.isPending(applicationContext)
+        if (run == null || run.params.jobId != params.jobId) return retry
         run.stopped.set(true)
         val generation = run.scanGeneration.getAndSet(0)
         if (generation != 0) {
             val purpose = if (periodic) ScanPurpose.PERIODIC_EPG_REFRESH else ScanPurpose.BOOT_EPG_SYNC
             ChannelScanManager.cancelIfCurrent(generation, purpose)
         }
-        deferBootWork("BOOT_EPG_JOB_STOPPED")
+        if (retry) deferBootWork("BOOT_EPG_JOB_STOPPED")
         run.completionDelivered.compareAndSet(false, true)
         activeRun.compareAndSet(run, null)
-        return !periodic
+        return retry
     }
 
     private fun deferBootWork(reason: String) {

@@ -115,7 +115,7 @@ class ChannelScanController(
         val incompleteReasons: Map<ServiceKey, List<String>>,
     )
 
-    internal data class PublishSnapshotResult(
+    private data class PublishSnapshotResult(
         val changed: Int,
         val failures: List<TvProviderWriter.Diagnostic> = emptyList(),
         val hasCommittedProgramTarget: Boolean = false,

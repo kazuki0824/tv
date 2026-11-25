@@ -40,6 +40,27 @@ import kotlin.test.assertTrue
 )
 class ScanCancellationProviderTest {
     @Test
+    fun stopWithoutPendingBootWorkDoesNotReschedule() {
+        val service = Robolectric.buildService(BootEpgSyncJobService::class.java).create().get()
+        DirectBootGuard.clearPending(service)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        ChannelScanManager.prepareEpgRefresh {
+            entered.countDown()
+            check(release.await(5, TimeUnit.SECONDS))
+        }
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val params = Shadow.newInstanceOf(JobParameters::class.java)
+            assertFalse(service.onStartJob(params))
+            assertFalse(service.onStopJob(params))
+            assertFalse(DirectBootGuard.isPending(service))
+        } finally {
+            release.countDown()
+        }
+    }
+
+    @Test
     fun stoppedBootJobDiscardsProviderReadinessResult() {
         for (available in listOf(true, false)) verifyStoppedReadiness(available)
     }

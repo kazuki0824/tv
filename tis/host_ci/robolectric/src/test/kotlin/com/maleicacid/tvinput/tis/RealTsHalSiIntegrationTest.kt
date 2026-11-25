@@ -157,7 +157,8 @@ class RealTsHalSiIntegrationTest {
             val titleColumn = TvContract.Programs.COLUMN_TITLE
             assertEquals(current.getAsString(titleColumn), tomorrow.getAsString(titleColumn))
             val pf = otherTransportSchedule(sections, nextDay = false)
-            verifyBootPartialOther(context, key, provider.rows, pf) { engine -> verifyIngest(engine, sections) }
+            val satellite = sections.map { if (it.pid == TsPid.NIT.value) it.copy(bytes = asBsNit(it.bytes)) else it }
+            verifyBootPartialOther(context, key, provider.rows, pf) { engine -> verifyIngest(engine, satellite) }
         } finally {
             session.onRelease()
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
