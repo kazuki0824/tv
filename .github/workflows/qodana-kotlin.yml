@@ -57,6 +57,7 @@ jobs:
           # PR modeはmerge-base commitを別worktreeで解析する。そのcommitにはこのPRで
           # 追加したqodana.yamlが存在しないため、導入PR自身を解析できない。
           # 検査は差分限定ではなくHEAD全体を対象にする。
+          env-vars-to-linter: QODANA_INCLUDE_REC_CONSUMERS
           pr-mode: false
           post-pr-comment: false
           args: >-

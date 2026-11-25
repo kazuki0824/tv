@@ -22,6 +22,9 @@ android {
         getByName("main") {
             manifest.srcFile("../../AndroidManifest.xml")
             java.setSrcDirs(listOf("../../src") + qodanaConsumerSources)
+            if (qodanaConsumerSources.isNotEmpty()) {
+                logger.lifecycle("Qodana main source set: " + java.srcDirs.joinToString { it.canonicalPath })
+            }
             res.setSrcDirs(listOf("../../res"))
             assets.setSrcDirs(listOf("../../tests/assets"))
         }
