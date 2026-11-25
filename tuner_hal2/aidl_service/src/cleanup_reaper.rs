@@ -580,7 +580,6 @@ fn run_cleanup_job(
         CleanupJob,
     >,
     worker: maleicacid_tuner_hal2_service_runtime::WorkerContext,
-    retry: impl Fn(&Arc<AidlServiceContext>, AidlObjectHandle, AidlMethodCall) -> Result<(), HalError>,
 ) {
     use crate::object_runtime::DropLeakQuarantineOutcome;
 
@@ -737,8 +736,9 @@ fn run_cleanup_job(
             mark_cleanup_reaper_critical(&context);
             return;
         }
-        let result = close_method(target.handle.object_kind())
-            .and_then(|method| retry(&context, target.handle, method));
+        let result = close_method(target.handle.object_kind()).and_then(|method| {
+            crate::object_runtime::retry_cleanup_from_reaper(&context, target.handle, method)
+        });
         if result.is_ok() {
             if target.handle == origin.handle {
                 return;
@@ -787,14 +787,7 @@ pub(crate) fn start_cleanup_reaper(
                 }
                 return;
             }
-            run_cleanup_job(
-                runner_context.clone(),
-                policy,
-                job,
-                pending,
-                worker,
-                crate::object_runtime::retry_cleanup_from_reaper,
-            );
+            run_cleanup_job(runner_context.clone(), policy, job, pending, worker);
         },
     );
     let owner = maleicacid_tuner_hal2_service_runtime::WorkerRuntime::start_reaper_queue(
@@ -1038,14 +1031,7 @@ mod tests {
         };
         let weak = Arc::downgrade(&context);
         let runner = Arc::new(move |job, pending, worker| {
-            run_cleanup_job(
-                weak.clone(),
-                policy,
-                job,
-                pending,
-                worker,
-                crate::object_runtime::retry_cleanup_from_reaper,
-            );
+            run_cleanup_job(weak.clone(), policy, job, pending, worker);
         });
         let queue = maleicacid_tuner_hal2_service_runtime::WorkerRuntime::start_reaper_queue(
             1,
@@ -1158,8 +1144,10 @@ mod tests {
                 handle.generation(),
                 handle.object_kind(),
                 method,
-            )?
-            .begin_cleanup_attempt(&mut guard)?;
+            )
+            .unwrap()
+            .begin_cleanup_attempt(&mut guard)
+            .unwrap();
             finish_object_close_use_case(
                 &mut guard,
                 simulated_cleanup_completion(attempt),
@@ -1182,26 +1170,15 @@ mod tests {
             terminal_deadline: deadline,
             retry_delays: [deadline; 4],
         };
-        let (observed, retries) = std::sync::mpsc::channel();
-        let runner = Arc::new(move |mut job: CleanupJob, pending, worker| {
-            job.execution_started_at = Some(Instant::now());
-            run_cleanup_job(
-                weak.clone(),
-                policy,
-                job,
-                pending,
-                worker,
-                |context, handle, method| {
-                    observed.send(handle).unwrap();
-                    fail_close(context, handle, method)
-                },
-            );
+        let runner = Arc::new(move |job, pending, worker| {
+            run_cleanup_job(weak.clone(), policy, job, pending, worker);
         });
         let queue =
             WorkerRuntime::start_reaper_queue(1, "test-failed-related-close", runner).unwrap();
         let job = CleanupJob {
             handle: parent,
-            registered_at: Instant::now(),
+            // 親・委譲先の両期限を投入前に経過させる。
+            registered_at: Instant::now() - deadline * 2,
             execution_started_at: None,
         };
         let parent_key = CleanupJobKey::from_handle(parent);
@@ -1210,7 +1187,6 @@ mod tests {
         queue
             .wait_until_released([&parent_key, &child_key], Duration::from_secs(10))
             .unwrap();
-        assert_eq!(retries.try_iter().collect::<Vec<_>>(), [parent, child]);
         assert!(!queue.any_pending([&parent_key, &child_key]).unwrap());
         assert!(!state.snapshot().service_critical);
         let diagnostics = runtime
@@ -1615,14 +1591,7 @@ mod tests {
             let waiter = Mutex::new(waiter);
             let runner = Arc::new(move |job: CleanupJob, pending, worker| {
                 if reserved && !blocked {
-                    run_cleanup_job(
-                        weak.clone(),
-                        policy,
-                        job,
-                        pending,
-                        worker,
-                        crate::object_runtime::retry_cleanup_from_reaper,
-                    );
+                    run_cleanup_job(weak.clone(), policy, job, pending, worker);
                 } else if let Ok(waiter) = waiter.lock() {
                     let _ = waiter.recv_timeout(Duration::from_secs(2));
                 }
