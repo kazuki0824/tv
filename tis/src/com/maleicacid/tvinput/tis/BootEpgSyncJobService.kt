@@ -121,7 +121,7 @@ open class BootEpgSyncJobService : JobService() {
 
     override fun onStopJob(params: JobParameters): Boolean {
         val run = activeRun.get()
-        if (run == null || run.params !== params) return !periodic
+        if (run == null || run.params.jobId != params.jobId) return !periodic
         run.stopped.set(true)
         val generation = run.scanGeneration.getAndSet(0)
         if (generation != 0) {
