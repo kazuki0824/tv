@@ -397,6 +397,16 @@ impl RuntimeObjectTable {
                 });
             }
         }
+        if self
+            .ancestor_object_keys(object_id, generation)?
+            .into_iter()
+            .any(|(id, gen)| self.object_close_txn.has_active_cleanup_attempt(id, gen))
+        {
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle: root_lifecycle,
+            });
+        }
         let mut targets = self.descendant_object_keys(object_id, generation);
         targets.push((object_id, generation));
         let mut changed = Vec::with_capacity(targets.len());
@@ -671,11 +681,11 @@ impl RuntimeObjectTable {
             .any(|(id, gen)| self.object_close_txn.has_outstanding_obligation(id, gen)))
     }
 
-    pub(crate) fn related_cleanup_owners(
+    fn ancestor_object_keys(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-    ) -> Result<Vec<(RuntimeObjectEntry, bool)>, RuntimeObjectTableError> {
+    ) -> Result<Vec<(AidlObjectId, AidlObjectGeneration)>, RuntimeObjectTableError> {
         let root = self.entry_checked_any(object_id, generation)?;
         // 親方向は現在の世代付き関係だけをたどる。
         let mut ancestors = Vec::new();
@@ -688,6 +698,15 @@ impl RuntimeObjectTable {
             ancestors.push((id, gen));
         }
 
+        Ok(ancestors)
+    }
+
+    pub(crate) fn related_cleanup_owners(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Vec<(RuntimeObjectEntry, bool)>, RuntimeObjectTableError> {
+        let ancestors = self.ancestor_object_keys(object_id, generation)?;
         // 毎回全子孫をDFSすると、回収義務のない過去のClosed子も走査する。
         // 既存ObjectCloseTxnの義務だけを起点に関係を調べ、子孫→自身→祖先を返す。
         let mut owners = Vec::new();
@@ -1676,6 +1695,13 @@ mod qg_object_lifecycle_tests {
         let attempt = table
             .begin_close_cleanup_attempt(parent, generation, authority)
             .unwrap();
+        assert!(matches!(
+            table.begin_close_cascade_with_cleanup_authority(child, generation, CleanupStep::StopWorker),
+            Err(RuntimeObjectTableError::InvalidLifecycle { object_id, .. }) if object_id == child
+        ));
+        assert!(!table
+            .object_close_txn
+            .has_outstanding_obligation(child, generation));
         table
             .finish_close_cleanup_attempt(
                 parent,

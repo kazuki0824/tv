@@ -686,11 +686,13 @@ impl ObjectCloseUseCasePlan {
         // 再実行しない。既存のretry入口で現在の対象から計画を再作成する。
         let current =
             object_close_cascade_entries(runtime, authority.object_id, authority.generation)?;
-        if !current.iter().map(|entry| (entry.object_id, entry.generation)).eq(
-            cascade_entries
+        if !current
+            .iter()
+            .map(|entry| (entry.object_id, entry.generation))
+            .eq(cascade_entries
                 .iter()
-                .map(|entry| (entry.object_id, entry.generation)),
-        ) {
+                .map(|entry| (entry.object_id, entry.generation)))
+        {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "object close cascade changed before cleanup attempt",
