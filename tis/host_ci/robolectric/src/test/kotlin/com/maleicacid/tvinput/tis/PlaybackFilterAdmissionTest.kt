@@ -2015,12 +2015,15 @@ class PlaybackFilterAdmissionTest {
                 Shadows.shadowOf(Looper.getMainLooper()).idle()
             }
 
-            fun feed(bytes: ByteArray) {
+            fun feed(
+                bytes: ByteArray,
+                source: Filter = filter,
+            ) {
                 val event = mediaEvent(bytes.size.toLong())
                 val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
                 Shadow.extract<NativeLinearBlock>(block).data = bytes
                 Shadow.extract<NativeMediaEvent>(event).block = block
-                deliver(filter, event)
+                deliver(source, event)
                 fixture.drain()
                 refresh()
             }
@@ -2046,6 +2049,24 @@ class PlaybackFilterAdmissionTest {
             assertEquals("$physical:sub", selected.last())
             feed(stereoFrame)
             assertEquals(physical, selected.last())
+            feed(dualFrame)
+            assertTrue(fixture.selectAudio(session, "$physical:sub"))
+            val second = selection.copy(audio = otherAudio, audioDualMono = true)
+            assertTrue(fixture.pipeline.switchAudio(fixture.tuner, second).switchedAudio)
+            assertEquals(AudioTrack.DUAL_MONO_MODE_LL, nativeTrack.modes.last())
+            assertTrue(fixture.pipeline.switchAudio(fixture.tuner, selection.copy(audioDualMono = null)).switchedAudio)
+            refresh()
+            assertEquals(physical, selected.last())
+            val currentFilter = ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter")
+            feed(dualFrame, filter)
+            assertEquals(physical, selected.last())
+            feed(dualFrame, currentFilter)
+            assertTrue(fixture.selectAudio(session, "$physical:sub"))
+            nativeTrack.accept = false
+            feed(stereoFrame, currentFilter)
+            assertEquals(AudioTrack.DUAL_MONO_MODE_OFF, nativeTrack.modes.last())
+            assertEquals(PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE, fixture.failures.last().first)
+            assertNull(selected.last())
             assertTrue(track === ReflectionHelpers.getField<Any>(fixture.pipeline, "audioTrack"))
             assertTrue(decoder === ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder"))
             assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
