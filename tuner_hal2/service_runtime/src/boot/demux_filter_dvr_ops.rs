@@ -27,8 +27,8 @@ use maleicacid_tuner_hal2_domain_request::{
     DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest,
 };
 
-// The source-boundary owner can observe both lifecycles at the failure point.
-// The generic DemuxRuntimeError only contains the kind and an optional target ID.
+// 接続元を扱うこの境界では、失敗時点の接続元と接続先の状態をともに観測できる。
+// 共通のDemuxRuntimeErrorが保持するのは、失敗種別と任意の対象IDだけである。
 #[derive(Debug)]
 pub(crate) struct DemuxFrontendSourceFailureDiagnostic {
     phase: &'static str,
@@ -63,8 +63,8 @@ impl DemuxFrontendSourceFailureDiagnostic {
                 let state = frontend.snapshot().state;
                 (state, frontend.generation())
             });
-        // Include quarantined AIDL wrappers in the snapshot when still present.
-        // "None" means the source had no corresponding record at failure time.
+        // 隔離済みのAIDLラッパーも記録が残っていれば観測対象に含める。
+        // Noneは、失敗時点で接続元に対応する記録が存在しなかったことを示す。
         let objects = runtime.object_table().active_diagnostic_snapshots();
         let frontend_object = objects.iter().find(|entry| {
             entry.object_kind() == AidlObjectKind::Frontend
