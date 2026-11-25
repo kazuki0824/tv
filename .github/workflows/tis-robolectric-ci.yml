@@ -113,7 +113,7 @@ jobs:
           for case in playback.findall("testcase"):
               print(f"Android 15実SDK playback受付試験: {case.get('name')} success")
           resolver = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CurrentProgramRatingResolverTest.xml")).getroot()
-          assert resolver.get("tests") == "2", resolver.attrib
+          assert resolver.get("tests") == "3", resolver.attrib
           assert resolver.get("failures") == "0" and resolver.get("errors") == "0", resolver.attrib
           assert resolver.get("skipped", "0") == "0", resolver.attrib
           lease = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.TunerFrontendLeaseTransitionTest.xml")).getroot()
@@ -135,7 +135,7 @@ jobs:
           assert caption.get("failures") == "0" and caption.get("errors") == "0", caption.attrib
           assert caption.get("skipped", "0") == "0", caption.attrib
           capacity = ET.parse(report.with_name("TEST-com.maleicacid.tvinput.tis.CaptionPresentationCapacityTest.xml")).getroot()
-          assert capacity.get("tests") == "4", capacity.attrib
+          assert capacity.get("tests") == "5", capacity.attrib
           assert capacity.get("failures") == "0" and capacity.get("errors") == "0", capacity.attrib
           assert capacity.get("skipped", "0") == "0", capacity.attrib
           for case in caption.findall("testcase"):
