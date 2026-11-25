@@ -8,6 +8,21 @@ pub enum AacPresentation {
     Unknown,
 }
 
+/// 完全フレームで確認できたMPEG ID、profile、周波数、チャンネル構成の同一性。
+pub fn adts_configuration_key(frame: &[u8]) -> Option<u16> {
+    let h = frame.get(..7)?;
+    let size = ((h[3] as usize & 3) << 11) | ((h[4] as usize) << 3) | (h[5] as usize >> 5);
+    if h[0] != 255
+        || h[1] & 0xf6 != 0xf0
+        || size != frame.len()
+        || size <= if h[1] & 1 == 0 { 9 } else { 7 }
+        || (h[2] >> 2) & 15 >= 13
+    {
+        return None;
+    }
+    Some((u16::from(h[1] & 8) << 8) | (u16::from(h[2] & 0xfd) << 2) | u16::from(h[3] >> 6))
+}
+
 pub fn adts_presentation(frame: &[u8]) -> AacPresentation {
     parse_frame(frame).map_or(AacPresentation::Unknown, |(fact, _)| fact)
 }
@@ -33,7 +48,7 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
     let mut tags = [0u16; 4];
     let mut channels = 0;
     let mut single_tags = [0; 2];
-    let mut pce_channels = None;
+    let mut pce = None;
     loop {
         let element = bits.read(3)? as usize;
         match element {
@@ -76,10 +91,10 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
                 bits.skip(size as usize * 8)?;
             }
             5 => {
-                let pce = parse_program_config(&mut bits)?;
-                if pce.object_type != 2
-                    || pce.frequency_index != frequency
-                    || pce_channels.replace(pce.channel_count).is_some()
+                let parsed = parse_program_config(&mut bits)?;
+                if parsed.object_type != 2
+                    || parsed.frequency_index != frequency
+                    || pce.replace(parsed).is_some()
                 {
                     return None;
                 }
@@ -98,11 +113,17 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
     bits.align()?;
     if bits.offset != bits.bytes.len() * 8
         || channels == 0
-        || pce_channels.is_some_and(|n| usize::from(n) != channels)
+        || pce.as_ref().is_some_and(|config| {
+            config.element_tags != tags || usize::from(config.channel_count) != channels
+        })
     {
         return None;
     }
     let sce = tags[0].count_ones();
+    if sce == 2 && channels == 2 && pce.is_some_and(|config| config.front_pair != Some(single_tags))
+    {
+        return None;
+    }
     let cpe = tags[1].count_ones();
     let lfe = tags[3].count_ones();
     if configuration != 0 {
@@ -367,5 +388,34 @@ mod tests {
         let mut invalid = *dual;
         *invalid.last_mut().unwrap() = 0;
         assert_eq!(adts_presentation(&invalid), AacPresentation::Unknown);
+    }
+    // 48 kHz/36 kbit/sの440 Hz・1100 Hzを個別に符号化し、同じraw blockに収録した。
+    #[test]
+    fn coded_spectra_follow_element_boundaries_with_and_without_pce() {
+        let text = concat!(
+            "fff94c0014dffc0108328967a73cff7ffebfcfffa7f3492b833cf77372eb771cea94df91",
+            "f29e749d8d9e7e69e79564aef9294b592c35588def5121a8b4ae88b10ce0bd848b245128",
+            "c82608c84808ae80014a81000a02b400bd0ca1f993e3dfcfe97bf1e3fff57effffe7d9af",
+            "1e78def5cc5e638e6eaa4b1487a21d612f4ebd695d72534a7354d78f5d208a0320b2d140",
+            "4c69125222600924104c50009a62404000480b8b01c0"
+        );
+        let frame: Vec<_> = text
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert_eq!(adts_presentation(&frame), AacPresentation::DualMono);
+        let mut with_pce = vec![255, 249, 76, 0, 21, 191, 252, 160, 153, 0, 0, 0, 2, 0];
+        with_pce.extend_from_slice(&frame[7..]);
+        assert_eq!(adts_presentation(&with_pce), AacPresentation::DualMono);
+        let AacConfigurationProbe::Ready { configuration } =
+            probe_adts_configuration(&with_pce, None)
+        else {
+            panic!("帯域内PCEを取得できません");
+        };
+        assert_eq!(configuration.channel_count, 2);
+        // PCEが存在しないSCEを指定した場合は判定しない。
+        with_pce[12] ^= 4;
+        assert_eq!(adts_presentation(&with_pce), AacPresentation::Unknown);
     }
 }

@@ -18,6 +18,7 @@ data class DecoderConfigurationIdentity(
             audioChannelConfiguration: String? = null,
         ): DecoderConfigurationIdentity {
             val audio = TunerSelectionPolicy.isSupportedAudioStreamType(stream.streamType)
+            val channelMask = PlaybackPipeline.PcmChannelMaskPolicy.multichannelMask(audioChannelConfiguration)
             return DecoderConfigurationIdentity(
                 codec = stream.codec.takeIf { audio },
                 avc = stream.codecFacts.avc.takeIf { stream.streamType == 0x1b },
@@ -26,7 +27,7 @@ data class DecoderConfigurationIdentity(
                         ?.lowercase()
                         .takeIf { stream.streamType == 0x0f },
                 audioConfigHeader = stream.codecFacts.audioConfigHeader.takeIf { stream.streamType == 0x0f },
-                audioChannelMask = PlaybackPipeline.PcmChannelMaskPolicy.multichannelMask(audioChannelConfiguration).takeIf { audio },
+                audioChannelMask = channelMask.takeIf { audio },
             )
         }
     }

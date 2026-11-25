@@ -269,6 +269,8 @@ fn channel_count_for_configuration(configuration: u8) -> Option<u8> {
 }
 
 struct ProgramConfig {
+    element_tags: [u16; 4],
+    front_pair: Option<[u8; 2]>,
     object_type: u8,
     frequency_index: u8,
     channel_count: u8,
@@ -297,9 +299,16 @@ fn parse_program_config(bits: &mut AudioConfigBits<'_>) -> Option<ProgramConfig>
     }
     let mut channel_count = 0u8;
     let mut tags = std::collections::BTreeSet::new();
-    for _ in 0..front + side + back {
+    let mut front_pair = (front == 2 && side + back + lfe == 0).then_some([0; 2]);
+    for index in 0..front + side + back {
         let pair = bits.read(1)?;
         let tag = bits.read(4)?;
+        if pair != 0 {
+            front_pair = None;
+        }
+        if let Some(front_tags) = front_pair.as_mut() {
+            front_tags[index as usize] = tag as u8;
+        }
         if !tags.insert((pair, tag)) {
             return None;
         }
@@ -324,7 +333,13 @@ fn parse_program_config(bits: &mut AudioConfigBits<'_>) -> Option<ProgramConfig>
     let comment_end = comment_start.checked_add(1 + comment_count)?;
     bits.bytes.get(comment_start..comment_end)?;
     bits.offset = comment_end * 8;
+    let mut element_tags = [0; 4];
+    for (kind, tag) in tags {
+        element_tags[kind as usize] |= 1 << tag;
+    }
     Some(ProgramConfig {
+        element_tags,
+        front_pair,
         object_type,
         frequency_index,
         channel_count,
@@ -526,7 +541,7 @@ pub fn probe_adts_configuration(
 mod aac_elements;
 #[path = "codec_signaling/aac_tables.rs"]
 mod aac_tables;
-pub use aac_elements::{adts_presentation, AacPresentation};
+pub use aac_elements::{adts_configuration_key, adts_presentation, AacPresentation};
 
 struct AudioConfigBits<'a> {
     bytes: &'a [u8],

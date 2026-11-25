@@ -853,7 +853,7 @@ class MaleicacidLiveSession(
                             track.type == TvTrackInfo.TYPE_AUDIO &&
                                 TunerSelectionPolicy.physicalAudioTrackId(track) == preferredAudioTrackId &&
                                 track.audioPresentation == presentation
-                        }?.let { notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id) }
+                        }?.let { publishAudioSelection(it.id) }
                 }
             }
         }
@@ -1068,22 +1068,29 @@ class MaleicacidLiveSession(
         notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, id)
     }
 
+    private fun currentAudioOutput(service: AribService): PlaybackPipeline.AudioPresentationOutput? {
+        val facts =
+            service.streams.filter(TunerSelectionPolicy::isSupportedAudioStream).associate { stream ->
+                stream.elementaryPid to currentAudioComponent(service.serviceKey, stream.componentTag)?.dualMono
+            }
+        return tunerController.audioPresentationOutput(service.serviceKey, facts)
+    }
+
     private fun displayTracksFor(
         service: AribService,
         defaultComponentGroupTags: Set<Int>? = currentDefaultComponentGroupTags(service.serviceKey),
+        output: PlaybackPipeline.AudioPresentationOutput? = currentAudioOutput(service),
     ): List<TunerController.TisTrack> =
         TunerSelectionPolicy.withDualMonoPresentations(
             tunerController.tracksFor(service.streams, defaultComponentGroupTags),
-            { track, component ->
-                tunerController.audioPresentationOutput(service.serviceKey, track, component?.dualMono)?.selectable ==
-                    true
-            },
+            { track, _ -> output?.selectable == true && track.pid == output.pid },
         ) { componentTag -> currentAudioComponent(service.serviceKey, componentTag) }
 
     @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength")
     private fun updateTracks(service: AribService) {
         val defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey)
-        val tracks = displayTracksFor(service, defaultComponentGroupTags)
+        val output = currentAudioOutput(service)
+        val tracks = displayTracksFor(service, defaultComponentGroupTags, output)
         val audioMetadataByTrackId =
             tracks
                 .filter { it.type == TvTrackInfo.TYPE_AUDIO }
@@ -1176,10 +1183,8 @@ class MaleicacidLiveSession(
         }
         val applied =
             tracks.firstOrNull { track ->
-                if (track.type != TvTrackInfo.TYPE_AUDIO) return@firstOrNull false
-                val eit = currentAudioComponent(service.serviceKey, track.componentTag)
-                val output = tunerController.audioPresentationOutput(service.serviceKey, track, eit?.dualMono)
-                output != null && track.audioPresentation == output.applied
+                output != null && track.type == TvTrackInfo.TYPE_AUDIO && track.pid == output.pid &&
+                    track.audioPresentation == output.applied
             }
         if (applied != null) preferredAudioTrackId = TunerSelectionPolicy.physicalAudioTrackId(applied)
         publishAudioSelection(applied?.id)

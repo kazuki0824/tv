@@ -72,7 +72,6 @@ import kotlin.test.assertTrue
 @RunWith(RobolectricTestRunner::class)
 @Config(
     sdk = [35],
-    instrumentedPackages = ["com.maleicacid.tvinput.aribsi"],
     shadows = [
         PlaybackFilterAdmissionTest.NativeTuner::class,
         PlaybackFilterAdmissionTest.NativeFilter::class,
@@ -1805,23 +1804,26 @@ class PlaybackFilterAdmissionTest {
     @Test
     fun advertisedDualMonoSelectionCommitsOnlyAfterAudioTrackAccepts() {
         Fixture().use { fixture ->
-            fixture.decoder(audio = true)
+            fixture.decoder(audio = true, aac = true)
             val dualFrame = byteArrayOf(-1, -7, 76, 0, 1, -1, -4, 0, -56, 0, 0, 22, 64, 0, 56)
-            val stereoFrame = byteArrayOf(-1, -7, 76, -128, 1, -33, -4, 32, 100, 0, 25, 0, 0, -32)
+            val stereoFrame = byteArrayOf(-1, -7, 76, -128, 1, -33, -4, 32, 100, 0, 1, -112, 0, 14)
             assertEquals(
                 true,
                 com.maleicacid.tvinput.aribsi.NativeAribSiParser
-                    .adtsDualMono(dualFrame),
+                    .adtsPresentation(dualFrame)
+                    ?.dualMono,
             )
             assertEquals(
                 false,
                 com.maleicacid.tvinput.aribsi.NativeAribSiParser
-                    .adtsDualMono(stereoFrame),
+                    .adtsPresentation(stereoFrame)
+                    ?.dualMono,
             )
             assertEquals(
                 null,
                 com.maleicacid.tvinput.aribsi.NativeAribSiParser
-                    .adtsDualMono(dualFrame.copyOf(12)),
+                    .adtsPresentation(dualFrame.copyOf(12))
+                    ?.dualMono,
             )
             val selection =
                 fixture.audioSelection().let { original ->
@@ -1894,9 +1896,9 @@ class PlaybackFilterAdmissionTest {
             assertTrue(selected.isEmpty())
             ReflectionHelpers.setField(session, "playbackState", started)
             ReflectionHelpers.setField(fixture.pipeline, "activeSelection", selection)
-            fixture.avFilter(true)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
-            fixture.avFilter(true)
+            var filter = fixture.avFilter(true)
+            fixture.attachCodec(audio = true)
             ReflectionHelpers.setField(decoder, "independentStereo", true)
             val track =
                 AudioTrack
@@ -2002,6 +2004,50 @@ class PlaybackFilterAdmissionTest {
             assertEquals("$physical:main", selected.last())
             assertTrue(ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter") !== lostFilter)
             assertEquals(modeCalls, nativeTrack.modes.size)
+            filter = ReflectionHelpers.getField(fixture.pipeline, "audioFilter")
+
+            fun refresh() {
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    session,
+                    "updateTracks",
+                    ReflectionHelpers.ClassParameter.from(com.maleicacid.tvinput.aribsi.AribService::class.java, service),
+                )
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+            }
+
+            fun feed(bytes: ByteArray) {
+                val event = mediaEvent(bytes.size.toLong())
+                val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+                Shadow.extract<NativeLinearBlock>(block).data = bytes
+                Shadow.extract<NativeMediaEvent>(event).block = block
+                deliver(filter, event)
+                fixture.drain()
+                refresh()
+            }
+            // EIT優先中にもAACの最新構成を保持し、EIT消失後に古い主副へ戻さない。
+            feed(stereoFrame)
+            assertEquals("$physical:main", selected.last())
+            ReflectionHelpers.setField(session, "latestLiveSnapshot", snapshot.copy(services = listOf(service)))
+            refresh()
+            assertEquals(physical, selected.last())
+            feed(dualFrame)
+            assertTrue(fixture.selectAudio(session, "$physical:sub"))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("$physical:sub", selected.last())
+            feed(dualFrame.copyOf(12))
+            assertEquals("$physical:sub", selected.last())
+            ReflectionHelpers.setField(decoder, "independentStereo", false)
+            refresh()
+            assertEquals(listOf(physical), published.last().filter { it.type == TvTrackInfo.TYPE_AUDIO }.map { it.id })
+            assertEquals(physical, selected.last())
+            assertEquals(AudioTrack.DUAL_MONO_MODE_OFF, nativeTrack.modes.last())
+            ReflectionHelpers.setField(decoder, "independentStereo", true)
+            refresh()
+            assertEquals("$physical:sub", selected.last())
+            feed(stereoFrame)
+            assertEquals(physical, selected.last())
+            assertTrue(track === ReflectionHelpers.getField<Any>(fixture.pipeline, "audioTrack"))
+            assertTrue(decoder === ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder"))
             assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
         }
     }
@@ -2837,6 +2883,7 @@ class PlaybackFilterAdmissionTest {
             audio: Boolean = false,
             videoKind: PlaybackPipeline.VideoCodecKind = PlaybackPipeline.VideoCodecKind.AVC,
             stopOnFailure: Boolean = !audio,
+            aac: Boolean = false,
         ) {
             val name = if (audio) "AudioDecoderPipeline" else "VideoDecoderPipeline"
             val type = Class.forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$$name")
@@ -2858,7 +2905,7 @@ class PlaybackFilterAdmissionTest {
                         Class
                             .forName("com.maleicacid.tvinput.tis.PlaybackPipeline\$AudioCodecKind")
                             .enumConstants
-                            .single { it.toString() == "MPEG1" }
+                            .single { it.toString() == if (aac) "AAC_ADTS" else "MPEG1" }
                     constructor.newInstance(
                         pipeline,
                         kind,

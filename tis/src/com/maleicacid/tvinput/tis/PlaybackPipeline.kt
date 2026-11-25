@@ -31,6 +31,8 @@ import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.common.CaptionTimestamp
 import com.maleicacid.tvinput.common.LogTags
+import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TsPid
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -464,21 +466,21 @@ class PlaybackPipeline(
     }
 
     data class AudioPresentationOutput(
+        val pid: TsPid,
         val selectable: Boolean,
         val applied: DualMonoPresentation?,
     )
 
     fun audioPresentationOutput(
-        service: com.maleicacid.tvinput.common.ServiceKey,
-        track: TunerController.TisTrack,
-        eitDualMono: Boolean?,
+        service: ServiceKey,
+        facts: Map<TsPid, Boolean?>,
     ): AudioPresentationOutput? =
         runOnPlaybackExecutorBlocking {
-            val selection = activeSelection
-            if (selection?.serviceKey != service || selection.audio?.elementaryPid != track.pid || audioFilter == null) {
+            val pid = activeSelection?.takeIf { it.serviceKey == service }?.audio?.elementaryPid
+            if (pid == null || pid !in facts || audioFilter == null) {
                 null
             } else {
-                audioDecoder?.presentationOutput(eitDualMono)
+                audioDecoder?.presentationOutput(pid, facts[pid])
             }
         }
 
@@ -515,7 +517,7 @@ class PlaybackPipeline(
             ) {
                 return@runOnPlaybackExecutorBlocking null
             }
-            val applied = decoder.setDualMonoPresentation(presentation)
+            val applied = decoder.selectPresentation(presentation)
             if (applied) activeSelection = activeSelection?.copy(dualMonoPresentation = presentation)
             applied
         }
@@ -870,8 +872,9 @@ class PlaybackPipeline(
                 resourceCleanup.requireComplete()
                 createAndStartAvFilter(tuner, audio, isAudio = true).getOrThrow()
                 // 開始成功した実入力と同時に選択を確定する。失敗時は同じ選択から再取得できる。
+                val applied = audioDecoder?.changePresentationInput(selection.audioDualMono, selection.dualMonoPresentation)
+                check(applied == true) { "切替先の主副モードを適用できません" }
                 activeSelection = selection
-                audioDecoder?.changePresentationInput(selection.audioDualMono, selection.dualMonoPresentation)
                 onAudioPresentationChanged(playbackGeneration)
                 AudioSwitchResult(true, listOf("AUDIO_PID_SWITCHED_VIDEO_PRESERVED"))
             }.getOrElse { error ->
@@ -2524,6 +2527,7 @@ class PlaybackPipeline(
         private var volume: Float = initialVolume
         private var dualMonoPresentation: DualMonoPresentation = initialDualMonoPresentation
         private var eitDualMono: Boolean? = dualMono
+        private var aacConfiguration: Int? = null
         private var aacDualMono: Boolean? = null
         private var aacInputCurrent: (() -> Boolean)? = null
         private var independentStereo = false
@@ -2531,6 +2535,7 @@ class PlaybackPipeline(
         private var selectable = false
 
         fun invalidateAudioInput() {
+            aacConfiguration = null
             aacDualMono = null
             aacInputCurrent = null
             onAudioPresentationChanged(generation)
@@ -2539,12 +2544,22 @@ class PlaybackPipeline(
         fun changePresentationInput(
             eit: Boolean?,
             requested: DualMonoPresentation,
-        ) {
+        ): Boolean {
             eitDualMono = eit
             dualMonoPresentation = requested
+            val wasSelectable = selectable
             reconcilePresentation()
+            if (wasSelectable && selectable && appliedPresentation != requested) {
+                if (!setDualMonoPresentation(requested) && appliedPresentation != null) {
+                    errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "切替先の主副モードを適用できません")
+                    return false
+                }
+            }
+            return selectable || appliedPresentation == null
         }
 
+        // ADTSの固定ヘッダ長と13ビットのフレーム長に収まる現入力だけを検査する。
+        @Suppress("ReturnCount", "MagicNumber")
         fun observeAac(
             sample: MediaSample,
             current: () -> Boolean,
@@ -2558,20 +2573,27 @@ class PlaybackPipeline(
                     val bytes = ByteArray(sample.size)
                     mapped.get(bytes)
                     com.maleicacid.tvinput.aribsi.NativeAribSiParser
-                        .adtsDualMono(bytes)
+                        .adtsPresentation(bytes)
                 }.getOrNull() ?: return
-            if (!current() || (aacDualMono == value && aacInputCurrent?.invoke() == true)) return
+            if (!current()) return
+            val sameConfiguration = aacConfiguration == value.configuration && aacInputCurrent?.invoke() == true
+            val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
+            if (sameConfiguration && aacDualMono == fact) return
+            aacConfiguration = value.configuration
             aacInputCurrent = current
-            aacDualMono = value
+            aacDualMono = fact
             reconcilePresentation()
             onAudioPresentationChanged(generation)
         }
 
-        fun presentationOutput(eit: Boolean?): AudioPresentationOutput? {
+        fun presentationOutput(
+            pid: TsPid,
+            eit: Boolean?,
+        ): AudioPresentationOutput? {
             eitDualMono = eit
             reconcilePresentation()
             if (audioTrack == null || (!selectable && appliedPresentation != null)) return null
-            return AudioPresentationOutput(selectable, appliedPresentation)
+            return AudioPresentationOutput(pid, selectable, appliedPresentation)
         }
 
         private fun reconcilePresentation() {
@@ -2583,7 +2605,7 @@ class PlaybackPipeline(
             if (available) {
                 setDualMonoPresentation(dualMonoPresentation)
             } else if (appliedPresentation != null) {
-                if (track.setDualMonoMode(AudioTrack.DUAL_MONO_MODE_OFF)) {
+                if (runCatching { track.setDualMonoMode(AudioTrack.DUAL_MONO_MODE_OFF) }.getOrDefault(false)) {
                     appliedPresentation = null
                 } else {
                     errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "失効した二重音声モードを解除できません")
@@ -2603,12 +2625,19 @@ class PlaybackPipeline(
             audioTrack?.let { track -> runCatching { track.setVolume(value) } }
         }
 
+        fun selectPresentation(presentation: DualMonoPresentation): Boolean {
+            reconcilePresentation()
+            return setDualMonoPresentation(presentation)
+        }
+
         // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
         @Suppress("ReturnCount")
-        fun setDualMonoPresentation(presentation: DualMonoPresentation): Boolean {
+        private fun setDualMonoPresentation(presentation: DualMonoPresentation): Boolean {
             if (!selectable) return false
             val track = audioTrack ?: return false
-            if (!track.setDualMonoMode(audioTrackDualMonoMode(presentation))) return false
+            val mode = audioTrackDualMonoMode(presentation)
+            val applied = runCatching { track.setDualMonoMode(mode) }.getOrDefault(false)
+            if (!applied) return false
             appliedPresentation = presentation
             dualMonoPresentation = presentation
             return true
@@ -3525,7 +3554,10 @@ class PlaybackPipeline(
         }
 
         @Suppress("MagicNumber")
-        fun multichannelMask(configuration: String?): Int? = fromChannelConfiguration(configuration)?.takeIf { Integer.bitCount(it) > 2 }
+        fun multichannelMask(configuration: String?): Int? {
+            val mask = fromChannelConfiguration(configuration)
+            return mask?.takeIf { Integer.bitCount(it) > 2 }
+        }
 
         fun fromChannelConfiguration(channelConfiguration: String?): Int? =
             when (channelConfiguration) {

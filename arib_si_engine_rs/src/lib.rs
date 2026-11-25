@@ -929,27 +929,42 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_pro
     _class: JClass<'_>,
     frame: JByteArray<'_>,
 ) -> jobject {
-    use maleicacid_arib_si_engine_core::codec_signaling::{adts_presentation, AacPresentation};
-    let result = match bounded_codec_bytes(&mut env, &frame, 8191) {
-        Ok(bytes) => adts_presentation(&bytes),
-        Err(CodecInputFailure::TooLarge) => AacPresentation::Unknown,
+    use maleicacid_arib_si_engine_core::codec_signaling::{
+        adts_configuration_key, adts_presentation, AacPresentation,
+    };
+    let bytes = match bounded_codec_bytes(&mut env, &frame, 8191) {
+        Ok(bytes) => bytes,
+        Err(CodecInputFailure::TooLarge) => return std::ptr::null_mut(),
         Err(CodecInputFailure::Jni(error)) => {
             return throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error))
                 as jobject
         }
     };
-    let field = match result {
-        AacPresentation::DualMono => "TRUE",
-        AacPresentation::Other => "FALSE",
-        AacPresentation::Unknown => return std::ptr::null_mut(),
+    let Some(key) = adts_configuration_key(&bytes) else {
+        return std::ptr::null_mut();
     };
-    match env
-        .get_static_field("java/lang/Boolean", field, "Ljava/lang/Boolean;")
-        .and_then(|v| v.l())
-    {
+    let fact = match adts_presentation(&bytes) {
+        AacPresentation::DualMono => Some("TRUE"),
+        AacPresentation::Other => Some("FALSE"),
+        AacPresentation::Unknown => None,
+    };
+    let result = (|| {
+        let value = match fact {
+            Some(field) => env
+                .get_static_field("java/lang/Boolean", field, "Ljava/lang/Boolean;")?
+                .l()?,
+            None => JObject::null(),
+        };
+        env.new_object(
+            "com/maleicacid/tvinput/aribsi/AacFramePresentation",
+            "(ILjava/lang/Boolean;)V",
+            &[JValue::Int(i32::from(key)), JValue::Object(&value)],
+        )
+    })();
+    match result {
         Ok(value) => value.into_raw(),
         Err(error) => {
-            throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error)) as jobject
+            throw_si_failure(&mut env, SiJniFailureReason::JniOutput.failure(error)) as jobject
         }
     }
 }

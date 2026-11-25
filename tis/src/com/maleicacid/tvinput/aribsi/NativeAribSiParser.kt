@@ -3,6 +3,11 @@ package com.maleicacid.tvinput.aribsi
 import com.maleicacid.tvinput.aribsi.generated.SiCollectionSnapshotDto
 import com.maleicacid.tvinput.common.TsPid
 
+internal data class AacFramePresentation(
+    val configuration: Int,
+    val dualMono: Boolean?,
+)
+
 class NativeParserCleanupException(
     val status: Int,
 ) : IllegalStateException("ネイティブ解析器の解放に失敗しました status=$status")
@@ -327,9 +332,9 @@ class NativeAribSiParser : AutoCloseable {
             }
         }
 
-        @JvmStatic private external fun probeDualMono(frame: ByteArray): Boolean?
+        @JvmStatic private external fun probeDualMono(frame: ByteArray): AacFramePresentation?
 
-        internal fun adtsDualMono(frame: ByteArray): Boolean? = probeDualMono(frame)
+        internal fun adtsPresentation(frame: ByteArray): AacFramePresentation? = probeDualMono(frame)
 
         @JvmStatic private external fun nativeProbeAacConfiguration(
             adts: ByteArray,
