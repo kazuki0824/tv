@@ -41,6 +41,10 @@ import kotlin.test.assertTrue
 class ScanCancellationProviderTest {
     @Test
     fun stoppedBootJobDiscardsProviderReadinessResult() {
+        for (available in listOf(true, false)) verifyStoppedReadiness(available)
+    }
+
+    private fun verifyStoppedReadiness(available: Boolean) {
         val service = Robolectric.buildService(BootEpgSyncJobService::class.java).create().get()
         shadowOf(checkNotNull(service.getSystemService(UserManager::class.java))).setUserUnlocked(true)
         DirectBootGuard.markBootEpgSyncRequested(service, "test")
@@ -58,6 +62,7 @@ class ScanCancellationProviderTest {
                     check(Looper.myLooper() !== Looper.getMainLooper())
                     entered.countDown()
                     check(release.await(5, TimeUnit.SECONDS))
+                    if (!available) throw IllegalStateException("TvProvider unavailable")
                     return MatrixCursor(checkNotNull(projection))
                 }
             }

@@ -51,11 +51,13 @@ object ChannelScanManager {
         targets: Set<ServiceKey>,
         result: ChannelScanController.ScanResult,
     ): Boolean {
+        val outcome = result.terminal.outcome
+        val allCommitted = targets.isNotEmpty() && result.committedServiceKeys.containsAll(targets)
         val reason =
             when {
-                result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED -> "BOOT_EPG_CANCELLED"
-                result.terminal.outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST -> TUNER_RESOURCE_LOST
-                targets.isEmpty() || !result.committedServiceKeys.containsAll(targets) -> "BOOT_EPG_INCOMPLETE_TARGET_SET"
+                outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED -> "BOOT_EPG_CANCELLED"
+                outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST -> TUNER_RESOURCE_LOST
+                !allCommitted -> "BOOT_EPG_INCOMPLETE_TARGET_SET"
                 else -> null
             }
         if (reason == null) DirectBootGuard.clearPending(context) else DirectBootGuard.deferPending(context, reason)

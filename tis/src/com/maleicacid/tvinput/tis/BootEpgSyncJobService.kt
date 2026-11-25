@@ -50,15 +50,23 @@ open class BootEpgSyncJobService : JobService() {
         if (periodic) return startRefresh(run)
         ChannelScanManager.prepareEpgRefresh {
             if (activeRun.get() !== run || run.stopped.get()) return@prepareEpgRefresh
-            val decision = DirectBootGuard.drainIfUserUnlocked(applicationContext, "JOB_START", System.currentTimeMillis())
+            val now = System.currentTimeMillis()
+            val decision = DirectBootGuard.drainIfUserUnlocked(applicationContext, "JOB_START", now)
             mainHandler.post {
                 if (activeRun.get() !== run || run.stopped.get()) return@post
                 when (decision) {
                     DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> startRefresh(run)
+
                     DirectBootGuard.DrainDecision.SKIP_NO_PENDING -> finish(run, needsReschedule = false)
+
                     DirectBootGuard.DrainDecision.SKIP_LOCKED,
                     DirectBootGuard.DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE,
-                    -> finish(run, needsReschedule = true)
+                    -> {
+                        val locked = decision == DirectBootGuard.DrainDecision.SKIP_LOCKED
+                        val reason = if (locked) "USER_LOCKED" else "TV_PROVIDER_UNAVAILABLE"
+                        DirectBootGuard.markSkipped(applicationContext, reason)
+                        finish(run, needsReschedule = true)
+                    }
                 }
             }
         }
