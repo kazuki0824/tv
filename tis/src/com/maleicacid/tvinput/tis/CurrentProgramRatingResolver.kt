@@ -147,7 +147,7 @@ class CurrentProgramRatingResolver internal constructor(
         )
     }
 
-    /** Prefer the received p/f actual present event, including broadcasts with undefined time. */
+    /** 開始時刻が未定義の場合も、受信済みのp/f actualの現在イベントを優先する。 */
     @Suppress("MagicNumber", "MaxLineLength")
     fun currentEvent(
         snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot?,
