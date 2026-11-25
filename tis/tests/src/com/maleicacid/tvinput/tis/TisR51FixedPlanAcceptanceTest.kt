@@ -842,18 +842,11 @@ class TisR51FixedPlanAcceptanceTest {
         )
         check(!requirements.evaluate(snapshot.copy(eitInstances = schedules + eitInstance(key))).complete)
         check(requirements.evaluate(snapshot).complete)
-        check(
-            !requirements
-                .evaluate(
-                    snapshot.copy(eitInstances = schedules + listOf(eitInstance(key), eitInstance(otherKey).copy(inconsistent = true))),
-                ).complete,
-        )
-        check(
-            !requirements
-                .evaluate(
-                    snapshot.copy(eitInstances = schedules + listOf(eitInstance(key), eitInstance(otherKey).copy(currentNextIndicator = false))),
-                ).complete,
-        )
+        val other = eitInstance(otherKey)
+        for (invalid in listOf(other.copy(inconsistent = true), other.copy(currentNextIndicator = false))) {
+            val updated = snapshot.copy(eitInstances = schedules + eitInstance(key) + invalid)
+            check(!requirements.evaluate(updated).complete)
+        }
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

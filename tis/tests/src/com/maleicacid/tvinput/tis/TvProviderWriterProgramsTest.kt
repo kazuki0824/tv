@@ -152,7 +152,12 @@ class TvProviderWriterProgramsTest {
         val channelId = store.channels.keys.single()
 
         fun programAt(time: Long) =
-            store.indexExistingProgramEntriesForWindow(channelId, time, time + 1).getOrThrow().values.flatten().singleOrNull()
+            store
+                .indexExistingProgramEntriesForWindow(channelId, time, time + 1)
+                .getOrThrow()
+                .values
+                .flatten()
+                .singleOrNull()
 
         val fiveMinutes = 300_000L
         val originalId = checkNotNull(programAt(ten + fiveMinutes)).programId
@@ -160,7 +165,8 @@ class TvProviderWriterProgramsTest {
         val received = writer.upsertProgramsForWindows(listOf(movie), emptyList())
         check(received.failures.isEmpty() && received.updated == 0 && received.inserted == 0)
         val current = checkNotNull(programAt(ten + fiveMinutes))
-        check(current.programId == originalId && current.values?.getAsString(TvContract.Programs.COLUMN_TITLE) == "ニュース")
+        check(current.programId == originalId)
+        check(current.values?.getAsString(TvContract.Programs.COLUMN_TITLE) == "ニュース")
         val revised = movie.copy(source = news.source)
         check(writer.upsertPrograms(listOf(revised)).updated == 1)
         check(programAt(ten + fiveMinutes) == null)

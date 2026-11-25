@@ -481,8 +481,10 @@ class TvProviderWriter private constructor(
                         val blocked =
                             pfRows.any {
                                 it.sourceTableId < program.source.tableId &&
-                                    (it.programId == existingEntry?.programId ||
-                                        (it.startTimeMillis < programEnd && program.startTimeMillis < it.endTimeMillis))
+                                    (
+                                        it.programId == existingEntry?.programId ||
+                                            (it.startTimeMillis < programEnd && program.startTimeMillis < it.endTimeMillis)
+                                    )
                             } ||
                                 incomingPf.any {
                                     it.source.tableId < program.source.tableId && it.startTimeMillis < programEnd &&
