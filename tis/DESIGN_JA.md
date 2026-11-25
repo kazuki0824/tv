@@ -74,7 +74,7 @@ SI engineが返すtyped audio factからAndroid `TvTrackInfo`へ自然対応す�
 
 AACの判定を現在の再生世代と音声PIDに結び付け、音声PIDの変更、再選局、停止で失効させる。同一PIDでも二重音声から別の音声構成へ切り替わったことを確認したら、旧判定に基づく副音声の選択肢を取り下げる。現行のAudioTrackに適用できる同一ES内の音声モード変更は `setDualMonoMode()` の成功後に選択を通知し、判定・選択を理由にAVデコーダを再作成しない。判定は既存の音声入力経路を用い、音声PIDやPESフィルタを増やさない。
 
-受入試験では、EITがない二重音声と通常ステレオ、再選局直後の旧判定の失効、同一PIDでの二重音声からステレオへの復帰、有効なEITとの優先関係を確認する。実機ではLive TVで副音声を選択して副だけを再生できることを確認する。PCEも有効なASCもない入力は、二重音声を判定できることとMediaCodecが構成・出力できることを別々に確認し、未確認の構成を再生対応として扱わない。
+AACの二重音声判定と、MediaCodecが入力を構成して主・副を独立したチャンネルとして出力できるかは別に扱う。PCEも有効なASCもない入力も、二重音声の判定だけで再生対応とみなさない。
 
 AudioTrackへ渡すPCM topologyはdecoderの実出力を正本にする。decoder output `MediaFormat`に有効な`KEY_CHANNEL_MASK`がある場合はその`AudioFormat` positional maskを最優先で使用する。`KEY_CHANNEL_MASK`が無い場合だけ、SI engineが返すtyped `channelConfiguration`をAndroid `AudioFormat` channel maskへ写像し、decoder outputの`KEY_CHANNEL_COUNT`と一致する場合に使用する。それも確定できない場合はAOSPの`audio_channel_out_mask_from_count()`相当のcount→canonical maskをfallbackとして使用する。このcount fallbackはcontent channel mask不明時の便宜的配置であり、ARIB raw `component_type`をTISで再解釈した結果ではない。Android 13以降のdefault AAC decoderが3ch以上を出力するにもかかわらずoutput `KEY_CHANNEL_MASK`を提示しない場合は、fallbackで再生継続できてもCDD §5.1.2 C-7-2の適合を満たしたとは扱わず診断する。AudioTrackはdecoderのcurrent output formatに対して構成し、sample rate / channel count / channel maskが変わるoutput-format changeでは旧AudioTrackをそのまま使わず、既存のplayback generation / MediaSync再生成契約に従って新しい実出力形式へ同期する。
 
