@@ -48,7 +48,11 @@ open class BootEpgSyncJobService : JobService() {
         if (!periodic && !DirectBootGuard.isPending(applicationContext)) return false
         val run = RunContext(params)
         activeRun.set(run)
-        if (periodic) return startRefresh(run)
+        if (periodic) startRefresh(run) else prepareBootRefresh(run)
+        return true
+    }
+
+    private fun prepareBootRefresh(run: RunContext) {
         ChannelScanManager.prepareEpgRefresh {
             if (activeRun.get() !== run || run.stopped.get()) return@prepareEpgRefresh
             val now = System.currentTimeMillis()
@@ -56,9 +60,13 @@ open class BootEpgSyncJobService : JobService() {
             mainHandler.post {
                 if (activeRun.get() !== run || run.stopped.get()) return@post
                 when (decision) {
-                    DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> startRefresh(run)
+                    DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> {
+                        startRefresh(run)
+                    }
 
-                    DirectBootGuard.DrainDecision.SKIP_NO_PENDING -> finish(run, needsReschedule = false)
+                    DirectBootGuard.DrainDecision.SKIP_NO_PENDING -> {
+                        finish(run, needsReschedule = false)
+                    }
 
                     DirectBootGuard.DrainDecision.SKIP_LOCKED,
                     DirectBootGuard.DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE,
@@ -71,12 +79,10 @@ open class BootEpgSyncJobService : JobService() {
                 }
             }
         }
-        return true
     }
 
     // periodic jobは次の定期枠で再試行し、Direct Bootの保留情報に触れない。
-    @Suppress("ReturnCount")
-    private fun startRefresh(run: RunContext): Boolean {
+    private fun startRefresh(run: RunContext) {
         if (!ProgramUpgradeCleanup.ensure(applicationContext) { success ->
                 if (success && !periodic) {
                     BootEpgSyncScheduler.scheduleIfEligible(applicationContext, "PROGRAM_CLEANUP_COMPLETED")
@@ -92,7 +98,6 @@ open class BootEpgSyncJobService : JobService() {
             return finish(run, needsReschedule = true)
         }
         readTargets(run, inputId, TvProviderWriter(applicationContext, inputId)::existingChannelsResult)
-        return true
     }
 
     private fun readTargets(
@@ -173,7 +178,7 @@ open class BootEpgSyncJobService : JobService() {
     private fun finish(
         run: RunContext,
         needsReschedule: Boolean,
-    ): Boolean {
+    ) {
         if (run.completionDelivered.compareAndSet(false, true)) {
             mainHandler.post {
                 if (activeRun.get() === run && !run.stopped.get()) {
@@ -182,7 +187,6 @@ open class BootEpgSyncJobService : JobService() {
                 }
             }
         }
-        return true
     }
 }
 

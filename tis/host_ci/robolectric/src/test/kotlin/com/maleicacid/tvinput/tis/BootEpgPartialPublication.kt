@@ -42,11 +42,7 @@ internal fun verifyBootPartialOther(
         filter.onStart = {
             if (injected.compareAndSet(false, true)) {
                 ingest(engine)
-                val data = ByteBuffer.wrap(pf)
-                for (offset in listOf(0, 13)) data.put(offset, 0x4f)
-                for (offset in listOf(6, 7, 12)) data.put(offset, 0)
-                data.putShort(14, 0xba02.toShort())
-                writeSectionCrc(pf)
+                prepareOtherPf(pf)
                 check(SectionIngestController(engine).onSection(TsPid.EIT, pf).status == SiStatus.OK)
                 native.successfulTunes = false
             }
@@ -87,6 +83,14 @@ internal fun verifyBootPartialOther(
         scan.close()
         engine.close()
     }
+}
+
+private fun prepareOtherPf(pf: ByteArray) {
+    val data = ByteBuffer.wrap(pf)
+    for (offset in listOf(0, 13)) data.put(offset, 0x4f)
+    for (offset in listOf(6, 7, 12)) data.put(offset, 0)
+    data.putShort(14, 0xba02.toShort())
+    writeSectionCrc(pf)
 }
 
 // 地上波fixtureのNIT network descriptor loopだけをBSのsystem_management_descriptorに置き換える。

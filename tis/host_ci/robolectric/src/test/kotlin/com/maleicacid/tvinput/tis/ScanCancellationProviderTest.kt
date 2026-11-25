@@ -83,7 +83,7 @@ class ScanCancellationProviderTest {
                     check(Looper.myLooper() !== Looper.getMainLooper())
                     entered.countDown()
                     check(release.await(5, TimeUnit.SECONDS))
-                    if (!available) throw IllegalStateException("TvProvider unavailable")
+                    check(available) { "TvProvider unavailable" }
                     return MatrixCursor(checkNotNull(projection))
                 }
             }
