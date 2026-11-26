@@ -541,10 +541,10 @@ class MaleicacidLiveSession(
         val service = transaction.services.firstOrNull { it.serviceKey == serviceKey }
         val pmtPids = transaction.pmtPidsFor(serviceKey)
         val decision = currentServicePolicy()
-        publishLiveProgramSnapshot()
         // 登録可能と判定したPMT trackは、CA descriptor解決・CAS確立・AV再生開始を待たずに通知する。
         // 不完全／不適格なserviceは広告せず、字幕言語は管理PES受信後だけ追加する。
         if (decision.registrationReady) service?.let(::updateTracks)
+        publishLiveProgramSnapshot()
         if (playbackState == PlaybackStartState.Idle && previouslyPending && initialLiveSiPending(decision)) {
             // SDT-actualの受理と、同じPIDのSDT-other/BATの受信を混同しない。
             val sdtDelivery = if ("SDT" in decision.reasons) " ${sectionIngestController.sdtDeliveryDiagnostic()}" else ""

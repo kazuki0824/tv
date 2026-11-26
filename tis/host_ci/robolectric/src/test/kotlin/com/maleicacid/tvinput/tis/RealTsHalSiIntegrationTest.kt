@@ -345,6 +345,11 @@ class RealTsHalSiIntegrationTest {
         selected: ServiceKey,
     ): List<Section> {
         val ingest = SectionIngestController(engine)
+        // TS所属を確定し、BのPMTを受理する。選局中AのPMT (257) は保留する。
+        for (pid in listOf(0, TsPid.NIT.value, 0x11, 258)) {
+            val section = sections.first { it.pid == pid }
+            assertEquals(SiStatus.OK, ingest.onSection(TsPid(pid), section.bytes).status)
+        }
         val ratedSections =
             sections.map { section ->
                 val data = ByteBuffer.wrap(section.bytes)
@@ -365,6 +370,7 @@ class RealTsHalSiIntegrationTest {
         val rated = provider.rows.single { it.getAsInteger(event) == 0xbdac }
         assertEquals("com.android.tv/ISDB/ISDB_15", rated.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING))
         provider.rows.clear()
+        engine.reset(SiDiscoveryProfile.ISDB_T)
         return ratedSections
     }
 
