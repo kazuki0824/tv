@@ -2246,7 +2246,7 @@ mod tests {
 
         type CloseJob = (
             RuntimeObjectEntry,
-            CloseCleanupAttemptCompletion,
+            Option<CloseCleanupAttemptCompletion>,
             AidlMethodCall,
         );
         let (finished_tx, finished_rx) = mpsc::channel();
@@ -2260,6 +2260,17 @@ mod tests {
                 move |(entry, completion, method): CloseJob, _: _, _: WorkerContext| {
                     {
                         let mut runtime = worker_runtime.lock().unwrap();
+                        let Some(completion) = completion else {
+                            // 前景closeが完了した旧keyは物理処理を繰り返さず予約だけ返す。
+                            assert!(ObjectCloseTxn::is_idempotent_complete(
+                                &runtime,
+                                entry.object_id(),
+                                entry.generation(),
+                                entry.object_kind(),
+                            )
+                            .unwrap());
+                            return;
+                        };
                         let failure = ObjectCloseCleanupFailure::new(
                             CleanupStep::ReleaseBackend,
                             HalError::cleanup_failed("mixed close test", "backend failure"),
@@ -2324,7 +2335,7 @@ mod tests {
             };
             reaper
                 .enqueue_reserved(
-                    (entry, completion, method),
+                    (entry, Some(completion), method),
                     [(key, CleanupStep::ReleaseBackend)],
                 )
                 .unwrap();
@@ -2409,22 +2420,90 @@ mod tests {
             .wait_until_released(triple.each_ref(), Duration::from_secs(10))
             .unwrap();
 
-        let runtime = runtime.lock().unwrap();
+        let guard = runtime.lock().unwrap();
         for key in all_keys.into_iter().chain(triple) {
             assert!(reaper.pending_value(&key).unwrap().is_none());
             assert_eq!(
-                runtime.object_table().entry(key.0).unwrap().lifecycle,
+                guard.object_table().entry(key.0).unwrap().lifecycle,
                 crate::RuntimeObjectLifecycle::Closed,
             );
         }
         assert_eq!(
-            runtime
+            guard
                 .object_table()
                 .entry(parent.object_id())
                 .unwrap()
                 .lifecycle,
             crate::RuntimeObjectLifecycle::Live,
         );
+        drop(guard);
+
+        // 両laneを止めたまま、受付後に前景で再closeできる経路を通す。
+        // 1つのRecord DVRの公開枠でも閉じた旧keyがqueueの容量まで残り得る。
+        let mut saturated = Vec::new();
+        for _ in 0..2 {
+            let dvr = enqueue_close(open_dvr(), AidlMethodCall::DvrClose);
+            assert_eq!(
+                finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                dvr
+            );
+            saturated.push(dvr);
+        }
+        let capacity = crate::CapabilitySnapshot::product_default().cleanup_reaper_capacity;
+        for index in saturated.len()..=capacity {
+            let entry = open_dvr();
+            let key = (entry.object_id(), entry.generation());
+            let begin_close = |runtime: &mut TunerServiceRuntime| {
+                close_object_use_case(
+                    runtime,
+                    key.0,
+                    key.1,
+                    AidlObjectKind::Dvr,
+                    AidlMethodCall::DvrClose,
+                )
+                .unwrap()
+                .begin_cleanup_attempt(runtime)
+                .unwrap()
+                .completion
+            };
+            let mut runtime = runtime.lock().unwrap();
+            let completion = begin_close(&mut runtime);
+            let failure = ObjectCloseCleanupFailure::new(
+                CleanupStep::ReleaseBackend,
+                HalError::cleanup_failed("record DVR close test", "backend failure"),
+            );
+            assert!(finish_object_close_use_case(&mut runtime, completion, Err(failure)).is_err());
+            let admission = reaper.enqueue_reserved(
+                (entry.clone(), None, AidlMethodCall::DvrClose),
+                [(key, CleanupStep::ReleaseBackend)],
+            );
+            if index == capacity {
+                assert!(matches!(admission, Err(HalError::Busy { .. })));
+                assert!(reaper.pending_value(&key).unwrap().is_none());
+            } else {
+                admission.unwrap();
+                saturated.push(key);
+            }
+            let completion = begin_close(&mut runtime);
+            runtime
+                .validate_public_runtime_for_closed_aidl_entry(&entry)
+                .unwrap();
+            runtime
+                .unregister_public_runtime_for_closed_aidl_entry(&entry)
+                .unwrap();
+            finish_object_close_use_case(&mut runtime, completion, Ok(())).unwrap();
+        }
+        assert_eq!(saturated.len(), capacity);
+        for key in &saturated {
+            assert!(reaper.pending_value(key).unwrap().is_some());
+        }
+        resume_tx.send(()).unwrap();
+        resume_tx.send(()).unwrap();
+        for key in &saturated {
+            reaper
+                .wait_until_released([key], Duration::from_secs(10))
+                .unwrap();
+        }
     }
 
     #[test]
