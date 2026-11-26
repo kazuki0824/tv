@@ -503,20 +503,25 @@ class TvProviderWriter private constructor(
                         val oldData = oldValues?.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
                         val writeValues =
                             if (oldData != null && (detailOnly || !hasExtended)) {
-                                val merged = ProviderDataBridge.buildProgramProviderData(program, oldData, detailOnly)
+                                val merged =
+                                    ProviderDataBridge.buildProgramProviderData(
+                                        program,
+                                        oldData,
+                                        detailOnly,
+                                        oldValues.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION),
+                                    )
                                 if (merged !is ProviderDataBridge.Success) {
                                     failures += Diagnostic(serviceKey, "program-provider-data", merged.toString())
                                     return@mapNotNull null
                                 }
                                 (if (detailOnly) ContentValues() else ContentValues(values)).apply {
                                     put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, merged.bytes)
-                                    if (detailOnly) {
-                                        put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, program.description)
-                                    } else if (!merged.bytes.contentEquals(
-                                            values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
-                                        )
-                                    ) {
-                                        remove(TvContract.Programs.COLUMN_LONG_DESCRIPTION)
+                                    merged.mergedDescription?.let { description ->
+                                        if (description.isBlank()) {
+                                            putNull(TvContract.Programs.COLUMN_LONG_DESCRIPTION)
+                                        } else {
+                                            put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, description)
+                                        }
                                     }
                                 }
                             } else {

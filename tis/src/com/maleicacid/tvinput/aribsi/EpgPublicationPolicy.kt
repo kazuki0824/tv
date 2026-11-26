@@ -107,7 +107,22 @@ internal class EpgPublicationPolicy {
                 basic
             } else {
                 basic.copy(
-                    extendedDescription = detail.extendedDescription,
+                    extendedDescription =
+                        if (detail.descriptors.extendedTexts.isEmpty()) {
+                            detail.extendedDescription.takeIf { basic.descriptors.shortEvents.isEmpty() }.orEmpty()
+                        } else {
+                            val language =
+                                basic.descriptors.shortEvents
+                                    .firstOrNull()
+                                    ?.languageCode
+                                    ?: detail.descriptors.extendedTexts
+                                        .first()
+                                        .languageCode
+                            detail.descriptors.extendedTexts
+                                .firstOrNull { it.languageCode == language }
+                                ?.text
+                                .orEmpty()
+                        },
                     descriptors =
                         basic.descriptors.copy(
                             extendedItems = detail.descriptors.extendedItems,

@@ -959,8 +959,13 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String {
+    let description = result
+        .merged_description
+        .as_deref()
+        .map(|value| format!(",\"mergedDescription\":{}", json_string(value)))
+        .unwrap_or_default();
     format!(
-        "{{\"success\":{},\"bytes\":{},\"schemaVersion\":{},\"truncated\":{},\"diagnosticsDroppedCount\":{},\"errorCode\":{},\"errorMessage\":{}}}",
+        "{{\"success\":{},\"bytes\":{},\"schemaVersion\":{},\"truncated\":{},\"diagnosticsDroppedCount\":{},\"errorCode\":{},\"errorMessage\":{}{description}}}",
         if result.success { "true" } else { "false" },
         json_string(&result.json),
         result.schema_version,
@@ -974,6 +979,7 @@ fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String
 fn provider_jni_failure(error: jni::errors::Error) -> provider_data_api::ProviderDataResult {
     provider_data_api::ProviderDataResult {
         success: false,
+        merged_description: None,
         json: String::new(),
         schema_version: 1,
         truncated: false,

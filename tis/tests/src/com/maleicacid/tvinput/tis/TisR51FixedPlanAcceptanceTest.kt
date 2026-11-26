@@ -16,13 +16,16 @@ import com.maleicacid.tvinput.aribsi.AribComponents
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribEventDescriptors
+import com.maleicacid.tvinput.aribsi.AribExtendedEventText
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.AribService
+import com.maleicacid.tvinput.aribsi.AribShortEventText
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.EitInstanceState
+import com.maleicacid.tvinput.aribsi.EpgPublicationPolicy
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.NativeAribSiParser
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
@@ -1922,6 +1925,42 @@ class TisR51FixedPlanAcceptanceTest {
                 .windows
                 .single()
                 .deletionAuthoritative,
+        )
+    }
+
+    @Test fun mergedScheduleDetailUsesBasicDisplayLanguage() {
+        val basic =
+            aribEvent().let {
+                it.copy(
+                    source = it.source.copy(version = 1),
+                    descriptors = it.descriptors.copy(shortEvents = listOf(AribShortEventText("jpn", "番組", ""))),
+                )
+            }
+        val detail =
+            basic.copy(
+                source = basic.source.copy(tableId = 0x58),
+                extendedDescription = "English",
+                descriptors =
+                    basic.descriptors.copy(
+                        shortEvents = emptyList(),
+                        extendedTexts = listOf(AribExtendedEventText("eng", "English")),
+                    ),
+            )
+        val instance = eitInstance(key)
+        val projected =
+            EpgPublicationPolicy()
+                .project(
+                    SiDiscoveryProfile.BS,
+                    3,
+                    listOf(detail, basic),
+                    listOf(instance, instance.copy(tableId = 0x58)),
+                ).events
+                .single()
+        check(projected.extendedDescription.isEmpty())
+        check(
+            projected.descriptors.extendedTexts
+                .single()
+                .text == "English",
         )
     }
 

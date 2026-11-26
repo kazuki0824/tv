@@ -13,6 +13,7 @@ const HARD_LIMIT_BYTES: usize = 32 * 1024;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderDataResult {
     pub success: bool,
+    pub merged_description: Option<String>,
     pub json: String,
     pub schema_version: i64,
     pub truncated: bool,
@@ -520,6 +521,7 @@ struct ProgramRequestDiagnosticsV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProgramProviderDataRequestV1 {
     existing: Option<ProgramProviderDataV1>,
+    existing_description: Option<String>,
     #[serde(default)]
     update_only_extended: bool,
     schema: String,
@@ -653,6 +655,7 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
     };
     let mut request = request;
     let existing = request.existing.take();
+    let existing_description = request.existing_description.take();
     let update_only_extended = request.update_only_extended;
     let Some(mut data) = program_data_from_request(request) else {
         return failure_result(
@@ -661,6 +664,8 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
             PROVIDER_SCHEMA_VERSION,
         );
     };
+    let mut description = None;
+    let mut retained_details = None;
     if let Some(mut previous) = existing {
         if !valid_program_provider_data(&previous) || previous.program_key != data.program_key {
             return failure_result(
@@ -674,11 +679,137 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
             previous.extended_items = data.extended_items;
             data = previous;
         } else if data.extended_texts.is_empty() && data.extended_items.is_empty() {
+            if previous.diagnostics.provider_data_truncated == Some(true) {
+                let language = data
+                    .short_events
+                    .first()
+                    .map(|v| v.language_code.as_str())
+                    .or_else(|| {
+                        previous
+                            .extended_texts
+                            .first()
+                            .map(|v| v.language_code.as_str())
+                    })
+                    .or_else(|| {
+                        previous
+                            .extended_items
+                            .first()
+                            .map(|v| v.language_code.as_str())
+                    });
+                if description_language(&previous) == language {
+                    if let Some(old) = existing_description {
+                        let supplements = description_supplements(&previous);
+                        let suffix = supplements.join("\n");
+                        retained_details = if suffix.is_empty() {
+                            Some(old)
+                        } else if old == suffix {
+                            Some(String::new())
+                        } else {
+                            old.strip_suffix(&format!("\n{suffix}")).map(str::to_owned)
+                        };
+                    }
+                }
+            }
             data.extended_texts = previous.extended_texts;
             data.extended_items = previous.extended_items;
         }
+        if !data.extended_texts.is_empty() || !data.extended_items.is_empty() {
+            let details = retained_details.unwrap_or_else(|| description_details(&data));
+            let mut parts = description_supplements(&data);
+            if !details.is_empty() {
+                parts.insert(0, details);
+            }
+            description = Some(parts.join("\n"));
+        }
     }
-    finalize_program(data)
+    let mut result = finalize_program(data);
+    if result.success {
+        result.merged_description = description;
+    }
+    result
+}
+
+fn description_language(data: &ProgramProviderDataV1) -> Option<&str> {
+    data.short_events
+        .first()
+        .map(|v| v.language_code.as_str())
+        .or_else(|| {
+            data.extended_texts
+                .first()
+                .map(|v| v.language_code.as_str())
+        })
+        .or_else(|| {
+            data.extended_items
+                .first()
+                .map(|v| v.language_code.as_str())
+        })
+}
+
+fn description_details(data: &ProgramProviderDataV1) -> String {
+    let language = description_language(data);
+    let mut parts = Vec::new();
+    if let Some(body) = data
+        .extended_texts
+        .iter()
+        .find(|v| Some(v.language_code.as_str()) == language)
+    {
+        parts.push(body.text.clone());
+    }
+    for item in data
+        .extended_items
+        .iter()
+        .filter(|v| Some(v.language_code.as_str()) == language)
+    {
+        parts.push(if item.description.trim().is_empty() {
+            item.text.clone()
+        } else {
+            format!("【{}】{}", item.description, item.text)
+        });
+    }
+    parts.retain(|v| !v.trim().is_empty());
+    parts.join("\n")
+}
+
+fn description_supplements(data: &ProgramProviderDataV1) -> Vec<String> {
+    let mut parts = Vec::new();
+    let video = data
+        .components
+        .video
+        .iter()
+        .filter_map(|v| v.text.as_deref())
+        .filter(|v| !v.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let audio = data
+        .components
+        .audio
+        .iter()
+        .filter_map(|v| v.text.as_deref())
+        .filter(|v| !v.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let genre = data
+        .genres
+        .iter()
+        .map(|v| v.arib_name.as_str())
+        .collect::<Vec<_>>()
+        .join("、");
+    for (label, value) in [("映像", video), ("音声", audio), ("ジャンル", genre)] {
+        if !value.trim().is_empty() {
+            parts.push(format!("{label}: {value}"));
+        }
+    }
+    if let Some(mode) = &data.free_ca_mode {
+        parts.push(
+            if mode.scrambled {
+                "放送種別: 有料放送"
+            } else {
+                "放送種別: 無料放送"
+            }
+            .to_owned(),
+        );
+    }
+    parts
 }
 
 pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
@@ -1473,6 +1604,7 @@ fn valid_optional_es_pid(v: Option<i64>) -> bool {
 fn failure_result(code: &str, message: String, schema_version: i64) -> ProviderDataResult {
     ProviderDataResult {
         success: false,
+        merged_description: None,
         json: String::new(),
         schema_version,
         truncated: false,
@@ -1490,6 +1622,7 @@ fn success_result(
 ) -> ProviderDataResult {
     ProviderDataResult {
         success: true,
+        merged_description: None,
         json,
         schema_version,
         truncated,
@@ -1748,6 +1881,19 @@ mod provider_data_tests {
         }
         assert_eq!(output["extendedTexts"][1]["text"], "");
         assert_eq!(output["shortEvents"][0]["title"], "日本語");
+        let mut basic = minimal_program_request_value();
+        basic["existing"] = output.clone();
+        let old = serde_json::from_value::<ProgramProviderDataV1>(output.clone()).unwrap();
+        let mut lines = vec!["長文".repeat(5000)];
+        lines.extend(description_supplements(&old));
+        basic["existingDescription"] = serde_json::json!(lines.join("\n"));
+        basic["shortEvents"] = value["shortEvents"].clone();
+        let merged = build_program_provider_data(&basic.to_string());
+        assert_eq!(
+            merged.merged_description.as_deref(),
+            Some(lines.join("\n").as_str())
+        );
+
         assert_eq!(
             finalize_program(serde_json::from_str(&first.json).unwrap()).json,
             first.json

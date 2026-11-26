@@ -106,7 +106,16 @@ class EventModelMapper {
                     null -> null
                 },
             )
-        return listOf(event.extendedDescription, extended)
+        val body =
+            if (d.extendedTexts.isEmpty()) {
+                event.extendedDescription
+            } else {
+                d.extendedTexts
+                    .firstOrNull { it.languageCode == selectedLanguage }
+                    ?.text
+                    .orEmpty()
+            }
+        return listOf(body, extended)
             .plus(uiSupplements)
             .filter { it.isNotBlank() }
             .joinToString("\n")

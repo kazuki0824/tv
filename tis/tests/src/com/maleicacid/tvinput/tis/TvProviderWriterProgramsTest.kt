@@ -138,6 +138,32 @@ class TvProviderWriterProgramsTest {
         check(row.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "出演者の詳細")
         check(row.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).utf8Contains("出演者の詳細"))
         check(ProviderDataBridge.buildProgramProviderData(first, "{}".toByteArray()) is ProviderDataBridge.Failure)
+        val video =
+            AribComponentEntry(esPid = TsPid(0x101), text = "HD")
+        val updatedBasic =
+            first.copy(
+                descriptors =
+                    first.descriptors.copy(
+                        shortEvents =
+                            listOf(
+                                AribShortEventText("jpn", "番組", ""),
+                            ),
+                        components = first.descriptors.components.copy(video = listOf(video)),
+                    ),
+            )
+        check(writer.upsertProgramsForWindows(listOf(updatedBasic), emptyList()).updated == 1)
+
+        fun description() =
+            store.programs.values
+                .single { it.getAsString(TvContract.Programs.COLUMN_TITLE) == "first" }
+                .getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION)
+        check(description() == "出演者の詳細\n映像: HD")
+        val englishTexts = listOf(AribExtendedEventText("eng", "English"))
+        val english = detail.copy(descriptors = detail.descriptors.copy(extendedTexts = englishTexts))
+        check(writer.upsertProgramsForWindows(listOf(english), emptyList()).updated == 1)
+        check(description() == "映像: HD")
+        check(writer.upsertProgramsForWindows(listOf(detail), emptyList()).updated == 1)
+        check(description() == "出演者の詳細\n映像: HD")
         verifyCurrentActualTimeChange(writer, store, first)
     }
 

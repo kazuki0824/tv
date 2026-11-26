@@ -398,10 +398,13 @@ ProviderDataResult {
   schemaVersion: Int,
   truncated: Boolean,
   diagnosticsDroppedCount: Int,
+  mergedDescription?: String,
   errorCode: String,
   errorMessage: String
 }
 ```
+
+番組の既存行と拡張候補を統合した成功時だけ、切詰め前の標準列本文を`mergedDescription`に返す。空文字は標準列のクリアを表す。保存済み候補が切詰め済みで表示言語が同じ場合、入力の`existingDescription`で標準列に残る本文を引き継ぐ。この入出力はprovider-dataの保存schemaには含めない。
 
 build成功時は`success=true`、`bytes`を非空canonical JSON、`schemaVersion`を対象schema version、`truncated`と`diagnosticsDroppedCount`を実処理結果、`errorCode/errorMessage`を空文字とする。UTF-8/JSON/schema/値域/32 KiB上限などの失敗時は`success=false`、`bytes=""`、`truncated=false`、`diagnosticsDroppedCount=0`とし、安定した非空`errorCode`と診断用の非空`errorMessage`を返す。失敗を`{}`、成功形の空bytes、panic、JNI nullへ丸めない。Kotlinは`success=false`を保存可能データとして扱わず、`errorCode/errorMessage`をprovider書込み失敗診断へ渡す。field追加・削除・意味変更はJNI契約変更としてRust/Kotlin/設計を同時更新する。
 
