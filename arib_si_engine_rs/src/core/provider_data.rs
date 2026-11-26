@@ -1884,7 +1884,10 @@ mod provider_data_tests {
             basic["source"]["version"] = serde_json::json!(version);
             let merged = build_program_provider_data(&basic.to_string());
             assert!(merged.success && !merged.truncated);
-            assert_eq!(merged.merged_description.as_deref(), Some(description.as_str()));
+            assert_eq!(
+                merged.merged_description.as_deref(),
+                Some(description.as_str())
+            );
             basic["existing"] = serde_json::from_str(&merged.json).unwrap();
             basic["existingDescription"] = serde_json::json!(merged.merged_description);
         }
