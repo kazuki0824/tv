@@ -1677,8 +1677,9 @@ class MaleicacidLiveSession(
         val ratingProfiles =
             transaction.events
                 .map { it.serviceKey }
-                .filter { it.originalNetworkId == key.originalNetworkId && it.transportStreamId == key.transportStreamId }
-                .associateWith { currentRatingProfile }
+                .filter {
+                    it.originalNetworkId == key.originalNetworkId && it.transportStreamId == key.transportStreamId
+                }.associateWith { currentRatingProfile }
         val records =
             eventModelMapper.toProgramRecords(
                 profile = transaction.discoveryProfile,
