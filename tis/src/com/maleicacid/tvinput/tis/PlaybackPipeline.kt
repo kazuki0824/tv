@@ -2764,7 +2764,7 @@ class PlaybackPipeline(
             configuredAacAsc = if (kind == AudioCodecKind.AAC_ADTS) aacAsc(format) else null
             configuredFrontPair =
                 configuredAacAsc?.let { bytes ->
-                    com.maleicacid.tvinput.aribsi.NativeAribSiParser
+                    NativeAribSiParser
                         .frontPairForDecoder(bytes)
                 }
             outputSampleRate = getIntegerOrDefault(format, MediaFormat.KEY_SAMPLE_RATE, DEFAULT_AUDIO_SAMPLE_RATE)

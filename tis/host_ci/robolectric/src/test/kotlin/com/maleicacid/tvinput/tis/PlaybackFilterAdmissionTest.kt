@@ -1875,7 +1875,7 @@ class PlaybackFilterAdmissionTest {
         val stereoAsc = byteArrayOf(0x11, 0x90.toByte())
         val dualAsc =
             checkNotNull(
-                com.maleicacid.tvinput.aribsi.NativeAribSiParser
+                NativeAribSiParser
                     .probeAacConfiguration(dual48, null),
             ).audioSpecificConfig
         Fixture().use { fixture ->
@@ -2057,13 +2057,13 @@ class PlaybackFilterAdmissionTest {
             val stereoFrame = byteArrayOf(-1, -8, 76, -128, 2, 0, 4, 51, -76, 32, 100, 0, 1, -112, 0, 14)
             assertEquals(
                 true,
-                com.maleicacid.tvinput.aribsi.NativeAribSiParser
+                NativeAribSiParser
                     .adtsPresentation(dualFrame)
                     .dualMono,
             )
             assertEquals(
                 false,
-                com.maleicacid.tvinput.aribsi.NativeAribSiParser
+                NativeAribSiParser
                     .adtsPresentation(stereoFrame)
                     .dualMono,
             )
@@ -2418,7 +2418,7 @@ class PlaybackFilterAdmissionTest {
             fixture.pipeline.setOnPlaybackGenerationRestartedCallback { restarts += it }
             val changed = dualFrame.copyOf().also { it[9] = 4 }
             val changedFact =
-                com.maleicacid.tvinput.aribsi.NativeAribSiParser
+                NativeAribSiParser
                     .adtsPresentation(changed)
             assertEquals(true, changedFact.dualMono)
             val discarded = feed(changed, otherFilter)
@@ -2695,7 +2695,7 @@ class PlaybackFilterAdmissionTest {
         malformed: ByteArray,
         withPce: ByteArray,
     ) {
-        val parser = com.maleicacid.tvinput.aribsi.NativeAribSiParser
+        val parser = NativeAribSiParser
         assertNull(parser.adtsPresentation(malformed).dualMono)
         assertEquals(false, parser.adtsPresentation(stereo).dualMono)
 
@@ -3363,7 +3363,7 @@ class PlaybackFilterAdmissionTest {
         if (dualAac) {
             val asc =
                 checkNotNull(
-                    com.maleicacid.tvinput.aribsi.NativeAribSiParser.probeAacConfiguration(
+                    NativeAribSiParser.probeAacConfiguration(
                         byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56),
                         null,
                     ),
