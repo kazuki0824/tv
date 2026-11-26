@@ -30,6 +30,7 @@ import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -266,16 +267,17 @@ class RealTsHalSiIntegrationTest {
             executor.callControl(15_000L) {
                 val engine = ReflectionHelpers.getField<AribSiEngine>(session, "aribSiEngine")
                 engine.setDiscoveryProfile(SiDiscoveryProfile.ISDB_T)
-                verifyIngest(engine, sections)
-                verifyServices(engine, expected)
-                verifyPrograms(engine, expected)
-                ingestSameTransportOverlap(engine, sections, schedule, key)
                 ReflectionHelpers.setField(session, "currentService", key)
                 ReflectionHelpers.setField(
                     session,
                     "currentRatingProfile",
                     AribRatingMapper.profileForDeliverySystem("ISDB_T"),
                 )
+                val ratedSections = verifyOtherServiceBeforePmt(engine, session, provider, sections, key)
+                verifyIngest(engine, ratedSections)
+                verifyServices(engine, expected)
+                verifyPrograms(engine, expected)
+                ingestSameTransportOverlap(engine, ratedSections, schedule, key)
                 val ready = engine.livePlaybackSnapshot()
                 assertTrue(ServicePolicyEvaluator.evaluateLive(ready, key).registrationReady)
                 ReflectionHelpers.setField(session, "latestLiveSnapshot", ready)
@@ -333,6 +335,52 @@ class RealTsHalSiIntegrationTest {
             session.onRelease()
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
+    }
+
+    private fun verifyOtherServiceBeforePmt(
+        engine: AribSiEngine,
+        session: MaleicacidLiveSession,
+        provider: LiveProgramProvider,
+        sections: List<Section>,
+        selected: ServiceKey,
+    ): List<Section> {
+        val ingest = SectionIngestController(engine)
+        val ratedSections =
+            sections.map { section ->
+                val data = ByteBuffer.wrap(section.bytes)
+                if (section.pid == TsPid.EIT.value && data.get(0).toInt() == 0x4e && data.getShort(3).toInt() == 1049) {
+                    val rated = if (data.get(6).toInt() == 0) withParentalRating(section.bytes) else section.bytes
+                    assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, rated).status)
+                    section.copy(bytes = rated)
+                } else {
+                    section
+                }
+            }
+        assertFalse(ServicePolicyEvaluator.evaluateLive(engine.livePlaybackSnapshot(), selected).registrationReady)
+        ReflectionHelpers.callInstanceMethod<Unit>(session, "refreshDynamicSiAndCasFilters")
+        val channel = TvContract.Programs.COLUMN_CHANNEL_ID
+        val event = TvContract.Programs.COLUMN_EVENT_ID
+        assertEquals(setOf(0xbdac, 0xbdb1), provider.rows.map { it.getAsInteger(event).toInt() }.toSet())
+        assertTrue(provider.rows.all { it.getAsLong(channel) == 8L })
+        val rated = provider.rows.single { it.getAsInteger(event) == 0xbdac }
+        assertEquals("com.android.tv/ISDB/ISDB_15", rated.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING))
+        provider.rows.clear()
+        return ratedSections
+    }
+
+    private fun withParentalRating(section: ByteArray): ByteArray {
+        val current = ByteBuffer.wrap(section)
+        val length = current.getShort(1).toInt() and 0x0fff
+        val descriptors = current.getShort(24).toInt() and 0x0fff
+        val end = 26 + descriptors
+        val rating = byteArrayOf(0x55, 4, 0x4a, 0x50, 0x4e, 12)
+        val rated = section.copyOfRange(0, end) + rating + section.copyOfRange(end, section.size)
+        ByteBuffer.wrap(rated).apply {
+            putShort(1, ((current.getShort(1).toInt() and 0xf000) or (length + rating.size)).toShort())
+            putShort(24, ((current.getShort(24).toInt() and 0xf000) or (descriptors + rating.size)).toShort())
+        }
+        writeSectionCrc(rated)
+        return rated
     }
 
     private fun ingestSameTransportOverlap(

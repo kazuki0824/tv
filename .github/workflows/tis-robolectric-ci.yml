@@ -221,8 +221,10 @@ jobs:
               if name == "RealTsCaptionFactTest":
                   caption_metrics = (suite.findtext("system-out") or "").splitlines()
                   print("\n".join(line for line in caption_metrics if line.startswith(("字幕受付", "字幕表示", "字幕Clear"))))
-          print(Path("tis/host_ci/robolectric/build/real-ts-diagnostics/section-burst.txt").read_text())
           PYRESULT
+
+      - name: 実TSのSection burst観測値を出力
+        run: cat tis/host_ci/robolectric/build/real-ts-diagnostics/section-burst.txt
 
       - name: 試験結果とHAL診断を保存
         if: always()

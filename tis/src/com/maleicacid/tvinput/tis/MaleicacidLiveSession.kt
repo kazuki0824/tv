@@ -541,6 +541,7 @@ class MaleicacidLiveSession(
         val service = transaction.services.firstOrNull { it.serviceKey == serviceKey }
         val pmtPids = transaction.pmtPidsFor(serviceKey)
         val decision = currentServicePolicy()
+        publishLiveProgramSnapshot()
         // 登録可能と判定したPMT trackは、CA descriptor解決・CAS確立・AV再生開始を待たずに通知する。
         // 不完全／不適格なserviceは広告せず、字幕言語は管理PES受信後だけ追加する。
         if (decision.registrationReady) service?.let(::updateTracks)
@@ -603,10 +604,7 @@ class MaleicacidLiveSession(
                 notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING)
             }
         }
-        if (decision.registrationReady) {
-            publishLiveProgramSnapshot()
-            refreshCurrentProgramRatingState()
-        }
+        if (decision.registrationReady) refreshCurrentProgramRatingState()
         if (!decision.casDecisionReady) return
         val casLinkageReady = currentCasLinkageReady()
         // 接続待ちと実際のCAS失敗を区別する。未準備をCAS_UNKNOWNへ昇格させない。
@@ -1676,13 +1674,18 @@ class MaleicacidLiveSession(
     private fun publishLiveProgramSnapshot() {
         val key = currentService ?: return
         val transaction = latestLiveSnapshot?.programs ?: return
+        val ratingProfiles =
+            transaction.events
+                .map { it.serviceKey }
+                .filter { it.originalNetworkId == key.originalNetworkId && it.transportStreamId == key.transportStreamId }
+                .associateWith { currentRatingProfile }
         val records =
             eventModelMapper.toProgramRecords(
                 profile = transaction.discoveryProfile,
                 events = transaction.events,
                 semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
                 malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
-                ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
+                ratingProfileByServiceKey = ratingProfiles,
             )
         publishLivePrograms(applyLatestVideoMetadata(records), transaction)
     }
@@ -1705,7 +1708,7 @@ class MaleicacidLiveSession(
         onlyService: ServiceKey? = null,
     ) {
         if (programProviderDirty.getAndSet(false)) programPublishCoordinator.invalidateProviderState()
-        if (currentService == null || !currentServicePolicy().registrationReady) return
+        if (onlyService != null && !currentServicePolicy().registrationReady) return
         val result =
             programPublishCoordinator.publishWithUpdates(
                 mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
