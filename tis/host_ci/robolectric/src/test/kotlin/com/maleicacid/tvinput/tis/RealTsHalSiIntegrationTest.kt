@@ -82,9 +82,13 @@ class RealTsHalSiIntegrationTest {
         assertEquals(expected.getLong("size_bytes"), input.length())
         assertEquals(expected.getString("sha256"), sha256(input.readBytes()))
         val references = objects(expected.getJSONArray("section_reference"))
-        val sections = runHal(input, expected, references)
+        val scheduleReference = JSONObject().put("pid", TsPid.EIT.value).put("table_id", 0x50).put("section_count", 38)
+        val (schedule, sections) =
+            runHal(input, expected, references + scheduleReference).partition {
+                it.pid == TsPid.EIT.value && it.bytes.first().toInt() == 0x50
+            }
         verifySections(sections, references)
-        verifyLiveProgramPublication(sections, expected)
+        verifyLiveProgramPublication(sections, schedule, expected)
     }
 
     // 通常setupで初回SDTを失った候補が、録画の次のSDTで登録まで進むことを検査する。
@@ -243,6 +247,7 @@ class RealTsHalSiIntegrationTest {
     @Suppress("LongMethod")
     private fun verifyLiveProgramPublication(
         sections: List<Section>,
+        schedule: List<Section>,
         expected: JSONObject,
     ) {
         val key =
@@ -264,6 +269,7 @@ class RealTsHalSiIntegrationTest {
                 verifyIngest(engine, sections)
                 verifyServices(engine, expected)
                 verifyPrograms(engine, expected)
+                ingestSameTransportOverlap(engine, sections, schedule, key)
                 ReflectionHelpers.setField(session, "currentService", key)
                 ReflectionHelpers.setField(
                     session,
@@ -273,7 +279,7 @@ class RealTsHalSiIntegrationTest {
                 val ready = engine.livePlaybackSnapshot()
                 assertTrue(ServicePolicyEvaluator.evaluateLive(ready, key).registrationReady)
                 ReflectionHelpers.setField(session, "latestLiveSnapshot", ready)
-                ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramsForCurrentService")
+                ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramSnapshot")
             }
             val present =
                 objects(expected.getJSONArray("selected_service_pf_events"))
@@ -281,10 +287,11 @@ class RealTsHalSiIntegrationTest {
             val start = present.getLong("start_time_unix_ms")
             val end = start + present.getLong("duration_ms")
             val fixtureNow = start + 1
-            assertTrue(provider.rows.all { it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 7L })
+            assertSameTransportPublication(provider.rows)
             val current =
                 provider.rows.single {
-                    it.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) <= fixtureNow &&
+                    it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 7L &&
+                        it.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) <= fixtureNow &&
                         fixtureNow < it.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
                 }
             assertEquals(present.getInt("event_id"), current.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID).toInt())
@@ -305,7 +312,7 @@ class RealTsHalSiIntegrationTest {
                     assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, schedule).status)
                 }
                 ReflectionHelpers.setField(session, "latestLiveSnapshot", engine.livePlaybackSnapshot())
-                ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramsForCurrentService")
+                ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramSnapshot")
             }
             // 同一session・同一選局のまま照会時刻を進める。この間の再受信・再公開はない。
             assertEquals(101 to "別局の現在番組", queryCurrentProgram(context, start + 1))
@@ -326,6 +333,57 @@ class RealTsHalSiIntegrationTest {
             session.onRelease()
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
+    }
+
+    private fun ingestSameTransportOverlap(
+        engine: AribSiEngine,
+        sections: List<Section>,
+        schedule: List<Section>,
+        selected: ServiceKey,
+    ) {
+        val ingest = SectionIngestController(engine)
+        // 同じ実TSで、別局1049の次番組0xbdb1がp/f actualとschedule actualの両方にある。
+        val duplicate =
+            schedule.first {
+                val data = ByteBuffer.wrap(it.bytes)
+                data.getShort(3).toInt() == 1049 && data.get(6).toInt() == 48
+            }.bytes
+        assertEquals(0xbdb1, ByteBuffer.wrap(duplicate).getShort(14).toInt() and 0xffff)
+        assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, duplicate).status)
+        val unregistered = selected.copy(serviceId = 0x7777)
+        val otherPresentFollowing =
+            sections
+                .filter {
+                    it.pid == TsPid.EIT.value && it.bytes.first().toInt() == 0x4e &&
+                        ByteBuffer.wrap(it.bytes).getShort(3).toInt() == 1049
+                }.distinctBy { it.bytes[6] }
+        assertEquals(2, otherPresentFollowing.size)
+        for (section in otherPresentFollowing) {
+            val bytes = section.bytes.copyOf()
+            ByteBuffer.wrap(bytes).apply {
+                putShort(3, unregistered.serviceId.toShort())
+                putShort(14, (0xbc00 + bytes[6]).toShort())
+            }
+            writeSectionCrc(bytes)
+            assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, bytes).status)
+        }
+        val programs = engine.livePlaybackSnapshot().programs
+        assertEquals(
+            0x4e,
+            programs.events.single { it.serviceKey.serviceId == 1049 && it.eventId == 0xbdb1 }.source.tableId,
+        )
+        val unregisteredEvents = programs.events.filter { it.serviceKey == unregistered }.map { it.eventId }.toSet()
+        assertEquals(setOf(0xbc00, 0xbc01), unregisteredEvents)
+    }
+
+    private fun assertSameTransportPublication(rows: List<ContentValues>) {
+        val channelColumn = TvContract.Programs.COLUMN_CHANNEL_ID
+        val eventColumn = TvContract.Programs.COLUMN_EVENT_ID
+        assertEquals(setOf(7L, 8L), rows.map { it.getAsLong(channelColumn).toLong() }.toSet())
+        val otherService = rows.filter { it.getAsLong(channelColumn) == 8L }.map { it.getAsInteger(eventColumn).toInt() }
+        assertEquals(1, otherService.count { it == 0xbdac })
+        assertEquals(1, otherService.count { it == 0xbdb1 })
+        assertTrue(rows.none { it.getAsInteger(eventColumn) in setOf(0xbc00, 0xbc01) })
     }
 
     private fun seedPriorProgram(

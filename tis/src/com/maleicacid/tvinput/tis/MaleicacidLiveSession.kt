@@ -17,7 +17,6 @@ import android.view.View
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
-import com.maleicacid.tvinput.aribsi.EpgSectionPolicy
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
@@ -605,7 +604,7 @@ class MaleicacidLiveSession(
             }
         }
         if (decision.registrationReady) {
-            publishLiveProgramsForCurrentService()
+            publishLiveProgramSnapshot()
             refreshCurrentProgramRatingState()
         }
         if (!decision.casDecisionReady) return
@@ -1645,7 +1644,7 @@ class MaleicacidLiveSession(
             )
         if (records.isEmpty()) return
         rememberVideoMetadata(records, info)
-        publishLivePrograms(applyLatestVideoMetadata(records), transaction)
+        publishLivePrograms(applyLatestVideoMetadata(records), transaction, onlyService = key)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -1674,17 +1673,13 @@ class MaleicacidLiveSession(
         }
     }
 
-    private fun publishLiveProgramsForCurrentService() {
+    private fun publishLiveProgramSnapshot() {
         val key = currentService ?: return
         val transaction = latestLiveSnapshot?.programs ?: return
         val records =
             eventModelMapper.toProgramRecords(
                 profile = transaction.discoveryProfile,
-                events =
-                    transaction.events.filter {
-                        it.serviceKey == key || it.source.tableId == EpgSectionPolicy.PF_OTHER ||
-                            EpgSectionPolicy.isSchedule(it.source.tableId)
-                    },
+                events = transaction.events,
                 semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
                 malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
                 ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
@@ -1707,19 +1702,19 @@ class MaleicacidLiveSession(
     private fun publishLivePrograms(
         records: List<ProgramRecord>,
         snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot,
+        onlyService: ServiceKey? = null,
     ) {
         if (programProviderDirty.getAndSet(false)) programPublishCoordinator.invalidateProviderState()
-        val key = currentService ?: return
-        if (!currentServicePolicy().registrationReady) return
+        if (currentService == null || !currentServicePolicy().registrationReady) return
         val result =
             programPublishCoordinator.publishWithUpdates(
                 mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
                 allPrograms = records,
                 updateWindows =
                     snapshot.updateWindows
-                        .filter { it.serviceKey == key }
+                        .filter { onlyService == null || it.serviceKey == onlyService }
                         .map(ProgramPublishCoordinator::EpgUpdateWindow),
-                allowedServiceKeys = records.mapTo(linkedSetOf(key)) { it.serviceKey },
+                allowedServiceKeys = onlyService?.let { setOf(it) },
             )
         if (result.failures.isNotEmpty()) {
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "live Programs 更新失敗=${result.failures}")
