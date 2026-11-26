@@ -2158,6 +2158,44 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun rejectedModeClearStopsOnceDuringAudioPidSwitch() {
+        Fixture().use { fixture ->
+            fixture.decoder(audio = true, stopOnFailure = true)
+            val oldFilter = fixture.avFilter(true)
+            val selection = fixture.audioSelection()
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+            val track =
+                AudioTrack
+                    .Builder()
+                    .setAudioFormat(
+                        AudioFormat
+                            .Builder()
+                            .setSampleRate(48_000)
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                            .build(),
+                    ).setBufferSizeInBytes(4_096)
+                    .build()
+            ReflectionHelpers.setField(fixture.pipeline, "audioTrack", track)
+            ReflectionHelpers.setField(decoder, "appliedPresentation", PlaybackPipeline.DualMonoPresentation.SUB)
+            val nativeTrack = Shadow.extract<DualMonoAudioTrack>(track)
+            nativeTrack.accept = false
+
+            val next = selection.copy(audio = selection.audio!!.copy(elementaryPid = TsPid(0x111)))
+            val result = fixture.pipeline.switchAudio(fixture.tuner, next)
+
+            assertFalse(result.switchedAudio)
+            assertTrue(result.previousInputClosed)
+            assertEquals(listOf(AudioTrack.DUAL_MONO_MODE_OFF), nativeTrack.modes)
+            assertEquals(1, fixture.unavailable.size)
+            assertEquals(7L, fixture.unavailable.single().generation)
+            assertEquals(8L, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "audioFilter"))
+            assertEquals(1, Shadow.extract<NativeFilter>(oldFilter).closes)
+        }
+    }
+
+    @Test
     fun failedAudioPidSwitchCanRecoverSameSelectionWithoutReplacingVideo() {
         for (stage in listOf("close", "open", "configure", "start")) {
             Fixture().use { fixture ->
@@ -2179,7 +2217,7 @@ class PlaybackFilterAdmissionTest {
                 val oldTrack = TunerSelectionPolicy.trackIdForAudio(selection.audio!!)
                 val newTrack = TunerSelectionPolicy.trackIdForAudio(next.audio!!)
                 assertFalse(fixture.selectAudio(session, newTrack), stage)
-                assertEquals(oldTrack, ReflectionHelpers.getField<String>(session, "preferredAudioTrackId"), stage)
+                assertNull(ReflectionHelpers.getField<String?>(session, "preferredAudioTrackId"), stage)
                 assertTrue(ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState") is PlaybackStartState.Started, stage)
                 assertEquals(null, ReflectionHelpers.getField<Filter?>(fixture.pipeline, "audioFilter"), stage)
                 assertEquals(selection, ReflectionHelpers.getField<Any>(fixture.pipeline, "activeSelection"), stage)
@@ -2191,7 +2229,7 @@ class PlaybackFilterAdmissionTest {
                 assertEquals(0, Shadow.extract<NativeMediaEvent>(stale).blockReads, stage)
                 assertEquals(1, Shadow.extract<NativeMediaEvent>(stale).releases, stage)
                 nativeOld.closeResult = Tuner.RESULT_SUCCESS
-                // Sessionが復元した旧選択も実Filter不在ならnoopにせず再取得する。
+                // 旧IDは失効済み。明示的に再選択したときだけ実Filterを再取得する。
                 assertTrue(fixture.selectAudio(session, oldTrack), stage)
                 assertTrue(ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState") is PlaybackStartState.Started, stage)
                 assertFalse(cleanup.hasPending, stage)

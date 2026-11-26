@@ -864,6 +864,7 @@ class PlaybackPipeline(
             }
             // 同一クロック・同一構成ならDecoder/AudioTrack/MediaSyncは継続してPID入力だけ替える。
             val oldFilter = audioFilter
+            val switchGeneration = playbackGeneration
             audioFilter = null
             return runCatching {
                 audioDecoder?.invalidateAudioInput()
@@ -875,7 +876,9 @@ class PlaybackPipeline(
                 // 開始成功した実入力と同時に選択を確定する。失敗時は同じ選択から再取得できる。
                 val applied = audioDecoder?.changePresentationInput(selection.audioDualMono, selection.dualMonoPresentation)
                 if (applied != true) {
-                    handleAudioFailure(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "切替先の主副モードを適用できません", selection.video == null)
+                    if (switchGeneration == playbackGeneration) {
+                        handleAudioFailure(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "切替先の主副モードを適用できません", selection.video == null)
+                    }
                     return AudioSwitchResult(false, listOf("AUDIO_PID_MODE_FAILED"), previousInputClosed = true)
                 }
                 activeSelection = selection
@@ -883,7 +886,11 @@ class PlaybackPipeline(
                 AudioSwitchResult(true, listOf("AUDIO_PID_SWITCHED_VIDEO_PRESERVED"))
             }.getOrElse { error ->
                 logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "音声PID切替失敗: ${error.message}")
-                AudioSwitchResult(false, listOf("AUDIO_PID_SWITCH_FAILED: ${error.message}"))
+                AudioSwitchResult(
+                    false,
+                    listOf("AUDIO_PID_SWITCH_FAILED: ${error.message}"),
+                    previousInputClosed = true,
+                )
             }
         }
         // PID-only切替では映像世代を保持する。全再生成の経路だけSurfaceを要求する。
