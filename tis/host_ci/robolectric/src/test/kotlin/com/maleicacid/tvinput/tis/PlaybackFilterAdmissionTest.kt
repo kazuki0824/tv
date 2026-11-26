@@ -1829,6 +1829,108 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    @Suppress("LongMethod")
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class])
+    @Test
+    fun inBandAacConfigurationChangeReconfiguresThroughNewFilter() {
+        val lcProfile =
+            MediaCodecInfo.CodecProfileLevel().apply {
+                profile = MediaCodecInfo.CodecProfileLevel.AACObjectLC
+            }
+        val capabilities =
+            MediaCodecInfoBuilder.CodecCapabilitiesBuilder
+                .newBuilder()
+                .setMediaFormat(MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 48_000, 2))
+                .setProfileLevels(arrayOf(lcProfile))
+                .build()
+        ShadowMediaCodecList.addCodec(
+            MediaCodecInfoBuilder.newBuilder().setName("c2.android.aac.decoder").setCapabilities(capabilities).build(),
+        )
+        val stereo48 = byteArrayOf(-1, -8, 76, -128, 2, 0, 4, 51, -76, 32, 100, 0, 1, -112, 0, 14)
+        val stereo32 = byteArrayOf(-1, -8, 84, -128, 2, 0, 4, 122, 4, 32, 100, 0, 1, -112, 0, 14)
+        val dual48 = byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56)
+        val stereoAsc = byteArrayOf(0x11, 0x90.toByte())
+        val dualAsc =
+            checkNotNull(
+                com.maleicacid.tvinput.aribsi.NativeAribSiParser.probeAacConfiguration(dual48, null),
+            ).audioSpecificConfig
+        Fixture().use { fixture ->
+            val original = fixture.audioSelection()
+            val channel = ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel")
+            val selection = original.copy(video = null)
+            val start = fixture.pipeline.start(fixture.tuner, channel.copy(serviceType = 2), selection)
+            assertTrue(start.startedAudio, start.diagnostics.toString())
+
+            fun feed(
+                filter: Filter,
+                frame: ByteArray,
+            ): NativeMediaEvent {
+                val event = mediaEvent(frame.size.toLong())
+                val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+                Shadow.extract<NativeLinearBlock>(block).data = frame
+                val nativeEvent = Shadow.extract<NativeMediaEvent>(event).also { it.block = block }
+                deliver(filter, event)
+                fixture.drain()
+                return nativeEvent
+            }
+
+            fun currentFilter(): Filter = ReflectionHelpers.getField(fixture.pipeline, "audioFilter")
+
+            fun configuredCodec(expectedAsc: ByteArray): MediaCodec {
+                val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+                assertContentEquals(expectedAsc, ReflectionHelpers.getField<ByteArray?>(decoder, "configuredAacAsc"))
+                return ReflectionHelpers.getField(decoder, "codec")
+            }
+
+            fun supplyCodecInputs(
+                codec: MediaCodec,
+                count: Int,
+            ) {
+                repeat(count) { postCodecCallback(codec, 1, it, null) }
+                val delivered = CountDownLatch(1)
+                ReflectionHelpers.getField<Handler>(fixture.pipeline, "codecCallbackHandler").post { delivered.countDown() }
+                assertTrue(delivered.await(5, TimeUnit.SECONDS))
+                fixture.drain()
+                val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+                assertEquals(1, ReflectionHelpers.getField<Collection<Int>>(decoder, "availableInputIndexes").size)
+            }
+
+            var filter = currentFilter()
+            feed(filter, stereo48)
+            var codec = configuredCodec(stereoAsc)
+            feed(filter, stereo48)
+            assertEquals(start.generation, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertTrue(filter === currentFilter() && codec === configuredCodec(stereoAsc))
+            supplyCodecInputs(codec, 3)
+
+            val transitions =
+                listOf(
+                    stereo32 to byteArrayOf(0x12, 0x90.toByte()),
+                    stereo48 to stereoAsc,
+                    dual48 to dualAsc,
+                    stereo48 to stereoAsc,
+                )
+            for ((frame, asc) in transitions) {
+                val previousGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
+                val oldCodec = Shadow.extract<NativeCodec>(codec)
+                val queuedBlock = checkNotNull(oldCodec.lastInputBlock)
+                val trigger = feed(filter, frame)
+                assertEquals(1, trigger.releases)
+                assertTrue(oldCodec.lastInputBlock === queuedBlock)
+                assertEquals(1, Shadow.extract<NativeFilter>(filter).closes)
+                assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > previousGeneration)
+                val nextFilter = currentFilter()
+                assertTrue(nextFilter !== filter)
+                feed(nextFilter, frame)
+                val nextCodec = configuredCodec(asc)
+                assertTrue(nextCodec !== codec)
+                supplyCodecInputs(nextCodec, 2)
+                filter = nextFilter
+                codec = nextCodec
+            }
+        }
+    }
+
     // 同じSessionの公開・選択・失敗時保持を順に検査し、通知履歴を別fixtureへ分断しない。
     @Suppress("LongMethod")
     @Test
