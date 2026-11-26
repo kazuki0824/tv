@@ -10,6 +10,14 @@ pub enum AacProbeStatusDto {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AacFramePresentationDto {
+    pub configuration: i32,
+    pub dual_mono: Option<bool>,
+    pub front_pair: Option<i32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AacAdtsConfigurationDto {
     pub audio_object_type: i32,
     pub sampling_frequency: i32,

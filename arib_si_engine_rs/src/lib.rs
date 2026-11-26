@@ -929,9 +929,6 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_pro
     _class: JClass<'_>,
     frame: JByteArray<'_>,
 ) -> jobject {
-    use maleicacid_arib_si_engine_core::codec_signaling::{
-        adts_configuration_key, adts_presentation, AacPresentation,
-    };
     let bytes = match bounded_codec_bytes(&mut env, &frame, 8191) {
         Ok(bytes) => bytes,
         Err(CodecInputFailure::TooLarge) => return std::ptr::null_mut(),
@@ -940,31 +937,30 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_pro
                 as jobject
         }
     };
-    let Some(key) = adts_configuration_key(&bytes) else {
+    let Some(value) =
+        maleicacid_arib_si_engine_core::codec_signaling::frame_presentation_dto(&bytes)
+    else {
         return std::ptr::null_mut();
     };
-    let fact = match adts_presentation(&bytes) {
-        AacPresentation::DualMono => Some("TRUE"),
-        AacPresentation::Other => Some("FALSE"),
-        AacPresentation::Unknown => None,
-    };
-    let result = (|| {
-        let value = match fact {
-            Some(field) => env
-                .get_static_field("java/lang/Boolean", field, "Ljava/lang/Boolean;")?
-                .l()?,
-            None => JObject::null(),
-        };
-        env.new_object(
-            "com/maleicacid/tvinput/aribsi/AacFramePresentation",
-            "(ILjava/lang/Boolean;)V",
-            &[JValue::Int(i32::from(key)), JValue::Object(&value)],
-        )
-    })();
-    match result {
+    match jvm_snapshot_generated::aac_frame_to_java(&mut env, &value) {
         Ok(value) => value.into_raw(),
-        Err(error) => {
-            throw_si_failure(&mut env, SiJniFailureReason::JniOutput.failure(error)) as jobject
+        Err(failure) => throw_si_failure(&mut env, failure) as jobject,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_configuredFrontPair(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    asc: JByteArray<'_>,
+) -> jint {
+    match bounded_codec_bytes(&mut env, &asc, 512) {
+        Ok(bytes) => maleicacid_arib_si_engine_core::codec_signaling::configured_front_pair(&bytes)
+            .unwrap_or(-1),
+        Err(CodecInputFailure::TooLarge) => -1,
+        Err(CodecInputFailure::Jni(error)) => {
+            throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error));
+            -1
         }
     }
 }

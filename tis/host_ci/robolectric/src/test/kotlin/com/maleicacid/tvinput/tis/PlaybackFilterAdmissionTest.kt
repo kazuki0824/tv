@@ -1205,7 +1205,7 @@ class PlaybackFilterAdmissionTest {
                     bytes[16] = 0x38
                     bytes[17] = 0x30
                 }
-                val event = mediaEvent(bytes.size.toLong())
+                val event = mediaEvent(bytes.size.toLong(), offset = 2)
                 val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
                 Shadow.extract<NativeLinearBlock>(block).data = bytes
                 val sample = constructor.newInstance(event, block, 0, bytes.size, 0L, false)
@@ -1799,14 +1799,44 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    @Test
+    fun protectedAacInspectionPreservesCodecInputAndEventLifetime() {
+        Fixture().use { fixture ->
+            fixture.decoder(audio = true, aac = true)
+            val codec = fixture.attachCodec(audio = true, dualAac = true)
+            val filter = fixture.avFilter(true)
+            val dual = byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56)
+            val stereo = byteArrayOf(-1, -8, 76, -128, 2, 0, 4, 51, -76, 32, 100, 0, 1, -112, 0, 14)
+            postCodecCallback(codec, 1, 0, null)
+            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            for (bytes in listOf(dual, stereo, dual.copyOf(12))) {
+                val sample = mediaEvent(bytes.size.toLong(), offset = 2)
+                val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+                Shadow.extract<NativeLinearBlock>(block).data = byteArrayOf(0, 0) + bytes + byteArrayOf(0)
+                val nativeEvent = Shadow.extract<NativeMediaEvent>(sample)
+                nativeEvent.block = block
+                val queued = CountDownLatch(1)
+                nativeCodec.onInputQueue = { queued.countDown() }
+                deliver(filter, sample)
+                assertTrue(queued.await(5, TimeUnit.SECONDS))
+                assertTrue(nativeCodec.lastInputBlock === block)
+                assertEquals(2, nativeCodec.lastInputOffset)
+                assertEquals(bytes.size, nativeCodec.lastInputSize)
+                assertEquals(0, nativeEvent.releases)
+                returnCodecInputAndAwaitEventRelease(codec, sample)
+                assertEquals(1, nativeEvent.releases)
+            }
+        }
+    }
+
     // 同じSessionの公開・選択・失敗時保持を順に検査し、通知履歴を別fixtureへ分断しない。
     @Suppress("LongMethod")
     @Test
     fun advertisedDualMonoSelectionCommitsOnlyAfterAudioTrackAccepts() {
         Fixture().use { fixture ->
             fixture.decoder(audio = true, aac = true)
-            val dualFrame = byteArrayOf(-1, -7, 76, 0, 1, -1, -4, 0, -56, 0, 0, 22, 64, 0, 56)
-            val stereoFrame = byteArrayOf(-1, -7, 76, -128, 1, -33, -4, 32, 100, 0, 1, -112, 0, 14)
+            val dualFrame = byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56)
+            val stereoFrame = byteArrayOf(-1, -8, 76, -128, 2, 0, 4, 51, -76, 32, 100, 0, 1, -112, 0, 14)
             assertEquals(
                 true,
                 com.maleicacid.tvinput.aribsi.NativeAribSiParser
@@ -1898,8 +1928,7 @@ class PlaybackFilterAdmissionTest {
             ReflectionHelpers.setField(fixture.pipeline, "activeSelection", selection)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
             var filter = fixture.avFilter(true)
-            fixture.attachCodec(audio = true)
-            ReflectionHelpers.setField(decoder, "independentStereo", true)
+            fixture.attachCodec(audio = true, dualAac = true)
             val track =
                 AudioTrack
                     .Builder()
@@ -1915,6 +1944,31 @@ class PlaybackFilterAdmissionTest {
                     .build()
             ReflectionHelpers.setField(fixture.pipeline, "audioTrack", track)
             val nativeTrack = Shadow.extract<DualMonoAudioTrack>(track)
+            val output = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_RAW, 48_000, 2)
+            output.setInteger(MediaFormat.KEY_CHANNEL_MASK, AudioFormat.CHANNEL_OUT_STEREO)
+
+            fun outputChanged() {
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    decoder,
+                    "onOutputFormatChanged",
+                    ReflectionHelpers.ClassParameter.from(MediaFormat::class.java, output),
+                )
+            }
+            nativeTrack.accept = false
+            outputChanged()
+            val update = {
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    session,
+                    "updateTracks",
+                    ReflectionHelpers.ClassParameter.from(com.maleicacid.tvinput.aribsi.AribService::class.java, service),
+                )
+            }
+            update()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(listOf(physical), published.last().filter { it.type == TvTrackInfo.TYPE_AUDIO }.map { it.id })
+            assertFalse(fixture.selectAudio(session, "$physical:sub"))
+            nativeTrack.accept = true
+            outputChanged()
             for ((suffix, mode) in listOf(
                 "sub" to AudioTrack.DUAL_MONO_MODE_RR,
                 "main_sub" to AudioTrack.DUAL_MONO_MODE_LR,
@@ -2019,9 +2073,9 @@ class PlaybackFilterAdmissionTest {
                 bytes: ByteArray,
                 source: Filter = filter,
             ) {
-                val event = mediaEvent(bytes.size.toLong())
+                val event = mediaEvent(bytes.size.toLong(), offset = 2)
                 val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
-                Shadow.extract<NativeLinearBlock>(block).data = bytes
+                Shadow.extract<NativeLinearBlock>(block).data = byteArrayOf(0, 0) + bytes + byteArrayOf(0)
                 Shadow.extract<NativeMediaEvent>(event).block = block
                 deliver(source, event)
                 fixture.drain()
@@ -2029,27 +2083,31 @@ class PlaybackFilterAdmissionTest {
             }
             // EIT優先中にもAACの最新構成を保持し、EIT消失後に古い主副へ戻さない。
             feed(stereoFrame)
-            assertEquals("$physical:main", selected.last())
+            assertEquals(physical, selected.last())
             ReflectionHelpers.setField(session, "latestLiveSnapshot", snapshot.copy(services = listOf(service)))
             refresh()
             assertEquals(physical, selected.last())
             feed(dualFrame)
+            assertNull(published.last().single { it.id == "$physical:sub" }.language)
             assertTrue(fixture.selectAudio(session, "$physical:sub"))
             Shadows.shadowOf(Looper.getMainLooper()).idle()
             assertEquals("$physical:sub", selected.last())
             feed(dualFrame.copyOf(12))
             assertEquals("$physical:sub", selected.last())
-            ReflectionHelpers.setField(decoder, "independentStereo", false)
+            output.removeKey(MediaFormat.KEY_CHANNEL_MASK)
+            outputChanged()
             refresh()
             assertEquals(listOf(physical), published.last().filter { it.type == TvTrackInfo.TYPE_AUDIO }.map { it.id })
             assertEquals(physical, selected.last())
             assertEquals(AudioTrack.DUAL_MONO_MODE_OFF, nativeTrack.modes.last())
-            ReflectionHelpers.setField(decoder, "independentStereo", true)
+            output.setInteger(MediaFormat.KEY_CHANNEL_MASK, AudioFormat.CHANNEL_OUT_STEREO)
+            outputChanged()
             refresh()
             assertEquals("$physical:sub", selected.last())
             feed(stereoFrame)
             assertEquals(physical, selected.last())
             feed(dualFrame)
+            assertNull(published.last().single { it.id == "$physical:sub" }.language)
             assertTrue(fixture.selectAudio(session, "$physical:sub"))
             val second = selection.copy(audio = otherAudio, audioDualMono = true)
             assertTrue(fixture.pipeline.switchAudio(fixture.tuner, second).switchedAudio)
@@ -2070,6 +2128,20 @@ class PlaybackFilterAdmissionTest {
             assertTrue(track === ReflectionHelpers.getField<Any>(fixture.pipeline, "audioTrack"))
             assertTrue(decoder === ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder"))
             assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+            nativeTrack.accept = true
+            refresh()
+            assertEquals(physical, selected.last())
+            ReflectionHelpers.setField(
+                session,
+                "latestLiveSnapshot",
+                snapshot.copy(services = listOf(otherService), programs = snapshot.programs.copy(events = listOf(otherEvent))),
+            )
+            nativeTrack.accept = false
+            assertFalse(fixture.selectAudio(session, TunerSelectionPolicy.trackIdForAudio(otherAudio)))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertNull(selected.last())
+            assertNull(ReflectionHelpers.getField<String?>(session, "preferredAudioTrackId"))
+            assertNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "audioFilter"))
         }
     }
 
@@ -2609,14 +2681,22 @@ class PlaybackFilterAdmissionTest {
             .map { it.msg }
             .filter { it.startsWith("VIDEO_AVAILABILITY_COMMITTED inputId=admission-test ") }
 
+    @Suppress("LongMethod")
     private fun Fixture.attachCodec(
         audio: Boolean = false,
         videoKind: PlaybackPipeline.VideoCodecKind = PlaybackPipeline.VideoCodecKind.AVC,
+        dualAac: Boolean = false,
     ): MediaCodec {
-        val codecName = if (audio) "maleicacid.test.mpeg.decoder" else "maleicacid.test.${videoKind.name.lowercase()}.decoder"
+        val codecName =
+            when {
+                dualAac -> "c2.android.aac.decoder"
+                audio -> "maleicacid.test.mpeg.decoder"
+                else -> "maleicacid.test.${videoKind.name.lowercase()}.decoder"
+            }
+        val audioMime = if (dualAac) MediaFormat.MIMETYPE_AUDIO_AAC else MediaFormat.MIMETYPE_AUDIO_MPEG
         val caps =
             if (audio) {
-                MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, 44_100, 2)
+                MediaFormat.createAudioFormat(audioMime, 44_100, 2)
             } else {
                 MediaFormat.createVideoFormat(videoKind.mime, 4096, 4096)
             }
@@ -2652,11 +2732,22 @@ class PlaybackFilterAdmissionTest {
                 .apply { isAccessible = true }
         val format =
             if (audio) {
-                MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, 44_100, 2)
+                MediaFormat.createAudioFormat(audioMime, 44_100, 2)
             } else {
                 MediaFormat.createVideoFormat(videoKind.mime, 32, 32)
             }
+        if (dualAac) {
+            val asc =
+                checkNotNull(
+                    com.maleicacid.tvinput.aribsi.NativeAribSiParser.probeAacConfiguration(
+                        byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56),
+                        null,
+                    ),
+                )
+            format.setByteBuffer("csd-0", ByteBuffer.wrap(asc.audioSpecificConfig))
+        }
         val codec = method.invoke(decoder, format) as MediaCodec
+        Shadow.extract<NativeCodec>(codec).registeredName = codecName
         ReflectionHelpers.setField(decoder, "codec", codec)
         return codec
     }
@@ -3041,6 +3132,7 @@ class PlaybackFilterAdmissionTest {
     private fun mediaEvent(
         length: Long,
         pts90k: Long = 0L,
+        offset: Long = 0L,
     ): MediaEvent =
         MediaEvent::class.java.declaredConstructors
             .single { it.parameterCount == 15 }
@@ -3052,7 +3144,7 @@ class PlaybackFilterAdmissionTest {
                 false,
                 0L,
                 length,
-                0L,
+                offset,
                 null,
                 false,
                 0L,
@@ -3279,7 +3371,13 @@ class PlaybackFilterAdmissionTest {
     @Suppress("LongParameterList", "ProtectedMemberInFinalClass")
     @Implements(MediaCodec::class)
     class NativeCodec : ShadowMediaCodec() {
+        var registeredName = ""
+
+        @Implementation
+        fun getCanonicalName(): String = registeredName
+
         val inputQueued = CountDownLatch(1)
+        var lastInputOffset = 0
         var lastInputSize = 0
         var lastInputPtsUs = 0L
         var lastInputBlock: MediaCodec.LinearBlock? = null
@@ -3322,6 +3420,7 @@ class PlaybackFilterAdmissionTest {
         ) {
             assertEquals(1, bufferInfos.size)
             val info = bufferInfos.single() as MediaCodec.BufferInfo
+            lastInputOffset = info.offset
             lastInputSize = info.size
             lastInputPtsUs = info.presentationTimeUs
             lastInputBlock = block

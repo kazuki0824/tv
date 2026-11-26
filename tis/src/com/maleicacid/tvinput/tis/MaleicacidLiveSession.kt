@@ -966,9 +966,15 @@ class MaleicacidLiveSession(
                     updateTracks(service)
                     requested.audioPresentation == null || notifiedAudioTrackId == requested.id
                 } else {
-                    preferredAudioTrackId = previousAudioTrackId
-                    audioFallbackDisabled = previousAudioFallbackDisabled
-                    dualMonoPresentation = previousDualMonoPresentation
+                    if (switched?.previousInputClosed == true) {
+                        preferredAudioTrackId = null
+                        updateTracks(service)
+                        publishAudioSelection(null)
+                    } else {
+                        preferredAudioTrackId = previousAudioTrackId
+                        audioFallbackDisabled = previousAudioFallbackDisabled
+                        dualMonoPresentation = previousDualMonoPresentation
+                    }
                     false
                 }
             }
@@ -1108,7 +1114,7 @@ class MaleicacidLiveSession(
                         projected.copy(
                             language =
                                 if (track.audioPresentation == PlaybackPipeline.DualMonoPresentation.SUB) {
-                                    component?.secondLanguage?.takeIf { it.isNotBlank() } ?: projected.language
+                                    component?.secondLanguage?.takeIf { it.isNotBlank() }
                                 } else {
                                     projected.language
                                 },

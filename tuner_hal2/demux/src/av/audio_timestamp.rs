@@ -1205,6 +1205,19 @@ mod tests {
     }
 
     #[test]
+    fn protected_two_sce_frame_is_delivered_with_its_original_bytes() {
+        let frame = vec![
+            255, 248, 76, 0, 2, 32, 4, 94, 87, 0, 200, 0, 0, 22, 64, 0, 56,
+        ];
+        let mut association = AudioTimestampAssociation::default();
+        let delivered = association
+            .extract(packet(frame.clone(), Some(90_000)), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&delivered), vec![90_000]);
+        assert_eq!(delivered[0].payload, frame);
+    }
+
+    #[test]
     fn continuation_only_pes_completes_the_containing_frame_with_its_pts() {
         let mut association = AudioTimestampAssociation::default();
         let frame = adts_frame(3, 8);

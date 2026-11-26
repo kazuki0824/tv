@@ -1,12 +1,8 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.aribsi.generated.AacFramePresentationDto
 import com.maleicacid.tvinput.aribsi.generated.SiCollectionSnapshotDto
 import com.maleicacid.tvinput.common.TsPid
-
-internal data class AacFramePresentation(
-    val configuration: Int,
-    val dualMono: Boolean?,
-)
 
 class NativeParserCleanupException(
     val status: Int,
@@ -332,9 +328,13 @@ class NativeAribSiParser : AutoCloseable {
             }
         }
 
-        @JvmStatic private external fun probeDualMono(frame: ByteArray): AacFramePresentation?
+        @JvmStatic private external fun configuredFrontPair(asc: ByteArray): Int
 
-        internal fun adtsPresentation(frame: ByteArray): AacFramePresentation? = probeDualMono(frame)
+        internal fun frontPairForDecoder(asc: ByteArray): Int? = configuredFrontPair(asc).takeIf { it >= 0 }
+
+        @JvmStatic private external fun probeDualMono(frame: ByteArray): AacFramePresentationDto?
+
+        internal fun adtsPresentation(frame: ByteArray): AacFramePresentationDto? = probeDualMono(frame)
 
         @JvmStatic private external fun nativeProbeAacConfiguration(
             adts: ByteArray,

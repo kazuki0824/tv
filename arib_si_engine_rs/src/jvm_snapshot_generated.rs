@@ -240,6 +240,24 @@ fn build_aac_adts_configuration<'local>(
     result
 }
 
+pub(super) fn aac_frame_to_java<'local>(
+    env: &mut JNIEnv<'local>,
+    value: &AacFramePresentationDto,
+) -> Result<JObject<'local>, SiJniFailure> {
+    let fact = boxed_bool(env, value.dual_mono)?;
+    let pair = boxed_int(env, value.front_pair)?;
+    new_generated(
+        env,
+        "AacFramePresentationDto",
+        "(ILjava/lang/Boolean;Ljava/lang/Integer;)V",
+        &[
+            JValue::Int(value.configuration),
+            JValue::Object(&fact),
+            JValue::Object(&pair),
+        ],
+    )
+}
+
 pub(super) fn aac_probe_to_java<'local>(
     env: &mut JNIEnv<'local>,
     value: &AacConfigurationProbeDto,

@@ -46,6 +46,7 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
         offset: 0,
     };
     let mut tags = [0u16; 4];
+    let mut first_audio_element = None;
     let mut channels = 0;
     let mut single_tags = [0; 2];
     let mut pce = None;
@@ -53,6 +54,7 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
         let element = bits.read(3)? as usize;
         match element {
             0 | 1 | 3 => {
+                first_audio_element.get_or_insert(element);
                 let instance = bits.read(4)?;
                 let tag = 1 << instance;
                 if element == 0 && channels < 2 {
@@ -73,8 +75,13 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
                 } else {
                     None
                 };
-                for _ in 0..if element == 1 { 2 } else { 1 } {
-                    channel(&mut bits, frequency, shared.as_ref())?;
+                for index in 0..if element == 1 { 2 } else { 1 } {
+                    channel(
+                        &mut bits,
+                        frequency,
+                        shared.as_ref(),
+                        index == 1 && shared.is_some(),
+                    )?;
                     channels += 1;
                 }
             }
@@ -126,7 +133,13 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
     }
     let cpe = tags[1].count_ones();
     let lfe = tags[3].count_ones();
-    if configuration != 0 {
+    if configuration == 0 {
+        // ARIB STD-B32 第2部5.2.3(2) の送出順。
+        match (first_audio_element?, sce, cpe, lfe) {
+            (0, 2, 0, 0) | (1, 1, 1, 0) | (1, 0, 2, 0) => {}
+            _ => return None,
+        }
+    } else {
         let expected = [
             (0, 0, 0),
             (1, 0, 0),
@@ -224,7 +237,12 @@ impl Window {
     }
 }
 
-fn channel(bits: &mut AudioConfigBits<'_>, frequency: u8, shared: Option<&Window>) -> Option<()> {
+fn channel(
+    bits: &mut AudioConfigBits<'_>,
+    frequency: u8,
+    shared: Option<&Window>,
+    intensity_allowed: bool,
+) -> Option<()> {
     let gain = bits.read(8)? as i32;
     let own;
     let window = if let Some(w) = shared {
@@ -240,7 +258,7 @@ fn channel(bits: &mut AudioConfigBits<'_>, frequency: u8, shared: Option<&Window
         let mut band = 0;
         while band < window.bands {
             let book = bits.read(4)? as usize;
-            if book == 12 || book == 13 {
+            if matches!(book, 12 | 13) || (book >= 14 && !intensity_allowed) {
                 return None;
             }
             let mut length = 0;
@@ -363,8 +381,12 @@ mod tests {
     use crate::codec_signaling::{probe_adts_configuration, AacConfigurationProbe};
     #[test]
     fn complete_elements_determine_presentation_and_decoder_config() {
-        let dual = &[255, 249, 76, 0, 1, 255, 252, 0, 200, 0, 0, 22, 64, 0, 56];
-        let stereo = &[255, 249, 76, 128, 1, 223, 252, 32, 100, 0, 1, 144, 0, 14];
+        let dual = &[
+            255, 248, 76, 0, 2, 32, 4, 94, 87, 0, 200, 0, 0, 22, 64, 0, 56,
+        ];
+        let stereo = &[
+            255, 248, 76, 128, 2, 0, 4, 51, 180, 32, 100, 0, 1, 144, 0, 14,
+        ];
         assert_eq!(adts_presentation(dual), AacPresentation::DualMono);
         assert_eq!(adts_presentation(stereo), AacPresentation::Other);
         let AacConfigurationProbe::Ready { configuration } = probe_adts_configuration(dual, None)
@@ -378,6 +400,19 @@ mod tests {
             .chunks_exact(2)
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect();
+        assert_eq!(
+            crate::codec_signaling::configured_front_pair(&asc),
+            crate::codec_signaling::frame_presentation_dto(dual)
+                .unwrap()
+                .front_pair
+        );
+        let mut reversed = asc.clone();
+        // 入力のタグ順に対応しないPCEを識別する。
+        reversed[6] ^= 0x80;
+        assert_ne!(
+            crate::codec_signaling::configured_front_pair(&asc),
+            crate::codec_signaling::configured_front_pair(&reversed)
+        );
         assert!(matches!(
             probe_adts_configuration(dual, Some(&asc)),
             AacConfigurationProbe::Ready { .. }
@@ -389,6 +424,46 @@ mod tests {
         *invalid.last_mut().unwrap() = 0;
         assert_eq!(adts_presentation(&invalid), AacPresentation::Unknown);
     }
+    #[test]
+    fn intensity_is_only_valid_on_common_window_right_channel() {
+        let vectors: &[(&[u8], &[u8])] = &[
+            (
+                &[
+                    255, 248, 76, 0, 2, 96, 4, 168, 4, 0, 200, 0, 184, 32, 5, 144, 1, 0, 71,
+                ],
+                &[
+                    255, 248, 76, 128, 2, 64, 4, 106, 85, 33, 0, 67, 32, 4, 50, 112, 67, 128,
+                ],
+            ),
+            (
+                &[
+                    255, 248, 76, 0, 2, 96, 4, 74, 68, 0, 200, 0, 188, 32, 5, 144, 1, 0, 71,
+                ],
+                &[
+                    255, 248, 76, 128, 2, 64, 4, 250, 108, 33, 0, 67, 32, 4, 50, 120, 67, 128,
+                ],
+            ),
+        ];
+        for &(single, pair) in vectors {
+            assert_eq!(adts_presentation(single), AacPresentation::Unknown);
+            assert!(matches!(
+                probe_adts_configuration(single, None),
+                AacConfigurationProbe::Pending
+            ));
+            assert_eq!(adts_presentation(pair), AacPresentation::Other);
+        }
+        // channel_configuration=0のCPEから2 SCEのASCを合成しない。
+        let mut other = [
+            255, 248, 76, 128, 2, 0, 4, 51, 180, 32, 100, 0, 1, 144, 0, 14,
+        ];
+        other[3] = 0;
+        assert_eq!(adts_presentation(&other), AacPresentation::Unknown);
+        assert!(matches!(
+            probe_adts_configuration(&other, None),
+            AacConfigurationProbe::Pending
+        ));
+    }
+
     // 48 kHz/36 kbit/sの440 Hz・1100 Hzを個別に符号化し、同じraw blockに収録した。
     #[test]
     fn coded_spectra_follow_element_boundaries_with_and_without_pce() {

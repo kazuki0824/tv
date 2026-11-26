@@ -541,6 +541,51 @@ pub fn probe_adts_configuration(
 mod aac_elements;
 #[path = "codec_signaling/aac_tables.rs"]
 mod aac_tables;
+pub fn configured_front_pair(asc: &[u8]) -> Option<i32> {
+    let mut bits = AudioConfigBits {
+        bytes: asc,
+        offset: 0,
+    };
+    if bits.object_type()? != 2 {
+        return None;
+    }
+    let frequency = bits.frequency()?;
+    if bits.read(4)? != 0 || bits.read(3)? != 0 {
+        return None;
+    }
+    let config = parse_program_config(&mut bits)?;
+    if config.comment_range.len() != 1
+        || config.comment_range.end != asc.len()
+        || config.object_type != 2
+        || audio_frequency(config.frequency_index)? != frequency
+    {
+        return None;
+    }
+    Some(front_pair_key(config.frequency_index, config.front_pair?))
+}
+
+fn front_pair_key(frequency: u8, tags: [u8; 2]) -> i32 {
+    ((0x900 | (i32::from(frequency) << 4)) << 8) | (i32::from(tags[0]) << 4) | i32::from(tags[1])
+}
+
+pub fn frame_presentation_dto(
+    frame: &[u8],
+) -> Option<crate::codec_probe_dto::AacFramePresentationDto> {
+    let configuration = i32::from(adts_configuration_key(frame)?);
+    let (dual_mono, front_pair) = match aac_elements::parse_frame(frame) {
+        Some((AacPresentation::DualMono, tags)) => {
+            (Some(true), Some(front_pair_key((frame[2] >> 2) & 15, tags)))
+        }
+        Some((AacPresentation::Other, _)) => (Some(false), None),
+        _ => (None, None),
+    };
+    Some(crate::codec_probe_dto::AacFramePresentationDto {
+        configuration,
+        dual_mono,
+        front_pair,
+    })
+}
+
 pub use aac_elements::{adts_configuration_key, adts_presentation, AacPresentation};
 
 struct AudioConfigBits<'a> {

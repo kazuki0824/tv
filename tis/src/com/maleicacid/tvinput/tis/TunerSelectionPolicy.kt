@@ -171,7 +171,7 @@ object TunerSelectionPolicy {
                 ),
                 track.copy(
                     id = "${track.id}:sub",
-                    language = component?.secondLanguage?.takeIf { it.isNotBlank() } ?: track.language,
+                    language = component?.secondLanguage?.takeIf { it.isNotBlank() },
                     audioPresentation = PlaybackPipeline.DualMonoPresentation.SUB,
                 ),
                 track.copy(

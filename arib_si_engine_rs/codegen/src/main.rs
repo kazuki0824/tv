@@ -1,5 +1,5 @@
 use maleicacid_arib_si_engine_core::codec_probe_dto::{
-    AacAdtsConfigurationDto, AacConfigurationProbeDto, AacProbeStatusDto,
+    AacAdtsConfigurationDto, AacConfigurationProbeDto, AacFramePresentationDto, AacProbeStatusDto,
 };
 use maleicacid_arib_si_engine_core::runtime_snapshot_dto::{
     BroadcastSystemDto, BulkSnapshotDto, CaDescriptorScopeDto, CaMetadataSourceDto,
@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut tracer = Tracer::new(TracerConfig::default());
     tracer.trace_simple_type::<AacConfigurationProbeDto>()?;
     tracer.trace_simple_type::<AacAdtsConfigurationDto>()?;
+    tracer.trace_simple_type::<AacFramePresentationDto>()?;
     tracer.trace_simple_type::<AacProbeStatusDto>()?;
     tracer.trace_simple_type::<BulkSnapshotDto>()?;
     tracer.trace_simple_type::<SiCollectionSnapshotDto>()?;
