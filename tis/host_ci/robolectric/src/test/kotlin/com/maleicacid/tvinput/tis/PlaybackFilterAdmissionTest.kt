@@ -7,7 +7,9 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.database.MatrixCursor
 import android.graphics.SurfaceTexture
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioRouting
 import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -2348,6 +2350,139 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    @Test
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
+    fun routingRestartReappliesSubBeforePublishingTheNewStereoSelection() = checkRoutingRestart(2)
+
+    @Test
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
+    fun routingRestartPublishesPhysicalAudioWhenTheNewOutputIsMono() = checkRoutingRestart(1)
+
+    // 登録済みlistenerから本番の再生成とSessionの通知を通し、Android入出力の境界だけを模擬する。
+    @Suppress("LongMethod")
+    private fun checkRoutingRestart(channels: Int) {
+        Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
+            val selection = fixture.audioSelection().copy(video = null)
+            val channel =
+                ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel").copy(serviceType = 2)
+            val session = fixture.audioSession(selection, selection, connectNotifications = true)
+            val physical = TunerSelectionPolicy.trackIdForAudio(requireNotNull(selection.audio))
+            val sub = "$physical:sub"
+            val started = fixture.pipeline.start(fixture.tuner, channel, selection)
+            assertTrue(started.startedAudio, started.diagnostics.toString())
+            val state = ReflectionHelpers.getField<PlaybackStartState.Started>(session, "playbackState")
+            ReflectionHelpers.setField(session, "playbackState", state.copy(pipelineGeneration = started.generation))
+            val callbacks = observeRouteAudioNotifications(session, fixture.pipeline, sub)
+            val previous = fixture.deliverRoutePcmFormat(2)
+            drainRouteAudioNotifications(session)
+            assertTrue(fixture.selectAudio(session, sub))
+            drainRouteAudioNotifications(session)
+            assertEquals("選択:$sub", callbacks.last())
+            val listener = ReflectionHelpers.getField<AudioRouting.OnRoutingChangedListener>(fixture.pipeline, "audioRoutingListener")
+            val nativeTrack = Shadow.extract<DualMonoAudioTrack>(previous)
+
+            nativeTrack.route = routeDevice(1)
+            listener.onRoutingChanged(previous)
+            fixture.drain()
+            assertEquals(started.generation, fixture.pipeline.currentPlaybackGenerationForTest())
+
+            callbacks.clear()
+            nativeTrack.route = routeDevice(2)
+            listener.onRoutingChanged(previous)
+            fixture.drain()
+            assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > started.generation)
+            drainRouteAudioNotifications(session)
+            assertNull(ReflectionHelpers.getField<AudioTrack?>(fixture.pipeline, "audioTrack"))
+            callbacks += "新出力"
+            val replacement = fixture.deliverRoutePcmFormat(channels)
+            assertTrue(previous !== replacement)
+            drainRouteAudioNotifications(session)
+
+            val expected = if (channels == 2) sub else physical
+            val publication = callbacks.indexOfLast { it.startsWith("一覧:") && expected in it.removePrefix("一覧:").split(",") }
+            val selectionNotice = callbacks.indexOfLast { it == "選択:$expected" }
+            assertTrue(publication >= 0 && selectionNotice > publication, callbacks.toString())
+            val modes = Shadow.extract<DualMonoAudioTrack>(replacement).modes
+            if (channels == 2) {
+                assertEquals(AudioTrack.DUAL_MONO_MODE_RR, modes.last())
+            } else {
+                assertTrue(AudioTrack.DUAL_MONO_MODE_RR !in modes)
+                assertTrue("選択:$sub" !in callbacks)
+            }
+        }
+    }
+
+    private fun routeDevice(id: Int): AudioDeviceInfo =
+        Shadow.newInstanceOf(AudioDeviceInfo::class.java).also { Shadow.extract<RouteDevice>(it).id = id }
+
+    private fun drainRouteAudioNotifications(session: MaleicacidLiveSession) {
+        val owner = ReflectionHelpers.getField<LifecycleSerialExecutor>(session, "sessionExecutor")
+        val drained = CountDownLatch(1)
+        owner.executeData { drained.countDown() }
+        assertTrue(drained.await(5, TimeUnit.SECONDS))
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    private fun observeRouteAudioNotifications(
+        session: MaleicacidLiveSession,
+        pipeline: PlaybackPipeline,
+        sub: String,
+    ): MutableList<String> {
+        val events = mutableListOf<String>()
+        val callbackType = Class.forName("android.media.tv.ITvInputSessionCallback")
+        val callback =
+            java.lang.reflect.Proxy.newProxyInstance(callbackType.classLoader, arrayOf(callbackType)) { _, method, args ->
+                when (method.name) {
+                    "onTracksChanged" -> {
+                        val ids = (args!![0] as List<*>).filterIsInstance<TvTrackInfo>()
+                            .filter { it.type == TvTrackInfo.TYPE_AUDIO }.map { it.id }
+                        if (sub in ids && "新出力" in events) {
+                            val track = ReflectionHelpers.getField<AudioTrack>(pipeline, "audioTrack")
+                            assertEquals(AudioTrack.DUAL_MONO_MODE_RR, Shadow.extract<DualMonoAudioTrack>(track).modes.last())
+                        }
+                        events += "一覧:${ids.joinToString(",")}"
+                    }
+
+                    "onTrackSelected" -> if (args!![0] == TvTrackInfo.TYPE_AUDIO) events += "選択:${args[1]}"
+                }
+                null
+            }
+        ReflectionHelpers.setField(session, "mSessionCallback", callback)
+        ReflectionHelpers.setField(session, "mHandler", Handler(Looper.getMainLooper()))
+        return events
+    }
+
+    private fun Fixture.deliverRoutePcmFormat(channels: Int): AudioTrack {
+        attachCodec(audio = true, dualAac = true)
+        val frame = byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56)
+        val event = mediaEvent(frame.size.toLong())
+        val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+        Shadow.extract<NativeLinearBlock>(block).data = frame
+        Shadow.extract<NativeMediaEvent>(event).block = block
+        deliver(ReflectionHelpers.getField(pipeline, "audioFilter"), event)
+        drain()
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_RAW, 48_000, channels)
+        val mask = if (channels == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
+        format.setInteger(MediaFormat.KEY_CHANNEL_MASK, mask)
+        return executor.callControl(5_000L) {
+            val decoder = ReflectionHelpers.getField<Any>(pipeline, "audioDecoder")
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                decoder,
+                "onOutputFormatChanged",
+                ReflectionHelpers.ClassParameter.from(MediaFormat::class.java, format),
+            )
+            ReflectionHelpers.getField(pipeline, "audioTrack")
+        }
+    }
+
+    @Implements(AudioDeviceInfo::class)
+    class RouteDevice {
+        var id = 0
+
+        @Implementation(methodName = "getId")
+        fun routeId(): Int = id
+    }
+
     @Suppress("LongMethod")
     @Test
     fun tunerResourceLossWithdrawsSelectedDualMonoWithoutStoppingTwice() {
@@ -2475,6 +2610,10 @@ class PlaybackFilterAdmissionTest {
     class DualMonoAudioTrack : org.robolectric.shadows.ShadowAudioTrack() {
         val modes = mutableListOf<Int>()
         var accept = true
+        var route: AudioDeviceInfo? = null
+
+        @Implementation(methodName = "getRoutedDevice")
+        fun routedDevice(): AudioDeviceInfo? = route
 
         @Implementation
         fun setDualMonoMode(mode: Int): Boolean {
@@ -3159,8 +3298,8 @@ class PlaybackFilterAdmissionTest {
         )
     }
 
-    private inner class Fixture : AutoCloseable {
-        val pipeline = PlaybackPipeline("admission-test", null)
+    private inner class Fixture(context: Context? = null) : AutoCloseable {
+        val pipeline = PlaybackPipeline("admission-test", null, sessionContext = context)
         val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
         val tuner = Tuner(RuntimeEnvironment.getApplication(), null, 0)
         val failures = mutableListOf<Pair<PlaybackPipeline.PlaybackUnavailableReason, String>>()
@@ -3199,12 +3338,22 @@ class PlaybackFilterAdmissionTest {
         fun audioSession(
             selection: TunerController.AvStreamSelection,
             next: TunerController.AvStreamSelection,
+            connectNotifications: Boolean = false,
         ): MaleicacidLiveSession {
             val context = RuntimeEnvironment.getApplication()
             val session = MaleicacidLiveSession(context, context, "admission-test", "audio-switch-fixture")
             audioSessions += session
             val controller = ReflectionHelpers.getField<TunerController>(session, "tunerController")
-            ReflectionHelpers.getField<PlaybackPipeline>(controller, "playbackPipeline").close()
+            val originalPipeline = ReflectionHelpers.getField<PlaybackPipeline>(controller, "playbackPipeline")
+            if (connectNotifications) {
+                pipeline.setOnAudioPresentationChanged(
+                    ReflectionHelpers.getField(originalPipeline, "onAudioPresentationChanged"),
+                )
+                pipeline.setOnPlaybackGenerationRestartedCallback(
+                    ReflectionHelpers.getField(originalPipeline, "onPlaybackGenerationRestarted"),
+                )
+            }
+            originalPipeline.close()
             ReflectionHelpers.setField(controller, "currentTune", ReflectionHelpers.getField<Any>(pipeline, "activeChannel"))
             ReflectionHelpers.setField(controller, "tuner", tuner)
             ReflectionHelpers.setField(controller, "playbackPipeline", pipeline)
