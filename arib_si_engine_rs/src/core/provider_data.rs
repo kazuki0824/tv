@@ -679,38 +679,33 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
             previous.extended_items = data.extended_items;
             data = previous;
         } else if data.extended_texts.is_empty() && data.extended_items.is_empty() {
-            if !previous.extended_texts.is_empty()
-                || !previous.extended_items.is_empty()
-                || previous.diagnostics.provider_data_truncated == Some(true)
-            {
-                let language = data
-                    .short_events
-                    .first()
-                    .map(|v| v.language_code.as_str())
-                    .or_else(|| {
-                        previous
-                            .extended_texts
-                            .first()
-                            .map(|v| v.language_code.as_str())
-                    })
-                    .or_else(|| {
-                        previous
-                            .extended_items
-                            .first()
-                            .map(|v| v.language_code.as_str())
-                    });
-                if description_language(&previous) == language {
-                    if let Some(old) = existing_description {
-                        let supplements = description_supplements(&previous);
-                        let suffix = supplements.join("\n");
-                        retained_details = if suffix.is_empty() {
-                            Some(old)
-                        } else if old == suffix {
-                            Some(String::new())
-                        } else {
-                            old.strip_suffix(&format!("\n{suffix}")).map(str::to_owned)
-                        };
-                    }
+            let language = data
+                .short_events
+                .first()
+                .map(|v| v.language_code.as_str())
+                .or_else(|| {
+                    previous
+                        .extended_texts
+                        .first()
+                        .map(|v| v.language_code.as_str())
+                })
+                .or_else(|| {
+                    previous
+                        .extended_items
+                        .first()
+                        .map(|v| v.language_code.as_str())
+                });
+            if language.is_some() && description_language(&previous) == language {
+                if let Some(old) = existing_description {
+                    let supplements = description_supplements(&previous);
+                    let suffix = supplements.join("\n");
+                    retained_details = if suffix.is_empty() {
+                        Some(old)
+                    } else if old == suffix {
+                        Some(String::new())
+                    } else {
+                        old.strip_suffix(&format!("\n{suffix}")).map(str::to_owned)
+                    };
                 }
             }
             data.extended_texts = previous.extended_texts;
@@ -1861,6 +1856,42 @@ mod provider_data_tests {
         stored.as_object_mut().unwrap().remove("extendedTexts");
 
         assert!(extract_program_key_result(stored.to_string().as_bytes()).is_none());
+    }
+
+    #[test]
+    fn basic_updates_keep_description_when_all_extended_items_were_dropped() {
+        let mut basic = minimal_program_request_value();
+        basic["shortEvents"] = serde_json::json!([
+            {"parseStatus":"OK", "languageCode":"jpn","title":"番組", "text":"基本"}
+        ]);
+        let mut initial = basic.clone();
+        initial["shortEvents"][0]["text"] = serde_json::json!("x".repeat(HARD_LIMIT_BYTES));
+        initial["extendedItems"] = serde_json::json!([
+            {"parseStatus":"OK","languageCode":"jpn","description":"項","text":"目"}
+        ]);
+        let first = build_program_provider_data(&initial.to_string());
+        assert!(first.success && first.truncated);
+        let bytes: serde_json::Value = serde_json::from_str(&first.json).unwrap();
+        assert_eq!(bytes["extendedTexts"], serde_json::json!([]));
+        assert_eq!(bytes["extendedItems"], serde_json::json!([]));
+        basic["existing"] = bytes;
+        let old = serde_json::from_str::<ProgramProviderDataV1>(&first.json).unwrap();
+        let mut description = vec!["【項】目".to_owned()];
+        description.extend(description_supplements(&old));
+        let description = description.join("\n");
+        basic["existingDescription"] = serde_json::json!(description);
+        for version in [13, 14] {
+            basic["source"]["version"] = serde_json::json!(version);
+            let merged = build_program_provider_data(&basic.to_string());
+            assert!(merged.success && !merged.truncated);
+            assert_eq!(merged.merged_description.as_deref(), Some(description.as_str()));
+            basic["existing"] = serde_json::from_str(&merged.json).unwrap();
+            basic["existingDescription"] = serde_json::json!(merged.merged_description);
+        }
+        basic["shortEvents"][0]["languageCode"] = serde_json::json!("eng");
+        let changed = build_program_provider_data(&basic.to_string());
+        assert!(changed.success);
+        assert_eq!(changed.merged_description, None);
     }
 
     #[test]
