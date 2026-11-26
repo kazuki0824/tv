@@ -582,6 +582,7 @@ class MaleicacidLiveSession(
                 try {
                     SectionFilterPolicy.completeCleanup(
                         { beginCaptionPresentationGeneration(-1L, false) },
+                        ::refreshPublishedAudioSelection,
                         { notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
                     )
                 } catch (cleanup: Exception) {
