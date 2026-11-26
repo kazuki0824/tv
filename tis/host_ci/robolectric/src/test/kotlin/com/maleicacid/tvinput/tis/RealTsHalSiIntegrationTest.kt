@@ -146,8 +146,8 @@ class RealTsHalSiIntegrationTest {
                     deliver(tuner, sdt[1])
                     awaitIdle(owner)
                     assertEquals(1, ingest.inputDeliveryLossCount)
-                    ShadowSystemClock.advanceBy(Duration.ofMillis(200L))
-                    val completed = result.get(10, TimeUnit.SECONDS)
+                    assertTrue(setupRequirements.evaluate(engine.serviceRegistrationSnapshot()).complete)
+                    val completed = awaitSetupScanCompletion(result, firstArrival + 11_000L)
                     assertEquals(ChannelScanController.ScanTerminalOutcome.COMPLETED, completed.terminal.outcome)
                     assertEquals(1, completed.scanned)
                     assertEquals(1, completed.successfulCandidates)
@@ -165,6 +165,18 @@ class RealTsHalSiIntegrationTest {
                 }
             }
         }
+    }
+
+    private fun awaitSetupScanCompletion(
+        result: FutureTask<ChannelScanController.ScanResult>,
+        clockLimit: Long,
+    ): ChannelScanController.ScanResult {
+        // 収集側が再送を最初に観測した後の安定待ちも、試験時計で進める。
+        while (!result.isDone && SystemClock.elapsedRealtime() < clockLimit) {
+            Thread.sleep(200L)
+            ShadowSystemClock.advanceBy(Duration.ofMillis(200L))
+        }
+        return result.get(5, TimeUnit.SECONDS)
     }
 
     private fun rejectFirstSdt(
