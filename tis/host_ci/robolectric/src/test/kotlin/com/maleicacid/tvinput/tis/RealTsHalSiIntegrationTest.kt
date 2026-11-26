@@ -344,13 +344,14 @@ class RealTsHalSiIntegrationTest {
         val ingest = SectionIngestController(engine)
         // 同じ実TSで、別局1049の次番組0xbdb1がp/f actualとschedule actualの両方にある。
         val duplicate =
-            schedule.first {
-                val data = ByteBuffer.wrap(it.bytes)
-                data.getShort(3).toInt() == 1049 && data.get(6).toInt() == 48
-            }.bytes
+            schedule
+                .first {
+                    val data = ByteBuffer.wrap(it.bytes)
+                    data.getShort(3).toInt() == 1049 && data.get(6).toInt() == 48
+                }.bytes
         assertEquals(0xbdb1, ByteBuffer.wrap(duplicate).getShort(14).toInt() and 0xffff)
         assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, duplicate).status)
-        val unregistered = selected.copy(serviceId = 0x7777)
+        val unregistered = ServiceKey(selected.originalNetworkId, selected.transportStreamId, 0x7777)
         val otherPresentFollowing =
             sections
                 .filter {
@@ -370,9 +371,15 @@ class RealTsHalSiIntegrationTest {
         val programs = engine.livePlaybackSnapshot().programs
         assertEquals(
             0x4e,
-            programs.events.single { it.serviceKey.serviceId == 1049 && it.eventId == 0xbdb1 }.source.tableId,
+            programs.events
+                .single { it.serviceKey.serviceId == 1049 && it.eventId == 0xbdb1 }
+                .source.tableId,
         )
-        val unregisteredEvents = programs.events.filter { it.serviceKey == unregistered }.map { it.eventId }.toSet()
+        val unregisteredEvents =
+            programs.events
+                .filter { it.serviceKey == unregistered }
+                .map { it.eventId }
+                .toSet()
         assertEquals(setOf(0xbc00, 0xbc01), unregisteredEvents)
     }
 
@@ -380,7 +387,8 @@ class RealTsHalSiIntegrationTest {
         val channelColumn = TvContract.Programs.COLUMN_CHANNEL_ID
         val eventColumn = TvContract.Programs.COLUMN_EVENT_ID
         assertEquals(setOf(7L, 8L), rows.map { it.getAsLong(channelColumn).toLong() }.toSet())
-        val otherService = rows.filter { it.getAsLong(channelColumn) == 8L }.map { it.getAsInteger(eventColumn).toInt() }
+        val otherService =
+            rows.filter { it.getAsLong(channelColumn) == 8L }.map { it.getAsInteger(eventColumn).toInt() }
         assertEquals(1, otherService.count { it == 0xbdac })
         assertEquals(1, otherService.count { it == 0xbdb1 })
         assertTrue(rows.none { it.getAsInteger(eventColumn) in setOf(0xbc00, 0xbc01) })
