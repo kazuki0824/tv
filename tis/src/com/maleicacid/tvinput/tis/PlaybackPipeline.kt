@@ -830,18 +830,20 @@ class PlaybackPipeline(
     fun switchAudio(
         tuner: Tuner,
         selection: TunerController.AvStreamSelection,
+        requirePresentation: Boolean = false,
     ): AudioSwitchResult =
         runOnPlaybackExecutorBlocking {
-            switchAudioOnPlaybackExecutor(tuner, selection)
+            switchAudioOnPlaybackExecutor(tuner, selection, requirePresentation)
         }
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("MagicNumber", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod", "ComplexCondition")
+    @Suppress("MagicNumber", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod", "ComplexCondition", "LongMethod")
     private fun switchAudioOnPlaybackExecutor(
         tuner: Tuner,
         selection: TunerController.AvStreamSelection,
+        requirePresentation: Boolean,
     ): AudioSwitchResult {
         val channel = activeChannel ?: return AudioSwitchResult(false, listOf("current channel 未確定"))
         val audio = selection.audio ?: return AudioSwitchResult(false, listOf("audio PID 未検出"))
@@ -874,7 +876,12 @@ class PlaybackPipeline(
                 resourceCleanup.requireComplete()
                 createAndStartAvFilter(tuner, audio, isAudio = true).getOrThrow()
                 // 開始成功した実入力と同時に選択を確定する。失敗時は同じ選択から再取得できる。
-                val applied = audioDecoder?.changePresentationInput(selection.audioDualMono, selection.dualMonoPresentation)
+                val applied =
+                    audioDecoder?.changePresentationInput(
+                        selection.audioDualMono,
+                        selection.dualMonoPresentation,
+                        requirePresentation,
+                    )
                 if (applied != true) {
                     if (switchGeneration == playbackGeneration) {
                         handleAudioFailure(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "切替先の主副モードを適用できません", selection.video == null)
@@ -1003,6 +1010,7 @@ class PlaybackPipeline(
                                                 val target = (if (isAudio) targetAudioDecoder else targetVideoDecoder) ?: continue
                                                 // queueは受理・拒否とも入力を所有し、自身の失敗時にも解放を保持する。
                                                 if (isAudio) targetAudioDecoder?.observeAac(sample, ::inputIsCurrent)
+                                                if (!inputIsCurrent()) continue
                                                 decoderOwnsEvent = true
                                                 target.queue(sample)
                                             } finally {
@@ -2558,16 +2566,15 @@ class PlaybackPipeline(
         fun changePresentationInput(
             eit: Boolean?,
             requested: DualMonoPresentation,
+            requirePresentation: Boolean,
         ): Boolean {
             eitDualMono = eit
             dualMonoPresentation = requested
             reconcilePresentation()
-            return if (eit == true ||
-                requested != DualMonoPresentation.MAIN
-            ) {
-                appliedPresentation == requested
+            return if (appliedPresentation == null) {
+                !requirePresentation
             } else {
-                appliedPresentation == null
+                selectable && appliedPresentation == requested
             }
         }
 
@@ -2589,6 +2596,13 @@ class PlaybackPipeline(
                         .adtsPresentation(bytes)
                 }.getOrNull() ?: return
             if (!current()) return
+            // 実入力から確認した配置が推定ASCと異なる場合、既存の構成経路で作り直す。
+            if (configuredFrontPair != null && value.frontPair != null &&
+                value.frontPair != configuredFrontPair && stream.codecFacts.audioConfigHex == null
+            ) {
+                restartCurrentPlaybackGeneration(generation)
+                return
+            }
             val sameConfiguration = aacConfiguration == value.configuration && aacInputCurrent?.invoke() == true
             val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
             val pair = if (value.dualMono == null && sameConfiguration) receivedFrontPair else value.frontPair
@@ -2615,11 +2629,11 @@ class PlaybackPipeline(
             val track = audioTrack ?: return
             val fact = eitDualMono ?: aacDualMono.takeIf { aacInputCurrent?.invoke() == true }
             val matchesLayout =
-                aacConfiguration == null ||
-                    (
-                        aacConfiguration == configuredFrontPair?.ushr(Byte.SIZE_BITS) && aacDualMono != false &&
-                            (receivedFrontPair == null || receivedFrontPair == configuredFrontPair)
-                    )
+                if (aacInputCurrent?.invoke() == true && aacConfiguration != null) {
+                    receivedFrontPair == configuredFrontPair && aacDualMono == true
+                } else {
+                    stream.codecFacts.audioConfigHex != null
+                }
             val available = independentStereo && configuredFrontPair != null && matchesLayout && fact == true
             if (available) {
                 selectable = appliedPresentation == dualMonoPresentation ||

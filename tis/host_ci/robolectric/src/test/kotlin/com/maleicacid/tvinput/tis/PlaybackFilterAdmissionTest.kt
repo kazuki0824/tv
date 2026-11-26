@@ -1954,6 +1954,31 @@ class PlaybackFilterAdmissionTest {
                     ReflectionHelpers.ClassParameter.from(MediaFormat::class.java, output),
                 )
             }
+
+            fun refresh(trackService: com.maleicacid.tvinput.aribsi.AribService = service) {
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    session,
+                    "updateTracks",
+                    ReflectionHelpers.ClassParameter.from(com.maleicacid.tvinput.aribsi.AribService::class.java, trackService),
+                )
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+            }
+
+            fun feed(
+                bytes: ByteArray,
+                source: Filter = filter,
+                refreshTracks: Boolean = true,
+            ): MediaEvent {
+                val sampleEvent = mediaEvent(bytes.size.toLong(), offset = 2)
+                val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+                Shadow.extract<NativeLinearBlock>(block).data = byteArrayOf(0, 0) + bytes + byteArrayOf(0)
+                Shadow.extract<NativeMediaEvent>(sampleEvent).block = block
+                deliver(source, sampleEvent)
+                fixture.drain()
+                if (refreshTracks) refresh()
+                return sampleEvent
+            }
+            feed(dualFrame)
             nativeTrack.accept = false
             outputChanged()
             val update = {
@@ -2014,7 +2039,8 @@ class PlaybackFilterAdmissionTest {
             Shadows.shadowOf(Looper.getMainLooper()).idle()
             assertEquals(beforePidSwitch, selected.size)
             assertEquals(AudioTrack.DUAL_MONO_MODE_RR, nativeTrack.modes.last())
-            // EIT消失時は旧モードを解除して物理trackを通知する。
+            // EIT消失かつ現行AACの根拠も失効したら物理trackへ戻す。
+            ReflectionHelpers.callInstanceMethod<Unit>(decoder, "invalidateAudioInput")
             ReflectionHelpers.setField(session, "latestLiveSnapshot", snapshot.copy(services = listOf(service)))
             ReflectionHelpers.callInstanceMethod<Unit>(
                 session,
@@ -2036,6 +2062,7 @@ class PlaybackFilterAdmissionTest {
                 ReflectionHelpers.ClassParameter.from(com.maleicacid.tvinput.aribsi.AribService::class.java, service),
             )
             Shadows.shadowOf(Looper.getMainLooper()).idle()
+            feed(dualFrame)
             assertEquals("$physical:sub", selected.last())
             assertTrue(fixture.selectAudio(session, "$physical:main"))
             Shadows.shadowOf(Looper.getMainLooper()).idle()
@@ -2060,27 +2087,6 @@ class PlaybackFilterAdmissionTest {
             assertEquals(modeCalls, nativeTrack.modes.size)
             filter = ReflectionHelpers.getField(fixture.pipeline, "audioFilter")
 
-            fun refresh() {
-                ReflectionHelpers.callInstanceMethod<Unit>(
-                    session,
-                    "updateTracks",
-                    ReflectionHelpers.ClassParameter.from(com.maleicacid.tvinput.aribsi.AribService::class.java, service),
-                )
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-            }
-
-            fun feed(
-                bytes: ByteArray,
-                source: Filter = filter,
-            ) {
-                val event = mediaEvent(bytes.size.toLong(), offset = 2)
-                val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
-                Shadow.extract<NativeLinearBlock>(block).data = byteArrayOf(0, 0) + bytes + byteArrayOf(0)
-                Shadow.extract<NativeMediaEvent>(event).block = block
-                deliver(source, event)
-                fixture.drain()
-                refresh()
-            }
             // EIT優先中にもAACの最新構成を保持し、EIT消失後に古い主副へ戻さない。
             feed(stereoFrame)
             assertEquals(physical, selected.last())
@@ -2111,6 +2117,9 @@ class PlaybackFilterAdmissionTest {
             assertTrue(fixture.selectAudio(session, "$physical:sub"))
             val second = selection.copy(audio = otherAudio, audioDualMono = true)
             assertTrue(fixture.pipeline.switchAudio(fixture.tuner, second).switchedAudio)
+            assertEquals(AudioTrack.DUAL_MONO_MODE_OFF, nativeTrack.modes.last())
+            val secondFilter = ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter")
+            feed(dualFrame, secondFilter)
             assertEquals(AudioTrack.DUAL_MONO_MODE_LL, nativeTrack.modes.last())
             assertTrue(fixture.pipeline.switchAudio(fixture.tuner, selection.copy(audioDualMono = null)).switchedAudio)
             refresh()
@@ -2136,12 +2145,50 @@ class PlaybackFilterAdmissionTest {
                 "latestLiveSnapshot",
                 snapshot.copy(services = listOf(otherService), programs = snapshot.programs.copy(events = listOf(otherEvent))),
             )
+            output.removeKey(MediaFormat.KEY_CHANNEL_MASK)
+            outputChanged()
             nativeTrack.accept = false
-            assertFalse(fixture.selectAudio(session, TunerSelectionPolicy.trackIdForAudio(otherAudio)))
+            val otherPhysical = TunerSelectionPolicy.trackIdForAudio(otherAudio)
+            assertTrue(fixture.selectAudio(session, otherPhysical))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(otherPhysical, selected.last())
+            assertEquals(otherPhysical, ReflectionHelpers.getField<String?>(session, "preferredAudioTrackId"))
+            val otherFilter = requireNotNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "audioFilter"))
+            assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+
+            nativeTrack.accept = true
+            output.setInteger(MediaFormat.KEY_CHANNEL_MASK, AudioFormat.CHANNEL_OUT_STEREO)
+            outputChanged()
+            feed(dualFrame, otherFilter, refreshTracks = false)
+            refresh(otherService)
+            assertEquals("$otherPhysical:main", selected.last())
+            assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
+
+            ReflectionHelpers.setField(fixture.pipeline, "activeTuner", fixture.tuner)
+            val restarts = mutableListOf<PlaybackPipeline.PlaybackGenerationRestart>()
+            fixture.pipeline.setOnPlaybackGenerationRestartedCallback { restarts += it }
+            val changed = dualFrame.copyOf().also { it[9] = 4 }
+            val changedFact =
+                com.maleicacid.tvinput.aribsi.NativeAribSiParser
+                    .adtsPresentation(changed)
+            assertEquals(true, changedFact?.dualMono)
+            val discarded = feed(changed, otherFilter, refreshTracks = false)
+            assertEquals(1, Shadow.extract<NativeMediaEvent>(discarded).releases)
+            val restart = restarts.single()
+            assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > 7L)
+            assertEquals(1, Shadow.extract<NativeFilter>(otherFilter).closes)
+            // Surfaceがないため新世代の出力は得られない。次のSI更新なしで旧論理IDを解除する。
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                session,
+                "handlePlaybackGenerationRestart",
+                ReflectionHelpers.ClassParameter.from(PlaybackPipeline.PlaybackGenerationRestart::class.java, restart),
+            )
             Shadows.shadowOf(Looper.getMainLooper()).idle()
             assertNull(selected.last())
-            assertNull(ReflectionHelpers.getField<String?>(session, "preferredAudioTrackId"))
-            assertNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "audioFilter"))
+            assertEquals(
+                listOf(physical, otherPhysical),
+                published.last().filter { it.type == TvTrackInfo.TYPE_AUDIO }.map { it.id },
+            )
         }
     }
 

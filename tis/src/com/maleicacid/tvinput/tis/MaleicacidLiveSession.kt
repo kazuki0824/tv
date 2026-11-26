@@ -945,7 +945,7 @@ class MaleicacidLiveSession(
                         dualMonoPresentation = previousDualMonoPresentation
                         return false
                     }
-                val switched = tunerController.switchAudioTrack(selection)
+                val switched = tunerController.switchAudioTrack(selection, requirePresentation = requested.audioPresentation != null)
                 if (switched != null && switched.generation >= 0L) {
                     val next =
                         PlaybackStartTransitions.afterRestartResult(
@@ -1239,7 +1239,11 @@ class MaleicacidLiveSession(
     }
 
     private fun updatePlaybackStartState(next: PlaybackStartState) {
+        val previousGeneration = PlaybackStartTransitions.pipelineGeneration(playbackState)
         playbackState = next
+        if (previousGeneration != PlaybackStartTransitions.pipelineGeneration(next) || next is PlaybackStartState.Failed) {
+            refreshPublishedAudioSelection()
+        }
         if (next is PlaybackStartState.Failed) {
             beginCaptionPresentationGeneration(-1L, false)
         } else {
@@ -1249,6 +1253,12 @@ class MaleicacidLiveSession(
             )
         }
         onCaptionPlaybackClockChanged()
+    }
+
+    private fun refreshPublishedAudioSelection() {
+        if (notifiedAudioTrackId != null) {
+            latestService?.let(::updateTracks) ?: publishAudioSelection(null)
+        }
     }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
@@ -1335,6 +1345,9 @@ class MaleicacidLiveSession(
             "PLAYBACK_UNAVAILABLE_ACCEPTED sessionId=$sessionId generation=${reason.generation} " +
                 "reason=${reason.reason} detail=${reason.detail}",
         )
+        if (!tunerController.isCurrentPlaybackGeneration(reason.generation)) {
+            refreshPublishedAudioSelection()
+        }
         if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED) {
             cancelPlaybackRetry()
             playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
