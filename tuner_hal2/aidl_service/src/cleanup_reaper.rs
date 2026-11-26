@@ -942,13 +942,15 @@ mod tests {
         parent_cleanup_delegation_case(true);
     }
 
-    fn parent_cleanup_delegation_case(expired: bool) {
+    fn open_demux_and_dvr() -> (
+        crate::service_context::SharedTunerRuntime,
+        AidlObjectHandle,
+        AidlObjectHandle,
+    ) {
         use maleicacid_tuner_hal2_domain_request::{
             AidlApi, AidlMethodCall, DvrOpenKind, OpenDvrRequest,
         };
-        use maleicacid_tuner_hal2_service_runtime::{
-            close_object_use_case, ObjectMethodUseCase, TunerServiceRuntime,
-        };
+        use maleicacid_tuner_hal2_service_runtime::{ObjectMethodUseCase, TunerServiceRuntime};
         use std::sync::Mutex;
 
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
@@ -993,20 +995,26 @@ mod tests {
             .commit_prepared_child_object(child_id, generation)
             .expect("子DVRを公開確定");
 
-        let _unstarted = close_object_use_case(
-            &mut runtime.lock().unwrap(),
-            parent.object_id(),
-            parent.generation(),
-            AidlObjectKind::Demux,
-            AidlMethodCall::DemuxClose,
-        )
-        .expect("親close権限だけを発行し、物理cleanupは開始しない");
         let parent_handle = AidlObjectHandle::new(
             AidlObjectKind::Demux,
             parent.object_id(),
             parent.generation(),
         );
         let child_handle = AidlObjectHandle::new(AidlObjectKind::Dvr, child_id, generation);
+        (runtime, parent_handle, child_handle)
+    }
+
+    fn parent_cleanup_delegation_case(expired: bool) {
+        use maleicacid_tuner_hal2_service_runtime::close_object_use_case;
+        let (runtime, parent_handle, child_handle) = open_demux_and_dvr();
+        let _unstarted = close_object_use_case(
+            &mut runtime.lock().unwrap(),
+            parent_handle.object_id(),
+            parent_handle.generation(),
+            AidlObjectKind::Demux,
+            AidlMethodCall::DemuxClose,
+        )
+        .expect("親close権限だけを発行し、物理cleanupは開始しない");
         let failure = runtime.lock().unwrap().failure_state();
         let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
         assert_eq!(
@@ -1054,6 +1062,163 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("親cleanupの回収または隔離移管が完了しませんでした");
+    }
+
+    #[test]
+    fn stale_parent_plan_cannot_repeat_child_cleanup() {
+        use maleicacid_tuner_hal2_service_runtime::close_object_use_case;
+        let (runtime, parent, child) = open_demux_and_dvr();
+        let context = AidlServiceContext::from_shared_runtime_for_test(runtime.clone());
+        let stale = close_object_use_case(
+            &mut runtime.lock().unwrap(),
+            parent.object_id(),
+            parent.generation(),
+            parent.object_kind(),
+            AidlMethodCall::DemuxClose,
+        )
+        .unwrap();
+        crate::object_runtime::retry_cleanup_from_reaper(&context, child, AidlMethodCall::DvrClose)
+            .unwrap();
+        assert!(stale
+            .begin_cleanup_attempt(&mut runtime.lock().unwrap())
+            .is_err());
+        crate::object_runtime::retry_cleanup_from_reaper(
+            &context,
+            parent,
+            AidlMethodCall::DemuxClose,
+        )
+        .unwrap();
+        let diagnostics = runtime
+            .lock()
+            .unwrap()
+            .object_cleanup_diagnostics()
+            .unwrap();
+        let executed: Vec<_> = diagnostics
+            .records()
+            .iter()
+            .flat_map(|record| {
+                record
+                    .report()
+                    .outcomes()
+                    .iter()
+                    .flat_map(|step| step.cascade_entries())
+            })
+            .map(|entry| (entry.object_id(), entry.generation()))
+            .collect();
+        assert_eq!(
+            executed,
+            [
+                (child.object_id(), child.generation()),
+                (parent.object_id(), parent.generation())
+            ]
+        );
+        for handle in [parent, child] {
+            assert_eq!(
+                context.cleanup_retry_disposition(handle),
+                Ok(AidlObjectCleanupDisposition::Closed)
+            );
+            assert!(context
+                .related_cleanup_recovery_owners(handle)
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn failed_parent_and_child_share_one_reaper_reservation_until_isolated() {
+        use maleicacid_tuner_hal2_service_runtime::{
+            close_object_use_case, finish_object_close_use_case, ObjectCleanupDiagnosticKind,
+            ObjectCloseCleanupFailure, WorkerRuntime,
+        };
+
+        fn fail_close(
+            context: &Arc<AidlServiceContext>,
+            handle: AidlObjectHandle,
+            method: AidlMethodCall,
+        ) -> Result<(), HalError> {
+            let runtime = context.runtime();
+            let mut guard = runtime.lock().unwrap();
+            let attempt = close_object_use_case(
+                &mut guard,
+                handle.object_id(),
+                handle.generation(),
+                handle.object_kind(),
+                method,
+            )
+            .unwrap()
+            .begin_cleanup_attempt(&mut guard)
+            .unwrap();
+            finish_object_close_use_case(
+                &mut guard,
+                simulated_cleanup_completion(attempt),
+                Err(ObjectCloseCleanupFailure::new(
+                    CleanupStep::ReleaseBackend,
+                    HalError::cleanup_failed("通常close", "回収失敗を注入"),
+                )),
+            )
+        }
+
+        let (runtime, parent, child) = open_demux_and_dvr();
+        let context = AidlServiceContext::from_shared_runtime_for_test(runtime.clone());
+        let state = runtime.lock().unwrap().failure_state();
+        assert!(fail_close(&context, parent, AidlMethodCall::DemuxClose).is_err());
+        assert!(fail_close(&context, child, AidlMethodCall::DvrClose).is_err());
+        let weak = Arc::downgrade(&context);
+        let deadline = Duration::from_secs(1);
+        let policy = CleanupReaperPolicy {
+            max_jobs: 1,
+            terminal_deadline: deadline,
+            retry_delays: [deadline; 4],
+        };
+        let runner = Arc::new(move |job, pending, worker| {
+            run_cleanup_job(weak.clone(), policy, job, pending, worker);
+        });
+        let queue =
+            WorkerRuntime::start_reaper_queue(1, "test-failed-related-close", runner).unwrap();
+        let job = CleanupJob {
+            handle: parent,
+            // 親・委譲先の両期限を投入前に経過させる。
+            registered_at: Instant::now() - deadline * 2,
+            execution_started_at: None,
+        };
+        let parent_key = CleanupJobKey::from_handle(parent);
+        let child_key = CleanupJobKey::from_handle(child);
+        queue.enqueue_reserved(job, [(parent_key, job)]).unwrap();
+        queue
+            .wait_until_released([&parent_key, &child_key], Duration::from_secs(10))
+            .unwrap();
+        assert!(!queue.any_pending([&parent_key, &child_key]).unwrap());
+        assert!(!state.snapshot().service_critical);
+        let diagnostics = runtime
+            .lock()
+            .unwrap()
+            .object_cleanup_diagnostics()
+            .unwrap();
+        let isolated: Vec<_> = diagnostics
+            .records()
+            .iter()
+            .filter(|record| record.kind() == ObjectCleanupDiagnosticKind::DropLeakTerminalization)
+            .flat_map(|record| record.report().outcomes())
+            .flat_map(|step| step.cascade_entries())
+            .map(|entry| (entry.object_id(), entry.generation()))
+            .collect();
+        assert_eq!(
+            isolated,
+            [
+                (child.object_id(), child.generation()),
+                (parent.object_id(), parent.generation())
+            ]
+        );
+        for handle in [parent, child] {
+            assert!(context
+                .related_cleanup_recovery_owners(handle)
+                .unwrap()
+                .is_empty());
+            assert!(context
+                .cleanup_retry_disposition(handle)
+                .unwrap()
+                .recovery_settled());
+        }
     }
 
     #[test]
