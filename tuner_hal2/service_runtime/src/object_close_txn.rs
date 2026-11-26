@@ -2177,7 +2177,7 @@ mod tests {
                 AidlObjectKind::Demux,
                 || -> Result<_, HalError> {
                     let request = OpenDvrRequest {
-                        kind: DvrOpenKind::Playback,
+                        kind: DvrOpenKind::Record,
                         buffer_size: 188,
                     };
                     Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
@@ -2306,22 +2306,21 @@ mod tests {
             ),
         )
         .unwrap();
-        let cases = [
-            (demux, AidlObjectKind::Demux, AidlMethodCall::DemuxClose),
-            (dvr, AidlObjectKind::Dvr, AidlMethodCall::DvrClose),
-            (filter, AidlObjectKind::Filter, AidlMethodCall::FilterClose),
-        ];
-        let keys = cases
-            .each_ref()
-            .map(|(entry, _, _)| (entry.object_id(), entry.generation()));
-        for ((entry, kind, method), key) in cases.into_iter().zip(keys) {
+        let enqueue_close = |entry: RuntimeObjectEntry, method: AidlMethodCall| {
+            let key = (entry.object_id(), entry.generation());
             let completion = {
                 let mut runtime = runtime.lock().unwrap();
-                close_object_use_case(&mut runtime, key.0, key.1, kind, method.clone())
-                    .unwrap()
-                    .begin_cleanup_attempt(&mut runtime)
-                    .unwrap()
-                    .completion
+                close_object_use_case(
+                    &mut runtime,
+                    key.0,
+                    key.1,
+                    entry.object_kind(),
+                    method.clone(),
+                )
+                .unwrap()
+                .begin_cleanup_attempt(&mut runtime)
+                .unwrap()
+                .completion
             };
             reaper
                 .enqueue_reserved(
@@ -2329,7 +2328,13 @@ mod tests {
                     [(key, CleanupStep::ReleaseBackend)],
                 )
                 .unwrap();
-        }
+            key
+        };
+        let keys = [
+            enqueue_close(demux, AidlMethodCall::DemuxClose),
+            enqueue_close(dvr, AidlMethodCall::DvrClose),
+            enqueue_close(filter, AidlMethodCall::FilterClose),
+        ];
         let first = finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         let second = finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_ne!(first, second);
@@ -2341,26 +2346,36 @@ mod tests {
             3,
         );
 
-        // retry済みでもrunner復帰前は旧objectの予約と新objectのopenが重なる。
-        for (reopened, key) in [(open_demux(), keys[0]), (open_dvr(), keys[1])] {
-            assert_ne!(reopened.object_id(), key.0);
-            assert!(reaper.pending_value(&key).unwrap().is_some());
-        }
+        // 旧runnerが返る前に再openし、同じ種類の新しいcloseも予約する。
+        let next_demux = enqueue_close(open_demux(), AidlMethodCall::DemuxClose);
+        let next_dvr = enqueue_close(open_dvr(), AidlMethodCall::DvrClose);
+        assert_eq!(
+            keys.iter()
+                .chain([&next_demux, &next_dvr])
+                .filter(|key| reaper.pending_value(key).unwrap().is_some())
+                .count(),
+            5,
+        );
         resume_tx.send(()).unwrap();
         assert_eq!(
             finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             keys[2]
         );
-        let reopened_filter = open_filter();
-        assert_ne!(reopened_filter.object_id(), keys[2].0);
+        let next_filter = enqueue_close(open_filter(), AidlMethodCall::FilterClose);
+        for (previous, next) in keys.into_iter().zip([next_demux, next_dvr, next_filter]) {
+            assert_ne!(previous.0, next.0);
+            assert!(reaper.pending_value(&next).unwrap().is_some());
+        }
         assert!(reaper.pending_value(&keys[2]).unwrap().is_some());
-        resume_tx.send(()).unwrap();
-        resume_tx.send(()).unwrap();
+        let all_keys = [keys[0], keys[1], keys[2], next_demux, next_dvr, next_filter];
+        for _ in 1..all_keys.len() {
+            resume_tx.send(()).unwrap();
+        }
         reaper
-            .wait_until_released(keys.each_ref(), Duration::from_secs(10))
+            .wait_until_released(all_keys.each_ref(), Duration::from_secs(10))
             .unwrap();
         let runtime = runtime.lock().unwrap();
-        for key in keys {
+        for key in all_keys {
             assert!(reaper.pending_value(&key).unwrap().is_none());
             assert_eq!(
                 runtime.object_table().entry(key.0).unwrap().lifecycle,
