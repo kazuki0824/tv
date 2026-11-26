@@ -13,6 +13,7 @@ import android.media.tv.TvContract
 import android.media.tv.tuner.filter.Filter
 import android.media.tv.tuner.filter.SectionEvent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.test.core.app.ApplicationProvider
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
@@ -23,6 +24,7 @@ import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.SiStatus
+import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONArray
@@ -35,15 +37,21 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowContentResolver
+import org.robolectric.shadows.ShadowLog
+import org.robolectric.shadows.ShadowSystemClock
 import org.robolectric.util.ReflectionHelpers
 import java.io.DataInputStream
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.security.MessageDigest
+import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 @RunWith(RobolectricTestRunner::class)
 @Config(
@@ -77,6 +85,139 @@ class RealTsHalSiIntegrationTest {
         val sections = runHal(input, expected, references)
         verifySections(sections, references)
         verifyLiveProgramPublication(sections, expected)
+    }
+
+    // 通常setupで初回SDTを失った候補が、録画の次のSDTで登録まで進むことを検査する。
+    @Suppress("LongMethod", "NestedBlockDepth")
+    @Test(timeout = 60000)
+    fun initialScanRegistersTheSameCandidateAfterSdtRetransmission() {
+        val directory = File(checkNotNull(System.getProperty("realTs.fixtureDirectory")))
+        val expected = JSONObject(File(directory, "expected.json").readText())
+        val input = File(directory, expected.getString("fixture"))
+        assertEquals(expected.getString("sha256"), sha256(input.readBytes()))
+        val references = objects(expected.getJSONArray("section_reference"))
+        val sections = runHal(input, expected, references)
+        verifySections(sections, references)
+        val pat = sections.first { it.pid == 0 }
+        val sdt = sections.filter { it.pid == 17 }
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val provider = SetupScanProvider()
+        provider.attachInfo(context, ProviderInfo().apply { authority = TvContract.AUTHORITY })
+        ShadowContentResolver.registerProviderInternal(TvContract.AUTHORITY, provider)
+        val cancelled = AtomicBoolean()
+        TunerFrontendLeaseTransitionTest.NativeTuner.successfulTunes = true
+        AribSiEngine(context).use { engine ->
+            ChannelScanController(context, "real-ts-setup", engine, ScanPurpose.SETUP_SCAN, cancelled).use { scan ->
+                val tuner = ReflectionHelpers.getField<TunerController>(scan, "tunerController")
+                val owner = ReflectionHelpers.getField<ControllerSerialExecutor>(tuner, "sectionExecutor")
+                val ingest = ReflectionHelpers.getField<SectionIngestController>(scan, "ingestController")
+                val fence = ReflectionHelpers.getField<ChannelScanController.ScanGenerationFence>(scan, "scanGenerationFence")
+                val active = ReflectionHelpers.getField<AtomicLong>(fence, "activeGeneration")
+                val result = FutureTask { scan.startInitialScan(listOf(TunerFrontendLeaseTransitionTest.terrestrial())) }
+                val scanThread = Thread(result, "real-ts-setup")
+                ShadowLog.clear()
+                scanThread.start()
+                try {
+                    val waitUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                    while (active.get() < 0L && !result.isDone && System.nanoTime() < waitUntil) Thread.sleep(1)
+                    val generation = active.get()
+                    assertTrue("通常候補の収集が開始されていません", generation >= 0L)
+                    val firstArrival = SystemClock.elapsedRealtime()
+                    rejectFirstSdt(tuner, owner, pat, sdt.first())
+                    assertEquals(1, ingest.inputDeliveryLossCount)
+                    awaitIdle(owner)
+                    // setup登録に必要なPAT・NIT・PMTだけを配送する。EIT scheduleは通常setupでは購読しない。
+                    val registrationTables = sections.filter { it.pid == 0 || it.pid == 16 || it.bytes[0].toInt() == 2 }
+                    replay(tuner, owner, registrationTables.distinctBy { it.pid })
+                    val setupRequirements =
+                        SiCollectionRequirements(ChannelScanController.PublishMode.SETUP_SCAN, SiDiscoveryProfile.ISDB_T)
+                    assertTrue(!setupRequirements.evaluate(engine.serviceRegistrationSnapshot()).complete)
+                    assertEquals(generation, active.get())
+
+                    // 固定TSの最初・次のSDT（packet 21894/44132）間のPCR補間をmsへ丸める。
+                    val remainingUntilRetransmission = 1_942L - (SystemClock.elapsedRealtime() - firstArrival)
+                    assertTrue(remainingUntilRetransmission >= 0L)
+                    ShadowSystemClock.advanceBy(Duration.ofMillis(remainingUntilRetransmission))
+                    deliver(tuner, sdt[1])
+                    awaitIdle(owner)
+                    assertEquals(1, ingest.inputDeliveryLossCount)
+                    ShadowSystemClock.advanceBy(Duration.ofMillis(200L))
+                    val completed = result.get(10, TimeUnit.SECONDS)
+                    assertEquals(ChannelScanController.ScanTerminalOutcome.COMPLETED, completed.terminal.outcome)
+                    assertEquals(1, completed.scanned)
+                    assertEquals(1, completed.successfulCandidates)
+                    assertTrue(provider.serviceIds.contains(1048))
+                    val collection =
+                        ShadowLog.getLogsForTag(LogTags.TIS).single { it.msg.startsWith("scan 候補の SI 収集結果 ") }.msg
+                    assertTrue(collection, "generation=$generation " in collection && "candidateInputDeliveryLoss=1 " in collection)
+                    val elapsed = checkNotNull(Regex("elapsedMs=(\\d+)").find(collection)).groupValues[1].toLong()
+                    assertTrue(collection, elapsed in 2_000L until 12_000L)
+                } finally {
+                    cancelled.set(true)
+                    scanThread.join(5_000)
+                    check(!scanThread.isAlive)
+                }
+            }
+        }
+    }
+
+    private fun rejectFirstSdt(
+        tuner: TunerController,
+        owner: ControllerSerialExecutor,
+        pat: Section,
+        sdt: Section,
+    ) {
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        owner.executeControl {
+            entered.countDown()
+            check(resume.await(5, TimeUnit.SECONDS))
+        }
+        try {
+            check(entered.await(5, TimeUnit.SECONDS))
+            repeat(16) { deliver(tuner, pat) }
+            deliver(tuner, sdt)
+        } finally {
+            resume.countDown()
+        }
+    }
+
+    private class SetupScanProvider : ContentProvider() {
+        val serviceIds = mutableSetOf<Int>()
+
+        override fun onCreate() = true
+
+        override fun query(
+            uri: Uri,
+            projection: Array<out String>?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+            sortOrder: String?,
+        ): MatrixCursor = MatrixCursor(checkNotNull(projection))
+
+        override fun getType(uri: Uri): String? = null
+
+        override fun insert(
+            uri: Uri,
+            values: ContentValues?,
+        ): Uri {
+            assertEquals(TvContract.Channels.CONTENT_URI, uri)
+            check(serviceIds.add(checkNotNull(values?.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID))))
+            return TvContract.buildChannelUri(serviceIds.size.toLong())
+        }
+
+        override fun update(
+            uri: Uri,
+            values: ContentValues?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ) = 1
+
+        override fun delete(
+            uri: Uri,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ) = 1
     }
 
     // 実TS取得を既存試験と共用し、製品Sessionの公開入口からProvider境界まで検査する。

@@ -216,7 +216,7 @@ jobs:
               assert all(not any(case.find(tag) is not None for tag in
                              ("skipped", "failure", "error")) for case in cases), name
               if name == "RealTsHalSiIntegrationTest":
-                  assert {case.get("name") for case in cases} == {"realTsProducesServiceAndProgramFacts", "realTsBurstLossAndRetransmissionStayWithinCandidate"}, name
+                  assert {case.get("name") for case in cases} == {"realTsProducesServiceAndProgramFacts", "realTsBurstLossAndRetransmissionStayWithinCandidate", "initialScanRegistersTheSameCandidateAfterSdtRetransmission"}, name
               print(f"{name}: {len(cases)} passed")
               if name == "RealTsCaptionFactTest":
                   caption_metrics = (suite.findtext("system-out") or "").splitlines()
