@@ -331,9 +331,7 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
-    @Test
-    @Config(shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class])
-    fun recoverableFailuresReleaseEachGenerationBeforeTheSessionRetries() {
+    private fun checkRecoverableFailuresReleaseEachGenerationBeforeRetry() {
         RetryFixture().use { retry ->
             Fixture().use { playback ->
                 val controller = ReflectionHelpers.getField<TunerController>(retry.session, "tunerController")
@@ -348,13 +346,14 @@ class PlaybackFilterAdmissionTest {
                 for (generation in listOf(7L, 9L)) {
                     val sync = MediaSync()
                     val nativeSync = Shadow.extract<PlaybackMediaSyncReleaseTest.NativeMediaSync>(sync)
-                    val codec = playback.executor.callControl(5_000L) {
-                        ReflectionHelpers.setField(playback.pipeline, "playbackGeneration", generation)
-                        playback.decoder(audio = false, stopOnFailure = true)
-                        playback.attachCodec(audio = false).also {
-                            ReflectionHelpers.setField(playback.pipeline, "mediaSync", sync)
+                    val codec =
+                        playback.executor.callControl(5_000L) {
+                            ReflectionHelpers.setField(playback.pipeline, "playbackGeneration", generation)
+                            playback.decoder(audio = false, stopOnFailure = true)
+                            playback.attachCodec(audio = false).also {
+                                ReflectionHelpers.setField(playback.pipeline, "mediaSync", sync)
+                            }
                         }
-                    }
                     retry.executor.callControl(5_000L) {
                         val started = PlaybackStartState.Started(retry.signature, generation)
                         ReflectionHelpers.setField(retry.session, "playbackState", started)
@@ -389,7 +388,9 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    @Config(shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class])
     fun successiveRecoveryTimersAreCancelledByRetuneOrRelease() {
+        checkRecoverableFailuresReleaseEachGenerationBeforeRetry()
         for (release in listOf(false, true)) {
             RetryFixture().use { fixture ->
                 for (generation in listOf(7L, 9L)) {

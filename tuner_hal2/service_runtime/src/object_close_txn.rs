@@ -2264,12 +2264,18 @@ mod tests {
                             CleanupStep::ReleaseBackend,
                             HalError::cleanup_failed("mixed close test", "backend failure"),
                         );
-                        assert!(
-                            finish_object_close_use_case(&mut runtime, completion, Err(failure))
-                                .is_err()
-                        );
+                        assert!(finish_object_close_use_case(
+                            &mut runtime,
+                            completion,
+                            Err(failure)
+                        )
+                        .is_err());
                         assert_eq!(
-                            runtime.object_table().entry(entry.object_id()).unwrap().lifecycle,
+                            runtime
+                                .object_table()
+                                .entry(entry.object_id())
+                                .unwrap()
+                                .lifecycle,
                             crate::RuntimeObjectLifecycle::CleanupPending {
                                 step: CleanupStep::ReleaseBackend,
                             },
