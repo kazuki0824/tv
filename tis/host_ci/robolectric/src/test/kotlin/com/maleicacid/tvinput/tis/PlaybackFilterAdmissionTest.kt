@@ -332,6 +332,63 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    @Config(shadows = [PlaybackMediaSyncReleaseTest.NativeMediaSync::class])
+    fun recoverableFailuresReleaseEachGenerationBeforeTheSessionRetries() {
+        RetryFixture().use { retry ->
+            Fixture().use { playback ->
+                val controller = ReflectionHelpers.getField<TunerController>(retry.session, "tunerController")
+                val sessionPipeline = ReflectionHelpers.getField<PlaybackPipeline>(controller, "playbackPipeline")
+                val onFailure =
+                    ReflectionHelpers.getField<(PlaybackPipeline.PlaybackUnavailable) -> Unit>(
+                        sessionPipeline,
+                        "onVideoUnavailable",
+                    )
+                // CodecとMediaSyncのnative境界だけを模擬し、停止からSessionへの通知まで本番経路を通す。
+                ReflectionHelpers.setField(playback.pipeline, "onVideoUnavailable", onFailure)
+                for (generation in listOf(7L, 9L)) {
+                    val sync = MediaSync()
+                    val nativeSync = Shadow.extract<PlaybackMediaSyncReleaseTest.NativeMediaSync>(sync)
+                    val codec = playback.executor.callControl(5_000L) {
+                        ReflectionHelpers.setField(playback.pipeline, "playbackGeneration", generation)
+                        playback.decoder(audio = false, stopOnFailure = true)
+                        playback.attachCodec(audio = false).also {
+                            ReflectionHelpers.setField(playback.pipeline, "mediaSync", sync)
+                        }
+                    }
+                    retry.executor.callControl(5_000L) {
+                        val started = PlaybackStartState.Started(retry.signature, generation)
+                        ReflectionHelpers.setField(retry.session, "playbackState", started)
+                    }
+                    playback.executor.callControl(5_000L) {
+                        playback.invoke(
+                            "failPlayback",
+                            generation,
+                            PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
+                            "初回映像停止を注入",
+                        )
+                    }
+                    retry.advanceClock(0L)
+                    retry.advanceClock(299L)
+                    assertEquals(PlaybackStartState.Failed(retry.signature, generation), retry.state())
+                    assertTrue(retry.hasReservation())
+                    assertEquals(1, nativeSync.events.count { it == "release" })
+                    assertEquals(1, Shadow.extract<NativeCodec>(codec).decoderReleases)
+                    playback.codecSurface?.release()
+                    playback.codecTexture?.release()
+                    playback.codecSurface = null
+                    playback.codecTexture = null
+                    assertNull(ReflectionHelpers.getField<Any?>(playback.pipeline, "videoDecoder"))
+                    assertNull(ReflectionHelpers.getField<MediaSync?>(playback.pipeline, "mediaSync"))
+                    assertFalse(ReflectionHelpers.getField<ResourceCleanup>(playback.pipeline, "resourceCleanup").hasPending)
+                    retry.advanceClock(1L)
+                    assertEquals(PlaybackStartState.Idle, retry.state())
+                    assertFalse(retry.hasReservation())
+                }
+            }
+        }
+    }
+
+    @Test
     fun successiveRecoveryTimersAreCancelledByRetuneOrRelease() {
         for (release in listOf(false, true)) {
             RetryFixture().use { fixture ->
@@ -3144,6 +3201,12 @@ class PlaybackFilterAdmissionTest {
         val outputReleased = CountDownLatch(1)
         var outputBlock: MediaCodec.LinearBlock? = null
         val releasedIndexes = mutableListOf<Int>()
+        var decoderReleases = 0
+
+        @Implementation(methodName = "release")
+        fun releaseDecoder() {
+            decoderReleases++
+        }
 
         @Implementation
         fun getOutputFrame(index: Int): MediaCodec.OutputFrame =

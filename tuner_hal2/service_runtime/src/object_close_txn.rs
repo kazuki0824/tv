@@ -2169,71 +2169,86 @@ mod tests {
         // 親を残したまま子を個別closeし、別のDemux closeと競合させる。
         let parent = open_demux();
         let demux = open_demux();
-        let dvr = ObjectMethodUseCase::execute_after_live(
-            &runtime,
-            parent.object_id(),
-            parent.generation(),
-            AidlObjectKind::Demux,
-            || -> Result<_, HalError> {
-                let request = OpenDvrRequest {
-                    kind: DvrOpenKind::Playback,
-                    buffer_size: 188,
-                };
-                Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
-            },
-            |runtime, dispatch, request| {
-                runtime
-                    .child_open_txn()
-                    .open_dvr_child_runtime_for_demux_object(
-                        parent.object_id(),
-                        parent.generation(),
+        let open_dvr = || {
+            let entry = ObjectMethodUseCase::execute_after_live(
+                &runtime,
+                parent.object_id(),
+                parent.generation(),
+                AidlObjectKind::Demux,
+                || -> Result<_, HalError> {
+                    let request = OpenDvrRequest {
+                        kind: DvrOpenKind::Playback,
+                        buffer_size: 188,
+                    };
+                    Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
+                },
+                |runtime, dispatch, request| {
+                    runtime
+                        .child_open_txn()
+                        .open_dvr_child_runtime_for_demux_object(
+                            parent.object_id(),
+                            parent.generation(),
+                            request,
+                            dispatch,
+                        )
+                },
+            )
+            .unwrap()
+            .runtime_entry;
+            runtime
+                .lock()
+                .unwrap()
+                .commit_prepared_child_object(entry.object_id(), entry.generation())
+                .unwrap();
+            entry
+        };
+        let open_filter = || {
+            let entry = ObjectMethodUseCase::execute_after_live(
+                &runtime,
+                parent.object_id(),
+                parent.generation(),
+                AidlObjectKind::Demux,
+                || -> Result<_, HalError> {
+                    let request = OpenFilterRequest {
+                        open_type: FilterOpenType::TsRaw,
+                        buffer_size: 4096,
+                        callback_present: false,
+                    };
+                    Ok((
+                        AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
+                            request.clone(),
+                        )),
                         request,
-                        dispatch,
-                    )
-            },
-        )
-        .unwrap()
-        .runtime_entry;
-        let filter = ObjectMethodUseCase::execute_after_live(
-            &runtime,
-            parent.object_id(),
-            parent.generation(),
-            AidlObjectKind::Demux,
-            || -> Result<_, HalError> {
-                let request = OpenFilterRequest {
-                    open_type: FilterOpenType::TsRaw,
-                    buffer_size: 4096,
-                    callback_present: false,
-                };
-                Ok((
-                    AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
-                        request.clone(),
-                    )),
-                    request,
-                ))
-            },
-            |runtime, dispatch, request| {
-                runtime
-                    .child_open_txn()
-                    .open_filter_child_runtime_for_demux_object(
-                        parent.object_id(),
-                        parent.generation(),
-                        &request,
-                        dispatch,
-                    )
-            },
-        )
-        .unwrap()
-        .runtime_entry;
-        {
-            let mut runtime = runtime.lock().unwrap();
-            for child in [&dvr, &filter] {
-                runtime
-                    .commit_prepared_child_object(child.object_id(), child.generation())
-                    .unwrap();
-            }
-        }
+                    ))
+                },
+                |runtime, dispatch, request| {
+                    runtime
+                        .child_open_txn()
+                        .open_filter_child_runtime_for_demux_object(
+                            parent.object_id(),
+                            parent.generation(),
+                            &request,
+                            dispatch,
+                        )
+                },
+            )
+            .unwrap()
+            .runtime_entry;
+            runtime
+                .lock()
+                .unwrap()
+                .commit_prepared_child_object(entry.object_id(), entry.generation())
+                .unwrap();
+            entry
+        };
+        let dvr = open_dvr();
+        let filter = open_filter();
 
+        type CloseJob = (
+            RuntimeObjectEntry,
+            CloseCleanupAttemptCompletion,
+            AidlMethodCall,
+        );
         let (finished_tx, finished_rx) = mpsc::channel();
         let (resume_tx, resume_rx) = mpsc::channel();
         let worker_runtime = Arc::clone(&runtime);
@@ -2242,11 +2257,34 @@ mod tests {
             crate::CapabilitySnapshot::product_default().cleanup_reaper_capacity,
             "product-mixed-close-overlap",
             Arc::new(
-                move |(entry, completion): (RuntimeObjectEntry, CloseCleanupAttemptCompletion),
-                      _: _,
-                      _: WorkerContext| {
+                move |(entry, completion, method): CloseJob, _: _, _: WorkerContext| {
                     {
                         let mut runtime = worker_runtime.lock().unwrap();
+                        let failure = ObjectCloseCleanupFailure::new(
+                            CleanupStep::ReleaseBackend,
+                            HalError::cleanup_failed("mixed close test", "backend failure"),
+                        );
+                        assert!(
+                            finish_object_close_use_case(&mut runtime, completion, Err(failure))
+                                .is_err()
+                        );
+                        assert_eq!(
+                            runtime.object_table().entry(entry.object_id()).unwrap().lifecycle,
+                            crate::RuntimeObjectLifecycle::CleanupPending {
+                                step: CleanupStep::ReleaseBackend,
+                            },
+                        );
+                        let completion = close_object_use_case(
+                            &mut runtime,
+                            entry.object_id(),
+                            entry.generation(),
+                            entry.object_kind(),
+                            method,
+                        )
+                        .unwrap()
+                        .begin_cleanup_attempt(&mut runtime)
+                        .unwrap()
+                        .completion;
                         runtime
                             .validate_public_runtime_for_closed_aidl_entry(&entry)
                             .unwrap();
@@ -2273,14 +2311,17 @@ mod tests {
         for ((entry, kind, method), key) in cases.into_iter().zip(keys) {
             let completion = {
                 let mut runtime = runtime.lock().unwrap();
-                close_object_use_case(&mut runtime, key.0, key.1, kind, method)
+                close_object_use_case(&mut runtime, key.0, key.1, kind, method.clone())
                     .unwrap()
                     .begin_cleanup_attempt(&mut runtime)
                     .unwrap()
                     .completion
             };
             reaper
-                .enqueue_reserved((entry, completion), [(key, CleanupStep::ReleaseBackend)])
+                .enqueue_reserved(
+                    (entry, completion, method),
+                    [(key, CleanupStep::ReleaseBackend)],
+                )
                 .unwrap();
         }
         let first = finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -2294,13 +2335,21 @@ mod tests {
             3,
         );
 
-        for _ in 0..keys.len() {
-            resume_tx.send(()).unwrap();
+        // retry済みでもrunner復帰前は旧objectの予約と新objectのopenが重なる。
+        for (reopened, key) in [(open_demux(), keys[0]), (open_dvr(), keys[1])] {
+            assert_ne!(reopened.object_id(), key.0);
+            assert!(reaper.pending_value(&key).unwrap().is_some());
         }
+        resume_tx.send(()).unwrap();
         assert_eq!(
             finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             keys[2]
         );
+        let reopened_filter = open_filter();
+        assert_ne!(reopened_filter.object_id(), keys[2].0);
+        assert!(reaper.pending_value(&keys[2]).unwrap().is_some());
+        resume_tx.send(()).unwrap();
+        resume_tx.send(()).unwrap();
         reaper
             .wait_until_released(keys.each_ref(), Duration::from_secs(10))
             .unwrap();
