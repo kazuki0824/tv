@@ -54,6 +54,8 @@ import java.util.concurrent.TimeUnit
         TunerFrontendLeaseTransitionTest.NativeFilter::class,
     ],
 )
+// 同じ録画のHAL入力・SI・Provider検証でFilterと入出力形式を共有する。
+@Suppress("LargeClass")
 class RealTsHalSiIntegrationTest {
     // Rust JNIの未対応PID/table通知値。製品の公開定数を試験のために復活させない。
     private val ignoredUnsupportedPidOrTable = 1
@@ -61,6 +63,7 @@ class RealTsHalSiIntegrationTest {
     private data class Section(
         val pid: Int,
         val bytes: ByteArray,
+        val packet: Int,
     )
 
     @Test(timeout = 60000)
@@ -247,7 +250,38 @@ class RealTsHalSiIntegrationTest {
             sortOrder: String?,
         ): MatrixCursor =
             MatrixCursor(checkNotNull(projection)).apply {
-                if (uri.pathSegments.first() == "channel") {
+                if (uri == TvContract.buildChannelUri(7L)) {
+                    val data =
+                        JSONObject()
+                            .put("schema", "maleicacid.tv.channel")
+                            .put("schemaVersion", 1)
+                            .put(
+                                "serviceKey",
+                                JSONObject()
+                                    .put("originalNetworkId", key.originalNetworkId)
+                                    .put("transportStreamId", key.transportStreamId)
+                                    .put("serviceId", key.serviceId),
+                            ).put(
+                                "tune",
+                                JSONObject()
+                                    .put("deliverySystem", "ISDB_T")
+                                    .put("frequencyHz", 473142857)
+                                    .put("streamIdType", "NONE"),
+                            ).put("cas", JSONObject().put("requiresCas", false))
+                            .put("diagnostics", JSONObject())
+                    addRow(
+                        arrayOf(
+                            "lease-integration-test",
+                            key.originalNetworkId,
+                            key.transportStreamId,
+                            key.serviceId,
+                            "TBS1",
+                            "061",
+                            "1",
+                            data.toString().toByteArray(),
+                        ),
+                    )
+                } else if (uri.pathSegments.first() == "channel") {
                     addRow(arrayOf(7L, key.originalNetworkId, key.transportStreamId, key.serviceId))
                     addRow(arrayOf(8L, key.originalNetworkId, key.transportStreamId, 1049))
                     addRow(arrayOf(9L, key.originalNetworkId, 0x7777, 1049))
@@ -409,7 +443,7 @@ class RealTsHalSiIntegrationTest {
                         "observedHostWallTime: blockedAndDrainNs=$blockedNanos replayNs=$replayNanos\n" +
                         "assertedExpectations: beforeReplayComplete=false afterReplayComplete=true " +
                         "nextCandidateLoss=0 nextCandidateComplete=true\n" +
-                        "scope=syntheticOwnerSaturationAndManualReplay; realScanDeadlineAndAutonomousRecovery=notTested\n",
+                        "scope=syntheticOwnerSaturationAndManualReplay\n",
                 )
                 // ownerを停止せず放送順に連続配送し、p/f限定とschedule混在を同じ入力で比較する。
                 for ((label, stream) in listOf("pf" to original, "mixed" to sections)) {
@@ -436,9 +470,89 @@ class RealTsHalSiIntegrationTest {
                     assertTrue(collectionComplete(engine))
                     report.appendText("$label completeAfterReplay=true\n")
                 }
+                verifyLiveRetransmission(tuner, owner, engine, ingest, sections, schedule, report)
             } finally {
                 tuner.release()
             }
+        }
+    }
+
+    // 元TSのPCR間隔で再生し、受付を拒否した表が送出順そのままで回復することを検査する。
+    @Suppress("LongMethod", "LongParameterList", "MagicNumber")
+    private fun verifyLiveRetransmission(
+        tuner: TunerController,
+        owner: ControllerSerialExecutor,
+        engine: AribSiEngine,
+        ingest: SectionIngestController,
+        sections: List<Section>,
+        schedule: List<Section>,
+        report: File,
+    ) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val service = ServiceKey(32739, 32739, 1048)
+        val provider = LiveProgramProvider(service)
+        provider.attachInfo(context, ProviderInfo().apply { authority = TvContract.AUTHORITY })
+        ShadowContentResolver.registerProviderInternal(TvContract.AUTHORITY, provider)
+        val tune =
+            tuner.tuneForLive(TvContract.buildChannelUri(7L)) {
+                engine.reset(SiDiscoveryProfile.ISDB_T)
+                ingest.resetForTune()
+            }
+        check(tune.success) { tune.message }
+        // PMTの入口だけ先に作る。PATとPMT自体は最初の放送copyが拒否されるまで入力しない。
+        val pmts = sections.filter { it.bytes[0] == 0x02.toByte() }.map { TsPid(it.pid) }.toSet()
+        tuner.updatePmtFilters(pmts, tune.generation)
+        val required = setOf(0, 257, 17)
+        val resent = mutableMapOf<Int, Long>()
+        val rejected = mutableMapOf<Int, Pair<Section, Long>>()
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        owner.executeControl {
+            entered.countDown()
+            check(resume.await(5, TimeUnit.SECONDS))
+        }
+        val started = System.nanoTime()
+        try {
+            check(entered.await(1, TimeUnit.SECONDS))
+            schedule.take(16).forEach { deliver(tuner, it) }
+            assertEquals(16, owner.queue.size)
+            for (section in sections) {
+                // 27 MHzのPCR差220998172 ticks / 93699 packets。
+                TimeUnit.NANOSECONDS.sleep(started + section.packet * 87_355L - System.nanoTime())
+                val before = ingest.inputDeliveryLossCount
+                deliver(tuner, section)
+                if (section.pid !in required) continue
+                val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                if (ingest.inputDeliveryLossCount > before) {
+                    rejected.putIfAbsent(section.pid, section to elapsedMs)
+                    if (resume.count != 0L && rejected.keys == required) {
+                        resume.countDown()
+                        awaitIdle(owner)
+                        check(!collectionComplete(engine))
+                    }
+                } else if (rejected[section.pid]?.first?.bytes?.contentEquals(section.bytes) == true) {
+                    resent.putIfAbsent(section.pid, elapsedMs)
+                }
+            }
+        } finally {
+            resume.countDown()
+        }
+        awaitIdle(owner)
+        assertEquals(required, rejected.keys)
+        assertEquals(required, resent.keys)
+        assertEquals(tune.generation, tuner.currentGeneration())
+        assertTrue(collectionComplete(engine))
+        assertTrue(engine.livePlaybackSnapshot().services.any { it.serviceKey == service && it.name == "TBS1" })
+        report.appendText("live generation=${tune.generation} completeBeforeResend=false completeAfterResend=true\n")
+        for ((pid, observation) in rejected) {
+            val (section, rejectedMs) = observation
+            val acceptedMs = resent.getValue(pid)
+            assertTrue(acceptedMs > rejectedMs)
+            val version = (section.bytes[5].toInt() ushr 1) and 31
+            report.appendText(
+                "live generation=${tune.generation} pid=$pid version=$version section=${section.bytes[6]} " +
+                    "rejectedMs=$rejectedMs acceptedMs=$acceptedMs\n",
+            )
         }
     }
 
@@ -571,13 +685,14 @@ class RealTsHalSiIntegrationTest {
             val sections =
                 (0 until count).map { sequence ->
                     assertEquals("配送順序", sequence, stream.readInt())
+                    val packet = stream.readInt()
                     val pid = stream.readInt()
                     checkNotNull(TsPid.fromOrNull(pid))
                     val length = stream.readInt()
                     check(length.toLong() in 3..SectionFilterPolicy.MAX_SECTION_EVENT_BYTES)
                     val bytes = ByteArray(length)
                     stream.readFully(bytes)
-                    Section(pid, bytes)
+                    Section(pid, bytes, packet)
                 }
             assertEquals("終了報告", -1, stream.readInt())
             assertEquals(expected.getInt("complete_packets"), stream.readInt())
