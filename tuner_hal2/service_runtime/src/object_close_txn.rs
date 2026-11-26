@@ -2257,10 +2257,7 @@ mod tests {
                     }
                     let _ = finished_tx.send((entry.object_id(), entry.generation()));
                     // 失敗時も送信側のdropでworkerを解放する。
-                    let _ = resume_rx
-                        .lock()
-                        .unwrap()
-                        .recv_timeout(Duration::from_secs(10));
+                    let _ = resume_rx.lock().unwrap().recv();
                 },
             ),
         )
