@@ -45,11 +45,25 @@ jobs:
       - name: Rust 1.81.0を使用
         uses: dtolnay/rust-toolchain@1.81.0
 
+      - name: 製品ソースの字幕レンダラーをホスト向けにビルド
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfreetype-dev libfontconfig-dev fonts-noto-cjk
+          git init "$RUNNER_TEMP/aribcaption-src"
+          git -C "$RUNNER_TEMP/aribcaption-src" fetch --depth 1 https://github.com/kazuki0824/libaribcaption-android.git 05cf370a56eaa0d2b9ed1cef2a67463840d42b43
+          git -C "$RUNNER_TEMP/aribcaption-src" checkout --detach FETCH_HEAD
+          cmake -S "$RUNNER_TEMP/aribcaption-src" -B "$RUNNER_TEMP/aribcaption-build" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/aribcaption-install" -DCMAKE_INSTALL_LIBDIR=lib
+          cmake --build "$RUNNER_TEMP/aribcaption-build" --parallel
+          cmake --install "$RUNNER_TEMP/aribcaption-build"
+
       - name: HAL実TS実行器と製品SI解析JNIをビルド
         run: |
           cargo build --manifest-path tuner_hal2/host_ci/Cargo.toml --locked -p maleicacid-tuner-hal2-demux-host-ci --bin real_ts_sections
           cargo build --manifest-path arib_si_engine_rs/host_ci/Cargo.toml --locked --lib
-          cargo build --manifest-path tis/host_ci/caption/Cargo.toml --locked --lib
+          ARIBCAPTION_LIB_DIR="$RUNNER_TEMP/aribcaption-install/lib" \
+            cargo build --manifest-path tis/host_ci/caption/Cargo.toml --locked --lib
 
       - name: 実TS AVC AU・PTS試験を明示実行
         shell: bash
