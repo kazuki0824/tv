@@ -24,6 +24,7 @@ import java.util.PriorityQueue
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class RealTsCaptionFactTest {
     @Test
     fun broadcastCaptionManagementLanguageSurvivesJni() {
@@ -54,7 +55,6 @@ class RealTsCaptionFactTest {
 
     // 固定入力の製品JNI出力を、本番queueとオフスクリーンのOverlay描画に流す。
     @Test
-    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun broadcastCaptionRgbaFitsPresentationQueueAndDrawsOffscreen() {
         val fixture = File(checkNotNull(System.getProperty("realTs.fixtureDirectory")), "test.ts")
         val frames =
@@ -62,10 +62,11 @@ class RealTsCaptionFactTest {
                 check(renderer.setViewport(WIDTH, HEIGHT))
                 captionPayloads(fixture.readBytes()).mapNotNull { pes ->
                     val timestamp = CaptionTimestamp.Pts(CaptionPtsMillis(pes.ptsMillis))
-                    (renderer.decodePes(pes.payload, timestamp) as? NativeAribCaptionRenderer.DecodeResult.Rendered)?.frame
+                    val decoded = renderer.decodePes(pes.payload, timestamp)
+                    (decoded as? NativeAribCaptionRenderer.DecodeResult.Rendered)?.frame
                 }
             }
-        check(frames.isNotEmpty() && frames.any { it.images.isNotEmpty() })
+        check(frames.size == 3 && frames.all { it.images.isNotEmpty() })
         verifyPresentation(frames)
     }
 
@@ -83,7 +84,8 @@ class RealTsCaptionFactTest {
             val viewport = AribCaptionController.CaptionViewport(WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT)
             ReflectionHelpers.setField(controller, "viewport", viewport)
             val queue = ReflectionHelpers.getField<PriorityQueue<*>>(controller, "boundaries")
-            val enqueue = controller.javaClass.getDeclaredMethod("enqueueFrame", frames.first().javaClass, viewport.javaClass)
+            val enqueue =
+                controller.javaClass.getDeclaredMethod("enqueueFrame", frames.first().javaClass, viewport.javaClass)
             enqueue.isAccessible = true
             var peak = 0L
             for (frame in frames) {
@@ -97,39 +99,45 @@ class RealTsCaptionFactTest {
                         pending?.images?.sumOf { it.rgba8888.size.toLong() } ?: 0L
                     }
                 peak = maxOf(peak, pendingBytes)
-                println("字幕受付 pts=${frame.ptsMillis} duration=${frame.durationMillis} RGBA=$bytes pending=$pendingBytes")
+                println(
+                    "字幕受付 pts=${frame.ptsMillis} duration=${frame.durationMillis} RGBA=$bytes pending=$pendingBytes",
+                )
             }
             check(diagnostics.isEmpty()) { diagnostics.toString() }
             check(peak in 1L..8L * 1024 * 1024)
             val times =
-                queue.map { boundary ->
-                    val field = checkNotNull(boundary).javaClass.getDeclaredField("mediaTimeMillis")
-                    field.isAccessible = true
-                    field.getLong(boundary)
-                }.toSortedSet()
-            val drawn = times.map { time ->
-                now = time
-                ReflectionHelpers.callInstanceMethod<Unit>(controller, "armNextBoundary")
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                val pixels = hasVisiblePixels(overlay)
-                println("字幕表示 pts=$time visible=$pixels peakRGBA=$peak")
-                pixels
-            }
-            check(true in drawn)
+                queue
+                    .map { boundary ->
+                        val field = checkNotNull(boundary).javaClass.getDeclaredField("mediaTimeMillis")
+                        field.isAccessible = true
+                        field.getLong(boundary)
+                    }.toSortedSet()
+            val drawn =
+                times.map { time ->
+                    now = time
+                    ReflectionHelpers.callInstanceMethod<Unit>(controller, "armNextBoundary")
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    val pixels = visiblePixelHash(overlay)
+                    println("字幕表示 pts=$time pixelHash=$pixels peakRGBA=$peak")
+                    checkNotNull(pixels)
+                }
+            check(drawn.size == frames.size && drawn.toSet().size == frames.size)
             check(queue.isEmpty() && diagnostics.isEmpty())
         }
         // 終端の製品Clearで同じOverlayの画素を消す。
         Shadows.shadowOf(Looper.getMainLooper()).idle()
-        check(!hasVisiblePixels(overlay))
+        val afterClear = visiblePixelHash(overlay)
+        println("字幕Clear pts=$now pixelHash=$afterClear")
+        check(afterClear == null)
     }
 
-    private fun hasVisiblePixels(overlay: CaptionOverlayView): Boolean {
+    private fun visiblePixelHash(overlay: CaptionOverlayView): Int? {
         val bitmap = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
         try {
             overlay.draw(Canvas(bitmap))
             val pixels = IntArray(WIDTH * HEIGHT)
             bitmap.getPixels(pixels, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
-            return pixels.any { it ushr 24 != 0 }
+            return pixels.contentHashCode().takeIf { pixels.any { it ushr 24 != 0 } }
         } finally {
             bitmap.recycle()
         }

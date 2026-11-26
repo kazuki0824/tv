@@ -216,6 +216,9 @@ jobs:
               if name == "RealTsHalSiIntegrationTest":
                   assert {case.get("name") for case in cases} == {"realTsProducesServiceAndProgramFacts", "realTsBurstLossAndRetransmissionStayWithinCandidate"}, name
               print(f"{name}: {len(cases)} passed")
+              if name == "RealTsCaptionFactTest":
+                  caption_metrics = (suite.findtext("system-out") or "").splitlines()
+                  print("\n".join(line for line in caption_metrics if line.startswith(("字幕受付", "字幕表示", "字幕Clear"))))
           PYRESULT
 
       - name: 試験結果とHAL診断を保存
