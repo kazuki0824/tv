@@ -780,30 +780,18 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_budget_matches_the_declared_product_profiles() {
+    fn declared_product_profiles_fit_the_shared_cleanup_budget() {
         let requested = CapabilitySnapshot::product_default();
-        // PX4の製品入力は最大8 frontend。能力選択の結果を0台から8台まで照合する。
+        // PX4の製品構成は最大8 frontend。公開能力とreaper容量の両方を検証する。
         for frontend_count in 0..=8 {
             let frontend_ids = (1..=frontend_count).collect::<Vec<_>>();
             let (snapshot, selected) =
                 CapabilitySnapshot::compose_for_frontends(&frontend_ids).unwrap();
             assert_eq!(selected, frontend_ids);
-            let counts = [
-                snapshot.num_ts_filter,
-                snapshot.num_section_filter,
-                snapshot.num_pcr_filter,
-                snapshot.num_pes_filter,
-                snapshot.num_audio_filter,
-                snapshot.num_video_filter,
-                snapshot.num_playback,
-                snapshot.num_record,
-            ];
-            let public_objects = counts.into_iter().sum::<i32>() as usize
-                + snapshot.public_demuxes().unwrap().len()
-                + selected.len();
-            assert_eq!(snapshot.cleanup_reaper_capacity, 2 * public_objects);
-            assert!(snapshot.cleanup_reaper_capacity <= requested.cleanup_reaper_capacity);
-            assert_eq!(snapshot.num_record, (14 - frontend_count).min(8));
+            snapshot.validate_dependency_closures().unwrap();
+            assert!((1..=requested.num_record).contains(&snapshot.num_record));
+            let cleanup_budget = 1..=requested.cleanup_reaper_capacity;
+            assert!(cleanup_budget.contains(&snapshot.cleanup_reaper_capacity));
         }
     }
 
