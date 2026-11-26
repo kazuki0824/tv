@@ -2394,20 +2394,26 @@ class PlaybackFilterAdmissionTest {
             assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > started.generation)
             drainRouteAudioNotifications(session)
             assertNull(ReflectionHelpers.getField<AudioTrack?>(fixture.pipeline, "audioTrack"))
+            assertFalse("選択:$sub" in callbacks, callbacks.toString())
+            val outputBoundary = callbacks.size
             callbacks += "新出力"
             val replacement = fixture.deliverRoutePcmFormat(channels)
             assertTrue(previous !== replacement)
             drainRouteAudioNotifications(session)
 
-            val expected = if (channels == 2) sub else physical
-            val publication =
-                callbacks.indexOfLast { it.startsWith("一覧:") && expected in it.removePrefix("一覧:").split(",") }
-            val selectionNotice = callbacks.indexOfLast { it == "選択:$expected" }
+            val publication = callbacks.indexOfLast { it.startsWith("一覧:") }
+            val selectionNotice = callbacks.indexOfLast { it.startsWith("選択:") }
             assertTrue(publication >= 0 && selectionNotice > publication, callbacks.toString())
+            val expected = if (channels == 2) sub else physical
+            assertEquals("選択:$expected", callbacks[selectionNotice])
+            val published = callbacks[publication].removePrefix("一覧:").split(",")
             val modes = Shadow.extract<DualMonoAudioTrack>(replacement).modes
             if (channels == 2) {
+                assertTrue(publication > outputBoundary, callbacks.toString())
+                assertTrue(sub in published)
                 assertEquals(AudioTrack.DUAL_MONO_MODE_RR, modes.last())
             } else {
+                assertEquals(listOf(physical), published)
                 assertTrue(AudioTrack.DUAL_MONO_MODE_RR !in modes)
                 assertTrue("選択:$sub" !in callbacks)
             }
