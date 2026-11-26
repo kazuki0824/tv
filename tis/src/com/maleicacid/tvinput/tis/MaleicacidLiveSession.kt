@@ -1234,7 +1234,8 @@ class MaleicacidLiveSession(
     private fun updatePlaybackStartState(next: PlaybackStartState) {
         val previousGeneration = PlaybackStartTransitions.pipelineGeneration(playbackState)
         playbackState = next
-        if (previousGeneration != PlaybackStartTransitions.pipelineGeneration(next) || next is PlaybackStartState.Failed) {
+        val generationChanged = previousGeneration != PlaybackStartTransitions.pipelineGeneration(next)
+        if (generationChanged || next is PlaybackStartState.Failed) {
             refreshPublishedAudioSelection()
         }
         if (next is PlaybackStartState.Failed) {

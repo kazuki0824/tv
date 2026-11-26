@@ -2598,9 +2598,7 @@ class PlaybackPipeline(
                 }.getOrNull() ?: return
             if (!current()) return
             // 実入力から確認した配置が推定ASCと異なる場合、既存の構成経路で作り直す。
-            if (configuredFrontPair != null && value.frontPair != null &&
-                value.frontPair != configuredFrontPair && stream.codecFacts.audioConfigHex == null
-            ) {
+            if (changedInBandLayout(value.frontPair)) {
                 restartCurrentPlaybackGeneration(generation)
                 return
             }
@@ -2614,6 +2612,11 @@ class PlaybackPipeline(
             aacDualMono = fact
             reconcilePresentation()
             onAudioPresentationChanged(generation)
+        }
+
+        private fun changedInBandLayout(pair: Int?): Boolean {
+            val configured = configuredFrontPair ?: return false
+            return pair != null && pair != configured && stream.codecFacts.audioConfigHex == null
         }
 
         fun presentationOutput(
