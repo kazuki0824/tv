@@ -2758,7 +2758,8 @@ class PlaybackPipeline(
                     startupAacFormat = null
                     CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
                         ?: inherited?.takeIf { format ->
-                            aacAsc(format)?.let { NativeAribSiParser.matchesInheritedAacConfiguration(bytes, it) } == true
+                            val asc = aacAsc(format)
+                            asc != null && NativeAribSiParser.matchesInheritedAacConfiguration(bytes, asc)
                         }
                 }
 

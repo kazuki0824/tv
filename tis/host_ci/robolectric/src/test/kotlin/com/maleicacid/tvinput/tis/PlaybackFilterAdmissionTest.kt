@@ -1929,6 +1929,8 @@ class PlaybackFilterAdmissionTest {
 
             val asc3 = hex("118004c40400200000")
             val asc4 = hex("118004c40400211000")
+            assertFalse(NativeAribSiParser.matchesInheritedAacConfiguration(noPce3, asc4))
+            assertFalse(NativeAribSiParser.matchesInheritedAacConfiguration(noPce4, asc3))
             val transitions =
                 listOf(
                     Triple(stereo32, byteArrayOf(0x12, 0x90.toByte()), stereo32),
@@ -1978,7 +1980,8 @@ class PlaybackFilterAdmissionTest {
             val routedCodec = configuredCodec(asc4)
             assertTrue(routedCodec !== codec)
             supplyCodecInputs(routedCodec, 2)
-            verifyAacOutputWithoutRepeatedPce(fixture, routedCodec, fixture.pipeline.currentPlaybackGenerationForTest(), pce4, noPce4)
+            val routedGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
+            verifyAacOutputWithoutRepeatedPce(fixture, routedCodec, routedGeneration, pce4, noPce4)
         }
     }
 
@@ -2003,7 +2006,8 @@ class PlaybackFilterAdmissionTest {
             fixture.invoke("observeAudioRouting", track, generation)
         }
         Shadow.extract<DualMonoAudioTrack>(track).route = routeDevice(2)
-        val listener = ReflectionHelpers.getField<AudioRouting.OnRoutingChangedListener>(fixture.pipeline, "audioRoutingListener")
+        val listener =
+            ReflectionHelpers.getField<AudioRouting.OnRoutingChangedListener>(fixture.pipeline, "audioRoutingListener")
         listener.onRoutingChanged(track)
         fixture.drain()
     }
