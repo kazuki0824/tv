@@ -189,7 +189,8 @@ class RealTsHalSiIntegrationTest {
         val resume = CountDownLatch(1)
         owner.executeControl {
             entered.countDown()
-            check(resume.await(5, TimeUnit.SECONDS))
+            // 配送側がfinallyで解除するまではSectionを消費しない。
+            resume.await()
         }
         try {
             check(entered.await(5, TimeUnit.SECONDS))
