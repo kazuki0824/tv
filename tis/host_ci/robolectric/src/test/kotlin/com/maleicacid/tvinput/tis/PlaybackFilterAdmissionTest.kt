@@ -2363,8 +2363,8 @@ class PlaybackFilterAdmissionTest {
     private fun checkRoutingRestart(channels: Int) {
         Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
             val selection = fixture.audioSelection().copy(video = null)
-            val channel =
-                ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel").copy(serviceType = 2)
+            val activeChannel = ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel")
+            val channel = activeChannel.copy(serviceType = 2)
             val session = fixture.audioSession(selection, selection, connectNotifications = true)
             val physical = TunerSelectionPolicy.trackIdForAudio(requireNotNull(selection.audio))
             val sub = "$physical:sub"
@@ -2378,7 +2378,8 @@ class PlaybackFilterAdmissionTest {
             assertTrue(fixture.selectAudio(session, sub))
             drainRouteAudioNotifications(session)
             assertEquals("選択:$sub", callbacks.last())
-            val listener = ReflectionHelpers.getField<AudioRouting.OnRoutingChangedListener>(fixture.pipeline, "audioRoutingListener")
+            val listener =
+                ReflectionHelpers.getField<AudioRouting.OnRoutingChangedListener>(fixture.pipeline, "audioRoutingListener")
             val nativeTrack = Shadow.extract<DualMonoAudioTrack>(previous)
 
             nativeTrack.route = routeDevice(1)
@@ -2399,7 +2400,8 @@ class PlaybackFilterAdmissionTest {
             drainRouteAudioNotifications(session)
 
             val expected = if (channels == 2) sub else physical
-            val publication = callbacks.indexOfLast { it.startsWith("一覧:") && expected in it.removePrefix("一覧:").split(",") }
+            val publication =
+                callbacks.indexOfLast { it.startsWith("一覧:") && expected in it.removePrefix("一覧:").split(",") }
             val selectionNotice = callbacks.indexOfLast { it == "選択:$expected" }
             assertTrue(publication >= 0 && selectionNotice > publication, callbacks.toString())
             val modes = Shadow.extract<DualMonoAudioTrack>(replacement).modes
@@ -2434,11 +2436,15 @@ class PlaybackFilterAdmissionTest {
             java.lang.reflect.Proxy.newProxyInstance(callbackType.classLoader, arrayOf(callbackType)) { _, method, args ->
                 when (method.name) {
                     "onTracksChanged" -> {
-                        val ids = (args!![0] as List<*>).filterIsInstance<TvTrackInfo>()
-                            .filter { it.type == TvTrackInfo.TYPE_AUDIO }.map { it.id }
+                        val ids =
+                            (args!![0] as List<*>)
+                                .filterIsInstance<TvTrackInfo>()
+                                .filter { it.type == TvTrackInfo.TYPE_AUDIO }
+                                .map { it.id }
                         if (sub in ids && "新出力" in events) {
                             val track = ReflectionHelpers.getField<AudioTrack>(pipeline, "audioTrack")
-                            assertEquals(AudioTrack.DUAL_MONO_MODE_RR, Shadow.extract<DualMonoAudioTrack>(track).modes.last())
+                            val nativeTrack = Shadow.extract<DualMonoAudioTrack>(track)
+                            assertEquals(AudioTrack.DUAL_MONO_MODE_RR, nativeTrack.modes.last())
                         }
                         events += "一覧:${ids.joinToString(",")}"
                     }
