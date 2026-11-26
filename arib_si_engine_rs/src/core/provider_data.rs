@@ -697,15 +697,7 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
                 });
             if language.is_some() && description_language(&previous) == language {
                 if let Some(old) = existing_description {
-                    let supplements = description_supplements(&previous);
-                    let suffix = supplements.join("\n");
-                    retained_details = if suffix.is_empty() {
-                        Some(old)
-                    } else if old == suffix {
-                        Some(String::new())
-                    } else {
-                        old.strip_suffix(&format!("\n{suffix}")).map(str::to_owned)
-                    };
+                    retained_details = retained_standard_details(&previous, &old);
                 }
             }
             data.extended_texts = previous.extended_texts;
@@ -728,6 +720,57 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
         result.merged_description = description;
     }
     result
+}
+
+fn retained_standard_details(previous: &ProgramProviderDataV1, old: &str) -> Option<String> {
+    let mut supplements = description_supplements(previous);
+    if previous.diagnostics.provider_data_truncated == Some(true) && !previous.genres.is_empty() {
+        restore_shortened_genre_supplement(previous, old, &mut supplements);
+    }
+    strip_description_supplements(old, &supplements).map(str::to_owned)
+}
+
+fn restore_shortened_genre_supplement(
+    previous: &ProgramProviderDataV1,
+    old: &str,
+    supplements: &mut Vec<String>,
+) {
+    // 上限処理はジャンル名をUTF-8の末尾から短縮する。標準列の同じ行だけを
+    // 旧BLOBの件数と各名称の前方一致で照合し、本文と他の補足はそのまま扱う。
+    let end = supplements.len() - usize::from(previous.free_ca_mode.is_some());
+    let Some(genre_line) = strip_description_supplements(old, &supplements[end..])
+        .and_then(|without_ca| without_ca.rsplit('\n').next())
+    else {
+        return;
+    };
+    let Some(names) = genre_line.strip_prefix("ジャンル: ") else {
+        return;
+    };
+    let mut stored_names = previous.genres.iter().map(|genre| genre.arib_name.as_str());
+    for name in names.split('、') {
+        if !stored_names.next().is_some_and(|stored| name.starts_with(stored)) {
+            return;
+        }
+    }
+    if stored_names.next().is_some() {
+        return;
+    }
+    if end > 0 && supplements[end - 1].starts_with("ジャンル: ") {
+        supplements[end - 1] = genre_line.to_owned();
+    } else {
+        supplements.insert(end, genre_line.to_owned());
+    }
+}
+
+fn strip_description_supplements<'a>(description: &'a str, supplements: &[String]) -> Option<&'a str> {
+    let suffix = supplements.join("\n");
+    if suffix.is_empty() {
+        Some(description)
+    } else if description == suffix {
+        Some("")
+    } else {
+        description.strip_suffix(&format!("\n{suffix}"))
+    }
 }
 
 fn description_language(data: &ProgramProviderDataV1) -> Option<&str> {
@@ -1856,6 +1899,42 @@ mod provider_data_tests {
         stored.as_object_mut().unwrap().remove("extendedTexts");
 
         assert!(extract_program_key_result(stored.to_string().as_bytes()).is_none());
+    }
+
+    #[test]
+    fn basic_updates_remove_a_shortened_genre_without_losing_details() {
+        let mut basic = minimal_program_request_value();
+        basic["shortEvents"] = serde_json::json!([
+            {"parseStatus":"OK", "languageCode":"jpn","title":"番組", "text":"基本"}
+        ]);
+        let mut initial = basic.clone();
+        let genre_name = "報道".repeat(HARD_LIMIT_BYTES / "報道".len());
+        initial["genres"] = serde_json::json!([
+            {"parseStatus":"OK","level1":0,"level2":0,"userNibble":0,"aribName":genre_name}
+        ]);
+        initial["extendedItems"] = serde_json::json!([
+            {"parseStatus":"OK","languageCode":"jpn","description":"項","text":"目"}
+        ]);
+        let first = build_program_provider_data(&initial.to_string());
+        assert!(first.success && first.truncated);
+        let stored: serde_json::Value = serde_json::from_str(&first.json).unwrap();
+        let shortened = stored["genres"][0]["aribName"].as_str().unwrap();
+        assert!(shortened.len() < genre_name.len() && genre_name.starts_with(shortened));
+        assert_eq!(stored["extendedItems"], serde_json::json!([]));
+        basic["existing"] = stored;
+        basic["existingDescription"] =
+            serde_json::json!(format!("【項】目\nジャンル: {genre_name}\n放送種別: 無料放送"));
+        for version in [13, 14] {
+            basic["source"]["version"] = serde_json::json!(version);
+            let merged = build_program_provider_data(&basic.to_string());
+            assert!(merged.success && !merged.truncated);
+            assert_eq!(
+                merged.merged_description.as_deref(),
+                Some("【項】目\n放送種別: 無料放送")
+            );
+            basic["existing"] = serde_json::from_str(&merged.json).unwrap();
+            basic["existingDescription"] = serde_json::json!(merged.merged_description);
+        }
     }
 
     #[test]
