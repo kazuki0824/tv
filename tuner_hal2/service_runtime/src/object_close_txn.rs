@@ -2374,8 +2374,43 @@ mod tests {
         reaper
             .wait_until_released(all_keys.each_ref(), Duration::from_secs(10))
             .unwrap();
+        for _ in keys.len()..all_keys.len() {
+            let finished = finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!([next_demux, next_dvr, next_filter].contains(&finished));
+        }
+        // 同じ親でRecord DVRを再取得する。完了済みの2世代が両laneに残る間に
+        // 3世代目のcloseも受付できるので、2世代は種類ごとの実行時上限ではない。
+        let first_dvr = enqueue_close(open_dvr(), AidlMethodCall::DvrClose);
+        assert_eq!(
+            finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            first_dvr
+        );
+        let second_dvr = enqueue_close(open_dvr(), AidlMethodCall::DvrClose);
+        assert_eq!(
+            finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            second_dvr
+        );
+        let third_dvr = enqueue_close(open_dvr(), AidlMethodCall::DvrClose);
+        let triple = [first_dvr, second_dvr, third_dvr];
+        assert_ne!(first_dvr, second_dvr);
+        assert_ne!(second_dvr, third_dvr);
+        assert_ne!(first_dvr, third_dvr);
+        for key in triple {
+            assert!(reaper.pending_value(&key).unwrap().is_some());
+        }
+        for _ in triple {
+            resume_tx.send(()).unwrap();
+        }
+        assert_eq!(
+            finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            third_dvr
+        );
+        reaper
+            .wait_until_released(triple.each_ref(), Duration::from_secs(10))
+            .unwrap();
+
         let runtime = runtime.lock().unwrap();
-        for key in all_keys {
+        for key in all_keys.into_iter().chain(triple) {
             assert!(reaper.pending_value(&key).unwrap().is_none());
             assert_eq!(
                 runtime.object_table().entry(key.0).unwrap().lifecycle,

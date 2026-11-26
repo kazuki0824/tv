@@ -2172,8 +2172,11 @@ class PlaybackFilterAdmissionTest {
                 native.outputBlock = block
                 val callbackHandler = ReflectionHelpers.getField<Handler>(fixture.pipeline, "codecCallbackHandler")
 
+                var ptsUs = 0L
+
                 fun produce(index: Int) {
-                    val info = MediaCodec.BufferInfo().apply { set(0, size, index * 20_000L, 0) }
+                    val info = MediaCodec.BufferInfo().apply { set(0, size, ptsUs, 0) }
+                    ptsUs += 20_000L
                     postCodecCallback(codec, 2, index, info)
                 }
 
@@ -2184,10 +2187,30 @@ class PlaybackFilterAdmissionTest {
                     fixture.drain()
                 }
 
+                ShadowLog.clear()
+                // MediaSyncの消費を3回のバーストの各終端まで遅らせる。
+                repeat(3) { burst ->
+                    repeat(8) { produce(accepted + 2 + burst * 8 + it) }
+                    drainCallbacks()
+                    val ids = pcm.queued.toList()
+                    assertEquals(8, ids.size)
+                    fixture.executor.callControl(5_000L) {
+                        ids.forEach { fixture.invoke("onAudioBufferConsumedOnPlaybackExecutor", sync, 7L, it) }
+                    }
+                    assertEquals(8, native.releasedIndexes.size)
+                    native.releasedIndexes.clear()
+                    pcm.queued.clear()
+                }
+
                 repeat(accepted + 1, ::produce)
                 drainCallbacks()
                 assertEquals(accepted, pcm.queued.size)
                 assertEquals(listOf(accepted), native.releasedIndexes)
+                val rejection =
+                    ShadowLog.getLogsForTag(LogTags.TIS).single { it.msg.startsWith("PLAYBACK_PCM_OUTPUT_BUDGET_REJECT ") }.msg
+                assertTrue("generation=7 " in rejection && "ptsUs=${ptsUs - 20_000L} " in rejection)
+                assertTrue("outstandingCount=$accepted outstandingBytes=${accepted.toLong() * size} " in rejection)
+                assertTrue("deadlineReached=false" in rejection)
 
                 val firstId = pcm.queued.first()
                 fixture.executor.callControl(5_000L) {

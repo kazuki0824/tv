@@ -2625,7 +2625,7 @@ class PlaybackPipeline(
                 Log.w(
                     LogTags.TIS,
                     "PLAYBACK_PCM_OUTPUT_BUDGET_REJECT sessionId=$sessionId generation=$generation " +
-                        "rejectCount=$pcmOutputBudgetRejections incomingBytes=${info.size} " +
+                        "rejectCount=$pcmOutputBudgetRejections ptsUs=${info.presentationTimeUs} incomingBytes=${info.size} " +
                         "outstandingCount=${outstandingAudioOutputs.size} " +
                         "outstandingBytes=${outstandingAudioOutputs.values.sumOf { it.size.toLong() }} " +
                         "limitCount=${budget.pending.maxSamples} limitBytes=${budget.pending.maxBytes} " +
