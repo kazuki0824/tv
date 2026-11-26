@@ -345,7 +345,8 @@ class NativeAribSiParser : AutoCloseable {
 
         @JvmStatic private external fun probeDualMono(frame: ByteArray): AacFramePresentationDto?
 
-        internal fun adtsPresentation(frame: ByteArray): AacFramePresentationDto? = probeDualMono(frame)
+        internal fun adtsPresentation(frame: ByteArray): AacFramePresentationDto =
+            probeDualMono(frame) ?: throw NativeSiException("JNI_OUTPUT", "JNIがAACフレーム判定を返しませんでした")
 
         @JvmStatic private external fun nativeProbeAacConfiguration(
             adts: ByteArray,

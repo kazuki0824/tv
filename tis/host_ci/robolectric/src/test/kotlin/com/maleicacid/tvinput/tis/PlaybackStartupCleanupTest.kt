@@ -205,6 +205,13 @@ class PlaybackStartupCleanupTest {
         ) = Unit
 
         @Implementation
+        fun queueAudio(
+            buffer: java.nio.ByteBuffer,
+            bufferId: Int,
+            presentationTimeUs: Long,
+        ) = Unit
+
+        @Implementation
         fun flush() = Unit
 
         @Implementation

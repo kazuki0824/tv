@@ -929,18 +929,21 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_pro
     _class: JClass<'_>,
     frame: JByteArray<'_>,
 ) -> jobject {
-    let bytes = match bounded_codec_bytes(&mut env, &frame, 8191) {
-        Ok(bytes) => bytes,
-        Err(CodecInputFailure::TooLarge) => return std::ptr::null_mut(),
+    use maleicacid_arib_si_engine_core::codec_probe_dto::{
+        AacFramePresentationDto, AacProbeStatusDto,
+    };
+    let value = match bounded_codec_bytes(&mut env, &frame, 8191) {
+        Ok(bytes) => {
+            maleicacid_arib_si_engine_core::codec_signaling::frame_presentation_dto(&bytes)
+        }
+        Err(CodecInputFailure::TooLarge) => AacFramePresentationDto::unresolved(
+            AacProbeStatusDto::Invalid,
+            Some("ADTS入力が8191 byteを超えています"),
+        ),
         Err(CodecInputFailure::Jni(error)) => {
             return throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error))
                 as jobject
         }
-    };
-    let Some(value) =
-        maleicacid_arib_si_engine_core::codec_signaling::frame_presentation_dto(&bytes)
-    else {
-        return std::ptr::null_mut();
     };
     match jvm_snapshot_generated::aac_frame_to_java(&mut env, &value) {
         Ok(value) => value.into_raw(),

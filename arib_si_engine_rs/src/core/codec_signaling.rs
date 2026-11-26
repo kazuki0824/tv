@@ -583,10 +583,26 @@ fn front_pair_key(frequency: u8, tags: [u8; 2]) -> i32 {
     ((0x900 | (i32::from(frequency) << 4)) << 8) | (i32::from(tags[0]) << 4) | i32::from(tags[1])
 }
 
-pub fn frame_presentation_dto(
-    frame: &[u8],
-) -> Option<crate::codec_probe_dto::AacFramePresentationDto> {
-    let configuration = i32::from(adts_configuration_key(frame)?);
+pub fn frame_presentation_dto(frame: &[u8]) -> crate::codec_probe_dto::AacFramePresentationDto {
+    use crate::codec_probe_dto::{AacFramePresentationDto, AacProbeStatusDto};
+    if frame.len() < 7 {
+        return AacFramePresentationDto::unresolved(AacProbeStatusDto::Pending, None);
+    }
+    let Some((declared_length, configuration)) = aac_elements::adts_frame_header(frame) else {
+        return AacFramePresentationDto::unresolved(
+            AacProbeStatusDto::Invalid,
+            Some("ADTSヘッダが不正です"),
+        );
+    };
+    if frame.len() < declared_length {
+        return AacFramePresentationDto::unresolved(AacProbeStatusDto::Pending, None);
+    }
+    if frame.len() != declared_length {
+        return AacFramePresentationDto::unresolved(
+            AacProbeStatusDto::Invalid,
+            Some("ADTSの宣言長が入力と一致しません"),
+        );
+    }
     let (dual_mono, front_pair, has_program_config) = match aac_elements::parse_frame(frame) {
         Some((AacPresentation::DualMono, tags, has_program_config)) => (
             Some(true),
@@ -598,12 +614,14 @@ pub fn frame_presentation_dto(
         }
         _ => (None, None, false),
     };
-    Some(crate::codec_probe_dto::AacFramePresentationDto {
-        configuration,
+    AacFramePresentationDto {
+        status: AacProbeStatusDto::Ready,
+        reason: None,
+        configuration: Some(i32::from(configuration)),
         dual_mono,
         front_pair,
         has_program_config,
-    })
+    }
 }
 
 pub use aac_elements::{adts_configuration_key, adts_presentation, AacPresentation};

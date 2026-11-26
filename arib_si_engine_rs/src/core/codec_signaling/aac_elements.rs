@@ -9,18 +9,23 @@ pub enum AacPresentation {
 }
 
 /// 完全フレームで確認できたMPEG ID、profile、周波数、チャンネル構成の同一性。
-pub fn adts_configuration_key(frame: &[u8]) -> Option<u16> {
+pub(super) fn adts_frame_header(frame: &[u8]) -> Option<(usize, u16)> {
     let h = frame.get(..7)?;
     let size = ((h[3] as usize & 3) << 11) | ((h[4] as usize) << 3) | (h[5] as usize >> 5);
     if h[0] != 255
         || h[1] & 0xf6 != 0xf0
-        || size != frame.len()
         || size <= if h[1] & 1 == 0 { 9 } else { 7 }
         || (h[2] >> 2) & 15 >= 13
     {
         return None;
     }
-    Some((u16::from(h[1] & 8) << 8) | (u16::from(h[2] & 0xfd) << 2) | u16::from(h[3] >> 6))
+    let key = (u16::from(h[1] & 8) << 8) | (u16::from(h[2] & 0xfd) << 2) | u16::from(h[3] >> 6);
+    Some((size, key))
+}
+
+pub fn adts_configuration_key(frame: &[u8]) -> Option<u16> {
+    let (size, key) = adts_frame_header(frame)?;
+    (size == frame.len()).then_some(key)
 }
 
 pub fn adts_presentation(frame: &[u8]) -> AacPresentation {
@@ -407,9 +412,7 @@ mod tests {
             .collect();
         assert_eq!(
             crate::codec_signaling::configured_front_pair(&asc),
-            crate::codec_signaling::frame_presentation_dto(dual)
-                .unwrap()
-                .front_pair
+            crate::codec_signaling::frame_presentation_dto(dual).front_pair
         );
         let mut reversed = asc.clone();
         // 入力のタグ順に対応しないPCEを識別する。

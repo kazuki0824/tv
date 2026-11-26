@@ -244,19 +244,34 @@ pub(super) fn aac_frame_to_java<'local>(
     env: &mut JNIEnv<'local>,
     value: &AacFramePresentationDto,
 ) -> Result<JObject<'local>, SiJniFailure> {
+    let status = generated_enum(
+        env,
+        "AacProbeStatusDto",
+        aac_probe_status_variant(&value.status),
+    )?;
+    let reason = optional_string_object(env, value.reason.as_deref())?;
+    let configuration = boxed_int(env, value.configuration)?;
     let fact = boxed_bool(env, value.dual_mono)?;
     let pair = boxed_int(env, value.front_pair)?;
-    new_generated(
+    let result = new_generated(
         env,
         "AacFramePresentationDto",
-        "(ILjava/lang/Boolean;Ljava/lang/Integer;Z)V",
+        "(Lcom/maleicacid/tvinput/aribsi/generated/AacProbeStatusDto;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Boolean;Ljava/lang/Integer;Z)V",
         &[
-            JValue::Int(value.configuration),
+            JValue::Object(&status),
+            JValue::Object(&reason),
+            JValue::Object(&configuration),
             JValue::Object(&fact),
             JValue::Object(&pair),
             JValue::Bool(u8::from(value.has_program_config)),
         ],
-    )
+    );
+    for object in [status, reason, configuration, fact, pair] {
+        if !object.is_null() {
+            jni_result(env.delete_local_ref(object))?;
+        }
+    }
+    result
 }
 
 pub(super) fn aac_probe_to_java<'local>(

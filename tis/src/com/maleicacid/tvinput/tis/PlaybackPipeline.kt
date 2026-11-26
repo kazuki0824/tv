@@ -29,6 +29,10 @@ import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribAvcSignaling
 import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.NativeAribSiParser
+import com.maleicacid.tvinput.aribsi.NativeSiException
+import com.maleicacid.tvinput.aribsi.generated.AacFramePresentationDto
+import com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto
 import com.maleicacid.tvinput.common.CaptionTimestamp
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
@@ -659,6 +663,7 @@ class PlaybackPipeline(
         tuner: Tuner,
         channel: TunerController.ResolvedChannel,
         selection: TunerController.AvStreamSelection,
+        restartAacFormat: MediaFormat? = null,
     ): StartResult {
         // 障害後の停止完了通知から来た通常startでは、旧世代を二重に停止しない。
         if (hasActivePlaybackResources()) stopOnPlaybackExecutor()
@@ -738,7 +743,7 @@ class PlaybackPipeline(
                     startGeneration,
                 ) { reason, detail ->
                     if (startGeneration == playbackGeneration) handleAudioFailure(reason, detail, audioOnly)
-                }
+                }.apply { setStartupAacFormat(restartAacFormat) }
         }
 
         if (video != null && videoDecoderLocal != null) {
@@ -1529,15 +1534,21 @@ class PlaybackPipeline(
         track.addOnRoutingChangedListener(listener, codecCallbackHandler)
     }
 
+    private fun restartCurrentPlaybackGeneration(originGeneration: Long): Boolean =
+        restartPlaybackWithAacFormat(originGeneration, restartAacFormat = null)
+
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
-    private fun restartCurrentPlaybackGeneration(originGeneration: Long): Boolean {
+    private fun restartPlaybackWithAacFormat(
+        originGeneration: Long,
+        restartAacFormat: MediaFormat?,
+    ): Boolean {
         if (originGeneration != playbackGeneration) return false
         val tuner = activeTuner ?: return false
         val channel = activeChannel ?: return false
         val selection = activeSelection ?: return false
         completePlaybackFailureAction(originGeneration, onVideoUnavailable) {
-            val restarted = startOnPlaybackExecutor(tuner, channel, selection)
+            val restarted = startOnPlaybackExecutor(tuner, channel, selection, restartAacFormat)
             onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted))
         }
         return true
@@ -2552,18 +2563,28 @@ class PlaybackPipeline(
         private var aacDualMono: Boolean? = null
         private var aacInputCurrent: (() -> Boolean)? = null
         private var independentStereo = false
+        private var startupAacFormat: MediaFormat? = null
         private var configuredAacAsc: ByteArray? = null
         private var configuredFrontPair: Int? = null
         private var receivedFrontPair: Int? = null
         private var appliedPresentation: DualMonoPresentation? = null
         private var selectable = false
 
+        fun setStartupAacFormat(format: MediaFormat?) {
+            startupAacFormat = format
+        }
+
         fun invalidateAudioInput() {
+            startupAacFormat = null
+            clearReceivedAacPresentation()
+            onAudioPresentationChanged(generation)
+        }
+
+        private fun clearReceivedAacPresentation() {
             aacConfiguration = null
             receivedFrontPair = null
             aacDualMono = null
             aacInputCurrent = null
-            onAudioPresentationChanged(generation)
         }
 
         fun changePresentationInput(
@@ -2597,47 +2618,67 @@ class PlaybackPipeline(
                     mapped.get(bytes)
                     bytes
                 }.getOrNull() ?: return
-            val value =
-                runCatching {
-                    com.maleicacid.tvinput.aribsi.NativeAribSiParser
-                        .adtsPresentation(bytes)
-                }.getOrNull() ?: return
-            if (!current()) return
-            updateAacPresentation(bytes, value, current)
+            try {
+                val value = NativeAribSiParser.adtsPresentation(bytes)
+                if (current() && value.status == AacProbeStatusDto.Ready) {
+                    updateAacPresentation(bytes, value, current)
+                }
+            } catch (error: NativeSiException) {
+                if (current()) reportAacPresentationFailure(error)
+            }
+        }
+
+        private fun reportAacPresentationFailure(error: NativeSiException) {
+            Log.w(
+                LogTags.TIS,
+                "PLAYBACK_AAC_PRESENTATION_FAILED sessionId=$sessionId generation=$generation reason=${error.reason}",
+                error,
+            )
+            clearReceivedAacPresentation()
+            reconcilePresentation()
+            onAudioPresentationChanged(generation)
         }
 
         // 未判定入力では再生成せず、有効な入力のASCが設定済みASCと異なる場合だけ作り直す。
         private fun updateAacPresentation(
             bytes: ByteArray,
-            value: com.maleicacid.tvinput.aribsi.generated.AacFramePresentationDto,
+            value: AacFramePresentationDto,
             current: () -> Boolean,
         ) {
-            val sameConfiguration = aacConfiguration == value.configuration && aacInputCurrent?.invoke() == true
+            val configuration = checkNotNull(value.configuration)
+            val sameConfiguration = aacConfiguration == configuration && aacInputCurrent?.invoke() == true
             val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
             val pair = if (value.dualMono == null && sameConfiguration) receivedFrontPair else value.frontPair
             val samePresentation = sameConfiguration && aacDualMono == fact && receivedFrontPair == pair
             val recheckConfiguration = value.dualMono != null && (!samePresentation || value.hasProgramConfig)
-            val configurationChanged = recheckConfiguration && changedInBandAacConfiguration(bytes)
-            if (configurationChanged && restartCurrentPlaybackGeneration(generation)) {
-                return
-            }
+            if (recheckConfiguration && restartForInBandAacChange(bytes, current)) return
             if (samePresentation) return
             receivedFrontPair = pair
-            aacConfiguration = value.configuration
+            aacConfiguration = configuration
             aacInputCurrent = current
             aacDualMono = fact
             reconcilePresentation()
             onAudioPresentationChanged(generation)
         }
 
-        private fun changedInBandAacConfiguration(frame: ByteArray): Boolean {
-            val configured = configuredAacAsc
-            if (configured == null || stream.codecFacts.audioConfigHex != null) return false
-            val nextFormat = runCatching { formatFromBufferedHeader(frame) }.getOrNull()
-            val nextAsc = nextFormat?.let(::aacAsc)
-            return nextAsc != null && !nextAsc.contentEquals(configured) &&
-                !com.maleicacid.tvinput.aribsi.NativeAribSiParser
-                    .sameAacDecoderConfiguration(configured, nextAsc)
+        // 未設定・PMT優先・構成未確認では再生成しない。
+        @Suppress("ReturnCount")
+        private fun restartForInBandAacChange(
+            frame: ByteArray,
+            current: () -> Boolean,
+        ): Boolean {
+            val configured = configuredAacAsc ?: return false
+            if (stream.codecFacts.audioConfigHex != null || audioDecoder !== this) return false
+            val format =
+                try {
+                    CodecFormatPolicy.adtsAudioFormat(frame, stream.codecFacts, stream.codec)
+                } catch (_: UnsupportedCodecFormat) {
+                    null
+                }
+            val asc = format?.let(::aacAsc) ?: return false
+            val changed =
+                !asc.contentEquals(configured) && !NativeAribSiParser.sameAacDecoderConfiguration(configured, asc)
+            return changed && current() && restartPlaybackWithAacFormat(generation, format)
         }
 
         fun presentationOutput(
@@ -2709,8 +2750,14 @@ class PlaybackPipeline(
 
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? =
             when (kind) {
-                AudioCodecKind.AAC_ADTS -> CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
-                AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> EsHeaderParser.mpegAudioFormat(bytes)
+                AudioCodecKind.AAC_ADTS -> {
+                    startupAacFormat?.also { startupAacFormat = null }
+                        ?: CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
+                }
+
+                AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> {
+                    EsHeaderParser.mpegAudioFormat(bytes)
+                }
             }
 
         override fun onDecoderConfigured(format: MediaFormat) {

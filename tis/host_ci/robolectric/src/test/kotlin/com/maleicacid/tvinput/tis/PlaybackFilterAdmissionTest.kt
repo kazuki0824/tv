@@ -37,7 +37,11 @@ import android.os.Looper
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.NativeAribSiParser
+import com.maleicacid.tvinput.aribsi.NativeSiException
+import com.maleicacid.tvinput.aribsi.NativeSiFailureReason
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
+import com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
@@ -59,6 +63,7 @@ import org.robolectric.shadows.ShadowMediaCodec
 import org.robolectric.shadows.ShadowMediaCodecList
 import org.robolectric.shadows.ShadowSystemClock
 import org.robolectric.util.ReflectionHelpers
+import java.lang.reflect.InvocationTargetException
 import java.nio.ByteBuffer
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
@@ -67,6 +72,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -1861,6 +1867,11 @@ class PlaybackFilterAdmissionTest {
         val dual48WithComment = hex("fff84c000320047ca9a09900000002014100c8000016400038")
         val pce3 = hex("fff84c00036004799fa0988080040000206400019000000c800070")
         val pce4 = hex("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
+        // 同じ2/1、2/2のraw data blockから先頭PCEを除き、ADTS長とprotection_absentを合わせた入力。
+        val noPce3 = hex("fff94c00024004206400019000000c800070")
+        val noPce4 = hex("fff94c0002a00420640001900002264000190000e0")
+        verifyAacFrameWithoutPce(noPce3)
+        verifyAacFrameWithoutPce(noPce4)
         val stereoAsc = byteArrayOf(0x11, 0x90.toByte())
         val dualAsc =
             checkNotNull(
@@ -1916,16 +1927,21 @@ class PlaybackFilterAdmissionTest {
             assertTrue(filter === currentFilter() && codec === configuredCodec(stereoAsc))
             supplyCodecInputs(codec, 3)
 
+            val asc3 = hex("118004c40400200000")
+            val asc4 = hex("118004c40400211000")
             val transitions =
                 listOf(
-                    stereo32 to byteArrayOf(0x12, 0x90.toByte()),
-                    stereo48 to stereoAsc,
-                    dual48 to dualAsc,
-                    stereo48 to stereoAsc,
-                    pce3 to hex("118004c40400200000"),
-                    pce4 to hex("118004c40400211000"),
+                    Triple(stereo32, byteArrayOf(0x12, 0x90.toByte()), stereo32),
+                    Triple(stereo48, stereoAsc, stereo48),
+                    Triple(dual48, dualAsc, dual48),
+                    Triple(stereo48, stereoAsc, stereo48),
+                    Triple(pce3, asc3, pce3),
+                    Triple(pce4, asc4, pce4),
+                    Triple(dual48, dualAsc, dual48),
+                    Triple(pce3, asc3, noPce3),
+                    Triple(pce4, asc4, noPce4),
                 )
-            for ((frame, asc) in transitions) {
+            for ((frame, asc, followUp) in transitions) {
                 val previousGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
                 val oldCodec = Shadow.extract<NativeCodec>(codec)
                 val queuedBlock = checkNotNull(oldCodec.lastInputBlock)
@@ -1936,21 +1952,98 @@ class PlaybackFilterAdmissionTest {
                 assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > previousGeneration)
                 val nextFilter = currentFilter()
                 assertTrue(nextFilter !== filter)
-                feed(nextFilter, frame)
+                feed(nextFilter, followUp)
                 val nextCodec = configuredCodec(asc)
                 assertTrue(nextCodec !== codec)
                 val nextGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
                 val sameConfigurationFrames =
-                    if (frame === dual48) listOf(dual48WithComment, dual48, dual48WithComment) else listOf(frame)
+                    if (frame === dual48) listOf(dual48WithComment, dual48, dual48WithComment) else listOf(followUp)
                 for (sameFrame in sameConfigurationFrames) {
                     feed(nextFilter, sameFrame)
                     assertEquals(nextGeneration, fixture.pipeline.currentPlaybackGenerationForTest())
                     assertTrue(nextFilter === currentFilter() && nextCodec === configuredCodec(asc))
                 }
                 supplyCodecInputs(nextCodec, sameConfigurationFrames.size + 2)
+                verifyAacOutputWithoutRepeatedPce(fixture, nextCodec, nextGeneration, frame, followUp)
                 filter = nextFilter
                 codec = nextCodec
             }
+        }
+    }
+
+    private fun verifyAacFrameWithoutPce(frame: ByteArray) {
+        val fact = NativeAribSiParser.adtsPresentation(frame)
+        assertEquals(AacProbeStatusDto.Ready, fact.status)
+        assertEquals(false, fact.dualMono)
+        assertFalse(fact.hasProgramConfig)
+        assertNull(NativeAribSiParser.probeAacConfiguration(frame, null))
+    }
+
+    private fun verifyAacOutputWithoutRepeatedPce(
+        fixture: Fixture,
+        codec: MediaCodec,
+        generation: Long,
+        trigger: ByteArray,
+        followUp: ByteArray,
+    ) {
+        if (trigger === followUp) return
+        val nativeCodec = Shadow.extract<NativeCodec>(codec)
+        assertEquals(followUp.size, nativeCodec.lastInputSize)
+        val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+        Shadow.extract<NativeLinearBlock>(block).data = ByteArray(16)
+        nativeCodec.outputBlock = block
+        postCodecCallback(codec, 2, 0, MediaCodec.BufferInfo().apply { set(0, 16, 0L, 0) })
+        val outputDelivered = CountDownLatch(1)
+        ReflectionHelpers.getField<Handler>(fixture.pipeline, "codecCallbackHandler").post { outputDelivered.countDown() }
+        assertTrue(outputDelivered.await(5, TimeUnit.SECONDS))
+        fixture.drain()
+        val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+        val deadline = ReflectionHelpers.getField<DecoderStartupDeadline>(decoder, "startupDeadline")
+        assertTrue(deadline.firstOutputSeen)
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+        fixture.drain()
+        assertTrue(fixture.unavailable.isEmpty())
+        assertEquals(generation, fixture.pipeline.currentPlaybackGenerationForTest())
+    }
+
+    @Test
+    fun aacObservationDistinguishesPendingInvalidAndJniFailure() {
+        val dual = byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56)
+        assertEquals(AacProbeStatusDto.Pending, NativeAribSiParser.adtsPresentation(dual.copyOf(12)).status)
+        val tooLarge = NativeAribSiParser.adtsPresentation(ByteArray(8192))
+        assertEquals(AacProbeStatusDto.Invalid, tooLarge.status)
+        assertTrue(!tooLarge.reason.isNullOrEmpty())
+        assertEquals(AacProbeStatusDto.Invalid, NativeAribSiParser.adtsPresentation(ByteArray(8)).status)
+        val native = NativeAribSiParser::class.java.getDeclaredMethod("probeDualMono", ByteArray::class.java)
+        native.isAccessible = true
+        val failure =
+            assertFailsWith<InvocationTargetException> { native.invoke(null, null) }.cause as NativeSiException
+        assertEquals(NativeSiFailureReason.JNI_INPUT, failure.reason)
+
+        Fixture().use { fixture ->
+            fixture.decoder(audio = true, aac = true)
+            fixture.attachCodec(audio = true, dualAac = true)
+            val filter = fixture.avFilter(true)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+            for (bytes in listOf(dual, dual.copyOf(12))) {
+                val event = mediaEvent(bytes.size.toLong())
+                val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+                Shadow.extract<NativeLinearBlock>(block).data = bytes
+                Shadow.extract<NativeMediaEvent>(event).block = block
+                deliver(filter, event)
+                fixture.drain()
+                assertEquals(true, ReflectionHelpers.getField<Boolean?>(decoder, "aacDualMono"))
+            }
+            fixture.executor.callControl(5_000L) {
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    decoder,
+                    "reportAacPresentationFailure",
+                    ReflectionHelpers.ClassParameter.from(NativeSiException::class.java, failure),
+                )
+            }
+            assertNull(ReflectionHelpers.getField<Boolean?>(decoder, "aacDualMono"))
+            assertTrue(fixture.unavailable.isEmpty())
+            assertTrue(ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter") === filter)
         }
     }
 
@@ -1966,19 +2059,17 @@ class PlaybackFilterAdmissionTest {
                 true,
                 com.maleicacid.tvinput.aribsi.NativeAribSiParser
                     .adtsPresentation(dualFrame)
-                    ?.dualMono,
+                    .dualMono,
             )
             assertEquals(
                 false,
                 com.maleicacid.tvinput.aribsi.NativeAribSiParser
                     .adtsPresentation(stereoFrame)
-                    ?.dualMono,
+                    .dualMono,
             )
             assertEquals(
-                null,
-                com.maleicacid.tvinput.aribsi.NativeAribSiParser
-                    .adtsPresentation(dualFrame.copyOf(12))
-                    ?.dualMono,
+                AacProbeStatusDto.Pending,
+                NativeAribSiParser.adtsPresentation(dualFrame.copyOf(12)).status,
             )
             val malformed = dualFrame.copyOf().also { it[it.lastIndex] = 0 }
             val withPce =
@@ -2329,7 +2420,7 @@ class PlaybackFilterAdmissionTest {
             val changedFact =
                 com.maleicacid.tvinput.aribsi.NativeAribSiParser
                     .adtsPresentation(changed)
-            assertEquals(true, changedFact?.dualMono)
+            assertEquals(true, changedFact.dualMono)
             val discarded = feed(changed, otherFilter)
             assertEquals(1, Shadow.extract<NativeMediaEvent>(discarded).releases)
             val restart = restarts.single()
@@ -2605,14 +2696,14 @@ class PlaybackFilterAdmissionTest {
         withPce: ByteArray,
     ) {
         val parser = com.maleicacid.tvinput.aribsi.NativeAribSiParser
-        assertNull(requireNotNull(parser.adtsPresentation(malformed)).dualMono)
-        assertEquals(false, parser.adtsPresentation(stereo)?.dualMono)
+        assertNull(parser.adtsPresentation(malformed).dualMono)
+        assertEquals(false, parser.adtsPresentation(stereo).dualMono)
 
         val configuredStereo = requireNotNull(parser.probeAacConfiguration(stereo, null))
         assertNull(parser.frontPairForDecoder(configuredStereo.audioSpecificConfig))
         val signaledAsc = "118004c80000001000"
         for ((frame, asc) in listOf(dual to null, withPce to null, dual to signaledAsc)) {
-            val fact = requireNotNull(parser.adtsPresentation(frame))
+            val fact = parser.adtsPresentation(frame)
             val configured = requireNotNull(parser.probeAacConfiguration(frame, asc))
             assertEquals(true, fact.dualMono)
             assertEquals(2, configured.channelCount)
