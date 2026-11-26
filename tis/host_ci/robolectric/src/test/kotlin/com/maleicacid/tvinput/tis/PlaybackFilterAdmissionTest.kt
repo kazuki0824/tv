@@ -2025,6 +2025,85 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    @Suppress("LongMethod")
+    @Config(shadows = [PcmMediaSync::class])
+    @Test
+    fun audioOutputLimitsReturnRejectedConsumedAndStoppedIndexesOnce() {
+        for ((size, accepted) in listOf(4096 to 192, 128 * 1024 to 96)) {
+            Fixture().use { fixture ->
+                fixture.decoder(audio = true)
+                val codec = fixture.attachCodec(audio = true)
+                val native = Shadow.extract<NativeCodec>(codec)
+                val sync = MediaSync()
+                val pcm = Shadow.extract<PcmMediaSync>(sync)
+                ReflectionHelpers.setField(fixture.pipeline, "mediaSync", sync)
+                val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+                Shadow.extract<NativeLinearBlock>(block).data = ByteArray(size)
+                native.outputBlock = block
+                val callbackHandler = ReflectionHelpers.getField<Handler>(fixture.pipeline, "codecCallbackHandler")
+
+                fun produce(index: Int) {
+                    val info = MediaCodec.BufferInfo().apply { set(0, size, index * 20_000L, 0) }
+                    postCodecCallback(codec, 2, index, info)
+                }
+
+                fun drainCallbacks() {
+                    val delivered = CountDownLatch(1)
+                    callbackHandler.post { delivered.countDown() }
+                    assertTrue(delivered.await(5, TimeUnit.SECONDS))
+                    fixture.drain()
+                }
+
+                repeat(accepted + 1, ::produce)
+                drainCallbacks()
+                assertEquals(accepted, pcm.queued.size)
+                assertEquals(listOf(accepted), native.releasedIndexes)
+
+                val firstId = pcm.queued.first()
+                fixture.executor.callControl(5_000L) {
+                    repeat(2) {
+                        fixture.invoke("onAudioBufferConsumedOnPlaybackExecutor", sync, 7L, firstId)
+                    }
+                }
+                assertEquals(listOf(accepted, 0), native.releasedIndexes)
+                produce(accepted + 1)
+                drainCallbacks()
+                assertEquals(accepted + 1, pcm.queued.size)
+                assertEquals(listOf(accepted, 0), native.releasedIndexes)
+                fixture.pipeline.stop()
+                assertEquals((0..accepted + 1).toList(), native.releasedIndexes.sorted())
+            }
+        }
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    @Implements(MediaSync::class)
+    class PcmMediaSync {
+        val queued = mutableListOf<Int>()
+
+        @Implementation(methodName = "__constructor__")
+        private fun construct() = Unit
+
+        @Implementation
+        fun queueAudio(
+            buffer: ByteBuffer,
+            bufferId: Int,
+            presentationTimeUs: Long,
+        ) {
+            assertTrue(buffer.hasRemaining())
+            queued += bufferId
+        }
+
+        @Implementation
+        fun flush() = Unit
+
+        @Implementation
+        fun setSurface(surface: Surface?) = Unit
+
+        @Implementation
+        fun release() = Unit
+    }
+
     @Test
     fun earlyInputIndexReturnDoesNotReleaseSampleInsideNativeQueue() {
         Fixture().use { fixture ->
@@ -2991,6 +3070,19 @@ class PlaybackFilterAdmissionTest {
         var lastInputPtsUs = 0L
         var lastInputBlock: MediaCodec.LinearBlock? = null
         val outputReleased = CountDownLatch(1)
+        var outputBlock: MediaCodec.LinearBlock? = null
+        val releasedIndexes = mutableListOf<Int>()
+
+        @Implementation
+        fun getOutputFrame(index: Int): MediaCodec.OutputFrame =
+            ReflectionHelpers
+                .callConstructor(
+                    MediaCodec.OutputFrame::class.java,
+                    ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, index),
+                ).also {
+                    ReflectionHelpers.setField(it, "mAccessible", true)
+                    ReflectionHelpers.setField(it, "mLinearBlock", outputBlock)
+                }
         var onInputQueue: () -> Unit = {}
         var onOutputRelease: () -> Unit = {}
 
@@ -3032,6 +3124,7 @@ class PlaybackFilterAdmissionTest {
             index: Int,
             render: Boolean,
         ) {
+            releasedIndexes += index
             outputReleased.countDown()
         }
     }
