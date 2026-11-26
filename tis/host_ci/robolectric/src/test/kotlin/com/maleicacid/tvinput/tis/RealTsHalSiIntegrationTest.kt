@@ -111,9 +111,11 @@ class RealTsHalSiIntegrationTest {
                 val tuner = ReflectionHelpers.getField<TunerController>(scan, "tunerController")
                 val owner = ReflectionHelpers.getField<ControllerSerialExecutor>(tuner, "sectionExecutor")
                 val ingest = ReflectionHelpers.getField<SectionIngestController>(scan, "ingestController")
-                val fence = ReflectionHelpers.getField<ChannelScanController.ScanGenerationFence>(scan, "scanGenerationFence")
+                val fence =
+                    ReflectionHelpers.getField<ChannelScanController.ScanGenerationFence>(scan, "scanGenerationFence")
                 val active = ReflectionHelpers.getField<AtomicLong>(fence, "activeGeneration")
-                val result = FutureTask { scan.startInitialScan(listOf(TunerFrontendLeaseTransitionTest.terrestrial())) }
+                val candidate = TunerFrontendLeaseTransitionTest.terrestrial()
+                val result = FutureTask { scan.startInitialScan(listOf(candidate)) }
                 val scanThread = Thread(result, "real-ts-setup")
                 ShadowLog.clear()
                 scanThread.start()
@@ -130,7 +132,10 @@ class RealTsHalSiIntegrationTest {
                     val registrationTables = sections.filter { it.pid == 0 || it.pid == 16 || it.bytes[0].toInt() == 2 }
                     replay(tuner, owner, registrationTables.distinctBy { it.pid })
                     val setupRequirements =
-                        SiCollectionRequirements(ChannelScanController.PublishMode.SETUP_SCAN, SiDiscoveryProfile.ISDB_T)
+                        SiCollectionRequirements(
+                            ChannelScanController.PublishMode.SETUP_SCAN,
+                            SiDiscoveryProfile.ISDB_T,
+                        )
                     assertTrue(!setupRequirements.evaluate(engine.serviceRegistrationSnapshot()).complete)
                     assertEquals(generation, active.get())
 
@@ -149,7 +154,8 @@ class RealTsHalSiIntegrationTest {
                     assertTrue(provider.serviceIds.contains(1048))
                     val collection =
                         ShadowLog.getLogsForTag(LogTags.TIS).single { it.msg.startsWith("scan 候補の SI 収集結果 ") }.msg
-                    assertTrue(collection, "generation=$generation " in collection && "candidateInputDeliveryLoss=1 " in collection)
+                    assertTrue(collection, "generation=$generation " in collection)
+                    assertTrue(collection, "candidateInputDeliveryLoss=1 " in collection)
                     val elapsed = checkNotNull(Regex("elapsedMs=(\\d+)").find(collection)).groupValues[1].toLong()
                     assertTrue(collection, elapsed in 2_000L until 12_000L)
                 } finally {
