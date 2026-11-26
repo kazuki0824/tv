@@ -525,8 +525,7 @@ class PlaybackFilterAdmissionTest {
         fun hasReservation(): Boolean =
             executor.callControl(5_000L) { ReflectionHelpers.getField<Any?>(session, "playbackRetryTask") != null }
 
-        fun pendingTimer(): Runnable =
-            executor.callControl(5_000L) { ReflectionHelpers.getField(session, "playbackRetryTask") }
+        fun pendingTimer(): Runnable = executor.callControl(5_000L) { ReflectionHelpers.getField(session, "playbackRetryTask") }
 
         fun reportFailure(generation: Long) {
             executor.callControl(5_000L) {
