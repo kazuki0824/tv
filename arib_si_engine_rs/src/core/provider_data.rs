@@ -679,7 +679,10 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
             previous.extended_items = data.extended_items;
             data = previous;
         } else if data.extended_texts.is_empty() && data.extended_items.is_empty() {
-            if previous.diagnostics.provider_data_truncated == Some(true) {
+            if !previous.extended_texts.is_empty()
+                || !previous.extended_items.is_empty()
+                || previous.diagnostics.provider_data_truncated == Some(true)
+            {
                 let language = data
                     .short_events
                     .first()
@@ -713,7 +716,10 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
             data.extended_texts = previous.extended_texts;
             data.extended_items = previous.extended_items;
         }
-        if !data.extended_texts.is_empty() || !data.extended_items.is_empty() {
+        if retained_details.is_some()
+            || !data.extended_texts.is_empty()
+            || !data.extended_items.is_empty()
+        {
             let details = retained_details.unwrap_or_else(|| description_details(&data));
             let mut parts = description_supplements(&data);
             if !details.is_empty() {
@@ -1894,6 +1900,10 @@ mod provider_data_tests {
             Some(lines.join("\n").as_str())
         );
 
+        basic["existing"] = serde_json::from_str(&merged.json).unwrap();
+        basic["existingDescription"] = serde_json::json!(merged.merged_description);
+        let repeated = build_program_provider_data(&basic.to_string());
+        assert_eq!(repeated.merged_description, merged.merged_description);
         assert_eq!(
             finalize_program(serde_json::from_str(&first.json).unwrap()).json,
             first.json
