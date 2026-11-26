@@ -352,11 +352,6 @@ class PlaybackFilterAdmissionTest {
                 if (release) {
                     fixture.session.onRelease()
                     assertTrue(fixture.executor.awaitTermination(5, TimeUnit.SECONDS))
-                    assertEquals(
-                        PlaybackStartState.Stopped,
-                        ReflectionHelpers.getField<PlaybackStartState>(fixture.session, "playbackState"),
-                    )
-                    Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(301L))
                 } else {
                     // 新しい選局を受付し、登録チャンネルがない場合でも旧予約が残らないことを確認する。
                     fixture.executor.callControl(5_000L) {
@@ -367,12 +362,21 @@ class PlaybackFilterAdmissionTest {
                         )
                     }
                     assertFalse(fixture.hasReservation())
+                }
+                // 期限到達でRunnableが自然に消える前に、Handlerから取り消されたことを検査する。
+                assertFalse(handler.hasCallbacks(timer))
+                assertNull(ReflectionHelpers.getField<Runnable?>(fixture.session, "playbackRetryTask"))
+                if (release) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(301L))
+                    assertEquals(
+                        PlaybackStartState.Stopped,
+                        ReflectionHelpers.getField<PlaybackStartState>(fixture.session, "playbackState"),
+                    )
+                } else {
                     val retuneState = fixture.state()
                     fixture.runReservation()
                     assertEquals(retuneState, fixture.state())
                 }
-                assertFalse(handler.hasCallbacks(timer))
-                assertNull(ReflectionHelpers.getField<Runnable?>(fixture.session, "playbackRetryTask"))
             }
         }
     }
