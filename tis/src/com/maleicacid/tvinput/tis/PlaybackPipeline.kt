@@ -2606,7 +2606,7 @@ class PlaybackPipeline(
             updateAacPresentation(bytes, value, current)
         }
 
-        // 未判定入力では再生成せず、確定した配置が現行ASCと異なる場合だけ作り直す。
+        // 未判定入力では再生成せず、有効な入力のASCが設定済みASCと異なる場合だけ作り直す。
         private fun updateAacPresentation(
             bytes: ByteArray,
             value: com.maleicacid.tvinput.aribsi.generated.AacFramePresentationDto,
@@ -2616,7 +2616,7 @@ class PlaybackPipeline(
             val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
             val pair = if (value.dualMono == null && sameConfiguration) receivedFrontPair else value.frontPair
             if (sameConfiguration && aacDualMono == fact && receivedFrontPair == pair) return
-            if (value.dualMono != null && changedInBandLayout(bytes, value.frontPair) &&
+            if (value.dualMono != null && changedInBandAacConfiguration(bytes) &&
                 restartCurrentPlaybackGeneration(generation)
             ) {
                 return
@@ -2629,12 +2629,9 @@ class PlaybackPipeline(
             onAudioPresentationChanged(generation)
         }
 
-        private fun changedInBandLayout(
-            frame: ByteArray,
-            pair: Int?,
-        ): Boolean {
+        private fun changedInBandAacConfiguration(frame: ByteArray): Boolean {
             val configured = configuredAacAsc ?: return false
-            if (pair == configuredFrontPair || stream.codecFacts.audioConfigHex != null) return false
+            if (stream.codecFacts.audioConfigHex != null) return false
             val nextFormat = runCatching { formatFromBufferedHeader(frame) }.getOrNull()
             val nextAsc = nextFormat?.let(::aacAsc) ?: return false
             return !nextAsc.contentEquals(configured)
