@@ -2615,18 +2615,27 @@ class PlaybackPipeline(
             val sameConfiguration = aacConfiguration == value.configuration && aacInputCurrent?.invoke() == true
             val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
             val pair = if (value.dualMono == null && sameConfiguration) receivedFrontPair else value.frontPair
-            if (sameConfiguration && aacDualMono == fact && receivedFrontPair == pair) return
-            if (value.dualMono != null && changedInBandAacConfiguration(bytes) &&
-                restartCurrentPlaybackGeneration(generation)
+            val samePresentation = sameConfiguration && aacDualMono == fact && receivedFrontPair == pair
+            if (value.dualMono != null && (!samePresentation || hasLeadingAacProgramConfig(bytes)) &&
+                changedInBandAacConfiguration(bytes) && restartCurrentPlaybackGeneration(generation)
             ) {
                 return
             }
+            if (samePresentation) return
             receivedFrontPair = pair
             aacConfiguration = value.configuration
             aacInputCurrent = current
             aacDualMono = fact
             reconcilePresentation()
             onAudioPresentationChanged(generation)
+        }
+
+        // channel_configuration=0 の先頭PCEでは、ADTSヘッダが同じでもASCが変わり得る。
+        @Suppress("MagicNumber")
+        private fun hasLeadingAacProgramConfig(frame: ByteArray): Boolean {
+            if ((frame[2].toInt() and 1) != 0 || (frame[3].toInt() and 0xc0) != 0) return false
+            val headerSize = if ((frame[1].toInt() and 1) == 0) 9 else 7
+            return frame.getOrNull(headerSize)?.toInt()?.and(0xe0) == 0xa0
         }
 
         private fun changedInBandAacConfiguration(frame: ByteArray): Boolean {
