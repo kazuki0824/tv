@@ -315,9 +315,7 @@ class MaleicacidLiveSession(
         }
         cancelPlaybackRetry()
         if (surface?.isValid != true) {
-            playbackState = PlaybackStartState.Stopped
-            tunerController.stopPlayback()
-            beginCaptionPresentationGeneration(-1L, false)
+            stopPlaybackAndRefreshTracks()
             // 表示先の返却は再生障害ではない。実障害の通知は既存の失敗経路に委ねる。
         } else {
             playbackState = PlaybackStartState.Idle
@@ -636,9 +634,7 @@ class MaleicacidLiveSession(
                     playbackState is PlaybackStartState.Starting || playbackRetryTask != null
             if (wasActive) {
                 cancelPlaybackRetry()
-                playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
-                beginCaptionPresentationGeneration(-1L, false)
+                stopPlaybackAndRefreshTracks()
             }
             if (wasActive || casErrors.isNotEmpty()) notifyVideoUnavailable(casUnavailableReason)
             return
@@ -733,9 +729,7 @@ class MaleicacidLiveSession(
                     "audioType=${selection.audio?.streamType} audioOnly=$audioOnly",
             )
             cancelPlaybackRetry()
-            playbackState = PlaybackStartState.Stopped
-            tunerController.stopPlayback()
-            beginCaptionPresentationGeneration(-1L, false)
+            stopPlaybackAndRefreshTracks()
             val failure =
                 if (audioOnly) {
                     PlaybackPipeline.PlaybackUnavailable(
@@ -1249,6 +1243,13 @@ class MaleicacidLiveSession(
         onCaptionPlaybackClockChanged()
     }
 
+    private fun stopPlaybackAndRefreshTracks() {
+        playbackState = PlaybackStartState.Stopped
+        tunerController.stopPlayback()
+        beginCaptionPresentationGeneration(-1L, false)
+        refreshPublishedAudioSelection()
+    }
+
     private fun refreshPublishedAudioSelection() {
         if (notifiedAudioTrackId != null) {
             latestService?.let(::updateTracks) ?: publishAudioSelection(null)
@@ -1309,9 +1310,7 @@ class MaleicacidLiveSession(
             OnTuneEventListener.SIGNAL_NO_SIGNAL, OnTuneEventListener.SIGNAL_LOST_LOCK -> {
                 frontendSignalUnavailable = true
                 cancelPlaybackRetry()
-                playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
-                beginCaptionPresentationGeneration(-1L, false)
+                stopPlaybackAndRefreshTracks()
                 notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_WEAK_SIGNAL)
             }
 
@@ -1457,9 +1456,7 @@ class MaleicacidLiveSession(
     private fun stopPlaybackForBlockedContent(blocked: BlockedContent) {
         notifyContentBlocked(blocked.rating)
         cancelPlaybackRetry()
-        playbackState = PlaybackStartState.Stopped
-        tunerController.stopPlayback()
-        beginCaptionPresentationGeneration(-1L, false)
+        stopPlaybackAndRefreshTracks()
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

@@ -1855,6 +1855,11 @@ class PlaybackFilterAdmissionTest {
                     .adtsPresentation(dualFrame.copyOf(12))
                     ?.dualMono,
             )
+            val malformed = dualFrame.copyOf().also { it[it.lastIndex] = 0 }
+            val withPce =
+                byteArrayOf(-1, -7, 76, 0, 2, -33, -4, -96, -103, 0, 0, 0, 2, 0) +
+                    dualFrame.copyOfRange(9, dualFrame.size)
+            verifyAacConfigurationAcrossJni(dualFrame, stereoFrame, malformed, withPce)
             val selection =
                 fixture.audioSelection().let { original ->
                     original.copy(audio = original.audio!!.copy(componentTag = 0x10))
@@ -2004,7 +2009,11 @@ class PlaybackFilterAdmissionTest {
                     putString(MaleicacidLiveSession.EXTRA_DUAL_MONO_PRESENTATION, MaleicacidLiveSession.DUAL_MONO_SUB)
                 },
             )
-            ReflectionHelpers.getField<LifecycleSerialExecutor>(session, "sessionExecutor").callControl(5_000L) {}
+            val commandDrained = CountDownLatch(1)
+            ReflectionHelpers.getField<LifecycleSerialExecutor>(session, "sessionExecutor").executeData {
+                commandDrained.countDown()
+            }
+            assertTrue(commandDrained.await(5, TimeUnit.SECONDS))
             Shadows.shadowOf(Looper.getMainLooper()).idle()
             assertEquals("$physical:sub", selected.last())
             for ((suffix, mode) in listOf(
@@ -2202,6 +2211,28 @@ class PlaybackFilterAdmissionTest {
                 listOf(physical, otherPhysical),
                 published.last().filter { it.type == TvTrackInfo.TYPE_AUDIO }.map { it.id },
             )
+        }
+    }
+
+    private fun verifyAacConfigurationAcrossJni(
+        dual: ByteArray,
+        stereo: ByteArray,
+        malformed: ByteArray,
+        withPce: ByteArray,
+    ) {
+        val parser = com.maleicacid.tvinput.aribsi.NativeAribSiParser
+        assertNull(requireNotNull(parser.adtsPresentation(malformed)).dualMono)
+        assertEquals(false, parser.adtsPresentation(stereo)?.dualMono)
+
+        val configuredStereo = requireNotNull(parser.probeAacConfiguration(stereo, null))
+        assertNull(parser.frontPairForDecoder(configuredStereo.audioSpecificConfig))
+        val signaledAsc = "118004c80000001000"
+        for ((frame, asc) in listOf(dual to null, withPce to null, dual to signaledAsc)) {
+            val fact = requireNotNull(parser.adtsPresentation(frame))
+            val configured = requireNotNull(parser.probeAacConfiguration(frame, asc))
+            assertEquals(true, fact.dualMono)
+            assertEquals(2, configured.channelCount)
+            assertEquals(requireNotNull(fact.frontPair), parser.frontPairForDecoder(configured.audioSpecificConfig))
         }
     }
 
