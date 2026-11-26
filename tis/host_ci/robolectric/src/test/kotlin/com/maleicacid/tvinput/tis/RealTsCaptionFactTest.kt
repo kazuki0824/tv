@@ -74,13 +74,19 @@ class RealTsCaptionFactTest {
 
     @Suppress("LongMethod")
     private fun verifyPresentation(frames: List<NativeAribCaptionRenderer.RenderedCaptionFrame>) {
-        var now = (checkNotNull(frames.first().ptsMillis) - 1L).coerceAtLeast(0L)
+        var nowMillis = (checkNotNull(frames.first().ptsMillis) - 1L).coerceAtLeast(0L)
         val overlay = CaptionOverlayView(RuntimeEnvironment.getApplication())
         overlay.layout(0, 0, WIDTH, HEIGHT)
         val diagnostics = mutableListOf<AribCaptionController.CaptionDiagnostic.Reason>()
         AribCaptionController(
             overlayView = overlay,
-            mediaClock = { PlaybackPipeline.MediaClockSnapshot(now, System.nanoTime(), 0.0f) },
+            mediaClock = {
+                PlaybackPipeline.MediaClockSnapshot(
+                    mediaTimeUs = nowMillis * 1_000L,
+                    nanoTime = System.nanoTime(),
+                    clockRate = 0.0f,
+                )
+            },
             onDiagnostic = { diagnostics += it.reason },
         ).use { controller ->
             val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(controller, "executor")
@@ -120,7 +126,7 @@ class RealTsCaptionFactTest {
                     }.toSortedSet()
             val drawn =
                 times.map { time ->
-                    now = time
+                    nowMillis = time
                     ReflectionHelpers.callInstanceMethod<Unit>(controller, "armNextBoundary")
                     Shadows.shadowOf(Looper.getMainLooper()).idle()
                     val pixels = visiblePixelHash(overlay)
@@ -133,7 +139,7 @@ class RealTsCaptionFactTest {
         // 終端の製品Clearで同じOverlayの画素を消す。
         Shadows.shadowOf(Looper.getMainLooper()).idle()
         val afterClear = visiblePixelHash(overlay)
-        println("字幕Clear pts=$now pixelHash=$afterClear")
+        println("字幕Clear pts=$nowMillis pixelHash=$afterClear")
         check(afterClear == null)
     }
 
