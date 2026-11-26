@@ -452,7 +452,7 @@ pub fn probe_adts_configuration(
                     if frame_end > bytes.len() {
                         return AacConfigurationProbe::Pending;
                     }
-                    if let Some((AacPresentation::DualMono, tags)) =
+                    if let Some((AacPresentation::DualMono, tags, _)) =
                         aac_elements::parse_frame(&bytes[cursor..frame_end])
                     {
                         // 確認した順序の2 SCEを前方要素としてPCEに記録する。
@@ -541,7 +541,7 @@ pub fn probe_adts_configuration(
 mod aac_elements;
 #[path = "codec_signaling/aac_tables.rs"]
 mod aac_tables;
-pub fn configured_front_pair(asc: &[u8]) -> Option<i32> {
+fn lc_asc_program_config(asc: &[u8]) -> Option<ProgramConfig> {
     let mut bits = AudioConfigBits {
         bytes: asc,
         offset: 0,
@@ -554,14 +554,29 @@ pub fn configured_front_pair(asc: &[u8]) -> Option<i32> {
         return None;
     }
     let config = parse_program_config(&mut bits)?;
-    if config.comment_range.len() != 1
-        || config.comment_range.end != asc.len()
+    if config.comment_range.end != asc.len()
         || config.object_type != 2
         || audio_frequency(config.frequency_index)? != frequency
     {
         return None;
     }
+    Some(config)
+}
+
+pub fn configured_front_pair(asc: &[u8]) -> Option<i32> {
+    let config = lc_asc_program_config(asc)?;
     Some(front_pair_key(config.frequency_index, config.front_pair?))
+}
+
+/// ARIB STD-B32 Part 2 5.2.3(3)(d): PCEコメントは構成の比較に使わない。
+pub fn same_aac_decoder_configuration(first: &[u8], second: &[u8]) -> bool {
+    if first == second {
+        return true;
+    }
+    match (lc_asc_program_config(first), lc_asc_program_config(second)) {
+        (Some(a), Some(b)) => first[..a.comment_range.start] == second[..b.comment_range.start],
+        _ => false,
+    }
 }
 
 fn front_pair_key(frequency: u8, tags: [u8; 2]) -> i32 {
@@ -572,17 +587,22 @@ pub fn frame_presentation_dto(
     frame: &[u8],
 ) -> Option<crate::codec_probe_dto::AacFramePresentationDto> {
     let configuration = i32::from(adts_configuration_key(frame)?);
-    let (dual_mono, front_pair) = match aac_elements::parse_frame(frame) {
-        Some((AacPresentation::DualMono, tags)) => {
-            (Some(true), Some(front_pair_key((frame[2] >> 2) & 15, tags)))
+    let (dual_mono, front_pair, has_program_config) = match aac_elements::parse_frame(frame) {
+        Some((AacPresentation::DualMono, tags, has_program_config)) => (
+            Some(true),
+            Some(front_pair_key((frame[2] >> 2) & 15, tags)),
+            has_program_config,
+        ),
+        Some((AacPresentation::Other, _, has_program_config)) => {
+            (Some(false), None, has_program_config)
         }
-        Some((AacPresentation::Other, _)) => (Some(false), None),
-        _ => (None, None),
+        _ => (None, None, false),
     };
     Some(crate::codec_probe_dto::AacFramePresentationDto {
         configuration,
         dual_mono,
         front_pair,
+        has_program_config,
     })
 }
 
@@ -645,6 +665,12 @@ mod tests {
         let parsed = parse_asc_header(DUAL_MONO_ASC).unwrap();
         assert_eq!(parsed.channel_count, Some(2));
         assert_eq!(parsed.sampling_frequency, 48000);
+        let no_comment = &[0x11, 0x80, 4, 0xc8, 0, 0, 0, 0x10, 0];
+        assert!(same_aac_decoder_configuration(DUAL_MONO_ASC, no_comment));
+        assert_eq!(
+            configured_front_pair(DUAL_MONO_ASC),
+            Some(front_pair_key(3, [0, 1]))
+        );
     }
 
     #[test]

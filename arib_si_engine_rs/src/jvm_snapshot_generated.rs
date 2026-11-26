@@ -249,11 +249,12 @@ pub(super) fn aac_frame_to_java<'local>(
     new_generated(
         env,
         "AacFramePresentationDto",
-        "(ILjava/lang/Boolean;Ljava/lang/Integer;)V",
+        "(ILjava/lang/Boolean;Ljava/lang/Integer;Z)V",
         &[
             JValue::Int(value.configuration),
             JValue::Object(&fact),
             JValue::Object(&pair),
+            JValue::Bool(u8::from(value.has_program_config)),
         ],
     )
 }

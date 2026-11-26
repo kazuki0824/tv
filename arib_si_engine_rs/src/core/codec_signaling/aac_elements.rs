@@ -24,10 +24,10 @@ pub fn adts_configuration_key(frame: &[u8]) -> Option<u16> {
 }
 
 pub fn adts_presentation(frame: &[u8]) -> AacPresentation {
-    parse_frame(frame).map_or(AacPresentation::Unknown, |(fact, _)| fact)
+    parse_frame(frame).map_or(AacPresentation::Unknown, |(fact, _, _)| fact)
 }
 
-pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
+pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2], bool)> {
     let h = frame.get(..7)?;
     let frequency = (h[2] >> 2) & 15;
     let configuration = ((h[2] & 1) << 2) | (h[3] >> 6);
@@ -127,7 +127,11 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
         return None;
     }
     let sce = tags[0].count_ones();
-    if sce == 2 && channels == 2 && pce.is_some_and(|config| config.front_pair != Some(single_tags))
+    if sce == 2
+        && channels == 2
+        && pce
+            .as_ref()
+            .is_some_and(|config| config.front_pair != Some(single_tags))
     {
         return None;
     }
@@ -161,6 +165,7 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2])> {
             AacPresentation::Other
         },
         single_tags,
+        configuration == 0 && pce.is_some(),
     ))
 }
 

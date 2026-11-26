@@ -16,7 +16,7 @@ use descriptors::json_escape;
 use discovery_requirements::DiscoveryProfile;
 use eit::EitEvent;
 use jni::objects::{JByteArray, JClass, JObject, JString, JThrowable, JValue};
-use jni::sys::{jint, jintArray, jlong, jobject, jstring};
+use jni::sys::{jboolean, jint, jintArray, jlong, jobject, jstring};
 use jni::JNIEnv;
 use maleicacid_arib_si_engine_core::codec_probe_dto::AacConfigurationProbeDto;
 use maleicacid_arib_si_engine_core::eit_instances::EitInstances;
@@ -962,6 +962,29 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_con
             throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error));
             -1
         }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSameAacDecoderConfiguration(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    first: JByteArray<'_>,
+    second: JByteArray<'_>,
+) -> jboolean {
+    let first = bounded_codec_bytes(&mut env, &first, 512);
+    let second = bounded_codec_bytes(&mut env, &second, 512);
+    match (first, second) {
+        (Ok(first), Ok(second)) => jboolean::from(
+            maleicacid_arib_si_engine_core::codec_signaling::same_aac_decoder_configuration(
+                &first, &second,
+            ),
+        ),
+        (Err(CodecInputFailure::Jni(error)), _) | (_, Err(CodecInputFailure::Jni(error))) => {
+            throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error));
+            0
+        }
+        _ => 0,
     }
 }
 

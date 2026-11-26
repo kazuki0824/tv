@@ -1851,6 +1851,7 @@ class PlaybackFilterAdmissionTest {
         val dual48 = byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56)
         fun hex(value: String): ByteArray = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
+        val dual48WithComment = hex("fff84c000320047ca9a09900000002014100c8000016400038")
         val pce3 = hex("fff84c00036004799fa0988080040000206400019000000c800070")
         val pce4 = hex("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
         val stereoAsc = byteArrayOf(0x11, 0x90.toByte())
@@ -1931,10 +1932,14 @@ class PlaybackFilterAdmissionTest {
                 val nextCodec = configuredCodec(asc)
                 assertTrue(nextCodec !== codec)
                 val nextGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
-                feed(nextFilter, frame)
-                assertEquals(nextGeneration, fixture.pipeline.currentPlaybackGenerationForTest())
-                assertTrue(nextFilter === currentFilter() && nextCodec === configuredCodec(asc))
-                supplyCodecInputs(nextCodec, 3)
+                val sameConfigurationFrames =
+                    if (frame === dual48) listOf(dual48WithComment, dual48, dual48WithComment) else listOf(frame)
+                for (sameFrame in sameConfigurationFrames) {
+                    feed(nextFilter, sameFrame)
+                    assertEquals(nextGeneration, fixture.pipeline.currentPlaybackGenerationForTest())
+                    assertTrue(nextFilter === currentFilter() && nextCodec === configuredCodec(asc))
+                }
+                supplyCodecInputs(nextCodec, sameConfigurationFrames.size + 2)
                 filter = nextFilter
                 codec = nextCodec
             }

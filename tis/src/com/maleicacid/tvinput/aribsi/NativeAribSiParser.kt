@@ -332,6 +332,17 @@ class NativeAribSiParser : AutoCloseable {
 
         internal fun frontPairForDecoder(asc: ByteArray): Int? = configuredFrontPair(asc).takeIf { it >= 0 }
 
+        @JvmStatic
+        private external fun nativeSameAacDecoderConfiguration(
+            first: ByteArray,
+            second: ByteArray,
+        ): Boolean
+
+        internal fun sameAacDecoderConfiguration(
+            first: ByteArray,
+            second: ByteArray,
+        ): Boolean = nativeSameAacDecoderConfiguration(first, second)
+
         @JvmStatic private external fun probeDualMono(frame: ByteArray): AacFramePresentationDto?
 
         internal fun adtsPresentation(frame: ByteArray): AacFramePresentationDto? = probeDualMono(frame)

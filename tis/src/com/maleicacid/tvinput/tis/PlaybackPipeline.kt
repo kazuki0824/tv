@@ -2616,7 +2616,7 @@ class PlaybackPipeline(
             val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
             val pair = if (value.dualMono == null && sameConfiguration) receivedFrontPair else value.frontPair
             val samePresentation = sameConfiguration && aacDualMono == fact && receivedFrontPair == pair
-            if (value.dualMono != null && (!samePresentation || hasLeadingAacProgramConfig(bytes)) &&
+            if (value.dualMono != null && (!samePresentation || value.hasProgramConfig) &&
                 changedInBandAacConfiguration(bytes) && restartCurrentPlaybackGeneration(generation)
             ) {
                 return
@@ -2630,20 +2630,13 @@ class PlaybackPipeline(
             onAudioPresentationChanged(generation)
         }
 
-        // channel_configuration=0 の先頭PCEでは、ADTSヘッダが同じでもASCが変わり得る。
-        @Suppress("MagicNumber")
-        private fun hasLeadingAacProgramConfig(frame: ByteArray): Boolean {
-            if ((frame[2].toInt() and 1) != 0 || (frame[3].toInt() and 0xc0) != 0) return false
-            val headerSize = if ((frame[1].toInt() and 1) == 0) 9 else 7
-            return frame.getOrNull(headerSize)?.toInt()?.and(0xe0) == 0xa0
-        }
-
         private fun changedInBandAacConfiguration(frame: ByteArray): Boolean {
             val configured = configuredAacAsc ?: return false
             if (stream.codecFacts.audioConfigHex != null) return false
             val nextFormat = runCatching { formatFromBufferedHeader(frame) }.getOrNull()
             val nextAsc = nextFormat?.let(::aacAsc) ?: return false
-            return !nextAsc.contentEquals(configured)
+            return !nextAsc.contentEquals(configured) &&
+                !com.maleicacid.tvinput.aribsi.NativeAribSiParser.sameAacDecoderConfiguration(configured, nextAsc)
         }
 
         fun presentationOutput(

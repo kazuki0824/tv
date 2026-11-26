@@ -14,6 +14,7 @@ pub struct AacFramePresentationDto {
     pub configuration: i32,
     pub dual_mono: Option<bool>,
     pub front_pair: Option<i32>,
+    pub has_program_config: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
