@@ -2449,7 +2449,9 @@ class PlaybackFilterAdmissionTest {
                         events += "一覧:${ids.joinToString(",")}"
                     }
 
-                    "onTrackSelected" -> if (args!![0] == TvTrackInfo.TYPE_AUDIO) events += "選択:${args[1]}"
+                    "onTrackSelected" -> {
+                        if (args!![0] == TvTrackInfo.TYPE_AUDIO) events += "選択:${args[1]}"
+                    }
                 }
                 null
             }
@@ -3304,7 +3306,9 @@ class PlaybackFilterAdmissionTest {
         )
     }
 
-    private inner class Fixture(context: Context? = null) : AutoCloseable {
+    private inner class Fixture(
+        context: Context? = null,
+    ) : AutoCloseable {
         val pipeline = PlaybackPipeline("admission-test", null, sessionContext = context)
         val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(pipeline, "executor")
         val tuner = Tuner(RuntimeEnvironment.getApplication(), null, 0)
