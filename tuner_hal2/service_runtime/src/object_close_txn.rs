@@ -2145,6 +2145,180 @@ mod tests {
     }
 
     #[test]
+    fn mixed_close_retains_demux_dvr_and_filter_reservations_until_runner_returns() {
+        use crate::{ObjectMethodUseCase, WorkerContext, WorkerRuntime};
+        use maleicacid_tuner_hal2_demux::{FilterOpenType, OpenFilterRequest};
+        use maleicacid_tuner_hal2_domain_request::{
+            DvrOpenKind, OpenDvrRequest, RuntimeExecutableRequest,
+        };
+        use std::sync::{mpsc, Arc, Mutex};
+        use std::time::Duration;
+
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let open_demux = || {
+            runtime
+                .lock()
+                .unwrap()
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .unwrap()
+        };
+        // 親を残したまま子を個別closeし、別のDemux closeと競合させる。
+        let parent = open_demux();
+        let demux = open_demux();
+        let dvr = ObjectMethodUseCase::execute_after_live(
+            &runtime,
+            parent.object_id(),
+            parent.generation(),
+            AidlObjectKind::Demux,
+            || -> Result<_, HalError> {
+                let request = OpenDvrRequest {
+                    kind: DvrOpenKind::Playback,
+                    buffer_size: 188,
+                };
+                Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
+            },
+            |runtime, dispatch, request| {
+                runtime
+                    .child_open_txn()
+                    .open_dvr_child_runtime_for_demux_object(
+                        parent.object_id(),
+                        parent.generation(),
+                        request,
+                        dispatch,
+                    )
+            },
+        )
+        .unwrap()
+        .runtime_entry;
+        let filter = ObjectMethodUseCase::execute_after_live(
+            &runtime,
+            parent.object_id(),
+            parent.generation(),
+            AidlObjectKind::Demux,
+            || -> Result<_, HalError> {
+                let request = OpenFilterRequest {
+                    open_type: FilterOpenType::TsRaw,
+                    buffer_size: 4096,
+                    callback_present: false,
+                };
+                Ok((
+                    AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
+                        request.clone(),
+                    )),
+                    request,
+                ))
+            },
+            |runtime, dispatch, request| {
+                runtime
+                    .child_open_txn()
+                    .open_filter_child_runtime_for_demux_object(
+                        parent.object_id(),
+                        parent.generation(),
+                        &request,
+                        dispatch,
+                    )
+            },
+        )
+        .unwrap()
+        .runtime_entry;
+        {
+            let mut runtime = runtime.lock().unwrap();
+            for child in [&dvr, &filter] {
+                runtime
+                    .commit_prepared_child_object(child.object_id(), child.generation())
+                    .unwrap();
+            }
+        }
+
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let worker_runtime = Arc::clone(&runtime);
+        let resume_rx = Mutex::new(resume_rx);
+        let reaper = WorkerRuntime::start_reaper_queue(
+            crate::CapabilitySnapshot::product_default().cleanup_reaper_capacity,
+            "product-mixed-close-overlap",
+            Arc::new(
+                move |(entry, completion): (RuntimeObjectEntry, CloseCleanupAttemptCompletion),
+                      _: _,
+                      _: WorkerContext| {
+                    {
+                        let mut runtime = worker_runtime.lock().unwrap();
+                        runtime
+                            .validate_public_runtime_for_closed_aidl_entry(&entry)
+                            .unwrap();
+                        runtime
+                            .unregister_public_runtime_for_closed_aidl_entry(&entry)
+                            .unwrap();
+                        finish_object_close_use_case(&mut runtime, completion, Ok(())).unwrap();
+                    }
+                    let _ = finished_tx.send((entry.object_id(), entry.generation()));
+                    // 失敗時も送信側のdropでworkerを解放する。
+                    let _ = resume_rx.lock().unwrap().recv_timeout(Duration::from_secs(10));
+                },
+            ),
+        )
+        .unwrap();
+        let cases = [
+            (demux, AidlObjectKind::Demux, AidlMethodCall::DemuxClose),
+            (dvr, AidlObjectKind::Dvr, AidlMethodCall::DvrClose),
+            (filter, AidlObjectKind::Filter, AidlMethodCall::FilterClose),
+        ];
+        let keys = cases
+            .each_ref()
+            .map(|(entry, _, _)| (entry.object_id(), entry.generation()));
+        for ((entry, kind, method), key) in cases.into_iter().zip(keys) {
+            let completion = {
+                let mut runtime = runtime.lock().unwrap();
+                close_object_use_case(&mut runtime, key.0, key.1, kind, method)
+                    .unwrap()
+                    .begin_cleanup_attempt(&mut runtime)
+                    .unwrap()
+                    .completion
+            };
+            reaper
+                .enqueue_reserved((entry, completion), [(key, CleanupStep::ReleaseBackend)])
+                .unwrap();
+        }
+        let first = finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let second = finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_ne!(first, second);
+        assert!(keys[..2].contains(&first) && keys[..2].contains(&second));
+        assert_eq!(
+            keys.iter()
+                .filter(|key| reaper.pending_value(key).unwrap().is_some())
+                .count(),
+            3,
+        );
+
+        for _ in 0..keys.len() {
+            resume_tx.send(()).unwrap();
+        }
+        assert_eq!(
+            finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            keys[2]
+        );
+        reaper
+            .wait_until_released(keys.each_ref(), Duration::from_secs(10))
+            .unwrap();
+        let runtime = runtime.lock().unwrap();
+        for key in keys {
+            assert!(reaper.pending_value(&key).unwrap().is_none());
+            assert_eq!(
+                runtime.object_table().entry(key.0).unwrap().lifecycle,
+                crate::RuntimeObjectLifecycle::Closed,
+            );
+        }
+        assert_eq!(
+            runtime.object_table().entry(parent.object_id()).unwrap().lifecycle,
+            crate::RuntimeObjectLifecycle::Live,
+        );
+    }
+
+    #[test]
     fn product_reaper_reservation_capacity_does_not_define_worker_parallelism() {
         use crate::worker_runtime::{WorkerContext, WorkerRuntime, WorkerRuntimeReaperPending};
         use std::sync::{mpsc, Arc, Mutex};
