@@ -36,7 +36,7 @@ object ProviderDataBridge {
             result = 31 * result + schemaVersion
             result = 31 * result + truncated.hashCode()
             result = 31 * result + diagnosticsDroppedCount
-            return 31 * result + (mergedDescription?.hashCode() ?: 0)
+            return 31 * result + mergedDescription.hashCode()
         }
     }
 

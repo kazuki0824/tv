@@ -525,13 +525,13 @@ class RealTsHalSiIntegrationTest {
                 val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
                 if (ingest.inputDeliveryLossCount > before) {
                     rejected.putIfAbsent(section.pid, section to elapsedMs)
-                    if (resume.count != 0L && rejected.keys == required) {
-                        resume.countDown()
-                        awaitIdle(owner)
-                        check(!collectionComplete(engine))
-                    }
                 } else if (rejected[section.pid]?.first?.bytes?.contentEquals(section.bytes) == true) {
                     resent.putIfAbsent(section.pid, elapsedMs)
+                }
+                if (resume.count != 0L && rejected.keys == required) {
+                    resume.countDown()
+                    awaitIdle(owner)
+                    check(!collectionComplete(engine))
                 }
             }
         } finally {
