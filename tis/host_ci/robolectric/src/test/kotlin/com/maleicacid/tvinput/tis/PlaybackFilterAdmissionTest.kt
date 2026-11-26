@@ -2331,6 +2331,100 @@ class PlaybackFilterAdmissionTest {
         }
     }
 
+    @Suppress("LongMethod")
+    @Test
+    fun tunerResourceLossWithdrawsSelectedDualMonoWithoutStoppingTwice() {
+        Fixture().use { fixture ->
+            fixture.decoder(audio = true, aac = true)
+            fixture.attachCodec(audio = true, dualAac = true)
+            val selection = fixture.audioSelection()
+            val session = fixture.audioSession(selection, selection)
+            val controller = ReflectionHelpers.getField<TunerController>(session, "tunerController")
+            val physical = TunerSelectionPolicy.trackIdForAudio(requireNotNull(selection.audio))
+            val sub = "$physical:sub"
+            val filter = fixture.avFilter(true)
+            val frame = byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56)
+            val sample = mediaEvent(frame.size.toLong())
+            val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
+            Shadow.extract<NativeLinearBlock>(block).data = frame
+            Shadow.extract<NativeMediaEvent>(sample).block = block
+            deliver(filter, sample)
+            fixture.drain()
+
+            val format =
+                AudioFormat.Builder()
+                    .setSampleRate(48_000)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                    .build()
+            val track = AudioTrack.Builder().setAudioFormat(format).setBufferSizeInBytes(4_096).build()
+            ReflectionHelpers.setField(fixture.pipeline, "audioTrack", track)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+            val output = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_RAW, 48_000, 2)
+            output.setInteger(MediaFormat.KEY_CHANNEL_MASK, AudioFormat.CHANNEL_OUT_STEREO)
+            ReflectionHelpers.callInstanceMethod<Unit>(
+                decoder,
+                "onOutputFormatChanged",
+                ReflectionHelpers.ClassParameter.from(MediaFormat::class.java, output),
+            )
+
+            val notifications = mutableListOf<Pair<List<String>?, String?>>()
+            val callbackType = Class.forName("android.media.tv.ITvInputSessionCallback")
+            val callback =
+                java.lang.reflect.Proxy.newProxyInstance(callbackType.classLoader, arrayOf(callbackType)) { _, method, args ->
+                    when (method.name) {
+                        "onTracksChanged" -> {
+                            val audio = (args!![0] as List<*>).filterIsInstance<TvTrackInfo>().filter { it.type == TvTrackInfo.TYPE_AUDIO }
+                            notifications += audio.map { it.id } to null
+                        }
+
+                        "onTrackSelected" -> {
+                            if (args!![0] == TvTrackInfo.TYPE_AUDIO) notifications += null to (args[1] as String?)
+                        }
+                    }
+                    null
+                }
+            ReflectionHelpers.setField(session, "mSessionCallback", callback)
+            ReflectionHelpers.setField(session, "mHandler", Handler(Looper.getMainLooper()))
+            assertTrue(fixture.selectAudio(session, sub))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(null to sub, notifications.last())
+            assertEquals(AudioTrack.DUAL_MONO_MODE_RR, Shadow.extract<DualMonoAudioTrack>(track).modes.last())
+            notifications.clear()
+
+            val sessionOwner = ReflectionHelpers.getField<LifecycleSerialExecutor>(session, "sessionExecutor")
+            ReflectionHelpers.setField(session, "currentGeneration", 7L)
+            sessionOwner.callControl(5_000L) {
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    session,
+                    "handleTunerResourceLost",
+                    ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, 6L),
+                )
+            }
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(notifications.isEmpty())
+            assertTrue(track === ReflectionHelpers.getField<Any?>(fixture.pipeline, "audioTrack"))
+
+            val controllerOwner = ReflectionHelpers.getField<ControllerSerialExecutor>(controller, "sectionExecutor")
+            controllerOwner.submitControl {
+                ReflectionHelpers.setField(controller, "tuneGeneration", 7L)
+                ReflectionHelpers.setField(controller, "tuneAccepted", true)
+                ReflectionHelpers.callInstanceMethod<Unit>(controller, "handleTunerResourceLostOnController")
+            }.get(5, TimeUnit.SECONDS)
+            val drained = CountDownLatch(1)
+            sessionOwner.executeData { drained.countDown() }
+            assertTrue(drained.await(5, TimeUnit.SECONDS))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+            assertEquals(PlaybackStartState.Stopped, ReflectionHelpers.getField<PlaybackStartState>(session, "playbackState"))
+            assertNull(ReflectionHelpers.getField<Any?>(fixture.pipeline, "audioTrack"))
+            assertEquals(8L, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertEquals(1, Shadow.extract<NativeFilter>(filter).closes)
+            val expected = listOf<Pair<List<String>?, String?>>(listOf(physical) to null, null to null)
+            assertEquals(expected, notifications)
+        }
+    }
+
     private fun verifyAacConfigurationAcrossJni(
         dual: ByteArray,
         stereo: ByteArray,

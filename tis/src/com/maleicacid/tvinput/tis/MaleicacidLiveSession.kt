@@ -1300,6 +1300,7 @@ class MaleicacidLiveSession(
         cancelPlaybackRetry()
         playbackState = PlaybackStartState.Stopped
         beginCaptionPresentationGeneration(-1L, false)
+        refreshPublishedAudioSelection()
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
     }
 
