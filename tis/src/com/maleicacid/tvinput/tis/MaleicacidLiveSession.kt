@@ -847,14 +847,7 @@ class MaleicacidLiveSession(
                 }
             if (tunerController.setDualMonoPresentation(presentation) == true) {
                 dualMonoPresentation = presentation
-                latestService?.let { service ->
-                    displayTracksFor(service)
-                        .firstOrNull { track ->
-                            track.type == TvTrackInfo.TYPE_AUDIO &&
-                                TunerSelectionPolicy.physicalAudioTrackId(track) == preferredAudioTrackId &&
-                                track.audioPresentation == presentation
-                        }?.let { publishAudioSelection(it.id) }
-                }
+                latestService?.let(::updateTracks)
             }
         }
     }
@@ -909,8 +902,8 @@ class MaleicacidLiveSession(
                         if (!applied) return false
                         dualMonoPresentation = presentation
                         audioFallbackDisabled = false
-                        publishAudioSelection(requested.id)
-                        return true
+                        updateTracks(service)
+                        return notifiedAudioTrackId == requested.id
                     }
                 }
                 val previousAudioTrackId = preferredAudioTrackId

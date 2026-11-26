@@ -910,6 +910,7 @@ class PlaybackPipeline(
             diagnostics = restarted.diagnostics + "MEDIASYNC_GENERATION_RECREATED_FOR_AUDIO_SWITCH",
             firstFramePending = restarted.firstFramePending,
             generation = restarted.generation,
+            previousInputClosed = true,
         )
     }
 

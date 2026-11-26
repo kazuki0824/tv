@@ -1905,7 +1905,11 @@ class PlaybackFilterAdmissionTest {
                         }
 
                         "onTrackSelected" -> {
-                            if (args!![0] == TvTrackInfo.TYPE_AUDIO) selected += args[1] as String?
+                            if (args!![0] == TvTrackInfo.TYPE_AUDIO) {
+                                val id = args[1] as String?
+                                if (id != null) assertTrue(published.last().any { track -> track.id == id })
+                                selected += id
+                            }
                         }
                     }
                     null
@@ -1994,6 +1998,15 @@ class PlaybackFilterAdmissionTest {
             assertFalse(fixture.selectAudio(session, "$physical:sub"))
             nativeTrack.accept = true
             outputChanged()
+            session.onAppPrivateCommand(
+                MaleicacidLiveSession.ACTION_SET_DUAL_MONO_PRESENTATION,
+                android.os.Bundle().apply {
+                    putString(MaleicacidLiveSession.EXTRA_DUAL_MONO_PRESENTATION, MaleicacidLiveSession.DUAL_MONO_SUB)
+                },
+            )
+            ReflectionHelpers.getField<LifecycleSerialExecutor>(session, "sessionExecutor").callControl(5_000L) {}
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("$physical:sub", selected.last())
             for ((suffix, mode) in listOf(
                 "sub" to AudioTrack.DUAL_MONO_MODE_RR,
                 "main_sub" to AudioTrack.DUAL_MONO_MODE_LR,
@@ -2296,7 +2309,8 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
-    fun audioRestartWithMissingSurfacePreservesVideoAndPlaybackGeneration() {
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class])
+    fun audioRestartInvalidatesTheOldInputOnlyAfterAcceptingTheRestart() {
         Fixture().use { fixture ->
             fixture.decoder(false)
             fixture.decoder(true)
@@ -2312,12 +2326,27 @@ class PlaybackFilterAdmissionTest {
             val next = selection.copy(audio = nextAudio)
             val result = fixture.pipeline.switchAudio(fixture.tuner, next)
             assertFalse(result.switchedAudio)
+            assertFalse(result.previousInputClosed)
             assertEquals(-1L, result.generation)
             assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
             assertEquals(selection, ReflectionHelpers.getField<Any>(fixture.pipeline, "activeSelection"))
             assertEquals(0, Shadow.extract<NativeFilter>(video).closes)
             assertEquals(0, Shadow.extract<NativeFilter>(audio).closes)
             assertTrue(fixture.unavailable.isEmpty())
+
+            val session = fixture.audioSession(selection, next)
+            fixture.codecTexture = SurfaceTexture(0)
+            fixture.codecSurface = Surface(fixture.codecTexture)
+            fixture.pipeline.setSurface(fixture.codecSurface)
+            fixture.drain()
+            val nativeTuner = Shadow.extract<NativeTuner>(fixture.tuner)
+            nativeTuner.rejectNextAudioStart = true
+            assertFalse(fixture.selectAudio(session, TunerSelectionPolicy.trackIdForAudio(nextAudio)))
+            assertFalse(nativeTuner.rejectNextAudioStart)
+            assertNull(ReflectionHelpers.getField<String?>(session, "preferredAudioTrackId"))
+            assertNull(ReflectionHelpers.getField<Filter?>(fixture.pipeline, "audioFilter"))
+            assertEquals(1, Shadow.extract<NativeFilter>(audio).closes)
+            assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > 7L)
         }
     }
 
@@ -3297,6 +3326,7 @@ class PlaybackFilterAdmissionTest {
         @RealObject private lateinit var actual: Tuner
 
         var failNextOpenAt: String? = null
+        var rejectNextAudioStart = false
 
         @Implementation(methodName = "__constructor__")
         @Suppress("UNUSED_PARAMETER")
@@ -3346,6 +3376,10 @@ class PlaybackFilterAdmissionTest {
             val native = Shadow.extract<NativeFilter>(filter)
             if (failure == "configure") native.configureResult = Tuner.RESULT_UNKNOWN_ERROR
             if (failure == "start") native.startResult = Tuner.RESULT_UNKNOWN_ERROR
+            if (rejectNextAudioStart && subtype == Filter.SUBTYPE_AUDIO) {
+                rejectNextAudioStart = false
+                native.startResult = Tuner.RESULT_UNKNOWN_ERROR
+            }
             return filter
         }
     }
