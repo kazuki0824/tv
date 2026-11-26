@@ -29,6 +29,7 @@ import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.MediaEvent
 import android.media.tv.tuner.filter.PesEvent
 import android.media.tv.tuner.filter.RestartEvent
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.Surface
@@ -331,6 +332,52 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Test
+    fun successiveRecoveryTimersAreCancelledByRetuneOrRelease() {
+        for (release in listOf(false, true)) {
+            RetryFixture().use { fixture ->
+                for (generation in listOf(7L, 9L)) {
+                    fixture.reportFailure(generation)
+                    fixture.advanceClock(299L)
+                    assertEquals(PlaybackStartState.Failed(fixture.signature, generation), fixture.state())
+                    assertTrue(fixture.hasReservation())
+                    fixture.advanceClock(1L)
+                    assertEquals(PlaybackStartState.Idle, fixture.state())
+                    assertFalse(fixture.hasReservation())
+                }
+
+                fixture.reportFailure(11L)
+                val timer = fixture.pendingTimer()
+                val handler = ReflectionHelpers.getField<Handler>(fixture.session, "unblockTimerHandler")
+                assertTrue(handler.hasCallbacks(timer))
+                if (release) {
+                    fixture.session.onRelease()
+                    assertTrue(fixture.executor.awaitTermination(5, TimeUnit.SECONDS))
+                    assertEquals(
+                        PlaybackStartState.Stopped,
+                        ReflectionHelpers.getField<PlaybackStartState>(fixture.session, "playbackState"),
+                    )
+                    Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(301L))
+                } else {
+                    // 新しい選局を受付し、登録チャンネルがない場合でも旧予約が残らないことを確認する。
+                    fixture.executor.callControl(5_000L) {
+                        ReflectionHelpers.callInstanceMethod<Boolean>(
+                            fixture.session,
+                            "onTuneOnSessionExecutor",
+                            ReflectionHelpers.ClassParameter.from(Uri::class.java, TvContract.buildChannelUri(1L)),
+                        )
+                    }
+                    assertFalse(fixture.hasReservation())
+                    val retuneState = fixture.state()
+                    fixture.runReservation()
+                    assertEquals(retuneState, fixture.state())
+                }
+                assertFalse(handler.hasCallbacks(timer))
+                assertNull(ReflectionHelpers.getField<Runnable?>(fixture.session, "playbackRetryTask"))
+            }
+        }
+    }
+
+    @Test
     fun audioOnlyRecoverableFailureCanRetryWithoutVideoSurface() {
         RetryFixture(audioOnly = true, surfaceReady = false).use { fixture ->
             for (generation in listOf(7L, 9L)) {
@@ -478,6 +525,26 @@ class PlaybackFilterAdmissionTest {
         fun hasReservation(): Boolean =
             executor.callControl(5_000L) { ReflectionHelpers.getField<Any?>(session, "playbackRetryTask") != null }
 
+        fun pendingTimer(): Runnable =
+            executor.callControl(5_000L) { ReflectionHelpers.getField(session, "playbackRetryTask") }
+
+        fun reportFailure(generation: Long) {
+            executor.callControl(5_000L) {
+                ReflectionHelpers.setField(session, "playbackState", PlaybackStartState.Started(signature, generation))
+                val failure =
+                    PlaybackPipeline.PlaybackUnavailable(
+                        PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
+                        "injected",
+                        generation,
+                    )
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    session,
+                    "handlePlaybackUnavailable",
+                    ReflectionHelpers.ClassParameter.from(PlaybackPipeline.PlaybackUnavailable::class.java, failure),
+                )
+            }
+        }
+
         // 同じ予約のSurface接続・切断を既存Session境界へ注入するfixtureを保つ。
         @Suppress("LongMethod")
         fun changeAudioOnlySurface(
@@ -533,8 +600,10 @@ class PlaybackFilterAdmissionTest {
             executor.callControl(5_000L) { ReflectionHelpers.setField(session, "surface", null) }
         }
 
-        fun runReservation() {
-            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(301L))
+        fun runReservation() = advanceClock(301L)
+
+        fun advanceClock(millis: Long) {
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(millis))
             val drained = CountDownLatch(1)
             executor.executeData { drained.countDown() }
             check(drained.await(5, TimeUnit.SECONDS))
