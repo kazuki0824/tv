@@ -748,7 +748,10 @@ fn restore_shortened_genre_supplement(
     };
     let mut stored_names = previous.genres.iter().map(|genre| genre.arib_name.as_str());
     for name in names.split('、') {
-        if !stored_names.next().is_some_and(|stored| name.starts_with(stored)) {
+        if !stored_names
+            .next()
+            .is_some_and(|stored| name.starts_with(stored))
+        {
             return;
         }
     }
@@ -762,7 +765,10 @@ fn restore_shortened_genre_supplement(
     }
 }
 
-fn strip_description_supplements<'a>(description: &'a str, supplements: &[String]) -> Option<&'a str> {
+fn strip_description_supplements<'a>(
+    description: &'a str,
+    supplements: &[String],
+) -> Option<&'a str> {
     let suffix = supplements.join("\n");
     if suffix.is_empty() {
         Some(description)
@@ -1922,8 +1928,9 @@ mod provider_data_tests {
         assert!(shortened.len() < genre_name.len() && genre_name.starts_with(shortened));
         assert_eq!(stored["extendedItems"], serde_json::json!([]));
         basic["existing"] = stored;
-        basic["existingDescription"] =
-            serde_json::json!(format!("【項】目\nジャンル: {genre_name}\n放送種別: 無料放送"));
+        basic["existingDescription"] = serde_json::json!(format!(
+            "【項】目\nジャンル: {genre_name}\n放送種別: 無料放送"
+        ));
         for version in [13, 14] {
             basic["source"]["version"] = serde_json::json!(version);
             let merged = build_program_provider_data(&basic.to_string());
