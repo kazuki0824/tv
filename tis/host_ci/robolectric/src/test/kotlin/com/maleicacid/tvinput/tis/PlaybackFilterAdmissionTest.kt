@@ -3083,6 +3083,7 @@ class PlaybackFilterAdmissionTest {
                     ReflectionHelpers.setField(it, "mAccessible", true)
                     ReflectionHelpers.setField(it, "mLinearBlock", outputBlock)
                 }
+
         var onInputQueue: () -> Unit = {}
         var onOutputRelease: () -> Unit = {}
 
