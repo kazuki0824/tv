@@ -21,6 +21,8 @@ import org.robolectric.util.ReflectionHelpers
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.PriorityQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -81,6 +83,10 @@ class RealTsCaptionFactTest {
             mediaClock = { PlaybackPipeline.MediaClockSnapshot(now, System.nanoTime(), 0.0f) },
             onDiagnostic = { diagnostics += it.reason },
         ).use { controller ->
+            val executor = ReflectionHelpers.getField<LifecycleSerialExecutor>(controller, "executor")
+            val initialized = CountDownLatch(1)
+            executor.executeData { initialized.countDown() }
+            check(initialized.await(5, TimeUnit.SECONDS))
             val viewport = AribCaptionController.CaptionViewport(WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT)
             ReflectionHelpers.setField(controller, "viewport", viewport)
             val queue = ReflectionHelpers.getField<PriorityQueue<*>>(controller, "boundaries")
