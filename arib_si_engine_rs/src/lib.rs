@@ -992,6 +992,29 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeMatchesInheritedAacConfiguration(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    first: JByteArray<'_>,
+    second: JByteArray<'_>,
+) -> jboolean {
+    let first = bounded_codec_bytes(&mut env, &first, 8191);
+    let second = bounded_codec_bytes(&mut env, &second, 512);
+    match (first, second) {
+        (Ok(first), Ok(second)) => jboolean::from(
+            maleicacid_arib_si_engine_core::codec_signaling::matches_inherited_aac_configuration(
+                &first, &second,
+            ),
+        ),
+        (Err(CodecInputFailure::Jni(error)), _) | (_, Err(CodecInputFailure::Jni(error))) => {
+            throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error));
+            0
+        }
+        _ => 0,
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeProbeAacConfiguration(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,

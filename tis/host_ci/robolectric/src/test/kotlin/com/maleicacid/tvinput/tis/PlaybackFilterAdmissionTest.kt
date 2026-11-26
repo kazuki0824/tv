@@ -1838,7 +1838,7 @@ class PlaybackFilterAdmissionTest {
     }
 
     @Suppress("LongMethod")
-    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class])
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
     @Test
     fun inBandAacConfigurationChangeReconfiguresThroughNewFilter() {
         val lcProfile =
@@ -1940,6 +1940,8 @@ class PlaybackFilterAdmissionTest {
                     Triple(dual48, dualAsc, dual48),
                     Triple(pce3, asc3, noPce3),
                     Triple(pce4, asc4, noPce4),
+                    // 旧Filterの2/1候補より、新Filterが先頭で受けた2/2 PCEを優先する。
+                    Triple(pce3, asc4, pce4),
                 )
             for ((frame, asc, followUp) in transitions) {
                 val previousGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
@@ -1968,7 +1970,42 @@ class PlaybackFilterAdmissionTest {
                 filter = nextFilter
                 codec = nextCodec
             }
+            val previousGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
+            verifyAacRouteRestart(fixture, previousGeneration)
+            assertEquals(1, Shadow.extract<NativeFilter>(filter).closes)
+            assertTrue(previousGeneration < fixture.pipeline.currentPlaybackGenerationForTest())
+            feed(currentFilter(), noPce4)
+            val routedCodec = configuredCodec(asc4)
+            assertTrue(routedCodec !== codec)
+            supplyCodecInputs(routedCodec, 2)
+            verifyAacOutputWithoutRepeatedPce(fixture, routedCodec, fixture.pipeline.currentPlaybackGenerationForTest(), pce4, noPce4)
         }
+    }
+
+    private fun verifyAacRouteRestart(
+        fixture: Fixture,
+        generation: Long,
+    ) {
+        val track =
+            AudioTrack
+                .Builder()
+                .setAudioFormat(
+                    AudioFormat
+                        .Builder()
+                        .setSampleRate(48_000)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                        .build(),
+                ).build()
+        Shadow.extract<DualMonoAudioTrack>(track).route = routeDevice(1)
+        fixture.executor.callControl(5_000L) {
+            ReflectionHelpers.setField(fixture.pipeline, "audioTrack", track)
+            fixture.invoke("observeAudioRouting", track, generation)
+        }
+        Shadow.extract<DualMonoAudioTrack>(track).route = routeDevice(2)
+        val listener = ReflectionHelpers.getField<AudioRouting.OnRoutingChangedListener>(fixture.pipeline, "audioRoutingListener")
+        listener.onRoutingChanged(track)
+        fixture.drain()
     }
 
     private fun verifyAacFrameWithoutPce(frame: ByteArray) {

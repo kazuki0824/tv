@@ -29,10 +29,10 @@ pub fn adts_configuration_key(frame: &[u8]) -> Option<u16> {
 }
 
 pub fn adts_presentation(frame: &[u8]) -> AacPresentation {
-    parse_frame(frame).map_or(AacPresentation::Unknown, |(fact, _, _)| fact)
+    parse_frame(frame).map_or(AacPresentation::Unknown, |(fact, _, _, _)| fact)
 }
 
-pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2], bool)> {
+pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2], bool, [u16; 4])> {
     let h = frame.get(..7)?;
     let frequency = (h[2] >> 2) & 15;
     let configuration = ((h[2] & 1) << 2) | (h[3] >> 6);
@@ -171,6 +171,7 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2], boo
         },
         single_tags,
         configuration == 0 && pce.is_some(),
+        tags,
     ))
 }
 

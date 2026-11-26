@@ -452,7 +452,7 @@ pub fn probe_adts_configuration(
                     if frame_end > bytes.len() {
                         return AacConfigurationProbe::Pending;
                     }
-                    if let Some((AacPresentation::DualMono, tags, _)) =
+                    if let Some((AacPresentation::DualMono, tags, _, _)) =
                         aac_elements::parse_frame(&bytes[cursor..frame_end])
                     {
                         // 確認した順序の2 SCEを前方要素としてPCEに記録する。
@@ -568,6 +568,20 @@ pub fn configured_front_pair(asc: &[u8]) -> Option<i32> {
     Some(front_pair_key(config.frequency_index, config.front_pair?))
 }
 
+/// PCE非再送時も、完全なraw data blockが既存ASCの周波数・音声要素と一致することを確認する。
+pub fn matches_inherited_aac_configuration(frame: &[u8], asc: &[u8]) -> bool {
+    let Some(config) = lc_asc_program_config(asc) else {
+        return false;
+    };
+    let Some((_, _, false, tags)) = aac_elements::parse_frame(frame) else {
+        return false;
+    };
+    let header = frame[2];
+    ((header & 1) | (frame[3] >> 6)) == 0
+        && (header >> 2) & 15 == config.frequency_index
+        && tags == config.element_tags
+}
+
 /// ARIB STD-B32 Part 2 5.2.3(3)(d): PCEコメントは構成の比較に使わない。
 pub fn same_aac_decoder_configuration(first: &[u8], second: &[u8]) -> bool {
     if first == second {
@@ -604,12 +618,12 @@ pub fn frame_presentation_dto(frame: &[u8]) -> crate::codec_probe_dto::AacFrameP
         );
     }
     let (dual_mono, front_pair, has_program_config) = match aac_elements::parse_frame(frame) {
-        Some((AacPresentation::DualMono, tags, has_program_config)) => (
+        Some((AacPresentation::DualMono, tags, has_program_config, _)) => (
             Some(true),
             Some(front_pair_key((frame[2] >> 2) & 15, tags)),
             has_program_config,
         ),
-        Some((AacPresentation::Other, _, has_program_config)) => {
+        Some((AacPresentation::Other, _, has_program_config, _)) => {
             (Some(false), None, has_program_config)
         }
         _ => (None, None, false),

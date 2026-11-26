@@ -1535,7 +1535,7 @@ class PlaybackPipeline(
     }
 
     private fun restartCurrentPlaybackGeneration(originGeneration: Long): Boolean =
-        restartPlaybackWithAacFormat(originGeneration, restartAacFormat = null)
+        restartPlaybackWithAacFormat(originGeneration, audioDecoder?.aacFormatForRestart())
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
@@ -2565,6 +2565,7 @@ class PlaybackPipeline(
         private var independentStereo = false
         private var startupAacFormat: MediaFormat? = null
         private var configuredAacAsc: ByteArray? = null
+        private var configuredAacFormat: MediaFormat? = null
         private var configuredFrontPair: Int? = null
         private var receivedFrontPair: Int? = null
         private var appliedPresentation: DualMonoPresentation? = null
@@ -2573,6 +2574,8 @@ class PlaybackPipeline(
         fun setStartupAacFormat(format: MediaFormat?) {
             startupAacFormat = format
         }
+
+        fun aacFormatForRestart(): MediaFormat? = configuredAacFormat.takeIf { aacInputCurrent?.invoke() == true }
 
         fun invalidateAudioInput() {
             startupAacFormat = null
@@ -2751,8 +2754,12 @@ class PlaybackPipeline(
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? =
             when (kind) {
                 AudioCodecKind.AAC_ADTS -> {
-                    startupAacFormat?.also { startupAacFormat = null }
-                        ?: CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
+                    val inherited = startupAacFormat
+                    startupAacFormat = null
+                    CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
+                        ?: inherited?.takeIf { format ->
+                            aacAsc(format)?.let { NativeAribSiParser.matchesInheritedAacConfiguration(bytes, it) } == true
+                        }
                 }
 
                 AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> {
@@ -2762,6 +2769,7 @@ class PlaybackPipeline(
 
         override fun onDecoderConfigured(format: MediaFormat) {
             configuredAacAsc = if (kind == AudioCodecKind.AAC_ADTS) aacAsc(format) else null
+            configuredAacFormat = format.takeIf { configuredAacAsc != null && stream.codecFacts.audioConfigHex == null }
             configuredFrontPair =
                 configuredAacAsc?.let { bytes ->
                     NativeAribSiParser
