@@ -1844,11 +1844,16 @@ class PlaybackFilterAdmissionTest {
                 .setProfileLevels(arrayOf(lcProfile))
                 .build()
         ShadowMediaCodecList.addCodec(
-            MediaCodecInfoBuilder.newBuilder().setName("c2.android.aac.decoder").setCapabilities(capabilities).build(),
+            MediaCodecInfoBuilder
+                .newBuilder()
+                .setName("c2.android.aac.decoder")
+                .setCapabilities(capabilities)
+                .build(),
         )
         val stereo48 = byteArrayOf(-1, -8, 76, -128, 2, 0, 4, 51, -76, 32, 100, 0, 1, -112, 0, 14)
         val stereo32 = byteArrayOf(-1, -8, 84, -128, 2, 0, 4, 122, 4, 32, 100, 0, 1, -112, 0, 14)
         val dual48 = byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56)
+
         fun hex(value: String): ByteArray = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
         val dual48WithComment = hex("fff84c000320047ca9a09900000002014100c8000016400038")
@@ -1857,7 +1862,8 @@ class PlaybackFilterAdmissionTest {
         val stereoAsc = byteArrayOf(0x11, 0x90.toByte())
         val dualAsc =
             checkNotNull(
-                com.maleicacid.tvinput.aribsi.NativeAribSiParser.probeAacConfiguration(dual48, null),
+                com.maleicacid.tvinput.aribsi.NativeAribSiParser
+                    .probeAacConfiguration(dual48, null),
             ).audioSpecificConfig
         Fixture().use { fixture ->
             val original = fixture.audioSelection()
@@ -2093,7 +2099,6 @@ class PlaybackFilterAdmissionTest {
             fun feed(
                 bytes: ByteArray,
                 source: Filter = filter,
-                refreshTracks: Boolean = true,
             ): MediaEvent {
                 val sampleEvent = mediaEvent(bytes.size.toLong(), offset = 2)
                 val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
@@ -2101,10 +2106,10 @@ class PlaybackFilterAdmissionTest {
                 Shadow.extract<NativeMediaEvent>(sampleEvent).block = block
                 deliver(source, sampleEvent)
                 fixture.drain()
-                if (refreshTracks) refresh()
                 return sampleEvent
             }
             feed(dualFrame)
+            refresh()
             nativeTrack.accept = false
             outputChanged()
             val update = {
@@ -2202,6 +2207,7 @@ class PlaybackFilterAdmissionTest {
             )
             Shadows.shadowOf(Looper.getMainLooper()).idle()
             feed(dualFrame)
+            refresh()
             assertEquals("$physical:sub", selected.last())
             assertTrue(fixture.selectAudio(session, "$physical:main"))
             Shadows.shadowOf(Looper.getMainLooper()).idle()
@@ -2228,16 +2234,19 @@ class PlaybackFilterAdmissionTest {
 
             // EIT優先中にもAACの最新構成を保持し、EIT消失後に古い主副へ戻さない。
             feed(stereoFrame)
+            refresh()
             assertEquals(physical, selected.last())
             ReflectionHelpers.setField(session, "latestLiveSnapshot", snapshot.copy(services = listOf(service)))
             refresh()
             assertEquals(physical, selected.last())
             feed(dualFrame)
+            refresh()
             assertNull(published.last().single { it.id == "$physical:sub" }.language)
             assertTrue(fixture.selectAudio(session, "$physical:sub"))
             Shadows.shadowOf(Looper.getMainLooper()).idle()
             assertEquals("$physical:sub", selected.last())
             feed(dualFrame.copyOf(12))
+            refresh()
             assertEquals("$physical:sub", selected.last())
             output.removeKey(MediaFormat.KEY_CHANNEL_MASK)
             outputChanged()
@@ -2250,8 +2259,10 @@ class PlaybackFilterAdmissionTest {
             refresh()
             assertEquals("$physical:sub", selected.last())
             feed(stereoFrame)
+            refresh()
             assertEquals(physical, selected.last())
             feed(dualFrame)
+            refresh()
             assertNull(published.last().single { it.id == "$physical:sub" }.language)
             assertTrue(fixture.selectAudio(session, "$physical:sub"))
             val second = selection.copy(audio = otherAudio, audioDualMono = true)
@@ -2259,17 +2270,21 @@ class PlaybackFilterAdmissionTest {
             assertEquals(AudioTrack.DUAL_MONO_MODE_OFF, nativeTrack.modes.last())
             val secondFilter = ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter")
             feed(dualFrame, secondFilter)
+            refresh()
             assertEquals(AudioTrack.DUAL_MONO_MODE_LL, nativeTrack.modes.last())
             assertTrue(fixture.pipeline.switchAudio(fixture.tuner, selection.copy(audioDualMono = null)).switchedAudio)
             refresh()
             assertEquals(physical, selected.last())
             val currentFilter = ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter")
             feed(dualFrame, filter)
+            refresh()
             assertEquals(physical, selected.last())
             feed(dualFrame, currentFilter)
+            refresh()
             assertTrue(fixture.selectAudio(session, "$physical:sub"))
             nativeTrack.accept = false
             feed(stereoFrame, currentFilter)
+            refresh()
             assertEquals(AudioTrack.DUAL_MONO_MODE_OFF, nativeTrack.modes.last())
             assertEquals(PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE, fixture.failures.last().first)
             assertNull(selected.last())
@@ -2298,7 +2313,7 @@ class PlaybackFilterAdmissionTest {
             nativeTrack.accept = true
             output.setInteger(MediaFormat.KEY_CHANNEL_MASK, AudioFormat.CHANNEL_OUT_STEREO)
             outputChanged()
-            feed(dualFrame, otherFilter, refreshTracks = false)
+            feed(dualFrame, otherFilter)
             refresh(otherService)
             assertEquals("$otherPhysical:main", selected.last())
             assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
@@ -2311,7 +2326,7 @@ class PlaybackFilterAdmissionTest {
                 com.maleicacid.tvinput.aribsi.NativeAribSiParser
                     .adtsPresentation(changed)
             assertEquals(true, changedFact?.dualMono)
-            val discarded = feed(changed, otherFilter, refreshTracks = false)
+            val discarded = feed(changed, otherFilter)
             assertEquals(1, Shadow.extract<NativeMediaEvent>(discarded).releases)
             val restart = restarts.single()
             assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > 7L)
@@ -2352,12 +2367,18 @@ class PlaybackFilterAdmissionTest {
             fixture.drain()
 
             val format =
-                AudioFormat.Builder()
+                AudioFormat
+                    .Builder()
                     .setSampleRate(48_000)
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                     .build()
-            val track = AudioTrack.Builder().setAudioFormat(format).setBufferSizeInBytes(4_096).build()
+            val track =
+                AudioTrack
+                    .Builder()
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(4_096)
+                    .build()
             ReflectionHelpers.setField(fixture.pipeline, "audioTrack", track)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
             val output = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_RAW, 48_000, 2)
@@ -2406,11 +2427,12 @@ class PlaybackFilterAdmissionTest {
             assertTrue(track === ReflectionHelpers.getField<Any?>(fixture.pipeline, "audioTrack"))
 
             val controllerOwner = ReflectionHelpers.getField<ControllerSerialExecutor>(controller, "sectionExecutor")
-            controllerOwner.submitControl {
-                ReflectionHelpers.setField(controller, "tuneGeneration", 7L)
-                ReflectionHelpers.setField(controller, "tuneAccepted", true)
-                ReflectionHelpers.callInstanceMethod<Unit>(controller, "handleTunerResourceLostOnController")
-            }.get(5, TimeUnit.SECONDS)
+            controllerOwner
+                .submitControl {
+                    ReflectionHelpers.setField(controller, "tuneGeneration", 7L)
+                    ReflectionHelpers.setField(controller, "tuneAccepted", true)
+                    ReflectionHelpers.callInstanceMethod<Unit>(controller, "handleTunerResourceLostOnController")
+                }.get(5, TimeUnit.SECONDS)
             val drained = CountDownLatch(1)
             sessionOwner.executeData { drained.countDown() }
             assertTrue(drained.await(5, TimeUnit.SECONDS))

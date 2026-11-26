@@ -2616,9 +2616,9 @@ class PlaybackPipeline(
             val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
             val pair = if (value.dualMono == null && sameConfiguration) receivedFrontPair else value.frontPair
             val samePresentation = sameConfiguration && aacDualMono == fact && receivedFrontPair == pair
-            if (value.dualMono != null && (!samePresentation || value.hasProgramConfig) &&
-                changedInBandAacConfiguration(bytes) && restartCurrentPlaybackGeneration(generation)
-            ) {
+            val recheckConfiguration = value.dualMono != null && (!samePresentation || value.hasProgramConfig)
+            val configurationChanged = recheckConfiguration && changedInBandAacConfiguration(bytes)
+            if (configurationChanged && restartCurrentPlaybackGeneration(generation)) {
                 return
             }
             if (samePresentation) return
@@ -2631,12 +2631,13 @@ class PlaybackPipeline(
         }
 
         private fun changedInBandAacConfiguration(frame: ByteArray): Boolean {
-            val configured = configuredAacAsc ?: return false
-            if (stream.codecFacts.audioConfigHex != null) return false
+            val configured = configuredAacAsc
+            if (configured == null || stream.codecFacts.audioConfigHex != null) return false
             val nextFormat = runCatching { formatFromBufferedHeader(frame) }.getOrNull()
-            val nextAsc = nextFormat?.let(::aacAsc) ?: return false
-            return !nextAsc.contentEquals(configured) &&
-                !com.maleicacid.tvinput.aribsi.NativeAribSiParser.sameAacDecoderConfiguration(configured, nextAsc)
+            val nextAsc = nextFormat?.let(::aacAsc)
+            return nextAsc != null && !nextAsc.contentEquals(configured) &&
+                !com.maleicacid.tvinput.aribsi.NativeAribSiParser
+                    .sameAacDecoderConfiguration(configured, nextAsc)
         }
 
         fun presentationOutput(
