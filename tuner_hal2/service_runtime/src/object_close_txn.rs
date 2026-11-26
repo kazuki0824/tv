@@ -2278,13 +2278,14 @@ mod tests {
                         let mut runtime = worker_runtime.lock().unwrap();
                         let Some(completion) = completion else {
                             // 前景closeが完了した旧keyは物理処理を繰り返さず予約だけ返す。
-                            assert!(ObjectCloseTxn::is_idempotent_complete(
+                            let disposition = crate::aidl_object_cleanup_disposition(
                                 &runtime,
                                 entry.object_id(),
                                 entry.generation(),
                                 entry.object_kind(),
                             )
-                            .unwrap());
+                            .unwrap();
+                            assert!(disposition.recovery_settled());
                             return;
                         };
                         let failure = ObjectCloseCleanupFailure::new(
