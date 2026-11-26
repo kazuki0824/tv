@@ -2223,13 +2223,15 @@ class PlaybackFilterAdmissionTest {
             val lostFilter = ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter")
             lostFilter.close()
             ReflectionHelpers.setField(fixture.pipeline, "audioFilter", null)
-            val modeCalls = nativeTrack.modes.size
             assertNull(fixture.pipeline.setDualMonoPresentation(PlaybackPipeline.DualMonoPresentation.SUB, physical))
-            assertTrue(fixture.selectAudio(session, "$physical:main"))
+            // 現入力の根拠を失った論理選択は受理せず、公開中の物理trackから再取得する。
+            assertFalse(fixture.selectAudio(session, "$physical:main"))
+            assertTrue(fixture.selectAudio(session, physical))
             Shadows.shadowOf(Looper.getMainLooper()).idle()
-            assertEquals("$physical:main", selected.last())
+            assertEquals(physical, selected.last())
             assertTrue(ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter") !== lostFilter)
-            assertEquals(modeCalls, nativeTrack.modes.size)
+            assertEquals(AudioTrack.DUAL_MONO_MODE_OFF, nativeTrack.modes.last())
+            assertEquals(7L, fixture.pipeline.currentPlaybackGenerationForTest())
             filter = ReflectionHelpers.getField(fixture.pipeline, "audioFilter")
 
             // EIT優先中にもAACの最新構成を保持し、EIT消失後に古い主副へ戻さない。
