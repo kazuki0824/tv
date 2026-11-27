@@ -544,7 +544,6 @@ class MaleicacidLiveSession(
         // 登録可能と判定したPMT trackは、CA descriptor解決・CAS確立・AV再生開始を待たずに通知する。
         // 不完全／不適格なserviceは広告せず、字幕言語は管理PES受信後だけ追加する。
         if (decision.registrationReady) service?.let(::updateTracks)
-        publishLiveProgramSnapshot()
         if (playbackState == PlaybackStartState.Idle && previouslyPending && initialLiveSiPending(decision)) {
             // SDT-actualの受理と、同じPIDのSDT-other/BATの受信を混同しない。
             val sdtDelivery = if ("SDT" in decision.reasons) " ${sectionIngestController.sdtDeliveryDiagnostic()}" else ""
@@ -553,6 +552,7 @@ class MaleicacidLiveSession(
                     "state=${decision.state} reasons=${decision.reasons}$sdtDelivery",
             )
             tunerController.updatePmtFilters(pmtPids, currentGeneration)
+            publishLiveProgramSnapshot()
             return
         }
         val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
@@ -583,6 +583,7 @@ class MaleicacidLiveSession(
                 }
                 throw failure
             }
+        publishLiveProgramSnapshot()
         if (casResult == null) {
             tracePlaybackGate("CAS_FILTER_UPDATE_UNAVAILABLE state=${decision.state} reasons=${decision.reasons}")
             return
@@ -1637,7 +1638,7 @@ class MaleicacidLiveSession(
                         ProgramVideoMetadataPolicy.eventContainsTime(event, key, now)
                     },
                 semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
-                malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
+                malformedCaDescriptorCountByServiceKey = transaction.malformedCaDescriptorCountByServiceKey,
                 ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
             )
         if (records.isEmpty()) return
@@ -1685,7 +1686,7 @@ class MaleicacidLiveSession(
                 profile = transaction.discoveryProfile,
                 events = transaction.events,
                 semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
-                malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
+                malformedCaDescriptorCountByServiceKey = transaction.malformedCaDescriptorCountByServiceKey,
                 ratingProfileByServiceKey = ratingProfiles,
             )
         publishLivePrograms(applyLatestVideoMetadata(records), transaction)

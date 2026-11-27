@@ -1,6 +1,5 @@
 package com.maleicacid.tvinput.aribsi
 
-import com.maleicacid.tvinput.common.ServiceId16
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ProgramDescriptors
 import com.maleicacid.tvinput.db.ProgramRecord
@@ -13,7 +12,7 @@ class EventModelMapper {
         events: List<AribEvent>,
         profile: Int,
         semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts> = emptyMap(),
-        malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
+        malformedCaDescriptorCountByServiceKey: Map<ServiceKey, Int> = emptyMap(),
         ratingProfileByServiceKey: Map<ServiceKey, AribRatingMapper.BroadcastProfile> = emptyMap(),
     ): List<ProgramRecord> {
         return events.mapNotNull { event ->
@@ -76,7 +75,7 @@ class EventModelMapper {
                                 ratingProfileByServiceKey[event.serviceKey] ?: AribRatingMapper.BroadcastProfile.UNRESOLVED,
                             )
                         },
-                    malformedCaDescriptorCount = malformedCaDescriptorCountByServiceId[event.serviceKey.service] ?: 0,
+                    malformedCaDescriptorCount = malformedCaDescriptorCountByServiceKey[event.serviceKey] ?: 0,
                 )
             }
         }

@@ -528,7 +528,7 @@ data class ProgramPublishSnapshot(
     val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
-    val malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
+    val malformedCaDescriptorCountByServiceKey: Map<ServiceKey, Int> = emptyMap(),
     val eitInstances: List<EitInstanceState> = emptyList(),
     val excludedEventDescriptorFacts: List<ExcludedEventDescriptorFacts> = emptyList(),
 )

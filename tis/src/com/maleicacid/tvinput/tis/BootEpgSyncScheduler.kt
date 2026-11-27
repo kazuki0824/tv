@@ -13,8 +13,6 @@ object BootEpgSyncScheduler {
     private const val PERIODIC_JOB_ID = 0x4d455048
 
     fun scheduleDailyRefresh(context: Context) {
-        val scheduler = context.getSystemService(JobScheduler::class.java) ?: return
-        if (scheduler.getPendingJob(PERIODIC_JOB_ID)?.isPeriodic == true) scheduler.cancel(PERIODIC_JOB_ID)
         DailyEpgSchedule.arm(context, onlyIfAbsent = true)
     }
 

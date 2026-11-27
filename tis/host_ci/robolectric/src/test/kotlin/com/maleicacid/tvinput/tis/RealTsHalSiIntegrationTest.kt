@@ -257,6 +257,8 @@ class RealTsHalSiIntegrationTest {
                 expected.getInt("transport_stream_id"),
                 expected.getInt("selected_service_id"),
             )
+        val sameTransportService = ServiceKey(key.originalNetworkId, key.transportStreamId, 1049)
+        val malformedCaCounts = mapOf(sameTransportService to 3)
         val context = ApplicationProvider.getApplicationContext<Context>()
         val provider = LiveProgramProvider(key)
         provider.attachInfo(context, ProviderInfo().apply { authority = TvContract.AUTHORITY })
@@ -280,7 +282,8 @@ class RealTsHalSiIntegrationTest {
                 ingestSameTransportOverlap(engine, ratedSections, schedule, key)
                 val ready = engine.livePlaybackSnapshot()
                 assertTrue(ServicePolicyEvaluator.evaluateLive(ready, key).registrationReady)
-                ReflectionHelpers.setField(session, "latestLiveSnapshot", ready)
+                val diagnosed = ready.programs.copy(malformedCaDescriptorCountByServiceKey = malformedCaCounts)
+                ReflectionHelpers.setField(session, "latestLiveSnapshot", ready.copy(programs = diagnosed))
                 ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramSnapshot")
             }
             val present =
@@ -290,6 +293,8 @@ class RealTsHalSiIntegrationTest {
             val end = start + present.getLong("duration_ms")
             val fixtureNow = start + 1
             assertSameTransportPublication(provider.rows)
+            val sameTransport = provider.rows.first { it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 8L }
+            assertEquals(3, malformedCaCount(sameTransport))
             val current =
                 provider.rows.single {
                     it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 7L &&
@@ -313,7 +318,9 @@ class RealTsHalSiIntegrationTest {
                     val schedule = withParentalRating(otherTransportSchedule(sections, nextDay), 0x10)
                     assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, schedule).status)
                 }
-                ReflectionHelpers.setField(session, "latestLiveSnapshot", engine.livePlaybackSnapshot())
+                val snapshot = engine.livePlaybackSnapshot()
+                val diagnosed = snapshot.programs.copy(malformedCaDescriptorCountByServiceKey = malformedCaCounts)
+                ReflectionHelpers.setField(session, "latestLiveSnapshot", snapshot.copy(programs = diagnosed))
                 ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramSnapshot")
             }
             // 同一session・同一選局のまま照会時刻を進める。この間の再受信・再公開はない。
@@ -324,6 +331,7 @@ class RealTsHalSiIntegrationTest {
             assertEquals(null, queryCurrentProgram(context, scheduleStart + present.getLong("duration_ms") + 1))
             val tomorrow = provider.rows.single { it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == 0xba01 }
             assertEquals(9L, tomorrow.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID).toLong())
+            assertEquals(0, malformedCaCount(tomorrow))
             assertEquals("com.android.tv/ISDB/ISDB_19", tomorrow.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING))
             val tomorrowStart = tomorrow.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS).toLong()
             assertEquals(start + TimeUnit.DAYS.toMillis(1), tomorrowStart)
@@ -336,6 +344,12 @@ class RealTsHalSiIntegrationTest {
             session.onRelease()
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
+    }
+
+    private fun malformedCaCount(row: ContentValues): Int {
+        val data = row.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
+        val diagnostics = JSONObject(String(data, Charsets.UTF_8)).getJSONObject("diagnostics")
+        return diagnostics.optInt("malformedCaDescriptorCount")
     }
 
     private fun verifyOtherServiceBeforePmt(

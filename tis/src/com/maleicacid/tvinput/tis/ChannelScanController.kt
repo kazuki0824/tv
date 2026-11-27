@@ -669,7 +669,7 @@ class ChannelScanController(
                 profile = transaction.discoveryProfile,
                 events = transaction.events,
                 semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
-                malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
+                malformedCaDescriptorCountByServiceKey = transaction.malformedCaDescriptorCountByServiceKey,
                 ratingProfileByServiceKey =
                     transaction.events.associate { event ->
                         event.serviceKey to AribRatingMapper.profileForDeliverySystem(currentCandidate?.deliverySystem)
