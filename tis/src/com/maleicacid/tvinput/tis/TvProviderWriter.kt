@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.IBinder
 import android.os.Parcel
 import android.util.Log
+import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.EpgSectionPolicy
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.LogTags
@@ -77,7 +78,10 @@ class TvProviderWriter private constructor(
     )
 
     interface ChannelStore {
-        fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>>
+        fun indexExistingChannelIds(
+            keys: Set<ServiceKey>,
+            satelliteServices: MutableSet<ServiceKey>? = null,
+        ): Result<Map<ServiceKey, Long>>
 
         fun insertChannel(values: ContentValues): Result<Long?>
 
@@ -318,8 +322,9 @@ class TvProviderWriter private constructor(
         val programsByService = programs.groupBy { it.serviceKey }
         val windowsByService = windows.groupBy { it.serviceKey }
         val targetKeys = programsByService.keys + windowsByService.keys + verifiedEmptyServiceKeys
+        val satelliteServices = if (programs.any { it.hasOtherTransportRating() }) mutableSetOf<ServiceKey>() else null
         val channelIds =
-            channelStore.indexExistingChannelIds(targetKeys).getOrElse { error ->
+            channelStore.indexExistingChannelIds(targetKeys, satelliteServices).getOrElse { error ->
                 return PreparedProgramPublication(
                     emptyList(),
                     targetKeys.map { key -> Diagnostic(key, "program-channel-query", error.message.orEmpty()) },
@@ -333,7 +338,8 @@ class TvProviderWriter private constructor(
                     return@mapNotNull null
                 }
                 val rows =
-                    programsByService[key].orEmpty().mapNotNull row@{ program ->
+                    programsByService[key].orEmpty().mapNotNull row@{ source ->
+                        val program = source.withRegisteredRatingProfile(satelliteServices)
                         validate(program)?.let {
                             failures += it
                             return@row null
@@ -369,6 +375,25 @@ class TvProviderWriter private constructor(
                 }
             }
         return PreparedProgramPublication(services, failures)
+    }
+
+    private fun ProgramRecord.hasOtherTransportRating(): Boolean =
+        EpgSectionPolicy.isOtherTransport(source.tableId) && descriptors.parentalRatings.isNotEmpty()
+
+    private fun ProgramRecord.withRegisteredRatingProfile(satelliteServices: Set<ServiceKey>?): ProgramRecord {
+        if (satelliteServices == null || !hasOtherTransportRating()) return this
+        val ratings =
+            if (serviceKey in satelliteServices) {
+                descriptors.parentalRatings.mapNotNull {
+                    AribRatingMapper.toTvContentRatingString(
+                        it,
+                        AribRatingMapper.BroadcastProfile.BS_CS,
+                    )
+                }
+            } else {
+                emptyList()
+            }
+        return copy(contentRatings = ratings)
     }
 
     fun upsertProgramsForWindows(
@@ -1111,7 +1136,10 @@ class TvProviderWriter private constructor(
             const val PROGRAM_END_TIME_COLUMN_INDEX = 3
         }
 
-        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+        override fun indexExistingChannelIds(
+            keys: Set<ServiceKey>,
+            satelliteServices: MutableSet<ServiceKey>?,
+        ): Result<Map<ServiceKey, Long>> =
             runCatching {
                 if (keys.isEmpty()) return@runCatching emptyMap()
                 val projection =
@@ -1120,7 +1148,7 @@ class TvProviderWriter private constructor(
                         TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID,
                         TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID,
                         TvContract.Channels.COLUMN_SERVICE_ID,
-                    )
+                    ).let { if (satelliteServices == null) it else it + TvContract.Channels.COLUMN_TYPE }
                 val wanted = keys.toHashSet()
                 val out = linkedMapOf<ServiceKey, Long>()
                 val cursor =
@@ -1139,7 +1167,15 @@ class TvProviderWriter private constructor(
                                 rows.getInt(TRANSPORT_STREAM_ID_COLUMN_INDEX),
                                 rows.getInt(SERVICE_ID_COLUMN_INDEX),
                             )
-                        if (key in wanted) out[key] = rows.getLong(CHANNEL_ID_COLUMN_INDEX)
+                        if (key in wanted) {
+                            out[key] = rows.getLong(CHANNEL_ID_COLUMN_INDEX)
+                            if (satelliteServices != null &&
+                                rows.getString(rows.getColumnIndexOrThrow(TvContract.Channels.COLUMN_TYPE)) ==
+                                TvContract.Channels.TYPE_ISDB_S
+                            ) {
+                                satelliteServices.add(key)
+                            }
+                        }
                     }
                 }
                 out

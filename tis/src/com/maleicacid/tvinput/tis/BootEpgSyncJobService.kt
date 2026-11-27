@@ -48,7 +48,7 @@ open class BootEpgSyncJobService : JobService() {
         if (!periodic && !DirectBootGuard.isPending(applicationContext)) return false
         val run = RunContext(params)
         activeRun.set(run)
-        if (periodic) startRefresh(run) else prepareBootRefresh(run)
+        if (periodic) prepareDailyRefresh(run) else prepareBootRefresh(run)
         return true
     }
 
@@ -82,9 +82,23 @@ open class BootEpgSyncJobService : JobService() {
     }
 
     // periodic jobは次の定期枠で再試行し、Direct Bootの保留情報に触れない。
+    private fun prepareDailyRefresh(run: RunContext) {
+        ProgramUpgradeCleanup.ensure(applicationContext) { success ->
+            mainHandler.post {
+                if (activeRun.get() !== run || run.stopped.get()) return@post
+                if (success) {
+                    startRefresh(run)
+                } else {
+                    finish(run, needsReschedule = false)
+                }
+            }
+        }
+    }
+
     private fun startRefresh(run: RunContext) {
-        if (!ProgramUpgradeCleanup.ensure(applicationContext) { success ->
-                if (success && !periodic) {
+        if (!periodic &&
+            !ProgramUpgradeCleanup.ensure(applicationContext) { success ->
+                if (success) {
                     BootEpgSyncScheduler.scheduleIfEligible(applicationContext, "PROGRAM_CLEANUP_COMPLETED")
                 }
             }

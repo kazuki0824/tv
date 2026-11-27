@@ -55,8 +55,10 @@ class TvProviderWriterProgramsTest {
     fun untimedProgramIndexFallbackFailsClosed() {
         val store =
             object : TvProviderWriter.ChannelStore {
-                override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
-                    Result.success(keys.associateWith { 1L })
+                override fun indexExistingChannelIds(
+                    keys: Set<ServiceKey>,
+                    satelliteServices: MutableSet<ServiceKey>?,
+                ): Result<Map<ServiceKey, Long>> = Result.success(keys.associateWith { 1L })
 
                 override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(1L)
 
@@ -1116,7 +1118,10 @@ class TvProviderWriterProgramsTest {
                     }.toMap(),
             )
 
-        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+        override fun indexExistingChannelIds(
+            keys: Set<ServiceKey>,
+            satelliteServices: MutableSet<ServiceKey>?,
+        ): Result<Map<ServiceKey, Long>> =
             Result.success(
                 buildMap {
                     channels.forEach { (id, values) ->

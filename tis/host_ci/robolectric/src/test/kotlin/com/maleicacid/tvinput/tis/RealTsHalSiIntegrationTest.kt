@@ -310,7 +310,7 @@ class RealTsHalSiIntegrationTest {
                 val engine = ReflectionHelpers.getField<AribSiEngine>(session, "aribSiEngine")
                 val ingest = SectionIngestController(engine)
                 for (nextDay in listOf(false, true)) {
-                    val schedule = otherTransportSchedule(sections, nextDay)
+                    val schedule = withParentalRating(otherTransportSchedule(sections, nextDay), 0x10)
                     assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, schedule).status)
                 }
                 ReflectionHelpers.setField(session, "latestLiveSnapshot", engine.livePlaybackSnapshot())
@@ -324,6 +324,7 @@ class RealTsHalSiIntegrationTest {
             assertEquals(null, queryCurrentProgram(context, scheduleStart + present.getLong("duration_ms") + 1))
             val tomorrow = provider.rows.single { it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == 0xba01 }
             assertEquals(9L, tomorrow.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID).toLong())
+            assertEquals("com.android.tv/ISDB/ISDB_19", tomorrow.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING))
             val tomorrowStart = tomorrow.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS).toLong()
             assertEquals(start + TimeUnit.DAYS.toMillis(1), tomorrowStart)
             val titleColumn = TvContract.Programs.COLUMN_TITLE
@@ -368,18 +369,21 @@ class RealTsHalSiIntegrationTest {
         assertEquals(setOf(0xbdac, 0xbdb1), provider.rows.map { it.getAsInteger(event).toInt() }.toSet())
         assertTrue(provider.rows.all { it.getAsLong(channel) == 8L })
         val rated = provider.rows.single { it.getAsInteger(event) == 0xbdac }
-        assertEquals("com.android.tv/ISDB/ISDB_15", rated.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING))
+        assertEquals(null, rated.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING))
         provider.rows.clear()
         engine.reset(SiDiscoveryProfile.ISDB_T)
         return ratedSections
     }
 
-    private fun withParentalRating(section: ByteArray): ByteArray {
+    private fun withParentalRating(
+        section: ByteArray,
+        raw: Byte = 12,
+    ): ByteArray {
         val current = ByteBuffer.wrap(section)
         val length = current.getShort(1).toInt() and 0x0fff
         val descriptors = current.getShort(24).toInt() and 0x0fff
         val end = 26 + descriptors
-        val rating = byteArrayOf(0x55, 4, 0x4a, 0x50, 0x4e, 12)
+        val rating = byteArrayOf(0x55, 4, 0x4a, 0x50, 0x4e, raw)
         val rated = section.copyOfRange(0, end) + rating + section.copyOfRange(end, section.size)
         ByteBuffer.wrap(rated).apply {
             putShort(1, ((current.getShort(1).toInt() and 0xf000) or (length + rating.size)).toShort())
@@ -562,9 +566,18 @@ class RealTsHalSiIntegrationTest {
                         ),
                     )
                 } else if (uri.pathSegments.first() == "channel") {
-                    addRow(arrayOf(7L, key.originalNetworkId, key.transportStreamId, key.serviceId))
-                    addRow(arrayOf(8L, key.originalNetworkId, key.transportStreamId, 1049))
-                    addRow(arrayOf(9L, key.originalNetworkId, 0x7777, 1049))
+                    fun channel(
+                        id: Long,
+                        tsid: Int,
+                        sid: Int,
+                        type: String,
+                    ) {
+                        val values = listOf(id, key.originalNetworkId, tsid, sid)
+                        addRow(if (TvContract.Channels.COLUMN_TYPE in columnNames) values + type else values)
+                    }
+                    channel(7L, key.transportStreamId, key.serviceId, TvContract.Channels.TYPE_ISDB_T)
+                    channel(8L, key.transportStreamId, 1049, TvContract.Channels.TYPE_ISDB_T)
+                    channel(9L, 0x7777, 1049, TvContract.Channels.TYPE_ISDB_S)
                 } else if (uri.pathSegments.first() == "program") {
                     addCurrentPrograms(uri, this)
                 }

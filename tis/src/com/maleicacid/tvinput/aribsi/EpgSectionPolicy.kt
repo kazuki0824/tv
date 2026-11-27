@@ -13,6 +13,9 @@ internal object EpgSectionPolicy {
     @Suppress("MagicNumber")
     fun isSchedule(tableId: Int): Boolean = tableId in 0x50..0x6f
 
+    @Suppress("MagicNumber")
+    fun isOtherTransport(tableId: Int): Boolean = tableId == PF_OTHER || tableId in 0x60..0x6f
+
     const val PF_OTHER = 0x4f
 
     @Suppress("MagicNumber")

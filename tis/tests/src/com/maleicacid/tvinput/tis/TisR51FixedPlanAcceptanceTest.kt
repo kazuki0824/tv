@@ -2706,7 +2706,10 @@ class TisR51FixedPlanAcceptanceTest {
                     }.toMap(),
             )
 
-        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+        override fun indexExistingChannelIds(
+            keys: Set<ServiceKey>,
+            satelliteServices: MutableSet<ServiceKey>?,
+        ): Result<Map<ServiceKey, Long>> =
             Result.success(
                 buildMap {
                     channels.forEach { (id, values) ->

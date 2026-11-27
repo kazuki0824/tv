@@ -23,8 +23,10 @@ class TvProviderWriterUpsertTest {
         var writes = 0
         val store =
             object : TvProviderWriter.ChannelStore {
-                override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
-                    Result.success(keys.associateWith { 1L })
+                override fun indexExistingChannelIds(
+                    keys: Set<ServiceKey>,
+                    satelliteServices: MutableSet<ServiceKey>?,
+                ): Result<Map<ServiceKey, Long>> = Result.success(keys.associateWith { 1L })
 
                 override fun insertChannel(values: ContentValues): Result<Long?> {
                     writes++
@@ -435,7 +437,10 @@ class TvProviderWriterUpsertTest {
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
-        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+        override fun indexExistingChannelIds(
+            keys: Set<ServiceKey>,
+            satelliteServices: MutableSet<ServiceKey>?,
+        ): Result<Map<ServiceKey, Long>> =
             Result.success(
                 buildMap {
                     rows.forEach { (id, values) ->

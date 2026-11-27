@@ -3,13 +3,21 @@
 package com.maleicacid.tvinput.tis
 
 import android.app.job.JobParameters
+import android.content.ComponentName
+import android.content.Context
 import android.content.pm.ProviderInfo
 import android.database.MatrixCursor
+import android.media.tv.ITvInputManager
 import android.media.tv.TvContract
+import android.media.tv.TvInputInfo
+import android.media.tv.TvInputManager
 import android.net.Uri
 import android.os.Looper
 import android.os.UserManager
 import com.maleicacid.tvinput.aribsi.AribSiEngine
+import com.maleicacid.tvinput.aribsi.ProviderDataBridge
+import com.maleicacid.tvinput.common.FrequencyHz
+import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -35,7 +43,7 @@ import kotlin.test.assertTrue
 @RunWith(RobolectricTestRunner::class)
 @Config(
     sdk = [35],
-    instrumentedPackages = ["com.maleicacid.tvinput.aribsi"],
+    instrumentedPackages = ["com.maleicacid.tvinput.aribsi.AribSiEngine"],
     shadows = [TunerFrontendLeaseTransitionTest.SiEngineBoundary::class],
 )
 class ScanCancellationProviderTest {
@@ -105,6 +113,81 @@ class ScanCancellationProviderTest {
         assertEquals("BOOT_EPG_JOB_STOPPED", DirectBootGuard.pendingState(service).lastSkippedReason)
         assertFalse(Shadow.extract<ShadowJobService>(service).getIsJobFinished())
         provider.database.close()
+    }
+
+    @Test
+    fun dailyRequestStartsOnceAfterPendingCleanupSucceeds() {
+        val service = Robolectric.buildService(PeriodicEpgRefreshJobService::class.java).create().get()
+        val context = service.applicationContext
+        val input = TvInputInfo.Builder(context, ComponentName(context, MaleicacidTvInputService::class.java)).build()
+        val manager =
+            TvInputManager(
+                object : ITvInputManager.Default() {
+                    override fun getTvInputList(userId: Int): List<TvInputInfo> = listOf(input)
+                },
+                0,
+            )
+        val app = shadowOf(RuntimeEnvironment.getApplication())
+        val ready = ReflectionHelpers.getField<AtomicBoolean>(ProgramUpgradeCleanup, "ready")
+        val previousReady = ready.getAndSet(false)
+        val release = CountDownLatch(1)
+        val complete = CountDownLatch(1)
+        val queries = AtomicInteger()
+        val provider =
+            object : TvProviderVisibilityTransactionTest.VisibilityProvider() {
+                override fun query(
+                    uri: Uri,
+                    projection: Array<out String>?,
+                    selection: String?,
+                    selectionArgs: Array<out String>?,
+                    sortOrder: String?,
+                ): MatrixCursor {
+                    queries.incrementAndGet()
+                    val channel =
+                        ChannelRecord(
+                            ServiceKey(1, 2, 3),
+                            1,
+                            "011",
+                            "試験局",
+                            FrequencyHz(473142857),
+                            casFactsCanonicalJson = testCasFacts(false),
+                        )
+                    val data = ProviderDataBridge.buildChannelProviderData(channel)
+                    check(data is ProviderDataBridge.Success) { data.toString() }
+                    val bytes = data.bytes
+                    return MatrixCursor(checkNotNull(projection)).apply {
+                        addRow(arrayOf(7L, 1, 2, 3, "011", "試験局", "1", TvContract.Channels.TYPE_ISDB_T, bytes))
+                    }
+                }
+            }
+        provider.attachInfo(context, ProviderInfo().apply { authority = TvContract.AUTHORITY })
+        ShadowContentResolver.registerProviderInternal(TvContract.AUTHORITY, provider)
+        val generation = ReflectionHelpers.getField<AtomicInteger>(ChannelScanManager, "nextGeneration")
+        val before = generation.get()
+        val params = Shadow.newInstanceOf(JobParameters::class.java)
+        try {
+            app.setSystemService(Context.TV_INPUT_SERVICE, manager)
+            assertFalse(ProgramUpgradeCleanup.ensure(cleanup = { release.await(5, TimeUnit.SECONDS) }))
+            assertTrue(service.onStartJob(params))
+            assertFalse(ProgramUpgradeCleanup.ensure(cleanup = { error("重複起動") }) { complete.countDown() })
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(0, queries.get())
+            release.countDown()
+            assertTrue(complete.await(5, TimeUnit.SECONDS))
+            shadowOf(Looper.getMainLooper()).idle()
+            val read = CountDownLatch(1)
+            ChannelScanManager.prepareEpgRefresh { read.countDown() }
+            assertTrue(read.await(5, TimeUnit.SECONDS))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(1, queries.get())
+            assertEquals(before + 1, generation.get())
+        } finally {
+            service.onStopJob(params)
+            release.countDown()
+            ready.set(previousReady)
+            app.removeSystemService(Context.TV_INPUT_SERVICE)
+            provider.database.close()
+        }
     }
 
     @Test
