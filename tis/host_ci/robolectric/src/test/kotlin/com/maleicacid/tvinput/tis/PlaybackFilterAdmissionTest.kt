@@ -2781,9 +2781,16 @@ class PlaybackFilterAdmissionTest {
     @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
     fun routingRestartPublishesPhysicalAudioWhenTheNewOutputIsMono() = checkRoutingRestart(1)
 
+    @Test
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
+    fun routingRestartPublishesPhysicalAudioWhenSubReapplicationIsRejected() = checkRoutingRestart(2, acceptDualMono = false)
+
     // 登録済みlistenerから本番の再生成とSessionの通知を通し、Android入出力の境界だけを模擬する。
     @Suppress("LongMethod")
-    private fun checkRoutingRestart(channels: Int) {
+    private fun checkRoutingRestart(
+        channels: Int,
+        acceptDualMono: Boolean = true,
+    ) {
         Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
             val selection = fixture.audioSelection().copy(video = null)
             val activeChannel = ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel")
@@ -2804,6 +2811,7 @@ class PlaybackFilterAdmissionTest {
             val listener =
                 ReflectionHelpers.getField<AudioRouting.OnRoutingChangedListener>(fixture.pipeline, "audioRoutingListener")
             val nativeTrack = Shadow.extract<DualMonoAudioTrack>(previous)
+            assertEquals(AudioTrack.DUAL_MONO_MODE_RR, nativeTrack.modes.last())
 
             nativeTrack.route = routeDevice(1)
             listener.onRoutingChanged(previous)
@@ -2817,27 +2825,32 @@ class PlaybackFilterAdmissionTest {
             assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > started.generation)
             drainRouteAudioNotifications(session)
             assertNull(ReflectionHelpers.getField<AudioTrack?>(fixture.pipeline, "audioTrack"))
+            assertTrue("選択:null" in callbacks, callbacks.toString())
             assertFalse("選択:$sub" in callbacks, callbacks.toString())
             val outputBoundary = callbacks.size
             callbacks += "新出力"
-            val replacement = fixture.deliverRoutePcmFormat(channels)
+            val replacement = fixture.deliverRoutePcmFormat(channels, acceptDualMono)
             assertTrue(previous !== replacement)
             drainRouteAudioNotifications(session)
 
             val publication = callbacks.indexOfLast { it.startsWith("一覧:") }
             val selectionNotice = callbacks.indexOfLast { it.startsWith("選択:") }
             assertTrue(publication >= 0 && selectionNotice > publication, callbacks.toString())
-            val expected = if (channels == 2) sub else physical
+            assertTrue(selectionNotice > outputBoundary, callbacks.toString())
+            val reappliesSub = channels == 2 && acceptDualMono
+            val expected = if (reappliesSub) sub else physical
             assertEquals("選択:$expected", callbacks[selectionNotice])
             val published = callbacks[publication].removePrefix("一覧:").split(",")
-            val modes = Shadow.extract<DualMonoAudioTrack>(replacement).modes
-            if (channels == 2) {
+            val replacementShadow = Shadow.extract<DualMonoAudioTrack>(replacement)
+            assertEquals(acceptDualMono, replacementShadow.accept)
+            val modes = replacementShadow.modes
+            if (reappliesSub) {
                 assertTrue(publication > outputBoundary, callbacks.toString())
                 assertTrue(sub in published)
                 assertEquals(AudioTrack.DUAL_MONO_MODE_RR, modes.last())
             } else {
                 assertEquals(listOf(physical), published)
-                assertTrue(AudioTrack.DUAL_MONO_MODE_RR !in modes)
+                assertEquals(channels == 2, AudioTrack.DUAL_MONO_MODE_RR in modes)
                 assertTrue("選択:$sub" !in callbacks)
             }
         }
@@ -2873,6 +2886,7 @@ class PlaybackFilterAdmissionTest {
                         if (sub in ids && "新出力" in events) {
                             val track = ReflectionHelpers.getField<AudioTrack>(pipeline, "audioTrack")
                             val nativeTrack = Shadow.extract<DualMonoAudioTrack>(track)
+                            assertTrue(nativeTrack.accept)
                             assertEquals(AudioTrack.DUAL_MONO_MODE_RR, nativeTrack.modes.last())
                         }
                         events += "一覧:${ids.joinToString(",")}"
@@ -2889,7 +2903,10 @@ class PlaybackFilterAdmissionTest {
         return events
     }
 
-    private fun Fixture.deliverRoutePcmFormat(channels: Int): AudioTrack {
+    private fun Fixture.deliverRoutePcmFormat(
+        channels: Int,
+        acceptDualMono: Boolean = true,
+    ): AudioTrack {
         attachCodec(audio = true, dualAac = true)
         val frame = byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56)
         val event = mediaEvent(frame.size.toLong())
@@ -2903,12 +2920,17 @@ class PlaybackFilterAdmissionTest {
         format.setInteger(MediaFormat.KEY_CHANNEL_MASK, mask)
         return executor.callControl(5_000L) {
             val decoder = ReflectionHelpers.getField<Any>(pipeline, "audioDecoder")
-            ReflectionHelpers.callInstanceMethod<Unit>(
-                decoder,
-                "onOutputFormatChanged",
-                ReflectionHelpers.ClassParameter.from(MediaFormat::class.java, format),
-            )
-            ReflectionHelpers.getField(pipeline, "audioTrack")
+            DualMonoAudioTrack.acceptOnNextRouteRead.set(acceptDualMono)
+            try {
+                ReflectionHelpers.callInstanceMethod<Unit>(
+                    decoder,
+                    "onOutputFormatChanged",
+                    ReflectionHelpers.ClassParameter.from(MediaFormat::class.java, format),
+                )
+                ReflectionHelpers.getField(pipeline, "audioTrack")
+            } finally {
+                DualMonoAudioTrack.acceptOnNextRouteRead.remove()
+            }
         }
     }
 
@@ -3049,8 +3071,19 @@ class PlaybackFilterAdmissionTest {
         var accept = true
         var route: AudioDeviceInfo? = null
 
+        companion object {
+            val acceptOnNextRouteRead = ThreadLocal<Boolean>()
+        }
+
         @Implementation(methodName = "getRoutedDevice")
-        fun routedDevice(): AudioDeviceInfo? = route
+        fun routedDevice(): AudioDeviceInfo? {
+            // 新Trackの経路listener登録時に、最初の主副適用より先に出力先の応答を設定する。
+            acceptOnNextRouteRead.get()?.let {
+                accept = it
+                acceptOnNextRouteRead.remove()
+            }
+            return route
+        }
 
         @Implementation
         fun setDualMonoMode(mode: Int): Boolean {
