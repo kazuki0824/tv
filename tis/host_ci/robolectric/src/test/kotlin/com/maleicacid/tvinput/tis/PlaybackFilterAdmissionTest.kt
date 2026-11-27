@@ -2031,6 +2031,36 @@ class PlaybackFilterAdmissionTest {
 
     @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
     @Test
+    fun switchedAudioCanReuseAscVerifiedOnTheNewInput() {
+        registerAacDecoder()
+        val pce = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
+        val noPce = aacBytes("fff94c0002a00420640001900002264000190000e0")
+        val asc = aacBytes("118004c40400211000")
+        Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
+            val selection = fixture.audioSelection().copy(video = null)
+            val channel = ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel")
+            val start = fixture.pipeline.start(fixture.tuner, channel.copy(serviceType = 2), selection)
+            assertTrue(start.startedAudio)
+            fixture.feedAac(pce)
+            fixture.applyAacPcmFormat(48_000)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+            val codec = ReflectionHelpers.getField<MediaCodec>(decoder, "codec")
+            val next = selection.copy(audio = requireNotNull(selection.audio).copy(elementaryPid = TsPid(0x111)))
+            assertTrue(fixture.pipeline.switchAudio(fixture.tuner, next).switchedAudio)
+            fixture.feedAac(noPce)
+            assertNull(ReflectionHelpers.getField<MediaFormat?>(decoder, "configuredAacFormat"))
+            fixture.feedAac(pce)
+            assertEquals(start.generation, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertTrue(codec === ReflectionHelpers.getField<MediaCodec>(decoder, "codec"))
+            verifyAacRouteRestart(fixture, start.generation)
+            val routed = fixture.pipeline.currentPlaybackGenerationForTest()
+            assertTrue(routed > start.generation)
+            fixture.verifyRestartedAac(asc, pce, noPce, routed)
+        }
+    }
+
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
+    @Test
     fun latestEitModeIsUsedByPlaybackRestart() {
         registerAacDecoder()
         val dual = aacBytes("fff84c000220045e5700c8000016400038")

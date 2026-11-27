@@ -2686,9 +2686,12 @@ class PlaybackPipeline(
                     null
                 }
             val asc = format?.let(::aacAsc) ?: return false
+            if (!current()) return false
             val changed =
                 !asc.contentEquals(configured) && !NativeAribSiParser.sameAacDecoderConfiguration(configured, asc)
-            return changed && current() && restartPlaybackWithAacFormat(generation, format)
+            if (changed) return restartPlaybackWithAacFormat(generation, format)
+            configuredAacFormat = format
+            return false
         }
 
         fun presentationOutput(
