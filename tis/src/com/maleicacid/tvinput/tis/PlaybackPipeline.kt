@@ -2659,9 +2659,10 @@ class PlaybackPipeline(
             val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
             val pair = if (value.dualMono == null && sameConfiguration) receivedFrontPair else value.frontPair
             val samePresentation = sameConfiguration && aacDualMono == fact && receivedFrontPair == pair
+            // ヘッダだけ判明した後、音声要素を判定できた入力も同じキーのまま照合する。
             val recheckConfiguration =
                 !sameConfiguration || value.hasProgramConfig ||
-                    (value.dualMono == true && !samePresentation)
+                    (value.dualMono != null && !samePresentation)
             if (recheckConfiguration && restartForInBandAacChange(bytes, value.hasProgramConfig, current)) return
             if (samePresentation) return
             receivedFrontPair = pair

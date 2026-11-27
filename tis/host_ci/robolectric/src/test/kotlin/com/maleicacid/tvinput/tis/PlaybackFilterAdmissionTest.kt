@@ -2034,7 +2034,7 @@ class PlaybackFilterAdmissionTest {
     fun switchedAudioCanReuseAscVerifiedOnTheNewInput() {
         registerAacDecoder()
         val pce = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
-        val noPce = aacBytes("fff94c0002a00420640001900002264000190000e0")
+        val noPce = aacBytes("fff84c0002e004000020640001900002264000190000e0")
         val asc = aacBytes("118004c40400211000")
         Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
             val selection = fixture.audioSelection().copy(video = null)
@@ -2051,6 +2051,8 @@ class PlaybackFilterAdmissionTest {
             val nextFilter = ReflectionHelpers.getField<Filter>(fixture.pipeline, "audioFilter")
             assertTrue(nextFilter !== previousFilter)
             assertEquals(1, Shadow.extract<NativeFilter>(previousFilter).closes)
+            fixture.feedAac(undecidableProtectedAac(noPce, asc))
+            assertEquals(true, NativeAribSiParser.matchesInheritedAacConfiguration(noPce, asc))
             val matching = fixture.feedAac(noPce)
             assertEquals(0, matching.releases)
             assertEquals(start.generation, fixture.pipeline.currentPlaybackGenerationForTest())
@@ -2070,7 +2072,7 @@ class PlaybackFilterAdmissionTest {
     fun switchedAudioWaitsForAacConfigWhenInheritedAscDoesNotMatch() {
         registerAacDecoder()
         val pce4 = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
-        val noPce3 = aacBytes("fff94c00024004206400019000000c800070")
+        val noPce3 = aacBytes("fff84c000280040000206400019000000c800070")
         val pce3 = aacBytes("fff84c00036004799fa0988080040000206400019000000c800070")
         val asc3 = aacBytes("118004c40400200000")
         Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
@@ -2089,14 +2091,18 @@ class PlaybackFilterAdmissionTest {
             val configuredAsc = ReflectionHelpers.getField<ByteArray>(oldDecoder, "configuredAacAsc")
             assertEquals(false, NativeAribSiParser.matchesInheritedAacConfiguration(noPce3, configuredAsc))
 
-            postCodecCallback(oldCodec, 1, 0, null)
+            repeat(2) { postCodecCallback(oldCodec, 1, it, null) }
             val delivered = CountDownLatch(1)
             ReflectionHelpers.getField<Handler>(fixture.pipeline, "codecCallbackHandler").post { delivered.countDown() }
             assertTrue(delivered.await(5, TimeUnit.SECONDS))
             fixture.drain()
+            assertEquals(2, ReflectionHelpers.getField<Collection<Int>>(oldDecoder, "availableInputIndexes").size)
+            fixture.feedAac(undecidableProtectedAac(noPce3, configuredAsc))
+            assertEquals(start.generation, fixture.pipeline.currentPlaybackGenerationForTest())
+            val firstBlock = checkNotNull(nativeCodec.lastInputBlock)
             assertEquals(1, ReflectionHelpers.getField<Collection<Int>>(oldDecoder, "availableInputIndexes").size)
             val mismatched = fixture.feedAac(noPce3)
-            assertNull(nativeCodec.lastInputBlock)
+            assertTrue(nativeCodec.lastInputBlock === firstBlock)
             assertEquals(1, mismatched.releases)
             val generation = fixture.pipeline.currentPlaybackGenerationForTest()
             assertTrue(generation > start.generation)
@@ -2151,6 +2157,20 @@ class PlaybackFilterAdmissionTest {
     }
 
     private fun aacBytes(hex: String): ByteArray = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+    private fun undecidableProtectedAac(
+        frame: ByteArray,
+        asc: ByteArray,
+    ): ByteArray {
+        val undecidable = frame.copyOf().apply { fill(0, fromIndex = 9) }
+        val observed = NativeAribSiParser.adtsPresentation(undecidable)
+        assertEquals(AacProbeStatusDto.Ready, observed.status)
+        assertEquals(NativeAribSiParser.adtsPresentation(frame).configuration, observed.configuration)
+        assertNull(observed.dualMono)
+        assertFalse(observed.hasProgramConfig)
+        assertNull(NativeAribSiParser.matchesInheritedAacConfiguration(undecidable, asc))
+        return undecidable
+    }
 
     private fun Fixture.feedAac(frame: ByteArray): NativeMediaEvent {
         val event = mediaEvent(frame.size.toLong())
