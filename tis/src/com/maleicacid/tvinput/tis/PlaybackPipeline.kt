@@ -2564,6 +2564,7 @@ class PlaybackPipeline(
         private var dualMonoPresentation: DualMonoPresentation = initialDualMonoPresentation
         private var eitDualMono: Boolean? = dualMono
         private var aacConfiguration: Int? = null
+        private var receivedAacElementOrder: Int? = null
         private var aacDualMono: Boolean? = null
         private var aacInputCurrent: (() -> Boolean)? = null
         private var independentStereo = false
@@ -2591,6 +2592,7 @@ class PlaybackPipeline(
 
         private fun clearReceivedAacPresentation() {
             aacConfiguration = null
+            receivedAacElementOrder = null
             receivedFrontPair = null
             aacDualMono = null
         }
@@ -2658,12 +2660,12 @@ class PlaybackPipeline(
             val sameConfiguration = aacConfiguration == configuration && aacInputCurrent?.invoke() == true
             val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
             val pair = if (value.dualMono == null && sameConfiguration) receivedFrontPair else value.frontPair
+            val order = value.elementOrder ?: receivedAacElementOrder.takeIf { sameConfiguration }
             val samePresentation = sameConfiguration && aacDualMono == fact && receivedFrontPair == pair
-            // ヘッダだけ判明した後、音声要素を判定できた入力も同じキーのまま照合する。
-            val recheckConfiguration =
-                !sameConfiguration || value.hasProgramConfig ||
-                    (value.dualMono != null && !samePresentation)
+            // 構成キーと主副が同じでも、判定できた音声要素の配置が変われば照合する。
+            val recheckConfiguration = !sameConfiguration || value.hasProgramConfig || order != receivedAacElementOrder
             if (recheckConfiguration && restartForInBandAacChange(bytes, value.hasProgramConfig, current)) return
+            receivedAacElementOrder = order
             if (samePresentation) return
             receivedFrontPair = pair
             aacConfiguration = configuration

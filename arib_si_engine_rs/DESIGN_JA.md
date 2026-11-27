@@ -372,7 +372,7 @@ SI内部のロックを保持した状態で、Java VMへの結果生成・例�
 
 Java VMが例外を保持している場合（メモリー不足など）は、その例外を消去・置換しない。例外の構築自体に失敗した場合も正常な空値を返さない。例外を伴わないnull戻り値は`JNI_OUTPUT`の失敗として扱い、正常値として受理しない。例外構築の失敗理由は元の失敗と併記する。Kotlin側の宣言と受取補助関数の使用規則は、`../tis/CODE_CONVENTION.md`を正とする。
 
-入力配列の長さ上限超過とコーデック構文不正は`Invalid`、JNI配列取得失敗は`JNI_INPUT`とする。単一ADTSフレームの二重音声判定も `AacFramePresentationDto` の `Pending / Invalid / Ready` を返す。宣言長に達しない入力はPending、ヘッダ不正・余剰bytes・上限超過はInvalid、完全なヘッダで音声要素の有効な判定が得られない場合はReadyの `dualMono=null` とする。この場合、構成キーのみが有効で、主副構成は証明しない。provider-dataの内容不正・キー不在は、本書の各APIで定義する結果として表す。JNI変換に失敗した入力を空配列として解析しない。
+入力配列の長さ上限超過とコーデック構文不正は`Invalid`、JNI配列取得失敗は`JNI_INPUT`とする。単一ADTSフレームの二重音声判定も `AacFramePresentationDto` の `Pending / Invalid / Ready` を返す。宣言長に達しない入力はPending、ヘッダ不正・余剰bytes・上限超過はInvalid、完全なヘッダで音声要素の有効な判定が得られない場合はReadyの `dualMono=null` とする。この場合、構成キーのみが有効で、主副構成は証明しない。構成0で完全な音声構文を判定できた場合だけ、2要素の種類とタグを送出順に並べた比較値をelementOrderとして渡す。provider-dataの内容不正・キー不在は、本書の各APIで定義する結果として表す。JNI変換に失敗した入力を空配列として解析しない。
 
 Rust は少なくとも以下の JNI API 相当を提供する。
 

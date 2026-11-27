@@ -627,27 +627,40 @@ pub fn frame_presentation_dto(frame: &[u8]) -> crate::codec_probe_dto::AacFrameP
             Some("ADTSの宣言長が入力と一致しません"),
         );
     }
-    let (dual_mono, front_pair, has_program_config) = match aac_elements::parse_frame(frame) {
-        Some(parsed) => {
-            let dual_mono = parsed.presentation == AacPresentation::DualMono;
-            let front_pair = dual_mono.then(|| {
-                let tags = parsed.first_elements.map(|(_, tag)| tag);
-                front_pair_key((frame[2] >> 2) & 15, tags)
-            });
-            (Some(dual_mono), front_pair, parsed.has_program_config)
-        }
-        None => {
-            // 主副を確定できなくても、先頭PCEがあれば構成probeに照合を委ねる。
-            let payload = if frame[1] & 1 == 0 { 9 } else { 7 };
-            (None, None, frame[payload] >> 5 == 5)
-        }
-    };
+    let (dual_mono, front_pair, element_order, has_program_config) =
+        match aac_elements::parse_frame(frame) {
+            Some(parsed) => {
+                let dual_mono = parsed.presentation == AacPresentation::DualMono;
+                let front_pair = dual_mono.then(|| {
+                    let tags = parsed.first_elements.map(|(_, tag)| tag);
+                    front_pair_key((frame[2] >> 2) & 15, tags)
+                });
+                // 構成0の2要素を、型とタグを各4ビットで並べた比較値にする。
+                let element_order = (((frame[2] & 1) | (frame[3] >> 6)) == 0).then(|| {
+                    i32::from(u16::from_be_bytes(
+                        parsed.first_elements.map(|(kind, tag)| (kind << 4) | tag),
+                    ))
+                });
+                (
+                    Some(dual_mono),
+                    front_pair,
+                    element_order,
+                    parsed.has_program_config,
+                )
+            }
+            None => {
+                // 主副を確定できなくても、先頭PCEがあれば構成probeに照合を委ねる。
+                let payload = if frame[1] & 1 == 0 { 9 } else { 7 };
+                (None, None, None, frame[payload] >> 5 == 5)
+            }
+        };
     AacFramePresentationDto {
         status: AacProbeStatusDto::Ready,
         reason: None,
         configuration: Some(i32::from(configuration)),
         dual_mono,
         front_pair,
+        element_order,
         has_program_config,
     }
 }
@@ -760,6 +773,12 @@ mod tests {
         let mut reversed = frame;
         reversed[9] = 0x22;
         reversed[16] = 0x06;
+        assert_eq!(frame_presentation_dto(&frame).element_order, Some(0x1011));
+        assert_eq!(
+            frame_presentation_dto(&reversed).element_order,
+            Some(0x1110)
+        );
+        assert_eq!(frame_presentation_dto(&reversed[..22]).element_order, None);
         assert_eq!(
             matches_inherited_aac_configuration(&frame, &asc),
             Some(true)

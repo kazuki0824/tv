@@ -7,5 +7,6 @@ data class AacFramePresentationDto(
     val configuration: Int?,
     val dualMono: Boolean?,
     val frontPair: Int?,
+    val elementOrder: Int?,
     val hasProgramConfig: Boolean
 )

@@ -16,6 +16,7 @@ pub struct AacFramePresentationDto {
     pub configuration: Option<i32>,
     pub dual_mono: Option<bool>,
     pub front_pair: Option<i32>,
+    pub element_order: Option<i32>,
     pub has_program_config: bool,
 }
 
@@ -27,6 +28,7 @@ impl AacFramePresentationDto {
             configuration: None,
             dual_mono: None,
             front_pair: None,
+            element_order: None,
             has_program_config: false,
         }
     }

@@ -1877,6 +1877,8 @@ class PlaybackFilterAdmissionTest {
         val dual48WithComment = hex("fff84c000320047ca9a09900000002014100c8000016400038")
         val pce3 = hex("fff84c00036004799fa0988080040000206400019000000c800070")
         val pce4 = hex("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
+        val invalidPce3 = pce3.copyOf()
+        invalidPce3[10] = (invalidPce3[10].toInt() xor 0x08).toByte()
         // 同じ2/1、2/2のraw data blockから先頭PCEを除き、ADTS長とprotection_absentを合わせた入力。
         val noPce3 = hex("fff94c00024004206400019000000c800070")
         val noPce4 = hex("fff94c0002a00420640001900002264000190000e0")
@@ -1955,12 +1957,25 @@ class PlaybackFilterAdmissionTest {
                     Triple(dual48, dualAsc, dual48),
                     Triple(pce3, asc3, noPce3),
                     Triple(pce4, asc4, noPce4),
+                    Triple(noPce3, asc3, pce3),
+                    Triple(pce4, asc4, noPce4),
                     // 旧Filterの2/1候補より、新Filterが先頭で受けた2/2 PCEを優先する。
                     Triple(pce3, asc4, pce4),
                 )
             for ((frame, asc, followUp) in transitions) {
                 val previousGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
                 val oldCodec = Shadow.extract<NativeCodec>(codec)
+                if (frame === noPce3) {
+                    val undecidable = NativeAribSiParser.adtsPresentation(invalidPce3)
+                    assertTrue(undecidable.hasProgramConfig)
+                    assertNull(undecidable.dualMono)
+                    assertFailsWith<IllegalArgumentException> { NativeAribSiParser.probeAacConfiguration(invalidPce3, null) }
+                    feed(filter, invalidPce3)
+                    val same = feed(filter, noPce4)
+                    supplyCodecInputs(codec, 2)
+                    assertTrue(oldCodec.lastInputBlock === same.block)
+                    assertEquals(previousGeneration, fixture.pipeline.currentPlaybackGenerationForTest())
+                }
                 val queuedBlock = checkNotNull(oldCodec.lastInputBlock)
                 val trigger = feed(filter, frame)
                 assertEquals(1, trigger.releases)
@@ -2432,7 +2447,7 @@ class PlaybackFilterAdmissionTest {
             ReflectionHelpers.setField(fixture.pipeline, "activeSelection", selection)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
             var filter = fixture.avFilter(true)
-            fixture.attachCodec(audio = true, dualAac = true)
+            val nativeCodec = Shadow.extract<NativeCodec>(fixture.attachCodec(audio = true, dualAac = true))
             val track =
                 AudioTrack
                     .Builder()
@@ -2631,6 +2646,18 @@ class PlaybackFilterAdmissionTest {
             feed(dualFrame)
             refresh()
             assertTrue(fixture.selectAudio(session, "$physical:sub"))
+            nativeCodec.registeredName = "c2.test.aac.decoder"
+            outputChanged()
+            refresh()
+            assertEquals(true, ReflectionHelpers.getField<Boolean?>(decoder, "aacDualMono"))
+            assertEquals(listOf(physical), published.last().filter { it.type == TvTrackInfo.TYPE_AUDIO }.map { it.id })
+            assertFalse(fixture.selectAudio(session, "$physical:sub"))
+            assertEquals(physical, selected.last())
+            assertEquals(AudioTrack.DUAL_MONO_MODE_OFF, nativeTrack.modes.last())
+            nativeCodec.registeredName = "c2.android.aac.decoder"
+            outputChanged()
+            refresh()
+            assertEquals("$physical:sub", selected.last())
             output.removeKey(MediaFormat.KEY_CHANNEL_MASK)
             outputChanged()
             refresh()
