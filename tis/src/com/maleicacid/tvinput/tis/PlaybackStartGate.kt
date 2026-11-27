@@ -8,14 +8,16 @@ data class DecoderConfigurationIdentity(
     val avc: com.maleicacid.tvinput.aribsi.AribAvcSignaling?,
     val audioConfigHex: String?,
     val audioConfigHeader: com.maleicacid.tvinput.aribsi.AribAudioConfigHeader?,
-    val componentType: Int?,
+    val audioChannelConfiguration: String?,
+    val audioDualMono: Boolean?,
 ) {
     companion object {
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         fun from(
             stream: com.maleicacid.tvinput.aribsi.AribElementaryStream,
-            audioComponentType: Int? = stream.componentType,
+            audioChannelConfiguration: String? = null,
+            audioDualMono: Boolean? = null,
         ): DecoderConfigurationIdentity {
             val audio = TunerSelectionPolicy.isSupportedAudioStreamType(stream.streamType)
             return DecoderConfigurationIdentity(
@@ -26,7 +28,8 @@ data class DecoderConfigurationIdentity(
                         ?.lowercase()
                         .takeIf { stream.streamType == 0x0f },
                 audioConfigHeader = stream.codecFacts.audioConfigHeader.takeIf { stream.streamType == 0x0f },
-                componentType = audioComponentType.takeIf { audio },
+                audioChannelConfiguration = audioChannelConfiguration.takeIf { audio },
+                audioDualMono = audioDualMono.takeIf { audio },
             )
         }
     }
@@ -43,7 +46,6 @@ data class AvPlaybackSignature(
     val keyTokenAvailable: Boolean,
     val subtitlePid: TsPid? = null,
     val subtitleDataComponentId: Int? = null,
-    val subtitleLanguageId: Int? = null,
     val superimposePid: TsPid? = null,
     val superimposeDataComponentId: Int? = null,
     val videoConfiguration: DecoderConfigurationIdentity? = null,

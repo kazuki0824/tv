@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AOSP Codec2のTV domainを、このTV製品で有効にする。 -->
+<MediaCodecs>
+    <Settings>
+        <Domain name="tv" enabled="true" update="true" />
+    </Settings>
+</MediaCodecs>

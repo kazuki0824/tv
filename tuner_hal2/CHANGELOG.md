@@ -1,3 +1,416 @@
+# 2026-11-27 AVC同期前の保持と固定TS回帰を是正
+
+- 同期前は開始コードの候補末尾と対応する時刻だけを保持する。固定入力は完成119 AUと先頭の時刻未確定1件を検査し、同期後の拒否を合格としない。
+
+# 2026-11-27 実AVC回帰の実行条件を明確化
+
+- 統合手順から2026-10-30時点の未取得記録を外し、通常実行で除外される条件と固定入力での明示実行手順を残した。
+
+# 2026-11-16 Playback DVRの能力選択と処理バッファ実確保量の照合（#232）
+
+- 能力選択のPlaybackBytesは1件8MiBの固定仮定をやめ、PlaybackConsumeTxnが実行時に予約するprocessing bufferの最大48,128 bytes/件とする。product-default最大8件の共有予算も同算式で385,024 bytesとし、FMQ本体の予算は別のFmqBytesで保持する。
+- 実行時のreserve_playback_processing()はconfigure済みFMQ容量に従う既存必要量計算・rollback・releaseを維持する。容量claim自体は実処理バッファ用であり、他の動的メモリ全量を上限化したと主張しない。
+- 最大8 Playback DVRについて能力選択・実予約・解放を検査する回帰試験を追加する。Android Soong・実機DVRのメモリ／同時能力確認は未実施。
+
+# 2026-11-11 テスト専用宣言の公開範囲を縮小
+
+- テスト専用の補助メソッド6件とTestKeyReferenceのタプルフィールドをpub(crate)へ限定し、同一クレート内の既存テストからの利用を維持する。処理とテスト条件は変更しない。
+- 参照元と宣言の可視性を静的確認し、コンパイルとテストは既存CIへ委ねる。
+
+# 2026-11-09 AIDL回収監督の非公開フィールド参照を修正
+
+- 回収監督への引渡しをAidlServiceContextのメソッドへ移し、別モジュールからのcleanup_reaper_queue直接参照によるE0616を解消する。フィールドの可視性と回収・失敗時の処理は維持する。
+- idle監督の寿命試験も既存のqueue注入入口へ変更し、同じ非公開フィールド参照を除く。設計の実装位置を更新する。試験はCIへ委ね、Android Soong／atestは未実施。
+
+# 2026-11-09 回収予約の待機APIを有限期限に統一
+
+- 製品呼出元のないNone待機を削除し、wait_until_releasedの期限をDuration必須へ縮減する。Frontendの製品経路とobject closeの回帰試験は同じ既存残時間を渡し、期限や回収義務を変えない。
+- panic回帰は30秒の待機予算に対して3秒のrecv_timeout内に元の異常が返ることと、未完予約が保持されることを検査する。既存control試験でCI実行し、Soong／atestと実機は未実施。
+
+# 2026-11-09 回収監督の全件コピーを除去
+
+- pending_snapshotを非割当のcheck_healthへ置換し、共有回収器の失敗と予約正本の汚染を既存lock_stateで確認する。健全性確認にはキー・値のClone制約を課さない。
+- 既存control試験へ健全時・runtime failure・panic・受信側汚染・予約lock汚染の確認を接続し、予約を保持する。AIDLの失効予約試験は既存のキー存在照会へ変更する。実行はCIへ委ね、Soong／atestと実機は未実施。
+
+# 2026-11-09 回収予約の存在照会から値の複製を除去
+
+- any_pendingは既存の予約正本を一度ロックしてキーの存在を調べる。不要になったpending_valuesを削除し、予約・異常分類・待機期限は変更しない。
+- 空集合、全件不在、混在、重複キー、解放後、値を複製しない照会と空集合を含むロック汚染伝播を既存control試験で検査する。試験実行はCIへ委ねる。
+
+# 2026-11-09 回収未完の経過時間による全体停止を除去
+
+- 実行中ownerと隔離report待ちは既存ObjectCloseTxnの受付監督に保持し、待機だけのlaneを返す。物理処理の完了・移管を経過時間で偽装せず、30秒＋30秒による全体停止を除く。
+- enqueueとworkerからの再監督要求が競合しても受付要求を失わないよう、予約の存在からの要求削除を除く。状態破損・異常終端・実行済み隔離報告の失敗は既存停止経路へ残す。
+- 旧最終期限後の遅延完了、無応答ownerの義務保持、容量1のlane返却と独立Demux回収、隔離report待ちを既存AIDL試験へ反映する。
+
+# 2026-11-08 回収laneとFrontend期限のレビュー是正（#230）
+
+- 回収laneを初期化時に固定し、CPU数・予約数に応じた追加生成を除去した。予約のDrop解放失敗は既存の型付き終端へ伝える。公開数から予約容量の倍数を要求せず、予約待ちと物理実行の開始時刻を区別する。
+- Frontend closeは予約返却とworker終了で一つの期限を共有する。reaper期限で専用処理がある場合は、隔離・診断を共通失敗処理から繰り返さない。
+- lane占有と待機後の進行、正規Demux open/closeと予約返却の境界、期限超過時の未完義務と単一通知を回帰で検査する。
+
+# 2026-11-08 Frontend closeとreaperの無期限回収待ちを是正
+
+- Frontend closeで既存reaper予約の解放を`wait_until_released(None)`で無期限に待たず、既存`worker_reaper_deadline_ms`の有界待ちへ変更。workerへの停止要求後も同期`ticket.complete()`の無期限joinではなく、同じ期限で実際の終了を待つ。
+- 期限到達時には完了済みworkerのterminal結果を既存の受理入口へ反映し、未完workerの物理終了とDemux-Frontend relation解除を偽装しない。`ObjectCloseTxn`および`WorkerRuntimeCleanup`の義務を保持し、既存cleanup受付から次の正規回収を行う。
+- Frontend reaperが期限通知後に`wait_for_progress(None)`へ戻る経路を止め、回収未完了として局所隔離・診断へつなぐ。期限後の無期限worker保持をなくす。
+- Frontend closeがworker終了後にrelationを解除する回帰と、期限到達で同じ未完義務を保持し、後着のworker終了後に再び回収できる回帰を追加。Android Soong／atest、実機CTS／VTSとHAL再起動・Binder再接続は未確認。
+
+# 2026-11-08 cleanup reaperの予約権限と物理実行並列度を是正
+
+- `WorkerRuntimeReaperReservation`を未移管時に解放するRAII ownerへ変更し、正常enqueue後だけ正規reaperへ所有権を移す。明示的解放失敗とDrop解放失敗は成功扱いしない。
+- 同一バッチ内の重複予約キーを受付前に拒否し、既存のgroupと世代付きキーを変更しない。
+- 予約groupが受付件数を有界に保持するため、重複していた`sync_channel(capacity)`の容量制御をなくし、予約group上限だけでbackpressureする。
+- 既存laneが動作可能な場合に追加laneの生成失敗だけを理由として有効な受付を捨てない。共有reaperのlock失陥や物理cleanupの未確認終了とは区別する。
+- 物理workerの実行上限を予約件数連動の176本から切り離し、実行環境が報告する並列度を有界poolの初期値として使う。これは実測で最適化済みのI/O並列度を意味せず、ブロックするbackendの期限監督は引き続き独立させる。
+- worker上限と予約容量の独立性、予約キーの重複拒否、未投入予約の自動解放、容量満杯時の受付制約、既存予約の原子性をhost回帰へ追加する。以前の176 laneを同時停止させる試験は、予約176・物理実行上限は独立という契約に沿う試験へ置き換える。
+- 同一groupの親子キーは既存`RuntimeObjectTable`で関連が確認されたものだけを保持する。単一workerのpanicによって途中の物理cleanup結果とgroup解放が不明になる場合は共有reaperの失陥として安全側へ停止する方針を維持し、既存の局所cleanup失敗と区別する。
+- Android Soong／atest、実HALの再起動・Binder再接続、CTS/VTSの実機実行結果は未取得。ホストCIの結果とは区別して記録する。
+
+# 2026-11-08 cleanup受付を呼出元から非同期化
+
+- Binder／Dropの呼出元では回収枠を待たず、最初の受付時刻を既存の世代付きcleanup義務へ記録する。監督workerが既存reaperへ受付を引き渡す。
+- 容量1の回収枠占有中に4件の受付を返し、重複要求で時刻を更新しないこと、後着close、待機対象が残る監督のstop応答を検査する。Soong／atestと実機は未実施。
+
+# 2026-11-08 cleanup受付満杯時の待機と物理回収の期限監視を分離
+
+- 受付待ち上限を型付きBusyとし、同世代の完了・移管・既存予約・空き枠を元の期限内で待つ。満杯だけで全体停止しない。
+- 既存監督workerは予約正本の時刻を監視し、物理回収は既存reaper laneで実行する。実行laneが戻らない場合も元の期限で同世代を再確認する。
+- 容量1の受付競合、製品容量の失効済み予約、実行laneのブロックを試験へ追加する。Android Soong／atest、実機再起動およびCTS/VTSは未実施。
+
+# 2026-11-08 隔離報告と回収受付の進行判定を是正
+
+- 同世代の隔離報告待ちとSupervisor移管済みを区別する。報告失敗は回収義務を保持して既存の全体停止へ伝え、並行する正常完了・移管では受付を返す。
+- 未受付記録は既存製品回収容量で制限し、満杯で既存世代の記録を失わない。同一予約内の委譲は元の登録時刻から測った回復猶予を使う。
+- 物理回収報告失敗、受付監督と通常reaperの報告待ち期限、世代別受付の容量回帰を追加する。容量1での委譲と恒久停止の試験は元の期限を使う。Android Soong／atestは未実施。
+
+# 2026-11-08 受付猶予試験の同期を監督の終端判定から分離
+
+- 受付猶予の試験通知を単一登録の非待機チャネルへ変更し、通知用mutexを除く。満杯と切断の回帰を追加し、猶予試験は通知を受信してから終端を検査する。Android Soong／atestは未実施。
+
+# 2026-11-08 VTS資源検査とAIDLの回収試験を修正
+
+- VTS profileの資源検査は既存host crateの本番型とcapability選択を参照する。現行本番ソースの生成Rustをコンパイル・実行する試験を既存CIへ追加し、ホストのCargo依存を統合手順へ記載する。
+- Frontend回収試験で既存executorを実行して完了権限を取得し、別crateのprivate field参照を除く。Android Soong／atestは未実施。
+
+# 2026-11-08 DVR通知workerの回収証明と受付回復猶予を是正
+
+- DVR通知workerはLiveな所有者のruntimeが発行した起動権限から生成し、実join後に同じ登録を照合する。同じID・世代の別workerから隔離を完了できない。
+- cleanup受付監督は既存ownerに製品期限1回分の回復猶予を設ける。期限は元の登録時刻から測り、猶予後に局所回収を再確認する。
+- 隔離reportの返却値は残存join義務から決定し、reportよりjoinが先に完了した場合は即座に回収完了を返す。
+
+# 2026-11-08 DVR通知回収とcleanup受付を是正
+
+- DVRのclose中に既存ownerが世代を遮断している場合は、通知workerの故障から重複cleanupや全体停止へ進まない。通知workerの終端結果を診断に残し、join成功から発行した世代付き完了値でSupervisorの回収を確定する。
+- 隔離時の実行済みreportを消費して物理回収を確定し、ID・世代・未完一覧を別々に渡せる入口を除去する。報告前とjoin待ちを排他的に保持し、関連owner探索を集約する。
+- cleanup受付は呼出し元でsleepせず、満杯時は既存の隔離・受付監督へ渡す。受付とreaperで同じjobと登録時刻を使い、service owner消滅後のDropは異常を記録する。
+- AIDL試験の非網羅matchと別crateのprivate field参照を修正し、既存executor経由で完了権限を受け取る。正規closeとの競合、異常終端したworkerのjoin、Supervisorへ渡す対象IDと世代を検査する。Soong/atest、実HAL再起動・Binder再接続、CTS/VTSは未実施。
+
+# 2026-11-07 PR #227 製品reaper容量回帰テストの後始末を確定
+
+- `product_capacity_saturates_after_real_open_close_before_reaper_group_release`に`ReleaseGateOnDrop`を追加し、途中のassert/expect失敗・panic時も全runnerのCondvarゲートを必ず開く。
+- 正常終了時はゲート解放後、全176世代キーの保留予約について既存`WorkerRuntimeReaperQueue::wait_until_released`による有界完了確認とpending値の全件消滅を確認する。
+- reaper送信側を閉じ、runnerのWeak参照が失効するまで期限内で監視し、テスト用workerが残らないことを検証する。独立したcleanup状態正本やテスト基盤は追加しない。
+- host Rust CIの結果は最新HEADのChecksを正とする。Android Soong/atest、CTS/VTSおよび実HAL再起動は別の未検証事項。
+
+# 2026-11-07 PR #227 製品既定容量176の正規open/close・実reaper経路を追加検証
+
+- Host`object_close_txn::product_capacity_saturates_after_real_open_close_before_reaper_group_release`：製品既定snapshot、公開Demuxの自動AIDL object ID、root open／close、public runtime unregister、ObjectCloseTxn完了、`WorkerRuntimeReaperQueue::enqueue_reserved`と実runnerを通す。runnerによるClosed確定後、pending group解放直前の停止を同期ゲートで注入し、実reaperが176 groupを保持して次の公開Demux openの予約がBusyになることを確認する。
+- AIDL Binder facade／実デバイス上の再現は未実施であり、Host Rust CIの結果と区別する。旧`RuntimeObjectTable`への手動世代・直接予約試験は補助的な境界試験として残す。
+
+# 2026-11-07 PR #227 製品予約容量と世代競合・idle駐機・join異常伝播の追加是正
+
+- 製品既定の公開オブジェクト82に対するreaper予約容量176が、旧世代Closed後のgroup解放遅延を数えないため厳密な予約上限ではないことをコード・設計SSOTで確認。製品既定snapshotのまま同一objectの世代更新・Closed確定後に旧世代groupを保持し、容量176のBusyに達するhost故障注入を追加。
+- 受付監督workerは待ち0件なら`WorkerContext::wait_until(None)`でstop/wakeまで駐機し、待ちありの場合だけ最早期限と有界周期から待機期限を導出する。待ち0件のdeadlineなしと、新規owner登録後の再起床を試験へ追加。
+- `CleanupReaperQueue::drop`は完了済みworkerのRuntimeFailure/PanicOrJoinFailureを既存service runtimeの全体停止状態へ伝播し、ログだけで破棄しない。終了結果の故障注入を追加。
+- Rust hostとAndroid AIDL/Soongは別証跡。AIDL/atest、CTS/VTS、実HAL再起動・Binder再接続は未検証。
+
+# 2026-11-07 PR #227 受付監督の二段目容量不足とjoin結果破棄を修正
+
+- 同一CleanupReaperQueueへ未受付ownerを世代付きで追加し、従属WorkerRuntimeの監督workerを1本に共用。reaper容量1にAが在籍中、B/Cが同時に未受付でも第二の監督worker上限による誤ServiceCriticalを発生させない。
+- 完了した監督workerのWorkerTerminalResultを型付きで判定し、失敗は既存ServiceFailureStateへ伝播する。所有者破棄時にも完了済みのjoin結果を無視しない。監督workerは物理cleanupを行わず、ObjectCloseTxnが唯一のcleanup権限を維持する。
+- A/B/Cの容量1競合に対する回帰試験を追加。Android向けSoong/atest、CTS/VTS、HAL PID再起動とBinder再接続は引き続き未検証。
+
+# 2026-11-07 PR #227 bounded reaper満杯時のactive cleanupを監督
+
+- `run_cleanup_job()`のAndroid AIDL専用`#[cfg(test)]`引数追従漏れを修正した。
+- `CleanupReaperQueue`が未予約ownerごとの従属`WorkerRuntime`監督handleを保持し、reaperの受付容量回復後に既存queueへ投入する。元の`ObjectCloseTxn`が世代・未完義務を保持し、監督workerは物理cleanupを二重実行しない。受付済みの場合は重複投入せず、同一世代の監督を重複生成しない。
+- 正常終了したactive closeと永久停止するactive closeを容量1の競合条件下で区別するAIDL回帰試験を追加した。期限到達して局所fenceを証明できない場合のみ既存ServiceFailureStateへfail-stopする。監督worker数は既存reaper容量を上限とし、専用のcleanup台帳や別reaperを追加しない。
+- Host Rust CIとRust品質CIはGitHub Checksを正とする。Android Soong/atest、CTS/VTS、HAL PID再起動・Binder再接続は未検証のまま扱う。
+
+# 2026-11-07 PR #227 終端回復の有界性とテスト同期を修正
+
+- 別ownerが物理cleanupを実行中／予約済みでもreaperの期限カウンターを繰り返し初期化しない。有界回復猶予の後で同世代の完了・局所fence・未完義務を再評価し、隔離不能な共有リスクだけをServiceCriticalへ伝播する。
+- AIDL回帰テストは時間固定のsleepではなく期限評価分岐のテスト専用チャネル通知でowner終了を同期させる。終了しないownerのfault injectionは別のテストで確認する。
+- TUNER_HAL_DESIGN_JA.mdの全体停止条件について、局所隔離と正規ownerの例外を明記して「のみ」の矛盾を解消。リテラル改行文字列はMarkdown空行に変換した。
+- Host CIとAndroid Soong/atestは別証跡。Android AIDL test、CTS/VTS、HAL PID再起動・Binder再接続は未検証。
+
+# 2026-11-07 PR #227 新規レビュー：受付容量・期限超過・Classifier正本追従
+
+- cleanup reaperの予約容量満杯をtyped`HalError::Busy`で通知し、既存retry scheduleに基づく有界受付再試行へ変更。容量不足だけで共有HALを停止せず、対象の局所隔離・既存ownerの進行証拠を評価し、fence不能な場合のみ全体停止へ進む。
+- 別のObjectCloseTxn ownerの処理が続く場合は、経過時間だけでServiceCriticalに昇格せず、ownerの正本進行・局所隔離可否を再判定する。期限超過後のactive ownerの遅延成功と、予約容量1でのBusy／解放後受付を検証する故障注入を追加。
+- WorkerFailureClassifierの既存規範アンカーへ公開入口2件を追記し、第二の分類表は追加しない。
+- Host Rust CI／Rust品質CIはチェック結果を参照。Android Soong／atest、AIDL VTS、CTS、実HAL再起動・Binder再接続は未実行。
+
+# 2026-11-07 PR #227 cleanup委譲・reaper予約容量・完了原子性の是正
+
+- `ObjectCloseTxn`の関連owner探索を対象自身・祖先・子孫へ統一し、削除済み`ancestor_cleanup_owner()`を参照していた回帰テストを改訂。既存権限の実行中／未開始を区別する。
+- bounded reaperに新たな予約枠を要求せず、実行中reaperの同一`WorkerRuntimeReaperPending`グループへ世代付き関連キーを追加し、同じworkerで順次回収する。別グループ所有の同じキーは二重実行しない。
+- owner照会と依存関係取得の間に別のcloseが成功した場合は、同じ世代の終端を再確認し、正常な競合を`ServiceCritical`へ昇格させない。
+- quarantine cleanup report／Supervisor join通知は未完義務を削除する前に対象と子孫のlifecycleを全件preflightする。途中の不整合では未完義務を保持する。
+- `service_runtime`のhost Rust検査とAndroid AIDLの`maleicacid_tuner_hal2_aidl_service_test`は別の証跡とする。Soong／atest、CTS／VTS、HAL PIDの再起動・Binder再接続は実施していない。
+
+# 2026-11-07 PR #227レビュー：親cleanup自律回収・隔離確定順序・未使用入口
+
+- `OwnedByExistingCleanup`で子のreaperジョブを終了する前に、既存親`ObjectCloseTxn`のcleanupが実行中であること、または正規cleanup reaperへの投入が成功したことを確認する。未開始の親close権限だけでは回収進行の証拠とせず、投入不能・委譲先不明は全体停止として報告する。
+- 隔離対象の全件preflightと未完cleanup権限の準備を先行させ、同一runtime lock下で`Quarantined`への遷移を確定する。権限発行失敗時の部分コミットを防止し、識別子枯渇の故障注入と親未開始権限の探索テストを追加する。
+- 呼出し元のない`dvr_notifier_supervised_cleanup_complete()`を削除し、通知workerの回収完了を既存Supervisorのjoin結果から`ObjectCloseTxn`へ伝える方式に統一する。
+- 実Demux/Playback DVRの公開経路を使い、親の未開始close権限から公開API再呼出しなしに自律回収されることを確認するAIDL回帰テストを追加する。Android向け`maleicacid_tuner_hal2_aidl_service_test`のSoongビルド・atestは未実施。HostのRust CI結果と区別する。
+
+# 2026-11-07 進行中cleanupの所有権競合を全体停止と区別
+
+- 対象・祖先・子孫の既存`ObjectCloseTxn`がcleanup実行中または別の後片付け義務を保持する場合、drop-leak隔離はplanを発行せず型付きの委譲結果を返す。既存の物理cleanupを二重実行せず、正常な競合拒否だけで`ServiceCritical`へ昇格させない。
+- `cleanup_reaper`の期限経路でも委譲結果と隔離失敗を区別し、別所有者への委譲では現在のreaper laneを解放する。実際の異常・隔離不能は従来どおりfail-closedとする。
+- 既存cleanupの実行中は隔離planを発行しないこと、処理が完了した後には隔離できること、競合だけではサービス停止bitを立てないことをRust host回帰テストへ追加した。AIDL接着層でも既存権限との競合を型付き委譲として返し、既存closeの状態とサービス全体停止bitが変化しない試験を追加した。Android Soong／CTS／VTSと実際のHAL再起動は未検証。
+
+# 2026-11-07 PR #227の局所隔離とDVR通知worker回収の完了経路を修正
+
+- cleanup reaperは期限前後で同じ対象状態・回収所有権を判定し、論理`Quarantined`だけで物理回収完了と判断しない。所有権が確認できず副作用の遮断を証明できない場合は全体停止に昇格する。
+- Supervisorへの通知worker移管後はreaper実行レーンを待機占有せず解放する。実workerのjoin結果は既存`WorkerRuntimeSupervisor`から受け、未完義務は`ObjectCloseTxn`だけに保持する。
+- 物理cleanup reportと通知workerのjoin通知が前後しても、対象ID・generationを照合して一度だけ完了確定する。未完義務のあるDVR runtime ID/ledgerの早期再利用を拒否し、重複物理cleanupを起こさない。
+- `Completed`と`SupervisedPending`の両方を許す試験の名称と期待結果を分け、先着join・重複join・別世代join・回収前再利用の回帰テストを追加した。
+- Android Soongビルド、Tuner AIDL VTS、CTS全体、実機でのHAL再起動・Binder再接続は未実施。実行済みCIの結果はGitHub Checksを参照する。
+
+# 2026-11-07 PR #227で巻き戻された既存設計との整合性を復元
+
+- post-commit DVR通知失敗を`PostCommitCallbackFailureTxn`の既存health/診断へ接続し、callback失敗だけで`ServiceCritical`へ昇格させない。通知workerの再開始失敗では対象DVR ownerの世代遮断を確認し、遮断を証明できない場合だけサービス全体を停止する。
+- DVR通知workerのSupervisor回収移管中は既存`WorkerCleanupFailureKind::Executing`で表す。Drop-leak cleanupは既存`ObjectCloseTxn`のstep reportで、DVR workerの移管だけが未完・他step成功・該当ID/世代のruntime登録解除成功の場合だけ局所隔離の成立を認める。未完の物理回収を完了扱いにしない。
+- Frontend reaper終了後の診断記録失敗は既存診断storeの失敗counterと標準エラーへ残し、世代fenceやworker終了の失敗と混同しない。
+- Drop-leakの物理cleanup成功と診断記録成功を分離し、診断失敗だけで既に成功した物理cleanupを再実行しない。
+- 共有cleanup reaperに固有のlock/worker失陥は既存`WorkerFailureClassifier`でtypedに分類し、対象objectが後から失効しただけで共有reaperの異常を見落とさない。
+- 本体/設定ファイルの文字列検査を正当性確認とする新規自己参照テストを削除。host回帰試験とCIで検証した範囲はPRのChecksを参照する。Android Soong/VTS/CTS・実機回復検証は実施していない。
+
+# 2026-11-07 Tuner HALの終端常駐とcleanup競合の修正
+
+- 既存`ServiceFailureState`の全体停止が確定した場合は、従属`WorkerRuntime`からHALプロセスを終了させてAndroid initへ再起動を委譲する。停止状態の第二正本は設けない。
+- cleanup再試行失敗で未完義務なし・失効済み・Closedと確定した場合だけ全体停止を省略する。それ以外は隔離を推測せずfail-closed。reaper期限時に論理Quarantinedを物理cleanup完了と誤認しない。
+- `ObjectCloseTxn`の実行中権限を対象・祖先・子孫まで検査し、drop-leak隔離が同じ物理cleanupを並行実行しない。host回帰試験を追加。
+- 未検証のDVR通知例外・独自隔離結果wrapper・reaperエラー再分類・Frontend診断回復経路等は撤回してPR #116のコードへ戻す。Loom CIのRust 1.95更新は依存互換のため維持。
+- Android Soong／AIDL VTS／CTS再試験／実機再起動・Binder再接続は未実施。CI結果はPRのChecksを参照。
+
+# 2026-11-07 Loom CIのRust toolchainを固定
+
+- Loomの依存generatorが要求するRust 1.95.0を当該jobで使用する。同一toolchainでlockfileを生成し、固定した解決結果を使ってLoomを実行する。製品用Rust toolchainと他jobは従来どおり。
+
+# 2026-10-31 worker終端とwake受付の競合を修正
+
+- 既存WorkerWakeのatomic通知状態へ閉鎖bitを統合し、終端observerより前に受付を閉じる。追加されたcompletion mutexでの通知判定を置き換え、CODE_CONVENTIONの非汚染通知契約を維持する。
+- runtime failure・panicでobserver待機中にもwakeを拒否し、終端前の受付は成功する回帰を既存試験へ追加。テストはCIのみ、実機検証は未実施。
+
+# 2026-10-31 AV payloadの独立1 MiB制限を除去
+
+- AVCの未完AUをPESごとに先頭から再走査せず、同じVideoTimestampAssociationに次回走査位置と未完AUD位置を保持する。drain時に両位置を補正し、既存resetで破棄する。AU長・PES分割長を独立に変え、payload/PTSと走査入力長の線形上限をCI回帰で確認する。
+
+- AVC時刻解析ではfiller等の未使用NALをRBSPへコピーせず、必要なRBSPとSPS/PPS保持の予約失敗を既存AllocationFailedへ返す。SEIはactive SPS確定後に順次解析し、RBSP配列を保管しない。共有RBSP変換の失敗時、任意のrecord slice索引は生成しない。大きなfiller/SEIを含む時刻対応の回帰を追加し、CIへ委ねる。
+
+- AVCの開始コード・NAL・AUD境界を割当不要のiteratorで走査し、境界配列の通常割当を除去する。多数NALの境界保持、異常入力のfail-closedと再anchor復旧の回帰を追加する。検証はCIへ委ねる。
+
+- PES組立破棄の診断にFilter IDを保持し、同じPIDの汎用PES filterの局所上限でAV時刻対応を失効させない。結合試験で両Filterを同時使用する。
+- AVのPES/AU組立・完成payloadコピーを失敗可能な割当へ接続し、割当失敗をOVERFLOWと型付き診断へ伝える。汎用PES filterの固定上限は維持する。
+- event-local DMA-BUFの単一payload上限と、その設定を渡すconstructor・registry fieldを除去する。
+- AVの固定PES byte予約と能力検証を除去し、4つの汎用PES filterだけを固定PES予算へ計上する。関連規範・実装入口と資源台帳の回帰を更新する。
+- CIに符号化AVC TS→実producer→host file割当→配送ESのdecode→TIS SDK callback/Codec入力境界の結合試験を追加する。host file・Robolectricは実DMAヒープ/実decoderの代替証明ではない。CI結果、現行ARIB日本語原文との差分、Soong/atest/VTS・実機確認は未確認。
+
+# 2026-10-31 AV破棄と最終参照終了の回収を修正
+
+- producer gateの受付失敗でevent所有権を返し、閉鎖時の保留eventもdemuxの既存未配送解放へ渡す。close時のbacking移管前にも保留eventを返却する。
+- callbackのstartId抑止、artifact取得失敗、変換失敗では未配送data IDを所有者を照合する内部解放入口から既存allocation解放へ返却する。隔離後も内部の未配送回収を許可し、公開release APIの隔離拒否は維持する。Binder呼出しを試みたeventは未配送と断定せず、既存client寿命契約を維持する。
+- 最終Filter参照の消滅をclose前に既存object entryへ記録し、非同期回収後の登録解除でもReleaseOnly領域を残さない。明示closeでclient参照が残る場合の保持は維持する。
+- キュー容量超過時の拒否・保留・後続AV割当て回収と、最終参照通知と登録解除が両順序で交差する回帰を追加。service_runtimeのhost試験ではmemfdで割当て寿命を検証し、実DMAヒープの検証とは区別する。全呼出し元を静的照合し、テストはCIへ委ねる。Soong/atest・実機検証は未実施。
+
+# 2026-10-31 VTS profile終了失敗の伝播を修正
+
+- device agentのclosed応答後も終了statusを確認し、cleanup失敗・timeout・応答異常をProfileErrorへ伝播する。元の処理失敗とcleanup失敗を併せて保持する。
+- 終了status・timeout・二重失敗のhost回帰を追加。Rust agentの呼出し順序をソース位置で代用していた検査を除去し、既存のproduct packaging検査だけを残す。agentの実機順序検証をhost試験で証明済みとはしない。
+- テストはCIへ委ね、実agent・Soong・実機検証は未実施。
+
+# 2026-10-31 並行性試験の同期と検証条件を修正
+
+- worker試験2件のsleep依存をchannel同期へ変更し、親thread停止中の正常完了を誤失敗にしない。
+- LNBのLoom試験は世代更新を物理gate待ちへ挟み、古い要求の効果が0であることを検査する。producer試験は受付時に観測したphaseと受付結果を直接照合する。
+- テスト実行はCIに委ねる。実機検証は未実施。
+
+# 2026-10-31 監査で判明した記述不整合の修正
+
+- controlの手書きコメントを日本語化し、AV共有handleの確認項目を既存の未初期化表現契約へ参照統一した。
+- 採用済み契約の変更なし。静的照合のみで、実行テストはCIに委ねる。
+
+# 2026-10-30 共通workerの異常終了を既存ownerへ接続
+
+- reaper laneを既存WorkerRuntimeの型付き終端observerへ接続。panicで未完予約を残したまま無期限に待つ経路を、typed failure返却へ変更する。未完義務の早期解放・自動再実行はしない。
+- Filter遅延配送のruntime failure/panicを分類して診断し、全Filter共有workerの喪失を既存ServiceCriticalへ反映する。終了済みworkerへのwakeを成功扱いしない。
+- 既存spawn_with_contextの終端観測を公開factoryから再利用し、別worker・監視loop・資源台帳を追加しない。
+- 実reaper runnerのpanic、期限なし待機の失敗返却、予約保持、新規受付拒否、通常エラーとpanicの区別をCI回帰へ追加。テスト実行はCI、実機検証は未実施。
+
+# 2026-10-30 AV flushの空処理と診断stepを除去
+
+- 空のpreserve_delivered_allocations_on_flushと呼出し中継を削除し、実処理を持たないAvBackingFlush診断stepを廃止する。診断step契約の整理として独立変更にする。
+- 実際のDemux flushを通して配送済みallocation維持・明示解放を確認する既存回帰を維持する。backing単体試験はclose後解放の検査として名称を合わせ、空処理を呼んでflushを検証したとは扱わない。
+- 新しいowner・状態・予算を追加しない。試験実行はCI、Soong/atest・実機検証は未実施。
+
+# 2026-10-30 全件監査の既存契約内修正
+
+- Filter/DVR生成commitと固定LNB給電解放の結果をロック内で確定し、失敗時の後片付け・lease復元前にロックを解放する。同じruntime lockへの自己再入を除去し、既存rollback順序を維持する。
+- tune送信前取消しは既存complete_prepared_submit_cleanupで終了結果を伝播し、失敗を正常停止へ丸めない。
+- Androidのdevice/service_runtime rust_testへ実ソースが参照するlog/control依存を補う。host Cargo成功をSoong成功とみなさない。
+- AV解放分類の未読filter_state引数と、常に成功するDemux binding検証helperを除去する。呼出元の実在・lifecycle検査は維持する。
+- 公開設計書のclose待機に残った旧期限記述を、現行の「Frontend closeの回収完了」へ参照統一する。新しい期限・owner・回収処理は追加しない。
+- 全呼出し元と差分を静的照合。テストと品質検査はCIへ委ねる。Soong/atest・実機検証は未実施。
+
+# 2026-10-30 DVR確定後診断の結果処理を明示（#210）
+
+- main由来のDVR callback診断fallbackで、コメントだけの空ifを除去し、型付きの成功結果を照合して記録失敗時は診断処理を明示的に終了する。
+- 記録失敗を既存storeのcounterが計上する契約を維持し、公開commitの取消し、二重計上、新たな状態・worker・台帳を追加しない。
+- 既存の汚染試験領域へ、実storeの記録失敗が型付き失敗を返し、失敗counterを一度だけ増やす回帰試験を追加する。試験はCIで確認し、Android製品build・実機確認は未実施。
+
+# 2026-10-28 明示的Framework停止後のTRM公開待ち
+
+- #202由来のzygote停止直後のmediatuner再起動を、停止と新TRM公開後の標準`tuner.server.enable=true`通知による再起動へ分けた。旧TRMの死んだBinderを取得する競合を避け、停止処理中のprocessにも再起動を予約する。
+- 製品rcの静的CI期待値を更新し、INTEGRATIONへ非lazy／lazy・標準enableとの関係と実機受入れ条件を記載した。レビューで確認したSoongの既定配置名（module名）をそのまま使用せず、`filename_from_src: true`で`.rc`拡張子を保持し、CIと配置確認手順を一致させた。
+- 静的配置検査と差分検査を実施。Android/Soong build、init/Binder実動作、通常起動・反復stop/start・自動再起動・lazy構成の実機検証は未実施。
+
+# 2026-10-22 PX4 worker異常終了時のSTOP失敗（#116）
+
+- 異常終了cleanupでもSTOP成功後だけlive pumpをjoinする。STOP失敗時は元エラーと停止エラーを返し、未終了pumpとsessionを既存worker slot / cleanup ownerへ保持して隔離する。終端回収や失敗結果への変換で物理資源を落とさず、同じfrontendの置換を拒否する。
+- 新しいworker・queue・独立した資源台帳は追加しない。隔離後の自動復旧は保証しない。
+- Rust 1.81 hostのdevice 154件・service_runtime 243件、device全targetのClippy（警告をエラー扱い）、製品同等のservice_runtime lib型検査（警告をエラー扱い）が成功。STOP失敗中のblocked reader、失敗通知、cleanup失敗後のfd所有、置換拒否、owner teardownまでの寿命を検証した。Android/Soong・atest/VTS・実機でのSTOP故障注入は未実施。
+
+## 2026-10-21 cleanup reaperの予約容量とthread生成数を分離（#116）
+
+- `WorkerRuntimeReaperQueue`は公開能力由来の保留予約容量（product-default 176）を維持し、起動時1 workerから保留中の同時cleanup数に従って実行workerを増やす。
+- queueの予約同一性と既存ownerを維持し、worker起動失敗時は未投入予約の解放とエラー返却を行う。
+- 回帰試験は予約容量4の起動直後1 worker、4件同時cleanup時4 worker、完了後の全予約返却を検証する。
+
+## スキャン中止後のFrontend close
+
+- #116: close全体の独立期限とclose専用の期限超過reaper移譲を除去。停止要求後にworkerの実終了を待ち、既存reaperの回収も待ってからlive data・電源を解放する。実際のcleanup失敗は保持する。
+- 採用px4_drvのPTX_SET_CHANNELはカーネル内でロック待ちを実行し、HALの取消しフラグでは中断できない。有限の下位I/O終了を待つ。driver永久停止時のclose完了は保証しない。
+- hostでcloseが回収前に戻らないことと、個別I/O期限を越えても実終了後に成功することを検証。実機34の再現操作は未検証。
+
+## AVCのAU分割と放送HRDによるPTS対応
+
+- #116: TS AVCのPES全体配送をAUDで区切る完成AU配送へ変更。PESを跨ぐ開始コード・AU、PPS→SPS対応、picture timing / buffering period SEI、delay counter / PTS wrapと有理数tickをHALで扱い、TISには解析を移さない。
+- 共通bit readerをrecord indexからparser/bitstreamへ移し、32 bit超のreadを拒否。AV対応付けのsnapshot、flush、source/generation、packet gap、stream type変更を同じFilterRuntimeへ接続した。
+- 検証: Rust 1.81 host demux 294件、service_runtime 242件成功。添付test.m2tsを明示入力した追加試験で119 AUを個別配送し、各PTSとpayload内AUD数を確認。先頭の構成情報不足1件は拒否。可変delay、period切替、33-bit/HRD wrap、有理数丸め、PES跨ぎ、reset後の旧anchor拒否を含む。
+- Android/Soong、atest/VTS、実機zappingは未実施。Codecの圧縮参照状態を含む欠落後復旧と肌色の原因特定は別の残作業であり、本変更で解消確認済みとはしない。
+
+# AVイベント専用領域への一本化
+
+- 固定共有pool、AV保持件数上限、Filter別・サービス全体のAV byte予算と能力claimを除去し、実payloadサイズのDMA-BUFをイベントごとに配送する。
+- `getAvSharedHandle()`は空handleとsize 0を返し、不要になった共有handle使用権・返却済み共有handle台帳を除去する。
+- 配送済み領域のflush・close後の寿命、token別返却、確保失敗、旧件数上限を超える保持、ID枯渇、診断飽和を検証する。確保失敗の診断を旧slot枯渇から分離する。
+- ホストでdemux 289件、service_runtime 242件の試験が成功。AIDL投影試験は追加済みだがAndroid環境では未実行。
+- 映像AU・PTS、欠落後復旧、色異常の修正は未完了。Android build / atest / VTS / 実機確認は未実施。ホスト検証を実機成功と扱わない。
+
+# Frontend停止phaseの診断
+
+- 既存Frontend worker slot/contextへ診断専用phaseを従属させ、取消観測、backend停止開始・結果・経過時間、終端引渡し、回収完了／隔離をfrontend/kind/generationで相関する。待機期限では最後のphaseと未完義務を記録する。
+- service_runtimeの製品tune/scan停止にも同じ観測入口を接続し、deviceの補助workerだけの診断にしない。停止結果の型付きerrnoは元HalErrorのまま出力し、公開結果・期限・回収権限を変えない。
+- 注入backendで停止処理中と停止結果取得後の終端待ちを区別し、両方で置換拒否・owner保持、失敗時隔離を検査する。
+- Android Soong・device atest・実機VTS・実波による故障原因特定は未実施。
+
+# Playback DVR Filterイベント配送と投入統計の訂正
+
+- Playback DVRの消費済みFilterイベントは、遅延配送workerのwake失敗後も既存の直接callback配送を試行する。wake結果は従来どおりworker終端へ返し、callback配送失敗は既存Filter診断に記録する。新owner/worker/queueを追加しない。
+- descrambler方針がDrop/DiagnoseOnlyの場合、未投入packetをPlaybackStats.injected_packets/injected_bytesへ加算しない。完了扱いの消費個数や既存のmalformed統計を変更しない。
+- wake失敗と診断済み配送失敗、未投入packetのstats、正常投入packetのstatsを既存Rust host試験へ追加。Android Soong、VTS、実機送受信は未実施。
+
+# 複数PES Filterの同一Demux受理と公称能力整合
+
+- 公開PES Filter数（既定4）はサービス全体の同時所有上限であり、同一Demux当たり1個という別の上限を設けない。字幕と文字スーパーの別PIDに対応する複数PES Filterを同一Demuxで構成できるようにする。
+- 不要となるowner Demux別PES重複検査用の`demux_has_filter_open_type()`を削除し、productionの未使用関数を残さない。
+- 既存ChildOpenTxnの`filter_open_type_count()`に基づく公開数の検査、FMQ / PES runtime budgetの予約、object / callback owner、rollback、quarantineを変更せず、同一Demux専用の重複したTsPes排他検査だけを撤廃する。
+- `TUNER_HAL_DESIGN_JA.md` の製品資源表の所有者別上限を、上記の公開PES同時利用契約へ訂正する。新たな資源owner、queue、parser、frontend contractを導入しない。
+- 既存Android 15 AIDL公開child-open use-caseを実行する単体試験で、同一Demuxに対する2個の独立PES Filter生成と別PIDのconfigure成功、および公開数2個設定時に3個目の拒否を検査する。
+- Android Soong／VTS／実受信／Framework JNI SIGABRT回避は対象HEADの検証結果により判定する。TIS側は未パッチAndroid 15 JNIのopenFilter失敗一般について回復保証しない。
+
+# PR #116 Filter生成失敗時のHAL拒否理由の観測
+
+- 既存`IDemux.openFilter()`の戻り値を変えずに、エラー時のみDemux object、要求Filter種別、要求buffer size、Binder errorを`HAL_FILTER_OPEN_REJECTED`として記録する。
+- Android native Tuner JNIのopenFilter失敗後に不正なWeakGlobal削除でSIGABRTへ至る実機事例を、HAL内の失敗理由に結びつけるための診断。Filter拒否を成功扱いせず、新owner/transaction/retryを追加しない。
+- LineageOS 22.1 Framework JNIの未初期化`jweak`問題の恒久修正と、HAL Filter拒否そのものの根本対処はこの診断追加では実現しない。ホストtest、Android Soong、VTS、実機観測は本コミット時点では未完了。
+
+# PR #116 AV成功ログのreport一括frame閾値判定
+
+- 旧実装は単一packetから同一Filterの複数AV MediaEventが生成される際、report処理終了後の同一累計値を各eventごとに検査していたため、成功ログが重複・閾値通過を見逃していた。
+- 既存`AvSharedBacking`の診断専用`last_sampled_delivery_threshold`で、2の累乗境界を通過した最初のreportだけ観測する。demuxは既存backingの報告時snapshotを各Filter一回取り、Android HALの成功ログに累積割当件数、通過閾値、前回閾値、使用中slot/budgetを併記する。配送待ちで`generated_events`が空でも割当累積は保持する。
+- `AvSharedBacking`の実allocate操作に対する回帰で1件、同一report相当の2/3件、次の4件目、重複観測の抑制、u64飽和近傍の閾値を検査する。AIDL公開contract、dataId所有、TS/AUDIO timestampのframe分割、flush/close/解放は変更しない。
+- 最新HEADのCIは別途確認する。実機再生・黒画面解消は未検証。Rebase/Resolveは行わない。
+
+# PR #116 黒画面診断向けAV共有領域の進捗可視化
+
+- AV共有領域の正本ownerである`AvSharedBacking`へ、配送成功・client解放・未配送破棄・枯渇の診断専用飽和counterを追加。使用中shared slot数、event-local数、payload byte数、filter許容量、runtime全体のbudget使用量を読み取り専用snapshotとして提供する。counter飽和は既存設計の必須`diagnostic_counter_saturated`へ記録する。
+- demuxからservice_runtimeへの読み取り専用参照のみを追加。AV所有権、dataId発行、AIDL公開interface、既存flush/close/releaseの確定点と失敗結果を変更しない。
+- AV共有slot枯渇の累計が2の累乗に到達した時、既存packet diagnosticのdemux ID・generation・PID・filter IDと正本snapshotをAndroidのlogcatに間引いて記録する。枯渇後のclient解放も同様にサンプリングする。枯渇していない場合もHALで最初のAVイベントを確保できたか判断できるよう、AV MediaEvent生成成功件数が2の累乗に達した際の累積値と使用状態をInfoログへ記録する。共有領域の異常を検出した場合は既存のtyped diagnosticと併せてlogcatへ記録する。ホストCIではAndroid専用ログだけを除外する。
+- 同じownerの実allocation/releaseを呼ぶテストで枯渇、budget、client解放、未配送破棄、既存slot復旧、counter飽和と進捗値を検証する。Rust 1.81用rustfmtのCI差分に合わせて整形済み。
+- Android全体のSoongビルド・実機選局・LineageOS 22.1未パッチ環境での映像再生・CodecからSurfaceへの描画確認は未実施。HAL診断導入を黒画面解消とは判定しない。該当commitのCI結果は別途確認する。
+
+# PR #202 mediatunerとTRMのFramework再起動時の登録寿命
+
+- LineageOS 22.1の`TunerService`は生成時にHALからFrontend一覧を取得し、TRMへ登録する。Frameworkの`system_server`が再生成されたときも旧`mediatuner`が存続するとTRMのFrontend登録が失われる問題に対し、製品initが稼働中`media.tuner`だけを再生成するactionを追加した。
+- 当初のvendor HALの`init_rc`へFramework用actionを同梱する構成を訂正し、`prebuilt_etc`(`maleicacid_mediatuner_trm_lifecycle_rc`)を既存製品makefileからsystem partitionの`/system/etc/init`へ配置する構成へ変更した。vendor HAL本体の`init_rc`はHAL自身の定義だけを保持する。system所有`init.svc.zygote`へのvendor init subcontextのproperty可視性に依存しない。
+- 明示的なzygote停止時は標準`onrestart`が実行されず`stopped`へ遷移するため、製品rcには`init.svc.zygote=stopped`の補完actionのみを残した。自動再起動時は標準`init.zygote*.rc`の`onrestart restart --only-if-running media.tuner`へ委ね、重複していた`restarting` actionを削除した。未起動・意図的停止中・lazy待機中のサービスを強制起動せず、Tuner HALのRegistry/Capability/BackendやTuner SDKも変更しない。
+- 既存VTS profile CIの補助的静的検査はSoong module、製品makefile、rcの整合性を確認する。追補修正で`stopped`のみを必須とし、`restarting`を含む余計なactionを拒否するexact検査へ変更した。静的検査はTRM復元の実動作証拠ではない。
+- 製品makefileへsystem init moduleを追加したことに合わせ、既存CAS plugin CIの`CAS・Tuner製品設定`工程が比較するTuner `PRODUCT_PACKAGES`の期待値も更新した。更新前に旧期待値との不一致で同工程が失敗した一方、CAS C++本体と通常のVTS profile CIは成功していた。
+- 統合手順を更新し、system imageとvendor imageの新旧混在を避けて配置を確認すること、Soongによる対象モジュールのビルド確認、Framework再起動前後の`mediatuner` PID・TRM登録資源・実際の`Tuner.tune()`結果を実機で確認する条件を明記した。
+- Soong system imageへの実配置、Android initのruntime action、TRM再登録、実機VTSとMXワンセグ再生は未実施。ホストの静的検査・VTS profile CIの成功をこれらの実証へ読み替えない。
+
+# PR #166 service_runtime単体試験の実行経路修復
+
+- 既存host Rust CIのunit-tests matrixからservice_runtimeの除外を削除し、追加した旧世代submit失敗の回帰試験を含む通常単体試験を継続実行する。
+- 既存試験のAidlApi・FrontendDevicePath import漏れ、未使用AidlMethodAdapter import、旧ExplicitClose名、private registry field参照、privateなFilter開始wrapper参照を現行の型・入口へ修正した。
+- 旧start_workerを使っていた5箇所を、既存prepare_backend_submitとstart_worker_with_prepared_submitへ接続するtest module内fixtureへ統一した。機器I/Oを発行せず準備済み権限を回収し、実ワーカーの寿命を検査する。
+- close完了情報を直接検査するfrontend再open試験群をObjectCloseTxn所有者のtest moduleへ移動した。本番APIの可視性拡大、新しい本番owner・状態・互換入口はない。
+- ホストにDMAヒープがないことは既存packet_path試験と同じ未対応スタブで表現し、リンク不足を修正した。Android試験のネイティブ実装は置換しない。cleanup権限を使う既存試験では、開始したattemptを変数へ保持した。
+- 初回実行で表面化した13件の失敗に対し、backend種別に一致するexclusive groupとISDB-T能力をfixtureへ設定した。世代不一致試験は同一configureのNoopを避け、PIDを保ってPES条件を変更し、実際の世代増加を確認してから反例を検査する。
+- START中のDemux close許可、setLnbのrelationのみのcommit、DVR post-commit通知失敗の診断記録、queue失敗の型付き投影という現行契約へ既存試験を更新した。scan END artifact lookup試験は実際のscan sessionを準備し、存在しないsessionのaccounting失敗が混入しないようにした。本番処理は変更しない。
+- コミット`d682b47`の[host Rust CI](https://github.com/kazuki0824/tv/actions/runs/37943174871)でservice_runtime単体試験235件が成功（失敗・無視0件）。旧世代submit失敗のDVB/PX4回帰試験を含み、本番の警告エラー扱い型検査とhost Rust CI全30ジョブも成功した。Rust quality、TISホスト、TIS Robolectric、Kotlin quality CIも成功。Soong/device atest/VTS/実機は未実施。
+
+# PR #166 旧tune submit失敗とworker回収結果の分離
+
+- 再選局・stop・closeでfenceされた旧世代の非同期tune失敗を、既存FrontendRuntimeの遅延診断入口へ接続する。現世代の状態を変更せず、rollback成功済みoperation失敗をworker cleanup失敗へ昇格させない。
+- 実非同期記録入口でDVB/PX4の旧世代、rollback未完、未来世代の反例を検査する回帰試験を追加。新しいowner/reaper/retry機構はない。
+- 追加時にBackendTuneStep import漏れを修正した。当時のCIはservice_runtimeをunit-tests matrixから除外しており、既存test graphの23エラーの修復・回帰試験実行は未実施だった。この制約の修復と検証結果は上記「service_runtime単体試験の実行経路修復」に記録する。
+
+# Android 15実装におけるueventd wildcard一致
+
+- READMEとdevices.cppの末尾wildcard最適化差を確認した。末尾以外のwildcardと末尾数字の文字クラスを組み合わせ、実装でもfnmatchを使用するpatternへ固定した。driver node、suffixなし、非数字末尾の一致/不一致を実fnmatchで試験する。
+
+- レビュー対応: host fnmatch試験のunsafe境界をSAFETY固定ラベルと日本語説明へ整形。logic変更なし。
+
+# px4 ueventd patternの文字クラス契約訂正
+
+- AOSP fnmatch契約に従い数値で始まるsuffixのpatternへ戻し、誤ったprefix最適化の説明を削除した。ueventd/file_contexts/probe prefix整合試験を復元した。DMA-BUF heap権限のplatform所有は維持する。
+
+# PR #166 未使用のreaper公開委譲の除去
+
+- 呼出元のないWorkerRuntimeReaperQueue::pending_valuesを削除した。共通pending owner内の複数key読取り、any_pending、wait_until_releasedは維持する。新しいhelper・状態・試験は追加しない。検証は既存CIへ委ね、Soong/VTS/実機は未実施。
+
+# frontend reaper受付の有限待機
+
+- Bound frontend tune/scan reaper-admission waits by the existing workerReaperDeadlineMs capability; retain pending ownership and return typed cleanup failure on timeout.
+- 既存workerとcleanup所有を維持する。検証はCIへ委ね、Soong/VTS/実機確認は未実施。
+
+# フロントエンドclose失敗詳細の日本語統一
+
+- ワーカー終了待ちの未完了を示すruntime error detailを日本語へ統一した。typed error、回収所有権、状態遷移、終了待ち期限は変更していない。
+- Rust 1.81系rustfmtで整形確認した。文言確認から単体試験、Soong、VTS、実機の成功は宣言しない。
+
+# フロントエンドclose待機試験の説明文修正
+
+- 速やかなワーカー終了を検証する既存試験のexpect説明文を日本語へ統一した。入力・期待値・後片付けの観測・本番処理は変更していない。
+- Rust 1.81系rustfmtで整形確認した。単体試験とAndroid/Soong、atest、VTS、実機確認はこの文言修正から成功を宣言しない。
+
 # 旧 tuner_hal 削除
 
 - Tuner HAL の公開契約正本をリポジトリ直下の `TUNER_HAL_DESIGN_JA.md` へ移し、`tuner_hal2` を唯一の製品実装として文書参照を整理した。

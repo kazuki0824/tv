@@ -43,8 +43,7 @@ object ProgramVideoMetadataPolicy {
         latestByProgramKey: Map<String, PlaybackPipeline.VideoFormatInfo>,
     ): List<ProgramRecord> =
         records.map { record ->
-            val info = latestByProgramKey[key(record)]
-            if (info == null) return@map record
+            val info = latestByProgramKey[key(record)] ?: return@map record
             if (record.videoWidth != null || record.videoHeight != null || record.videoFormat != null) {
                 record
             } else {

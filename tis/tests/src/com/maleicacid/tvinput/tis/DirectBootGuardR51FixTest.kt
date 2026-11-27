@@ -14,7 +14,7 @@ class DirectBootGuardR51FixTest {
     @Test fun lockedBootStoresOnlyPendingState() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         DirectBootGuard.onLockedBootCompleted(context, 1234L, Intent.ACTION_LOCKED_BOOT_COMPLETED)
-        val state = DirectBootGuard.pendingStateForTest(context)
+        val state = DirectBootGuard.pendingState(context)
         check(state.pending)
         check(state.lastLockedBootReceivedAt == 1234L)
         check(state.bootReason == Intent.ACTION_LOCKED_BOOT_COMPLETED)

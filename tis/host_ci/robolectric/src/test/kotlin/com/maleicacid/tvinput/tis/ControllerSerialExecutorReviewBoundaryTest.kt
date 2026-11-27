@@ -1,0 +1,426 @@
+// 試験の入力・期待値を本体定数から独立した具体値で固定する。
+@file:Suppress("MagicNumber")
+
+package com.maleicacid.tvinput.tis
+
+import com.maleicacid.tvinput.aribsi.NativeAribCaptionFactParser
+import com.maleicacid.tvinput.common.TsPid
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+import org.robolectric.util.ReflectionHelpers
+import java.util.concurrent.CancellationException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
+class ControllerSerialExecutorReviewBoundaryTest {
+    @Test
+    fun replacementWorkerReentersControllerWithoutSelfQueueWait() {
+        val executor = ControllerSerialExecutor("交換worker試験")
+        val previous = AtomicReference<Thread>()
+        val controller = controllerForRelease(executor)
+        val dataCall =
+            TunerController::class.java
+                .getDeclaredMethod("postOnControllerData", Function0::class.java)
+                .apply { isAccessible = true }
+        try {
+            executor.executeControl {
+                previous.set(Thread.currentThread())
+                error("worker交換を起こす試験用例外")
+            }
+            val result =
+                executor
+                    .submitControl {
+                        check(Thread.currentThread() !== previous.get())
+                        check(executor.isOwnerThread())
+                        check(controller.currentGeneration() == 0L)
+                        dataCall.invoke(controller, { Unit })
+                        7
+                    }.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            check(result == 7)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun controllerExecutorOwnerUsesThreadIdentityNotName() {
+        val executor = ControllerSerialExecutor("owner-identity-test")
+        try {
+            check(executor.submitControl { executor.isOwnerThread() }.get(WAIT_SECONDS, TimeUnit.SECONDS))
+            val sameNameOtherThreadResult = arrayOf(false)
+            val thread =
+                Thread(
+                    { sameNameOtherThreadResult[0] = executor.isOwnerThread() },
+                    "owner-identity-test",
+                )
+            thread.start()
+            thread.join(JOIN_WAIT_MS)
+            check(!sameNameOtherThreadResult[0])
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun controllerSectionBurstAdmissionRemainsBoundedWithoutHardwareCapacityHeuristic() {
+        val executor = ControllerSerialExecutor("section-admission-boundary", maxPendingDataTasks = 16)
+        val started = CountDownLatch(1)
+        val releaseControl = CountDownLatch(1)
+        val slots =
+            generateSequence<Class<*>>(executor.javaClass) { it.superclass }
+                .mapNotNull { type -> type.declaredFields.singleOrNull { it.name == "pendingDataSlots" } }
+                .first()
+                .apply { isAccessible = true }
+                .get(executor) as Semaphore
+        try {
+            executor.executeControl {
+                started.countDown()
+                runCatching { releaseControl.await() }
+            }
+            check(started.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            repeat(16) { executor.executeData { error("未実行data taskが実行されました") } }
+            check(slots.availablePermits() == 0)
+            check(runCatching { executor.executeData {} }.exceptionOrNull() is DataCapacityExceededException)
+            check(executor.shutdownNow().size == 16)
+            check(slots.availablePermits() == 16)
+        } finally {
+            releaseControl.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun sectionExecutorMetricsTrackRealAdmissionWithoutChangingCapacity() {
+        val executor = ControllerSerialExecutor("section-metrics-boundary", maxPendingDataTasks = 2)
+        val started = CountDownLatch(1)
+        val releaseControl = CountDownLatch(1)
+        val finishedData = CountDownLatch(2)
+        try {
+            executor.executeControl {
+                started.countDown()
+                releaseControl.await()
+            }
+            check(started.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            repeat(2) { executor.executeData { finishedData.countDown() } }
+            check(runCatching { executor.executeData {} }.exceptionOrNull() is DataCapacityExceededException)
+            check(executor.metricsSnapshot().contains("dataInFlightPeakSampled=2 dataCapacityRejections=1"))
+            releaseControl.countDown()
+            check(finishedData.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+            var metrics = executor.metricsSnapshot()
+            while (!metrics.contains("dataTasksFinished=2") && System.nanoTime() < deadline) {
+                Thread.yield()
+                metrics = executor.metricsSnapshot()
+            }
+            check(metrics.contains("dataTasksFinished=2"))
+            check(metrics.contains("controlTasksFinished=1"))
+            check(metrics.contains("dataOwnerTotalUs="))
+            check(metrics.contains("controlOwnerMaxUs="))
+        } finally {
+            releaseControl.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun scanWindowPeakDoesNotLeakIntoNextCandidate() {
+        val executor = ControllerSerialExecutor("区間別Section試験", maxPendingDataTasks = 2)
+        val controlStarted = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val completed = CountDownLatch(2)
+        val resumeSecond = CountDownLatch(1)
+        try {
+            executor.executeControl {
+                controlStarted.countDown()
+                release.await()
+            }
+            check(controlStarted.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            val first = executor.beginMetricsWindow()
+            repeat(2) { executor.executeData { completed.countDown() } }
+            check(runCatching { executor.executeData {} }.exceptionOrNull() is DataCapacityExceededException)
+            val firstResult = executor.finishMetricsWindow(first)
+            check(firstResult.contains("inFlightPeakSampled=2 capacityRejectionsDelta=1"))
+            release.countDown()
+            check(completed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            executor.submitControl {}.get(WAIT_SECONDS, TimeUnit.SECONDS)
+
+            val second = executor.beginMetricsWindow()
+            val secondStarted = CountDownLatch(1)
+            executor.executeData {
+                secondStarted.countDown()
+                resumeSecond.await()
+            }
+            check(secondStarted.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            val secondResult = executor.finishMetricsWindow(second)
+            check(secondResult.contains("inFlightPeakSampled=1 capacityRejectionsDelta=0"))
+        } finally {
+            resumeSecond.countDown()
+            release.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun cleanupTaskDoesNotIncreaseControlTaskCount() {
+        val executor = ControllerSerialExecutor("cleanup分類試験")
+        try {
+            val window = executor.beginMetricsWindow()
+            executor.submitControl(cleanup = true) { Unit }.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+            while (!executor.metricsSnapshot().contains("cleanupTasksFinished=1") &&
+                System.nanoTime() < deadline
+            ) {
+                Thread.yield()
+            }
+            val result = executor.finishMetricsWindow(window)
+            check(result.contains("controlFinishedDelta=0"))
+            check(result.contains("cleanupFinishedDelta=1"))
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    // 取得と標本読取りの間へ解放を挟み、競合を確率や負荷に依存せず再現する。
+    @Suppress("LongMethod")
+    @Test
+    fun sampledPeakCanMissReservationWhenOwnerReleasesBeforeSampling() {
+        val executor = ControllerSerialExecutor("Section標本競合試験", maxPendingDataTasks = 2)
+        val pauseSample = AtomicBoolean(false)
+        val acquiredSecond = CountDownLatch(1)
+        val resumeSample = CountDownLatch(1)
+        val firstStarted = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val secondFinished = CountDownLatch(1)
+        val submitFailure = AtomicReference<Throwable>()
+        val slots =
+            object : Semaphore(2) {
+                override fun availablePermits(): Int {
+                    if (pauseSample.compareAndSet(true, false)) {
+                        // 一つ目は未解放、二つ目は取得済みなので実占有は2。
+                        check(super.availablePermits() == 0)
+                        acquiredSecond.countDown()
+                        check(resumeSample.await(WAIT_SECONDS, TimeUnit.SECONDS))
+                    }
+                    return super.availablePermits()
+                }
+            }
+        ReflectionHelpers.setField(executor, "pendingDataSlots", slots)
+        val submitter =
+            Thread {
+                submitFailure.set(
+                    runCatching { executor.executeData { secondFinished.countDown() } }.exceptionOrNull(),
+                )
+            }
+        try {
+            executor.executeData {
+                firstStarted.countDown()
+                releaseFirst.await()
+            }
+            check(firstStarted.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            pauseSample.set(true)
+            submitter.start()
+            check(acquiredSecond.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            releaseFirst.countDown()
+            executor.submitControl {}.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            check(slots.availablePermits() == 1)
+            resumeSample.countDown()
+            submitter.join(JOIN_WAIT_MS)
+            check(!submitter.isAlive && submitFailure.get() == null)
+            check(secondFinished.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            executor.submitControl {}.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            check(slots.availablePermits() == 2)
+            check(executor.metricsSnapshot().contains("dataInFlightPeakSampled=1 dataCapacityRejections=0"))
+        } finally {
+            releaseFirst.countDown()
+            resumeSample.countDown()
+            submitter.interrupt()
+            submitter.join(JOIN_WAIT_MS)
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun controllerExecutorShutdownReturnsDiscardedDataPermit() {
+        val executor = ControllerSerialExecutor("shutdown-permit-test", maxPendingDataTasks = 1)
+        val controlStarted = CountDownLatch(1)
+        val releaseControl = CountDownLatch(1)
+        val slots =
+            generateSequence<Class<*>>(executor.javaClass) { it.superclass }
+                .mapNotNull { type -> type.declaredFields.singleOrNull { it.name == "pendingDataSlots" } }
+                .first()
+                .apply { isAccessible = true }
+                .get(executor) as Semaphore
+        try {
+            executor.executeControl {
+                controlStarted.countDown()
+                runCatching { releaseControl.await() }
+            }
+            check(controlStarted.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            executor.executeData { error("破棄対象data taskが実行されました") }
+            check(slots.availablePermits() == 0)
+            check(runCatching { executor.executeData {} }.isFailure)
+            check(slots.availablePermits() == 0)
+            check(executor.shutdownNow().size == 1)
+            check(slots.availablePermits() == 1)
+        } finally {
+            releaseControl.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    // 採番境界と本番releaseの失敗・再試行を同じownerで検査する。
+    @Suppress("LongMethod")
+    @Test
+    fun controllerReleaseRetriesCleanupAfterNormalSequenceExhaustion() {
+        val executor = ControllerSerialExecutor("枯渇後controller解放試験")
+        var cleanupCalls = 0
+        val controller =
+            controllerForRelease(executor) {
+                cleanupCalls++
+                check(cleanupCalls != 1) { "解放境界の試験用失敗" }
+            }
+        val sequence =
+            PrioritySerialExecutor::class.java
+                .getDeclaredField("nextSequence")
+                .apply { isAccessible = true }
+                .get(executor) as AtomicLong
+        val released = TunerController::class.java.getDeclaredField("released").apply { isAccessible = true }
+        try {
+            sequence.set(Long.MAX_VALUE)
+            executor.submitControl {}.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            check(sequence.get() == Long.MIN_VALUE)
+            check(runCatching { executor.submitControl {} }.isFailure)
+            val failure = runCatching { controller.release() }.exceptionOrNull()
+            check(failure?.message == "解放境界の試験用失敗")
+            check(cleanupCalls == 1 && !released.getBoolean(controller) && !executor.isShutdown)
+            controller.release()
+            check(cleanupCalls == 3 && released.getBoolean(controller) && executor.isShutdown)
+            controller.release()
+            check(cleanupCalls == 3)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    // 優先releaseが受理済みcontrolを破棄したとき、同期callerを待機中のまま残さない。
+    @Suppress("LongMethod")
+    @Test
+    fun priorityReleaseFinishesDiscardedCurrentGenerationCaller() {
+        val executor = ControllerSerialExecutor("優先release終了通知試験")
+        val controller = controllerForRelease(executor)
+        val ownerStarted = CountDownLatch(1)
+        val resumeOwner = CountDownLatch(1)
+        val resumeNormal = CountDownLatch(1)
+        val currentDone = CountDownLatch(1)
+        val releaseDone = CountDownLatch(1)
+        val currentFailure = AtomicReference<Throwable>()
+        val releaseFailure = AtomicReference<Throwable>()
+        val currentCaller =
+            Thread {
+                currentFailure.set(runCatching { controller.currentGeneration() }.exceptionOrNull())
+                currentDone.countDown()
+            }
+        val releaseCaller =
+            Thread {
+                releaseFailure.set(runCatching { controller.release() }.exceptionOrNull())
+                releaseDone.countDown()
+            }
+        try {
+            executor.executeControl {
+                ownerStarted.countDown()
+                runCatching { resumeOwner.await() }
+            }
+            check(ownerStarted.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            executor.submitControl {
+                runCatching { resumeNormal.await() }
+                Unit
+            }
+            currentCaller.start()
+            awaitQueuedTasks(executor, 2)
+            releaseCaller.start()
+            awaitQueuedTasks(executor, 3)
+            resumeOwner.countDown()
+            check(releaseDone.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            check(releaseFailure.get() == null && executor.isShutdown)
+            check(currentDone.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            check(currentFailure.get() is CancellationException)
+        } finally {
+            resumeOwner.countDown()
+            resumeNormal.countDown()
+            executor.shutdownNow()
+            currentCaller.interrupt()
+            releaseCaller.interrupt()
+            currentCaller.join(JOIN_WAIT_MS)
+            releaseCaller.join(JOIN_WAIT_MS)
+        }
+    }
+
+    @Test
+    fun controllerShutdownCompletesUnstartedNormalAndCleanupFutures() {
+        val executor = ControllerSerialExecutor("control Future破棄試験")
+        val started = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        try {
+            executor.executeControl {
+                started.countDown()
+                runCatching { resume.await() }
+            }
+            check(started.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            val normal = executor.submitControl<Unit> { error("破棄対象の通常controlが実行されました") }
+            val cleanup = executor.submitControl<Unit>(cleanup = true) { error("破棄対象のcleanupが実行されました") }
+            check(executor.shutdownNow().size == 2)
+            listOf(normal, cleanup).forEach { task ->
+                check(task.isDone && task.isCancelled)
+                val failure = runCatching { task.get(WAIT_SECONDS, TimeUnit.SECONDS) }.exceptionOrNull()
+                check(failure is CancellationException)
+            }
+        } finally {
+            resume.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    private fun awaitQueuedTasks(
+        executor: ControllerSerialExecutor,
+        count: Int,
+    ) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+        while (executor.queue.size != count && System.nanoTime() < deadline) Thread.yield()
+        check(executor.queue.size == count)
+    }
+
+    // 正規生成・停止済みPipelineを保持し、Controllerの投入・終了境界へ失敗を注入する。
+    private fun controllerForRelease(
+        executor: ControllerSerialExecutor,
+        onClear: () -> Unit = {},
+    ): TunerController {
+        val controller = TunerController(RuntimeEnvironment.getApplication(), "controller-boundary-test")
+        ReflectionHelpers.getField<ControllerSerialExecutor>(controller, "sectionExecutor").shutdownNow()
+        ReflectionHelpers.setField(controller, "sectionExecutor", executor)
+        ReflectionHelpers.getField<PlaybackPipeline>(controller, "playbackPipeline").close()
+        val languages =
+            object : ConcurrentHashMap<TsPid, List<NativeAribCaptionFactParser.Language>>() {
+                override fun clear() {
+                    onClear()
+                    super.clear()
+                }
+            }
+        ReflectionHelpers.setField(controller, "captionLanguagesByPid", languages)
+        return controller
+    }
+
+    private companion object {
+        const val WAIT_SECONDS = 1L
+        const val JOIN_WAIT_MS = 1_000L
+    }
+}

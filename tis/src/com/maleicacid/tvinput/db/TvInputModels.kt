@@ -29,6 +29,7 @@ data class ChannelRecord(
     val remoteControlKeyId: Int? = null,
     val requiresCas: Boolean = false,
     val casFactsCanonicalJson: String? = null,
+    val partialReception: Boolean = false,
 ) {
     companion object {
         const val DELIVERY_SYSTEM_ISDB_T = "ISDB_T"
@@ -50,6 +51,7 @@ data class ProgramDescriptors(
     val scrambled: Boolean? = null,
     val freeCaMode: AribFreeCaMode? = null,
     val series: AribSeries? = null,
+    val seriesCandidates: List<AribSeries> = emptyList(),
     val seriesCandidatesCanonicalJson: String? = null,
     val descriptorDiagnosticsCanonicalJson: String = "[]",
     val descriptorFactsCanonicalJson: String? = null,

@@ -1,0 +1,13 @@
+[package]
+name = "maleicacid-tuner-hal2-concurrency-loom-host-ci"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[target.'cfg(loom)'.dependencies]
+loom = "=0.7.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

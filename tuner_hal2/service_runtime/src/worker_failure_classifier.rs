@@ -1,20 +1,8 @@
-use maleicacid_tuner_hal2_common::HalError;
+use maleicacid_tuner_hal2_common::{HalError, RuntimeLockKind};
 
 use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
+use crate::diagnostics::WorkerFailureCategory;
 use crate::worker_runtime::WorkerTerminalResult;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WorkerFailureCategory {
-    CallbackCommit,
-    CallbackArtifact,
-    CallbackPolicy,
-    CallbackConversion,
-    CallbackBinder,
-    CallbackNotifierTerminal,
-    CallbackCleanup,
-    Join,
-    Unknown,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ClassifiedCallbackFailure {
@@ -28,29 +16,47 @@ impl ClassifiedCallbackFailure {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ClassifiedWorkerTerminalResult<T> {
-    Normal(T),
-    StopRequested,
-    Failure {
-        category: WorkerFailureCategory,
-        error: HalError,
-    },
-}
-
-impl<T> ClassifiedWorkerTerminalResult<T> {
-    pub fn into_failure(self) -> Option<(WorkerFailureCategory, HalError)> {
-        match self {
-            Self::Failure { category, error } => Some((category, error)),
-            Self::Normal(_) | Self::StopRequested => None,
-        }
-    }
-}
+use crate::diagnostics::ClassifiedWorkerTerminalResult;
 
 pub struct WorkerFailureClassifier;
 
 impl WorkerFailureClassifier {
-    pub(crate) fn classify_terminal<T>(
+    /// 共有cleanup reaperの失陥は複合失敗の両側を調べて検出する。
+    /// 個別objectの失敗を共有reaperの失陥として誤分類しない。
+    pub fn cleanup_reaper_requires_service_stop(error: &HalError) -> bool {
+        match error {
+            HalError::ComposedFailure {
+                primary, cleanup, ..
+            } => {
+                Self::cleanup_reaper_requires_service_stop(primary)
+                    || Self::cleanup_reaper_requires_service_stop(cleanup)
+            }
+            HalError::WorkerReaperUnavailable | HalError::WorkerReaperPanicked => true,
+            HalError::LockPoisoned(poison) => matches!(
+                poison.lock,
+                RuntimeLockKind::CleanupReaperOwner
+                    | RuntimeLockKind::WorkerReaperPending
+                    | RuntimeLockKind::WorkerReaperReceiver
+            ),
+            _ => false,
+        }
+    }
+
+    /// cleanup reaper ownerのenqueue境界だけでWorkerLockPoisonedを検出する。
+    pub fn reaper_enqueue_worker_lock_poisoned(error: &HalError) -> bool {
+        match error {
+            HalError::ComposedFailure {
+                primary, cleanup, ..
+            } => {
+                Self::reaper_enqueue_worker_lock_poisoned(primary)
+                    || Self::reaper_enqueue_worker_lock_poisoned(cleanup)
+            }
+            HalError::WorkerLockPoisoned { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub fn classify_terminal<T>(
         result: WorkerTerminalResult<T>,
         panic_context: &'static str,
     ) -> ClassifiedWorkerTerminalResult<T> {
@@ -59,7 +65,7 @@ impl WorkerFailureClassifier {
             WorkerTerminalResult::StopRequested => ClassifiedWorkerTerminalResult::StopRequested,
             WorkerTerminalResult::RuntimeFailure(error) => {
                 ClassifiedWorkerTerminalResult::Failure {
-                    category: Self::classify_unknown(&error),
+                    category: Self::classify_runtime_failure(&error),
                     error,
                 }
             }
@@ -106,7 +112,159 @@ impl WorkerFailureClassifier {
         WorkerFailureCategory::Join
     }
 
-    pub(crate) const fn classify_unknown(_error: &HalError) -> WorkerFailureCategory {
-        WorkerFailureCategory::Unknown
+    fn classify_runtime_failure(error: &HalError) -> WorkerFailureCategory {
+        match error.primary_error() {
+            HalError::WorkerReaperPanicked => WorkerFailureCategory::Join,
+            HalError::IoctlFailed { .. } | HalError::Io { .. } => {
+                WorkerFailureCategory::BackendControl
+            }
+            HalError::CallbackFailed { .. } => WorkerFailureCategory::CallbackBinder,
+            HalError::FmqDeliveryFailed {
+                kind: maleicacid_tuner_hal2_common::FmqFailureKind::EventFlagWakeFailed,
+                ..
+            } => WorkerFailureCategory::EventFlag,
+            HalError::FmqFailed { .. } | HalError::FmqDeliveryFailed { .. } => {
+                WorkerFailureCategory::Fmq
+            }
+            HalError::EventFlagFailed { .. } => WorkerFailureCategory::EventFlag,
+            HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => {
+                WorkerFailureCategory::Cleanup
+            }
+            HalError::QueueEpochLockPoisoned { .. }
+            | HalError::LockPoisoned(_)
+            | HalError::WorkerLockPoisoned { .. }
+            | HalError::WorkerReaperUnavailable
+            | HalError::ServiceRuntimeLockPoisoned { .. }
+            | HalError::FilterGateLockPoisoned { .. } => WorkerFailureCategory::LockPoison,
+            _ => WorkerFailureCategory::Unknown,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maleicacid_tuner_hal2_common::{HalInternalKind, WorkerLockKind};
+
+    #[test]
+    fn reaper_shared_failure_is_detected_through_composition() {
+        use maleicacid_tuner_hal2_common::LockPoisonDiagnostic;
+        let poisoned = HalError::LockPoisoned(LockPoisonDiagnostic {
+            lock: RuntimeLockKind::WorkerReaperPending,
+            poison_count: 1,
+            counter_saturated: false,
+        });
+        let local = HalError::cleanup_failed("DVR", "局所的な後片付け失敗");
+        let composed = HalError::composed_failure(
+            "cleanup reaper",
+            local.clone(),
+            HalError::composed_failure("reserve", local.clone(), poisoned),
+        );
+        assert!(WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&composed));
+        assert!(!WorkerFailureClassifier::cleanup_reaper_requires_service_stop(&local));
+        assert!(
+            WorkerFailureClassifier::cleanup_reaper_requires_service_stop(
+                &HalError::WorkerReaperUnavailable
+            )
+        );
+        assert!(!WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(&local));
+        assert!(
+            WorkerFailureClassifier::reaper_enqueue_worker_lock_poisoned(
+                &HalError::WorkerLockPoisoned {
+                    owner: "cleanup reaper",
+                    lock: WorkerLockKind::Result,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn terminal_failure_preserves_known_domains_and_unknown_fallback() {
+        let backend = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some("/dev/px4video0".into()),
+            op: "PTX_SET_CHANNEL",
+            errno: 5,
+        };
+        let cases = [
+            (HalError::WorkerReaperPanicked, WorkerFailureCategory::Join),
+            (backend, WorkerFailureCategory::BackendControl),
+            (
+                HalError::callback_failed("onEvent", "failure"),
+                WorkerFailureCategory::CallbackBinder,
+            ),
+            (
+                HalError::fmq_failed("write", "failure"),
+                WorkerFailureCategory::Fmq,
+            ),
+            (
+                HalError::event_flag_failed("wake", "failure"),
+                WorkerFailureCategory::EventFlag,
+            ),
+            (
+                HalError::cleanup_failed("worker", "failure"),
+                WorkerFailureCategory::Cleanup,
+            ),
+            (
+                HalError::WorkerLockPoisoned {
+                    owner: "frontend",
+                    lock: WorkerLockKind::Result,
+                },
+                WorkerFailureCategory::LockPoison,
+            ),
+            (
+                HalError::internal(HalInternalKind::InvariantViolation, "unknown"),
+                WorkerFailureCategory::Unknown,
+            ),
+            (
+                HalError::WorkerReaperUnavailable,
+                WorkerFailureCategory::LockPoison,
+            ),
+        ];
+        for (error, category) in cases {
+            assert_eq!(
+                WorkerFailureClassifier::classify_terminal::<()>(
+                    WorkerTerminalResult::RuntimeFailure(error.clone()),
+                    "panic",
+                ),
+                ClassifiedWorkerTerminalResult::Failure { category, error },
+            );
+        }
+    }
+
+    #[test]
+    fn composed_failure_keeps_primary_domain_and_cleanup_error() {
+        let error = HalError::composed_failure(
+            "書込みと後片付け",
+            HalError::fmq_failed("write", "failure"),
+            HalError::cleanup_failed("queue", "failure"),
+        );
+        assert_eq!(
+            WorkerFailureClassifier::classify_terminal::<()>(
+                WorkerTerminalResult::RuntimeFailure(error.clone()),
+                "panic"
+            ),
+            ClassifiedWorkerTerminalResult::Failure {
+                category: WorkerFailureCategory::Fmq,
+                error
+            },
+        );
+        assert!(matches!(
+            WorkerFailureClassifier::classify_terminal::<()>(
+                WorkerTerminalResult::PanicOrJoinFailure,
+                "panic"
+            ),
+            ClassifiedWorkerTerminalResult::Failure {
+                category: WorkerFailureCategory::Join,
+                ..
+            },
+        ));
+        assert_eq!(
+            WorkerFailureClassifier::classify_terminal::<()>(
+                WorkerTerminalResult::StopRequested,
+                "panic"
+            ),
+            ClassifiedWorkerTerminalResult::StopRequested,
+        );
     }
 }

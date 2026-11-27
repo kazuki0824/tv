@@ -4,10 +4,10 @@ import org.junit.Test
 
 class SetupActivityBk10CompletionTest {
     @Test fun scanRequiresNonBlankOwnInputId() {
-        check(!SetupActivity.scanStartAllowedForTest(null, isOwnInputId = true))
-        check(!SetupActivity.scanStartAllowedForTest("", isOwnInputId = true))
-        check(!SetupActivity.scanStartAllowedForTest("other.input", isOwnInputId = false))
-        check(SetupActivity.scanStartAllowedForTest("own.input", isOwnInputId = true))
+        check(!SetupActivity.scanStartAllowed(null, isOwnInputId = true))
+        check(!SetupActivity.scanStartAllowed("", isOwnInputId = true))
+        check(!SetupActivity.scanStartAllowed("other.input", isOwnInputId = false))
+        check(SetupActivity.scanStartAllowed("own.input", isOwnInputId = true))
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -21,18 +21,18 @@ class SetupActivityBk10CompletionTest {
         val background = ScanState.Completed(result, generation = 7, purpose = ScanPurpose.BACKGROUND_MAINTENANCE)
         val empty = ScanState.Completed(result.copy(published = 0), generation = 7, purpose = ScanPurpose.SETUP_SCAN)
 
-        check(SetupActivity.shouldFinishSetupForStateForTest(current, activeSetupGeneration = 7, invalidInputId = false))
-        check(!SetupActivity.shouldFinishSetupForStateForTest(stale, activeSetupGeneration = 7, invalidInputId = false))
-        check(!SetupActivity.shouldFinishSetupForStateForTest(boot, activeSetupGeneration = 7, invalidInputId = false))
-        check(!SetupActivity.shouldFinishSetupForStateForTest(background, activeSetupGeneration = 7, invalidInputId = false))
-        check(!SetupActivity.shouldFinishSetupForStateForTest(empty, activeSetupGeneration = 7, invalidInputId = false))
-        check(!SetupActivity.shouldFinishSetupForStateForTest(current, activeSetupGeneration = null, invalidInputId = false))
-        check(!SetupActivity.shouldFinishSetupForStateForTest(current, activeSetupGeneration = 7, invalidInputId = true))
+        check(SetupActivity.shouldFinishSetupForState(current, activeSetupGeneration = 7, invalidInputId = false))
+        check(!SetupActivity.shouldFinishSetupForState(stale, activeSetupGeneration = 7, invalidInputId = false))
+        check(!SetupActivity.shouldFinishSetupForState(boot, activeSetupGeneration = 7, invalidInputId = false))
+        check(!SetupActivity.shouldFinishSetupForState(background, activeSetupGeneration = 7, invalidInputId = false))
+        check(!SetupActivity.shouldFinishSetupForState(empty, activeSetupGeneration = 7, invalidInputId = false))
+        check(!SetupActivity.shouldFinishSetupForState(current, activeSetupGeneration = null, invalidInputId = false))
+        check(!SetupActivity.shouldFinishSetupForState(current, activeSetupGeneration = 7, invalidInputId = true))
     }
 
     @Test fun setupActivityDoesNotTreatForeignInputAsOwn() {
         check(
-            !TisInputIdResolver.isOwnInputInfoForTest(
+            !TisInputIdResolver.isOwnInputInfo(
                 infoId = "foreign.input",
                 servicePackageName = "foreign.package",
                 serviceName = "foreign.Service",

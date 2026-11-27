@@ -11,6 +11,22 @@ pub enum AidlObjectCloseability {
     BeginClose,
 }
 
+fn invalid_close_lifecycle(lifecycle: RuntimeObjectLifecycle) -> HalError {
+    let detail = match lifecycle {
+        RuntimeObjectLifecycle::Prepared => {
+            "AIDL objectはPreparedでありLiveとして公開されていません"
+        }
+        RuntimeObjectLifecycle::Closed => "AIDL objectは既にClosedです",
+        RuntimeObjectLifecycle::Quarantined => {
+            "AIDL objectはQuarantinedでありfail-closed処理が必要です"
+        }
+        RuntimeObjectLifecycle::Live
+        | RuntimeObjectLifecycle::Closing { .. }
+        | RuntimeObjectLifecycle::CleanupPending { .. } => "AIDL objectはcloseできません",
+    };
+    HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, detail)
+}
+
 pub fn aidl_object_entry_for_kind(
     runtime: &TunerServiceRuntime,
     object_id: AidlObjectId,
@@ -63,11 +79,112 @@ pub fn aidl_object_closeable(
         | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(AidlObjectCloseability::BeginClose),
         RuntimeObjectLifecycle::Prepared
         | RuntimeObjectLifecycle::Closed
-        | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "AIDL object is not closeable",
-        )),
+        | RuntimeObjectLifecycle::Quarantined => Err(invalid_close_lifecycle(entry.lifecycle)),
     }
+}
+
+/// Cleanup受付で使用するread-onlyなobject世代・状態分類。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AidlObjectCleanupDisposition {
+    Stale,
+    Closed,
+    Quarantined,
+    QuarantineAwaitingReport,
+    QuarantineSupervised,
+    NoCleanupPending,
+    RequiresIsolation,
+}
+
+impl AidlObjectCleanupDisposition {
+    /// この受付・予約を返してよい。Supervisor移管済みは物理回収完了とは異なる。
+    pub fn recovery_settled(self) -> bool {
+        matches!(
+            self,
+            Self::Stale | Self::Closed | Self::NoCleanupPending | Self::QuarantineSupervised
+        )
+    }
+}
+
+pub fn aidl_object_cleanup_disposition(
+    runtime: &TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    expected_kind: AidlObjectKind,
+) -> Result<AidlObjectCleanupDisposition, HalError> {
+    let Some(entry) = runtime.object_table().entry(object_id) else {
+        return Ok(AidlObjectCleanupDisposition::Stale);
+    };
+    if entry.generation != generation {
+        return Ok(AidlObjectCleanupDisposition::Stale);
+    }
+    if entry.object_kind != expected_kind {
+        return Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object kind mismatch while classifying cleanup retry",
+        ));
+    }
+    Ok(match entry.lifecycle {
+        RuntimeObjectLifecycle::Closed => AidlObjectCleanupDisposition::Closed,
+        RuntimeObjectLifecycle::Quarantined => {
+            match runtime
+                .object_table()
+                .quarantine_cleanup_is_supervised(object_id, generation)
+            {
+                Some(false) => AidlObjectCleanupDisposition::QuarantineAwaitingReport,
+                Some(true) => AidlObjectCleanupDisposition::QuarantineSupervised,
+                None => AidlObjectCleanupDisposition::Quarantined,
+            }
+        }
+        RuntimeObjectLifecycle::Prepared | RuntimeObjectLifecycle::Live => {
+            AidlObjectCleanupDisposition::NoCleanupPending
+        }
+        RuntimeObjectLifecycle::Closing { .. } | RuntimeObjectLifecycle::CleanupPending { .. } => {
+            AidlObjectCleanupDisposition::RequiresIsolation
+        }
+    })
+}
+
+pub struct CleanupRecoveryRequest {
+    pub object_kind: AidlObjectKind,
+    pub object_id: AidlObjectId,
+    pub generation: AidlObjectGeneration,
+    pub requested_at: std::time::Instant,
+}
+
+pub fn request_aidl_cleanup_recovery(
+    runtime: &mut TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    expected_kind: AidlObjectKind,
+) -> Result<(), HalError> {
+    if aidl_object_cleanup_disposition(runtime, object_id, generation, expected_kind)?
+        .recovery_settled()
+    {
+        return Ok(());
+    }
+    runtime
+        .object_table_mut()
+        .request_cleanup_recovery(object_id, generation, std::time::Instant::now())
+        .map_err(object_table_error_to_hal)
+}
+
+pub fn finish_aidl_cleanup_recovery_admission(
+    runtime: &mut TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+) {
+    runtime
+        .object_table_mut()
+        .finish_cleanup_recovery_admission(object_id, generation);
+}
+
+pub fn aidl_cleanup_recovery_requests(
+    runtime: &TunerServiceRuntime,
+) -> Result<Vec<CleanupRecoveryRequest>, HalError> {
+    runtime
+        .object_table()
+        .cleanup_recovery_requests()
+        .map_err(object_table_error_to_hal)
 }
 
 pub fn aidl_object_cleanup_dependency(
@@ -179,16 +296,9 @@ pub fn aidl_object_entry_for_close_cleanup(
         RuntimeObjectLifecycle::Live
         | RuntimeObjectLifecycle::Closing { .. }
         | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(entry.clone()),
-        RuntimeObjectLifecycle::Prepared => Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "AIDL object is not live for close cleanup",
-        )),
-        RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {
-            Err(HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "AIDL object is terminal",
-            ))
-        }
+        RuntimeObjectLifecycle::Prepared
+        | RuntimeObjectLifecycle::Closed
+        | RuntimeObjectLifecycle::Quarantined => Err(invalid_close_lifecycle(entry.lifecycle)),
     }
 }
 
@@ -218,6 +328,7 @@ mod closeable_lifecycle_tests {
         runtime
             .object_table_mut()
             .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
                 object_kind: AidlObjectKind::Filter,
                 object_id: AidlObjectId(501),
                 generation: AidlObjectGeneration(1),
@@ -228,6 +339,136 @@ mod closeable_lifecycle_tests {
             })
             .expect("insert succeeds");
         runtime
+    }
+
+    #[test]
+    fn cleanup_disposition_classifies_stale_live_terminal_and_wrong_kind() {
+        let mut runtime = runtime_with_filter();
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(999),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::Stale)
+        );
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(501),
+                AidlObjectGeneration(2),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::Stale)
+        );
+        assert!(aidl_object_cleanup_disposition(
+            &runtime,
+            AidlObjectId(501),
+            AidlObjectGeneration(1),
+            AidlObjectKind::Dvr,
+        )
+        .is_err());
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::NoCleanupPending)
+        );
+        runtime
+            .object_table_mut()
+            .begin_close_cascade(
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                CleanupStep::UnregisterRuntime,
+            )
+            .expect("close開始で後片付け依存関係を生成する");
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::RequiresIsolation)
+        );
+        runtime
+            .object_table_mut()
+            .quarantine_cascade(AidlObjectId(501), AidlObjectGeneration(1))
+            .expect("論理隔離に成功する");
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::Quarantined)
+        );
+    }
+
+    #[test]
+    fn live_dvr_missing_backend_is_not_generation_fenced() {
+        // metadata照会失敗とobject lifecycleの終了は同義ではない。
+        let mut runtime = TunerServiceRuntime::new();
+        runtime
+            .object_table_mut()
+            .insert(RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Dvr,
+                object_id: AidlObjectId(707),
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(707),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("DVR objectを登録する");
+        assert!(runtime
+            .dvr_status_metadata_snapshot_for_aidl_object(
+                AidlObjectId(707),
+                AidlObjectGeneration(1)
+            )
+            .is_err());
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(707),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Dvr,
+            ),
+            Ok(AidlObjectCleanupDisposition::NoCleanupPending)
+        );
+    }
+
+    #[test]
+    fn prepared_object_does_not_have_cleanup_retry_obligation() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime
+            .object_table_mut()
+            .insert_prepared(RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Filter,
+                object_id: AidlObjectId(502),
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(502),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("Preparedの作成に成功");
+        assert_eq!(
+            aidl_object_cleanup_disposition(
+                &runtime,
+                AidlObjectId(502),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            ),
+            Ok(AidlObjectCleanupDisposition::NoCleanupPending)
+        );
     }
 
     #[test]
@@ -251,7 +492,7 @@ mod closeable_lifecycle_tests {
                 AidlObjectGeneration(1),
                 CleanupStep::UnregisterRuntime,
             )
-            .expect("begin close succeeds");
+            .expect("close開始が成功する");
         runtime
             .object_table_mut()
             .mark_cleanup_failed_cascade(
@@ -273,6 +514,71 @@ mod closeable_lifecycle_tests {
         );
     }
 
+    fn invalid_state_detail(error: HalError) -> String {
+        match error {
+            HalError::InvalidState { detail, .. } => detail.detail,
+            other => panic!("InvalidStateを期待しましたが{other:?}でした"),
+        }
+    }
+
+    fn assert_closeable_state_detail(runtime: &TunerServiceRuntime, expected: &str) {
+        let error = aidl_object_closeable(
+            runtime,
+            AidlObjectId(501),
+            AidlObjectGeneration(1),
+            AidlObjectKind::Filter,
+        )
+        .expect_err("状態がclose可能ではありません");
+        assert_eq!(invalid_state_detail(error), expected);
+    }
+
+    #[test]
+    fn aidl_object_closeable_reports_state_without_collapsing_diagnostics() {
+        let mut prepared = TunerServiceRuntime::new();
+        prepared
+            .object_table_mut()
+            .insert_prepared(RuntimeObjectEntry {
+                last_reference_ended: false,
+                object_kind: AidlObjectKind::Filter,
+                object_id: AidlObjectId(501),
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(501),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("Prepared objectのinsertが成功する");
+        assert_closeable_state_detail(
+            &prepared,
+            "AIDL objectはPreparedでありLiveとして公開されていません",
+        );
+
+        let mut closed = runtime_with_filter();
+        closed
+            .object_table_mut()
+            .begin_close_cascade(
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                CleanupStep::UnregisterRuntime,
+            )
+            .expect("close開始が成功する");
+        closed
+            .object_table_mut()
+            .commit_close_cascade(AidlObjectId(501), AidlObjectGeneration(1))
+            .expect("close commitが成功する");
+        assert_closeable_state_detail(&closed, "AIDL objectは既にClosedです");
+
+        let mut quarantined = runtime_with_filter();
+        quarantined
+            .object_table_mut()
+            .quarantine_cascade(AidlObjectId(501), AidlObjectGeneration(1))
+            .expect("quarantineが成功する");
+        assert_closeable_state_detail(
+            &quarantined,
+            "AIDL objectはQuarantinedでありfail-closed処理が必要です",
+        );
+    }
+
     #[test]
     fn aidl_object_closeable_rejects_closed() {
         let mut runtime = runtime_with_filter();
@@ -283,11 +589,11 @@ mod closeable_lifecycle_tests {
                 AidlObjectGeneration(1),
                 CleanupStep::UnregisterRuntime,
             )
-            .expect("begin close succeeds");
+            .expect("close開始が成功する");
         runtime
             .object_table_mut()
             .commit_close_cascade(AidlObjectId(501), AidlObjectGeneration(1))
-            .expect("commit close succeeds");
+            .expect("close commitが成功する");
         assert!(aidl_object_closeable(
             &runtime,
             AidlObjectId(501),
@@ -307,7 +613,7 @@ mod closeable_lifecycle_tests {
                 AidlObjectGeneration(1),
                 CleanupStep::UnregisterRuntime,
             )
-            .expect("begin close succeeds");
+            .expect("close開始が成功する");
         assert_eq!(
             aidl_object_closeable(
                 &closing,
@@ -323,7 +629,7 @@ mod closeable_lifecycle_tests {
         quarantined
             .object_table_mut()
             .quarantine_cascade(AidlObjectId(501), AidlObjectGeneration(1))
-            .expect("quarantine succeeds");
+            .expect("quarantineが成功する");
         assert!(aidl_object_closeable(
             &quarantined,
             AidlObjectId(501),
@@ -343,11 +649,11 @@ mod closeable_lifecycle_tests {
                 AidlObjectGeneration(1),
                 CleanupStep::UnregisterRuntime,
             )
-            .expect("begin close succeeds");
+            .expect("close開始が成功する");
         closed
             .object_table_mut()
             .commit_close_cascade(AidlObjectId(501), AidlObjectGeneration(1))
-            .expect("commit close succeeds");
+            .expect("close commitが成功する");
         assert!(aidl_object_closeable(
             &closed,
             AidlObjectId(501),

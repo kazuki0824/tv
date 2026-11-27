@@ -24,7 +24,7 @@ class EventModelMapper {
             val end =
                 runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }
                     .getOrElse { return@mapNotNull null }
-            if (event.startTimeMillis <= 0L || end <= event.startTimeMillis) {
+            if (event.startTimeMillis !in 1L until end) {
                 null
             } else {
                 ProgramRecord(
@@ -56,6 +56,7 @@ class EventModelMapper {
                             scrambled = event.descriptors.scrambled,
                             freeCaMode = event.descriptors.freeCaMode,
                             series = event.descriptors.series,
+                            seriesCandidates = event.descriptors.seriesCandidates,
                             seriesCandidatesCanonicalJson = event.descriptors.seriesCandidatesCanonicalJson,
                             descriptorDiagnosticsCanonicalJson = event.descriptors.diagnostics.descriptorDiagnosticsCanonicalJson,
                             descriptorFactsCanonicalJson = event.descriptors.diagnostics.descriptorFactsCanonicalJson,

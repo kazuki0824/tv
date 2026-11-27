@@ -1,6 +1,6 @@
 use crate::av::{
     AudioMediaFrame, AudioTimestampAssociation, AudioTimestampAssociationFailure,
-    AvMediaEventMetadata,
+    AvMediaEventMetadata, VideoTimestampAssociation, VideoTimestampFailure,
 };
 use crate::config::{
     AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterDelayReadiness, FilterOpenType,
@@ -167,6 +167,7 @@ pub struct FilterRuntimeSnapshot {
     pub av_backing_present: bool,
     pub av_stream_type_hint: Option<AvStreamTypeConfig>,
     pub(crate) audio_timestamp_association: AudioTimestampAssociation,
+    video_timestamp_association: VideoTimestampAssociation,
     pub delay_hints: FilterDelayHints,
     pub queued_bytes: usize,
     pub delivery_not_before: Option<Instant>,
@@ -198,6 +199,7 @@ pub struct FilterRuntime {
     av_backing_present: bool,
     av_stream_type_hint: Option<AvStreamTypeConfig>,
     audio_timestamp_association: AudioTimestampAssociation,
+    video_timestamp_association: VideoTimestampAssociation,
     delay_hints: FilterDelayHints,
     queued_bytes: usize,
     delivery_not_before: Option<Instant>,
@@ -206,6 +208,12 @@ pub struct FilterRuntime {
     has_started_once: bool,
     next_start_id: i32,
     pending_start_id: Option<i32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AvTimestampFailure {
+    Audio(AudioTimestampAssociationFailure),
+    Video(VideoTimestampFailure),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -255,6 +263,7 @@ impl FilterRuntime {
             av_backing_present: false,
             av_stream_type_hint: None,
             audio_timestamp_association: AudioTimestampAssociation::default(),
+            video_timestamp_association: VideoTimestampAssociation::default(),
             delay_hints: FilterDelayHints::default(),
             queued_bytes: 0,
             delivery_not_before: None,
@@ -287,6 +296,7 @@ impl FilterRuntime {
             av_backing_present: false,
             av_stream_type_hint: None,
             audio_timestamp_association: AudioTimestampAssociation::default(),
+            video_timestamp_association: VideoTimestampAssociation::default(),
             delay_hints: FilterDelayHints::default(),
             queued_bytes: 0,
             delivery_not_before: None,
@@ -391,6 +401,7 @@ impl FilterRuntime {
             av_backing_present: self.av_backing_present,
             av_stream_type_hint: self.av_stream_type_hint,
             audio_timestamp_association: self.audio_timestamp_association.clone(),
+            video_timestamp_association: self.video_timestamp_association.clone(),
             delay_hints: self.delay_hints,
             queued_bytes: self.queued_bytes,
             delivery_not_before: self.delivery_not_before,
@@ -422,6 +433,7 @@ impl FilterRuntime {
         self.av_backing_present = snapshot.av_backing_present;
         self.av_stream_type_hint = snapshot.av_stream_type_hint;
         self.audio_timestamp_association = snapshot.audio_timestamp_association;
+        self.video_timestamp_association = snapshot.video_timestamp_association;
         self.delay_hints = snapshot.delay_hints;
         self.queued_bytes = snapshot.queued_bytes;
         self.delivery_not_before = snapshot.delivery_not_before;
@@ -449,6 +461,7 @@ impl FilterRuntime {
         self.av_backing_present = matches!(self.open_kind, PipelineOpenKind::Av);
         self.av_stream_type_hint = None;
         self.audio_timestamp_association.reset();
+        self.video_timestamp_association.reset();
         self.queued_bytes = 0;
         self.delivery_not_before = None;
         self.last_watermark_status = None;
@@ -602,6 +615,9 @@ impl FilterRuntime {
     }
 
     pub fn set_av_stream_type_hint(&mut self, config: AvStreamTypeConfig) {
+        if self.av_stream_type_hint != Some(config) {
+            self.reset_av_timestamp_association();
+        }
         self.av_stream_type_hint = Some(config);
     }
 
@@ -609,9 +625,30 @@ impl FilterRuntime {
         &mut self,
         packet: PesPacket,
         origin: TsInputOrigin,
-    ) -> Result<Vec<PreparedAvMediaPayload>, AudioTimestampAssociationFailure> {
+    ) -> Result<Vec<PreparedAvMediaPayload>, AvTimestampFailure> {
+        if self.open_type == FilterOpenType::TsVideo
+            && self
+                .av_stream_type_hint
+                .is_some_and(|config| config.stream_type == 5)
+        {
+            return self
+                .video_timestamp_association
+                .extract_avc(packet, origin)
+                .map(|frames| {
+                    frames
+                        .into_iter()
+                        .map(|frame| PreparedAvMediaPayload {
+                            payload: frame.payload,
+                            metadata: frame.metadata,
+                        })
+                        .collect()
+                })
+                .map_err(AvTimestampFailure::Video);
+        }
         if self.open_type == FilterOpenType::TsVideo && packet.pts_90khz.is_none() {
-            return Err(AudioTimestampAssociationFailure::MissingAnchor);
+            return Err(AvTimestampFailure::Video(
+                VideoTimestampFailure::MissingAnchor,
+            ));
         }
         if self.open_type != FilterOpenType::TsAudio {
             let metadata = AvMediaEventMetadata::from_pes(
@@ -627,6 +664,7 @@ impl FilterRuntime {
         }
         self.audio_timestamp_association
             .extract(packet, origin)
+            .map_err(AvTimestampFailure::Audio)
             .map(|frames| {
                 frames
                     .into_iter()
@@ -635,12 +673,14 @@ impl FilterRuntime {
             })
     }
 
-    pub(crate) fn reset_audio_timestamp_association(&mut self) {
+    pub(crate) fn reset_av_timestamp_association(&mut self) {
         self.audio_timestamp_association.reset();
+        self.video_timestamp_association.reset();
     }
 
-    pub(crate) fn reset_audio_timestamp_association_for_origin(&mut self, origin: TsInputOrigin) {
+    pub(crate) fn reset_av_timestamp_association_for_origin(&mut self, origin: TsInputOrigin) {
         self.audio_timestamp_association.reset_if_origin(origin);
+        self.video_timestamp_association.reset_if_origin(origin);
     }
 
     pub fn set_delay_hint(&mut self, hint: FilterDelayHint) {
@@ -734,6 +774,7 @@ impl FilterRuntime {
         self.source = FilterSource::DemuxInput;
         self.source_relation_generation = next_generation;
         self.audio_timestamp_association.reset();
+        self.video_timestamp_association.reset();
         true
     }
 
@@ -756,6 +797,7 @@ impl FilterRuntime {
         };
         self.source_relation_generation = next_generation;
         self.audio_timestamp_association.reset();
+        self.video_timestamp_association.reset();
         true
     }
 
@@ -811,6 +853,7 @@ impl FilterRuntime {
     }
     pub fn mark_failed(&mut self) {
         self.audio_timestamp_association.reset();
+        self.video_timestamp_association.reset();
         self.clear_pending_start_id();
         self.state = FilterRuntimeState::Failed;
         self.delivery_not_before = None;
@@ -1073,11 +1116,42 @@ mod video_pts_contract_tests {
     }
 
     #[test]
+    fn avc_hint_uses_au_timing_and_lifecycle_reset_discards_old_anchor() {
+        use crate::av::avc_timing::tests::au;
+        use crate::config::AvStreamKind;
+        let mut filter = FilterRuntime::new_typed(1, 1, FilterOpenType::TsVideo);
+        filter.set_av_stream_type_hint(AvStreamTypeConfig {
+            kind: AvStreamKind::Video,
+            stream_type: 5,
+        });
+        let mut packet = video_packet(Some(90000));
+        packet.payload = au(true, true, 60, 0, 1001, 30000);
+        packet.payload.extend(au(false, false, 2, 0, 1001, 30000));
+        packet.payload.extend(au(false, false, 4, 0, 1001, 30000));
+        let frames = filter
+            .prepare_av_media_payloads(packet, TsInputOrigin::frontend(1))
+            .unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].metadata.pts_90khz, Some(90000));
+        assert_eq!(frames[1].metadata.pts_90khz, Some(96006));
+        assert!(!frames[1].metadata.is_pts_present);
+        filter.reset_av_timestamp_association();
+        let mut packet = video_packet(Some(102012));
+        packet.payload = au(false, false, 4, 0, 1001, 30000);
+        packet.payload.extend(au(false, false, 6, 0, 1001, 30000));
+        assert!(filter
+            .prepare_av_media_payloads(packet, TsInputOrigin::frontend(1))
+            .is_err());
+    }
+
+    #[test]
     fn video_media_payload_requires_authoritative_pes_pts() {
         let mut filter = FilterRuntime::new_typed(1, 1, FilterOpenType::TsVideo);
         assert_eq!(
             filter.prepare_av_media_payloads(video_packet(None), TsInputOrigin::frontend(1)),
-            Err(AudioTimestampAssociationFailure::MissingAnchor)
+            Err(AvTimestampFailure::Video(
+                VideoTimestampFailure::MissingAnchor
+            ))
         );
         let prepared = filter
             .prepare_av_media_payloads(video_packet(Some(90_000)), TsInputOrigin::frontend(1))

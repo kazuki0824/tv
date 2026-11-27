@@ -23,6 +23,131 @@ fn cleanup_failure() -> HalError {
 }
 
 #[test]
+fn runtime_poison_latches_critical_state_and_keeps_diagnostics_readable() {
+    let runtime = std::sync::Mutex::new(TunerServiceRuntime::new());
+    let failure_state = runtime.lock().unwrap().failure_state();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = runtime.lock().unwrap();
+        panic!("service runtimeを汚染");
+    }))
+    .is_err());
+    TunerServiceRuntime::mark_shared_service_critical(&runtime);
+    assert_eq!(
+        failure_state.snapshot(),
+        crate::ServiceFailureSnapshot {
+            service_critical: true,
+            runtime_lock_poison_count: 1,
+            diagnostic_counter_saturated: false,
+        }
+    );
+    assert!(matches!(
+        TunerServiceRuntime::lock_shared(&runtime, "retry"),
+        Err(HalError::ServiceRuntimeLockPoisoned { operation: "retry" })
+    ));
+    assert!(runtime.is_poisoned());
+    assert_eq!(failure_state.snapshot().runtime_lock_poison_count, 2);
+}
+
+#[test]
+fn critical_service_cannot_be_reopened_by_boot_reset() {
+    let mut runtime = TunerServiceRuntime::new();
+    runtime.mark_service_critical();
+    assert!(runtime
+        .boot_from_probe_results_with_diagnostic_clear_result([])
+        .1
+        .is_err());
+    assert_eq!(runtime.state(), crate::ServiceState::ServiceCritical);
+    assert_eq!(
+        runtime.failure_state().snapshot().runtime_lock_poison_count,
+        0
+    );
+}
+
+#[test]
+fn filter_delivery_wake_preserves_runtime_poison_state() {
+    let runtime = std::sync::Arc::new(std::sync::Mutex::new(TunerServiceRuntime::new()));
+    let failure_state = runtime.lock().unwrap().failure_state();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = runtime.lock().unwrap();
+        panic!("service runtimeを汚染");
+    }))
+    .is_err());
+    assert!(matches!(
+        crate::boot::notify_filter_delivery_change(&runtime),
+        Err(HalError::ServiceRuntimeLockPoisoned { .. })
+    ));
+    assert!(failure_state.snapshot().service_critical);
+    assert_eq!(failure_state.snapshot().runtime_lock_poison_count, 1);
+}
+
+#[test]
+fn probe_io_failure_is_retained_without_advertising_a_frontend() {
+    let mut runtime = TunerServiceRuntime::new();
+    let error = HalError::Io {
+        backend: "dvb",
+        operation: "driver link読取り",
+        path: Some("/sys/dvb/driver".into()),
+        errno: Some(13),
+        detail: maleicacid_tuner_hal2_common::HalErrorDetail::new("権限がありません"),
+    };
+    let outcome =
+        runtime.boot_from_probe_results([crate::FrontendProbeOutcome::DeviceProbeFailed {
+            backend: maleicacid_tuner_hal2_common::FrontendBackendKind::LinuxDvb,
+            path: "/dev/dvb/adapter0/frontend0".into(),
+            error: error.clone(),
+        }]);
+    assert_eq!(outcome, crate::ServiceBootOutcome::Degraded);
+    assert!(runtime.query().frontend_ids().is_empty());
+    assert!(runtime.startup_diagnostic_snapshot().records().iter().any(|record| matches!(record,
+        crate::StartupDiagnosticRecord::DeviceProbeFailed { error: recorded, .. } if recorded == &error)));
+}
+
+#[test]
+fn fmq_failure_and_rollback_keep_the_primary_delivery_kind() {
+    use maleicacid_tuner_hal2_common::FmqFailureKind;
+    use maleicacid_tuner_hal2_demux::DemuxRuntimeError;
+    for kind in [
+        FmqFailureKind::WriteFailed,
+        FmqFailureKind::ShortWrite,
+        FmqFailureKind::EventFlagWakeFailed,
+    ] {
+        let expected = HalError::FmqDeliveryFailed {
+            kind,
+            object_id: Some(17),
+        };
+        assert_eq!(
+            crate::boot::demux_runtime_error_to_hal(DemuxRuntimeError::fmq_delivery_failure(
+                17, kind
+            )),
+            expected
+        );
+        let rollback = maleicacid_tuner_hal2_demux::QueueRuntimeError {
+            kind: maleicacid_tuner_hal2_demux::QueueRuntimeErrorKind::DataPathFailure,
+            detail: "transaction解放中にDVR queue epochロックが汚染されました",
+        };
+        let failure = DemuxRuntimeError::fmq_delivery_rollback_failed(17, kind, rollback);
+        assert!(matches!(failure.kind,
+            maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed {
+                delivery, rollback: recorded,
+            } if delivery == kind && recorded == rollback));
+        let composed = crate::boot::demux_runtime_error_to_hal(failure);
+        assert_eq!(composed.primary_error(), &expected);
+        assert_eq!(
+            composed.cleanup_error(),
+            Some(&HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                rollback.detail
+            ))
+        );
+        assert!(composed
+            .cleanup_error()
+            .unwrap()
+            .to_string()
+            .contains(rollback.detail));
+    }
+}
+
+#[test]
 fn open_rollback_composes_object_and_runtime_cleanup_failure() {
     let result = finish_open_rollback(
         Err(primary_failure()),
@@ -69,6 +194,7 @@ fn close_cleanup_failed_marking_keeps_mark_failure_as_cleanup_detail() {
 fn public_close_runtime_unregister_missing_target_is_cleanup_failure() {
     let mut runtime = TunerServiceRuntime::new();
     let entry = RuntimeObjectEntry {
+        last_reference_ended: false,
         object_kind: AidlObjectKind::Demux,
         object_id: AidlObjectId(93_002),
         generation: AidlObjectGeneration(1),
@@ -143,6 +269,135 @@ fn dvr_delivery_failure_finish_use_case_records_diagnostic_and_composes_marking_
         .expect("DVR post-commit diagnostics snapshot should be available")
         .records()
         .is_empty());
+}
+
+#[test]
+fn queued_old_dvr_worker_cannot_consume_playback_after_owner_quarantine() {
+    use crate::{
+        quarantine_object_drop_leak_use_case, ObjectMethodUseCase, WorkerRuntime,
+        WorkerTerminalResult,
+    };
+    use maleicacid_tuner_hal2_domain_request::{
+        AidlMethodCall, DvrConfigureKind, DvrConfigureRequest, DvrDataFormat, DvrOpenKind,
+        OpenDvrRequest,
+    };
+    use std::sync::{mpsc, Arc, Mutex};
+
+    let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+    let demux = runtime
+        .lock()
+        .unwrap()
+        .root_open_txn()
+        .open_demux_root_object(AidlMethodCall::PublicApi {
+            object: AidlObjectKind::Tuner,
+            api: AidlApi::TunerOpenDemux,
+        })
+        .expect("Demux公開");
+
+    let dvr = ObjectMethodUseCase::execute_after_live(
+        &runtime,
+        demux.object_id(),
+        demux.generation(),
+        AidlObjectKind::Demux,
+        || -> Result<_, HalError> {
+            let request = OpenDvrRequest {
+                kind: DvrOpenKind::Playback,
+                buffer_size: 188,
+            };
+            Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
+        },
+        |runtime, dispatch, request| {
+            runtime
+                .child_open_txn()
+                .open_dvr_child_runtime_for_demux_object(
+                    demux.object_id(),
+                    demux.generation(),
+                    request,
+                    dispatch,
+                )
+        },
+    )
+    .expect("Playback DVR公開");
+    let object_id = dvr.runtime_entry.object_id();
+    let generation = dvr.runtime_entry.generation();
+    runtime
+        .lock()
+        .unwrap()
+        .commit_prepared_child_object(object_id, generation)
+        .expect("DVRを公開確定する");
+
+    ObjectMethodUseCase::execute_after_live(
+        &runtime,
+        object_id,
+        generation,
+        AidlObjectKind::Dvr,
+        || -> Result<_, HalError> {
+            let request = DvrConfigureRequest {
+                kind: DvrConfigureKind::Playback,
+                status_mask: 0,
+                low_threshold_bytes: 0,
+                high_threshold_bytes: 188,
+                data_format: DvrDataFormat::Ts,
+                packet_size: 188,
+            };
+            Ok((AidlMethodCall::DvrConfigure(request.clone()), request))
+        },
+        |runtime, dispatch, request| {
+            runtime.configure_dvr_runtime_for_object(object_id, generation, request, dispatch)
+        },
+    )
+    .expect("Playback DVR設定");
+
+    ObjectMethodUseCase::execute_after_live(
+        &runtime,
+        object_id,
+        generation,
+        AidlObjectKind::Dvr,
+        || -> Result<_, HalError> { Ok((AidlMethodCall::DvrStart, ())) },
+        |runtime, dispatch, ()| runtime.start_dvr_for_object(object_id, generation, dispatch),
+    )
+    .expect("Playback DVR開始");
+
+    TunerServiceRuntime::consume_playback_dvr_for_object(&runtime, object_id, generation)
+        .expect("隔離前は本物のPlayback消費入口が利用可能");
+
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<()>(0);
+    let (resume_tx, resume_rx) = mpsc::sync_channel::<()>(0);
+    let old_runtime = Arc::clone(&runtime);
+    // 実際のWorkerRuntime経由で旧世代を保持する。stop flagに依存せず
+    // 隔離済みobjectへのdata-path受付自体が拒否されることを検査する。
+    let old_worker = WorkerRuntime::spawn(
+        "old-dvr-playback-after-quarantine-test".to_owned(),
+        object_id.0,
+        generation.0,
+        move |_control| {
+            ready_tx.send(()).expect("worker準備");
+            resume_rx.recv().expect("worker再開");
+            TunerServiceRuntime::consume_playback_dvr_for_object(
+                &old_runtime,
+                object_id,
+                generation,
+            )
+            .map(|_| ())
+        },
+        || {},
+    )
+    .expect("旧世代のWorkerRuntime起動");
+    ready_rx.recv().expect("workerが旧世代を保持して待機中");
+
+    // lifecycleの値を検査するだけでなく、実際のPlayback消費関数を
+    // 隔離前後で呼び、隔離後に副作用が発生する入口が拒否されることを確認する。
+    let _plan =
+        quarantine_object_drop_leak_use_case(&mut runtime.lock().unwrap(), object_id, generation)
+            .expect("旧世代の隔離確定");
+    resume_tx.send(()).expect("workerを隔離後に再開");
+    assert!(
+        matches!(
+            old_worker.join(),
+            WorkerTerminalResult::RuntimeFailure(HalError::InvalidState { .. })
+        ),
+        "Quarantined後の旧世代Playback消費はWorkerRuntimeへ失敗を返す"
+    );
 }
 
 fn record_runtime_callback_registration(
@@ -359,6 +614,7 @@ fn dvr_callback_artifact_lookup_failure_records_diagnostic_without_cleanup_compo
     );
 
     let primary = HalError::callback_failed("IDvrCallback.lookup", "callback artifact missing");
+    let expected_error = primary.clone();
     let result =
         runtime.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::dvr(
             owner_id,
@@ -368,19 +624,12 @@ fn dvr_callback_artifact_lookup_failure_records_diagnostic_without_cleanup_compo
             primary,
         ));
 
-    let Err(error) = result else {
-        panic!("expected DVR callback artifact lookup failure");
-    };
-    assert!(matches!(
-        error.primary_error(),
-        HalError::CallbackFailed { .. }
-    ));
-    assert!(error.cleanup_error().is_none());
-    assert!(!runtime
-        .dvr_post_commit_notification_diagnostics()
-        .expect("DVR post-commit diagnostics snapshot should be available")
-        .records()
-        .is_empty());
+    assert_eq!(result, Ok(()), "DVR post-commit通知失敗は診断に記録する");
+    let snapshot = runtime.dvr_post_commit_notification_diagnostics().unwrap();
+    assert_eq!(snapshot.records().len(), 1);
+    assert_eq!(snapshot.records()[0].error, expected_error);
+    assert_eq!(snapshot.records()[0].object_id, owner_id);
+    assert_eq!(snapshot.records()[0].generation, owner_generation);
 }
 
 #[test]
@@ -484,6 +733,74 @@ fn frontend_scan_end_artifact_lookup_failure_records_lookup_diagnostic_only() {
         AidlApi::FrontendSetCallback,
     );
 
+    use crate::registry::{
+        FrontendCapabilitySnapshot, FrontendRegistryEntry, FrontendRuntimeId,
+        FrontendScalarCapability, IsdbtSegmentCapability, SatellitePowerTopology,
+    };
+    use maleicacid_tuner_hal2_common::{
+        FrontendBackendKind, FrontendIsdbtPartialReceptionRequirement, FrontendSystem,
+        FrontendTuneRequest,
+    };
+    runtime
+        .registry_mut_for_test()
+        .register_frontend(FrontendRegistryEntry {
+            id: FrontendRuntimeId(94_007),
+            backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbT,
+            device_path: "/dev/null".into(),
+            lnb_profile: None,
+            satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+            capability: FrontendCapabilitySnapshot {
+                scalar: FrontendScalarCapability {
+                    min_frequency_hz: 473_142_857,
+                    max_frequency_hz: 473_142_857,
+                    min_symbol_rate: 0,
+                    max_symbol_rate: 0,
+                    acquire_range_hz: 0,
+                },
+                exclusive_group_id: 0x1000_0007,
+                isdbt_segment: Some(IsdbtSegmentCapability {
+                    is_segment_auto: true,
+                    is_full_segment: true,
+                }),
+            },
+        })
+        .unwrap();
+    let scan_generation = runtime
+        .frontend_txn()
+        .prepare_frontend_worker_generation(
+            94_007,
+            maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
+        )
+        .unwrap();
+    runtime
+        .frontend_txn()
+        .install_frontend_live_reader_descriptor_for_generation(
+            94_007,
+            maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
+            scan_generation,
+        )
+        .unwrap();
+    runtime
+        .frontend_txn()
+        .begin_frontend_scan_session(
+            94_007,
+            scan_generation,
+            "callback-lookup-test".into(),
+            vec![FrontendTuneRequest {
+                system: FrontendSystem::IsdbT,
+                frequency: 473_142_857,
+                end_frequency: None,
+                stream_id: None,
+                stream_id_kind: None,
+                bandwidth_hz: Some(6_000_000),
+                symbol_rate: None,
+                isdbt_layer_settings: Vec::new(),
+                partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            }],
+        )
+        .unwrap();
+
     let primary = HalError::callback_failed(
         "IFrontendCallback.lookup",
         "frontend scan-end callback artifact missing",
@@ -493,7 +810,7 @@ fn frontend_scan_end_artifact_lookup_failure_records_lookup_diagnostic_only() {
             owner_id,
             owner_generation,
             94_007,
-            1,
+            scan_generation,
             CallbackDeliveryFailurePhase::CallbackArtifactLookup,
             primary,
         ),

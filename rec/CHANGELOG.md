@@ -1,3 +1,8 @@
+# 2026-11-11 予約優先度比較の公開範囲を限定
+
+- ReservationPolicy.comparePriorityをinternalへ限定する。既存MaleicacidRecScopeTestsは実装ソースと試験ソースを同一moduleでコンパイルするため、比較動作と試験呼出元を維持する。
+- Kotlin品質検査はCIへ委ねる。Soong／atestでの録画試験実行は未実施。
+
 # r50cw
 - r51対象外の準備領域として、録画側の動的SI/CASフィルタ更新が廃止 snapshot wrapper を参照しないよう `casDiscoverySnapshot()` 経由へ追随した。
 - rec は引き続き r53 準備領域であり、r51 product package / release確認条件には含めない。

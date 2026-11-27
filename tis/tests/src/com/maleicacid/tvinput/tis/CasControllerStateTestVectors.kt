@@ -9,7 +9,7 @@ import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 
 /** CasController の状態遷移確認用ベクトル。 */
-object CasControllerStateTestVectors {
+internal object CasControllerStateTestVectors {
     val serviceKey = ServiceKey(originalNetworkId = 4, transportStreamId = 16625, serviceId = 101)
 
     fun pluginSelectionSuccessMetadata(): List<CaMetadata> =

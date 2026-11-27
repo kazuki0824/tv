@@ -5,6 +5,7 @@ pub const DEFAULT_MULTI2_ROUNDS: usize = 4;
 
 fn volatile_zeroize_u8(bytes: &mut [u8]) {
     for byte in bytes {
+        // SAFETY: byteは排他的に借用したスライス内の有効な要素を指し、ゼロも有効な値である。
         unsafe { ptr::write_volatile(byte, 0) };
     }
     compiler_fence(Ordering::SeqCst);
@@ -12,6 +13,7 @@ fn volatile_zeroize_u8(bytes: &mut [u8]) {
 
 fn volatile_zeroize_u32(words: &mut [u32]) {
     for word in words {
+        // SAFETY: wordは排他的に借用したスライス内の有効な要素を指し、ゼロも有効な値である。
         unsafe { ptr::write_volatile(word, 0) };
     }
     compiler_fence(Ordering::SeqCst);

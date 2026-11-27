@@ -215,6 +215,35 @@ class FrameworkCasCloseTest {
         }
     }
 
+    // 同じFramework接続のECM/EMM失敗と終了処理を一つの試験に保持する。
+    @Suppress("NestedBlockDepth")
+    @Test
+    fun ecmAndEmmStateFailuresRetainPlatformStatusInDiagnostics() {
+        val faults = MediaCas.Faults
+        faults.reset()
+        try {
+            CasController().use { controller ->
+                check(controller.updateFromCaMetadata(multipleSessions).diagnostics.isEmpty())
+                for (operation in listOf(MediaCas.Operation.ECM, MediaCas.Operation.EMM)) {
+                    faults.stateFailureAt = operation
+                    val diagnostic =
+                        if (operation == MediaCas.Operation.ECM) {
+                            controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).single()
+                        } else {
+                            controller.onEmmSection(TsPid(0x010), byteArrayOf(1)).single()
+                        }
+                    val failure = diagnostic.cause as android.media.MediaCasStateException
+                    check(diagnostic.message.contains("mediaCasErrorCode=${failure.errorCode}"))
+                    check(diagnostic.message.contains("mediaCasDiagnosticInfo=${failure.diagnosticInfo}"))
+                    check(diagnostic.errorCode != CasController.ErrorCode.MEDIA_CAS_INVALIDATED)
+                    faults.stateFailureAt = null
+                }
+            }
+        } finally {
+            faults.reset()
+        }
+    }
+
     @Test fun invalidatedAdapterBlocksAllOrdinaryCallsAcrossItsSessionsButAllowsFrameworkClose() {
         val f = MediaCas.Faults
         f.reset()

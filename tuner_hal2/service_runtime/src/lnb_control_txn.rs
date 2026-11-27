@@ -13,6 +13,7 @@ use crate::lnb_backend_adapter::{
     ServiceRuntimeLnbBackendSnapshot, ServiceRuntimeLnbProfileAdapter,
 };
 use crate::registry::{LnbPhysicalIoPermit, LnbRuntimeId};
+use crate::LnbBackendFailureDiagnosticRecord;
 
 #[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 
@@ -28,6 +29,7 @@ pub(crate) struct CompletedLnbControlTxn {
     lnb_key: LnbRuntimeId,
     runtime_apply: PreparedLnbStateApply,
     backend_result: LnbBackendApplyOutcome,
+    failure_diagnostic: Option<LnbBackendFailureDiagnosticRecord>,
 }
 
 impl PreparedLnbControlTxn {
@@ -37,10 +39,12 @@ impl PreparedLnbControlTxn {
             self.runtime_apply.lnb_id(),
             self.runtime_apply.target_state(),
         );
+        let failure_diagnostic = backend.take_failure_diagnostic();
         CompletedLnbControlTxn {
             lnb_key: self.lnb_key,
             runtime_apply: self.runtime_apply,
             backend_result,
+            failure_diagnostic,
         }
     }
 }
@@ -109,6 +113,9 @@ impl LnbControlTxn<'_> {
     }
 
     pub(crate) fn finish(&mut self, completed: CompletedLnbControlTxn) -> Result<(), HalError> {
+        if let Some(record) = completed.failure_diagnostic.clone() {
+            self.runtime.record_lnb_backend_failure_diagnostic(record);
+        }
         self.runtime
             .registry_mut()
             .finish_lnb_state_apply(

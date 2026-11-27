@@ -15,6 +15,15 @@ import org.junit.Test
 // 同じHEVC構成契約の各シナリオを独立したテストとして保ち、関数数だけで集合を分割しない。
 @Suppress("TooManyFunctions")
 class HevcPlaybackTest {
+    @Test fun configUsesCsdContentForValueEquality() {
+        val first = HevcConfigParser.Config(1920, 1080, byteArrayOf(1, 2, 3))
+        val sameContent = HevcConfigParser.Config(1920, 1080, byteArrayOf(1, 2, 3))
+        val differentContent = HevcConfigParser.Config(1920, 1080, byteArrayOf(1, 2, 4))
+        assertEquals(first, sameContent)
+        assertEquals(first.hashCode(), sameContent.hashCode())
+        check(first != differentContent)
+    }
+
     // ffmpeg color=1920x1080:rate=25 / libx265 / 1 frameの実VPS/SPS/PPS。
     private fun headers(): List<ByteArray> {
         val path = "hevc_1080p_headers.hex"

@@ -45,23 +45,26 @@ pub(crate) enum PlaybackConsumeTxnPrepareError {
     OutOfMemory,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PlaybackConsumeTxnError {
-    primary: DemuxRuntimeError,
-    cleanup: Option<DemuxRuntimeError>,
+    primary: Box<DemuxRuntimeError>,
+    cleanup: Option<Box<DemuxRuntimeError>>,
 }
 
 impl PlaybackConsumeTxnError {
-    const fn new(primary: DemuxRuntimeError, cleanup: Option<DemuxRuntimeError>) -> Self {
-        Self { primary, cleanup }
+    fn new(primary: DemuxRuntimeError, cleanup: Option<DemuxRuntimeError>) -> Self {
+        Self {
+            primary: Box::new(primary),
+            cleanup: cleanup.map(Box::new),
+        }
     }
 
-    pub(crate) const fn primary(self) -> DemuxRuntimeError {
-        self.primary
+    pub(crate) fn primary(&self) -> DemuxRuntimeError {
+        *self.primary
     }
 
-    pub(crate) const fn cleanup(self) -> Option<DemuxRuntimeError> {
-        self.cleanup
+    pub(crate) fn cleanup(&self) -> Option<DemuxRuntimeError> {
+        self.cleanup.as_deref().copied()
     }
 }
 
@@ -193,21 +196,18 @@ impl PlaybackConsumeTxn {
         if self.parse_inject_cursor.is_empty() {
             self.cursor_origin = None;
         }
-        let (packet_report, malformed_packets) = match ValidatedTsPacket::validate(&packet.packet) {
-            Ok(_) => (
-                output.map_or_else(PipelineReport::default, |validated| {
-                    demux.inject_playback_packet(validated, packet.origin)
-                }),
-                0,
-            ),
-            Err(reason) => (demux.note_malformed_playback_packet(reason), 1),
-        };
-        demux.note_playback_consume_result(
-            self.dvr_id,
-            1 - malformed_packets,
-            malformed_packets,
-            0,
-        )?;
+        let (packet_report, malformed_packets, injected_packets) =
+            match ValidatedTsPacket::validate(&packet.packet) {
+                Ok(_) => (
+                    output.map_or_else(PipelineReport::default, |validated| {
+                        demux.inject_playback_packet(validated, packet.origin)
+                    }),
+                    0,
+                    usize::from(output.is_some()),
+                ),
+                Err(reason) => (demux.note_malformed_playback_packet(reason), 1, 0),
+            };
+        demux.note_playback_consume_result(self.dvr_id, injected_packets, malformed_packets, 0)?;
         Ok(PlaybackConsumeReport {
             completed_packets: 1,
             malformed_packets,
@@ -309,6 +309,27 @@ mod tests {
     }
 
     #[test]
+    fn skipped_playback_packet_is_completed_without_incrementing_injected_counters() {
+        let mut demux = started_demux();
+        let packet = clear_packet();
+        let mut txn = pending_txn(packet);
+        let pending = txn.pending_packet(&demux).unwrap().unwrap();
+        let report = txn.consume(&mut demux, pending, None).unwrap();
+        assert_eq!(report.completed_packets, 1);
+        let counters = demux.note_playback_consume_result(7, 0, 0, 0).unwrap();
+        assert_eq!(counters.injected_packets, 0);
+        assert_eq!(counters.injected_bytes, 0);
+
+        let mut txn = pending_txn(packet);
+        let pending = txn.pending_packet(&demux).unwrap().unwrap();
+        let validated = ValidatedTsPacket::validate(&packet).unwrap();
+        txn.consume(&mut demux, pending, Some(&validated)).unwrap();
+        let counters = demux.note_playback_consume_result(7, 0, 0, 0).unwrap();
+        assert_eq!(counters.injected_packets, 1);
+        assert_eq!(counters.injected_bytes, TS_PACKET_SIZE as u64);
+    }
+
+    #[test]
     fn boundary_discards_pending_packet_and_rejects_delayed_result() {
         let mut demux = started_demux();
         let mut txn = pending_txn(clear_packet());
@@ -320,6 +341,112 @@ mod tests {
                 .completed_packets,
             0
         );
+    }
+
+    #[test]
+    fn delayed_playback_packet_cannot_commit_after_boundary_on_host() {
+        use std::sync::{mpsc, Arc, Mutex};
+
+        // データ経路が取得済みの実PlaybackPacketを保持している段階で
+        // boundaryが確定する順序を同期で固定する。sleep/状態文字列検査は使わない。
+        let shared = Arc::new(Mutex::new((started_demux(), pending_txn(clear_packet()))));
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<()>(0);
+        let (resume_tx, resume_rx) = mpsc::sync_channel::<()>(0);
+        let worker_state = Arc::clone(&shared);
+        let worker = std::thread::spawn(move || {
+            let pending = {
+                let guard = worker_state.lock().unwrap();
+                let (demux, txn) = &*guard;
+                txn.pending_packet(demux)
+                    .expect("パケット取得")
+                    .expect("隔離前にPlaybackPacketを取得する")
+            };
+            ready_tx.send(()).expect("取得済みパケット通知");
+            resume_rx.recv().expect("境界確定後に再開");
+            let packet_bytes = *pending.bytes();
+            let output = ValidatedTsPacket::validate(&packet_bytes).expect("正しいTS");
+            let mut guard = worker_state.lock().unwrap();
+            let (demux, txn) = &mut *guard;
+            let result = txn
+                .consume(demux, pending, Some(&output))
+                .expect("遅延したconsume完了");
+            (
+                result.completed_packets,
+                demux
+                    .note_playback_consume_result(7, 0, 0, 0)
+                    .expect("注入診断")
+                    .injected_packets,
+            )
+        });
+
+        ready_rx.recv().expect("旧世代パケット取得済み");
+        {
+            let mut guard = shared.lock().unwrap();
+            let (demux, txn) = &mut *guard;
+            assert_eq!(txn.discard_for_boundary(), TS_PACKET_SIZE);
+            assert_eq!(
+                demux
+                    .note_playback_consume_result(7, 0, 0, 0)
+                    .expect("隔離直後の注入数")
+                    .injected_packets,
+                0
+            );
+        }
+        resume_tx.send(()).expect("旧世代WorkerRuntime再開");
+        assert_eq!(worker.join().expect("worker終了"), (0, 0));
+    }
+
+    #[test]
+    fn playback_commit_accepted_before_boundary_is_serialized_before_fence() {
+        use std::sync::{mpsc, Arc, Mutex, TryLockError};
+
+        let shared = Arc::new(Mutex::new((started_demux(), pending_txn(clear_packet()))));
+        let (committed_tx, committed_rx) = mpsc::sync_channel::<()>(0);
+        let (release_tx, release_rx) = mpsc::sync_channel::<()>(0);
+        let worker_state = Arc::clone(&shared);
+        let worker = std::thread::spawn(move || {
+            let mut guard = worker_state.lock().unwrap();
+            let (demux, txn) = &mut *guard;
+            let pending = txn
+                .pending_packet(demux)
+                .expect("パケット照会")
+                .expect("PlaybackPacket取得");
+            let bytes = *pending.bytes();
+            let output = ValidatedTsPacket::validate(&bytes).expect("正しいTS");
+            assert_eq!(
+                txn.consume(demux, pending, Some(&output))
+                    .expect("確定済みconsume")
+                    .completed_packets,
+                1
+            );
+            committed_tx.send(()).expect("commit完了通知");
+            // txn/demuxの同期lockを保持したまま待ち、後続boundaryが
+            // 既に確定したcommitの途中へ割り込めないことを確認する。
+            release_rx.recv().expect("lock解放");
+        });
+
+        committed_rx.recv().expect("先行commit完了");
+        assert!(matches!(shared.try_lock(), Err(TryLockError::WouldBlock)));
+        let fence_state = Arc::clone(&shared);
+        let (fence_started_tx, fence_started_rx) = mpsc::sync_channel::<()>(0);
+        let fence = std::thread::spawn(move || {
+            fence_started_tx.send(()).expect("boundary要求通知");
+            let mut guard = fence_state.lock().unwrap();
+            let (demux, txn) = &mut *guard;
+            let discarded = txn.discard_for_boundary();
+            let injected = demux
+                .note_playback_consume_result(7, 0, 0, 0)
+                .expect("boundary後の注入数")
+                .injected_packets;
+            (discarded, injected)
+        });
+        fence_started_rx.recv().expect("boundary開始");
+        assert!(matches!(shared.try_lock(), Err(TryLockError::WouldBlock)));
+        release_tx.send(()).expect("先行WorkerRuntime解放");
+        worker.join().expect("先行worker終了");
+        let (discarded, injected) = fence.join().expect("boundary完了");
+        assert_eq!(discarded, 0, "確定済みパケットを後から捨て直さない");
+        assert_eq!(injected, 1, "boundary以前の確定済み副作用は保持する");
     }
 
     #[test]

@@ -3,8 +3,11 @@
 
 package com.maleicacid.tvinput.tis
 
+import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.CaMetadata
 import com.maleicacid.tvinput.aribsi.CaMetadataSource
+import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.common.TunerKeyToken
@@ -23,6 +26,67 @@ class CasControllerSessionTest {
             CaMetadataSource.ELEMENTARY_STREAM,
         )
     private val cat = CaMetadata(null, 5, null, TsPid(0x010), null, byteArrayOf(3), CaMetadataSource.CAT)
+
+    @Test
+    fun explicitEsOverridesProgramWithoutEmptyCasSessionOrFalseReadiness() {
+        val key = requireNotNull(first.serviceKey)
+        val video = TsPid(0x101)
+        val audio = TsPid(0x102)
+        val service =
+            AribService(
+                serviceKey = key,
+                name = "CAS owner test",
+                streams =
+                    listOf(
+                        AribElementaryStream(video, 0x02, null, null, null),
+                        AribElementaryStream(audio, 0x0f, null, null, null),
+                    ),
+            )
+        val program = first.copy(ecmPid = TsPid(0x031), elementaryPid = null, source = CaMetadataSource.PROGRAM)
+        val firstClear = first.copy(elementaryPid = video, ecmPid = TsPid.NULL)
+        val secondClear = firstClear.copy(elementaryPid = audio)
+        val mapper = PmtCatCaMetadataMapper()
+        val allClear =
+            mapper.expandProgramLevelToElementaryStreams(
+                listOf(program, firstClear, secondClear),
+                listOf(service),
+            )
+        check(allClear.isEmpty())
+        CasController(mediaCasFactory = Factory()).use { controller ->
+            val update = controller.updateFromCaMetadata(allClear, generation = 3)
+            check(update.diagnostics.isEmpty() && update.ecmPids.isEmpty() && update.emmPids.isEmpty())
+        }
+        val explicitFirst = firstClear.copy(ecmPid = TsPid(0x032))
+        val explicitSecond = secondClear.copy(ecmPid = TsPid(0x033))
+        val metadata =
+            mapper.expandProgramLevelToElementaryStreams(
+                listOf(program, explicitFirst, explicitSecond),
+                listOf(service),
+            )
+        check(metadata.size == 2 && metadata.none { it.source == CaMetadataSource.PROGRAM })
+        val factory = Factory()
+        val descramblers = mutableListOf<Descrambler>()
+        CasController(mediaCasFactory = factory).use { controller ->
+            val update =
+                controller.updateFromCaMetadata(metadata, generation = 3) {
+                    Descrambler().also { descramblers += it }
+                }
+            check(update.diagnostics.isEmpty())
+            check(update.ecmPids == setOf(TsPid(0x032), TsPid(0x033)))
+            check(factory.plugins.size == 1)
+            check(factory.plugins[0].sessions.size == 2)
+            // 初回ECMにより実key tokenを取得するまでは、ES PIDを物理結合しない。
+            check(descramblers.size == 2 && descramblers.all { it.pids.isEmpty() })
+            check(!controller.isServiceDescramblingReady(key, 3))
+            update.ecmPids.forEach { check(controller.onEcmSection(it, byteArrayOf(1)).isEmpty()) }
+            val assignedPidSets =
+                descramblers
+                    .map { it.pids.toSet() }
+                    .toSet()
+            check(assignedPidSets == setOf(setOf(video.value), setOf(audio.value)))
+            check(controller.isServiceDescramblingReady(key, 3))
+        }
+    }
 
     @Test fun frameworkReclaimClosesCasWithoutVoidOnClosedDescrambler() {
         val factory = Factory()

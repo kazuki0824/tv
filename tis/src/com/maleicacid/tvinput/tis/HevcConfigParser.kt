@@ -6,9 +6,20 @@ internal object HevcConfigParser {
         val width: Int,
         val height: Int,
         val csd: ByteArray,
-    )
+    ) {
+        override fun equals(other: Any?): Boolean =
+            this === other ||
+                (other is Config && width == other.width && height == other.height && csd.contentEquals(other.csd))
 
-    private data class Sps(
+        override fun hashCode(): Int {
+            var result = width
+            result = 31 * result + height
+            result = 31 * result + csd.contentHashCode()
+            return result
+        }
+    }
+
+    private class Sps(
         val nal: ByteArray,
         val width: Int,
         val height: Int,

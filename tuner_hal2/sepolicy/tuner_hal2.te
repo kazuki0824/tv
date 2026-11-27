@@ -7,3 +7,7 @@ allow hal_tv_tuner_default px4_tuner_device:chr_file rw_file_perms;
 # 固定parameter入力のreaderはTuner HALに限定する。
 type maleicacid_multi2_parameters, file_type, vendor_file_type;
 allow hal_tv_tuner_default maleicacid_multi2_parameters:file r_file_perms;
+
+# Clear AV MediaEventのDMA-BUF FDはHALが発行し、Codec2 software serviceが
+# MediaCodec.queueLinearBlock()で利用する。Binder FD受渡しのuseのみ許可する。
+allow mediaswcodec hal_tv_tuner_default:fd use;

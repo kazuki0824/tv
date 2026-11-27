@@ -2,6 +2,7 @@
 # product defaultはtuner_hal2のみとし、旧tuner_hal service packageは追加しない。
 PRODUCT_PACKAGES += \
     android.hardware.tv.tuner-service.maleicacid2 \
+    maleicacid_mediatuner_trm_lifecycle_rc \
     maleicacid_tuner_hal2_ueventd_rc \
     fs_config_files
 
