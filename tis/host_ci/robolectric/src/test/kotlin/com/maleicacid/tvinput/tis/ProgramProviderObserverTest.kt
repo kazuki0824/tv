@@ -65,8 +65,9 @@ class ProgramProviderObserverTest {
                         "publishLivePrograms",
                         List::class.java,
                         snapshot.javaClass,
+                        com.maleicacid.tvinput.common.ServiceKey::class.java,
                     ).apply { isAccessible = true }
-                    .invoke(session, emptyList<Any>(), snapshot)
+                    .invoke(session, emptyList<Any>(), snapshot, null)
                 check(signatures.isEmpty() && !dirty.get() && !released.get())
             }
         } finally {
