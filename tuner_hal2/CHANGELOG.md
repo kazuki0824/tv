@@ -1,3 +1,7 @@
+# 2026-11-27 実AVC回帰の実行条件を明確化
+
+- 統合手順から2026-10-30時点の未取得記録を外し、通常実行で除外される条件と固定入力での明示実行手順を残した。
+
 # 2026-11-16 Playback DVRの能力選択と処理バッファ実確保量の照合（#232）
 
 - 能力選択のPlaybackBytesは1件8MiBの固定仮定をやめ、PlaybackConsumeTxnが実行時に予約するprocessing bufferの最大48,128 bytes/件とする。product-default最大8件の共有予算も同算式で385,024 bytesとし、FMQ本体の予算は別のFmqBytesで保持する。

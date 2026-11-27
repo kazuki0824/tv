@@ -441,9 +441,9 @@ adb shell dumpsys android.hardware.tv.tuner.ITuner/default
 機器障害、受信読み取り障害、FMQ配送障害、コールバック障害等の正本設計が要求するケースについて、このコマンドで対応するtyped診断または取得失敗が観測できることを実機確認する。Soongの`maleicacid_tuner_hal2_aidl_service_test`はBinder取得入口と診断snapshot接続を検査するが、ホストCIの成功だけでAndroid上のBinder接続・実機取得を確認済みとは扱わない。
 
 
-## 実AVCキャプチャのAU境界・PTS回帰（未実施の受入条件）
+## 実AVCキャプチャのAU境界・PTS回帰
 
-`demux/src/av/video_timestamp.rs` の `captured_transport_frames_have_individual_timestamps` は `#[ignore]` であり、通常のhost CIの成功件数へ含めない。2026-10-30のレビュー5708139001対応時点では、対象HEADで入力fixtureを固定して実行したCI証跡は未取得である。この項目は未実施として残し、AVC実キャプチャ適合・製品受入の完了を表明しない。
+`demux/src/av/video_timestamp.rs` の `captured_transport_frames_have_individual_timestamps` は `#[ignore]` であり、通常のhost CIの成功件数へ含めない。
 
 再現入力は188-byte TS、AVC PID `0x281`、SPS/VUI・HRD・picture timing SEIを含み、隣接AUの時刻差が90 kHz単位で`6006`となる当該放送captureを用いる。任意の`test.m2ts`や別codecの録画を同じfixtureとみなさない。実行者は入力をTS形式で固定し、元ファイルと使用TSのSHA-256、抽出手順、PID、対象Git SHAを記録する。
 
@@ -458,4 +458,4 @@ AVC_CAPTURE_PATH=/absolute/path/capture.ts cargo +1.81.0 test \
 
 実行ログで対象の試験名と**1件実行**を確認する。0件実行を成功証跡にしない。
 
-期待値は80超の完成AU、各payloadのAUDが1件、明示PTSを持たないAUの存在、全隣接AUの33-bit wrapを考慮したPTS差`6006`である。実行ログの対象名・実行件数・pass/fail、frames/failures出力を保存し、使用fixtureと対応付ける。これは実キャプチャによるproducer単体回帰であり、実機MediaSync/Codecのnative待機・最終描画、およびscan停止後のHAL worker→Framework/TRM→Frontend再取得を証明する試験ではない。これらは各実機統合手順に沿った別の未取得証跡として扱う。
+期待値は80超の完成AU、各payloadのAUDが1件、明示PTSを持たないAUの存在、全隣接AUの33-bit wrapを考慮したPTS差`6006`である。実行ログの対象名・実行件数・pass/fail、frames/failures出力を保存し、使用fixtureと対応付ける。これは実キャプチャによるproducer単体回帰であり、実機MediaSync/Codecのnative待機・最終描画、およびscan停止後のHAL worker→Framework/TRM→Frontend再取得を証明する試験ではない。これらは各実機統合手順に沿った別途確認する。
