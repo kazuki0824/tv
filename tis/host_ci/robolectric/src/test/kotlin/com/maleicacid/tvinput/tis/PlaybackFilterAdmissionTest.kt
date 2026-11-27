@@ -1939,8 +1939,11 @@ class PlaybackFilterAdmissionTest {
 
             val asc3 = hex("118004c40400200000")
             val asc4 = hex("118004c40400211000")
+            val swappedNoPce4 = hex("fff84c0002e004000022640001900002064000190000e0")
             assertEquals(false, NativeAribSiParser.matchesInheritedAacConfiguration(noPce3, asc4))
             assertEquals(false, NativeAribSiParser.matchesInheritedAacConfiguration(noPce4, asc3))
+            assertEquals(true, NativeAribSiParser.matchesInheritedAacConfiguration(noPce4, asc4))
+            assertEquals(false, NativeAribSiParser.matchesInheritedAacConfiguration(swappedNoPce4, asc4))
             val transitions =
                 listOf(
                     Triple(stereo32, byteArrayOf(0x12, 0x90.toByte()), stereo32),

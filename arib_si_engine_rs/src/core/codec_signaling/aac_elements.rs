@@ -7,6 +7,13 @@ pub enum AacPresentation {
     Other,
 }
 
+pub(super) struct ParsedAacFrame {
+    pub(super) presentation: AacPresentation,
+    pub(super) first_elements: [(u8, u8); 2],
+    pub(super) has_program_config: bool,
+    pub(super) element_tags: [u16; 4],
+}
+
 /// 完全フレームで確認できたMPEG ID、profile、周波数、チャンネル構成の同一性。
 pub(super) fn adts_frame_header(frame: &[u8]) -> Option<(usize, u16)> {
     let h = frame.get(..7)?;
@@ -24,10 +31,10 @@ pub(super) fn adts_frame_header(frame: &[u8]) -> Option<(usize, u16)> {
 
 #[cfg(test)]
 fn adts_presentation(frame: &[u8]) -> Option<AacPresentation> {
-    parse_frame(frame).map(|(fact, _, _, _)| fact)
+    parse_frame(frame).map(|parsed| parsed.presentation)
 }
 
-pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2], bool, [u16; 4])> {
+pub(super) fn parse_frame(frame: &[u8]) -> Option<ParsedAacFrame> {
     let h = frame.get(..7)?;
     let frequency = (h[2] >> 2) & 15;
     let configuration = ((h[2] & 1) << 2) | (h[3] >> 6);
@@ -46,19 +53,18 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2], boo
         offset: 0,
     };
     let mut tags = [0u16; 4];
-    let mut first_audio_element = None;
+    let mut first_elements = [(0, 0); 2];
+    let mut next_element = first_elements.iter_mut();
     let mut channels = 0;
-    let mut single_tags = [0; 2];
     let mut pce = None;
     loop {
         let element = bits.read(3)? as usize;
         match element {
             0 | 1 | 3 => {
-                first_audio_element.get_or_insert(element);
                 let instance = bits.read(4)?;
                 let tag = 1 << instance;
-                if element == 0 && channels < 2 {
-                    single_tags[channels] = instance as u8;
+                if let Some(slot) = next_element.next() {
+                    *slot = (element as u8, instance as u8);
                 }
                 if tags[element] & tag != 0 {
                     return None;
@@ -131,7 +137,7 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2], boo
         && channels == 2
         && pce
             .as_ref()
-            .is_some_and(|config| config.front_pair != Some(single_tags))
+            .is_some_and(|config| config.front_pair != Some(first_elements.map(|(_, tag)| tag)))
     {
         return None;
     }
@@ -139,7 +145,7 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2], boo
     let lfe = tags[3].count_ones();
     if configuration == 0 {
         // ARIB STD-B32 第2部5.2.3(2) の送出順。
-        match (first_audio_element?, sce, cpe, lfe) {
+        match (first_elements[0].0, sce, cpe, lfe) {
             (0, 2, 0, 0) | (1, 1, 1, 0) | (1, 0, 2, 0) => {}
             _ => return None,
         }
@@ -158,16 +164,16 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2], boo
             return None;
         }
     }
-    Some((
-        if configuration == 0 && sce == 2 && channels == 2 {
+    Some(ParsedAacFrame {
+        presentation: if configuration == 0 && sce == 2 && channels == 2 {
             AacPresentation::DualMono
         } else {
             AacPresentation::Other
         },
-        single_tags,
-        configuration == 0 && pce.is_some(),
-        tags,
-    ))
+        first_elements,
+        has_program_config: configuration == 0 && pce.is_some(),
+        element_tags: tags,
+    })
 }
 
 impl AudioConfigBits<'_> {

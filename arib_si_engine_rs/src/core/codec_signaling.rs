@@ -270,6 +270,7 @@ fn channel_count_for_configuration(configuration: u8) -> Option<u8> {
 
 struct ProgramConfig {
     element_tags: [u16; 4],
+    arib_element_order: Option<[(u8, u8); 2]>,
     front_pair: Option<[u8; 2]>,
     object_type: u8,
     frequency_index: u8,
@@ -299,15 +300,12 @@ fn parse_program_config(bits: &mut AudioConfigBits<'_>) -> Option<ProgramConfig>
     }
     let mut channel_count = 0u8;
     let mut tags = std::collections::BTreeSet::new();
-    let mut front_pair = (front == 2 && side + back + lfe == 0).then_some([0; 2]);
+    let mut first_elements = [(0, 0); 2];
     for index in 0..front + side + back {
         let pair = bits.read(1)?;
         let tag = bits.read(4)?;
-        if pair != 0 {
-            front_pair = None;
-        }
-        if let Some(front_tags) = front_pair.as_mut() {
-            front_tags[index as usize] = tag as u8;
+        if let Some(slot) = first_elements.get_mut(index as usize) {
+            *slot = (pair as u8, tag as u8);
         }
         if !tags.insert((pair, tag)) {
             return None;
@@ -333,12 +331,19 @@ fn parse_program_config(bits: &mut AudioConfigBits<'_>) -> Option<ProgramConfig>
     let comment_end = comment_start.checked_add(1 + comment_count)?;
     bits.bytes.get(comment_start..comment_end)?;
     bits.offset = comment_end * 8;
-    let mut element_tags = [0; 4];
+    let mut element_tags = [0u16; 4];
     for (kind, tag) in tags {
         element_tags[kind as usize] |= 1 << tag;
     }
+    let front_pair = (front == 2 && side + back + lfe == 0 && element_tags[0].count_ones() == 2)
+        .then(|| first_elements.map(|(_, tag)| tag));
+    // channel_configuration=0では、主副の前方2 SCEまたは前方CPE→後方要素を照合できる。
+    let arib_element_order = (front_pair.is_some()
+        || (front == 1 && side == 0 && back == 1 && lfe == 0 && first_elements[0].0 == 1))
+        .then_some(first_elements);
     Some(ProgramConfig {
         element_tags,
+        arib_element_order,
         front_pair,
         object_type,
         frequency_index,
@@ -452,9 +457,13 @@ pub fn probe_adts_configuration(
                     if frame_end > bytes.len() {
                         return AacConfigurationProbe::Pending;
                     }
-                    if let Some((AacPresentation::DualMono, tags, _, _)) =
-                        aac_elements::parse_frame(&bytes[cursor..frame_end])
+                    if let Some(aac_elements::ParsedAacFrame {
+                        presentation: AacPresentation::DualMono,
+                        first_elements,
+                        ..
+                    }) = aac_elements::parse_frame(&bytes[cursor..frame_end])
                     {
+                        let tags = first_elements.map(|(_, tag)| tag);
                         // 確認した順序の2 SCEを前方要素としてPCEに記録する。
                         let mut config = prefix.to_vec();
                         let mut index = 0;
@@ -568,17 +577,19 @@ pub fn configured_front_pair(asc: &[u8]) -> Option<i32> {
     Some(front_pair_key(config.frequency_index, config.front_pair?))
 }
 
-/// PCE非再送時も、完全なraw data blockが既存ASCの周波数・音声要素と一致することを確認する。
+/// PCE非再送時も、完全なraw data blockの周波数と要素の配置が既存ASCに一致することを確認する。
 pub fn matches_inherited_aac_configuration(frame: &[u8], asc: &[u8]) -> Option<bool> {
     let config = lc_asc_program_config(asc)?;
-    let (_, _, has_pce, tags) = aac_elements::parse_frame(frame)?;
+    let parsed = aac_elements::parse_frame(frame)?;
     let header = frame[2];
-    Some(
-        !has_pce
-            && ((header & 1) | (frame[3] >> 6)) == 0
-            && (header >> 2) & 15 == config.frequency_index
-            && tags == config.element_tags,
-    )
+    if parsed.has_program_config
+        || ((header & 1) | (frame[3] >> 6)) != 0
+        || (header >> 2) & 15 != config.frequency_index
+        || parsed.element_tags != config.element_tags
+    {
+        return Some(false);
+    }
+    Some(parsed.first_elements == config.arib_element_order?)
 }
 
 /// ARIB STD-B32 Part 2 5.2.3(3)(d): PCEコメントは構成の比較に使わない。
@@ -617,13 +628,13 @@ pub fn frame_presentation_dto(frame: &[u8]) -> crate::codec_probe_dto::AacFrameP
         );
     }
     let (dual_mono, front_pair, has_program_config) = match aac_elements::parse_frame(frame) {
-        Some((AacPresentation::DualMono, tags, has_program_config, _)) => (
-            Some(true),
-            Some(front_pair_key((frame[2] >> 2) & 15, tags)),
-            has_program_config,
-        ),
-        Some((AacPresentation::Other, _, has_program_config, _)) => {
-            (Some(false), None, has_program_config)
+        Some(parsed) => {
+            let dual_mono = parsed.presentation == AacPresentation::DualMono;
+            let front_pair = dual_mono.then(|| {
+                let tags = parsed.first_elements.map(|(_, tag)| tag);
+                front_pair_key((frame[2] >> 2) & 15, tags)
+            });
+            (Some(dual_mono), front_pair, parsed.has_program_config)
         }
         None => {
             // 主副を確定できなくても、先頭PCEがあれば構成probeに照合を委ねる。
@@ -735,6 +746,40 @@ mod tests {
         };
         assert_eq!(configuration.audio_specific_config_hex, hex(DUAL_MONO_ASC));
         assert_eq!(configuration.channel_count, 2);
+    }
+
+    #[test]
+    fn inherited_aac_requires_matching_front_and_surround_cpe_tags() {
+        let asc = [0x11, 0x80, 0x04, 0xc4, 0x04, 0, 0x21, 0x10, 0];
+        let reversed_asc = [0x11, 0x80, 0x04, 0xc4, 0x04, 0, 0x23, 0, 0];
+        let both_front = [0x11, 0x80, 0x04, 0xc8, 0, 0, 0x21, 0x10, 0];
+        let frame = [
+            0xff, 0xf8, 0x4c, 0, 0x02, 0xe0, 0x04, 0, 0, 0x20, 0x64, 0, 0x01, 0x90, 0, 0x02, 0x26,
+            0x40, 0, 0x19, 0, 0, 0xe0,
+        ];
+        let mut reversed = frame;
+        reversed[9] = 0x22;
+        reversed[16] = 0x06;
+        assert_eq!(
+            matches_inherited_aac_configuration(&frame, &asc),
+            Some(true)
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&reversed, &asc),
+            Some(false)
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&reversed, &reversed_asc),
+            Some(true)
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&reversed[..22], &asc),
+            None
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&frame, &both_front),
+            None
+        );
     }
 
     #[test]
