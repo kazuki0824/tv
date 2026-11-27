@@ -257,8 +257,6 @@ class RealTsHalSiIntegrationTest {
                 expected.getInt("transport_stream_id"),
                 expected.getInt("selected_service_id"),
             )
-        val sameTransportService = ServiceKey(key.originalNetworkId, key.transportStreamId, 1049)
-        val malformedCaCounts = mapOf(sameTransportService to 3)
         val context = ApplicationProvider.getApplicationContext<Context>()
         val provider = LiveProgramProvider(key)
         provider.attachInfo(context, ProviderInfo().apply { authority = TvContract.AUTHORITY })
@@ -280,10 +278,13 @@ class RealTsHalSiIntegrationTest {
                 verifyServices(engine, expected)
                 verifyPrograms(engine, expected)
                 ingestSameTransportOverlap(engine, ratedSections, schedule, key)
+                val pmt = sections.first { it.pid == 258 }
+                val damagedPmt = withShortCaDescriptor(pmt.bytes)
+                val diagnosed = SectionIngestController(engine).onSection(TsPid(pmt.pid), damagedPmt)
+                assertEquals(SiStatus.OK, diagnosed.status)
                 val ready = engine.livePlaybackSnapshot()
                 assertTrue(ServicePolicyEvaluator.evaluateLive(ready, key).registrationReady)
-                val diagnosed = ready.programs.copy(malformedCaDescriptorCountByServiceKey = malformedCaCounts)
-                ReflectionHelpers.setField(session, "latestLiveSnapshot", ready.copy(programs = diagnosed))
+                ReflectionHelpers.setField(session, "latestLiveSnapshot", ready)
                 ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramSnapshot")
             }
             val present =
@@ -294,7 +295,7 @@ class RealTsHalSiIntegrationTest {
             val fixtureNow = start + 1
             assertSameTransportPublication(provider.rows)
             val sameTransport = provider.rows.first { it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 8L }
-            assertEquals(3, malformedCaCount(sameTransport))
+            assertEquals(1, malformedCaCount(sameTransport))
             val current =
                 provider.rows.single {
                     it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 7L &&
@@ -318,9 +319,7 @@ class RealTsHalSiIntegrationTest {
                     val schedule = withParentalRating(otherTransportSchedule(sections, nextDay), 0x10)
                     assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, schedule).status)
                 }
-                val snapshot = engine.livePlaybackSnapshot()
-                val diagnosed = snapshot.programs.copy(malformedCaDescriptorCountByServiceKey = malformedCaCounts)
-                ReflectionHelpers.setField(session, "latestLiveSnapshot", snapshot.copy(programs = diagnosed))
+                ReflectionHelpers.setField(session, "latestLiveSnapshot", engine.livePlaybackSnapshot())
                 ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramSnapshot")
             }
             // 同一session・同一選局のまま照会時刻を進める。この間の再受信・再公開はない。
@@ -344,6 +343,25 @@ class RealTsHalSiIntegrationTest {
             session.onRelease()
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
+    }
+
+    // 正常PMTを受理した後、同じSIDの新versionに4バイト未満のCA記述子を1件加える。
+    private fun withShortCaDescriptor(section: ByteArray): ByteArray {
+        val original = ByteBuffer.wrap(section)
+        val sectionLength = original.getShort(1).toInt() and 0x0fff
+        val programInfoLength = original.getShort(10).toInt() and 0x0fff
+        val end = 12 + programInfoLength
+        val descriptor = byteArrayOf(0x09, 3, 0, 5, 0xe1.toByte())
+        val replacement = section.copyOfRange(0, end) + descriptor + section.copyOfRange(end, section.size)
+        ByteBuffer.wrap(replacement).apply {
+            putShort(1, ((original.getShort(1).toInt() and 0xf000) or (sectionLength + descriptor.size)).toShort())
+            val programInfoFlags = original.getShort(10).toInt() and 0xf000
+            putShort(10, (programInfoFlags or (programInfoLength + descriptor.size)).toShort())
+            val versionAndFlags = original.get(5).toInt() and 0xff
+            put(5, ((versionAndFlags and 0xc1) or ((versionAndFlags + 2) and 0x3e)).toByte())
+        }
+        writeSectionCrc(replacement)
+        return replacement
     }
 
     private fun malformedCaCount(row: ContentValues): Int {
