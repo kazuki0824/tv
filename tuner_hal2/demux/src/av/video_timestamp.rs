@@ -92,7 +92,6 @@ impl VideoTimestampAssociation {
             self.scanned_input_bytes += self.bytes.len() - self.scan_offset;
         }
         let mut frames = Vec::new();
-        let mut consumed = 0;
         {
             let boundaries = start_codes(&self.bytes, self.scan_offset)
                 .filter(|(_, header)| self.bytes[*header] & 31 == 9)
@@ -144,14 +143,22 @@ impl VideoTimestampAssociation {
                         metadata.is_pes_private_data,
                     ),
                 });
-                consumed = end;
             }
         }
         // 未確定の3 byte開始prefixだけを次回も調べる。4 byte prefixの先行0は
         // start_codesが同じbuffer内の直前byteを参照して位置へ含める。
         self.scan_offset = self.bytes.len().saturating_sub(3);
+        // 同期前は4 byte prefix候補だけ、同期後は先頭AUDから未確定AUを残す。
+        let consumed = self
+            .pending_aud
+            .unwrap_or_else(|| self.scan_offset.saturating_sub(1));
         if consumed != 0 {
             self.bytes.drain(..consumed);
+            // 残した先頭位置のPES時刻を保持し、それ以前の時刻は次のAUへ届かない。
+            let earlier_anchors = self
+                .anchors
+                .partition_point(|anchor| anchor.offset <= consumed);
+            self.anchors.drain(..earlier_anchors.saturating_sub(1));
             self.scan_offset = self.scan_offset.saturating_sub(consumed);
             self.pending_aud = self.pending_aud.map(|offset| offset - consumed);
             for anchor in &mut self.anchors {
@@ -308,6 +315,37 @@ mod tests {
     }
 
     #[test]
+    fn drops_unsynchronized_prefix_without_losing_split_aud_anchor() {
+        use crate::av::avc_timing::tests::au;
+        let first = au(true, true, 60, 0, 1001, 30000);
+        let second = au(false, false, 2, 0, 1001, 30000);
+        for split in 1..=4 {
+            let mut video = VideoTimestampAssociation::default();
+            let origin = TsInputOrigin::frontend(1);
+            for index in 0..256 {
+                let output = video
+                    .extract_avc(packet(vec![0xff; 188], Some(index)), origin)
+                    .unwrap();
+                assert!(output.is_empty());
+                assert_eq!(video.bytes, [0xff; 4]);
+                assert_eq!(video.anchors.len(), 1);
+            }
+            assert!(video
+                .extract_avc(packet(first[..split].to_vec(), Some(90000)), origin)
+                .unwrap()
+                .is_empty());
+            let mut continuation = first[split..].to_vec();
+            continuation.extend_from_slice(&second);
+            let output = video
+                .extract_avc(packet(continuation, Some(96006)), origin)
+                .unwrap();
+            assert_eq!(output.len(), 1);
+            assert_eq!(output[0].payload, first);
+            assert_eq!(output[0].metadata.pts_90khz, Some(90000));
+        }
+    }
+
+    #[test]
     #[ignore = "放送captureをAVC_CAPTURE_PATHで明示して実行する"]
     fn captured_transport_frames_have_individual_timestamps() {
         let path = std::env::var("AVC_CAPTURE_PATH").expect("capture path");
@@ -333,12 +371,19 @@ mod tests {
             for packet in pes.push(pid, packet[1] & 0x40 != 0, &packet[offset..]) {
                 match video.extract_avc(packet, TsInputOrigin::frontend(1)) {
                     Ok(output) => frames.extend(output),
-                    Err(_) => failures += 1,
+                    Err(failure) => {
+                        assert!(frames.is_empty(), "同期後のAVC拒否: {failure:?}");
+                        assert_eq!(failure, VideoTimestampFailure::MissingAnchor);
+                        failures += 1;
+                    }
                 }
             }
         }
         eprintln!("frames={} failures={}", frames.len(), failures);
-        assert!(frames.len() > 80);
+        // 最終AUDから先は次のAUDが未着のため出力しない。
+        assert_eq!(frames.len(), 119);
+        assert_eq!(failures, 1);
+        assert_eq!(video.pending_aud, Some(0));
         assert!(frames.iter().any(|frame| !frame.metadata.is_pts_present));
         for frame in &frames {
             assert_eq!(

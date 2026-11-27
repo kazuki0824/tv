@@ -142,16 +142,7 @@ fn int_list<'local>(
     env: &mut JNIEnv<'local>,
     values: &[i32],
 ) -> Result<JObject<'local>, SiJniFailure> {
-    let list = new_list(env)?;
-    let class = jni_result(env.find_class("java/util/ArrayList"))?;
-    let add = jni_result(env.get_method_id(&class, "add", "(Ljava/lang/Object;)Z"))?;
-    for value in values {
-        let child = boxed_int(env, Some(*value))?;
-        add_to_list(env, &list, &child, add)?;
-        jni_result(env.delete_local_ref(child))?;
-    }
-    jni_result(env.delete_local_ref(class))?;
-    Ok(list)
+    object_list(env, values, |env, value| boxed_int(env, Some(*value)))
 }
 
 fn parse_status_variant(value: &SiParseStatusDto) -> &'static str {

@@ -458,4 +458,4 @@ AVC_CAPTURE_PATH=/absolute/path/capture.ts cargo +1.81.0 test \
 
 実行ログで対象の試験名と**1件実行**を確認する。0件実行を成功証跡にしない。
 
-期待値は80超の完成AU、各payloadのAUDが1件、明示PTSを持たないAUの存在、全隣接AUの33-bit wrapを考慮したPTS差`6006`である。実行ログの対象名・実行件数・pass/fail、frames/failures出力を保存し、使用fixtureと対応付ける。これは実キャプチャによるproducer単体回帰であり、実機MediaSync/Codecのnative待機・最終描画、およびscan停止後のHAL worker→Framework/TRM→Frontend再取得を証明する試験ではない。これらは各実機統合手順に沿って別途確認する。
+固定captureの期待値は完成AU 119件と最初の出力前の `MissingAnchor` 1件で、末尾の未確定AUは含めない。各AUについて、各payloadのAUDが1件、明示PTSを持たないAUの存在、全隣接AUの33-bit wrapを考慮したPTS差`6006`である。実行ログの対象名・実行件数・pass/fail、frames/failures出力を保存し、使用fixtureと対応付ける。これは実キャプチャによるproducer単体回帰であり、実機MediaSync/Codecのnative待機・最終描画、およびscan停止後のHAL worker→Framework/TRM→Frontend再取得を証明する試験ではない。これらは各実機統合手順に沿って別途確認する。

@@ -215,7 +215,9 @@ class PlaybackFailureCallbacksTest {
         val executor = ControllerSerialExecutor("maleicacid-tis-controller-test")
         val faults = FailureMediaCas.Faults
         faults.reset()
-        val delegate = FrameworkMediaCasBridgeFactory().create(5).getOrThrow()
+        val mediaCas = MediaCas(5)
+        val target = Shadow.extract<FailureMediaCas>(mediaCas)
+        val delegate = FrameworkMediaCasBridge({ mediaCas })
         lateinit var connectionListener: CasController.ConnectionListener
         val bridge =
             object : CasController.InitializingMediaCasBridge, CasController.MediaCasBridge by delegate {
@@ -280,7 +282,7 @@ class PlaybackFailureCallbacksTest {
                     )
                     controller.setCasController(cas)
                     controller.setOnTunerResourceLostCallback { lostGeneration = it }
-                    faults.pluginFailure = true
+                    target.rejectClose = true
                     if (initializing) connectionListener.onCapacity(0) else connectionListener.onResourceLost()
                     executor.submitControl { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
                     check(lostGeneration == null)
@@ -298,9 +300,9 @@ class PlaybackFailureCallbacksTest {
                     check(fixture.failures.single().generation == 7L)
                     check(ecm.closes == 1 && emm.closes == 1)
                     val attempts = if (initializing) 2 else 1
-                    check(faults.sessionCloses == 0 && faults.pluginCloses == attempts) {
-                        "initializing=$initializing sessionCloses=${faults.sessionCloses} " +
-                            "pluginCloses=${faults.pluginCloses} expectedPluginCloses=$attempts"
+                    check(target.sessionCloseAttempts == 0 && target.pluginCloseAttempts == attempts) {
+                        "initializing=$initializing sessionCloses=${target.sessionCloseAttempts} " +
+                            "pluginCloses=${target.pluginCloseAttempts} expectedPluginCloses=$attempts"
                     }
                     val expectedError =
                         if (initializing) {
@@ -312,16 +314,17 @@ class PlaybackFailureCallbacksTest {
                     check(cas.updateFromCaMetadata(metadata, 7L).ecmPids.isEmpty())
                     if (initializing) connectionListener.onCapacity(0) else connectionListener.onResourceLost()
                     executor.submitControl { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
-                    check(fixture.notifications == 1 && faults.pluginCloses == attempts)
-                    faults.pluginFailure = false
+                    check(fixture.notifications == 1 && target.pluginCloseAttempts == attempts)
+                    target.rejectClose = false
                     cas.clearForResourceLoss()
                     ecm.rejectClose = false
                     controller.closeSectionFilters()
                     fixture.rejectRelease = false
                     executor.submitControl { fixture.pipeline.stop() }.get(5, TimeUnit.SECONDS)
-                    check(faults.pluginCloses == attempts + 1 && faults.sessionCloses == 0)
+                    check(target.pluginCloseAttempts == attempts + 1 && target.sessionCloseAttempts == 0)
                     check(ecm.closes == 2)
                 } finally {
+                    target.rejectClose = false
                     ecm.rejectClose = false
                     fixture.rejectRelease = false
                 }

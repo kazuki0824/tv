@@ -3154,12 +3154,12 @@ extern "C" fn tuner_dmabuf_heap_alloc_system(len: usize) -> i32 {
     extern "C" {
         fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> i32;
     }
-    // 終端付き固定名を渡し、成功したfdの所有権は直後にFileへ移す。
+    // SAFETY: 固定名はNUL終端され、呼出し中は有効なポインタである。
     let fd = unsafe { memfd_create(b"tuner_service_runtime_av_test\0".as_ptr().cast(), 0) };
     if fd < 0 {
         return fd;
     }
-    // fdは直前のmemfd_createが生成した未移譲の所有fdである。
+    // SAFETY: fdは直前のmemfd_createが生成した未移譲の所有fdである。
     let file = unsafe { std::fs::File::from_raw_fd(fd) };
     if file.set_len(len as u64).is_err() {
         return -1;

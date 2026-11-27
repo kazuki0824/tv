@@ -218,6 +218,12 @@ class FailureMediaCas {
     private var invalidated = false
     private var closed = false
 
+    var pluginCloseAttempts = 0
+        private set
+    var sessionCloseAttempts = 0
+        private set
+    var rejectClose = false
+
     @RealObject private lateinit var mediaCas: MediaCas
 
     @Implementation(methodName = "__constructor__")
@@ -258,13 +264,15 @@ class FailureMediaCas {
     @Implementation
     fun close() {
         if (closed) return
+        pluginCloseAttempts++
         Faults.pluginCloses++
-        if (Faults.pluginFailure) error("下位プラグインの閉鎖失敗")
+        if (rejectClose || Faults.pluginFailure) error("下位プラグインの閉鎖失敗")
         closed = true
     }
 
     fun call(operation: Operation) {
         Faults.calls += operation
+        if (operation == Operation.SESSION_CLOSE) sessionCloseAttempts++
         if (Faults.invalidateAt == operation) {
             Faults.invalidateAt = null
             invalidated = true
