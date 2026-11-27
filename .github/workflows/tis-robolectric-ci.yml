@@ -107,7 +107,7 @@ jobs:
           assert identity.get("skipped", "0") == "0", identity.attrib
           playback_report = report.with_name("TEST-com.maleicacid.tvinput.tis.PlaybackFilterAdmissionTest.xml")
           playback = ET.parse(playback_report).getroot()
-          assert playback.get("tests") == "71", playback.attrib
+          assert playback.get("tests") == "72", playback.attrib
           assert playback.get("failures") == "0" and playback.get("errors") == "0", playback.attrib
           assert playback.get("skipped", "0") == "0", playback.attrib
           playback_cases = playback.findall("testcase")
@@ -115,7 +115,9 @@ jobs:
                   "inBandAacConfigurationChangeReconfiguresThroughNewFilter",
                   "aacPceIsNotRequiredAfterPcmChangeOrRouteChangeFollowingJniFailure",
                   "latestEitModeIsUsedByPlaybackRestart",
-                  "switchedAudioCanReuseAscVerifiedOnTheNewInput"} <= {
+                  "switchedAudioCanReuseAscVerifiedOnTheNewInput",
+                  "switchedAudioWaitsForAacConfigWhenInheritedAscDoesNotMatch",
+                  "rejectedModeClearStopsOnceDuringAudioPidSwitch"} <= {
                       case.get("name") for case in playback_cases
                   }, playback.attrib
           for case in playback_cases:

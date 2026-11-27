@@ -2648,7 +2648,7 @@ class PlaybackPipeline(
             onAudioPresentationChanged(generation)
         }
 
-        // 未判定入力では再生成せず、有効な入力のASCが設定済みASCと異なる場合だけ作り直す。
+        // 未判定入力では再生成せず、設定済みASCとの構成不一致が確定した場合だけ作り直す。
         private fun updateAacPresentation(
             bytes: ByteArray,
             value: AacFramePresentationDto,
@@ -2662,7 +2662,7 @@ class PlaybackPipeline(
             val recheckConfiguration =
                 !sameConfiguration || value.hasProgramConfig ||
                     (value.dualMono == true && !samePresentation)
-            if (recheckConfiguration && restartForInBandAacChange(bytes, current)) return
+            if (recheckConfiguration && restartForInBandAacChange(bytes, value.hasProgramConfig, current)) return
             if (samePresentation) return
             receivedFrontPair = pair
             aacConfiguration = configuration
@@ -2671,10 +2671,11 @@ class PlaybackPipeline(
             onAudioPresentationChanged(generation)
         }
 
-        // 未設定・PMT優先・構成未確認では再生成しない。
+        // PCEのない完全な入力でも、設定済みASCと照合して不一致を確定できる。
         @Suppress("ReturnCount")
         private fun restartForInBandAacChange(
             frame: ByteArray,
+            hasProgramConfig: Boolean,
             current: () -> Boolean,
         ): Boolean {
             val configured = configuredAacAsc ?: return false
@@ -2683,10 +2684,19 @@ class PlaybackPipeline(
                 try {
                     CodecFormatPolicy.adtsAudioFormat(frame, stream.codecFacts, stream.codec)
                 } catch (_: UnsupportedCodecFormat) {
-                    null
+                    return false
                 }
-            val asc = format?.let(::aacAsc) ?: return false
             if (!current()) return false
+            if (format == null) {
+                if (hasProgramConfig) return false
+                val matches = NativeAribSiParser.matchesInheritedAacConfiguration(frame, configured)
+                if (matches != false || !current()) return false
+                if (!restartPlaybackWithAacFormat(generation, null)) {
+                    stopAfterCompressedInputLoss(generation, "AAC_CONFIGURATION_MISMATCH")
+                }
+                return true
+            }
+            val asc = aacAsc(format) ?: return false
             val changed =
                 !asc.contentEquals(configured) && !NativeAribSiParser.sameAacDecoderConfiguration(configured, asc)
             if (changed) return restartPlaybackWithAacFormat(generation, format)
