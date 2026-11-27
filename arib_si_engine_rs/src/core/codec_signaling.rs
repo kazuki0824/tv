@@ -579,6 +579,20 @@ pub fn configured_front_pair(asc: &[u8]) -> Option<i32> {
 
 /// PCE非再送時も、完全なraw data blockの周波数と要素の配置が既存ASCに一致することを確認する。
 pub fn matches_inherited_aac_configuration(frame: &[u8], asc: &[u8]) -> Option<bool> {
+    // ADTSの通常probeで生成する2バイトの固定構成AAC LC ASC。
+    if asc.len() == 2 && asc[1] & 0x07 == 0 {
+        let fixed = parse_asc_header(asc)?;
+        if fixed.audio_object_type != 2 || !(1..=7).contains(&fixed.channel_configuration) {
+            return None;
+        }
+        aac_elements::parse_frame(frame)?;
+        let channel_configuration = ((frame[2] & 1) << 2) | (frame[3] >> 6);
+        let frequency = audio_frequency((frame[2] >> 2) & 15)?;
+        return Some(
+            channel_configuration == fixed.channel_configuration
+                && frequency == fixed.sampling_frequency,
+        );
+    }
     let config = lc_asc_program_config(asc)?;
     let parsed = aac_elements::parse_frame(frame)?;
     let header = frame[2];
@@ -762,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_aac_requires_matching_front_and_surround_cpe_tags() {
+    fn inherited_aac_distinguishes_fixed_and_program_defined_layouts() {
         let asc = [0x11, 0x80, 0x04, 0xc4, 0x04, 0, 0x21, 0x10, 0];
         let reversed_asc = [0x11, 0x80, 0x04, 0xc4, 0x04, 0, 0x23, 0, 0];
         let both_front = [0x11, 0x80, 0x04, 0xc8, 0, 0, 0x21, 0x10, 0];
@@ -779,6 +793,26 @@ mod tests {
             Some(0x1110)
         );
         assert_eq!(frame_presentation_dto(&reversed[..22]).element_order, None);
+        let stereo_asc = [0x11, 0x90];
+        let stereo = [
+            0xff, 0xf8, 0x4c, 0x80, 0x02, 0, 0x04, 0x33, 0xb4, 0x20, 0x64, 0, 0x01, 0x90, 0, 0x0e,
+        ];
+        assert_eq!(
+            matches_inherited_aac_configuration(&frame, &stereo_asc),
+            Some(false)
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&frame[..22], &stereo_asc),
+            None
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&stereo, &stereo_asc),
+            Some(true)
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&frame, &[0x11, 0x92]),
+            None
+        );
         assert_eq!(
             matches_inherited_aac_configuration(&frame, &asc),
             Some(true)

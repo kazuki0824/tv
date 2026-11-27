@@ -2090,24 +2090,41 @@ class PlaybackFilterAdmissionTest {
     fun switchedAudioWaitsForAacConfigWhenInheritedAscDoesNotMatch() {
         registerAacDecoder()
         val pce4 = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
-        val noPce3 = aacBytes("fff84c000280040000206400019000000c800070")
-        val pce3 = aacBytes("fff84c00036004799fa0988080040000206400019000000c800070")
-        val asc3 = aacBytes("118004c40400200000")
+        verifySwitchedAudioWaitsForAacConfig(
+            initial = pce4,
+            withoutPce = aacBytes("fff84c000280040000206400019000000c800070"),
+            withPce = aacBytes("fff84c00036004799fa0988080040000206400019000000c800070"),
+            expectedAsc = aacBytes("118004c40400200000"),
+        )
+        verifySwitchedAudioWaitsForAacConfig(
+            initial = aacBytes("fff84c8002000433b42064000190000e"),
+            withoutPce = aacBytes("fff84c0002e004000020640001900002264000190000e0"),
+            withPce = pce4,
+            expectedAsc = aacBytes("118004c40400211000"),
+        )
+    }
+
+    private fun verifySwitchedAudioWaitsForAacConfig(
+        initial: ByteArray,
+        withoutPce: ByteArray,
+        withPce: ByteArray,
+        expectedAsc: ByteArray,
+    ) {
         Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
             val selection = fixture.audioSelection().copy(video = null)
             val channel = ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel")
             val start = fixture.pipeline.start(fixture.tuner, channel.copy(serviceType = 2), selection)
             assertTrue(start.startedAudio)
-            fixture.feedAac(pce4)
+            fixture.feedAac(initial)
             fixture.applyAacPcmFormat(48_000)
             val oldDecoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
             val oldCodec = ReflectionHelpers.getField<MediaCodec>(oldDecoder, "codec")
             val nativeCodec = Shadow.extract<NativeCodec>(oldCodec)
             val next = selection.copy(audio = requireNotNull(selection.audio).copy(elementaryPid = TsPid(0x111)))
             assertTrue(fixture.pipeline.switchAudio(fixture.tuner, next).switchedAudio)
-            assertNull(NativeAribSiParser.probeAacConfiguration(noPce3, null))
+            assertNull(NativeAribSiParser.probeAacConfiguration(withoutPce, null))
             val configuredAsc = ReflectionHelpers.getField<ByteArray>(oldDecoder, "configuredAacAsc")
-            assertEquals(false, NativeAribSiParser.matchesInheritedAacConfiguration(noPce3, configuredAsc))
+            assertEquals(false, NativeAribSiParser.matchesInheritedAacConfiguration(withoutPce, configuredAsc))
 
             repeat(2) { postCodecCallback(oldCodec, 1, it, null) }
             val delivered = CountDownLatch(1)
@@ -2115,11 +2132,11 @@ class PlaybackFilterAdmissionTest {
             assertTrue(delivered.await(5, TimeUnit.SECONDS))
             fixture.drain()
             assertEquals(2, ReflectionHelpers.getField<Collection<Int>>(oldDecoder, "availableInputIndexes").size)
-            fixture.feedAac(undecidableProtectedAac(noPce3, configuredAsc))
+            fixture.feedAac(undecidableProtectedAac(withoutPce, configuredAsc))
             assertEquals(start.generation, fixture.pipeline.currentPlaybackGenerationForTest())
             val firstBlock = checkNotNull(nativeCodec.lastInputBlock)
             assertEquals(1, ReflectionHelpers.getField<Collection<Int>>(oldDecoder, "availableInputIndexes").size)
-            val mismatched = fixture.feedAac(noPce3)
+            val mismatched = fixture.feedAac(withoutPce)
             assertTrue(nativeCodec.lastInputBlock === firstBlock)
             assertEquals(1, mismatched.releases)
             val generation = fixture.pipeline.currentPlaybackGenerationForTest()
@@ -2127,15 +2144,15 @@ class PlaybackFilterAdmissionTest {
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
             assertNull(ReflectionHelpers.getField<MediaCodec?>(decoder, "codec"))
             assertNull(ReflectionHelpers.getField<MediaFormat?>(decoder, "startupAacFormat"))
-            fixture.feedAac(pce3)
-            assertContentEquals(asc3, ReflectionHelpers.getField<ByteArray?>(decoder, "configuredAacAsc"))
+            fixture.feedAac(withPce)
+            assertContentEquals(expectedAsc, ReflectionHelpers.getField<ByteArray?>(decoder, "configuredAacAsc"))
             val codec = ReflectionHelpers.getField<MediaCodec>(decoder, "codec")
             assertTrue(codec !== oldCodec)
             val configuredCodec = Shadow.extract<NativeCodec>(codec)
             postCodecCallback(codec, 1, 0, null)
             assertTrue(configuredCodec.inputQueued.await(5, TimeUnit.SECONDS))
             fixture.drain()
-            assertEquals(pce3.size, configuredCodec.lastInputSize)
+            assertEquals(withPce.size, configuredCodec.lastInputSize)
             assertEquals(generation, fixture.pipeline.currentPlaybackGenerationForTest())
         }
     }
