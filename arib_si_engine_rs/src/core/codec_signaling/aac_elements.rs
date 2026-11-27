@@ -5,7 +5,6 @@ use super::{aac_tables::*, parse_program_config, AudioConfigBits};
 pub enum AacPresentation {
     DualMono,
     Other,
-    Unknown,
 }
 
 /// 完全フレームで確認できたMPEG ID、profile、周波数、チャンネル構成の同一性。
@@ -24,8 +23,8 @@ pub(super) fn adts_frame_header(frame: &[u8]) -> Option<(usize, u16)> {
 }
 
 #[cfg(test)]
-fn adts_presentation(frame: &[u8]) -> AacPresentation {
-    parse_frame(frame).map_or(AacPresentation::Unknown, |(fact, _, _, _)| fact)
+fn adts_presentation(frame: &[u8]) -> Option<AacPresentation> {
+    parse_frame(frame).map(|(fact, _, _, _)| fact)
 }
 
 pub(super) fn parse_frame(frame: &[u8]) -> Option<(AacPresentation, [u8; 2], bool, [u16; 4])> {
@@ -394,8 +393,8 @@ mod tests {
         let stereo = &[
             255, 248, 76, 128, 2, 0, 4, 51, 180, 32, 100, 0, 1, 144, 0, 14,
         ];
-        assert_eq!(adts_presentation(dual), AacPresentation::DualMono);
-        assert_eq!(adts_presentation(stereo), AacPresentation::Other);
+        assert_eq!(adts_presentation(dual), Some(AacPresentation::DualMono));
+        assert_eq!(adts_presentation(stereo), Some(AacPresentation::Other));
         let AacConfigurationProbe::Ready { configuration } = probe_adts_configuration(dual, None)
         else {
             panic!("2 SCEの構成が必要");
@@ -423,11 +422,11 @@ mod tests {
             AacConfigurationProbe::Ready { .. }
         ));
         for end in 0..dual.len() {
-            assert_eq!(adts_presentation(&dual[..end]), AacPresentation::Unknown);
+            assert_eq!(adts_presentation(&dual[..end]), None);
         }
         let mut invalid = *dual;
         *invalid.last_mut().unwrap() = 0;
-        assert_eq!(adts_presentation(&invalid), AacPresentation::Unknown);
+        assert_eq!(adts_presentation(&invalid), None);
     }
     #[test]
     fn intensity_is_only_valid_on_common_window_right_channel() {
@@ -450,19 +449,19 @@ mod tests {
             ),
         ];
         for &(single, pair) in vectors {
-            assert_eq!(adts_presentation(single), AacPresentation::Unknown);
+            assert_eq!(adts_presentation(single), None);
             assert!(matches!(
                 probe_adts_configuration(single, None),
                 AacConfigurationProbe::Pending
             ));
-            assert_eq!(adts_presentation(pair), AacPresentation::Other);
+            assert_eq!(adts_presentation(pair), Some(AacPresentation::Other));
         }
         // channel_configuration=0のCPEから2 SCEのASCを合成しない。
         let mut other = [
             255, 248, 76, 128, 2, 0, 4, 51, 180, 32, 100, 0, 1, 144, 0, 14,
         ];
         other[3] = 0;
-        assert_eq!(adts_presentation(&other), AacPresentation::Unknown);
+        assert_eq!(adts_presentation(&other), None);
         assert!(matches!(
             probe_adts_configuration(&other, None),
             AacConfigurationProbe::Pending
@@ -484,10 +483,13 @@ mod tests {
             .chunks_exact(2)
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect();
-        assert_eq!(adts_presentation(&frame), AacPresentation::DualMono);
+        assert_eq!(adts_presentation(&frame), Some(AacPresentation::DualMono));
         let mut with_pce = vec![255, 249, 76, 0, 21, 191, 252, 160, 153, 0, 0, 0, 2, 0];
         with_pce.extend_from_slice(&frame[7..]);
-        assert_eq!(adts_presentation(&with_pce), AacPresentation::DualMono);
+        assert_eq!(
+            adts_presentation(&with_pce),
+            Some(AacPresentation::DualMono)
+        );
         let AacConfigurationProbe::Ready { configuration } =
             probe_adts_configuration(&with_pce, None)
         else {
@@ -496,6 +498,6 @@ mod tests {
         assert_eq!(configuration.channel_count, 2);
         // PCEが存在しないSCEを指定した場合は判定しない。
         with_pce[12] ^= 4;
-        assert_eq!(adts_presentation(&with_pce), AacPresentation::Unknown);
+        assert_eq!(adts_presentation(&with_pce), None);
     }
 }

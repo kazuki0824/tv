@@ -625,7 +625,11 @@ pub fn frame_presentation_dto(frame: &[u8]) -> crate::codec_probe_dto::AacFrameP
         Some((AacPresentation::Other, _, has_program_config, _)) => {
             (Some(false), None, has_program_config)
         }
-        _ => (None, None, false),
+        None => {
+            // 主副を確定できなくても、先頭PCEがあれば構成probeに照合を委ねる。
+            let payload = if frame[1] & 1 == 0 { 9 } else { 7 };
+            (None, None, frame[payload] >> 5 == 5)
+        }
     };
     AacFramePresentationDto {
         status: AacProbeStatusDto::Ready,
@@ -682,6 +686,9 @@ mod tests {
 
     #[test]
     fn adts_pce_is_relocated_to_asc_alignment_with_exact_comment() {
+        let presentation = frame_presentation_dto(DUAL_MONO_ADTS);
+        assert_eq!(presentation.dual_mono, None);
+        assert!(presentation.has_program_config);
         let AacConfigurationProbe::Ready { configuration } =
             probe_adts_configuration(DUAL_MONO_ADTS, None)
         else {

@@ -481,11 +481,14 @@ class PlaybackPipeline(
         facts: Map<TsPid, Boolean?>,
     ): AudioPresentationOutput? =
         runOnPlaybackExecutorBlocking {
-            val pid = activeSelection?.takeIf { it.serviceKey == service }?.audio?.elementaryPid
+            val selection = activeSelection?.takeIf { it.serviceKey == service }
+            val pid = selection?.audio?.elementaryPid
             if (pid == null || pid !in facts || audioFilter == null) {
                 null
             } else {
-                audioDecoder?.presentationOutput(pid, facts[pid])
+                val eit = facts[pid]
+                activeSelection = selection.copy(audioDualMono = eit)
+                audioDecoder?.presentationOutput(pid, eit)
             }
         }
 
@@ -897,6 +900,7 @@ class PlaybackPipeline(
                 onAudioPresentationChanged(playbackGeneration)
                 AudioSwitchResult(true, listOf("AUDIO_PID_SWITCHED_VIDEO_PRESERVED"))
             }.getOrElse { error ->
+                audioDecoder?.clearAppliedPresentation()
                 logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "音声PID切替失敗: ${error.message}")
                 AudioSwitchResult(
                     false,
@@ -2579,6 +2583,8 @@ class PlaybackPipeline(
 
         fun invalidateAudioInput() {
             startupAacFormat = null
+            configuredAacFormat = null
+            aacInputCurrent = null
             clearReceivedAacPresentation()
             onAudioPresentationChanged(generation)
         }
@@ -2587,7 +2593,6 @@ class PlaybackPipeline(
             aacConfiguration = null
             receivedFrontPair = null
             aacDualMono = null
-            aacInputCurrent = null
         }
 
         fun changePresentationInput(
@@ -2621,6 +2626,7 @@ class PlaybackPipeline(
                     mapped.get(bytes)
                     bytes
                 }.getOrNull() ?: return
+            aacInputCurrent = current
             try {
                 val value = NativeAribSiParser.adtsPresentation(bytes)
                 if (current() && value.status == AacProbeStatusDto.Ready) {
@@ -2653,12 +2659,13 @@ class PlaybackPipeline(
             val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
             val pair = if (value.dualMono == null && sameConfiguration) receivedFrontPair else value.frontPair
             val samePresentation = sameConfiguration && aacDualMono == fact && receivedFrontPair == pair
-            val recheckConfiguration = value.dualMono != null && (!samePresentation || value.hasProgramConfig)
+            val recheckConfiguration =
+                !sameConfiguration || value.hasProgramConfig ||
+                    (value.dualMono == true && !samePresentation)
             if (recheckConfiguration && restartForInBandAacChange(bytes, current)) return
             if (samePresentation) return
             receivedFrontPair = pair
             aacConfiguration = configuration
-            aacInputCurrent = current
             aacDualMono = fact
             reconcilePresentation()
             onAudioPresentationChanged(generation)
@@ -2695,7 +2702,7 @@ class PlaybackPipeline(
         }
 
         private fun reconcilePresentation() {
-            val track = audioTrack ?: return
+            if (audioTrack == null) return
             val fact = eitDualMono ?: aacDualMono.takeIf { aacInputCurrent?.invoke() == true }
             val matchesLayout =
                 if (aacInputCurrent?.invoke() == true && aacConfiguration != null) {
@@ -2708,13 +2715,18 @@ class PlaybackPipeline(
                 selectable = appliedPresentation == dualMonoPresentation ||
                     setDualMonoPresentation(dualMonoPresentation)
             } else {
-                selectable = false
-                if (appliedPresentation == null) return
-                if (runCatching { track.setDualMonoMode(AudioTrack.DUAL_MONO_MODE_OFF) }.getOrDefault(false)) {
-                    appliedPresentation = null
-                } else {
-                    errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "失効した二重音声モードを解除できません")
-                }
+                clearAppliedPresentation()
+            }
+        }
+
+        fun clearAppliedPresentation() {
+            selectable = false
+            val track = audioTrack ?: return
+            if (appliedPresentation == null) return
+            if (runCatching { track.setDualMonoMode(AudioTrack.DUAL_MONO_MODE_OFF) }.getOrDefault(false)) {
+                appliedPresentation = null
+            } else {
+                errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "失効した二重音声モードを解除できません")
             }
         }
 
