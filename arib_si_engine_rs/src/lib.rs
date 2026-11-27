@@ -997,20 +997,21 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _class: JClass<'_>,
     first: JByteArray<'_>,
     second: JByteArray<'_>,
-) -> jboolean {
+) -> jint {
     let first = bounded_codec_bytes(&mut env, &first, 8191);
     let second = bounded_codec_bytes(&mut env, &second, 512);
     match (first, second) {
-        (Ok(first), Ok(second)) => jboolean::from(
+        (Ok(first), Ok(second)) => {
             maleicacid_arib_si_engine_core::codec_signaling::matches_inherited_aac_configuration(
                 &first, &second,
-            ),
-        ),
+            )
+            .map_or(-1, i32::from)
+        }
         (Err(CodecInputFailure::Jni(error)), _) | (_, Err(CodecInputFailure::Jni(error))) => {
             throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error));
             0
         }
-        _ => 0,
+        _ => -1,
     }
 }
 

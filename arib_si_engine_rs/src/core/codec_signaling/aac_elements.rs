@@ -23,12 +23,8 @@ pub(super) fn adts_frame_header(frame: &[u8]) -> Option<(usize, u16)> {
     Some((size, key))
 }
 
-pub fn adts_configuration_key(frame: &[u8]) -> Option<u16> {
-    let (size, key) = adts_frame_header(frame)?;
-    (size == frame.len()).then_some(key)
-}
-
-pub fn adts_presentation(frame: &[u8]) -> AacPresentation {
+#[cfg(test)]
+fn adts_presentation(frame: &[u8]) -> AacPresentation {
     parse_frame(frame).map_or(AacPresentation::Unknown, |(fact, _, _, _)| fact)
 }
 

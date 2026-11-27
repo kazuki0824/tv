@@ -41,6 +41,7 @@ import com.maleicacid.tvinput.aribsi.NativeAribSiParser
 import com.maleicacid.tvinput.aribsi.NativeSiException
 import com.maleicacid.tvinput.aribsi.NativeSiFailureReason
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
+import com.maleicacid.tvinput.aribsi.generated.AacFramePresentationDto
 import com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.LogTags
@@ -80,7 +81,9 @@ import kotlin.test.assertTrue
 @RunWith(RobolectricTestRunner::class)
 @Config(
     sdk = [35],
+    instrumentedPackages = ["com.maleicacid.tvinput.aribsi.NativeAribSiParser\$Companion"],
     shadows = [
+        PlaybackFilterAdmissionTest.AacProbeBoundary::class,
         PlaybackFilterAdmissionTest.NativeTuner::class,
         PlaybackFilterAdmissionTest.NativeFilter::class,
         PlaybackFilterAdmissionTest.NativeMediaEvent::class,
@@ -1929,8 +1932,8 @@ class PlaybackFilterAdmissionTest {
 
             val asc3 = hex("118004c40400200000")
             val asc4 = hex("118004c40400211000")
-            assertFalse(NativeAribSiParser.matchesInheritedAacConfiguration(noPce3, asc4))
-            assertFalse(NativeAribSiParser.matchesInheritedAacConfiguration(noPce4, asc3))
+            assertEquals(false, NativeAribSiParser.matchesInheritedAacConfiguration(noPce3, asc4))
+            assertEquals(false, NativeAribSiParser.matchesInheritedAacConfiguration(noPce4, asc3))
             val transitions =
                 listOf(
                     Triple(stereo32, byteArrayOf(0x12, 0x90.toByte()), stereo32),
@@ -1976,10 +1979,16 @@ class PlaybackFilterAdmissionTest {
             verifyAacRouteRestart(fixture, previousGeneration)
             assertEquals(1, Shadow.extract<NativeFilter>(filter).closes)
             assertTrue(previousGeneration < fixture.pipeline.currentPlaybackGenerationForTest())
+            val undecidable = noPce4.copyOf()
+            undecidable.fill(0, fromIndex = 7)
+            assertNull(NativeAribSiParser.matchesInheritedAacConfiguration(undecidable, asc4))
+            feed(currentFilter(), undecidable)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+            assertNull(ReflectionHelpers.getField<MediaCodec?>(decoder, "codec"))
             feed(currentFilter(), noPce4)
             val routedCodec = configuredCodec(asc4)
             assertTrue(routedCodec !== codec)
-            supplyCodecInputs(routedCodec, 2)
+            supplyCodecInputs(routedCodec, 3)
             val routedGeneration = fixture.pipeline.currentPlaybackGenerationForTest()
             verifyAacOutputWithoutRepeatedPce(fixture, routedCodec, routedGeneration, pce4, noPce4)
         }
@@ -2063,24 +2072,24 @@ class PlaybackFilterAdmissionTest {
 
         Fixture().use { fixture ->
             fixture.decoder(audio = true, aac = true)
-            fixture.attachCodec(audio = true, dualAac = true)
+            val codec = fixture.attachCodec(audio = true, dualAac = true)
             val filter = fixture.avFilter(true)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
-            for (bytes in listOf(dual, dual.copyOf(12))) {
+            for ((index, bytes) in listOf(dual, dual.copyOf(12), dual).withIndex()) {
                 val event = mediaEvent(bytes.size.toLong())
                 val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
                 Shadow.extract<NativeLinearBlock>(block).data = bytes
                 Shadow.extract<NativeMediaEvent>(event).block = block
+                val nativeCodec = Shadow.extract<NativeCodec>(codec)
+                val queued = CountDownLatch(1)
+                nativeCodec.onInputQueue = { queued.countDown() }
+                postCodecCallback(codec, 1, index, null)
+                AacProbeBoundary.failNext.set(index == 2)
                 deliver(filter, event)
+                assertTrue(queued.await(5, TimeUnit.SECONDS))
                 fixture.drain()
-                assertEquals(true, ReflectionHelpers.getField<Boolean?>(decoder, "aacDualMono"))
-            }
-            fixture.executor.callControl(5_000L) {
-                ReflectionHelpers.callInstanceMethod<Unit>(
-                    decoder,
-                    "reportAacPresentationFailure",
-                    ReflectionHelpers.ClassParameter.from(NativeSiException::class.java, failure),
-                )
+                assertTrue(nativeCodec.lastInputBlock === block)
+                if (index < 2) assertEquals(true, ReflectionHelpers.getField<Boolean?>(decoder, "aacDualMono"))
             }
             assertNull(ReflectionHelpers.getField<Boolean?>(decoder, "aacDualMono"))
             assertTrue(fixture.unavailable.isEmpty())
@@ -2384,6 +2393,15 @@ class PlaybackFilterAdmissionTest {
             feed(dualFrame.copyOf(12))
             refresh()
             assertEquals("$physical:sub", selected.last())
+            AacProbeBoundary.failNext.set(true)
+            feed(dualFrame)
+            refresh()
+            assertNull(ReflectionHelpers.getField<Boolean?>(decoder, "aacDualMono"))
+            assertEquals(physical, selected.last())
+            assertEquals(AudioTrack.DUAL_MONO_MODE_OFF, nativeTrack.modes.last())
+            feed(dualFrame)
+            refresh()
+            assertTrue(fixture.selectAudio(session, "$physical:sub"))
             output.removeKey(MediaFormat.KEY_CHANNEL_MASK)
             outputChanged()
             refresh()
@@ -3882,6 +3900,28 @@ class PlaybackFilterAdmissionTest {
             "onFilterStatus",
             ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, value),
         )
+    }
+
+    @Implements(NativeAribSiParser.Companion::class, isInAndroidSdk = false)
+    class AacProbeBoundary {
+        @RealObject private lateinit var parser: NativeAribSiParser.Companion
+
+        @Implementation
+        fun probeDualMono(frame: ByteArray): AacFramePresentationDto? =
+            if (failNext.getAndSet(false)) {
+                null
+            } else {
+                Shadow.directlyOn(
+                    parser,
+                    NativeAribSiParser.Companion::class.java,
+                    "probeDualMono",
+                    ReflectionHelpers.ClassParameter.from(ByteArray::class.java, frame),
+                )
+            }
+
+        companion object {
+            val failNext = AtomicBoolean()
+        }
     }
 
     @Implements(Tuner::class)

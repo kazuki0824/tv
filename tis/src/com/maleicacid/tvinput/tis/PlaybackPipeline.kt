@@ -2754,13 +2754,19 @@ class PlaybackPipeline(
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? =
             when (kind) {
                 AudioCodecKind.AAC_ADTS -> {
+                    val detected = CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
                     val inherited = startupAacFormat
-                    startupAacFormat = null
-                    CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
-                        ?: inherited?.takeIf { format ->
-                            val asc = aacAsc(format)
-                            asc != null && NativeAribSiParser.matchesInheritedAacConfiguration(bytes, asc)
-                        }
+                    if (detected != null || inherited == null) {
+                        startupAacFormat = null
+                        detected
+                    } else {
+                        val matches =
+                            aacAsc(inherited)?.let { asc ->
+                                NativeAribSiParser.matchesInheritedAacConfiguration(bytes, asc)
+                            }
+                        if (matches != null) startupAacFormat = null
+                        inherited.takeIf { matches == true }
+                    }
                 }
 
                 AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> {

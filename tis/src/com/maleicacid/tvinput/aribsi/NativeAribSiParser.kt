@@ -347,12 +347,17 @@ class NativeAribSiParser : AutoCloseable {
         private external fun nativeMatchesInheritedAacConfiguration(
             frame: ByteArray,
             asc: ByteArray,
-        ): Boolean
+        ): Int
 
         internal fun matchesInheritedAacConfiguration(
             frame: ByteArray,
             asc: ByteArray,
-        ): Boolean = nativeMatchesInheritedAacConfiguration(frame, asc)
+        ): Boolean? =
+            when (nativeMatchesInheritedAacConfiguration(frame, asc)) {
+                0 -> false
+                1 -> true
+                else -> null
+            }
 
         @JvmStatic private external fun probeDualMono(frame: ByteArray): AacFramePresentationDto?
 

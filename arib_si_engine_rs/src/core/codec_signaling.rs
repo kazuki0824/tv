@@ -569,17 +569,16 @@ pub fn configured_front_pair(asc: &[u8]) -> Option<i32> {
 }
 
 /// PCE非再送時も、完全なraw data blockが既存ASCの周波数・音声要素と一致することを確認する。
-pub fn matches_inherited_aac_configuration(frame: &[u8], asc: &[u8]) -> bool {
-    let Some(config) = lc_asc_program_config(asc) else {
-        return false;
-    };
-    let Some((_, _, false, tags)) = aac_elements::parse_frame(frame) else {
-        return false;
-    };
+pub fn matches_inherited_aac_configuration(frame: &[u8], asc: &[u8]) -> Option<bool> {
+    let config = lc_asc_program_config(asc)?;
+    let (_, _, has_pce, tags) = aac_elements::parse_frame(frame)?;
     let header = frame[2];
-    ((header & 1) | (frame[3] >> 6)) == 0
-        && (header >> 2) & 15 == config.frequency_index
-        && tags == config.element_tags
+    Some(
+        !has_pce
+            && ((header & 1) | (frame[3] >> 6)) == 0
+            && (header >> 2) & 15 == config.frequency_index
+            && tags == config.element_tags,
+    )
 }
 
 /// ARIB STD-B32 Part 2 5.2.3(3)(d): PCEコメントは構成の比較に使わない。
@@ -638,7 +637,7 @@ pub fn frame_presentation_dto(frame: &[u8]) -> crate::codec_probe_dto::AacFrameP
     }
 }
 
-pub use aac_elements::{adts_configuration_key, adts_presentation, AacPresentation};
+pub use aac_elements::AacPresentation;
 
 struct AudioConfigBits<'a> {
     bytes: &'a [u8],
