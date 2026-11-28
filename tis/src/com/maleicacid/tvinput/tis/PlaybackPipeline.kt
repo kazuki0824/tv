@@ -746,7 +746,6 @@ class PlaybackPipeline(
                     selection.dualMonoPresentation,
                     streamVolume,
                     startGeneration,
-                    inferMultichannelLayout = restartAacFormat == null,
                 ) { reason, detail ->
                     if (startGeneration == playbackGeneration) handleAudioFailure(reason, detail, audioOnly)
                 }.apply { setStartupAacFormat(restartAacFormat) }
@@ -2574,7 +2573,6 @@ class PlaybackPipeline(
         initialDualMonoPresentation: DualMonoPresentation,
         initialVolume: Float,
         override val generation: Long,
-        private val inferMultichannelLayout: Boolean,
         private val errorSink: (PlaybackUnavailableReason, String) -> Unit,
     ) : DecoderPipeline() {
         private var volume: Float = initialVolume
@@ -2821,14 +2819,14 @@ class PlaybackPipeline(
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? =
             when (kind) {
                 AudioCodecKind.AAC_ADTS -> {
+                    val inherited = startupAacFormat
                     val detected =
                         CodecFormatPolicy.adtsAudioFormat(
                             bytes,
                             stream.codecFacts,
                             stream.codec,
-                            inferMultichannelLayout,
+                            inferMultichannelLayout = inherited == null,
                         )
-                    val inherited = startupAacFormat
                     if (detected != null || inherited == null) {
                         startupAacFormat = null
                         detected

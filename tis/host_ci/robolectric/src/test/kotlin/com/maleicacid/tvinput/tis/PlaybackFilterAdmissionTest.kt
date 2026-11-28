@@ -2063,6 +2063,7 @@ class PlaybackFilterAdmissionTest {
         val pce4 = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
         val noPce3 = aacBytes("fff84c000280043910206400019000000c800070")
         val noPce4 = aacBytes("fff84c0002e004fe7f20640001900002264000190000e0")
+        val asc4 = aacBytes("118004c40400211000")
         Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
             val selection = fixture.audioSelection().copy(video = null)
             val channel = ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel")
@@ -2074,11 +2075,11 @@ class PlaybackFilterAdmissionTest {
             assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > start.generation)
 
             val mismatched = fixture.feedAac(noPce3)
-            val compatible = fixture.feedAac(noPce4)
+            val undecidable = fixture.feedAac(undecidableProtectedAac(noPce4, asc4))
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
             assertNull(ReflectionHelpers.getField<MediaCodec?>(decoder, "codec"))
             assertEquals(0, mismatched.releases)
-            assertEquals(0, compatible.releases)
+            assertEquals(0, undecidable.releases)
 
             val configured = fixture.feedAac(pce4)
             val codec = ReflectionHelpers.getField<MediaCodec>(decoder, "codec")
@@ -2091,10 +2092,45 @@ class PlaybackFilterAdmissionTest {
             assertTrue(delivered.await(5, TimeUnit.SECONDS))
             fixture.drain()
 
-            assertEquals(listOf(compatible.block, configured.block), queuedBlocks)
+            assertEquals(listOf(undecidable.block, configured.block), queuedBlocks)
             assertEquals(1, mismatched.releases)
-            assertEquals(0, compatible.releases)
+            assertEquals(0, undecidable.releases)
             assertEquals(0, configured.releases)
+        }
+    }
+
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
+    @Test
+    fun routeRestartInfersAacLayoutAfterInheritedAscMismatch() {
+        registerAacDecoder()
+        val pce4 = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
+        val noPce3 = aacBytes("fff84c000280043910206400019000000c800070")
+        val asc3 = aacBytes("118004c40400200000")
+        Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
+            val selection = fixture.audioSelection().copy(video = null)
+            val channel = ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel")
+            val start = fixture.pipeline.start(fixture.tuner, channel.copy(serviceType = 2), selection)
+            assertTrue(start.startedAudio)
+            fixture.feedAac(pce4)
+            fixture.applyAacPcmFormat(48_000)
+            verifyAacRouteRestart(fixture, start.generation)
+            val generation = fixture.pipeline.currentPlaybackGenerationForTest()
+            assertTrue(generation > start.generation)
+
+            val first = fixture.feedAac(noPce3)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+            assertNull(ReflectionHelpers.getField<MediaCodec?>(decoder, "codec"))
+            fixture.feedAac(noPce3)
+            assertContentEquals(asc3, ReflectionHelpers.getField<ByteArray?>(decoder, "configuredAacAsc"))
+            val codec = ReflectionHelpers.getField<MediaCodec>(decoder, "codec")
+            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            postCodecCallback(codec, 1, 0, null)
+            assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+            assertTrue(first.block === nativeCodec.lastInputBlock)
+            assertEquals(0, first.releases)
+            fixture.applyAacPcmFormat(48_000)
+            verifyAacOutputWithoutRepeatedPce(fixture, codec, generation, pce4, noPce3)
         }
     }
 
@@ -4149,7 +4185,6 @@ class PlaybackFilterAdmissionTest {
                         PlaybackPipeline.DualMonoPresentation.MAIN,
                         1.0f,
                         7L,
-                        false,
                         sink,
                     )
                 } else {
