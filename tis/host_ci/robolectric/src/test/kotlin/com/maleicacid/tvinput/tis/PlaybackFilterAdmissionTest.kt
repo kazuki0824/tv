@@ -1899,7 +1899,7 @@ class PlaybackFilterAdmissionTest {
         val dualAsc =
             checkNotNull(
                 NativeAribSiParser
-                    .probeAacConfiguration(dual48, null),
+                    .probeAacConfiguration(dual48, null, inferMissingPceLayout = true),
             ).audioSpecificConfig
         Fixture().use { fixture ->
             val original = fixture.audioSelection()
@@ -2029,6 +2029,53 @@ class PlaybackFilterAdmissionTest {
             verifyAacOutputWithoutRepeatedPce(fixture, routedCodec, routedGeneration, pce4, noPce4)
         }
     }
+
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
+    @Test
+    fun dualMonoKeepsPceAscWhenFramesOmitPce() {
+        registerAacDecoder()
+        // DSE参照を持つPCEと、同じ2 SCE・DSEを持つPCEなし対照。
+        val withPce = aacBytes("fff94c00035ffca0990004000200000000000010000020004ab8")
+        val withoutPce = aacBytes("fff94c00025ffc0000000010000020004ab8")
+        val asc = aacBytes("118004c80020001000")
+        assertEquals(true, NativeAribSiParser.adtsPresentation(withPce).dualMono)
+        assertEquals(true, NativeAribSiParser.matchesInheritedAacConfiguration(withoutPce, asc))
+        Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
+            val selection = fixture.audioSelection().copy(video = null)
+            val channel = ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel")
+            val start = fixture.pipeline.start(fixture.tuner, channel.copy(serviceType = 2), selection)
+            assertTrue(start.startedAudio)
+            fixture.feedAac(withPce)
+            assertContentEquals(asc, fixture.configuredAacAsc())
+            fixture.applyAacPcmFormat(48_000)
+            // 補助判定だけを失効させ、起動済みCodecで同じ配置を再照合させる。
+            AacProbeBoundary.failNext.set(true)
+            fixture.feedAac(withoutPce)
+            assertFalse(AacProbeBoundary.failNext.get())
+            fixture.feedAac(withoutPce)
+            assertEquals(start.generation, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertContentEquals(asc, fixture.configuredAacAsc())
+
+            verifyAacRouteRestart(fixture, start.generation)
+            val generation = fixture.pipeline.currentPlaybackGenerationForTest()
+            assertTrue(generation > start.generation)
+            fixture.verifyRestartedAac(asc, withPce, withoutPce, generation)
+            fixture.feedAac(withPce)
+            assertEquals(generation, fixture.pipeline.currentPlaybackGenerationForTest())
+            fixture.feedAac(withoutPce)
+            assertEquals(generation, fixture.pipeline.currentPlaybackGenerationForTest())
+            assertContentEquals(asc, fixture.configuredAacAsc())
+
+            val stereo = aacBytes("fff84c8002000433b42064000190000e")
+            fixture.feedAac(stereo)
+            val changed = fixture.pipeline.currentPlaybackGenerationForTest()
+            assertTrue(changed > generation)
+            fixture.verifyRestartedAac(aacBytes("1190"), withPce, stereo, changed)
+        }
+    }
+
+    private fun Fixture.configuredAacAsc(): ByteArray? =
+        ReflectionHelpers.getField(ReflectionHelpers.getField<Any>(pipeline, "audioDecoder"), "configuredAacAsc")
 
     @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
     @Test
@@ -2965,7 +3012,7 @@ class PlaybackFilterAdmissionTest {
     fun frontPairJniFailureKeepsPhysicalAudioAndPlayback() {
         registerAacDecoder()
         val dual = aacBytes("fff84c000220045e5700c8000016400038")
-        val asc = requireNotNull(NativeAribSiParser.probeAacConfiguration(dual, null)).audioSpecificConfig
+        val asc = requireNotNull(NativeAribSiParser.probeAacConfiguration(dual, null, inferMissingPceLayout = true)).audioSpecificConfig
         val frontPair = assertNotNull(NativeAribSiParser.adtsPresentation(dual).frontPair)
         assertEquals(frontPair, NativeAribSiParser.frontPairForDecoder(asc))
         verifyAacStartupWithPhysicalTrack(
@@ -3294,7 +3341,7 @@ class PlaybackFilterAdmissionTest {
         val signaledAsc = "118004c80000001000"
         for ((frame, asc) in listOf(dual to null, withPce to null, dual to signaledAsc)) {
             val fact = parser.adtsPresentation(frame)
-            val configured = requireNotNull(parser.probeAacConfiguration(frame, asc))
+            val configured = requireNotNull(parser.probeAacConfiguration(frame, asc, inferMissingPceLayout = true))
             assertEquals(true, fact.dualMono)
             assertEquals(2, configured.channelCount)
             assertEquals(requireNotNull(fact.frontPair), parser.frontPairForDecoder(configured.audioSpecificConfig))
@@ -3969,6 +4016,7 @@ class PlaybackFilterAdmissionTest {
                     NativeAribSiParser.probeAacConfiguration(
                         byteArrayOf(-1, -8, 76, 0, 2, 32, 4, 94, 87, 0, -56, 0, 0, 22, 64, 0, 56),
                         null,
+                        inferMissingPceLayout = true,
                     ),
                 )
             format.setByteBuffer("csd-0", ByteBuffer.wrap(asc.audioSpecificConfig))
@@ -4455,9 +4503,9 @@ class PlaybackFilterAdmissionTest {
         fun nativeProbeAacConfiguration(
             adts: ByteArray,
             asc: ByteArray?,
-            inferMultichannelLayout: Boolean,
+            inferMissingPceLayout: Boolean,
         ): AacConfigurationProbeDto {
-            if (inferMultichannelLayout && failNextInferredConfiguration.getAndSet(false)) {
+            if (inferMissingPceLayout && failNextInferredConfiguration.getAndSet(false)) {
                 throw NativeSiException("JNI_INPUT", "新ASC合成の障害注入")
             }
             return Shadow.directlyOn(
@@ -4466,7 +4514,7 @@ class PlaybackFilterAdmissionTest {
                 "nativeProbeAacConfiguration",
                 ReflectionHelpers.ClassParameter.from(ByteArray::class.java, adts),
                 ReflectionHelpers.ClassParameter.from(ByteArray::class.java, asc),
-                ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType, inferMultichannelLayout),
+                ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType, inferMissingPceLayout),
             )
         }
 

@@ -13,6 +13,18 @@ pub(super) struct ParsedAacFrame {
     pub(super) has_program_config: bool,
 }
 
+// ARIB STD-B32 第2部5.2.3(2) と MPEG-2 AAC の既定の音声要素順。
+const FIXED_AUDIO_ELEMENT_ORDER: [&[u8]; 8] = [
+    &[],
+    &[0],
+    &[1],
+    &[0, 1],
+    &[0, 1, 0],
+    &[0, 1, 1],
+    &[0, 1, 1, 3],
+    &[0, 1, 1, 1, 3],
+];
+
 /// 完全フレームで確認できたMPEG ID、profile、周波数、チャンネル構成の同一性。
 pub(super) fn adts_frame_header(frame: &[u8]) -> Option<(usize, u16)> {
     let h = frame.get(..7)?;
@@ -55,11 +67,20 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<ParsedAacFrame> {
     let mut first_elements = [(0, 0); 2];
     let mut next_element = first_elements.iter_mut();
     let mut channels = 0;
+    let fixed_order =
+        (configuration != 0).then(|| FIXED_AUDIO_ELEMENT_ORDER[configuration as usize]);
+    let mut audio_elements = 0;
     let mut pce = None;
     loop {
         let element = bits.read(3)? as usize;
         match element {
             0 | 1 | 3 => {
+                if fixed_order
+                    .is_some_and(|order| order.get(audio_elements) != Some(&(element as u8)))
+                {
+                    return None;
+                }
+                audio_elements += 1;
                 let instance = bits.read(4)?;
                 let tag = 1 << instance;
                 if let Some(slot) = next_element.next() {
@@ -125,6 +146,7 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<ParsedAacFrame> {
     bits.align()?;
     if bits.offset != bits.bytes.len() * 8
         || channels == 0
+        || fixed_order.is_some_and(|order| audio_elements != order.len())
         || pce.as_ref().is_some_and(|config| {
             config.element_tags != tags || usize::from(config.channel_count) != channels
         })
@@ -140,27 +162,16 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<ParsedAacFrame> {
     {
         return None;
     }
-    let cpe = tags[1].count_ones();
-    let lfe = tags[3].count_ones();
     if configuration == 0 {
         // ARIB STD-B32 第2部5.2.3(2) の送出順。
-        match (first_elements[0].0, sce, cpe, lfe) {
+        match (
+            first_elements[0].0,
+            sce,
+            tags[1].count_ones(),
+            tags[3].count_ones(),
+        ) {
             (0, 2, 0, 0) | (1, 1, 1, 0) | (1, 0, 2, 0) => {}
             _ => return None,
-        }
-    } else {
-        let expected = [
-            (0, 0, 0),
-            (1, 0, 0),
-            (0, 1, 0),
-            (1, 1, 0),
-            (2, 1, 0),
-            (1, 2, 0),
-            (1, 2, 1),
-            (1, 3, 1),
-        ];
-        if expected[configuration as usize] != (sce, cpe, lfe) {
-            return None;
         }
     }
     Some(ParsedAacFrame {
@@ -388,7 +399,27 @@ fn channel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec_signaling::{probe_adts_configuration, AacConfigurationProbe};
+    use crate::codec_signaling::{
+        frame_presentation_dto, probe_adts_configuration, AacConfigurationProbe,
+    };
+
+    #[test]
+    fn fixed_configuration_requires_audio_elements_in_transmission_order() {
+        // 同じ無音SCE・CPEを構成3で送出し、要素順だけを反転した対照。
+        let ordered = [
+            0xff, 0xf9, 0x4c, 0xc0, 2, 0x5f, 0xfc, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0x70,
+        ];
+        let reversed = [
+            0xff, 0xf9, 0x4c, 0xc0, 2, 0x5f, 0xfc, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x70,
+        ];
+        assert_eq!(frame_presentation_dto(&ordered).dual_mono, Some(false));
+        assert_eq!(frame_presentation_dto(&reversed).dual_mono, None);
+        assert!(matches!(
+            probe_adts_configuration(&reversed, None, false),
+            AacConfigurationProbe::Ready { .. }
+        ));
+    }
+
     #[test]
     fn complete_elements_determine_presentation_and_decoder_config() {
         let dual = &[
@@ -399,8 +430,12 @@ mod tests {
         ];
         assert_eq!(adts_presentation(dual), Some(AacPresentation::DualMono));
         assert_eq!(adts_presentation(stereo), Some(AacPresentation::Other));
+        assert!(matches!(
+            probe_adts_configuration(dual, None, false),
+            AacConfigurationProbe::Pending
+        ));
         let AacConfigurationProbe::Ready { configuration } =
-            probe_adts_configuration(dual, None, false)
+            probe_adts_configuration(dual, None, true)
         else {
             panic!("2 SCEの構成が必要");
         };
@@ -456,7 +491,7 @@ mod tests {
         for &(single, pair) in vectors {
             assert_eq!(adts_presentation(single), None);
             assert!(matches!(
-                probe_adts_configuration(single, None, false),
+                probe_adts_configuration(single, None, true),
                 AacConfigurationProbe::Pending
             ));
             assert_eq!(adts_presentation(pair), Some(AacPresentation::Other));
@@ -468,7 +503,7 @@ mod tests {
         other[3] = 0;
         assert_eq!(adts_presentation(&other), None);
         assert!(matches!(
-            probe_adts_configuration(&other, None, false),
+            probe_adts_configuration(&other, None, true),
             AacConfigurationProbe::Pending
         ));
     }

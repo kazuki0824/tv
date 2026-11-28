@@ -375,7 +375,7 @@ pub struct AacAdtsConfiguration {
 pub fn probe_adts_configuration(
     bytes: &[u8],
     supplied_asc: Option<&[u8]>,
-    infer_multichannel_layout: bool,
+    infer_missing_pce_layout: bool,
 ) -> AacConfigurationProbe {
     let mut cursor = 0usize;
     while let Some(header) = bytes.get(cursor..).and_then(|tail| tail.get(..7)) {
@@ -463,10 +463,10 @@ pub fn probe_adts_configuration(
                         first_elements,
                         has_program_config: false,
                         ..
-                    }) = aac_elements::parse_frame(&bytes[cursor..frame_end]).filter(|parsed| {
-                        parsed.presentation == AacPresentation::DualMono
-                            || (infer_multichannel_layout && configuration == 0)
-                    }) {
+                    }) = infer_missing_pce_layout
+                        .then(|| aac_elements::parse_frame(&bytes[cursor..frame_end]))
+                        .flatten()
+                    {
                         // STD-B32 5.2.3(2): 2 SCEは両方前方、CPE→SCE/CPEは前方と後方。
                         let (front, back) = if presentation == AacPresentation::DualMono {
                             (2, 0)

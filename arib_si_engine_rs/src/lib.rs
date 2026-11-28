@@ -1049,7 +1049,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _class: JClass<'_>,
     adts: JByteArray<'_>,
     asc: JByteArray<'_>,
-    infer_multichannel_layout: jboolean,
+    infer_missing_pce_layout: jboolean,
 ) -> jobject {
     use maleicacid_arib_si_engine_core::codec_signaling::{
         probe_adts_configuration, AacConfigurationProbe,
@@ -1062,7 +1062,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     };
     let result = match (input, config) {
         (Ok(input), Ok(config)) => {
-            probe_adts_configuration(&input, config.as_deref(), infer_multichannel_layout != 0)
+            probe_adts_configuration(&input, config.as_deref(), infer_missing_pce_layout != 0)
         }
         (Err(CodecInputFailure::Jni(error)), _) | (_, Err(CodecInputFailure::Jni(error))) => {
             return throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error))

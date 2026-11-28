@@ -2736,7 +2736,7 @@ class PlaybackPipeline(
                         frame,
                         stream.codecFacts,
                         stream.codec,
-                        inferMultichannelLayout = true,
+                        inferMissingPceLayout = true,
                     )
                 } catch (_: UnsupportedCodecFormat) {
                     null
@@ -2832,7 +2832,7 @@ class PlaybackPipeline(
                             bytes,
                             stream.codecFacts,
                             stream.codec,
-                            inferMultichannelLayout = inherited == null,
+                            inferMissingPceLayout = inherited == null,
                         )
                     if (detected != null || inherited == null) {
                         startupAacFormat = null
