@@ -8,7 +8,28 @@ internal object EpgSectionPolicy {
         profile: Int,
         tableId: Int,
         sectionNumber: Int,
-    ): Boolean = tableId == 0x4e && (profile == 0 || sectionNumber in 0..1)
+    ): Boolean = (tableId in 0x4e..0x4f && (profile == 0 || sectionNumber in 0..1)) || isSchedule(tableId)
+
+    @Suppress("MagicNumber")
+    fun isSchedule(tableId: Int): Boolean = tableId in 0x50..0x6f
+
+    @Suppress("MagicNumber")
+    fun isOtherTransport(tableId: Int): Boolean = tableId == PF_OTHER || tableId in 0x60..0x6f
+
+    const val PF_OTHER = 0x4f
+
+    @Suppress("MagicNumber")
+    fun isExtendedSchedule(tableId: Int): Boolean = tableId in 0x58..0x5f || tableId in 0x68..0x6f
+
+    @Suppress("MagicNumber")
+    fun coversOtherTransport(instances: List<EitInstanceState>): Boolean {
+        val safe =
+            instances.filter {
+                it.currentNextIndicator && it.complete && !it.inconsistent &&
+                    it.safeSections.containsAll(it.receivedSections)
+            }
+        return safe.any { it.tableId == PF_OTHER } && safe.any { it.tableId == 0x60 }
+    }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")

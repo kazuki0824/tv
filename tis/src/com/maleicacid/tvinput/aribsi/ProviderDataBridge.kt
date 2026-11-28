@@ -18,6 +18,7 @@ object ProviderDataBridge {
         val schemaVersion: Int,
         val truncated: Boolean,
         val diagnosticsDroppedCount: Int,
+        val mergedDescription: String? = null,
     ) : ProviderDataResult {
         val json: String get() = bytes.toString(Charsets.UTF_8)
 
@@ -27,7 +28,7 @@ object ProviderDataBridge {
             return bytes.contentEquals(other.bytes) &&
                 schemaVersion == other.schemaVersion &&
                 truncated == other.truncated &&
-                diagnosticsDroppedCount == other.diagnosticsDroppedCount
+                diagnosticsDroppedCount == other.diagnosticsDroppedCount && mergedDescription == other.mergedDescription
         }
 
         override fun hashCode(): Int {
@@ -35,7 +36,7 @@ object ProviderDataBridge {
             result = 31 * result + schemaVersion
             result = 31 * result + truncated.hashCode()
             result = 31 * result + diagnosticsDroppedCount
-            return result
+            return 31 * result + mergedDescription.hashCode()
         }
     }
 
@@ -49,6 +50,7 @@ object ProviderDataBridge {
         val serviceKey: ServiceKey,
         val eventId: Int,
         val key: String,
+        val tableId: Int = -1,
     )
 
     data class ChannelTune(
@@ -149,9 +151,25 @@ object ProviderDataBridge {
             eventId,
         )
 
-    fun buildProgramProviderData(program: ProgramRecord): ProviderDataResult {
+    fun buildProgramProviderData(
+        program: ProgramRecord,
+        existing: ByteArray? = null,
+        updateOnlyExtended: Boolean = false,
+        existingDescription: String? = null,
+    ): ProviderDataResult {
         val request =
-            runCatching { programRequest(program) }.getOrElse { error ->
+            runCatching {
+                val request = programRequest(program)
+                if (existing == null) {
+                    request
+                } else {
+                    JSONObject(request)
+                        .put("existing", JSONObject(existing.toString(Charsets.UTF_8)))
+                        .put("updateOnlyExtended", updateOnlyExtended)
+                        .put("existingDescription", existingDescription)
+                        .toString()
+                }
+            }.getOrElse { error ->
                 return Failure("PROGRAM_REQUEST_INVALID", error.message ?: "Invalid program request")
             }
         return parseResult(native.buildProgramProviderData(request))
@@ -229,7 +247,7 @@ object ProviderDataBridge {
         val invalidProgramKey =
             onid < 0 || tsid < 0 || sid < 0 || eventId < 0 || key.isBlank()
         if (invalidProgramKey) return null
-        return ProgramKeyResult(ServiceKey(onid, tsid, sid), eventId, key)
+        return ProgramKeyResult(ServiceKey(onid, tsid, sid), eventId, key, obj.optInt("tableId", -1))
     }
 
     fun extractProgramKey(providerData: ByteArray?): String? = extractProgramKeyResult(providerData)?.key
@@ -336,7 +354,8 @@ object ProviderDataBridge {
         val invalid = Failure("PROVIDER_DATA_RESULT_INVALID", "provider-data JNI result envelope is invalid")
         val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return invalid
         val fields = setOf("success", "bytes", "schemaVersion", "truncated", "diagnosticsDroppedCount", "errorCode", "errorMessage")
-        if (obj.keys().asSequence().toSet() != fields) return invalid
+        val description = if (obj.has("mergedDescription")) obj.opt("mergedDescription") as? String ?: return invalid else null
+        if (obj.keys().asSequence().toSet() - "mergedDescription" != fields) return invalid
         val success = obj.opt("success") as? Boolean ?: return invalid
         val json = obj.opt("bytes") as? String ?: return invalid
         val version = obj.opt("schemaVersion") as? Int ?: return invalid
@@ -351,11 +370,11 @@ object ProviderDataBridge {
             if (invalidSuccessEnvelope) {
                 invalid
             } else {
-                Success(json.toByteArray(Charsets.UTF_8), version, truncated, dropped)
+                Success(json.toByteArray(Charsets.UTF_8), version, truncated, dropped, description)
             }
         } else {
             val invalidFailureEnvelope =
-                json.isNotEmpty() || truncated || dropped != 0 || code.isBlank() || message.isBlank()
+                description != null || json.isNotEmpty() || truncated || dropped != 0 || code.isBlank() || message.isBlank()
             if (invalidFailureEnvelope) {
                 invalid
             } else {

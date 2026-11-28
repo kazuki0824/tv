@@ -118,6 +118,10 @@ jobs:
               object string {
                   const val invalid_setup_request = 1
                   const val boot_epg_sync_pending_status = 2
+                  const val daily_epg_time = 3
+                  const val daily_epg_targets = 4
+                  const val daily_epg_all_services = 5
+                  const val daily_epg_channels_unavailable = 6
               }
           }
           EOF
@@ -193,6 +197,10 @@ jobs:
               object string {
                   const val invalid_setup_request = 1
                   const val boot_epg_sync_pending_status = 2
+                  const val daily_epg_time = 3
+                  const val daily_epg_targets = 4
+                  const val daily_epg_all_services = 5
+                  const val daily_epg_channels_unavailable = 6
               }
           }
           EOF
@@ -259,7 +267,7 @@ jobs:
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
           # JUnitの成功だけでは試験数の減少を検知できない。試験追加/削除時に差分を確認して同じcommitで更新する。
-          grep --fixed-strings --line-regexp "OK (366 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings --line-regexp "OK (369 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest

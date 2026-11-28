@@ -10,6 +10,24 @@ import com.maleicacid.tvinput.common.LogTags
 
 object BootEpgSyncScheduler {
     const val JOB_ID = 0x4d455047
+    private const val PERIODIC_JOB_ID = 0x4d455048
+
+    fun scheduleDailyRefresh(context: Context) {
+        DailyEpgSchedule.arm(context, onlyIfAbsent = true)
+    }
+
+    fun enqueueDailyRefresh(context: Context) {
+        val scheduler = context.getSystemService(JobScheduler::class.java) ?: return
+        if (scheduler.getPendingJob(PERIODIC_JOB_ID) != null) return
+        val job =
+            JobInfo
+                .Builder(PERIODIC_JOB_ID, ComponentName(context, PeriodicEpgRefreshJobService::class.java))
+                .setMinimumLatency(0)
+                .build()
+        if (scheduler.schedule(job) != JobScheduler.RESULT_SUCCESS) {
+            Log.w(LogTags.TIS, "指定時刻のEPG更新ジョブを登録できません")
+        }
+    }
 
     enum class ScheduleResult { SCHEDULED, ALREADY_SCHEDULED, NO_PENDING, USER_LOCKED, UNAVAILABLE }
 

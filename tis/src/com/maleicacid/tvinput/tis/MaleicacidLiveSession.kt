@@ -552,6 +552,7 @@ class MaleicacidLiveSession(
                     "state=${decision.state} reasons=${decision.reasons}$sdtDelivery",
             )
             tunerController.updatePmtFilters(pmtPids, currentGeneration)
+            publishLiveProgramSnapshot()
             return
         }
         val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
@@ -582,6 +583,7 @@ class MaleicacidLiveSession(
                 }
                 throw failure
             }
+        publishLiveProgramSnapshot()
         if (casResult == null) {
             tracePlaybackGate("CAS_FILTER_UPDATE_UNAVAILABLE state=${decision.state} reasons=${decision.reasons}")
             return
@@ -603,10 +605,7 @@ class MaleicacidLiveSession(
                 notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING)
             }
         }
-        if (decision.registrationReady) {
-            publishLiveProgramsForCurrentService()
-            refreshCurrentProgramRatingState()
-        }
+        if (decision.registrationReady) refreshCurrentProgramRatingState()
         if (!decision.casDecisionReady) return
         val casLinkageReady = currentCasLinkageReady()
         // 接続待ちと実際のCAS失敗を区別する。未準備をCAS_UNKNOWNへ昇格させない。
@@ -1639,12 +1638,12 @@ class MaleicacidLiveSession(
                         ProgramVideoMetadataPolicy.eventContainsTime(event, key, now)
                     },
                 semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
-                malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
+                malformedCaDescriptorCountByServiceKey = transaction.malformedCaDescriptorCountByServiceKey,
                 ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
             )
         if (records.isEmpty()) return
         rememberVideoMetadata(records, info)
-        publishLivePrograms(applyLatestVideoMetadata(records), transaction)
+        publishLivePrograms(applyLatestVideoMetadata(records), transaction, onlyService = key)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -1673,16 +1672,22 @@ class MaleicacidLiveSession(
         }
     }
 
-    private fun publishLiveProgramsForCurrentService() {
+    private fun publishLiveProgramSnapshot() {
         val key = currentService ?: return
         val transaction = latestLiveSnapshot?.programs ?: return
+        val ratingProfiles =
+            transaction.events
+                .map { it.serviceKey }
+                .filter {
+                    it.originalNetworkId == key.originalNetworkId && it.transportStreamId == key.transportStreamId
+                }.associateWith { currentRatingProfile }
         val records =
             eventModelMapper.toProgramRecords(
                 profile = transaction.discoveryProfile,
-                events = transaction.events.filter { it.serviceKey == key },
+                events = transaction.events,
                 semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
-                malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
-                ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
+                malformedCaDescriptorCountByServiceKey = transaction.malformedCaDescriptorCountByServiceKey,
+                ratingProfileByServiceKey = ratingProfiles,
             )
         publishLivePrograms(applyLatestVideoMetadata(records), transaction)
     }
@@ -1702,19 +1707,19 @@ class MaleicacidLiveSession(
     private fun publishLivePrograms(
         records: List<ProgramRecord>,
         snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot,
+        onlyService: ServiceKey? = null,
     ) {
         if (programProviderDirty.getAndSet(false)) programPublishCoordinator.invalidateProviderState()
-        val key = currentService ?: return
-        if (!currentServicePolicy().registrationReady) return
+        if (onlyService != null && !currentServicePolicy().registrationReady) return
         val result =
             programPublishCoordinator.publishWithUpdates(
                 mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
                 allPrograms = records,
                 updateWindows =
                     snapshot.updateWindows
-                        .filter { it.serviceKey == key }
+                        .filter { onlyService == null || it.serviceKey == onlyService }
                         .map(ProgramPublishCoordinator::EpgUpdateWindow),
-                allowedServiceKeys = setOf(key),
+                allowedServiceKeys = onlyService?.let { setOf(it) },
             )
         if (result.failures.isNotEmpty()) {
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "live Programs 更新失敗=${result.failures}")

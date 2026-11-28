@@ -1,6 +1,7 @@
 package com.maleicacid.tvinput.aribsi
 
 import com.maleicacid.tvinput.aribsi.generated.SiCollectionSnapshotDto
+import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 
 class NativeParserCleanupException(
@@ -161,6 +162,15 @@ class NativeAribSiParser : AutoCloseable {
                 snapshot.eitInstances,
             )
         val publishedEvents = publication.events.toSet()
+        // PMT由来のSID別診断は一意に確認できた受信TSのサービスにだけ対応させる。
+        val actual = snapshot.transportSemanticFacts.singleOrNull { it.sdtActual }
+        val malformedCaCounts =
+            actual
+                ?.let { transport ->
+                    snapshot.malformedCaDescriptorCountByServiceId.entries.associate { (service, count) ->
+                        ServiceKey(transport.originalNetworkId, transport.transportStreamId, service.value) to count
+                    }
+                }.orEmpty()
         return ProgramPublishSnapshot(
             discoveryProfile = discoveryProfile,
             ingestSequence = snapshot.ingestSequence,
@@ -175,7 +185,7 @@ class NativeAribSiParser : AutoCloseable {
             semanticFactsByServiceKey = snapshot.serviceSemanticFacts.associateBy { it.serviceKey },
             descriptorDiagnostics = descriptorDiagnosticsFromEvents(snapshot.events),
             parserDiagnostics = snapshot.parserDiagnostics,
-            malformedCaDescriptorCountByServiceId = snapshot.malformedCaDescriptorCountByServiceId,
+            malformedCaDescriptorCountByServiceKey = malformedCaCounts,
         )
     }
 

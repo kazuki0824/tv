@@ -51,7 +51,10 @@ internal fun programSignatureForTest(programs: List<ProgramRecord>): List<String
             object : TvProviderWriter.ChannelStore {
                 // 既存store契約の型を維持し、試験だけの別型を作らない。
                 @Suppress("MaxLineLength")
-                override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> = Result.success(emptyMap())
+                override fun indexExistingChannelIds(
+                    keys: Set<ServiceKey>,
+                    satelliteServices: MutableSet<ServiceKey>?,
+                ): Result<Map<ServiceKey, Long>> = Result.success(emptyMap())
 
                 override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(null)
 

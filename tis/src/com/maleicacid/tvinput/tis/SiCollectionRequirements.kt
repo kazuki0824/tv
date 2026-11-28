@@ -114,6 +114,13 @@ internal class SiCollectionRequirements(
                     Key("EIT_PF_ACTUAL", key.originalNetworkId, key.transportStreamId, key.serviceId),
                     instances.isNotEmpty() && instances.all { EpgSectionPolicy.isComplete(profile, it) },
                 )
+                require(
+                    Key("EIT_SCHEDULE_ACTUAL", key.originalNetworkId, key.transportStreamId, key.serviceId),
+                    snapshot.eitInstances.any {
+                        it.serviceKey == key && it.tableId == 0x50 && it.currentNextIndicator &&
+                            it.complete && !it.inconsistent && it.safeSections.containsAll(it.receivedSections)
+                    },
+                )
             }
         }
         return Status(result)

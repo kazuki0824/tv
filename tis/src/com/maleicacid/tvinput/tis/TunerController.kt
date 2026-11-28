@@ -546,7 +546,7 @@ class TunerController(
             }
         return tuneResolvedChannel(
             resolved,
-            eitPfActualOnly = true,
+            eitPfActualOnly = false,
             afterOldSectionFiltersClosed = afterOldSectionFiltersClosed,
         )
     }
@@ -2329,7 +2329,7 @@ class TunerController(
             pid: TsPid,
             eitPfActualOnly: Boolean = false,
         ): List<SectionSettingsWithSectionBits> {
-            // 現在TSのp/f actualだけがライブ/初期登録に必要。other/scheduleはEPG同期と保守で収集する。
+            // 現在TSのp/f actualだけが初期登録に必要。other/scheduleはEPG同期と保守で収集する。
             // 第2 Filterや別queueを増やさず、既存Section Filterのtable_id maskのみを指定する。
             val tableIds: List<Int?> =
                 when {

@@ -16,13 +16,16 @@ import com.maleicacid.tvinput.aribsi.AribComponents
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribEventDescriptors
+import com.maleicacid.tvinput.aribsi.AribExtendedEventText
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.AribService
+import com.maleicacid.tvinput.aribsi.AribShortEventText
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.BroadcastSystem
 import com.maleicacid.tvinput.aribsi.EitInstanceState
+import com.maleicacid.tvinput.aribsi.EpgPublicationPolicy
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.NativeAribSiParser
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
@@ -827,21 +830,26 @@ class TisR51FixedPlanAcceptanceTest {
                 SiDiscoveryProfile.ISDB_T,
                 setOf(key, otherKey),
             )
-        val snapshot = collectionSnapshot(listOf(key, otherKey))
-        check(!requirements.evaluate(snapshot.copy(eitInstances = listOf(eitInstance(key)))).complete)
+        val pf = collectionSnapshot(listOf(key, otherKey))
+        val schedules = pf.eitInstances.map { it.copy(tableId = 0x50) }
+        val snapshot = pf.copy(eitInstances = pf.eitInstances + schedules)
+        val newVersion = schedules.last().copy(version = 2, complete = false, receivedSections = listOf(0), missingSections = listOf(1))
+        val finalStatus = requirements.evaluate(snapshot.copy(eitInstances = pf.eitInstances + schedules.first() + newVersion))
+        check(finalStatus.missing.single().component == "EIT_SCHEDULE_ACTUAL")
+        check(
+            ChannelScanController.finalizeSiCollectionOutcome(
+                ChannelScanController.SiCollectionOutcome.COMPLETE,
+                finalStatus.complete,
+                2,
+            ) == ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL,
+        )
+        check(!requirements.evaluate(snapshot.copy(eitInstances = schedules + eitInstance(key))).complete)
         check(requirements.evaluate(snapshot).complete)
-        check(
-            !requirements
-                .evaluate(
-                    snapshot.copy(eitInstances = listOf(eitInstance(key), eitInstance(otherKey).copy(inconsistent = true))),
-                ).complete,
-        )
-        check(
-            !requirements
-                .evaluate(
-                    snapshot.copy(eitInstances = listOf(eitInstance(key), eitInstance(otherKey).copy(currentNextIndicator = false))),
-                ).complete,
-        )
+        val other = eitInstance(otherKey)
+        for (invalid in listOf(other.copy(inconsistent = true), other.copy(currentNextIndicator = false))) {
+            val updated = snapshot.copy(eitInstances = schedules + eitInstance(key) + invalid)
+            check(!requirements.evaluate(updated).complete)
+        }
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -1920,6 +1928,85 @@ class TisR51FixedPlanAcceptanceTest {
         )
     }
 
+    @Test fun mergedScheduleDetailUsesBasicDisplayLanguage() {
+        val basic =
+            aribEvent().let {
+                it.copy(
+                    source = it.source.copy(version = 1),
+                    descriptors = it.descriptors.copy(shortEvents = listOf(AribShortEventText("jpn", "番組", ""))),
+                )
+            }
+        val detail =
+            basic.copy(
+                source = basic.source.copy(tableId = 0x58),
+                extendedDescription = "English",
+                descriptors =
+                    basic.descriptors.copy(
+                        shortEvents = emptyList(),
+                        extendedTexts = listOf(AribExtendedEventText("eng", "English")),
+                    ),
+            )
+        val instance = eitInstance(key)
+        val projected =
+            EpgPublicationPolicy()
+                .project(
+                    SiDiscoveryProfile.BS,
+                    3,
+                    listOf(detail, basic),
+                    listOf(instance, instance.copy(tableId = 0x58)),
+                ).events
+                .single()
+        check(projected.extendedDescription.isEmpty())
+        check(
+            projected.descriptors.extendedTexts
+                .single()
+                .text == "English",
+        )
+    }
+
+    @Test fun partialSchedulePublishesFutureEventsWithoutExtendingPfDeletionAuthority() {
+        val policy =
+            com.maleicacid.tvinput.aribsi
+                .EpgPublicationPolicy()
+        val pf = aribEvent().let { it.copy(source = it.source.copy(version = 1)) }
+        val duplicate = pf.copy(title = "schedule", source = pf.source.copy(tableId = 0x50))
+        val future = duplicate.copy(eventId = 2, startTimeMillis = pf.startTimeMillis + pf.durationMillis)
+        val instance = eitInstance(key)
+        val received = listOf(0)
+        val partial =
+            instance.copy(
+                tableId = 0x50,
+                complete = false,
+                receivedSections = received,
+                safeSections = received,
+            )
+        val events = listOf(future, duplicate, pf)
+        val published = policy.project(SiDiscoveryProfile.ISDB_T, 1, events, listOf(partial, instance))
+        check(published.events == listOf(pf, future))
+        check(published.windows.single().windowEndMillis == future.startTimeMillis)
+        val other = future.copy(source = future.source.copy(tableId = 0x60))
+        val otherOnly = policy.project(SiDiscoveryProfile.BS, 2, listOf(other), listOf(partial.copy(tableId = 0x60)))
+        check(otherOnly.events == listOf(other) && otherOnly.windows.isEmpty())
+        val otherPf = pf.copy(source = pf.source.copy(tableId = 0x4f))
+        val detailSource = duplicate.source.copy(tableId = 0x68)
+        val extended = duplicate.copy(title = "", extendedDescription = "詳細", source = detailSource)
+        val supplemental =
+            policy.project(
+                SiDiscoveryProfile.BS,
+                3,
+                listOf(extended, otherPf),
+                listOf(partial.copy(tableId = 0x68), partial.copy(tableId = 0x4f)),
+            )
+        check(supplemental.events.single() == otherPf.copy(extendedDescription = "詳細"))
+        check(supplemental.windows.isEmpty() && supplemental.authoritativeProgramKeysByService.isEmpty())
+        val otherTables = listOf(instance.copy(tableId = 0x4f), instance.copy(tableId = 0x60))
+        val coverage = com.maleicacid.tvinput.aribsi.EpgSectionPolicy
+        check(coverage.coversOtherTransport(otherTables))
+        check(!coverage.coversOtherTransport(otherTables.take(1)))
+        check(!coverage.coversOtherTransport(otherTables.map { it.copy(complete = false) }))
+        check(!coverage.coversOtherTransport(otherTables.map { it.copy(safeSections = emptyList()) }))
+    }
+
     @Test fun epgDeletionWindowContainsOnlyPreviousAndCurrentCompletedVersions() {
         val policy =
             com.maleicacid.tvinput.aribsi
@@ -2619,7 +2706,10 @@ class TisR51FixedPlanAcceptanceTest {
                     }.toMap(),
             )
 
-        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+        override fun indexExistingChannelIds(
+            keys: Set<ServiceKey>,
+            satelliteServices: MutableSet<ServiceKey>?,
+        ): Result<Map<ServiceKey, Long>> =
             Result.success(
                 buildMap {
                     channels.forEach { (id, values) ->

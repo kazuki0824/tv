@@ -111,6 +111,7 @@ impl Capture {
                     .ok_or("unknown filter")?;
                 self.payloads[index].extend_from_slice(&bytes);
                 self.output.extend_from_slice(&self.sections.to_be_bytes());
+                self.output.extend_from_slice(&self.packets.to_be_bytes());
                 self.output
                     .extend_from_slice(&pid.to_i32_for_aidl_boundary().to_be_bytes());
                 self.output

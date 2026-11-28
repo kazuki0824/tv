@@ -13,6 +13,7 @@ import android.media.tv.TvContract
 import android.media.tv.tuner.filter.Filter
 import android.media.tv.tuner.filter.SectionEvent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.test.core.app.ApplicationProvider
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
@@ -23,11 +24,14 @@ import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.SiStatus
+import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -35,14 +39,21 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowContentResolver
+import org.robolectric.shadows.ShadowLog
+import org.robolectric.shadows.ShadowSystemClock
 import org.robolectric.util.ReflectionHelpers
 import java.io.DataInputStream
 import java.io.File
+import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.security.MessageDigest
+import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 @RunWith(RobolectricTestRunner::class)
 @Config(
@@ -53,6 +64,8 @@ import java.util.concurrent.TimeUnit
         TunerFrontendLeaseTransitionTest.NativeFilter::class,
     ],
 )
+// 同じ録画のHAL入力・SI・Provider検証でFilterと入出力形式を共有する。
+@Suppress("LargeClass")
 class RealTsHalSiIntegrationTest {
     // Rust JNIの未対応PID/table通知値。製品の公開定数を試験のために復活させない。
     private val ignoredUnsupportedPidOrTable = 1
@@ -60,6 +73,7 @@ class RealTsHalSiIntegrationTest {
     private data class Section(
         val pid: Int,
         val bytes: ByteArray,
+        val packet: Int,
     )
 
     @Test(timeout = 60000)
@@ -70,15 +84,172 @@ class RealTsHalSiIntegrationTest {
         assertEquals(expected.getLong("size_bytes"), input.length())
         assertEquals(expected.getString("sha256"), sha256(input.readBytes()))
         val references = objects(expected.getJSONArray("section_reference"))
+        val scheduleReference = JSONObject().put("pid", TsPid.EIT.value).put("table_id", 0x50).put("section_count", 38)
+        val (schedule, sections) =
+            runHal(input, expected, references + scheduleReference).partition {
+                it.pid == TsPid.EIT.value && it.bytes.first().toInt() == 0x50
+            }
+        verifySections(sections, references)
+        verifyLiveProgramPublication(sections, schedule, expected)
+    }
+
+    // 通常setupで初回SDTを失った候補が、録画の次のSDTで登録まで進むことを検査する。
+    @Suppress("LongMethod", "NestedBlockDepth")
+    @Test(timeout = 60000)
+    fun initialScanRegistersTheSameCandidateAfterSdtRetransmission() {
+        val directory = File(checkNotNull(System.getProperty("realTs.fixtureDirectory")))
+        val expected = JSONObject(File(directory, "expected.json").readText())
+        val input = File(directory, expected.getString("fixture"))
+        assertEquals(expected.getString("sha256"), sha256(input.readBytes()))
+        val references = objects(expected.getJSONArray("section_reference"))
         val sections = runHal(input, expected, references)
         verifySections(sections, references)
-        verifyLiveProgramPublication(sections, expected)
+        val pat = sections.first { it.pid == 0 }
+        val sdt = sections.filter { it.pid == 17 }
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val provider = SetupScanProvider()
+        provider.attachInfo(context, ProviderInfo().apply { authority = TvContract.AUTHORITY })
+        ShadowContentResolver.registerProviderInternal(TvContract.AUTHORITY, provider)
+        val cancelled = AtomicBoolean()
+        TunerFrontendLeaseTransitionTest.NativeTuner.successfulTunes = true
+        AribSiEngine(context).use { engine ->
+            ChannelScanController(context, "real-ts-setup", engine, ScanPurpose.SETUP_SCAN, cancelled).use { scan ->
+                val tuner = ReflectionHelpers.getField<TunerController>(scan, "tunerController")
+                val owner = ReflectionHelpers.getField<ControllerSerialExecutor>(tuner, "sectionExecutor")
+                val ingest = ReflectionHelpers.getField<SectionIngestController>(scan, "ingestController")
+                val fence =
+                    ReflectionHelpers.getField<ChannelScanController.ScanGenerationFence>(scan, "scanGenerationFence")
+                val active = ReflectionHelpers.getField<AtomicLong>(fence, "activeGeneration")
+                val candidate = TunerFrontendLeaseTransitionTest.terrestrial()
+                val result = FutureTask { scan.startInitialScan(listOf(candidate)) }
+                val scanThread = Thread(result, "real-ts-setup")
+                ShadowLog.clear()
+                scanThread.start()
+                try {
+                    val waitUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                    while (active.get() < 0L && !result.isDone && System.nanoTime() < waitUntil) Thread.sleep(1)
+                    val generation = active.get()
+                    assertTrue("通常候補の収集が開始されていません", generation >= 0L)
+                    val firstArrival = SystemClock.elapsedRealtime()
+                    rejectFirstSdt(tuner, owner, pat, sdt.first())
+                    assertEquals(1, ingest.inputDeliveryLossCount)
+                    awaitIdle(owner)
+                    // setup登録に必要なPAT・NIT・PMTだけを配送する。EIT scheduleは通常setupでは購読しない。
+                    val registrationTables = sections.filter { it.pid == 0 || it.pid == 16 || it.bytes[0].toInt() == 2 }
+                    replay(tuner, owner, registrationTables.distinctBy { it.pid })
+                    val setupRequirements =
+                        SiCollectionRequirements(
+                            ChannelScanController.PublishMode.SETUP_SCAN,
+                            SiDiscoveryProfile.ISDB_T,
+                        )
+                    assertTrue(!setupRequirements.evaluate(engine.serviceRegistrationSnapshot()).complete)
+                    assertEquals(generation, active.get())
+
+                    // 固定TSの最初・次のSDT（packet 21894/44132）間のPCR補間をmsへ丸める。
+                    val remainingUntilRetransmission = 1_942L - (SystemClock.elapsedRealtime() - firstArrival)
+                    assertTrue(remainingUntilRetransmission >= 0L)
+                    ShadowSystemClock.advanceBy(Duration.ofMillis(remainingUntilRetransmission))
+                    deliver(tuner, sdt[1])
+                    awaitIdle(owner)
+                    assertEquals(1, ingest.inputDeliveryLossCount)
+                    assertTrue(setupRequirements.evaluate(engine.serviceRegistrationSnapshot()).complete)
+                    val completed = awaitSetupScanCompletion(result, firstArrival + 11_000L)
+                    assertEquals(ChannelScanController.ScanTerminalOutcome.COMPLETED, completed.terminal.outcome)
+                    assertEquals(1, completed.scanned)
+                    assertEquals(1, completed.successfulCandidates)
+                    assertTrue(provider.serviceIds.contains(1048))
+                    val collection =
+                        ShadowLog.getLogsForTag(LogTags.TIS).single { it.msg.startsWith("scan 候補の SI 収集結果 ") }.msg
+                    assertTrue(collection, "generation=$generation " in collection)
+                    assertTrue(collection, "candidateInputDeliveryLoss=1 " in collection)
+                    val elapsed = checkNotNull(Regex("elapsedMs=(\\d+)").find(collection)).groupValues[1].toLong()
+                    assertTrue(collection, elapsed in 2_000L until 12_000L)
+                } finally {
+                    cancelled.set(true)
+                    scanThread.join(5_000)
+                    check(!scanThread.isAlive)
+                }
+            }
+        }
+    }
+
+    private fun awaitSetupScanCompletion(
+        result: FutureTask<ChannelScanController.ScanResult>,
+        clockLimit: Long,
+    ): ChannelScanController.ScanResult {
+        // 収集側が再送を最初に観測した後の安定待ちも、試験時計で進める。
+        while (!result.isDone && SystemClock.elapsedRealtime() < clockLimit) {
+            Thread.sleep(200L)
+            ShadowSystemClock.advanceBy(Duration.ofMillis(200L))
+        }
+        return result.get(5, TimeUnit.SECONDS)
+    }
+
+    private fun rejectFirstSdt(
+        tuner: TunerController,
+        owner: ControllerSerialExecutor,
+        pat: Section,
+        sdt: Section,
+    ) {
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        owner.executeControl {
+            entered.countDown()
+            // 配送側がfinallyで解除するまではSectionを消費しない。
+            resume.await()
+        }
+        try {
+            check(entered.await(5, TimeUnit.SECONDS))
+            repeat(16) { deliver(tuner, pat) }
+            deliver(tuner, sdt)
+        } finally {
+            resume.countDown()
+        }
+    }
+
+    private class SetupScanProvider : ContentProvider() {
+        val serviceIds = mutableSetOf<Int>()
+
+        override fun onCreate() = true
+
+        override fun query(
+            uri: Uri,
+            projection: Array<out String>?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+            sortOrder: String?,
+        ): MatrixCursor = MatrixCursor(checkNotNull(projection))
+
+        override fun getType(uri: Uri): String? = null
+
+        override fun insert(
+            uri: Uri,
+            values: ContentValues?,
+        ): Uri {
+            assertEquals(TvContract.Channels.CONTENT_URI, uri)
+            check(serviceIds.add(checkNotNull(values?.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID))))
+            return TvContract.buildChannelUri(serviceIds.size.toLong())
+        }
+
+        override fun update(
+            uri: Uri,
+            values: ContentValues?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ) = 1
+
+        override fun delete(
+            uri: Uri,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ) = 1
     }
 
     // 実TS取得を既存試験と共用し、製品Sessionの公開入口からProvider境界まで検査する。
     @Suppress("LongMethod")
     private fun verifyLiveProgramPublication(
         sections: List<Section>,
+        schedule: List<Section>,
         expected: JSONObject,
     ) {
         val key =
@@ -97,19 +268,25 @@ class RealTsHalSiIntegrationTest {
             executor.callControl(15_000L) {
                 val engine = ReflectionHelpers.getField<AribSiEngine>(session, "aribSiEngine")
                 engine.setDiscoveryProfile(SiDiscoveryProfile.ISDB_T)
-                verifyIngest(engine, sections)
-                verifyServices(engine, expected)
-                verifyPrograms(engine, expected)
                 ReflectionHelpers.setField(session, "currentService", key)
                 ReflectionHelpers.setField(
                     session,
                     "currentRatingProfile",
                     AribRatingMapper.profileForDeliverySystem("ISDB_T"),
                 )
+                val ratedSections = verifyOtherServiceBeforePmt(engine, session, provider, sections, key)
+                verifyIngest(engine, ratedSections)
+                verifyServices(engine, expected)
+                verifyPrograms(engine, expected)
+                ingestSameTransportOverlap(engine, ratedSections, schedule, key)
+                val pmt = sections.first { it.pid == 258 }
+                val damagedPmt = withShortCaDescriptor(pmt.bytes)
+                val diagnosed = SectionIngestController(engine).onSection(TsPid(pmt.pid), damagedPmt)
+                assertEquals(SiStatus.OK, diagnosed.status)
                 val ready = engine.livePlaybackSnapshot()
                 assertTrue(ServicePolicyEvaluator.evaluateLive(ready, key).registrationReady)
                 ReflectionHelpers.setField(session, "latestLiveSnapshot", ready)
-                ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramsForCurrentService")
+                ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramSnapshot")
             }
             val present =
                 objects(expected.getJSONArray("selected_service_pf_events"))
@@ -117,10 +294,13 @@ class RealTsHalSiIntegrationTest {
             val start = present.getLong("start_time_unix_ms")
             val end = start + present.getLong("duration_ms")
             val fixtureNow = start + 1
-            assertTrue(provider.rows.all { it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 7L })
+            assertSameTransportPublication(provider.rows)
+            val sameTransport = provider.rows.first { it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 8L }
+            assertEquals(1, malformedCaCount(sameTransport))
             val current =
                 provider.rows.single {
-                    it.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) <= fixtureNow &&
+                    it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == 7L &&
+                        it.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) <= fixtureNow &&
                         fixtureNow < it.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
                 }
             assertEquals(present.getInt("event_id"), current.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID).toInt())
@@ -128,10 +308,312 @@ class RealTsHalSiIntegrationTest {
             assertEquals(end, current.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS).toLong())
             // 元section 0のshort_event_descriptorに含まれる固定の番組名。
             assertTrue(current.getAsString(TvContract.Programs.COLUMN_TITLE).orEmpty().contains("名古屋"))
+            val scheduleStart = start + TimeUnit.MINUTES.toMillis(390)
+            // 別局には前回取得したp/fの2枠だけが保存されている状態から始める。
+            seedPriorProgram(context, 101, "別局の現在番組", start, end)
+            seedPriorProgram(context, 102, "別局の次番組", end, scheduleStart)
+            assertEquals(null, queryCurrentProgram(context, scheduleStart + 1))
+            executor.callControl(15_000L) {
+                val engine = ReflectionHelpers.getField<AribSiEngine>(session, "aribSiEngine")
+                val ingest = SectionIngestController(engine)
+                for (nextDay in listOf(false, true)) {
+                    val schedule = withParentalRating(otherTransportSchedule(sections, nextDay), 0x10)
+                    assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, schedule).status)
+                }
+                ReflectionHelpers.setField(session, "latestLiveSnapshot", engine.livePlaybackSnapshot())
+                ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramSnapshot")
+            }
+            // 同一session・同一選局のまま照会時刻を進める。この間の再受信・再公開はない。
+            assertEquals(101 to "別局の現在番組", queryCurrentProgram(context, start + 1))
+            assertEquals(102 to "別局の次番組", queryCurrentProgram(context, scheduleStart - 1))
+            val title = current.getAsString(TvContract.Programs.COLUMN_TITLE)
+            assertEquals(0xba00 to title, queryCurrentProgram(context, scheduleStart + TimeUnit.MINUTES.toMillis(30)))
+            assertEquals(null, queryCurrentProgram(context, scheduleStart + present.getLong("duration_ms") + 1))
+            val tomorrow = provider.rows.single { it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == 0xba01 }
+            assertEquals(9L, tomorrow.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID).toLong())
+            assertEquals(0, malformedCaCount(tomorrow))
+            assertEquals("com.android.tv/ISDB/ISDB_19", tomorrow.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING))
+            val tomorrowStart = tomorrow.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS).toLong()
+            assertEquals(start + TimeUnit.DAYS.toMillis(1), tomorrowStart)
+            val titleColumn = TvContract.Programs.COLUMN_TITLE
+            assertEquals(current.getAsString(titleColumn), tomorrow.getAsString(titleColumn))
+            executor.callControl(15_000L) {
+                val reference = otherTransportSchedule(sections, nextDay = true)
+                verifyUntitledSupplementalPublication(session, provider.rows, reference, key)
+            }
+            val pf = otherTransportSchedule(sections, nextDay = false)
+            val satellite = sections.map { if (it.pid == TsPid.NIT.value) it.copy(bytes = asBsNit(it.bytes)) else it }
+            verifyBootPartialOther(context, key, provider.rows, pf) { engine -> verifyIngest(engine, satellite) }
         } finally {
             session.onRelease()
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
+    }
+
+    private fun verifyUntitledSupplementalPublication(
+        session: MaleicacidLiveSession,
+        rows: List<ContentValues>,
+        reference: ByteArray,
+        actualService: ServiceKey,
+    ) {
+        val engine = ReflectionHelpers.getField<AribSiEngine>(session, "aribSiEngine")
+        val ingest = SectionIngestController(engine)
+        val eventId = 0xba10
+        for (table in listOf(0x4f, 0x50)) {
+            val section = untitledSupplementalSection(reference, table, actualService, eventId)
+            assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, section).status)
+        }
+        val tomorrow = rows.single { it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == 0xba01 }
+        val tomorrowStart = tomorrow.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+        val expectedStart = tomorrowStart + TimeUnit.DAYS.toMillis(1)
+        val duration = tomorrow.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS) - tomorrowStart
+        ReflectionHelpers.setField(session, "latestLiveSnapshot", engine.livePlaybackSnapshot())
+        ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramSnapshot")
+        for (channel in listOf(7L, 9L)) {
+            val row =
+                rows.single {
+                    it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channel &&
+                        it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == eventId
+                }
+            assertEquals(expectedStart, row.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS).toLong())
+            val end = row.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+            assertEquals(expectedStart + duration, end.toLong())
+            assertNull(row.getAsString(TvContract.Programs.COLUMN_TITLE))
+            assertEquals("番組", row.getAsString(TvContract.Programs.COLUMN_SHORT_DESCRIPTION))
+        }
+    }
+
+    private fun untitledSupplementalSection(
+        reference: ByteArray,
+        table: Int,
+        actualService: ServiceKey,
+        eventId: Int,
+    ): ByteArray {
+        // 番組名0バイトと、独立した短形式本文「番組」を持つ1イベントのsectionを作る。
+        val shortEvent = byteArrayOf(0x4d, 9, 0x6a, 0x70, 0x6e, 0, 4, 0x48, 0x56, 0x41, 0x48)
+        val section = reference.copyOfRange(0, 26) + shortEvent + ByteArray(4)
+        ByteBuffer.wrap(section).apply {
+            put(0, table.toByte())
+            putShort(1, ((getShort(1).toInt() and 0xf000) or (section.size - 3)).toShort())
+            if (table == 0x4f) {
+                for (offset in listOf(6, 7, 12)) put(offset, 0)
+            } else {
+                putShort(3, actualService.serviceId.toShort())
+                putShort(8, actualService.transportStreamId.toShort())
+            }
+            put(13, table.toByte())
+            putShort(14, eventId.toShort())
+            putShort(16, (getShort(16) + 1).toShort())
+            putShort(24, ((getShort(24).toInt() and 0xf000) or shortEvent.size).toShort())
+        }
+        writeSectionCrc(section)
+        return section
+    }
+
+    // 正常PMTを受理した後、同じSIDの新versionに4バイト未満のCA記述子を1件加える。
+    private fun withShortCaDescriptor(section: ByteArray): ByteArray {
+        val original = ByteBuffer.wrap(section)
+        val sectionLength = original.getShort(1).toInt() and 0x0fff
+        val programInfoLength = original.getShort(10).toInt() and 0x0fff
+        val end = 12 + programInfoLength
+        val descriptor = byteArrayOf(0x09, 3, 0, 5, 0xe1.toByte())
+        val replacement = section.copyOfRange(0, end) + descriptor + section.copyOfRange(end, section.size)
+        ByteBuffer.wrap(replacement).apply {
+            putShort(1, ((original.getShort(1).toInt() and 0xf000) or (sectionLength + descriptor.size)).toShort())
+            val programInfoFlags = original.getShort(10).toInt() and 0xf000
+            putShort(10, (programInfoFlags or (programInfoLength + descriptor.size)).toShort())
+            val versionAndFlags = original.get(5).toInt() and 0xff
+            put(5, ((versionAndFlags and 0xc1) or ((versionAndFlags + 2) and 0x3e)).toByte())
+        }
+        writeSectionCrc(replacement)
+        return replacement
+    }
+
+    private fun malformedCaCount(row: ContentValues): Int {
+        val data = row.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
+        val diagnostics = JSONObject(String(data, Charsets.UTF_8)).getJSONObject("diagnostics")
+        return diagnostics.optInt("malformedCaDescriptorCount")
+    }
+
+    private fun verifyOtherServiceBeforePmt(
+        engine: AribSiEngine,
+        session: MaleicacidLiveSession,
+        provider: LiveProgramProvider,
+        sections: List<Section>,
+        selected: ServiceKey,
+    ): List<Section> {
+        val ingest = SectionIngestController(engine)
+        // TS所属を確定し、BのPMTを受理する。選局中AのPMT (257) は保留する。
+        for (pid in listOf(0, TsPid.NIT.value, 0x11, 258)) {
+            val section = sections.first { it.pid == pid }
+            assertEquals(SiStatus.OK, ingest.onSection(TsPid(pid), section.bytes).status)
+        }
+        val ratedSections =
+            sections.map { section ->
+                val data = ByteBuffer.wrap(section.bytes)
+                if (section.pid == TsPid.EIT.value && data.get(0).toInt() == 0x4e && data.getShort(3).toInt() == 1049) {
+                    val rated = if (data.get(6).toInt() == 0) withParentalRating(section.bytes) else section.bytes
+                    assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, rated).status)
+                    section.copy(bytes = rated)
+                } else {
+                    section
+                }
+            }
+        assertFalse(ServicePolicyEvaluator.evaluateLive(engine.livePlaybackSnapshot(), selected).registrationReady)
+        ReflectionHelpers.callInstanceMethod<Unit>(session, "refreshDynamicSiAndCasFilters")
+        val channel = TvContract.Programs.COLUMN_CHANNEL_ID
+        val event = TvContract.Programs.COLUMN_EVENT_ID
+        assertEquals(setOf(0xbdac, 0xbdb1), provider.rows.map { it.getAsInteger(event).toInt() }.toSet())
+        assertTrue(provider.rows.all { it.getAsLong(channel) == 8L })
+        val rated = provider.rows.single { it.getAsInteger(event) == 0xbdac }
+        assertEquals(null, rated.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING))
+        provider.rows.clear()
+        engine.reset(SiDiscoveryProfile.ISDB_T)
+        return ratedSections
+    }
+
+    private fun withParentalRating(
+        section: ByteArray,
+        raw: Byte = 12,
+    ): ByteArray {
+        val current = ByteBuffer.wrap(section)
+        val length = current.getShort(1).toInt() and 0x0fff
+        val descriptors = current.getShort(24).toInt() and 0x0fff
+        val end = 26 + descriptors
+        val rating = byteArrayOf(0x55, 4, 0x4a, 0x50, 0x4e, raw)
+        val rated = section.copyOfRange(0, end) + rating + section.copyOfRange(end, section.size)
+        ByteBuffer.wrap(rated).apply {
+            putShort(1, ((current.getShort(1).toInt() and 0xf000) or (length + rating.size)).toShort())
+            putShort(24, ((current.getShort(24).toInt() and 0xf000) or (descriptors + rating.size)).toShort())
+        }
+        writeSectionCrc(rated)
+        return rated
+    }
+
+    private fun ingestSameTransportOverlap(
+        engine: AribSiEngine,
+        sections: List<Section>,
+        schedule: List<Section>,
+        selected: ServiceKey,
+    ) {
+        val ingest = SectionIngestController(engine)
+        // 同じ実TSで、別局1049の次番組0xbdb1がp/f actualとschedule actualの両方にある。
+        val duplicate =
+            schedule
+                .first {
+                    val data = ByteBuffer.wrap(it.bytes)
+                    data.getShort(3).toInt() == 1049 && data.get(6).toInt() == 48
+                }.bytes
+        assertEquals(0xbdb1, ByteBuffer.wrap(duplicate).getShort(14).toInt() and 0xffff)
+        assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, duplicate).status)
+        val unregistered = ServiceKey(selected.originalNetworkId, selected.transportStreamId, 0x7777)
+        val otherPresentFollowing =
+            sections
+                .filter {
+                    it.pid == TsPid.EIT.value && it.bytes.first().toInt() == 0x4e &&
+                        ByteBuffer.wrap(it.bytes).getShort(3).toInt() == 1049
+                }.distinctBy { it.bytes[6] }
+        assertEquals(2, otherPresentFollowing.size)
+        for (section in otherPresentFollowing) {
+            val bytes = section.bytes.copyOf()
+            ByteBuffer.wrap(bytes).apply {
+                putShort(3, unregistered.serviceId.toShort())
+                putShort(14, (0xbc00 + bytes[6]).toShort())
+            }
+            writeSectionCrc(bytes)
+            assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, bytes).status)
+        }
+        val programs = engine.livePlaybackSnapshot().programs
+        assertEquals(
+            0x4e,
+            programs.events
+                .single { it.serviceKey.serviceId == 1049 && it.eventId == 0xbdb1 }
+                .source.tableId,
+        )
+        val unregisteredEvents =
+            programs.events
+                .filter { it.serviceKey == unregistered }
+                .map { it.eventId }
+                .toSet()
+        assertEquals(setOf(0xbc00, 0xbc01), unregisteredEvents)
+    }
+
+    private fun assertSameTransportPublication(rows: List<ContentValues>) {
+        val channelColumn = TvContract.Programs.COLUMN_CHANNEL_ID
+        val eventColumn = TvContract.Programs.COLUMN_EVENT_ID
+        assertEquals(setOf(7L, 8L), rows.map { it.getAsLong(channelColumn).toLong() }.toSet())
+        val otherService =
+            rows.filter { it.getAsLong(channelColumn) == 8L }.map { it.getAsInteger(eventColumn).toInt() }
+        assertEquals(1, otherService.count { it == 0xbdac })
+        assertEquals(1, otherService.count { it == 0xbdb1 })
+        assertTrue(rows.none { it.getAsInteger(eventColumn) in setOf(0xbc00, 0xbc01) })
+    }
+
+    private fun seedPriorProgram(
+        context: Context,
+        event: Int,
+        title: String,
+        start: Long,
+        end: Long,
+    ) {
+        val values =
+            ContentValues().apply {
+                put(TvContract.Programs.COLUMN_CHANNEL_ID, 9L)
+                put(TvContract.Programs.COLUMN_EVENT_ID, event)
+                put(TvContract.Programs.COLUMN_TITLE, title)
+                put(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS, start)
+                put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, end)
+            }
+        checkNotNull(context.contentResolver.insert(TvContract.Programs.CONTENT_URI, values))
+    }
+
+    // Live TVのProgramDataManagerと同じchannel/time/time URIで、Providerが返す現在枠を読む。
+    private fun queryCurrentProgram(
+        context: Context,
+        time: Long,
+    ): Pair<Int, String>? {
+        val uri = TvContract.buildProgramsUriForChannel(9L, time, time)
+        val columns = arrayOf(TvContract.Programs.COLUMN_EVENT_ID, TvContract.Programs.COLUMN_TITLE)
+        return checkNotNull(context.contentResolver.query(uri, columns, null, null, null)).use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val program = cursor.getInt(0) to cursor.getString(1)
+            check(!cursor.moveToNext()) { "非視聴局の現在枠が重複しています" }
+            program
+        }
+    }
+
+    // fixtureのp/f sectionを基に、別TSの当日夜と翌日の部分scheduleを生成する。放送実測のscheduleとは区別する。
+    private fun otherTransportSchedule(
+        sections: List<Section>,
+        nextDay: Boolean,
+    ): ByteArray {
+        val bytes =
+            sections
+                .first { section ->
+                    val data = ByteBuffer.wrap(section.bytes)
+                    section.pid == TsPid.EIT.value && data.get(0).toInt() == 0x4e &&
+                        data.getShort(3).toInt() == 1048 && data.get(6).toInt() == 0
+                }.bytes
+                .copyOf()
+        val data = ByteBuffer.wrap(bytes)
+        data.put(0, 0x60)
+        data.put(13, 0x60)
+        data.putShort(3, 1049)
+        data.putShort(8, 0x7777)
+        val sectionNumber: Byte = if (nextDay) 104 else 56
+        data.put(6, sectionNumber)
+        data.put(7, 104)
+        data.put(12, sectionNumber)
+        if (nextDay) {
+            data.putShort(14, 0xba01.toShort())
+            data.putShort(16, (data.getShort(16) + 1).toShort())
+        } else {
+            data.putShort(14, 0xba00.toShort())
+            data.put(18, 0x23)
+            data.put(19, 0x30)
+        }
+        writeSectionCrc(bytes)
+        return bytes
     }
 
     private class LiveProgramProvider(
@@ -149,11 +631,69 @@ class RealTsHalSiIntegrationTest {
             sortOrder: String?,
         ): MatrixCursor =
             MatrixCursor(checkNotNull(projection)).apply {
-                if (uri.pathSegments.first() == "channel") {
-                    addRow(arrayOf(7L, key.originalNetworkId, key.transportStreamId, key.serviceId))
-                    addRow(arrayOf(8L, key.originalNetworkId, key.transportStreamId, 1049))
+                if (uri == TvContract.buildChannelUri(7L)) {
+                    val data =
+                        JSONObject()
+                            .put("schema", "maleicacid.tv.channel")
+                            .put("schemaVersion", 1)
+                            .put(
+                                "serviceKey",
+                                JSONObject()
+                                    .put("originalNetworkId", key.originalNetworkId)
+                                    .put("transportStreamId", key.transportStreamId)
+                                    .put("serviceId", key.serviceId),
+                            ).put(
+                                "tune",
+                                JSONObject()
+                                    .put("deliverySystem", "ISDB_T")
+                                    .put("frequencyHz", 473142857)
+                                    .put("streamIdType", "NONE"),
+                            ).put("cas", JSONObject().put("requiresCas", false))
+                            .put("diagnostics", JSONObject())
+                    addRow(
+                        arrayOf(
+                            "lease-integration-test",
+                            key.originalNetworkId,
+                            key.transportStreamId,
+                            key.serviceId,
+                            "TBS1",
+                            "061",
+                            "1",
+                            data.toString().toByteArray(),
+                        ),
+                    )
+                } else if (uri.pathSegments.first() == "channel") {
+                    fun channel(
+                        id: Long,
+                        tsid: Int,
+                        sid: Int,
+                        type: String,
+                    ) {
+                        val values = listOf(id, key.originalNetworkId, tsid, sid)
+                        addRow(if (TvContract.Channels.COLUMN_TYPE in columnNames) values + type else values)
+                    }
+                    channel(7L, key.transportStreamId, key.serviceId, TvContract.Channels.TYPE_ISDB_T)
+                    channel(8L, key.transportStreamId, 1049, TvContract.Channels.TYPE_ISDB_T)
+                    channel(9L, 0x7777, 1049, TvContract.Channels.TYPE_ISDB_S)
+                } else if (uri.pathSegments.first() == "program") {
+                    addCurrentPrograms(uri, this)
                 }
             }
+
+        private fun addCurrentPrograms(
+            uri: Uri,
+            cursor: MatrixCursor,
+        ) {
+            val start = uri.getQueryParameter("start_time")?.toLong() ?: return
+            if (start != uri.getQueryParameter("end_time")?.toLong()) return
+            val channel = uri.getQueryParameter("channel")?.toLong()
+            rows
+                .filter { row ->
+                    row.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channel &&
+                        row.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) <= start &&
+                        start < row.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                }.forEach { row -> cursor.addRow(cursor.columnNames.map { row.get(it) }.toTypedArray()) }
+        }
 
         override fun getType(uri: Uri): String? = null
 
@@ -190,8 +730,16 @@ class RealTsHalSiIntegrationTest {
         val input = File(directory, expected.getString("fixture"))
         assertEquals(expected.getString("sha256"), sha256(input.readBytes()))
         val references = objects(expected.getJSONArray("section_reference"))
-        val sections = runHal(input, expected, references)
-        verifySections(sections, references)
+        // 同じ実TS内のCRC正常なscheduleを含め、製品HALの出力を放送順に受け取る。
+        val scheduleCounts = mapOf(0x50 to 38, 0x51 to 11, 0x58 to 40, 0x59 to 5)
+        val scheduleReferences =
+            scheduleCounts.map { (table, count) ->
+                JSONObject().put("pid", 18).put("table_id", table).put("section_count", count)
+            }
+        val sections = runHal(input, expected, references + scheduleReferences)
+        val (schedule, original) = sections.partition { it.pid == 18 && it.bytes.first().toInt() in scheduleCounts }
+        assertEquals(scheduleCounts, schedule.groupingBy { it.bytes.first().toInt() }.eachCount())
+        verifySections(original, references)
         AribSiEngine(ApplicationProvider.getApplicationContext()).use { engine ->
             val tuner = TunerFrontendLeaseTransitionTest.controller()
             val ingest = SectionIngestController(engine)
@@ -215,8 +763,7 @@ class RealTsHalSiIntegrationTest {
                 try {
                     check(entered.await(5, TimeUnit.SECONDS))
                     // EIT先行で既存16枠を占有し、他FilterのPAT/PMT/SDT/NITを含むburstを同時配送する。
-                    val eit = sections.first { it.pid == 18 }
-                    repeat(16) { deliver(tuner, eit) }
+                    schedule.take(16).forEach { deliver(tuner, it) }
                     assertEquals(16, owner.queue.size)
                     val groups = sections.groupBy { it.pid }
                     val callbacks = Executors.newFixedThreadPool(groups.size)
@@ -281,15 +828,121 @@ class RealTsHalSiIntegrationTest {
                     "sha256=${expected.getString(
                         "sha256",
                     )} sections=${sections.size} filters=${sections.map { it.pid }.distinct().size}\n" +
+                        "scheduleCounts=$scheduleCounts metrics=${owner.metricsSnapshot()}\n" +
                         "assertedExpectations: peakPending=16 rejected=${sections.size} filterOverflow=0\n" +
                         "observedHostWallTime: blockedAndDrainNs=$blockedNanos replayNs=$replayNanos\n" +
                         "assertedExpectations: beforeReplayComplete=false afterReplayComplete=true " +
                         "nextCandidateLoss=0 nextCandidateComplete=true\n" +
-                        "scope=syntheticOwnerSaturationAndManualReplay; realScanDeadlineAndAutonomousRecovery=notTested\n",
+                        "scope=syntheticOwnerSaturationAndManualReplay\n",
                 )
+                // ownerを停止せず放送順に連続配送し、p/f限定とschedule混在を同じ入力で比較する。
+                for ((label, stream) in listOf("pf" to original, "mixed" to sections)) {
+                    check(
+                        tuner
+                            .tuneForScan(TunerFrontendLeaseTransitionTest.terrestrial()) {
+                                engine.reset(SiDiscoveryProfile.ISDB_T)
+                                ingest.resetForTune()
+                            }.success,
+                    )
+                    deliver(tuner, pat)
+                    awaitIdle(owner)
+                    tuner.updatePmtFilters(engine.pmtPidsForSectionFilters(), tuner.currentGeneration())
+                    val window = tuner.beginSectionWindow()
+                    try {
+                        stream.forEach { deliver(tuner, it) }
+                        awaitIdle(owner)
+                    } finally {
+                        report.appendText("$label ${tuner.finishSectionMetricsWindow(window)}\n")
+                    }
+                    val completeBeforeReplay = collectionComplete(engine)
+                    report.appendText("$label loss=${ingest.transportLossSnapshot()} completeBeforeReplay=$completeBeforeReplay\n")
+                    replay(tuner, owner, stream)
+                    assertTrue(collectionComplete(engine))
+                    report.appendText("$label completeAfterReplay=true\n")
+                }
+                verifyLiveRetransmission(tuner, owner, engine, ingest, sections, schedule, report)
             } finally {
                 tuner.release()
             }
+        }
+    }
+
+    // 元TSのPCR間隔で再生し、受付を拒否した表が送出順そのままで回復することを検査する。
+    @Suppress("LongMethod", "LongParameterList", "MagicNumber")
+    private fun verifyLiveRetransmission(
+        tuner: TunerController,
+        owner: ControllerSerialExecutor,
+        engine: AribSiEngine,
+        ingest: SectionIngestController,
+        sections: List<Section>,
+        schedule: List<Section>,
+        report: File,
+    ) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val service = ServiceKey(32739, 32739, 1048)
+        val provider = LiveProgramProvider(service)
+        provider.attachInfo(context, ProviderInfo().apply { authority = TvContract.AUTHORITY })
+        ShadowContentResolver.registerProviderInternal(TvContract.AUTHORITY, provider)
+        val tune =
+            tuner.tuneForLive(TvContract.buildChannelUri(7L)) {
+                engine.reset(SiDiscoveryProfile.ISDB_T)
+                ingest.resetForTune()
+            }
+        check(tune.success) { tune.message }
+        // PMTの入口だけ先に作る。PATとPMT自体は最初の放送copyが拒否されるまで入力しない。
+        val pmts = sections.filter { it.bytes[0] == 0x02.toByte() }.map { TsPid(it.pid) }.toSet()
+        tuner.updatePmtFilters(pmts, tune.generation)
+        val required = setOf(0, 257, 17)
+        val resent = mutableMapOf<Int, Long>()
+        val rejected = mutableMapOf<Int, Pair<Section, Long>>()
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        owner.executeControl {
+            entered.countDown()
+            check(resume.await(5, TimeUnit.SECONDS))
+        }
+        val started = System.nanoTime()
+        try {
+            check(entered.await(1, TimeUnit.SECONDS))
+            schedule.take(16).forEach { deliver(tuner, it) }
+            assertEquals(16, owner.queue.size)
+            for (section in sections) {
+                // 27 MHzのPCR差220998172 ticks / 93699 packets。
+                TimeUnit.NANOSECONDS.sleep(started + section.packet * 87_355L - System.nanoTime())
+                val before = ingest.inputDeliveryLossCount
+                deliver(tuner, section)
+                if (section.pid !in required) continue
+                val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                if (ingest.inputDeliveryLossCount > before) {
+                    rejected.putIfAbsent(section.pid, section to elapsedMs)
+                } else if (rejected[section.pid]?.first?.bytes?.contentEquals(section.bytes) == true) {
+                    resent.putIfAbsent(section.pid, elapsedMs)
+                }
+                if (resume.count != 0L && rejected.keys == required) {
+                    resume.countDown()
+                    awaitIdle(owner)
+                    check(!collectionComplete(engine))
+                }
+            }
+        } finally {
+            resume.countDown()
+        }
+        awaitIdle(owner)
+        assertEquals(required, rejected.keys)
+        assertEquals(required, resent.keys)
+        assertEquals(tune.generation, tuner.currentGeneration())
+        assertTrue(collectionComplete(engine))
+        assertTrue(engine.livePlaybackSnapshot().services.any { it.serviceKey == service && it.name == "TBS1" })
+        report.appendText("live generation=${tune.generation} completeBeforeResend=false completeAfterResend=true\n")
+        for ((pid, observation) in rejected) {
+            val (section, rejectedMs) = observation
+            val acceptedMs = resent.getValue(pid)
+            assertTrue(acceptedMs > rejectedMs)
+            val version = (section.bytes[5].toInt() ushr 1) and 31
+            report.appendText(
+                "live generation=${tune.generation} pid=$pid version=$version section=${section.bytes[6]} " +
+                    "rejectedMs=$rejectedMs acceptedMs=$acceptedMs\n",
+            )
         }
     }
 
@@ -422,13 +1075,14 @@ class RealTsHalSiIntegrationTest {
             val sections =
                 (0 until count).map { sequence ->
                     assertEquals("配送順序", sequence, stream.readInt())
+                    val packet = stream.readInt()
                     val pid = stream.readInt()
                     checkNotNull(TsPid.fromOrNull(pid))
                     val length = stream.readInt()
                     check(length.toLong() in 3..SectionFilterPolicy.MAX_SECTION_EVENT_BYTES)
                     val bytes = ByteArray(length)
                     stream.readFully(bytes)
-                    Section(pid, bytes)
+                    Section(pid, bytes, packet)
                 }
             assertEquals("終了報告", -1, stream.readInt())
             assertEquals(expected.getInt("complete_packets"), stream.readInt())

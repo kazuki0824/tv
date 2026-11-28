@@ -3,6 +3,7 @@ package com.maleicacid.tvinput.tis
 enum class ScanPurpose {
     SETUP_SCAN,
     BOOT_EPG_SYNC,
+    PERIODIC_EPG_REFRESH,
     BACKGROUND_MAINTENANCE,
 }
 

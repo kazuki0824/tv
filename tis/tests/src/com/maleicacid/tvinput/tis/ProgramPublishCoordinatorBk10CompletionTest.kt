@@ -705,7 +705,10 @@ class ProgramPublishCoordinatorBk10CompletionTest {
                     }.toMap(),
             )
 
-        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+        override fun indexExistingChannelIds(
+            keys: Set<ServiceKey>,
+            satelliteServices: MutableSet<ServiceKey>?,
+        ): Result<Map<ServiceKey, Long>> =
             if (failChannelQuery) {
                 Result.failure(IllegalStateException("channel問い合わせ失敗"))
             } else {

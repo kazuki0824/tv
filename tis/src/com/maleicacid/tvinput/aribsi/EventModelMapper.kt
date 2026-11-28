@@ -1,6 +1,5 @@
 package com.maleicacid.tvinput.aribsi
 
-import com.maleicacid.tvinput.common.ServiceId16
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ProgramDescriptors
 import com.maleicacid.tvinput.db.ProgramRecord
@@ -13,14 +12,16 @@ class EventModelMapper {
         events: List<AribEvent>,
         profile: Int,
         semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts> = emptyMap(),
-        malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
+        malformedCaDescriptorCountByServiceKey: Map<ServiceKey, Int> = emptyMap(),
         ratingProfileByServiceKey: Map<ServiceKey, AribRatingMapper.BroadcastProfile> = emptyMap(),
     ): List<ProgramRecord> {
         return events.mapNotNull { event ->
             if (!EpgPublicationPolicy.isProgramRow(profile, event)) return@mapNotNull null
             val stableIdentity = event.stableIdentity ?: return@mapNotNull null
             val semanticFacts = semanticFactsByServiceKey[event.serviceKey]
-            if (semanticFactsByServiceKey.isNotEmpty() && semanticFacts == null) return@mapNotNull null
+            if (semanticFactsByServiceKey.isNotEmpty() && semanticFacts == null && event.source.tableId < EpgSectionPolicy.PF_OTHER) {
+                return@mapNotNull null
+            }
             val end =
                 runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }
                     .getOrElse { return@mapNotNull null }
@@ -74,7 +75,7 @@ class EventModelMapper {
                                 ratingProfileByServiceKey[event.serviceKey] ?: AribRatingMapper.BroadcastProfile.UNRESOLVED,
                             )
                         },
-                    malformedCaDescriptorCount = malformedCaDescriptorCountByServiceId[event.serviceKey.service] ?: 0,
+                    malformedCaDescriptorCount = malformedCaDescriptorCountByServiceKey[event.serviceKey] ?: 0,
                 )
             }
         }
@@ -104,7 +105,16 @@ class EventModelMapper {
                     null -> null
                 },
             )
-        return listOf(event.extendedDescription, extended)
+        val body =
+            if (d.extendedTexts.isEmpty()) {
+                event.extendedDescription
+            } else {
+                d.extendedTexts
+                    .firstOrNull { it.languageCode == selectedLanguage }
+                    ?.text
+                    .orEmpty()
+            }
+        return listOf(body, extended)
             .plus(uiSupplements)
             .filter { it.isNotBlank() }
             .joinToString("\n")

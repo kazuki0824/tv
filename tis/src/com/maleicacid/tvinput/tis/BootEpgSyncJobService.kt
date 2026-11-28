@@ -4,11 +4,14 @@ import android.app.job.JobParameters
 import android.app.job.JobService
 import android.os.Handler
 import android.os.Looper
+import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
-class BootEpgSyncJobService : JobService() {
+open class BootEpgSyncJobService : JobService() {
+    protected open val periodic: Boolean = false
+
     private data class ScanCompletion(
         val generation: Int,
         val needsReschedule: Boolean,
@@ -41,90 +44,168 @@ class BootEpgSyncJobService : JobService() {
     private val activeRun = AtomicReference<RunContext?>(null)
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("CyclomaticComplexMethod", "MaxLineLength", "ReturnCount")
     override fun onStartJob(params: JobParameters): Boolean {
+        if (!periodic && !DirectBootGuard.isPending(applicationContext)) return false
         val run = RunContext(params)
         activeRun.set(run)
-        when (DirectBootGuard.drainIfUserUnlocked(applicationContext, "JOB_START", System.currentTimeMillis())) {
-            DirectBootGuard.DrainDecision.SKIP_NO_PENDING -> {
-                activeRun.compareAndSet(run, null)
-                return false
-            }
+        if (periodic) prepareDailyRefresh(run) else prepareBootRefresh(run)
+        return true
+    }
 
-            DirectBootGuard.DrainDecision.SKIP_LOCKED,
-            DirectBootGuard.DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE,
-            -> {
-                return finish(run, needsReschedule = true)
-            }
+    private fun prepareBootRefresh(run: RunContext) {
+        ChannelScanManager.prepareEpgRefresh {
+            if (activeRun.get() !== run || run.stopped.get()) return@prepareEpgRefresh
+            val now = System.currentTimeMillis()
+            val decision = DirectBootGuard.drainIfUserUnlocked(applicationContext, "JOB_START", now)
+            mainHandler.post {
+                if (activeRun.get() !== run || run.stopped.get()) return@post
+                when (decision) {
+                    DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> {
+                        startRefresh(run)
+                    }
 
-            DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> {
-                // 続けて番組表の同期を開始する。
+                    DirectBootGuard.DrainDecision.SKIP_NO_PENDING -> {
+                        finish(run, needsReschedule = false)
+                    }
+
+                    DirectBootGuard.DrainDecision.SKIP_LOCKED,
+                    DirectBootGuard.DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE,
+                    -> {
+                        val locked = decision == DirectBootGuard.DrainDecision.SKIP_LOCKED
+                        val reason = if (locked) "USER_LOCKED" else "TV_PROVIDER_UNAVAILABLE"
+                        DirectBootGuard.markSkipped(applicationContext, reason)
+                        finish(run, needsReschedule = true)
+                    }
+                }
             }
         }
-        if (!ProgramUpgradeCleanup.ensure(applicationContext) { success ->
-                if (success) BootEpgSyncScheduler.scheduleIfEligible(applicationContext, "PROGRAM_CLEANUP_COMPLETED")
+    }
+
+    // periodic jobは次の定期枠で再試行し、Direct Bootの保留情報に触れない。
+    private fun prepareDailyRefresh(run: RunContext) {
+        ProgramUpgradeCleanup.ensure(applicationContext) { success ->
+            mainHandler.post {
+                if (activeRun.get() !== run || run.stopped.get()) return@post
+                if (success) {
+                    startRefresh(run)
+                } else {
+                    finish(run, needsReschedule = false)
+                }
+            }
+        }
+    }
+
+    private fun startRefresh(run: RunContext) {
+        if (!periodic &&
+            !ProgramUpgradeCleanup.ensure(applicationContext) { success ->
+                if (success) {
+                    BootEpgSyncScheduler.scheduleIfEligible(applicationContext, "PROGRAM_CLEANUP_COMPLETED")
+                }
             }
         ) {
-            DirectBootGuard.deferPending(applicationContext, "PROGRAM_UPGRADE_CLEANUP_PENDING")
+            deferBootWork("PROGRAM_UPGRADE_CLEANUP_PENDING")
             return finish(run, needsReschedule = true)
         }
         val inputId = TisInputIdResolver.resolveOwnInputId(applicationContext)
         if (inputId == null) {
-            DirectBootGuard.deferPending(applicationContext, "TV_INPUT_ID_UNRESOLVED")
+            deferBootWork("TV_INPUT_ID_UNRESOLVED")
             return finish(run, needsReschedule = true)
         }
-        val existingChannels = TvProviderWriter(applicationContext, inputId).existingChannelsResult()
+        readTargets(run, inputId, TvProviderWriter(applicationContext, inputId)::existingChannelsResult)
+    }
+
+    private fun readTargets(
+        run: RunContext,
+        inputId: String,
+        readChannels: () -> Result<List<ChannelRecord>>,
+    ) {
+        ChannelScanManager.prepareEpgRefresh {
+            if (activeRun.get() !== run || run.stopped.get()) return@prepareEpgRefresh
+            val channels = readChannels()
+            mainHandler.post {
+                if (activeRun.get() === run && !run.stopped.get()) startScan(run, inputId, channels)
+            }
+        }
+    }
+
+    @Suppress("ReturnCount")
+    private fun startScan(
+        run: RunContext,
+        inputId: String,
+        existingChannels: Result<List<ChannelRecord>>,
+    ) {
         if (existingChannels.isFailure) {
-            DirectBootGuard.deferPending(applicationContext, "TV_PROVIDER_CHANNEL_QUERY_FAILED")
-            return finish(run, needsReschedule = true)
+            deferBootWork("TV_PROVIDER_CHANNEL_QUERY_FAILED")
+            finish(run, needsReschedule = true)
+            return
         }
-        val targetChannels = existingChannels.getOrThrow()
+        val channels = existingChannels.getOrThrow()
+        val targetChannels = targets(channels)
         if (targetChannels.isEmpty()) {
-            DirectBootGuard.clearPending(applicationContext)
-            activeRun.compareAndSet(run, null)
-            return false
+            if (!periodic) DirectBootGuard.clearPending(applicationContext)
+            finish(run, needsReschedule = false)
+            return
         }
         val generation =
-            ChannelScanManager.startBootEpgSyncIfIdle(applicationContext, inputId, targetChannels) { completedGeneration, needsReschedule ->
-                if (activeRun.get() !== run || run.stopped.get()) return@startBootEpgSyncIfIdle
+            ChannelScanManager.startEpgRefreshIfIdle(
+                applicationContext,
+                inputId,
+                targetChannels,
+                periodic,
+            ) { completedGeneration, needsReschedule ->
+                if (activeRun.get() !== run || run.stopped.get()) return@startEpgRefreshIfIdle
                 val shouldFinish = run.acceptCompletion(ScanCompletion(completedGeneration, needsReschedule))
                 if (shouldFinish) finish(run, needsReschedule)
-            } ?: return finish(run, needsReschedule = true)
+            }
+        if (generation == null) {
+            finish(run, needsReschedule = true)
+            return
+        }
         val earlyCompletion = run.bindGeneration(generation)
         earlyCompletion?.takeIf { it.generation == generation }?.let { completion ->
             if (run.scanGeneration.compareAndSet(generation, 0)) finish(run, completion.needsReschedule)
         }
-        return true
     }
+
+    protected open fun targets(channels: List<ChannelRecord>): List<ChannelRecord> = channels
 
     override fun onStopJob(params: JobParameters): Boolean {
         val run = activeRun.get()
-        if (run == null || run.params !== params) return true
+        val retry = !periodic && DirectBootGuard.isPending(applicationContext)
+        if (run == null || run.params.jobId != params.jobId) return retry
         run.stopped.set(true)
         val generation = run.scanGeneration.getAndSet(0)
         if (generation != 0) {
-            ChannelScanManager.cancelIfCurrent(generation, ScanPurpose.BOOT_EPG_SYNC)
+            val purpose = if (periodic) ScanPurpose.PERIODIC_EPG_REFRESH else ScanPurpose.BOOT_EPG_SYNC
+            ChannelScanManager.cancelIfCurrent(generation, purpose)
         }
-        DirectBootGuard.deferPending(applicationContext, "BOOT_EPG_JOB_STOPPED")
+        if (retry) deferBootWork("BOOT_EPG_JOB_STOPPED")
         run.completionDelivered.compareAndSet(false, true)
         activeRun.compareAndSet(run, null)
-        return true
+        return retry
+    }
+
+    private fun deferBootWork(reason: String) {
+        if (!periodic) DirectBootGuard.deferPending(applicationContext, reason)
     }
 
     private fun finish(
         run: RunContext,
         needsReschedule: Boolean,
-    ): Boolean {
+    ) {
         if (run.completionDelivered.compareAndSet(false, true)) {
             mainHandler.post {
                 if (activeRun.get() === run && !run.stopped.get()) {
                     activeRun.compareAndSet(run, null)
-                    jobFinished(run.params, needsReschedule)
+                    jobFinished(run.params, !periodic && needsReschedule)
                 }
             }
         }
-        return true
     }
+}
+
+class PeriodicEpgRefreshJobService : BootEpgSyncJobService() {
+    override val periodic: Boolean = true
+
+    override fun targets(channels: List<ChannelRecord>) = DailyEpgSchedule.targets(applicationContext, channels)
 }

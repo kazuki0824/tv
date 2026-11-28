@@ -10,6 +10,8 @@ import android.net.Uri
 import android.os.IBinder
 import android.os.Parcel
 import android.util.Log
+import com.maleicacid.tvinput.aribsi.AribRatingMapper
+import com.maleicacid.tvinput.aribsi.EpgSectionPolicy
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
@@ -63,6 +65,7 @@ class TvProviderWriter private constructor(
         val startTimeMillis: Long,
         val endTimeMillis: Long,
         val values: ContentValues? = null,
+        val sourceTableId: Int = -1,
     )
 
     data class ProgramUpsertRequest(
@@ -75,7 +78,10 @@ class TvProviderWriter private constructor(
     )
 
     interface ChannelStore {
-        fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>>
+        fun indexExistingChannelIds(
+            keys: Set<ServiceKey>,
+            satelliteServices: MutableSet<ServiceKey>? = null,
+        ): Result<Map<ServiceKey, Long>>
 
         fun insertChannel(values: ContentValues): Result<Long?>
 
@@ -316,8 +322,9 @@ class TvProviderWriter private constructor(
         val programsByService = programs.groupBy { it.serviceKey }
         val windowsByService = windows.groupBy { it.serviceKey }
         val targetKeys = programsByService.keys + windowsByService.keys + verifiedEmptyServiceKeys
+        val satelliteServices = if (programs.any { it.hasOtherTransportRating() }) mutableSetOf<ServiceKey>() else null
         val channelIds =
-            channelStore.indexExistingChannelIds(targetKeys).getOrElse { error ->
+            channelStore.indexExistingChannelIds(targetKeys, satelliteServices).getOrElse { error ->
                 return PreparedProgramPublication(
                     emptyList(),
                     targetKeys.map { key -> Diagnostic(key, "program-channel-query", error.message.orEmpty()) },
@@ -331,7 +338,8 @@ class TvProviderWriter private constructor(
                     return@mapNotNull null
                 }
                 val rows =
-                    programsByService[key].orEmpty().mapNotNull row@{ program ->
+                    programsByService[key].orEmpty().mapNotNull row@{ source ->
+                        val program = source.withRegisteredRatingProfile(satelliteServices)
                         validate(program)?.let {
                             failures += it
                             return@row null
@@ -369,6 +377,25 @@ class TvProviderWriter private constructor(
         return PreparedProgramPublication(services, failures)
     }
 
+    private fun ProgramRecord.hasOtherTransportRating(): Boolean =
+        EpgSectionPolicy.isOtherTransport(source.tableId) && descriptors.parentalRatings.isNotEmpty()
+
+    private fun ProgramRecord.withRegisteredRatingProfile(satelliteServices: Set<ServiceKey>?): ProgramRecord {
+        if (satelliteServices == null || !hasOtherTransportRating()) return this
+        val ratings =
+            if (serviceKey in satelliteServices) {
+                descriptors.parentalRatings.mapNotNull {
+                    AribRatingMapper.toTvContentRatingString(
+                        it,
+                        AribRatingMapper.BroadcastProfile.BS_CS,
+                    )
+                }
+            } else {
+                emptyList()
+            }
+        return copy(contentRatings = ratings)
+    }
+
     fun upsertProgramsForWindows(
         programs: List<ProgramRecord>,
         windows: List<ProgramPublishCoordinator.EpgUpdateWindow>,
@@ -395,6 +422,8 @@ class TvProviderWriter private constructor(
             val channelId = service.channelId
             val failureCountBeforeService = failures.size
             val preparationFailed = publication.failures.any { it.serviceKey == serviceKey }
+            var allProgramsStored = true
+            val supplementalKeys = mutableSetOf<String>()
             val serviceWindows = service.windows
             if (!preparationFailed && service.programs.isEmpty() && serviceWindows.isEmpty()) {
                 val existingPrograms = channelStore.indexExistingProgramsForService(channelId)
@@ -437,6 +466,21 @@ class TvProviderWriter private constructor(
                     val values: ContentValues,
                     val existingId: Long?,
                 )
+                val incomingPf = sortedPrograms.map { it.first }.filter { it.source.tableId in EIT_PF_ACTUAL..EpgSectionPolicy.PF_OTHER }
+                val incomingPfByKey = incomingPf.associateBy(::programIdentity)
+                val pfRows =
+                    existingPrograms.flatMap { (key, entries) ->
+                        entries.filter { entry ->
+                            entry.sourceTableId in EIT_PF_ACTUAL..EpgSectionPolicy.PF_OTHER &&
+                                incomingPfByKey[key]?.let { program ->
+                                    program.source.tableId <= entry.sourceTableId && program.startTimeMillis == entry.startTimeMillis
+                                } != true &&
+                                serviceWindows.none { window ->
+                                    window.deletionAuthoritative && key !in window.validProgramKeys &&
+                                        entry.startTimeMillis < window.windowEndMs && window.windowStartMs < entry.endTimeMillis
+                                }
+                        }
+                    }
                 val publicationKeys = linkedSetOf<String>()
                 val writes =
                     sortedPrograms.mapNotNull { (program, values) ->
@@ -458,11 +502,61 @@ class TvProviderWriter private constructor(
                                 .filter { entry ->
                                     entry.endTimeMillis > guardStart && entry.startTimeMillis < guardEnd
                                 }.maxByOrNull { it.programId }
-                        // Provider通知後も実際の保存値が同じなら再書込みせず、自己通知の連鎖を止める。
-                        if (skipUnchangedRows && existingEntry?.values?.let { programValuesMatch(values, it) } == true) {
+                        val sameOccurrence = existingEntry?.takeIf { it.startTimeMillis == program.startTimeMillis }
+                        val blocked =
+                            pfRows.any {
+                                it.sourceTableId < program.source.tableId &&
+                                    (
+                                        it.programId == existingEntry?.programId ||
+                                            (it.startTimeMillis < programEnd && program.startTimeMillis < it.endTimeMillis)
+                                    )
+                            } ||
+                                incomingPf.any {
+                                    it.source.tableId < program.source.tableId && it.startTimeMillis < programEnd &&
+                                        program.startTimeMillis < checkNotNull(checkedProgramEndTimeMillis(it))
+                                }
+                        val hasExtended = program.descriptors.extendedTexts.isNotEmpty() || program.descriptors.extendedItems.isNotEmpty()
+                        val detailOnly = blocked || EpgSectionPolicy.isExtendedSchedule(program.source.tableId)
+                        if (blocked) allProgramsStored = false
+                        val missingDetailTarget = sameOccurrence == null && (blocked || existingEntry != null)
+                        if (detailOnly && (!hasExtended || missingDetailTarget)) {
+                            allProgramsStored = false
                             return@mapNotNull null
                         }
-                        PendingWrite(values, existingEntry?.programId)
+                        if (!blocked && program.source.tableId != EIT_PF_ACTUAL) supplementalKeys += key
+                        val oldValues = sameOccurrence?.values
+                        val oldData = oldValues?.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
+                        val writeValues =
+                            if (oldData != null && (detailOnly || !hasExtended)) {
+                                val merged =
+                                    ProviderDataBridge.buildProgramProviderData(
+                                        program,
+                                        oldData,
+                                        detailOnly,
+                                        oldValues.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION),
+                                    )
+                                if (merged !is ProviderDataBridge.Success) {
+                                    failures += Diagnostic(serviceKey, "program-provider-data", merged.toString())
+                                    return@mapNotNull null
+                                }
+                                (if (detailOnly) ContentValues() else ContentValues(values)).apply {
+                                    put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, merged.bytes)
+                                    merged.mergedDescription?.let { description ->
+                                        if (description.isBlank()) {
+                                            putNull(TvContract.Programs.COLUMN_LONG_DESCRIPTION)
+                                        } else {
+                                            put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, description)
+                                        }
+                                    }
+                                }
+                            } else {
+                                values
+                            }
+                        // Provider通知後も実際の保存値が同じなら再書込みせず、自己通知の連鎖を止める。
+                        if (skipUnchangedRows && existingEntry?.values?.let { programValuesMatch(writeValues, it) } == true) {
+                            return@mapNotNull null
+                        }
+                        PendingWrite(writeValues, existingEntry?.programId)
                     }
                 if (failures.size == failureCountBeforeService) {
                     val batchStartedAtNs = System.nanoTime()
@@ -529,7 +623,7 @@ class TvProviderWriter private constructor(
                     val deleteResult =
                         channelStore.deleteObsoletePrograms(
                             channelId,
-                            window.validProgramKeys,
+                            window.validProgramKeys + supplementalKeys,
                             window.windowStartMs,
                             window.windowEndMs,
                         )
@@ -540,7 +634,7 @@ class TvProviderWriter private constructor(
                     }
                 }
             }
-            if (!preparationFailed && failures.size == failureCountBeforeService) {
+            if (allProgramsStored && !preparationFailed && failures.size == failureCountBeforeService) {
                 succeededServiceKeys += serviceKey
             }
             val serviceElapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - serviceStartedAtNs)
@@ -823,6 +917,7 @@ class TvProviderWriter private constructor(
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
     @Suppress("TooManyFunctions")
     companion object {
+        private const val EIT_PF_ACTUAL = 0x4e
         private const val PROGRAM_PROVIDER_BATCH_SIZE = 64
         private const val SLOW_PROVIDER_OPERATION_MS = 5_000L
 
@@ -1041,7 +1136,10 @@ class TvProviderWriter private constructor(
             const val PROGRAM_END_TIME_COLUMN_INDEX = 3
         }
 
-        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+        override fun indexExistingChannelIds(
+            keys: Set<ServiceKey>,
+            satelliteServices: MutableSet<ServiceKey>?,
+        ): Result<Map<ServiceKey, Long>> =
             runCatching {
                 if (keys.isEmpty()) return@runCatching emptyMap()
                 val projection =
@@ -1050,7 +1148,7 @@ class TvProviderWriter private constructor(
                         TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID,
                         TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID,
                         TvContract.Channels.COLUMN_SERVICE_ID,
-                    )
+                    ).let { if (satelliteServices == null) it else it + TvContract.Channels.COLUMN_TYPE }
                 val wanted = keys.toHashSet()
                 val out = linkedMapOf<ServiceKey, Long>()
                 val cursor =
@@ -1069,7 +1167,15 @@ class TvProviderWriter private constructor(
                                 rows.getInt(TRANSPORT_STREAM_ID_COLUMN_INDEX),
                                 rows.getInt(SERVICE_ID_COLUMN_INDEX),
                             )
-                        if (key in wanted) out[key] = rows.getLong(CHANNEL_ID_COLUMN_INDEX)
+                        if (key in wanted) {
+                            out[key] = rows.getLong(CHANNEL_ID_COLUMN_INDEX)
+                            if (satelliteServices != null &&
+                                rows.getString(rows.getColumnIndexOrThrow(TvContract.Channels.COLUMN_TYPE)) ==
+                                TvContract.Channels.TYPE_ISDB_S
+                            ) {
+                                satelliteServices.add(key)
+                            }
+                        }
                     }
                 }
                 out
@@ -1261,7 +1367,8 @@ class TvProviderWriter private constructor(
                     while (rows.moveToNext()) {
                         val key =
                             if (rows.getString(ownerIndex) == context.packageName) {
-                                parseProgramKey(providerDataBytes(rows, PROGRAM_PROVIDER_DATA_COLUMN_INDEX))
+                                val data = providerDataBytes(rows, PROGRAM_PROVIDER_DATA_COLUMN_INDEX)
+                                ProviderDataBridge.extractProgramKeyResult(data)
                             } else {
                                 null
                             }
@@ -1273,9 +1380,10 @@ class TvProviderWriter private constructor(
                             "TvProvider program index rowの時刻が未定義です " +
                                 "id=${rows.getLong(PROGRAM_ID_COLUMN_INDEX)}"
                         }
-                        out.getOrPut(key) { mutableListOf() } +=
+                        out.getOrPut(key.key) { mutableListOf() } +=
                             ExistingProgramIndexEntry(
                                 programId = rows.getLong(PROGRAM_ID_COLUMN_INDEX),
+                                sourceTableId = key.tableId,
                                 startTimeMillis = rows.getLong(PROGRAM_START_TIME_COLUMN_INDEX),
                                 endTimeMillis = rows.getLong(PROGRAM_END_TIME_COLUMN_INDEX),
                                 values =

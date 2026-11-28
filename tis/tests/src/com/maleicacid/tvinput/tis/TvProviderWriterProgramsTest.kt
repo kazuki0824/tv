@@ -5,6 +5,7 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
 import android.media.tv.TvContract
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.maleicacid.tvinput.aribsi.AribComponentEntry
 import com.maleicacid.tvinput.aribsi.AribComponents
 import com.maleicacid.tvinput.aribsi.AribContentGenre
@@ -28,9 +29,12 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramDescriptors
 import com.maleicacid.tvinput.db.ProgramRecord
 import org.junit.Test
+import org.junit.runner.RunWith
+import java.time.Instant
 
 // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
 @Suppress("LargeClass", "TooManyFunctions")
+@RunWith(AndroidJUnit4::class)
 class TvProviderWriterProgramsTest {
     @Test
     fun testStoreBatchFailureDoesNotCommitEarlierOperations() {
@@ -51,8 +55,10 @@ class TvProviderWriterProgramsTest {
     fun untimedProgramIndexFallbackFailsClosed() {
         val store =
             object : TvProviderWriter.ChannelStore {
-                override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
-                    Result.success(keys.associateWith { 1L })
+                override fun indexExistingChannelIds(
+                    keys: Set<ServiceKey>,
+                    satelliteServices: MutableSet<ServiceKey>?,
+                ): Result<Map<ServiceKey, Long>> = Result.success(keys.associateWith { 1L })
 
                 override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(1L)
 
@@ -74,10 +80,7 @@ class TvProviderWriterProgramsTest {
     }
 
     @Suppress("MaxLineLength")
-    @Test
-    fun multipleProgramsUseOneProviderIndexQueryPerService() {
-        val store = FakeStore()
-        val writer = TvProviderWriter("input.test", store, testOnly = true)
+    private fun seedPresentFollowing(writer: TvProviderWriter): Pair<ProgramRecord, ProgramRecord> {
         writer.upsertChannels(
             listOf(
                 ChannelRecord(
@@ -111,7 +114,121 @@ class TvProviderWriterProgramsTest {
             )
         val result = writer.upsertPrograms(listOf(first, second))
         check(result.inserted == 2) { result.toString() }
+        return first to second
+    }
+
+    @Test
+    fun multipleProgramsUseOneProviderIndexQueryPerService() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val (first, _) = seedPresentFollowing(writer)
         check(store.programWindowQueryCount == 1) { "queries=${store.programWindowQueryCount}" }
+        val schedule = first.copy(title = "older schedule", source = first.source.copy(tableId = 0x60))
+        val replay = writer.upsertProgramsForWindows(listOf(schedule), emptyList())
+        check(replay.failures.isEmpty() && replay.updated == 0 && replay.inserted == 0)
+        check(store.programs.values.any { it.getAsString(TvContract.Programs.COLUMN_TITLE) == "first" })
+        val detail =
+            schedule.copy(
+                title = "",
+                description = "出演者の詳細",
+                descriptors = ProgramDescriptors(extendedTexts = listOf(AribExtendedEventText("jpn", "出演者の詳細"))),
+                source = schedule.source.copy(tableId = 0x68),
+            )
+        check(writer.upsertProgramsForWindows(listOf(detail), emptyList()).updated == 1)
+        check(writer.upsertProgramsForWindows(listOf(first.copy(title = "改題")), emptyList()).updated == 1)
+        val row = store.programs.values.single { it.getAsString(TvContract.Programs.COLUMN_TITLE) == "改題" }
+        check(row.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "出演者の詳細")
+        check(row.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).utf8Contains("出演者の詳細"))
+        check(ProviderDataBridge.buildProgramProviderData(first, "{}".toByteArray()) is ProviderDataBridge.Failure)
+        val video =
+            AribComponentEntry(esPid = TsPid(0x101), text = "HD")
+        val updatedBasic =
+            first.copy(
+                descriptors =
+                    first.descriptors.copy(
+                        shortEvents =
+                            listOf(
+                                AribShortEventText("jpn", "番組", ""),
+                            ),
+                        components = first.descriptors.components.copy(video = listOf(video)),
+                    ),
+            )
+        check(writer.upsertProgramsForWindows(listOf(updatedBasic), emptyList()).updated == 1)
+
+        fun description() =
+            store.programs.values
+                .single { it.getAsString(TvContract.Programs.COLUMN_TITLE) == "first" }
+                .getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION)
+        check(description() == "出演者の詳細\n映像: HD")
+        val englishTexts = listOf(AribExtendedEventText("eng", "English"))
+        val english = detail.copy(descriptors = detail.descriptors.copy(extendedTexts = englishTexts))
+        check(writer.upsertProgramsForWindows(listOf(english), emptyList()).updated == 1)
+        check(description() == "映像: HD")
+        check(writer.upsertProgramsForWindows(listOf(detail), emptyList()).updated == 1)
+        check(description() == "出演者の詳細\n映像: HD")
+        verifyCurrentActualTimeChange(writer, store, first)
+    }
+
+    private fun verifyCurrentActualTimeChange(
+        writer: TvProviderWriter,
+        store: FakeStore,
+        first: ProgramRecord,
+    ) {
+        val start = Instant.parse("2023-11-15T10:00:00+09:00")
+        val ten = start.toEpochMilli()
+        val hour = 3_600_000L
+        val news = first.copy(startTimeMillis = ten, durationMillis = hour, title = "ニュース")
+        check(writer.upsertPrograms(listOf(news)).updated == 1)
+        val channelId = store.channels.keys.single()
+
+        fun programAt(time: Long) =
+            store
+                .indexExistingProgramEntriesForWindow(channelId, time, time + 1)
+                .getOrThrow()
+                .values
+                .flatten()
+                .singleOrNull()
+
+        val fiveMinutes = 300_000L
+        val originalId = checkNotNull(programAt(ten + fiveMinutes)).programId
+        val movie = news.copy(startTimeMillis = ten + 2 * hour, title = "映画", source = news.source.copy(tableId = 0x60))
+        val received = writer.upsertProgramsForWindows(listOf(movie), emptyList())
+        check(received.failures.isEmpty() && received.updated == 0 && received.inserted == 0)
+        val current = checkNotNull(programAt(ten + fiveMinutes))
+        check(current.programId == originalId)
+        check(current.values?.getAsString(TvContract.Programs.COLUMN_TITLE) == "ニュース")
+        val revised = movie.copy(source = news.source)
+        check(writer.upsertPrograms(listOf(revised)).updated == 1)
+        check(programAt(ten + fiveMinutes) == null)
+        val moved = checkNotNull(programAt(revised.startTimeMillis + fiveMinutes))
+        check(moved.programId == originalId && moved.values?.getAsString(TvContract.Programs.COLUMN_TITLE) == "映画")
+    }
+
+    @Test
+    fun obsoletePfBlocksOtherUntilAuthoritativeReplacement() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val (first, second) = seedPresentFollowing(writer)
+        val other = second.copy(eventId = 12, title = "他TS番組", source = second.source.copy(tableId = 0x4f))
+        val blocked = writer.upsertProgramsForWindows(listOf(other), emptyList())
+        check(blocked.failures.isEmpty() && key !in blocked.succeededServiceKeys)
+        check(store.programs.size == 2)
+        val replacement = other.copy(source = other.source.copy(tableId = 0x50))
+        val window =
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                key,
+                first.startTimeMillis,
+                second.startTimeMillis + second.durationMillis,
+                setOf(ProviderDataBridge.buildProgramKey(first)),
+                true,
+            )
+        val replaced = writer.upsertProgramsForWindows(listOf(first, replacement), listOf(window))
+        check(replaced.failures.isEmpty() && replaced.inserted == 1 && replaced.deleted == 1)
+        check(
+            store.programs.values
+                .map { it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) }
+                .toSet() == setOf(10, 12),
+        )
     }
 
     @Test
@@ -1001,7 +1118,10 @@ class TvProviderWriterProgramsTest {
                     }.toMap(),
             )
 
-        override fun indexExistingChannelIds(keys: Set<ServiceKey>): Result<Map<ServiceKey, Long>> =
+        override fun indexExistingChannelIds(
+            keys: Set<ServiceKey>,
+            satelliteServices: MutableSet<ServiceKey>?,
+        ): Result<Map<ServiceKey, Long>> =
             Result.success(
                 buildMap {
                     channels.forEach { (id, values) ->
@@ -1043,11 +1163,11 @@ class TvProviderWriterProgramsTest {
                 val end = values.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
                 if (end <= windowStartMs || start >= windowEndMs) return@forEach
                 val key =
-                    TvProviderWriter.parseProgramKey(
+                    ProviderDataBridge.extractProgramKeyResult(
                         values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA),
                     ) ?: return@forEach
-                out.getOrPut(key) { mutableListOf() } +=
-                    TvProviderWriter.ExistingProgramIndexEntry(id, start, end)
+                out.getOrPut(key.key) { mutableListOf() } +=
+                    TvProviderWriter.ExistingProgramIndexEntry(id, start, end, values, key.tableId)
             }
             return Result.success(out)
         }

@@ -59,11 +59,9 @@ object DirectBootGuard {
         if (!prefs.getBoolean(KEY_PENDING, false)) return DrainDecision.SKIP_NO_PENDING
         val userManager = context.getSystemService(UserManager::class.java)
         if (userManager == null || !userManager.isUserUnlocked) {
-            markSkipped(context, "USER_LOCKED")
             return DrainDecision.SKIP_LOCKED
         }
         if (!isTvProviderReady(context)) {
-            markSkipped(context, "TV_PROVIDER_UNAVAILABLE")
             return DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE
         }
         Log.i(LogTags.TIS, "Direct Boot pending boot EPG 同期を開始します source=$source now=$nowMillis")
@@ -121,7 +119,7 @@ object DirectBootGuard {
 
     // 同じ式で apply() を呼び、診断理由を確定する。
     @Suppress("AndroidLintCommitPrefEdits")
-    private fun markSkipped(
+    internal fun markSkipped(
         context: Context,
         reason: String,
     ) {

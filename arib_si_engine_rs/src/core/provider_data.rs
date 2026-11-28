@@ -13,6 +13,7 @@ const HARD_LIMIT_BYTES: usize = 32 * 1024;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderDataResult {
     pub success: bool,
+    pub merged_description: Option<String>,
     pub json: String,
     pub schema_version: i64,
     pub truncated: bool,
@@ -28,9 +29,10 @@ pub struct ProgramKeyResult {
     pub service_id: i64,
     pub event_id: i64,
     pub key: String,
+    pub table_id: i64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProgramKeyV1 {
     kind: String,
@@ -518,6 +520,10 @@ struct ProgramRequestDiagnosticsV1 {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProgramProviderDataRequestV1 {
+    existing: Option<ProgramProviderDataV1>,
+    existing_description: Option<String>,
+    #[serde(default)]
+    update_only_extended: bool,
     schema: String,
     schema_version: i64,
     program_key: ProgramKeyV1,
@@ -647,14 +653,213 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
             )
         }
     };
-    let Some(data) = program_data_from_request(request) else {
+    let mut request = request;
+    let existing = request.existing.take();
+    let existing_description = request.existing_description.take();
+    let update_only_extended = request.update_only_extended;
+    let Some(mut data) = program_data_from_request(request) else {
         return failure_result(
             "PROGRAM_REQUEST_INVALID",
             "Program provider-data requestがschema v1の不変条件を満たしません".to_string(),
             PROVIDER_SCHEMA_VERSION,
         );
     };
-    finalize_program(data)
+    let mut description = None;
+    let mut retained_details = None;
+    if let Some(mut previous) = existing {
+        if !valid_program_provider_data(&previous) || previous.program_key != data.program_key {
+            return failure_result(
+                "PROGRAM_REQUEST_INVALID",
+                "保存済みの番組情報が不正か、番組キーが一致しません".to_string(),
+                PROVIDER_SCHEMA_VERSION,
+            );
+        }
+        if update_only_extended {
+            previous.extended_texts = data.extended_texts;
+            previous.extended_items = data.extended_items;
+            data = previous;
+        } else if data.extended_texts.is_empty() && data.extended_items.is_empty() {
+            let language = data
+                .short_events
+                .first()
+                .map(|v| v.language_code.as_str())
+                .or_else(|| {
+                    previous
+                        .extended_texts
+                        .first()
+                        .map(|v| v.language_code.as_str())
+                })
+                .or_else(|| {
+                    previous
+                        .extended_items
+                        .first()
+                        .map(|v| v.language_code.as_str())
+                });
+            if language.is_some() && description_language(&previous) == language {
+                if let Some(old) = existing_description {
+                    retained_details = retained_standard_details(&previous, &old);
+                }
+            }
+            data.extended_texts = previous.extended_texts;
+            data.extended_items = previous.extended_items;
+        }
+        if retained_details.is_some()
+            || !data.extended_texts.is_empty()
+            || !data.extended_items.is_empty()
+        {
+            let details = retained_details.unwrap_or_else(|| description_details(&data));
+            let mut parts = description_supplements(&data);
+            if !details.is_empty() {
+                parts.insert(0, details);
+            }
+            description = Some(parts.join("\n"));
+        }
+    }
+    let mut result = finalize_program(data);
+    if result.success {
+        result.merged_description = description;
+    }
+    result
+}
+
+fn retained_standard_details(previous: &ProgramProviderDataV1, old: &str) -> Option<String> {
+    let mut supplements = description_supplements(previous);
+    if previous.diagnostics.provider_data_truncated == Some(true) && !previous.genres.is_empty() {
+        restore_shortened_genre_supplement(previous, old, &mut supplements);
+    }
+    strip_description_supplements(old, &supplements).map(str::to_owned)
+}
+
+fn restore_shortened_genre_supplement(
+    previous: &ProgramProviderDataV1,
+    old: &str,
+    supplements: &mut Vec<String>,
+) {
+    // 上限処理はジャンル名をUTF-8の末尾から短縮する。標準列の同じ行だけを
+    // 旧BLOBの件数と各名称の前方一致で照合し、本文と他の補足はそのまま扱う。
+    let end = supplements.len() - usize::from(previous.free_ca_mode.is_some());
+    let Some(genre_line) = strip_description_supplements(old, &supplements[end..])
+        .and_then(|without_ca| without_ca.rsplit('\n').next())
+    else {
+        return;
+    };
+    let Some(names) = genre_line.strip_prefix("ジャンル: ") else {
+        return;
+    };
+    let mut stored_names = previous.genres.iter().map(|genre| genre.arib_name.as_str());
+    for name in names.split('、') {
+        if !stored_names
+            .next()
+            .is_some_and(|stored| name.starts_with(stored))
+        {
+            return;
+        }
+    }
+    if stored_names.next().is_some() {
+        return;
+    }
+    if end > 0 && supplements[end - 1].starts_with("ジャンル: ") {
+        supplements[end - 1] = genre_line.to_owned();
+    } else {
+        supplements.insert(end, genre_line.to_owned());
+    }
+}
+
+fn strip_description_supplements<'a>(
+    description: &'a str,
+    supplements: &[String],
+) -> Option<&'a str> {
+    let suffix = supplements.join("\n");
+    if suffix.is_empty() {
+        Some(description)
+    } else if description == suffix {
+        Some("")
+    } else {
+        description.strip_suffix(&format!("\n{suffix}"))
+    }
+}
+
+fn description_language(data: &ProgramProviderDataV1) -> Option<&str> {
+    data.short_events
+        .first()
+        .map(|v| v.language_code.as_str())
+        .or_else(|| {
+            data.extended_texts
+                .first()
+                .map(|v| v.language_code.as_str())
+        })
+        .or_else(|| {
+            data.extended_items
+                .first()
+                .map(|v| v.language_code.as_str())
+        })
+}
+
+fn description_details(data: &ProgramProviderDataV1) -> String {
+    let language = description_language(data);
+    let mut parts = Vec::new();
+    if let Some(body) = data
+        .extended_texts
+        .iter()
+        .find(|v| Some(v.language_code.as_str()) == language)
+    {
+        parts.push(body.text.clone());
+    }
+    for item in data
+        .extended_items
+        .iter()
+        .filter(|v| Some(v.language_code.as_str()) == language)
+    {
+        parts.push(if item.description.trim().is_empty() {
+            item.text.clone()
+        } else {
+            format!("【{}】{}", item.description, item.text)
+        });
+    }
+    parts.retain(|v| !v.trim().is_empty());
+    parts.join("\n")
+}
+
+fn description_supplements(data: &ProgramProviderDataV1) -> Vec<String> {
+    let mut parts = Vec::new();
+    let video = data
+        .components
+        .video
+        .iter()
+        .filter_map(|v| v.text.as_deref())
+        .filter(|v| !v.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let audio = data
+        .components
+        .audio
+        .iter()
+        .filter_map(|v| v.text.as_deref())
+        .filter(|v| !v.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let genre = data
+        .genres
+        .iter()
+        .map(|v| v.arib_name.as_str())
+        .collect::<Vec<_>>()
+        .join("、");
+    for (label, value) in [("映像", video), ("音声", audio), ("ジャンル", genre)] {
+        if !value.trim().is_empty() {
+            parts.push(format!("{label}: {value}"));
+        }
+    }
+    if let Some(mode) = &data.free_ca_mode {
+        parts.push(
+            if mode.scrambled {
+                "放送種別: 有料放送"
+            } else {
+                "放送種別: 無料放送"
+            }
+            .to_owned(),
+        );
+    }
+    parts
 }
 
 pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
@@ -691,6 +896,7 @@ pub fn extract_program_key_result(raw_bytes: &[u8]) -> Option<ProgramKeyResult> 
         service_id: data.program_key.service_id,
         event_id: data.program_key.event_id,
         key: serde_json::to_string(&data.program_key).unwrap_or_default(),
+        table_id: data.source.table_id,
     })
 }
 
@@ -765,6 +971,14 @@ fn program_data_from_request(
             }]
         }
     };
+    // 他TSのEITは、対象サービスのPMTを受信する前に届くことがある。
+    let cas_facts = match request.cas_facts_canonical_json.as_deref() {
+        Some(raw) => serde_json::from_str(raw).ok()?,
+        None if (0x4f..=0x6f).contains(&request.source.table_id) => {
+            CasFactsV1::from(&crate::service_discovery::ServiceSemanticFacts::default())
+        }
+        None => return None,
+    };
     let data = ProgramProviderDataV1 {
         schema: PROGRAM_SCHEMA_NAME.to_string(),
         schema_version: PROVIDER_SCHEMA_VERSION,
@@ -775,7 +989,7 @@ fn program_data_from_request(
         },
         source: request.source,
         cas: request.cas,
-        cas_facts: Some(serde_json::from_str(request.cas_facts_canonical_json.as_deref()?).ok()?),
+        cas_facts: Some(cas_facts),
         ratings: request.ratings,
         genres: request.genres,
         series: request.series,
@@ -1440,6 +1654,7 @@ fn valid_optional_es_pid(v: Option<i64>) -> bool {
 fn failure_result(code: &str, message: String, schema_version: i64) -> ProviderDataResult {
     ProviderDataResult {
         success: false,
+        merged_description: None,
         json: String::new(),
         schema_version,
         truncated: false,
@@ -1457,6 +1672,7 @@ fn success_result(
 ) -> ProviderDataResult {
     ProviderDataResult {
         success: true,
+        merged_description: None,
         json,
         schema_version,
         truncated,
@@ -1692,6 +1908,82 @@ mod provider_data_tests {
     }
 
     #[test]
+    fn basic_updates_remove_a_shortened_genre_without_losing_details() {
+        let mut basic = minimal_program_request_value();
+        basic["shortEvents"] = serde_json::json!([
+            {"parseStatus":"OK", "languageCode":"jpn","title":"番組", "text":"基本"}
+        ]);
+        let mut initial = basic.clone();
+        let genre_name = "報道".repeat(HARD_LIMIT_BYTES / "報道".len());
+        initial["genres"] = serde_json::json!([
+            {"parseStatus":"OK","level1":0,"level2":0,"userNibble":0,"aribName":genre_name}
+        ]);
+        initial["extendedItems"] = serde_json::json!([
+            {"parseStatus":"OK","languageCode":"jpn","description":"項","text":"目"}
+        ]);
+        let first = build_program_provider_data(&initial.to_string());
+        assert!(first.success && first.truncated);
+        let stored: serde_json::Value = serde_json::from_str(&first.json).unwrap();
+        let shortened = stored["genres"][0]["aribName"].as_str().unwrap();
+        assert!(shortened.len() < genre_name.len() && genre_name.starts_with(shortened));
+        assert_eq!(stored["extendedItems"], serde_json::json!([]));
+        basic["existing"] = stored;
+        basic["existingDescription"] = serde_json::json!(format!(
+            "【項】目\nジャンル: {genre_name}\n放送種別: 無料放送"
+        ));
+        for version in [13, 14] {
+            basic["source"]["version"] = serde_json::json!(version);
+            let merged = build_program_provider_data(&basic.to_string());
+            assert!(merged.success && !merged.truncated);
+            assert_eq!(
+                merged.merged_description.as_deref(),
+                Some("【項】目\n放送種別: 無料放送")
+            );
+            basic["existing"] = serde_json::from_str(&merged.json).unwrap();
+            basic["existingDescription"] = serde_json::json!(merged.merged_description);
+        }
+    }
+
+    #[test]
+    fn basic_updates_keep_description_when_all_extended_items_were_dropped() {
+        let mut basic = minimal_program_request_value();
+        basic["shortEvents"] = serde_json::json!([
+            {"parseStatus":"OK", "languageCode":"jpn","title":"番組", "text":"基本"}
+        ]);
+        let mut initial = basic.clone();
+        initial["shortEvents"][0]["text"] = serde_json::json!("x".repeat(HARD_LIMIT_BYTES));
+        initial["extendedItems"] = serde_json::json!([
+            {"parseStatus":"OK","languageCode":"jpn","description":"項","text":"目"}
+        ]);
+        let first = build_program_provider_data(&initial.to_string());
+        assert!(first.success && first.truncated);
+        let bytes: serde_json::Value = serde_json::from_str(&first.json).unwrap();
+        assert_eq!(bytes["extendedTexts"], serde_json::json!([]));
+        assert_eq!(bytes["extendedItems"], serde_json::json!([]));
+        basic["existing"] = bytes;
+        let old = serde_json::from_str::<ProgramProviderDataV1>(&first.json).unwrap();
+        let mut description = vec!["【項】目".to_owned()];
+        description.extend(description_supplements(&old));
+        let description = description.join("\n");
+        basic["existingDescription"] = serde_json::json!(description);
+        for version in [13, 14] {
+            basic["source"]["version"] = serde_json::json!(version);
+            let merged = build_program_provider_data(&basic.to_string());
+            assert!(merged.success && !merged.truncated);
+            assert_eq!(
+                merged.merged_description.as_deref(),
+                Some(description.as_str())
+            );
+            basic["existing"] = serde_json::from_str(&merged.json).unwrap();
+            basic["existingDescription"] = serde_json::json!(merged.merged_description);
+        }
+        basic["shortEvents"][0]["languageCode"] = serde_json::json!("eng");
+        let changed = build_program_provider_data(&basic.to_string());
+        assert!(changed.success);
+        assert_eq!(changed.merged_description, None);
+    }
+
+    #[test]
     fn size_limit_shortens_text_without_removing_languages() {
         let mut value = minimal_program_request_value();
         value["shortEvents"] = serde_json::json!([
@@ -1715,6 +2007,23 @@ mod provider_data_tests {
         }
         assert_eq!(output["extendedTexts"][1]["text"], "");
         assert_eq!(output["shortEvents"][0]["title"], "日本語");
+        let mut basic = minimal_program_request_value();
+        basic["existing"] = output.clone();
+        let old = serde_json::from_value::<ProgramProviderDataV1>(output.clone()).unwrap();
+        let mut lines = vec!["長文".repeat(5000)];
+        lines.extend(description_supplements(&old));
+        basic["existingDescription"] = serde_json::json!(lines.join("\n"));
+        basic["shortEvents"] = value["shortEvents"].clone();
+        let merged = build_program_provider_data(&basic.to_string());
+        assert_eq!(
+            merged.merged_description.as_deref(),
+            Some(lines.join("\n").as_str())
+        );
+
+        basic["existing"] = serde_json::from_str(&merged.json).unwrap();
+        basic["existingDescription"] = serde_json::json!(merged.merged_description);
+        let repeated = build_program_provider_data(&basic.to_string());
+        assert_eq!(repeated.merged_description, merged.merged_description);
         assert_eq!(
             finalize_program(serde_json::from_str(&first.json).unwrap()).json,
             first.json

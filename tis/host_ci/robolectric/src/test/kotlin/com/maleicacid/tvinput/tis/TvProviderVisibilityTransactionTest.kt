@@ -115,7 +115,7 @@ class TvProviderVisibilityTransactionTest {
     }
 
     // AOSP TvProviderと同じSQLite transaction境界で、実ContentProviderOperationを実行する。
-    class VisibilityProvider : ContentProvider() {
+    open class VisibilityProvider : ContentProvider() {
         lateinit var database: SQLiteDatabase
         val updatedIds = mutableListOf<Long>()
         var committedBatches = 0

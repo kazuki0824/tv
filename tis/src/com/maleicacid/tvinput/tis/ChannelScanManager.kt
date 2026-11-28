@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.common.LogTags
+import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CopyOnWriteArraySet
@@ -44,6 +45,26 @@ object ChannelScanManager {
         Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "maleicacid-channel-scan-manager").apply { isDaemon = true }
         }
+
+    internal fun finishBootTargets(
+        context: Context,
+        targets: Set<ServiceKey>,
+        result: ChannelScanController.ScanResult,
+    ): Boolean {
+        val outcome = result.terminal.outcome
+        val allCommitted = targets.isNotEmpty() && result.committedServiceKeys.containsAll(targets)
+        val reason =
+            when {
+                outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED -> "BOOT_EPG_CANCELLED"
+                outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST -> TUNER_RESOURCE_LOST
+                !allCommitted -> "BOOT_EPG_INCOMPLETE_TARGET_SET"
+                else -> null
+            }
+        if (reason == null) DirectBootGuard.clearPending(context) else DirectBootGuard.deferPending(context, reason)
+        return reason == null
+    }
+
+    internal fun prepareEpgRefresh(work: () -> Unit) = executor.execute(work)
 
     internal class ActiveScanTask(
         val generation: Int,
@@ -268,57 +289,64 @@ object ChannelScanManager {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount")
-    fun startBootEpgSyncIfIdle(
+    fun startEpgRefreshIfIdle(
         context: Context,
         inputId: String,
         targetChannels: List<ChannelRecord>,
+        periodic: Boolean,
         onFinished: ((generation: Int, needsReschedule: Boolean) -> Unit)? = null,
     ): Int? {
         retryPendingRelease()
+        val purpose = if (periodic) ScanPurpose.PERIODIC_EPG_REFRESH else ScanPurpose.BOOT_EPG_SYNC
         val targetSnapshot = targetChannels.toList()
         val requiredServiceKeys = targetSnapshot.map { it.serviceKey }.toSet()
         val appContext = context.applicationContext
-        if (!ProgramUpgradeCleanup.ensure(appContext)) {
-            markBootEpgSyncDeferred(appContext, "PROGRAM_UPGRADE_CLEANUP_PENDING")
-            return null
+
+        fun deferBootRefresh(reason: String) {
+            if (!periodic) markBootEpgSyncDeferred(appContext, reason)
         }
-        val precheck =
+
+        fun startDecision(scanRunning: Boolean): BootEpgSyncStartDecision =
             bootEpgSyncStartDecision(
                 activeLiveSessions.size,
-                isScanRunning(),
+                scanRunning,
                 sessionCreationsInProgress.get() > 0,
                 activePlaybackPipelines.get() > 0,
+                periodic = periodic,
             )
-        if (!precheck.allowed) {
-            markBootEpgSyncDeferred(appContext, precheck.reason ?: "UNKNOWN")
+
+        if (!ProgramUpgradeCleanup.ensure(appContext)) {
+            deferBootRefresh("PROGRAM_UPGRADE_CLEANUP_PENDING")
             return null
         }
-        val admission = beginScan(ScanPurpose.BOOT_EPG_SYNC, appContext)
+        val precheck = startDecision(isScanRunning())
+        if (!precheck.allowed) {
+            deferBootRefresh(precheck.reason ?: "UNKNOWN")
+            return null
+        }
+        val admission = beginScan(purpose, appContext)
         val task = admission.task
         if (task == null) {
-            markBootEpgSyncDeferred(
-                appContext,
-                admission.failure?.message ?: "SCAN_RUNNING",
-            )
+            deferBootRefresh(admission.failure?.message ?: "SCAN_RUNNING")
             return null
         }
         val generation = task.generation
-        if (activeLiveSessions.isNotEmpty() || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
+        if (!startDecision(scanRunning = false).allowed) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
-            markBootEpgSyncDeferred(appContext, "LIVE_SESSION_STARTING_OR_ACTIVE")
+            deferBootRefresh("LIVE_SESSION_STARTING_OR_ACTIVE")
             return null
         }
         executor.execute {
-            if (activeLiveSessions.isNotEmpty() || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
+            if (!startDecision(scanRunning = false).allowed) {
                 setTerminalStateIfCurrent(generation, ScanState.Idle)
                 finishScanIfCurrent(generation)
-                markBootEpgSyncDeferred(appContext, "LIVE_SESSION_STARTING_OR_ACTIVE")
+                deferBootRefresh("LIVE_SESSION_STARTING_OR_ACTIVE")
                 onFinished?.invoke(generation, true)
                 return@execute
             }
             var shouldScheduleBackgroundMaintenance = false
-            var needsReschedule = true
+            var needsReschedule = !periodic
             val result =
                 runCatching {
                     val createdEngine = AribSiEngine(appContext)
@@ -344,49 +372,34 @@ object ChannelScanManager {
                             scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.CANCELLED
                         val terminalResourceLost =
                             scanResult.terminal.outcome == ChannelScanController.ScanTerminalOutcome.RESOURCE_LOST
-                        val allRequiredTargetsCommitted =
-                            requiredServiceKeys.isNotEmpty() &&
-                                scanResult.committedServiceKeys.containsAll(requiredServiceKeys) &&
-                                !terminalCancel &&
-                                !terminalResourceLost
-                        if (allRequiredTargetsCommitted) {
-                            DirectBootGuard.clearPending(appContext)
+                        if (!periodic && finishBootTargets(appContext, requiredServiceKeys, scanResult)) {
                             shouldScheduleBackgroundMaintenance = true
                             needsReschedule = false
-                        } else {
-                            DirectBootGuard.deferPending(
-                                appContext,
-                                when {
-                                    terminalCancel -> "BOOT_EPG_CANCELLED"
-                                    terminalResourceLost -> TUNER_RESOURCE_LOST
-                                    else -> "BOOT_EPG_INCOMPLETE_TARGET_SET"
-                                },
-                            )
                         }
                         if (terminalCancel) {
-                            setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BOOT_EPG_SYNC))
+                            setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, purpose))
                         } else if (terminalResourceLost) {
                             setTerminalStateIfCurrent(
                                 generation,
-                                ScanState.Failed(TUNER_RESOURCE_LOST, generation, ScanPurpose.BOOT_EPG_SYNC),
+                                ScanState.Failed(TUNER_RESOURCE_LOST, generation, purpose),
                             )
                         } else {
-                            setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.BOOT_EPG_SYNC))
+                            setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, purpose))
                         }
                     }
                 }.onFailure { e ->
-                    DirectBootGuard.markTunerUnavailable(appContext)
-                    Log.w(LogTags.TIS, "boot後EPG同期に失敗しました inputId=$inputId", e)
+                    if (!periodic) DirectBootGuard.markTunerUnavailable(appContext)
+                    Log.w(LogTags.TIS, "EPG同期に失敗しました inputId=$inputId", e)
                     if (isCancelledGeneration(generation)) {
-                        setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BOOT_EPG_SYNC))
+                        setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, purpose))
                     } else {
-                        setTerminalStateIfCurrent(generation, ScanState.Failed(e.message ?: "不明な例外", generation, ScanPurpose.BOOT_EPG_SYNC))
+                        setTerminalStateIfCurrent(generation, ScanState.Failed(e.message ?: "不明な例外", generation, purpose))
                     }
                 }
             if (!finishScanIfCurrent(generation)) {
                 needsReschedule = true
                 shouldScheduleBackgroundMaintenance = false
-                DirectBootGuard.deferPending(appContext, "SCAN_RELEASE_PENDING")
+                deferBootRefresh("SCAN_RELEASE_PENDING")
             }
             onFinished?.invoke(generation, needsReschedule)
             if (shouldScheduleBackgroundMaintenance) {
@@ -563,6 +576,14 @@ object ChannelScanManager {
                 )
             }
 
+            ScanPurpose.PERIODIC_EPG_REFRESH -> {
+                LiveSessionPreemptDecision(
+                    shouldCancel = true,
+                    deferBootEpgSync = false,
+                    diagnosticReason = "LIVE_SESSION_PREEMPTED_PERIODIC_EPG_REFRESH",
+                )
+            }
+
             ScanPurpose.BACKGROUND_MAINTENANCE -> {
                 LiveSessionPreemptDecision(
                     shouldCancel = true,
@@ -664,13 +685,16 @@ object ChannelScanManager {
         scanRunning: Boolean,
         sessionCreationInProgress: Boolean = false,
         playbackPipelineRunning: Boolean = false,
-    ): BootEpgSyncStartDecision =
-        when {
-            activeLiveSessionCount > 0 || sessionCreationInProgress -> BootEpgSyncStartDecision(false, "LIVE_SESSION_STARTING_OR_ACTIVE")
-            playbackPipelineRunning -> BootEpgSyncStartDecision(false, "PLAYBACK_PIPELINE_RUNNING")
+        periodic: Boolean = false,
+    ): BootEpgSyncStartDecision {
+        val liveBlocked = sessionCreationInProgress || (!periodic && activeLiveSessionCount > 0)
+        return when {
+            liveBlocked -> BootEpgSyncStartDecision(false, "LIVE_SESSION_STARTING_OR_ACTIVE")
+            !periodic && playbackPipelineRunning -> BootEpgSyncStartDecision(false, "PLAYBACK_PIPELINE_RUNNING")
             scanRunning -> BootEpgSyncStartDecision(false, "SCAN_RUNNING")
             else -> BootEpgSyncStartDecision(true, null)
         }
+    }
 
     private fun markBootEpgSyncDeferred(
         context: Context,

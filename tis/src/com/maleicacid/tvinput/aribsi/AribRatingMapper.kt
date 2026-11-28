@@ -41,22 +41,14 @@ object AribRatingMapper {
     ): TvContentRating? {
         if (rating.countryCode != "JPN") return null
         if (rating.parseStatus != SiParseStatus.OK) return null
-        if (profile == BroadcastProfile.UNRESOLVED) return null
+        if (profile != BroadcastProfile.BS_CS) return null
         return when (val raw = rating.rawRatingByte) {
             0x00 -> {
                 null
             }
 
-            in 0x01..0x0f -> {
+            in 0x01..0x11 -> {
                 TvContentRating.createRating(DOMAIN, RATING_SYSTEM, "$RATING_PREFIX${raw + 3}")
-            }
-
-            in 0x10..0x11 -> {
-                if (profile == BroadcastProfile.BS_CS) {
-                    TvContentRating.createRating(DOMAIN, RATING_SYSTEM, "$RATING_PREFIX${raw + 3}")
-                } else {
-                    null
-                }
             }
 
             in 0x12..0xff -> {
