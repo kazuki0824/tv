@@ -150,8 +150,8 @@ object TunerSelectionPolicy {
             .thenBy { it.elementaryPid.value }
 
     /**
-     * 有効なcurrent EITがdual-monoと示す場合だけ、同一音声ESの選択可能な出力modeをTIFへ投影する。
-     * 仮想trackは別PIDや別decoderを意味せず、物理ESへの選択とAudioTrack modeを分ける。
+     * 現在の音声出力で主副を選択できると [selectable] が判定した音声ESを、TIF向けの主・副・主副の論理トラックに展開する。
+     * 各論理トラックは、同じ物理音声ESの異なるAudioTrack出力モードに対応する。
      */
     fun withDualMonoPresentations(
         tracks: List<TunerController.TisTrack>,
