@@ -399,6 +399,11 @@ mod tests {
 
     #[test]
     fn program_config_requires_matching_audio_element_order() {
+        // 前方CPE tag 0・後方SCE tag 0のPCEを持つ2/1。
+        let surround = [
+            0xff, 0xf8, 0x4c, 0, 3, 0x60, 4, 0x79, 0x9f, 0xa0, 0x98, 0x80, 0x80, 4, 0, 0, 0x20,
+            0x64, 0, 1, 0x90, 0, 0, 0x0c, 0x80, 0, 0x70,
+        ];
         // 前方CPE tag 0・後方CPE tag 1のPCEを持つ2/2。
         let ordered = [
             0xff, 0xf9, 0x4c, 0, 3, 0x80, 4, 0xa0, 0x98, 0x80, 0x80, 4, 0x22, 0, 0x20, 0x64, 0, 1,
@@ -408,25 +413,26 @@ mod tests {
         // PCEとチャンネル数を保ち、CPEのタグ順を1→0にする。
         reversed[14] = 0x22;
         reversed[21] = 0x06;
+        // タグ集合・チャンネル数・受信順を保ち、PCEだけを前方2 CPE・後方0にする。
+        let mut both_front = ordered;
+        both_front[8..11].copy_from_slice(&[0x99, 0, 0]);
 
-        let ordered_fact = frame_presentation_dto(&ordered);
-        assert_eq!(ordered_fact.dual_mono, Some(false));
-        assert_eq!(ordered_fact.element_order, Some(0x1011));
-        let reversed_fact = frame_presentation_dto(&reversed);
-        assert_eq!(reversed_fact.dual_mono, None);
-        assert_eq!(reversed_fact.element_order, None);
-        assert!(ordered_fact.has_program_config && reversed_fact.has_program_config);
-
-        for frame in [&ordered, &reversed] {
+        for (frame, order, asc) in [
+            (surround.as_slice(), Some(0x1000), "118004c40400200000"),
+            (ordered.as_slice(), Some(0x1011), "118004c40400211000"),
+            (reversed.as_slice(), None, "118004c40400211000"),
+            (both_front.as_slice(), None, "118004c80000211000"),
+        ] {
+            let fact = frame_presentation_dto(frame);
+            assert_eq!(fact.dual_mono, order.map(|_| false));
+            assert_eq!(fact.element_order, order);
+            assert!(fact.has_program_config);
             let AacConfigurationProbe::Ready { configuration } =
                 probe_adts_configuration(frame, None, false)
             else {
                 panic!("通常の構成取得は帯域内PCEを使用する");
             };
-            assert_eq!(
-                configuration.audio_specific_config_hex,
-                "118004c40400211000"
-            );
+            assert_eq!(configuration.audio_specific_config_hex, asc);
         }
     }
 
