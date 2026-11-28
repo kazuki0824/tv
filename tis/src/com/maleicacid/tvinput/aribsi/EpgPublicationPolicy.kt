@@ -74,7 +74,7 @@ internal class EpgPublicationPolicy {
         val candidates =
             selected.filter {
                 it.source.tableId != EIT_PRESENT_FOLLOWING_ACTUAL_TABLE_ID && isProgramRow(profile, it) &&
-                    (it.title.isNotBlank() || hasExtended(it))
+                    (!EpgSectionPolicy.isExtendedSchedule(it.source.tableId) || hasExtended(it))
             }
         val priority = compareBy<AribEvent> { EpgSectionPolicy.isExtendedSchedule(it.source.tableId) }
         val sorted = candidates.sortedWith(priority.thenBy { it.source.tableId })

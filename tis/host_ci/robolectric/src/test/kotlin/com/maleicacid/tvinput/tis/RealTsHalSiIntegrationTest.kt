@@ -31,6 +31,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -336,6 +337,10 @@ class RealTsHalSiIntegrationTest {
             assertEquals(start + TimeUnit.DAYS.toMillis(1), tomorrowStart)
             val titleColumn = TvContract.Programs.COLUMN_TITLE
             assertEquals(current.getAsString(titleColumn), tomorrow.getAsString(titleColumn))
+            executor.callControl(15_000L) {
+                val reference = otherTransportSchedule(sections, nextDay = true)
+                verifyUntitledSupplementalPublication(session, provider.rows, reference, key)
+            }
             val pf = otherTransportSchedule(sections, nextDay = false)
             val satellite = sections.map { if (it.pid == TsPid.NIT.value) it.copy(bytes = asBsNit(it.bytes)) else it }
             verifyBootPartialOther(context, key, provider.rows, pf) { engine -> verifyIngest(engine, satellite) }
@@ -343,6 +348,66 @@ class RealTsHalSiIntegrationTest {
             session.onRelease()
             check(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
+    }
+
+    private fun verifyUntitledSupplementalPublication(
+        session: MaleicacidLiveSession,
+        rows: List<ContentValues>,
+        reference: ByteArray,
+        actualService: ServiceKey,
+    ) {
+        val engine = ReflectionHelpers.getField<AribSiEngine>(session, "aribSiEngine")
+        val ingest = SectionIngestController(engine)
+        val eventId = 0xba10
+        for (table in listOf(0x4f, 0x50)) {
+            val section = untitledSupplementalSection(reference, table, actualService, eventId)
+            assertEquals(SiStatus.OK, ingest.onSection(TsPid.EIT, section).status)
+        }
+        val tomorrow = rows.single { it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == 0xba01 }
+        val tomorrowStart = tomorrow.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+        val expectedStart = tomorrowStart + TimeUnit.DAYS.toMillis(1)
+        val duration = tomorrow.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS) - tomorrowStart
+        ReflectionHelpers.setField(session, "latestLiveSnapshot", engine.livePlaybackSnapshot())
+        ReflectionHelpers.callInstanceMethod<Unit>(session, "publishLiveProgramSnapshot")
+        for (channel in listOf(7L, 9L)) {
+            val row =
+                rows.single {
+                    it.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channel &&
+                        it.getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == eventId
+                }
+            assertEquals(expectedStart, row.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS).toLong())
+            val end = row.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+            assertEquals(expectedStart + duration, end.toLong())
+            assertNull(row.getAsString(TvContract.Programs.COLUMN_TITLE))
+            assertEquals("番組", row.getAsString(TvContract.Programs.COLUMN_SHORT_DESCRIPTION))
+        }
+    }
+
+    private fun untitledSupplementalSection(
+        reference: ByteArray,
+        table: Int,
+        actualService: ServiceKey,
+        eventId: Int,
+    ): ByteArray {
+        // 番組名0バイトと、独立した短形式本文「番組」を持つ1イベントのsectionを作る。
+        val shortEvent = byteArrayOf(0x4d, 9, 0x6a, 0x70, 0x6e, 0, 4, 0x48, 0x56, 0x41, 0x48)
+        val section = reference.copyOfRange(0, 26) + shortEvent + ByteArray(4)
+        ByteBuffer.wrap(section).apply {
+            put(0, table.toByte())
+            putShort(1, ((getShort(1).toInt() and 0xf000) or (section.size - 3)).toShort())
+            if (table == 0x4f) {
+                for (offset in listOf(6, 7, 12)) put(offset, 0)
+            } else {
+                putShort(3, actualService.serviceId.toShort())
+                putShort(8, actualService.transportStreamId.toShort())
+            }
+            put(13, table.toByte())
+            putShort(14, eventId.toShort())
+            putShort(16, (getShort(16) + 1).toShort())
+            putShort(24, ((getShort(24).toInt() and 0xf000) or shortEvent.size).toShort())
+        }
+        writeSectionCrc(section)
+        return section
     }
 
     // 正常PMTを受理した後、同じSIDの新versionに4バイト未満のCA記述子を1件加える。
