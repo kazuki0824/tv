@@ -85,5 +85,8 @@ tasks.withType<Test>().configureEach {
             .get()
             .asFile
     systemProperty("realTs.diagnosticsDirectory", diagnostics.absolutePath)
-    systemProperty("java.library.path", file("../../../arib_si_engine_rs/host_ci/target/debug").absolutePath)
+    systemProperty(
+        "java.library.path",
+        files("../../../arib_si_engine_rs/host_ci/target/debug", "../caption/target/debug").asPath,
+    )
 }
