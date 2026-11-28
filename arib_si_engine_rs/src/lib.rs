@@ -16,7 +16,7 @@ use descriptors::json_escape;
 use discovery_requirements::DiscoveryProfile;
 use eit::EitEvent;
 use jni::objects::{JByteArray, JClass, JObject, JString, JThrowable, JValue};
-use jni::sys::{jint, jintArray, jlong, jobject, jstring};
+use jni::sys::{jboolean, jint, jintArray, jlong, jobject, jstring};
 use jni::JNIEnv;
 use maleicacid_arib_si_engine_core::codec_probe_dto::AacConfigurationProbeDto;
 use maleicacid_arib_si_engine_core::eit_instances::EitInstances;
@@ -924,11 +924,132 @@ fn bounded_codec_bytes(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_probeDualMono(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    frame: JByteArray<'_>,
+) -> jobject {
+    use maleicacid_arib_si_engine_core::codec_probe_dto::{
+        AacFramePresentationDto, AacProbeStatusDto,
+    };
+    let value = match bounded_codec_bytes(&mut env, &frame, 8191) {
+        Ok(bytes) => {
+            maleicacid_arib_si_engine_core::codec_signaling::frame_presentation_dto(&bytes)
+        }
+        Err(CodecInputFailure::TooLarge) => AacFramePresentationDto::unresolved(
+            AacProbeStatusDto::Invalid,
+            Some("ADTS入力が8191 byteを超えています"),
+        ),
+        Err(CodecInputFailure::Jni(error)) => {
+            return throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error))
+                as jobject
+        }
+    };
+    match jvm_snapshot_generated::aac_frame_to_java(&mut env, &value) {
+        Ok(value) => value.into_raw(),
+        Err(failure) => throw_si_failure(&mut env, failure) as jobject,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_configuredFrontPair(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    asc: JByteArray<'_>,
+) -> jint {
+    match bounded_codec_bytes(&mut env, &asc, 512) {
+        Ok(bytes) => maleicacid_arib_si_engine_core::codec_signaling::configured_front_pair(&bytes)
+            .unwrap_or(-1),
+        Err(CodecInputFailure::TooLarge) => -1,
+        Err(CodecInputFailure::Jni(error)) => {
+            throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error));
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSameAacDecoderConfiguration(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    first: JByteArray<'_>,
+    second: JByteArray<'_>,
+) -> jboolean {
+    let first = bounded_codec_bytes(&mut env, &first, 512);
+    let second = bounded_codec_bytes(&mut env, &second, 512);
+    match (first, second) {
+        (Ok(first), Ok(second)) => jboolean::from(
+            maleicacid_arib_si_engine_core::codec_signaling::same_aac_decoder_configuration(
+                &first, &second,
+            ),
+        ),
+        (Err(CodecInputFailure::Jni(error)), _) | (_, Err(CodecInputFailure::Jni(error))) => {
+            throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error));
+            0
+        }
+        _ => 0,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeMatchesInheritedAacConfiguration(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    first: JByteArray<'_>,
+    second: JByteArray<'_>,
+) -> jint {
+    let first = bounded_codec_bytes(&mut env, &first, 8191);
+    let second = bounded_codec_bytes(&mut env, &second, 512);
+    match (first, second) {
+        (Ok(first), Ok(second)) => {
+            maleicacid_arib_si_engine_core::codec_signaling::matches_inherited_aac_configuration(
+                &first, &second,
+            )
+            .map_or(-1, i32::from)
+        }
+        (Err(CodecInputFailure::Jni(error)), _) | (_, Err(CodecInputFailure::Jni(error))) => {
+            throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error));
+            0
+        }
+        _ => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeMatchesObservedAacConfiguration(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    configuration: jint,
+    element_order: jint,
+    asc: JByteArray<'_>,
+) -> jint {
+    let Ok(configuration) = u16::try_from(configuration) else {
+        return -1;
+    };
+    match bounded_codec_bytes(&mut env, &asc, 512) {
+        Ok(asc) => {
+            maleicacid_arib_si_engine_core::codec_signaling::matches_observed_aac_configuration(
+                configuration,
+                u16::try_from(element_order).ok(),
+                &asc,
+            )
+            .map_or(-1, i32::from)
+        }
+        Err(CodecInputFailure::Jni(error)) => {
+            throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error));
+            -1
+        }
+        _ => -1,
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeProbeAacConfiguration(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     adts: JByteArray<'_>,
     asc: JByteArray<'_>,
+    infer_missing_pce_layout: jboolean,
 ) -> jobject {
     use maleicacid_arib_si_engine_core::codec_signaling::{
         probe_adts_configuration, AacConfigurationProbe,
@@ -940,7 +1061,9 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
         bounded_codec_bytes(&mut env, &asc, 255).map(Some)
     };
     let result = match (input, config) {
-        (Ok(input), Ok(config)) => probe_adts_configuration(&input, config.as_deref()),
+        (Ok(input), Ok(config)) => {
+            probe_adts_configuration(&input, config.as_deref(), infer_missing_pce_layout != 0)
+        }
         (Err(CodecInputFailure::Jni(error)), _) | (_, Err(CodecInputFailure::Jni(error))) => {
             return throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error))
                 as jobject;

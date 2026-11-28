@@ -29,8 +29,14 @@ import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribAvcSignaling
 import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.NativeAribSiParser
+import com.maleicacid.tvinput.aribsi.NativeSiException
+import com.maleicacid.tvinput.aribsi.generated.AacFramePresentationDto
+import com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto
 import com.maleicacid.tvinput.common.CaptionTimestamp
 import com.maleicacid.tvinput.common.LogTags
+import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TsPid
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -66,6 +72,7 @@ class PlaybackPipeline(
         private set
     private var onVideoAvailable: (Long) -> Unit = {}
     private var onVideoUnavailable: (PlaybackUnavailable) -> Unit = {}
+    private var onAudioPresentationChanged: (Long) -> Unit = {}
     private var onVideoFormatDiscovered: (Long, VideoFormatInfo) -> Unit = { _, _ -> }
     private var onSubtitlePes: (Long, String, ByteArray, CaptionTimestamp) -> Unit = { _, _, _, _ -> }
     private var onSubtitleContinuityLost: (Long, String) -> Unit = { _, _ -> }
@@ -193,6 +200,7 @@ class PlaybackPipeline(
         val diagnostics: List<String> = emptyList(),
         val firstFramePending: Boolean = false,
         val generation: Long = -1L,
+        val previousInputClosed: Boolean = false,
     )
 
     data class PlaybackGenerationRestart(
@@ -249,7 +257,9 @@ class PlaybackPipeline(
         val size: Int,
         val presentationTimeUs: Long,
         val isAudio: Boolean,
-    )
+    ) {
+        var startupAacLayout: AacFramePresentationDto? = null
+    }
 
     private data class AvailabilityArm(
         val generation: Long,
@@ -458,6 +468,32 @@ class PlaybackPipeline(
         }
     }
 
+    fun setOnAudioPresentationChanged(callback: (Long) -> Unit) {
+        runOnPlaybackExecutorBlocking { onAudioPresentationChanged = callback }
+    }
+
+    data class AudioPresentationOutput(
+        val pid: TsPid,
+        val selectable: Boolean,
+        val applied: DualMonoPresentation?,
+    )
+
+    fun audioPresentationOutput(
+        service: ServiceKey,
+        facts: Map<TsPid, Boolean?>,
+    ): AudioPresentationOutput? =
+        runOnPlaybackExecutorBlocking {
+            val selection = activeSelection?.takeIf { it.serviceKey == service }
+            val pid = selection?.audio?.elementaryPid
+            if (pid == null || pid !in facts || audioFilter == null) {
+                null
+            } else {
+                val eit = facts[pid]
+                activeSelection = selection.copy(audioDualMono = eit)
+                audioDecoder?.presentationOutput(pid, eit)
+            }
+        }
+
     fun setOnVideoFormatDiscoveredCallback(callback: (Long, VideoFormatInfo) -> Unit) {
         runOnPlaybackExecutorBlocking { onVideoFormatDiscovered = callback }
     }
@@ -491,7 +527,7 @@ class PlaybackPipeline(
             ) {
                 return@runOnPlaybackExecutorBlocking null
             }
-            val applied = decoder.setDualMonoPresentation(presentation)
+            val applied = decoder.selectPresentation(presentation)
             if (applied) activeSelection = activeSelection?.copy(dualMonoPresentation = presentation)
             applied
         }
@@ -632,6 +668,7 @@ class PlaybackPipeline(
         tuner: Tuner,
         channel: TunerController.ResolvedChannel,
         selection: TunerController.AvStreamSelection,
+        restartAacFormat: MediaFormat? = null,
     ): StartResult {
         // 障害後の停止完了通知から来た通常startでは、旧世代を二重に停止しない。
         if (hasActivePlaybackResources()) stopOnPlaybackExecutor()
@@ -705,13 +742,13 @@ class PlaybackPipeline(
                     audioKind!!,
                     audio,
                     selection.audioChannelConfiguration,
-                    selection.audioDualMono == true,
+                    selection.audioDualMono,
                     selection.dualMonoPresentation,
                     streamVolume,
                     startGeneration,
                 ) { reason, detail ->
                     if (startGeneration == playbackGeneration) handleAudioFailure(reason, detail, audioOnly)
-                }
+                }.apply { setStartupAacFormat(restartAacFormat) }
         }
 
         if (video != null && videoDecoderLocal != null) {
@@ -803,18 +840,20 @@ class PlaybackPipeline(
     fun switchAudio(
         tuner: Tuner,
         selection: TunerController.AvStreamSelection,
+        requirePresentation: Boolean = false,
     ): AudioSwitchResult =
         runOnPlaybackExecutorBlocking {
-            switchAudioOnPlaybackExecutor(tuner, selection)
+            switchAudioOnPlaybackExecutor(tuner, selection, requirePresentation)
         }
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("MagicNumber", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod", "ComplexCondition")
+    @Suppress("MagicNumber", "MaxLineLength", "ReturnCount", "CyclomaticComplexMethod", "ComplexCondition", "LongMethod")
     private fun switchAudioOnPlaybackExecutor(
         tuner: Tuner,
         selection: TunerController.AvStreamSelection,
+        requirePresentation: Boolean,
     ): AudioSwitchResult {
         val channel = activeChannel ?: return AudioSwitchResult(false, listOf("current channel 未確定"))
         val audio = selection.audio ?: return AudioSwitchResult(false, listOf("audio PID 未検出"))
@@ -829,27 +868,47 @@ class PlaybackPipeline(
         val sameAudioFormat =
             previous?.audio?.streamType == audio.streamType &&
                 previous.audio.codecFacts == audio.codecFacts &&
-                previous.audioChannelConfiguration == selection.audioChannelConfiguration &&
-                previous.audioDualMono == selection.audioDualMono && previous.dualMonoPresentation == selection.dualMonoPresentation
+                PcmChannelMaskPolicy.multichannelMask(previous.audioChannelConfiguration) ==
+                PcmChannelMaskPolicy.multichannelMask(selection.audioChannelConfiguration)
         if (sameVideoClock && sameAudioFormat && audioDecoder != null) {
             if (previous?.audio?.elementaryPid == audio.elementaryPid && audioFilter != null) {
                 return AudioSwitchResult(true, listOf("AUDIO_SELECTION_UNCHANGED"))
             }
             // 同一クロック・同一構成ならDecoder/AudioTrack/MediaSyncは継続してPID入力だけ替える。
             val oldFilter = audioFilter
+            val switchGeneration = playbackGeneration
             audioFilter = null
             return runCatching {
+                audioDecoder?.invalidateAudioInput()
                 audioDecoder?.discardPendingInput()
                 resourceCleanup.retry()
                 closeFilter(oldFilter)
                 resourceCleanup.requireComplete()
                 createAndStartAvFilter(tuner, audio, isAudio = true).getOrThrow()
                 // 開始成功した実入力と同時に選択を確定する。失敗時は同じ選択から再取得できる。
+                val applied =
+                    audioDecoder?.changePresentationInput(
+                        selection.audioDualMono,
+                        selection.dualMonoPresentation,
+                        requirePresentation,
+                    )
+                if (applied != true) {
+                    if (switchGeneration == playbackGeneration) {
+                        handleAudioFailure(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "切替先の主副モードを適用できません", selection.video == null)
+                    }
+                    return AudioSwitchResult(false, listOf("AUDIO_PID_MODE_FAILED"), previousInputClosed = true)
+                }
                 activeSelection = selection
+                onAudioPresentationChanged(playbackGeneration)
                 AudioSwitchResult(true, listOf("AUDIO_PID_SWITCHED_VIDEO_PRESERVED"))
             }.getOrElse { error ->
+                audioDecoder?.clearAppliedPresentation()
                 logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "音声PID切替失敗: ${error.message}")
-                AudioSwitchResult(false, listOf("AUDIO_PID_SWITCH_FAILED: ${error.message}"))
+                AudioSwitchResult(
+                    false,
+                    listOf("AUDIO_PID_SWITCH_FAILED: ${error.message}"),
+                    previousInputClosed = true,
+                )
             }
         }
         // PID-only切替では映像世代を保持する。全再生成の経路だけSurfaceを要求する。
@@ -862,6 +921,7 @@ class PlaybackPipeline(
             diagnostics = restarted.diagnostics + "MEDIASYNC_GENERATION_RECREATED_FOR_AUDIO_SWITCH",
             firstFramePending = restarted.firstFramePending,
             generation = restarted.generation,
+            previousInputClosed = true,
         )
     }
 
@@ -936,6 +996,7 @@ class PlaybackPipeline(
                                             val event = events[nextEvent++]
                                             if (event is RestartEvent) {
                                                 if (inputIsCurrent()) {
+                                                    if (isAudio) targetAudioDecoder?.invalidateAudioInput()
                                                     val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
                                                     if (target?.hasConfiguredCodec() == true) {
                                                         stopAfterCompressedInputLoss(
@@ -960,6 +1021,8 @@ class PlaybackPipeline(
                                                 dataPathProgress.record(PlaybackDataPathProgress.Stage.VALID_SAMPLE, isAudio)
                                                 val target = (if (isAudio) targetAudioDecoder else targetVideoDecoder) ?: continue
                                                 // queueは受理・拒否とも入力を所有し、自身の失敗時にも解放を保持する。
+                                                if (isAudio) targetAudioDecoder?.observeAac(sample, ::inputIsCurrent)
+                                                if (!inputIsCurrent()) continue
                                                 decoderOwnsEvent = true
                                                 target.queue(sample)
                                             } finally {
@@ -1007,6 +1070,7 @@ class PlaybackPipeline(
                                 )
                                 dataPathProgress.record(PlaybackDataPathProgress.Stage.OVERFLOW, isAudio)
                                 inputIdentity.set(null)
+                                if (isAudio) targetAudioDecoder?.invalidateAudioInput()
                                 val target = if (isAudio) targetAudioDecoder else targetVideoDecoder
                                 if (target?.hasConfiguredCodec() == true) {
                                     stopAfterCompressedInputLoss(
@@ -1476,17 +1540,24 @@ class PlaybackPipeline(
         track.addOnRoutingChangedListener(listener, codecCallbackHandler)
     }
 
+    private fun restartCurrentPlaybackGeneration(originGeneration: Long): Boolean =
+        restartPlaybackWithAacFormat(originGeneration, audioDecoder?.aacFormatForRestart())
+
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("ReturnCount")
-    private fun restartCurrentPlaybackGeneration(originGeneration: Long) {
-        if (originGeneration != playbackGeneration) return
-        val tuner = activeTuner ?: return
-        val channel = activeChannel ?: return
-        val selection = activeSelection ?: return
+    private fun restartPlaybackWithAacFormat(
+        originGeneration: Long,
+        restartAacFormat: MediaFormat?,
+    ): Boolean {
+        if (originGeneration != playbackGeneration) return false
+        val tuner = activeTuner ?: return false
+        val channel = activeChannel ?: return false
+        val selection = activeSelection ?: return false
         completePlaybackFailureAction(originGeneration, onVideoUnavailable) {
-            val restarted = startOnPlaybackExecutor(tuner, channel, selection)
+            val restarted = startOnPlaybackExecutor(tuner, channel, selection, restartAacFormat)
             onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted))
         }
+        return true
     }
 
     private fun handleAudioFailure(
@@ -2162,6 +2233,19 @@ class PlaybackPipeline(
 
         protected open fun onDecoderConfigured(format: MediaFormat) = Unit
 
+        protected fun discardIncompatibleStartupAacInput(isIncompatible: (MediaSample) -> Boolean) {
+            val pending = pendingSamples.iterator()
+            while (pending.hasNext()) {
+                val sample = pending.next()
+                if (isIncompatible(sample)) {
+                    pending.remove()
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
+                    releaseMediaSample(sample)
+                    onSampleRejected("STARTUP_AAC_CONFIGURATION_MISMATCH size=${sample.size}")
+                }
+            }
+        }
+
         protected open fun onOutputFormatChanged(format: MediaFormat) = Unit
 
         protected abstract fun onOutput(
@@ -2485,7 +2569,7 @@ class PlaybackPipeline(
         private val kind: AudioCodecKind,
         private val stream: AribElementaryStream,
         private val channelConfiguration: String?,
-        dualMono: Boolean,
+        dualMono: Boolean?,
         initialDualMonoPresentation: DualMonoPresentation,
         initialVolume: Float,
         override val generation: Long,
@@ -2493,7 +2577,219 @@ class PlaybackPipeline(
     ) : DecoderPipeline() {
         private var volume: Float = initialVolume
         private var dualMonoPresentation: DualMonoPresentation = initialDualMonoPresentation
-        private val isDualMonoStream: Boolean = dualMono
+        private var eitDualMono: Boolean? = dualMono
+        private var aacConfiguration: Int? = null
+        private var receivedAacElementOrder: Int? = null
+        private var aacDualMono: Boolean? = null
+        private var aacInputCurrent: (() -> Boolean)? = null
+        private var independentStereo = false
+        private var startupAacFormat: MediaFormat? = null
+        private var configuredAacAsc: ByteArray? = null
+        private var configuredAacFormat: MediaFormat? = null
+        private var configuredFrontPair: Int? = null
+        private var receivedFrontPair: Int? = null
+        private var appliedPresentation: DualMonoPresentation? = null
+        private var selectable = false
+
+        fun setStartupAacFormat(format: MediaFormat?) {
+            startupAacFormat = format
+        }
+
+        fun aacFormatForRestart(): MediaFormat? = configuredAacFormat.takeIf { aacInputCurrent?.invoke() == true }
+
+        fun invalidateAudioInput() {
+            startupAacFormat = null
+            configuredAacFormat = null
+            aacInputCurrent = null
+            clearReceivedAacPresentation()
+            onAudioPresentationChanged(generation)
+        }
+
+        private fun clearReceivedAacPresentation() {
+            aacConfiguration = null
+            receivedAacElementOrder = null
+            receivedFrontPair = null
+            aacDualMono = null
+        }
+
+        fun changePresentationInput(
+            eit: Boolean?,
+            requested: DualMonoPresentation,
+            requirePresentation: Boolean,
+        ): Boolean {
+            eitDualMono = eit
+            dualMonoPresentation = requested
+            reconcilePresentation()
+            return if (appliedPresentation == null) {
+                !requirePresentation
+            } else {
+                selectable && appliedPresentation == requested
+            }
+        }
+
+        // ADTSの固定ヘッダ長と13ビットのフレーム長に収まる現入力だけを検査する。
+        @Suppress("ReturnCount", "MagicNumber")
+        fun observeAac(
+            sample: MediaSample,
+            current: () -> Boolean,
+        ) {
+            if (kind != AudioCodecKind.AAC_ADTS || sample.size !in 7..8191) return
+            val bytes =
+                runCatching {
+                    val mapped = sample.block.map().duplicate()
+                    mapped.position(sample.offset)
+                    mapped.limit(sample.offset + sample.size)
+                    val bytes = ByteArray(sample.size)
+                    mapped.get(bytes)
+                    bytes
+                }.getOrNull() ?: return
+            aacInputCurrent = current
+            try {
+                val value = NativeAribSiParser.adtsPresentation(bytes)
+                if (current() && value.status == AacProbeStatusDto.Ready) {
+                    if (!hasConfiguredCodec() && value.dualMono != null && !value.hasProgramConfig) {
+                        sample.startupAacLayout = value
+                    }
+                    updateAacPresentation(bytes, value, current)
+                }
+            } catch (error: NativeSiException) {
+                if (current()) reportAacPresentationFailure(error)
+            }
+        }
+
+        private fun reportAacPresentationFailure(error: NativeSiException) {
+            logAacPresentationFailure(error)
+            clearReceivedAacPresentation()
+            reconcilePresentation()
+            onAudioPresentationChanged(generation)
+        }
+
+        private fun logAacPresentationFailure(error: NativeSiException) {
+            Log.w(
+                LogTags.TIS,
+                "PLAYBACK_AAC_PRESENTATION_FAILED sessionId=$sessionId generation=$generation reason=${error.reason}",
+                error,
+            )
+        }
+
+        // 未判定入力では再生成せず、設定済みASCとの構成不一致が確定した場合だけ作り直す。
+        private fun updateAacPresentation(
+            bytes: ByteArray,
+            value: AacFramePresentationDto,
+            current: () -> Boolean,
+        ) {
+            val configuration = checkNotNull(value.configuration)
+            val sameConfiguration = aacConfiguration == configuration && aacInputCurrent?.invoke() == true
+            val fact = value.dualMono ?: aacDualMono.takeIf { sameConfiguration }
+            val pair = if (value.dualMono == null && sameConfiguration) receivedFrontPair else value.frontPair
+            val order = value.elementOrder ?: receivedAacElementOrder.takeIf { sameConfiguration }
+            val samePresentation = sameConfiguration && aacDualMono == fact && receivedFrontPair == pair
+            // 構成キーと主副が同じでも、判定できた音声要素の配置が変われば照合する。
+            val recheckConfiguration = !sameConfiguration || value.hasProgramConfig || order != receivedAacElementOrder
+            if (recheckConfiguration && restartForInBandAacChange(bytes, value.hasProgramConfig, current)) return
+            receivedAacElementOrder = order
+            if (samePresentation) return
+            receivedFrontPair = pair
+            aacConfiguration = configuration
+            aacDualMono = fact
+            reconcilePresentation()
+            onAudioPresentationChanged(generation)
+        }
+
+        // PCEのない完全な入力でも、設定済みASCと照合して不一致を確定できる。
+        @Suppress("ReturnCount")
+        private fun restartForInBandAacChange(
+            frame: ByteArray,
+            hasProgramConfig: Boolean,
+            current: () -> Boolean,
+        ): Boolean {
+            val configured = configuredAacAsc ?: return false
+            if (stream.codecFacts.audioConfigHex != null || audioDecoder !== this) return false
+            val format =
+                try {
+                    CodecFormatPolicy.adtsAudioFormat(frame, stream.codecFacts, stream.codec)
+                } catch (_: UnsupportedCodecFormat) {
+                    return false
+                }
+            if (!current()) return false
+            if (format == null) {
+                if (hasProgramConfig) return false
+                val matches = NativeAribSiParser.matchesInheritedAacConfiguration(frame, configured)
+                return matches == false && restartWithInferredAacFormat(frame, current)
+            }
+            val asc = aacAsc(format) ?: return false
+            val changed =
+                !asc.contentEquals(configured) && !NativeAribSiParser.sameAacDecoderConfiguration(configured, asc)
+            if (changed) return restartPlaybackWithAacFormat(generation, format)
+            configuredAacFormat = format
+            return false
+        }
+
+        // 不一致を確定した現入力だけから合成し、同じ構成のPCE由来設定は維持する。
+        private fun restartWithInferredAacFormat(
+            frame: ByteArray,
+            current: () -> Boolean,
+        ): Boolean {
+            val replacement =
+                try {
+                    CodecFormatPolicy.adtsAudioFormat(
+                        frame,
+                        stream.codecFacts,
+                        stream.codec,
+                        inferMissingPceLayout = true,
+                    )
+                } catch (_: UnsupportedCodecFormat) {
+                    null
+                } catch (error: NativeSiException) {
+                    logAacPresentationFailure(error)
+                    null
+                }
+            if (!current()) return false
+            if (!restartPlaybackWithAacFormat(generation, replacement)) {
+                stopAfterCompressedInputLoss(generation, "AAC_CONFIGURATION_MISMATCH")
+            }
+            return true
+        }
+
+        fun presentationOutput(
+            pid: TsPid,
+            eit: Boolean?,
+        ): AudioPresentationOutput? {
+            eitDualMono = eit
+            reconcilePresentation()
+            if (audioTrack == null || (!selectable && appliedPresentation != null)) return null
+            return AudioPresentationOutput(pid, selectable, appliedPresentation)
+        }
+
+        private fun reconcilePresentation() {
+            if (audioTrack == null) return
+            val fact = eitDualMono ?: aacDualMono.takeIf { aacInputCurrent?.invoke() == true }
+            val matchesLayout =
+                if (aacInputCurrent?.invoke() == true && aacConfiguration != null) {
+                    receivedFrontPair == configuredFrontPair && aacDualMono == true
+                } else {
+                    stream.codecFacts.audioConfigHex != null
+                }
+            val available = independentStereo && configuredFrontPair != null && matchesLayout && fact == true
+            if (available) {
+                selectable = appliedPresentation == dualMonoPresentation ||
+                    setDualMonoPresentation(dualMonoPresentation)
+            } else {
+                clearAppliedPresentation()
+            }
+        }
+
+        fun clearAppliedPresentation() {
+            selectable = false
+            val track = audioTrack ?: return
+            if (appliedPresentation == null) return
+            if (runCatching { track.setDualMonoMode(AudioTrack.DUAL_MONO_MODE_OFF) }.getOrDefault(false)) {
+                appliedPresentation = null
+            } else {
+                errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "失効した二重音声モードを解除できません")
+            }
+        }
+
         private var outputSampleRate: Int = DEFAULT_AUDIO_SAMPLE_RATE
         private var outputChannels: Int = DEFAULT_AUDIO_CHANNEL_COUNT
         private var outputPcmFormat: OutputPcmFormat? = null
@@ -2506,12 +2802,19 @@ class PlaybackPipeline(
             audioTrack?.let { track -> runCatching { track.setVolume(value) } }
         }
 
+        fun selectPresentation(presentation: DualMonoPresentation): Boolean {
+            reconcilePresentation()
+            return selectable && setDualMonoPresentation(presentation)
+        }
+
         // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
         @Suppress("ReturnCount")
-        fun setDualMonoPresentation(presentation: DualMonoPresentation): Boolean {
-            if (!isDualMonoStream) return false
-            val track = audioTrack
-            if (track != null && !track.setDualMonoMode(audioTrackDualMonoMode(presentation))) return false
+        private fun setDualMonoPresentation(presentation: DualMonoPresentation): Boolean {
+            val track = audioTrack ?: return false
+            val mode = audioTrackDualMonoMode(presentation)
+            val applied = runCatching { track.setDualMonoMode(mode) }.getOrDefault(false)
+            if (!applied) return false
+            appliedPresentation = presentation
             dualMonoPresentation = presentation
             return true
         }
@@ -2522,14 +2825,67 @@ class PlaybackPipeline(
 
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? =
             when (kind) {
-                AudioCodecKind.AAC_ADTS -> CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
-                AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> EsHeaderParser.mpegAudioFormat(bytes)
+                AudioCodecKind.AAC_ADTS -> {
+                    val inherited = startupAacFormat
+                    val detected =
+                        CodecFormatPolicy.adtsAudioFormat(
+                            bytes,
+                            stream.codecFacts,
+                            stream.codec,
+                            inferMissingPceLayout = inherited == null,
+                        )
+                    if (detected != null || inherited == null) {
+                        startupAacFormat = null
+                        detected
+                    } else {
+                        val matches =
+                            aacAsc(inherited)?.let { asc ->
+                                NativeAribSiParser.matchesInheritedAacConfiguration(bytes, asc)
+                            }
+                        if (matches != null) startupAacFormat = null
+                        inherited.takeIf { matches == true }
+                    }
+                }
+
+                AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> {
+                    EsHeaderParser.mpegAudioFormat(bytes)
+                }
             }
 
         override fun onDecoderConfigured(format: MediaFormat) {
+            configuredAacAsc = if (kind == AudioCodecKind.AAC_ADTS) aacAsc(format) else null
+            if (kind == AudioCodecKind.AAC_ADTS) {
+                val asc = configuredAacAsc
+                discardIncompatibleStartupAacInput { sample ->
+                    // 既に確認した構文だけを、実際に採用したASCと照合する。
+                    val layout = sample.startupAacLayout
+                    sample.startupAacLayout = null
+                    if (asc == null || layout == null) return@discardIncompatibleStartupAacInput false
+                    try {
+                        NativeAribSiParser.observedAacConfigurationMismatch(layout, asc)
+                    } catch (error: NativeSiException) {
+                        logAacPresentationFailure(error)
+                        false
+                    }
+                }
+            }
+            configuredAacFormat = format.takeIf { configuredAacAsc != null && stream.codecFacts.audioConfigHex == null }
+            configuredFrontPair =
+                try {
+                    configuredAacAsc?.let(NativeAribSiParser::frontPairForDecoder)
+                } catch (error: NativeSiException) {
+                    logAacPresentationFailure(error)
+                    null
+                }
             outputSampleRate = getIntegerOrDefault(format, MediaFormat.KEY_SAMPLE_RATE, DEFAULT_AUDIO_SAMPLE_RATE)
             outputChannels = getIntegerOrDefault(format, MediaFormat.KEY_CHANNEL_COUNT, DEFAULT_AUDIO_CHANNEL_COUNT)
         }
+
+        private fun aacAsc(format: MediaFormat): ByteArray? =
+            format.getByteBuffer("csd-0")?.duplicate()?.let { csd ->
+                if (csd.remaining() > MAX_AAC_ASC_BYTES) return@let null
+                ByteArray(csd.remaining()).also { csd.get(it) }
+            }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
@@ -2586,7 +2942,12 @@ class PlaybackPipeline(
             outputSampleRate = sampleRate
             outputChannels = channelCount
             outputPcmFormat = next
+            // 製品のC2SoftAacDecはFDKの既定の独立出力を使う。未知のcodecや推定maskには適用しない。
+            independentStereo = codec?.canonicalName == "c2.android.aac.decoder" &&
+                channelCount == 2 && decoderMask == AudioFormat.CHANNEL_OUT_STEREO
             ensureAudioTrack(channelMask)
+            reconcilePresentation()
+            onAudioPresentationChanged(generation)
         }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -2695,9 +3056,6 @@ class PlaybackPipeline(
             preparePlaybackResource(
                 prepare = {
                     created.setVolume(volume)
-                    check(!isDualMonoStream || created.setDualMonoMode(audioTrackDualMonoMode(dualMonoPresentation))) {
-                        "ARIB dual-mono presentationをAudioTrackへ設定できません channelConfiguration=$channelConfiguration"
-                    }
                     requireNotNull(mediaSync).setAudioTrack(created)
                     observeAudioRouting(created, generation)
                 },
@@ -3425,6 +3783,11 @@ class PlaybackPipeline(
         }
 
         @Suppress("MagicNumber")
+        fun multichannelMask(configuration: String?): Int? {
+            val mask = fromChannelConfiguration(configuration)
+            return mask?.takeIf { Integer.bitCount(it) > 2 }
+        }
+
         fun fromChannelConfiguration(channelConfiguration: String?): Int? =
             when (channelConfiguration) {
                 "1/0" -> AudioFormat.CHANNEL_OUT_MONO
@@ -3886,6 +4249,7 @@ class PlaybackPipeline(
         private const val AUDIO_DIAGNOSTIC_SAMPLE_INTERVAL = 32L
         private const val AUDIO_DIAGNOSTIC_SLOW_US = 100_000L
 
+        private const val MAX_AAC_ASC_BYTES = 512
         private const val DEFAULT_AUDIO_SAMPLE_RATE = 48_000
         private const val DEFAULT_AUDIO_CHANNEL_COUNT = 2
         private const val FIRST_FRAME_TIMEOUT_MS = 10_000L

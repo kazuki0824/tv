@@ -10,6 +10,32 @@ pub enum AacProbeStatusDto {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AacFramePresentationDto {
+    pub status: AacProbeStatusDto,
+    pub reason: Option<String>,
+    pub configuration: Option<i32>,
+    pub dual_mono: Option<bool>,
+    pub front_pair: Option<i32>,
+    pub element_order: Option<i32>,
+    pub has_program_config: bool,
+}
+
+impl AacFramePresentationDto {
+    pub fn unresolved(status: AacProbeStatusDto, reason: Option<&str>) -> Self {
+        Self {
+            status,
+            reason: reason.map(str::to_owned),
+            configuration: None,
+            dual_mono: None,
+            front_pair: None,
+            element_order: None,
+            has_program_config: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AacAdtsConfigurationDto {
     pub audio_object_type: i32,
     pub sampling_frequency: i32,

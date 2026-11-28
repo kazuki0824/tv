@@ -9,7 +9,7 @@
 - JNI入口はロック解放後に full 経路では `jvm_snapshot_generated::snapshot_to_java`、bounded collection 経路では `jvm_snapshot_generated::si_collection_snapshot_to_java` を呼び、Rust DTOからsame-build codegen生成Kotlin DTOを直接構築する。Kotlin側はfull `BulkSnapshotDto`を`GeneratedSiSnapshotMapper.toDomainSnapshot()`で`NativeSiSnapshot`へ、bounded `SiCollectionSnapshotDto`を`GeneratedSiSnapshotMapper.toDomainServiceRegistrationSnapshot()`で`ServiceRegistrationSnapshot`へ機械的に投影する。production SI snapshot境界でJSON文字列化、`serde_json::to_value` によるdynamic object graph化、`JSONObject` / `JSONArray` の生成を行わない。
 - field集合、意味、値域、nullable条件、enum選択、cross-field不変条件はRust側のSI意味型・snapshot構築処理をSSOTとする。JVM constructionは検証済みfactの機械的投影だけに限定する。
 - PMT section-filter bootstrapのcontrol snapshotは `nativeSnapshotPmtPidsForSectionFilters()` から `IntArray` を返し、JSON文字列境界を設けない。
-- AAC codec probe は `codec_probe_dto.rs` の `AacConfigurationProbeDto` / `AacAdtsConfigurationDto` / `AacProbeStatusDto` を transport SSOT とし、同じ serde-reflection / serde-generate 生成物を JVM へ直接構築する。codec probe の結果をJSON文字列化しない。
+- AAC codec probe は `codec_probe_dto.rs` の `AacConfigurationProbeDto` / `AacAdtsConfigurationDto` / `AacFramePresentationDto` / `AacProbeStatusDto` を transport SSOT とし、同じ serde-reflection / serde-generate 生成物を JVM へ直接構築する。codec probe の結果をJSON文字列化しない。
 
 - non-blocking `try_snapshot_si_collection_typed` では `TryLockError::WouldBlock` だけを正常な未取得として返す。registry/parser poison、invalid handle、JNI変換失敗はtyped failureのまま保持し、busyへ丸めない。blocking/non-blockingの双方は同じRust意味factを投影する。
 

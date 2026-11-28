@@ -101,6 +101,7 @@ class MaleicacidLiveSession(
     private var frontendSignalUnavailable: Boolean = false
     private var selectedSubtitleTrackId: String? = null
     private var subtitleExplicitlyDisabled: Boolean = false
+    private var notifiedAudioTrackId: String? = null
     private var currentTrackSignature: Set<String> = emptySet()
     private val captionOverlayView = CaptionOverlayView(appContext)
     private val captionController =
@@ -162,6 +163,13 @@ class MaleicacidLiveSession(
             onVideoAvailable = { generation -> enqueueSessionAction { handleFirstFrameAvailable(generation) } },
             onVideoUnavailable = { reason -> enqueueSessionAction { handlePlaybackUnavailable(reason) } },
         )
+        tunerController.setOnAudioPresentationChanged { generation ->
+            enqueueSessionAction {
+                if (PlaybackStartTransitions.acceptsGeneration(playbackState, generation)) {
+                    latestService?.let(::updateTracks)
+                }
+            }
+        }
         tunerController.setOnVideoFormatDiscoveredCallback { generation, info ->
             enqueueSessionAction { updateCurrentProgramVideoMetadata(generation, info) }
         }
@@ -307,9 +315,7 @@ class MaleicacidLiveSession(
         }
         cancelPlaybackRetry()
         if (surface?.isValid != true) {
-            playbackState = PlaybackStartState.Stopped
-            tunerController.stopPlayback()
-            beginCaptionPresentationGeneration(-1L, false)
+            stopPlaybackAndRefreshTracks()
             // 表示先の返却は再生障害ではない。実障害の通知は既存の失敗経路に委ねる。
         } else {
             playbackState = PlaybackStartState.Idle
@@ -512,6 +518,7 @@ class MaleicacidLiveSession(
         captionController.selectTrack(null)
         superimposeController.setEnabled(true)
         superimposeController.selectTrack(null)
+        notifiedAudioTrackId = null
         currentTrackSignature = emptySet()
     }
 
@@ -575,6 +582,7 @@ class MaleicacidLiveSession(
                 try {
                     SectionFilterPolicy.completeCleanup(
                         { beginCaptionPresentationGeneration(-1L, false) },
+                        ::refreshPublishedAudioSelection,
                         { notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
                     )
                 } catch (cleanup: Exception) {
@@ -600,6 +608,7 @@ class MaleicacidLiveSession(
                 playbackState = PlaybackStartState.Stopped
                 // ControllerのCAS更新が既にpipelineを停止しているため、世代を二重に進めない。
                 beginCaptionPresentationGeneration(-1L, false)
+                refreshPublishedAudioSelection()
                 notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING)
             }
         }
@@ -627,9 +636,7 @@ class MaleicacidLiveSession(
                     playbackState is PlaybackStartState.Starting || playbackRetryTask != null
             if (wasActive) {
                 cancelPlaybackRetry()
-                playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
-                beginCaptionPresentationGeneration(-1L, false)
+                stopPlaybackAndRefreshTracks()
             }
             if (wasActive || casErrors.isNotEmpty()) notifyVideoUnavailable(casUnavailableReason)
             return
@@ -724,9 +731,7 @@ class MaleicacidLiveSession(
                     "audioType=${selection.audio?.streamType} audioOnly=$audioOnly",
             )
             cancelPlaybackRetry()
-            playbackState = PlaybackStartState.Stopped
-            tunerController.stopPlayback()
-            beginCaptionPresentationGeneration(-1L, false)
+            stopPlaybackAndRefreshTracks()
             val failure =
                 if (audioOnly) {
                     PlaybackPipeline.PlaybackUnavailable(
@@ -812,7 +817,6 @@ class MaleicacidLiveSession(
                     DecoderConfigurationIdentity.from(
                         it,
                         selection.audioChannelConfiguration,
-                        selection.audioDualMono,
                     )
                 },
             subtitlePid = selection.subtitle?.elementaryPid,
@@ -839,14 +843,7 @@ class MaleicacidLiveSession(
                 }
             if (tunerController.setDualMonoPresentation(presentation) == true) {
                 dualMonoPresentation = presentation
-                latestService?.let { service ->
-                    displayTracksFor(service)
-                        .firstOrNull { track ->
-                            track.type == TvTrackInfo.TYPE_AUDIO &&
-                                TunerSelectionPolicy.physicalAudioTrackId(track) == preferredAudioTrackId &&
-                                track.audioPresentation == presentation
-                        }?.let { notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id) }
-                }
+                latestService?.let(::updateTracks)
             }
         }
     }
@@ -891,8 +888,7 @@ class MaleicacidLiveSession(
                     preferredAudioTrackId = physicalTrackId
                     dualMonoPresentation = presentation
                     audioFallbackDisabled = false
-                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
-                    return true
+                    return requested.audioPresentation == null
                 }
                 if (playbackState !is PlaybackStartState.Started) return false
                 if (physicalTrackId == preferredAudioTrackId && requested.audioPresentation != null) {
@@ -902,8 +898,8 @@ class MaleicacidLiveSession(
                         if (!applied) return false
                         dualMonoPresentation = presentation
                         audioFallbackDisabled = false
-                        notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
-                        return true
+                        updateTracks(service)
+                        return notifiedAudioTrackId == requested.id
                     }
                 }
                 val previousAudioTrackId = preferredAudioTrackId
@@ -938,7 +934,7 @@ class MaleicacidLiveSession(
                         dualMonoPresentation = previousDualMonoPresentation
                         return false
                     }
-                val switched = tunerController.switchAudioTrack(selection)
+                val switched = tunerController.switchAudioTrack(selection, requirePresentation = requested.audioPresentation != null)
                 if (switched != null && switched.generation >= 0L) {
                     val next =
                         PlaybackStartTransitions.afterRestartResult(
@@ -956,12 +952,18 @@ class MaleicacidLiveSession(
                             updatePlaybackStartState(current.copy(signature = signature))
                         }
                     }
-                    notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, requested.id)
-                    true
+                    updateTracks(service)
+                    requested.audioPresentation == null || notifiedAudioTrackId == requested.id
                 } else {
-                    preferredAudioTrackId = previousAudioTrackId
-                    audioFallbackDisabled = previousAudioFallbackDisabled
-                    dualMonoPresentation = previousDualMonoPresentation
+                    if (switched?.previousInputClosed == true) {
+                        preferredAudioTrackId = null
+                        updateTracks(service)
+                        publishAudioSelection(null)
+                    } else {
+                        preferredAudioTrackId = previousAudioTrackId
+                        audioFallbackDisabled = previousAudioFallbackDisabled
+                        dualMonoPresentation = previousDualMonoPresentation
+                    }
                     false
                 }
             }
@@ -1055,18 +1057,35 @@ class MaleicacidLiveSession(
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    private fun publishAudioSelection(id: String?) {
+        if (notifiedAudioTrackId == id) return
+        notifiedAudioTrackId = id
+        notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, id)
+    }
+
+    private fun currentAudioOutput(service: AribService): PlaybackPipeline.AudioPresentationOutput? {
+        val facts =
+            service.streams.filter(TunerSelectionPolicy::isSupportedAudioStream).associate { stream ->
+                stream.elementaryPid to currentAudioComponent(service.serviceKey, stream.componentTag)?.dualMono
+            }
+        return tunerController.audioPresentationOutput(service.serviceKey, facts)
+    }
+
     private fun displayTracksFor(
         service: AribService,
         defaultComponentGroupTags: Set<Int>? = currentDefaultComponentGroupTags(service.serviceKey),
+        output: PlaybackPipeline.AudioPresentationOutput? = currentAudioOutput(service),
     ): List<TunerController.TisTrack> =
         TunerSelectionPolicy.withDualMonoPresentations(
             tunerController.tracksFor(service.streams, defaultComponentGroupTags),
+            { track, _ -> output?.selectable == true && track.pid == output.pid },
         ) { componentTag -> currentAudioComponent(service.serviceKey, componentTag) }
 
     @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength")
     private fun updateTracks(service: AribService) {
         val defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey)
-        val tracks = displayTracksFor(service, defaultComponentGroupTags)
+        val output = currentAudioOutput(service)
+        val tracks = displayTracksFor(service, defaultComponentGroupTags, output)
         val audioMetadataByTrackId =
             tracks
                 .filter { it.type == TvTrackInfo.TYPE_AUDIO }
@@ -1084,7 +1103,7 @@ class MaleicacidLiveSession(
                         projected.copy(
                             language =
                                 if (track.audioPresentation == PlaybackPipeline.DualMonoPresentation.SUB) {
-                                    component?.secondLanguage?.takeIf { it.isNotBlank() } ?: projected.language
+                                    component?.secondLanguage?.takeIf { it.isNotBlank() }
                                 } else {
                                     projected.language
                                 },
@@ -1155,22 +1174,15 @@ class MaleicacidLiveSession(
             // トラック集合が変わらないSI更新では、選択通知も繰り返さない。
             // 明示的な選択操作はonSelectTrackで別途通知する。
             tracks.firstOrNull { it.type == TvTrackInfo.TYPE_VIDEO }?.let { notifyTrackSelected(TvTrackInfo.TYPE_VIDEO, it.id) }
-            val selectedAudio =
-                preferredAudioTrackId?.let { wanted ->
-                    tracks.firstOrNull { track ->
-                        track.type == TvTrackInfo.TYPE_AUDIO &&
-                            TunerSelectionPolicy.physicalAudioTrackId(track) == wanted &&
-                            (track.audioPresentation == null || track.audioPresentation == dualMonoPresentation)
-                    }
-                } ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO }
-            selectedAudio?.let {
-                preferredAudioTrackId = TunerSelectionPolicy.physicalAudioTrackId(it)
-                // EITから論理選択肢が消えても、物理PIDの通知だけで実音声modeを変更したことにしない。
-                it.audioPresentation?.let { presentation -> dualMonoPresentation = presentation }
-                notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id)
-            }
             updateSubtitleSelection(tracks)
         }
+        val applied =
+            tracks.firstOrNull { track ->
+                output != null && track.type == TvTrackInfo.TYPE_AUDIO && track.pid == output.pid &&
+                    track.audioPresentation == output.applied
+            }
+        if (applied != null) preferredAudioTrackId = TunerSelectionPolicy.physicalAudioTrackId(applied)
+        publishAudioSelection(applied?.id)
         updateSuperimposeSelection(service)
     }
 
@@ -1216,7 +1228,12 @@ class MaleicacidLiveSession(
     }
 
     private fun updatePlaybackStartState(next: PlaybackStartState) {
+        val previousGeneration = PlaybackStartTransitions.pipelineGeneration(playbackState)
         playbackState = next
+        val generationChanged = previousGeneration != PlaybackStartTransitions.pipelineGeneration(next)
+        if (generationChanged || next is PlaybackStartState.Failed) {
+            refreshPublishedAudioSelection()
+        }
         if (next is PlaybackStartState.Failed) {
             beginCaptionPresentationGeneration(-1L, false)
         } else {
@@ -1226,6 +1243,19 @@ class MaleicacidLiveSession(
             )
         }
         onCaptionPlaybackClockChanged()
+    }
+
+    private fun stopPlaybackAndRefreshTracks() {
+        playbackState = PlaybackStartState.Stopped
+        tunerController.stopPlayback()
+        beginCaptionPresentationGeneration(-1L, false)
+        refreshPublishedAudioSelection()
+    }
+
+    private fun refreshPublishedAudioSelection() {
+        if (notifiedAudioTrackId != null) {
+            latestService?.let(::updateTracks) ?: publishAudioSelection(null)
+        }
     }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
@@ -1270,6 +1300,7 @@ class MaleicacidLiveSession(
         cancelPlaybackRetry()
         playbackState = PlaybackStartState.Stopped
         beginCaptionPresentationGeneration(-1L, false)
+        refreshPublishedAudioSelection()
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
     }
 
@@ -1282,9 +1313,7 @@ class MaleicacidLiveSession(
             OnTuneEventListener.SIGNAL_NO_SIGNAL, OnTuneEventListener.SIGNAL_LOST_LOCK -> {
                 frontendSignalUnavailable = true
                 cancelPlaybackRetry()
-                playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
-                beginCaptionPresentationGeneration(-1L, false)
+                stopPlaybackAndRefreshTracks()
                 notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_WEAK_SIGNAL)
             }
 
@@ -1312,6 +1341,9 @@ class MaleicacidLiveSession(
             "PLAYBACK_UNAVAILABLE_ACCEPTED sessionId=$sessionId generation=${reason.generation} " +
                 "reason=${reason.reason} detail=${reason.detail}",
         )
+        if (!tunerController.isCurrentPlaybackGeneration(reason.generation)) {
+            refreshPublishedAudioSelection()
+        }
         if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED) {
             cancelPlaybackRetry()
             playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
@@ -1427,9 +1459,7 @@ class MaleicacidLiveSession(
     private fun stopPlaybackForBlockedContent(blocked: BlockedContent) {
         notifyContentBlocked(blocked.rating)
         cancelPlaybackRetry()
-        playbackState = PlaybackStartState.Stopped
-        tunerController.stopPlayback()
-        beginCaptionPresentationGeneration(-1L, false)
+        stopPlaybackAndRefreshTracks()
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

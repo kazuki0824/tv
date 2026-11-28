@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.aribsi.generated.AacFramePresentationDto
 import com.maleicacid.tvinput.aribsi.generated.SiCollectionSnapshotDto
 import com.maleicacid.tvinput.common.TsPid
 
@@ -302,8 +303,9 @@ class NativeAribSiParser : AutoCloseable {
         internal fun probeAacConfiguration(
             adts: ByteArray,
             ascHex: String?,
+            inferMissingPceLayout: Boolean = false,
         ): AribAacConfiguration? {
-            val result = nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) })
+            val result = nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) }, inferMissingPceLayout)
             return when (result.status) {
                 com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Pending -> {
                     null
@@ -327,9 +329,63 @@ class NativeAribSiParser : AutoCloseable {
             }
         }
 
+        @JvmStatic private external fun configuredFrontPair(asc: ByteArray): Int
+
+        internal fun frontPairForDecoder(asc: ByteArray): Int? = configuredFrontPair(asc).takeIf { it >= 0 }
+
+        @JvmStatic
+        private external fun nativeSameAacDecoderConfiguration(
+            first: ByteArray,
+            second: ByteArray,
+        ): Boolean
+
+        internal fun sameAacDecoderConfiguration(
+            first: ByteArray,
+            second: ByteArray,
+        ): Boolean = nativeSameAacDecoderConfiguration(first, second)
+
+        @JvmStatic
+        private external fun nativeMatchesInheritedAacConfiguration(
+            frame: ByteArray,
+            asc: ByteArray,
+        ): Int
+
+        internal fun matchesInheritedAacConfiguration(
+            frame: ByteArray,
+            asc: ByteArray,
+        ): Boolean? =
+            when (nativeMatchesInheritedAacConfiguration(frame, asc)) {
+                0 -> false
+                1 -> true
+                else -> null
+            }
+
+        @JvmStatic
+        private external fun nativeMatchesObservedAacConfiguration(
+            configuration: Int,
+            elementOrder: Int,
+            asc: ByteArray,
+        ): Int
+
+        internal fun observedAacConfigurationMismatch(
+            frame: AacFramePresentationDto,
+            asc: ByteArray,
+        ): Boolean =
+            nativeMatchesObservedAacConfiguration(
+                checkNotNull(frame.configuration),
+                frame.elementOrder ?: -1,
+                asc,
+            ) == 0
+
+        @JvmStatic private external fun probeDualMono(frame: ByteArray): AacFramePresentationDto?
+
+        internal fun adtsPresentation(frame: ByteArray): AacFramePresentationDto =
+            probeDualMono(frame) ?: throw NativeSiException("JNI_OUTPUT", "JNIがAACフレーム判定を返しませんでした")
+
         @JvmStatic private external fun nativeProbeAacConfiguration(
             adts: ByteArray,
             asc: ByteArray?,
+            inferMissingPceLayout: Boolean,
         ): com.maleicacid.tvinput.aribsi.generated.AacConfigurationProbeDto
 
         init {

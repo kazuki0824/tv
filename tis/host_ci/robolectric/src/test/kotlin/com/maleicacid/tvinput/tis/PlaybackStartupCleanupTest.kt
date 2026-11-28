@@ -1,6 +1,7 @@
 package com.maleicacid.tvinput.tis
 
 import android.graphics.SurfaceTexture
+import android.media.AudioTrack
 import android.media.MediaSync
 import android.media.PlaybackParams
 import android.media.tv.tuner.Tuner
@@ -186,6 +187,9 @@ class PlaybackStartupCleanupTest {
         fun createInputSurface(): Surface = Surface(SurfaceTexture(0))
 
         @Implementation
+        fun setAudioTrack(track: AudioTrack) = Unit
+
+        @Implementation
         fun setPlaybackParams(params: PlaybackParams) = Unit
 
         @Implementation
@@ -198,6 +202,13 @@ class PlaybackStartupCleanupTest {
         fun setOnErrorListener(
             listener: MediaSync.OnErrorListener?,
             handler: Handler?,
+        ) = Unit
+
+        @Implementation
+        fun queueAudio(
+            buffer: java.nio.ByteBuffer,
+            bufferId: Int,
+            presentationTimeUs: Long,
         ) = Unit
 
         @Implementation

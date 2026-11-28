@@ -269,6 +269,9 @@ fn channel_count_for_configuration(configuration: u8) -> Option<u8> {
 }
 
 struct ProgramConfig {
+    element_tags: [u16; 4],
+    arib_element_order: Option<[(u8, u8); 2]>,
+    front_pair: Option<[u8; 2]>,
     object_type: u8,
     frequency_index: u8,
     channel_count: u8,
@@ -297,9 +300,13 @@ fn parse_program_config(bits: &mut AudioConfigBits<'_>) -> Option<ProgramConfig>
     }
     let mut channel_count = 0u8;
     let mut tags = std::collections::BTreeSet::new();
-    for _ in 0..front + side + back {
+    let mut first_elements = [(0, 0); 2];
+    for index in 0..front + side + back {
         let pair = bits.read(1)?;
         let tag = bits.read(4)?;
+        if let Some(slot) = first_elements.get_mut(index as usize) {
+            *slot = (pair as u8, tag as u8);
+        }
         if !tags.insert((pair, tag)) {
             return None;
         }
@@ -324,7 +331,20 @@ fn parse_program_config(bits: &mut AudioConfigBits<'_>) -> Option<ProgramConfig>
     let comment_end = comment_start.checked_add(1 + comment_count)?;
     bits.bytes.get(comment_start..comment_end)?;
     bits.offset = comment_end * 8;
+    let mut element_tags = [0u16; 4];
+    for (kind, tag) in tags {
+        element_tags[kind as usize] |= 1 << tag;
+    }
+    let front_pair = (front == 2 && side + back + lfe == 0 && element_tags[0].count_ones() == 2)
+        .then(|| first_elements.map(|(_, tag)| tag));
+    // channel_configuration=0では、主副の前方2 SCEまたは前方CPE→後方要素を照合できる。
+    let arib_element_order = (front_pair.is_some()
+        || (front == 1 && side == 0 && back == 1 && lfe == 0 && first_elements[0].0 == 1))
+        .then_some(first_elements);
     Some(ProgramConfig {
+        element_tags,
+        arib_element_order,
+        front_pair,
         object_type,
         frequency_index,
         channel_count,
@@ -355,6 +375,7 @@ pub struct AacAdtsConfiguration {
 pub fn probe_adts_configuration(
     bytes: &[u8],
     supplied_asc: Option<&[u8]>,
+    infer_missing_pce_layout: bool,
 ) -> AacConfigurationProbe {
     let mut cursor = 0usize;
     while let Some(header) = bytes.get(cursor..).and_then(|tail| tail.get(..7)) {
@@ -437,6 +458,59 @@ pub fn probe_adts_configuration(
                     if frame_end > bytes.len() {
                         return AacConfigurationProbe::Pending;
                     }
+                    if let Some(aac_elements::ParsedAacFrame {
+                        presentation,
+                        first_elements,
+                        has_program_config: false,
+                        ..
+                    }) = infer_missing_pce_layout
+                        .then(|| aac_elements::parse_frame(&bytes[cursor..frame_end]))
+                        .flatten()
+                    {
+                        // STD-B32 5.2.3(2): 2 SCEは両方前方、CPE→SCE/CPEは前方と後方。
+                        let (front, back) = if presentation == AacPresentation::DualMono {
+                            (2, 0)
+                        } else {
+                            (1, 1)
+                        };
+                        let elements = first_elements.map(|(kind, tag)| (kind << 4) | tag);
+                        let channel_count = 2 + first_elements[0].0 + first_elements[1].0;
+                        let mut config = prefix.to_vec();
+                        let mut index = 0;
+                        for (value, width) in [
+                            (0, 4),
+                            (1, 2),
+                            (frequency_index, 4),
+                            (front, 4),
+                            (0, 4),
+                            (back, 4),
+                            (0, 2),
+                            (0, 3),
+                            (0, 4),
+                            (0, 3),
+                            (elements[0], 5),
+                            (elements[1], 5),
+                        ] {
+                            for bit in (0..width).rev() {
+                                if index % 8 == 0 {
+                                    config.push(0);
+                                }
+                                config[2 + index / 8] |= ((value >> bit) & 1) << (7 - index % 8);
+                                index += 1;
+                            }
+                        }
+                        config.push(0);
+                        return AacConfigurationProbe::Ready {
+                            configuration: AacAdtsConfiguration {
+                                audio_object_type: object_type,
+                                sampling_frequency: frequency,
+                                extension_sampling_frequency: None,
+                                channel_configuration: 0,
+                                channel_count,
+                                audio_specific_config_hex: hex(&config),
+                            },
+                        };
+                    }
                     cursor = frame_end;
                     continue;
                 }
@@ -482,6 +556,173 @@ pub fn probe_adts_configuration(
     AacConfigurationProbe::Pending
 }
 
+#[path = "codec_signaling/aac_elements.rs"]
+mod aac_elements;
+#[path = "codec_signaling/aac_tables.rs"]
+mod aac_tables;
+fn lc_asc_program_config(asc: &[u8]) -> Option<ProgramConfig> {
+    let mut bits = AudioConfigBits {
+        bytes: asc,
+        offset: 0,
+    };
+    if bits.object_type()? != 2 {
+        return None;
+    }
+    let frequency = bits.frequency()?;
+    if bits.read(4)? != 0 || bits.read(3)? != 0 {
+        return None;
+    }
+    let config = parse_program_config(&mut bits)?;
+    if config.comment_range.end != asc.len()
+        || config.object_type != 2
+        || audio_frequency(config.frequency_index)? != frequency
+    {
+        return None;
+    }
+    Some(config)
+}
+
+pub fn configured_front_pair(asc: &[u8]) -> Option<i32> {
+    let config = lc_asc_program_config(asc)?;
+    Some(front_pair_key(config.frequency_index, config.front_pair?))
+}
+
+/// PCE非再送時も、完全なraw data blockの周波数と要素の配置が既存ASCに一致することを確認する。
+pub fn matches_inherited_aac_configuration(frame: &[u8], asc: &[u8]) -> Option<bool> {
+    let (_, configuration) = aac_elements::adts_frame_header(frame)?;
+    let parsed = aac_elements::parse_frame(frame)?;
+    matches_aac_layout(
+        configuration,
+        Some(parsed.first_elements),
+        parsed.has_program_config,
+        asc,
+    )
+}
+
+/// 完全に構文確認済みのPCEなしADTSを、最終的に採用したASCと照合する。
+pub fn matches_observed_aac_configuration(
+    configuration: u16,
+    element_order: Option<u16>,
+    asc: &[u8],
+) -> Option<bool> {
+    let elements = element_order.map(|order| {
+        order
+            .to_be_bytes()
+            .map(|element| (element >> 4, element & 15))
+    });
+    matches_aac_layout(configuration, elements, false, asc)
+}
+
+fn matches_aac_layout(
+    configuration: u16,
+    elements: Option<[(u8, u8); 2]>,
+    has_program_config: bool,
+    asc: &[u8],
+) -> Option<bool> {
+    let channel_configuration = (configuration & 7) as u8;
+    let frequency_index = ((configuration >> 4) & 15) as u8;
+    // ADTSの通常probeで生成する2バイトの固定構成AAC LC ASC。
+    if asc.len() == 2 && asc[1] & 0x07 == 0 {
+        let fixed = parse_asc_header(asc)?;
+        if fixed.audio_object_type != 2 || !(1..=7).contains(&fixed.channel_configuration) {
+            return None;
+        }
+        return Some(
+            channel_configuration == fixed.channel_configuration
+                && audio_frequency(frequency_index)? == fixed.sampling_frequency,
+        );
+    }
+    let config = lc_asc_program_config(asc)?;
+    if has_program_config || channel_configuration != 0 || frequency_index != config.frequency_index
+    {
+        return Some(false);
+    }
+    let elements = elements?;
+    let mut tags = [0u16; 4];
+    for (kind, tag) in elements {
+        *tags.get_mut(usize::from(kind))? |= 1 << tag;
+    }
+    if tags != config.element_tags {
+        return Some(false);
+    }
+    Some(elements == config.arib_element_order?)
+}
+
+/// ARIB STD-B32 Part 2 5.2.3(3)(d): PCEコメントは構成の比較に使わない。
+pub fn same_aac_decoder_configuration(first: &[u8], second: &[u8]) -> bool {
+    if first == second {
+        return true;
+    }
+    match (lc_asc_program_config(first), lc_asc_program_config(second)) {
+        (Some(a), Some(b)) => first[..a.comment_range.start] == second[..b.comment_range.start],
+        _ => false,
+    }
+}
+
+fn front_pair_key(frequency: u8, tags: [u8; 2]) -> i32 {
+    ((0x900 | (i32::from(frequency) << 4)) << 8) | (i32::from(tags[0]) << 4) | i32::from(tags[1])
+}
+
+pub fn frame_presentation_dto(frame: &[u8]) -> crate::codec_probe_dto::AacFramePresentationDto {
+    use crate::codec_probe_dto::{AacFramePresentationDto, AacProbeStatusDto};
+    if frame.len() < 7 {
+        return AacFramePresentationDto::unresolved(AacProbeStatusDto::Pending, None);
+    }
+    let Some((declared_length, configuration)) = aac_elements::adts_frame_header(frame) else {
+        return AacFramePresentationDto::unresolved(
+            AacProbeStatusDto::Invalid,
+            Some("ADTSヘッダが不正です"),
+        );
+    };
+    if frame.len() < declared_length {
+        return AacFramePresentationDto::unresolved(AacProbeStatusDto::Pending, None);
+    }
+    if frame.len() != declared_length {
+        return AacFramePresentationDto::unresolved(
+            AacProbeStatusDto::Invalid,
+            Some("ADTSの宣言長が入力と一致しません"),
+        );
+    }
+    let (dual_mono, front_pair, element_order, has_program_config) =
+        match aac_elements::parse_frame(frame) {
+            Some(parsed) => {
+                let dual_mono = parsed.presentation == AacPresentation::DualMono;
+                let front_pair = dual_mono.then(|| {
+                    let tags = parsed.first_elements.map(|(_, tag)| tag);
+                    front_pair_key((frame[2] >> 2) & 15, tags)
+                });
+                // 構成0の2要素を、型とタグを各4ビットで並べた比較値にする。
+                let element_order = (((frame[2] & 1) | (frame[3] >> 6)) == 0).then(|| {
+                    i32::from(u16::from_be_bytes(
+                        parsed.first_elements.map(|(kind, tag)| (kind << 4) | tag),
+                    ))
+                });
+                (
+                    Some(dual_mono),
+                    front_pair,
+                    element_order,
+                    parsed.has_program_config,
+                )
+            }
+            None => {
+                // 主副を確定できなくても、先頭PCEがあれば構成probeに照合を委ねる。
+                let payload = if frame[1] & 1 == 0 { 9 } else { 7 };
+                (None, None, None, frame[payload] >> 5 == 5)
+            }
+        };
+    AacFramePresentationDto {
+        status: AacProbeStatusDto::Ready,
+        reason: None,
+        configuration: Some(i32::from(configuration)),
+        dual_mono,
+        front_pair,
+        element_order,
+        has_program_config,
+    }
+}
+
+pub use aac_elements::AacPresentation;
+
 struct AudioConfigBits<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -525,8 +766,11 @@ mod tests {
 
     #[test]
     fn adts_pce_is_relocated_to_asc_alignment_with_exact_comment() {
+        let presentation = frame_presentation_dto(DUAL_MONO_ADTS);
+        assert_eq!(presentation.dual_mono, None);
+        assert!(presentation.has_program_config);
         let AacConfigurationProbe::Ready { configuration } =
-            probe_adts_configuration(DUAL_MONO_ADTS, None)
+            probe_adts_configuration(DUAL_MONO_ADTS, None, false)
         else {
             panic!("PCEの構成を取得できません");
         };
@@ -539,27 +783,33 @@ mod tests {
         let parsed = parse_asc_header(DUAL_MONO_ASC).unwrap();
         assert_eq!(parsed.channel_count, Some(2));
         assert_eq!(parsed.sampling_frequency, 48000);
+        let no_comment = &[0x11, 0x80, 4, 0xc8, 0, 0, 0, 0x10, 0];
+        assert!(same_aac_decoder_configuration(DUAL_MONO_ASC, no_comment));
+        assert_eq!(
+            configured_front_pair(DUAL_MONO_ASC),
+            Some(front_pair_key(3, [0, 1]))
+        );
     }
 
     #[test]
     fn adts_waits_for_pce_and_accepts_out_of_band_config_without_inventing_channels() {
         let absent = &[0xff, 0xf1, 0x4c, 0, 1, 0x1f, 0xfc, 0xe0];
         assert!(matches!(
-            probe_adts_configuration(absent, None),
+            probe_adts_configuration(absent, None, false),
             AacConfigurationProbe::Pending
         ));
         let mut later = absent.to_vec();
         later.extend_from_slice(DUAL_MONO_ADTS);
         assert!(matches!(
-            probe_adts_configuration(&later, None),
+            probe_adts_configuration(&later, None, false),
             AacConfigurationProbe::Ready { .. }
         ));
         assert!(matches!(
-            probe_adts_configuration(&DUAL_MONO_ADTS[..13], None),
+            probe_adts_configuration(&DUAL_MONO_ADTS[..13], None, false),
             AacConfigurationProbe::Pending
         ));
         let AacConfigurationProbe::Ready { configuration } =
-            probe_adts_configuration(absent, Some(DUAL_MONO_ASC))
+            probe_adts_configuration(absent, Some(DUAL_MONO_ASC), false)
         else {
             panic!("帯域外PCEの構成を取得できません");
         };
@@ -568,24 +818,84 @@ mod tests {
     }
 
     #[test]
+    fn inherited_aac_distinguishes_fixed_and_program_defined_layouts() {
+        let asc = [0x11, 0x80, 0x04, 0xc4, 0x04, 0, 0x21, 0x10, 0];
+        let reversed_asc = [0x11, 0x80, 0x04, 0xc4, 0x04, 0, 0x23, 0, 0];
+        let both_front = [0x11, 0x80, 0x04, 0xc8, 0, 0, 0x21, 0x10, 0];
+        let frame = [
+            0xff, 0xf8, 0x4c, 0, 0x02, 0xe0, 0x04, 0, 0, 0x20, 0x64, 0, 0x01, 0x90, 0, 0x02, 0x26,
+            0x40, 0, 0x19, 0, 0, 0xe0,
+        ];
+        let mut reversed = frame;
+        reversed[9] = 0x22;
+        reversed[16] = 0x06;
+        assert_eq!(frame_presentation_dto(&frame).element_order, Some(0x1011));
+        assert_eq!(
+            frame_presentation_dto(&reversed).element_order,
+            Some(0x1110)
+        );
+        assert_eq!(frame_presentation_dto(&reversed[..22]).element_order, None);
+        let stereo_asc = [0x11, 0x90];
+        let stereo = [
+            0xff, 0xf8, 0x4c, 0x80, 0x02, 0, 0x04, 0x33, 0xb4, 0x20, 0x64, 0, 0x01, 0x90, 0, 0x0e,
+        ];
+        assert_eq!(
+            matches_inherited_aac_configuration(&frame, &stereo_asc),
+            Some(false)
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&frame[..22], &stereo_asc),
+            None
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&stereo, &stereo_asc),
+            Some(true)
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&frame, &[0x11, 0x92]),
+            None
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&frame, &asc),
+            Some(true)
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&reversed, &asc),
+            Some(false)
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&reversed, &reversed_asc),
+            Some(true)
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&reversed[..22], &asc),
+            None
+        );
+        assert_eq!(
+            matches_inherited_aac_configuration(&frame, &both_front),
+            None
+        );
+    }
+
+    #[test]
     fn conflicting_or_truncated_complete_pce_is_invalid() {
         let mut malformed = DUAL_MONO_ADTS.to_vec();
         malformed[8] ^= 0x08;
         assert!(matches!(
-            probe_adts_configuration(&malformed, None),
+            probe_adts_configuration(&malformed, None, false),
             AacConfigurationProbe::Invalid { .. }
         ));
         let mut duplicate = DUAL_MONO_ADTS.to_vec();
         duplicate[12] = 0;
         assert!(matches!(
-            probe_adts_configuration(&duplicate, None),
+            probe_adts_configuration(&duplicate, None, false),
             AacConfigurationProbe::Invalid { .. }
         ));
         let mut truncated = DUAL_MONO_ADTS[..13].to_vec();
         truncated[4] = 1;
         truncated[5] = 0xbf;
         assert!(matches!(
-            probe_adts_configuration(&truncated, None),
+            probe_adts_configuration(&truncated, None, false),
             AacConfigurationProbe::Invalid { .. }
         ));
     }

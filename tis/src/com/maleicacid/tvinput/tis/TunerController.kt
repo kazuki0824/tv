@@ -421,6 +421,15 @@ class TunerController(
         playbackPipeline.setCallbacks(onVideoAvailable, onVideoUnavailable)
     }
 
+    fun setOnAudioPresentationChanged(callback: (Long) -> Unit) {
+        playbackPipeline.setOnAudioPresentationChanged(callback)
+    }
+
+    fun audioPresentationOutput(
+        service: ServiceKey,
+        facts: Map<TsPid, Boolean?>,
+    ) = playbackPipeline.audioPresentationOutput(service, facts)
+
     fun setOnVideoFormatDiscoveredCallback(callback: (Long, PlaybackPipeline.VideoFormatInfo) -> Unit) {
         playbackPipeline.setOnVideoFormatDiscoveredCallback(callback)
     }
@@ -2030,10 +2039,13 @@ class TunerController(
     }
 
     @Suppress("ReturnCount")
-    fun switchAudioTrack(selection: AvStreamSelection): PlaybackPipeline.AudioSwitchResult? {
+    fun switchAudioTrack(
+        selection: AvStreamSelection,
+        requirePresentation: Boolean,
+    ): PlaybackPipeline.AudioSwitchResult? {
         if (currentTune == null) return null
         val tunerInstance = tuner ?: return null
-        return playbackPipeline.switchAudio(tunerInstance, selection)
+        return playbackPipeline.switchAudio(tunerInstance, selection, requirePresentation)
     }
 
     fun setDualMonoPresentation(

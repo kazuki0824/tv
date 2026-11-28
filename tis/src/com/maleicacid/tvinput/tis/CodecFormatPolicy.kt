@@ -88,12 +88,13 @@ internal object CodecFormatPolicy {
         bytes: ByteArray,
         facts: AribCodecFacts,
         signaledCodec: String?,
+        inferMissingPceLayout: Boolean = false,
     ): MediaFormat? {
         if (!facts.resolved) throw UnsupportedCodecFormat("未解決のAAC記述子です")
         val config =
             try {
                 com.maleicacid.tvinput.aribsi.NativeAribSiParser
-                    .probeAacConfiguration(bytes, facts.audioConfigHex)
+                    .probeAacConfiguration(bytes, facts.audioConfigHex, inferMissingPceLayout)
             } catch (error: IllegalArgumentException) {
                 throw UnsupportedCodecFormat(error.message ?: "AAC構成が不正です", error)
             } ?: return null
