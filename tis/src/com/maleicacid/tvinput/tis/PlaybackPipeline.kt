@@ -257,7 +257,9 @@ class PlaybackPipeline(
         val size: Int,
         val presentationTimeUs: Long,
         val isAudio: Boolean,
-    )
+    ) {
+        var startupAacLayout: AacFramePresentationDto? = null
+    }
 
     private data class AvailabilityArm(
         val generation: Long,
@@ -2231,6 +2233,19 @@ class PlaybackPipeline(
 
         protected open fun onDecoderConfigured(format: MediaFormat) = Unit
 
+        protected fun discardIncompatibleStartupAacInput(isIncompatible: (MediaSample) -> Boolean) {
+            val pending = pendingSamples.iterator()
+            while (pending.hasNext()) {
+                val sample = pending.next()
+                if (isIncompatible(sample)) {
+                    pending.remove()
+                    dataPathProgress.record(PlaybackDataPathProgress.Stage.INPUT_REJECTED, sample.isAudio)
+                    releaseMediaSample(sample)
+                    onSampleRejected("STARTUP_AAC_CONFIGURATION_MISMATCH size=${sample.size}")
+                }
+            }
+        }
+
         protected open fun onOutputFormatChanged(format: MediaFormat) = Unit
 
         protected abstract fun onOutput(
@@ -2632,6 +2647,9 @@ class PlaybackPipeline(
             try {
                 val value = NativeAribSiParser.adtsPresentation(bytes)
                 if (current() && value.status == AacProbeStatusDto.Ready) {
+                    if (!hasConfiguredCodec() && value.dualMono != null && !value.hasProgramConfig) {
+                        sample.startupAacLayout = value
+                    }
                     updateAacPresentation(bytes, value, current)
                 }
             } catch (error: NativeSiException) {
@@ -2804,6 +2822,15 @@ class PlaybackPipeline(
 
         override fun onDecoderConfigured(format: MediaFormat) {
             configuredAacAsc = if (kind == AudioCodecKind.AAC_ADTS) aacAsc(format) else null
+            if (kind == AudioCodecKind.AAC_ADTS) {
+                val asc = configuredAacAsc
+                discardIncompatibleStartupAacInput { sample ->
+                    // 既に確認した構文だけを、実際に採用したASCと照合する。
+                    val layout = sample.startupAacLayout
+                    sample.startupAacLayout = null
+                    asc != null && layout != null && NativeAribSiParser.observedAacConfigurationMismatch(layout, asc)
+                }
+            }
             configuredAacFormat = format.takeIf { configuredAacAsc != null && stream.codecFacts.audioConfigHex == null }
             configuredFrontPair =
                 configuredAacAsc?.let { bytes ->

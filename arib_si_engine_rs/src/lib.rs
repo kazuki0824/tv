@@ -1016,6 +1016,34 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeMatchesObservedAacConfiguration(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    configuration: jint,
+    element_order: jint,
+    asc: JByteArray<'_>,
+) -> jint {
+    let Ok(configuration) = u16::try_from(configuration) else {
+        return -1;
+    };
+    match bounded_codec_bytes(&mut env, &asc, 512) {
+        Ok(asc) => {
+            maleicacid_arib_si_engine_core::codec_signaling::matches_observed_aac_configuration(
+                configuration,
+                u16::try_from(element_order).ok(),
+                &asc,
+            )
+            .map_or(-1, i32::from)
+        }
+        Err(CodecInputFailure::Jni(error)) => {
+            throw_si_failure(&mut env, SiJniFailureReason::JniInput.failure(error));
+            -1
+        }
+        _ => -1,
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeProbeAacConfiguration(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,

@@ -2049,6 +2049,48 @@ class PlaybackFilterAdmissionTest {
 
     @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
     @Test
+    fun routedAacDiscardsOnlyIncompatiblePendingFrames() {
+        registerAacDecoder()
+        val pce4 = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
+        val noPce3 = aacBytes("fff84c000280040000206400019000000c800070")
+        val noPce4 = aacBytes("fff84c0002e004000020640001900002264000190000e0")
+        Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
+            val selection = fixture.audioSelection().copy(video = null)
+            val channel = ReflectionHelpers.getField<TunerController.ResolvedChannel>(fixture.pipeline, "activeChannel")
+            val start = fixture.pipeline.start(fixture.tuner, channel.copy(serviceType = 2), selection)
+            assertTrue(start.startedAudio)
+            fixture.feedAac(pce4)
+            fixture.applyAacPcmFormat(48_000)
+            verifyAacRouteRestart(fixture, start.generation)
+            assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > start.generation)
+
+            val mismatched = fixture.feedAac(noPce3)
+            val compatible = fixture.feedAac(noPce4)
+            val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
+            assertNull(ReflectionHelpers.getField<MediaCodec?>(decoder, "codec"))
+            assertEquals(0, mismatched.releases)
+            assertEquals(0, compatible.releases)
+
+            val configured = fixture.feedAac(pce4)
+            val codec = ReflectionHelpers.getField<MediaCodec>(decoder, "codec")
+            val nativeCodec = Shadow.extract<NativeCodec>(codec)
+            val queuedBlocks = mutableListOf<MediaCodec.LinearBlock?>()
+            nativeCodec.onInputQueue = { queuedBlocks.add(nativeCodec.lastInputBlock) }
+            repeat(3) { postCodecCallback(codec, 1, it, null) }
+            val delivered = CountDownLatch(1)
+            ReflectionHelpers.getField<Handler>(fixture.pipeline, "codecCallbackHandler").post { delivered.countDown() }
+            assertTrue(delivered.await(5, TimeUnit.SECONDS))
+            fixture.drain()
+
+            assertEquals(listOf(compatible.block, configured.block), queuedBlocks)
+            assertEquals(1, mismatched.releases)
+            assertEquals(0, compatible.releases)
+            assertEquals(0, configured.releases)
+        }
+    }
+
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
+    @Test
     fun switchedAudioCanReuseAscVerifiedOnTheNewInput() {
         registerAacDecoder()
         val pce = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0")

@@ -579,31 +579,63 @@ pub fn configured_front_pair(asc: &[u8]) -> Option<i32> {
 
 /// PCE非再送時も、完全なraw data blockの周波数と要素の配置が既存ASCに一致することを確認する。
 pub fn matches_inherited_aac_configuration(frame: &[u8], asc: &[u8]) -> Option<bool> {
+    let (_, configuration) = aac_elements::adts_frame_header(frame)?;
+    let parsed = aac_elements::parse_frame(frame)?;
+    matches_aac_layout(
+        configuration,
+        Some(parsed.first_elements),
+        parsed.has_program_config,
+        asc,
+    )
+}
+
+/// 完全に構文確認済みのPCEなしADTSを、最終的に採用したASCと照合する。
+pub fn matches_observed_aac_configuration(
+    configuration: u16,
+    element_order: Option<u16>,
+    asc: &[u8],
+) -> Option<bool> {
+    let elements = element_order.map(|order| {
+        order
+            .to_be_bytes()
+            .map(|element| (element >> 4, element & 15))
+    });
+    matches_aac_layout(configuration, elements, false, asc)
+}
+
+fn matches_aac_layout(
+    configuration: u16,
+    elements: Option<[(u8, u8); 2]>,
+    has_program_config: bool,
+    asc: &[u8],
+) -> Option<bool> {
+    let channel_configuration = (configuration & 7) as u8;
+    let frequency_index = ((configuration >> 4) & 15) as u8;
     // ADTSの通常probeで生成する2バイトの固定構成AAC LC ASC。
     if asc.len() == 2 && asc[1] & 0x07 == 0 {
         let fixed = parse_asc_header(asc)?;
         if fixed.audio_object_type != 2 || !(1..=7).contains(&fixed.channel_configuration) {
             return None;
         }
-        aac_elements::parse_frame(frame)?;
-        let channel_configuration = ((frame[2] & 1) << 2) | (frame[3] >> 6);
-        let frequency = audio_frequency((frame[2] >> 2) & 15)?;
         return Some(
             channel_configuration == fixed.channel_configuration
-                && frequency == fixed.sampling_frequency,
+                && audio_frequency(frequency_index)? == fixed.sampling_frequency,
         );
     }
     let config = lc_asc_program_config(asc)?;
-    let parsed = aac_elements::parse_frame(frame)?;
-    let header = frame[2];
-    if parsed.has_program_config
-        || ((header & 1) | (frame[3] >> 6)) != 0
-        || (header >> 2) & 15 != config.frequency_index
-        || parsed.element_tags != config.element_tags
+    if has_program_config || channel_configuration != 0 || frequency_index != config.frequency_index
     {
         return Some(false);
     }
-    Some(parsed.first_elements == config.arib_element_order?)
+    let elements = elements?;
+    let mut tags = [0u16; 4];
+    for (kind, tag) in elements {
+        *tags.get_mut(usize::from(kind))? |= 1 << tag;
+    }
+    if tags != config.element_tags {
+        return Some(false);
+    }
+    Some(elements == config.arib_element_order?)
 }
 
 /// ARIB STD-B32 Part 2 5.2.3(3)(d): PCEコメントは構成の比較に使わない。

@@ -359,6 +359,18 @@ class NativeAribSiParser : AutoCloseable {
                 else -> null
             }
 
+        @JvmStatic
+        private external fun nativeMatchesObservedAacConfiguration(
+            configuration: Int,
+            elementOrder: Int,
+            asc: ByteArray,
+        ): Int
+
+        internal fun observedAacConfigurationMismatch(
+            frame: AacFramePresentationDto,
+            asc: ByteArray,
+        ): Boolean = nativeMatchesObservedAacConfiguration(checkNotNull(frame.configuration), frame.elementOrder ?: -1, asc) == 0
+
         @JvmStatic private external fun probeDualMono(frame: ByteArray): AacFramePresentationDto?
 
         internal fun adtsPresentation(frame: ByteArray): AacFramePresentationDto =

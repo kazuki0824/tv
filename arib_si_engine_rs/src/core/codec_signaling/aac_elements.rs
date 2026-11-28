@@ -11,7 +11,6 @@ pub(super) struct ParsedAacFrame {
     pub(super) presentation: AacPresentation,
     pub(super) first_elements: [(u8, u8); 2],
     pub(super) has_program_config: bool,
-    pub(super) element_tags: [u16; 4],
 }
 
 /// 完全フレームで確認できたMPEG ID、profile、周波数、チャンネル構成の同一性。
@@ -172,7 +171,6 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<ParsedAacFrame> {
         },
         first_elements,
         has_program_config: configuration == 0 && pce.is_some(),
-        element_tags: tags,
     })
 }
 
