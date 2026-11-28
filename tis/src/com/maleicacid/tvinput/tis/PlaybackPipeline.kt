@@ -2713,8 +2713,7 @@ class PlaybackPipeline(
             if (format == null) {
                 if (hasProgramConfig) return false
                 val matches = NativeAribSiParser.matchesInheritedAacConfiguration(frame, configured)
-                if (matches != false) return false
-                return restartWithInferredAacFormat(frame, current)
+                return matches == false && restartWithInferredAacFormat(frame, current)
             }
             val asc = aacAsc(format) ?: return false
             val changed =
