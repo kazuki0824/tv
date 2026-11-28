@@ -669,7 +669,6 @@ class PlaybackPipeline(
         channel: TunerController.ResolvedChannel,
         selection: TunerController.AvStreamSelection,
         restartAacFormat: MediaFormat? = null,
-        inferMultichannelLayout: Boolean = true,
     ): StartResult {
         // 障害後の停止完了通知から来た通常startでは、旧世代を二重に停止しない。
         if (hasActivePlaybackResources()) stopOnPlaybackExecutor()
@@ -747,7 +746,7 @@ class PlaybackPipeline(
                     selection.dualMonoPresentation,
                     streamVolume,
                     startGeneration,
-                    inferMultichannelLayout,
+                    inferMultichannelLayout = restartAacFormat == null,
                 ) { reason, detail ->
                     if (startGeneration == playbackGeneration) handleAudioFailure(reason, detail, audioOnly)
                 }.apply { setStartupAacFormat(restartAacFormat) }
@@ -1556,8 +1555,7 @@ class PlaybackPipeline(
         val channel = activeChannel ?: return false
         val selection = activeSelection ?: return false
         completePlaybackFailureAction(originGeneration, onVideoUnavailable) {
-            val restarted =
-                startOnPlaybackExecutor(tuner, channel, selection, restartAacFormat, inferMultichannelLayout = false)
+            val restarted = startOnPlaybackExecutor(tuner, channel, selection, restartAacFormat)
             onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted))
         }
         return true
@@ -2715,11 +2713,8 @@ class PlaybackPipeline(
             if (format == null) {
                 if (hasProgramConfig) return false
                 val matches = NativeAribSiParser.matchesInheritedAacConfiguration(frame, configured)
-                if (matches != false || !current()) return false
-                if (!restartPlaybackWithAacFormat(generation, null)) {
-                    stopAfterCompressedInputLoss(generation, "AAC_CONFIGURATION_MISMATCH")
-                }
-                return true
+                if (matches != false) return false
+                return restartWithInferredAacFormat(frame, current)
             }
             val asc = aacAsc(format) ?: return false
             val changed =
@@ -2727,6 +2722,29 @@ class PlaybackPipeline(
             if (changed) return restartPlaybackWithAacFormat(generation, format)
             configuredAacFormat = format
             return false
+        }
+
+        // 不一致を確定した現入力だけから合成し、同じ構成のPCE由来設定は維持する。
+        private fun restartWithInferredAacFormat(
+            frame: ByteArray,
+            current: () -> Boolean,
+        ): Boolean {
+            val replacement =
+                try {
+                    CodecFormatPolicy.adtsAudioFormat(
+                        frame,
+                        stream.codecFacts,
+                        stream.codec,
+                        inferMultichannelLayout = true,
+                    )
+                } catch (_: UnsupportedCodecFormat) {
+                    null
+                }
+            if (!current()) return false
+            if (!restartPlaybackWithAacFormat(generation, replacement)) {
+                stopAfterCompressedInputLoss(generation, "AAC_CONFIGURATION_MISMATCH")
+            }
+            return true
         }
 
         fun presentationOutput(

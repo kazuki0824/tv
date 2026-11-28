@@ -2138,28 +2138,33 @@ class PlaybackFilterAdmissionTest {
 
     @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
     @Test
-    fun switchedAudioWaitsForAacConfigWhenInheritedAscDoesNotMatch() {
+    fun switchedAudioReconfiguresWhenInheritedAscDoesNotMatch() {
         registerAacDecoder()
         val pce4 = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
-        verifySwitchedAudioWaitsForAacConfig(
-            initial = pce4,
-            withoutPce = aacBytes("fff84c000280043910206400019000000c800070"),
-            withPce = aacBytes("fff84c00036004799fa0988080040000206400019000000c800070"),
-            expectedAsc = aacBytes("118004c40400200000"),
-        )
-        verifySwitchedAudioWaitsForAacConfig(
-            initial = aacBytes("fff84c8002000433b42064000190000e"),
-            withoutPce = aacBytes("fff84c0002e004fe7f20640001900002264000190000e0"),
-            withPce = pce4,
-            expectedAsc = aacBytes("118004c40400211000"),
-        )
+        for (resendPce in listOf(false, true)) {
+            verifySwitchedAudioReconfigures(
+                initial = pce4,
+                withoutPce = aacBytes("fff84c000280043910206400019000000c800070"),
+                withPce = aacBytes("fff84c00036004799fa0988080040000206400019000000c800070"),
+                expectedAsc = aacBytes("118004c40400200000"),
+                resendPce = resendPce,
+            )
+            verifySwitchedAudioReconfigures(
+                initial = aacBytes("fff84c8002000433b42064000190000e"),
+                withoutPce = aacBytes("fff84c0002e004fe7f20640001900002264000190000e0"),
+                withPce = pce4,
+                expectedAsc = aacBytes("118004c40400211000"),
+                resendPce = resendPce,
+            )
+        }
     }
 
-    private fun verifySwitchedAudioWaitsForAacConfig(
+    private fun verifySwitchedAudioReconfigures(
         initial: ByteArray,
         withoutPce: ByteArray,
         withPce: ByteArray,
         expectedAsc: ByteArray,
+        resendPce: Boolean,
     ) {
         Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
             val selection = fixture.audioSelection().copy(video = null)
@@ -2194,8 +2199,8 @@ class PlaybackFilterAdmissionTest {
             assertTrue(generation > start.generation)
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
             assertNull(ReflectionHelpers.getField<MediaCodec?>(decoder, "codec"))
-            assertNull(ReflectionHelpers.getField<MediaFormat?>(decoder, "startupAacFormat"))
-            fixture.feedAac(withPce)
+            val followUp = if (resendPce) withPce else withoutPce
+            val sample = fixture.feedAac(followUp)
             assertContentEquals(expectedAsc, ReflectionHelpers.getField<ByteArray?>(decoder, "configuredAacAsc"))
             val codec = ReflectionHelpers.getField<MediaCodec>(decoder, "codec")
             assertTrue(codec !== oldCodec)
@@ -2203,8 +2208,13 @@ class PlaybackFilterAdmissionTest {
             postCodecCallback(codec, 1, 0, null)
             assertTrue(configuredCodec.inputQueued.await(5, TimeUnit.SECONDS))
             fixture.drain()
-            assertEquals(withPce.size, configuredCodec.lastInputSize)
+            assertTrue(sample.block === configuredCodec.lastInputBlock)
+            assertEquals(followUp.size, configuredCodec.lastInputSize)
             assertEquals(generation, fixture.pipeline.currentPlaybackGenerationForTest())
+            fixture.applyAacPcmFormat(48_000)
+            val track = ReflectionHelpers.getField<AudioTrack>(fixture.pipeline, "audioTrack")
+            assertTrue(Shadow.extract<DualMonoAudioTrack>(track).modes.isEmpty())
+            verifyAacOutputWithoutRepeatedPce(fixture, codec, generation, initial, followUp)
         }
     }
 

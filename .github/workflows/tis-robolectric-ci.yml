@@ -117,7 +117,7 @@ jobs:
                   "routedAacDiscardsOnlyIncompatiblePendingFrames",
                   "latestEitModeIsUsedByPlaybackRestart",
                   "switchedAudioCanReuseAscVerifiedOnTheNewInput",
-                  "switchedAudioWaitsForAacConfigWhenInheritedAscDoesNotMatch",
+                  "switchedAudioReconfiguresWhenInheritedAscDoesNotMatch",
                   "routingRestartPublishesPhysicalAudioWhenSubReapplicationIsRejected",
                   "multichannelAacWithStereoPcmPublishesOnlyPhysicalTrack",
                   "rejectedModeClearStopsOnceDuringAudioPidSwitch"} <= {
