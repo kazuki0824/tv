@@ -75,6 +75,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -2058,7 +2059,13 @@ class PlaybackFilterAdmissionTest {
 
     @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
     @Test
-    fun routedAacDiscardsOnlyIncompatiblePendingFrames() {
+    fun routedAacDiscardsOnlyIncompatiblePendingFrames() = verifyPendingAacAfterRoute(failMatch = false)
+
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class, RouteDevice::class])
+    @Test
+    fun pendingAacMatchJniFailurePreservesInputOrderAndPlayback() = verifyPendingAacAfterRoute(failMatch = true)
+
+    private fun verifyPendingAacAfterRoute(failMatch: Boolean) {
         registerAacDecoder()
         val pce4 = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0")
         val noPce3 = aacBytes("fff84c000280043910206400019000000c800070")
@@ -2072,7 +2079,8 @@ class PlaybackFilterAdmissionTest {
             fixture.feedAac(pce4)
             fixture.applyAacPcmFormat(48_000)
             verifyAacRouteRestart(fixture, start.generation)
-            assertTrue(fixture.pipeline.currentPlaybackGenerationForTest() > start.generation)
+            val generation = fixture.pipeline.currentPlaybackGenerationForTest()
+            assertTrue(generation > start.generation)
 
             val mismatched = fixture.feedAac(noPce3)
             val undecidable = fixture.feedAac(undecidableProtectedAac(noPce4, asc4))
@@ -2081,8 +2089,10 @@ class PlaybackFilterAdmissionTest {
             assertEquals(0, mismatched.releases)
             assertEquals(0, undecidable.releases)
 
+            AacProbeBoundary.failNextObservedMatch.set(failMatch)
             val configured = fixture.feedAac(pce4)
-            val codec = ReflectionHelpers.getField<MediaCodec>(decoder, "codec")
+            assertFalse(AacProbeBoundary.failNextObservedMatch.get())
+            val codec = assertNotNull(ReflectionHelpers.getField<MediaCodec?>(decoder, "codec"))
             val nativeCodec = Shadow.extract<NativeCodec>(codec)
             val queuedBlocks = mutableListOf<MediaCodec.LinearBlock?>()
             nativeCodec.onInputQueue = { queuedBlocks.add(nativeCodec.lastInputBlock) }
@@ -2092,10 +2102,19 @@ class PlaybackFilterAdmissionTest {
             assertTrue(delivered.await(5, TimeUnit.SECONDS))
             fixture.drain()
 
-            assertEquals(listOf(undecidable.block, configured.block), queuedBlocks)
-            assertEquals(1, mismatched.releases)
+            val compatible = listOf(undecidable.block, configured.block)
+            val expected = if (failMatch) listOf(mismatched.block) + compatible else compatible
+            assertEquals(expected, queuedBlocks)
+            assertEquals(if (failMatch) 0 else 1, mismatched.releases)
             assertEquals(0, undecidable.releases)
             assertEquals(0, configured.releases)
+            fixture.applyAacPcmFormat(48_000)
+            verifyAacDecodedOutput(fixture, codec, generation, pce4.size)
+            fixture.pipeline.stop()
+            for (event in listOf(mismatched, undecidable, configured)) {
+                assertEquals(1, event.releases)
+                assertEquals(1, Shadow.extract<NativeLinearBlock>(requireNotNull(event.block)).recycles)
+            }
         }
     }
 
@@ -2395,8 +2414,17 @@ class PlaybackFilterAdmissionTest {
         followUp: ByteArray,
     ) {
         if (trigger === followUp) return
+        verifyAacDecodedOutput(fixture, codec, generation, followUp.size)
+    }
+
+    private fun verifyAacDecodedOutput(
+        fixture: Fixture,
+        codec: MediaCodec,
+        generation: Long,
+        inputSize: Int,
+    ) {
         val nativeCodec = Shadow.extract<NativeCodec>(codec)
-        assertEquals(followUp.size, nativeCodec.lastInputSize)
+        assertEquals(inputSize, nativeCodec.lastInputSize)
         val block = ReflectionHelpers.callConstructor(MediaCodec.LinearBlock::class.java)
         Shadow.extract<NativeLinearBlock>(block).data = ByteArray(16)
         nativeCodec.outputBlock = block
@@ -2886,22 +2914,35 @@ class PlaybackFilterAdmissionTest {
     @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class])
     fun multichannelAacWithStereoPcmPublishesOnlyPhysicalTrack() {
         registerAacDecoder()
-        verifyMultichannelStartupWithStereoPcm(
-            pce = aacBytes("fff84c00036004799fa0988080040000206400019000000c800070"),
+        verifyAacStartupWithPhysicalTrack(
             withoutPce = aacBytes("fff84c000280043910206400019000000c800070"),
             asc = aacBytes("118004c40400200000"),
         )
-        verifyMultichannelStartupWithStereoPcm(
-            pce = aacBytes("fff84c0003c00476f1a098808004220020640001900002264000190000e0"),
+        verifyAacStartupWithPhysicalTrack(
             withoutPce = aacBytes("fff84c0002e004fe7f20640001900002264000190000e0"),
             asc = aacBytes("118004c40400211000"),
         )
     }
 
-    private fun verifyMultichannelStartupWithStereoPcm(
-        pce: ByteArray,
+    @Test
+    @Config(shadows = [PlaybackStartupCleanupTest.NativeMediaSync::class])
+    fun frontPairJniFailureKeepsPhysicalAudioAndPlayback() {
+        registerAacDecoder()
+        val dual = aacBytes("fff84c000220045e5700c8000016400038")
+        val asc = requireNotNull(NativeAribSiParser.probeAacConfiguration(dual, null)).audioSpecificConfig
+        val frontPair = assertNotNull(NativeAribSiParser.adtsPresentation(dual).frontPair)
+        assertEquals(frontPair, NativeAribSiParser.frontPairForDecoder(asc))
+        verifyAacStartupWithPhysicalTrack(
+            withoutPce = dual,
+            asc = asc,
+            failFrontPair = true,
+        )
+    }
+
+    private fun verifyAacStartupWithPhysicalTrack(
         withoutPce: ByteArray,
         asc: ByteArray,
+        failFrontPair: Boolean = false,
     ) {
         Fixture(RuntimeEnvironment.getApplication()).use { fixture ->
             val selection = fixture.audioSelection().copy(video = null)
@@ -2915,10 +2956,12 @@ class PlaybackFilterAdmissionTest {
             ReflectionHelpers.setField(session, "playbackState", state.copy(pipelineGeneration = start.generation))
             val notifications = observeRouteAudioNotifications(session, fixture.pipeline, sub)
 
+            AacProbeBoundary.failNextConfiguredFrontPair.set(failFrontPair)
             val first = fixture.feedAac(withoutPce)
+            assertFalse(AacProbeBoundary.failNextConfiguredFrontPair.get())
             val decoder = ReflectionHelpers.getField<Any>(fixture.pipeline, "audioDecoder")
             assertContentEquals(asc, ReflectionHelpers.getField<ByteArray?>(decoder, "configuredAacAsc"))
-            val codec = ReflectionHelpers.getField<MediaCodec>(decoder, "codec")
+            val codec = assertNotNull(ReflectionHelpers.getField<MediaCodec?>(decoder, "codec"))
             val nativeCodec = Shadow.extract<NativeCodec>(codec)
             postCodecCallback(codec, 1, 0, null)
             assertTrue(nativeCodec.inputQueued.await(5, TimeUnit.SECONDS))
@@ -2926,7 +2969,7 @@ class PlaybackFilterAdmissionTest {
             assertTrue(first.block === nativeCodec.lastInputBlock)
 
             fixture.applyAacPcmFormat(48_000)
-            verifyAacOutputWithoutRepeatedPce(fixture, codec, start.generation, pce, withoutPce)
+            verifyAacDecodedOutput(fixture, codec, start.generation, withoutPce.size)
             drainRouteAudioNotifications(session)
             assertFalse(fixture.selectAudio(session, sub))
             assertTrue(fixture.selectAudio(session, physical))
@@ -2936,6 +2979,9 @@ class PlaybackFilterAdmissionTest {
             assertTrue(notifications.filter { it.startsWith("選択:") }.all { it == "選択:null" || it == "選択:$physical" })
             val track = ReflectionHelpers.getField<AudioTrack>(fixture.pipeline, "audioTrack")
             assertTrue(Shadow.extract<DualMonoAudioTrack>(track).modes.isEmpty())
+            fixture.pipeline.stop()
+            assertEquals(1, first.releases)
+            assertEquals(1, Shadow.extract<NativeLinearBlock>(requireNotNull(first.block)).recycles)
         }
     }
 
@@ -4382,8 +4428,38 @@ class PlaybackFilterAdmissionTest {
                 )
             }
 
+        @Implementation
+        fun nativeMatchesObservedAacConfiguration(
+            configuration: Int,
+            elementOrder: Int,
+            asc: ByteArray,
+        ): Int {
+            if (failNextObservedMatch.getAndSet(false)) throw NativeSiException("JNI_INPUT", "保留AAC照合の障害注入")
+            return Shadow.directlyOn(
+                parser,
+                NativeAribSiParser.Companion::class.java,
+                "nativeMatchesObservedAacConfiguration",
+                ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, configuration),
+                ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, elementOrder),
+                ReflectionHelpers.ClassParameter.from(ByteArray::class.java, asc),
+            )
+        }
+
+        @Implementation
+        fun configuredFrontPair(asc: ByteArray): Int {
+            if (failNextConfiguredFrontPair.getAndSet(false)) throw NativeSiException("JNI_INPUT", "前方SCE照合の障害注入")
+            return Shadow.directlyOn(
+                parser,
+                NativeAribSiParser.Companion::class.java,
+                "configuredFrontPair",
+                ReflectionHelpers.ClassParameter.from(ByteArray::class.java, asc),
+            )
+        }
+
         companion object {
             val failNext = AtomicBoolean()
+            val failNextObservedMatch = AtomicBoolean()
+            val failNextConfiguredFrontPair = AtomicBoolean()
         }
     }
 

@@ -2658,14 +2658,18 @@ class PlaybackPipeline(
         }
 
         private fun reportAacPresentationFailure(error: NativeSiException) {
+            logAacPresentationFailure(error)
+            clearReceivedAacPresentation()
+            reconcilePresentation()
+            onAudioPresentationChanged(generation)
+        }
+
+        private fun logAacPresentationFailure(error: NativeSiException) {
             Log.w(
                 LogTags.TIS,
                 "PLAYBACK_AAC_PRESENTATION_FAILED sessionId=$sessionId generation=$generation reason=${error.reason}",
                 error,
             )
-            clearReceivedAacPresentation()
-            reconcilePresentation()
-            onAudioPresentationChanged(generation)
         }
 
         // 未判定入力では再生成せず、設定済みASCとの構成不一致が確定した場合だけ作り直す。
@@ -2853,14 +2857,22 @@ class PlaybackPipeline(
                     // 既に確認した構文だけを、実際に採用したASCと照合する。
                     val layout = sample.startupAacLayout
                     sample.startupAacLayout = null
-                    asc != null && layout != null && NativeAribSiParser.observedAacConfigurationMismatch(layout, asc)
+                    if (asc == null || layout == null) return@discardIncompatibleStartupAacInput false
+                    try {
+                        NativeAribSiParser.observedAacConfigurationMismatch(layout, asc)
+                    } catch (error: NativeSiException) {
+                        logAacPresentationFailure(error)
+                        false
+                    }
                 }
             }
             configuredAacFormat = format.takeIf { configuredAacAsc != null && stream.codecFacts.audioConfigHex == null }
             configuredFrontPair =
-                configuredAacAsc?.let { bytes ->
-                    NativeAribSiParser
-                        .frontPairForDecoder(bytes)
+                try {
+                    configuredAacAsc?.let(NativeAribSiParser::frontPairForDecoder)
+                } catch (error: NativeSiException) {
+                    logAacPresentationFailure(error)
+                    null
                 }
             outputSampleRate = getIntegerOrDefault(format, MediaFormat.KEY_SAMPLE_RATE, DEFAULT_AUDIO_SAMPLE_RATE)
             outputChannels = getIntegerOrDefault(format, MediaFormat.KEY_CHANNEL_COUNT, DEFAULT_AUDIO_CHANNEL_COUNT)
