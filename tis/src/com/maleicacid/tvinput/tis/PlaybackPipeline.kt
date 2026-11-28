@@ -2740,6 +2740,9 @@ class PlaybackPipeline(
                     )
                 } catch (_: UnsupportedCodecFormat) {
                     null
+                } catch (error: NativeSiException) {
+                    logAacPresentationFailure(error)
+                    null
                 }
             if (!current()) return false
             if (!restartPlaybackWithAacFormat(generation, replacement)) {
