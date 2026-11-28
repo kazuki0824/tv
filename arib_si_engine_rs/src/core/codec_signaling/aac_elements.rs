@@ -148,20 +148,14 @@ pub(super) fn parse_frame(frame: &[u8]) -> Option<ParsedAacFrame> {
         || channels == 0
         || fixed_order.is_some_and(|order| audio_elements != order.len())
         || pce.as_ref().is_some_and(|config| {
-            config.element_tags != tags || usize::from(config.channel_count) != channels
+            config.element_tags != tags
+                || usize::from(config.channel_count) != channels
+                || (configuration == 0 && config.arib_element_order != Some(first_elements))
         })
     {
         return None;
     }
     let sce = tags[0].count_ones();
-    if sce == 2
-        && channels == 2
-        && pce
-            .as_ref()
-            .is_some_and(|config| config.front_pair != Some(first_elements.map(|(_, tag)| tag)))
-    {
-        return None;
-    }
     if configuration == 0 {
         // ARIB STD-B32 第2部5.2.3(2) の送出順。
         match (
@@ -402,6 +396,39 @@ mod tests {
     use crate::codec_signaling::{
         frame_presentation_dto, probe_adts_configuration, AacConfigurationProbe,
     };
+
+    #[test]
+    fn program_config_requires_matching_audio_element_order() {
+        // 前方CPE tag 0・後方CPE tag 1のPCEを持つ2/2。
+        let ordered = [
+            0xff, 0xf9, 0x4c, 0, 3, 0x80, 4, 0xa0, 0x98, 0x80, 0x80, 4, 0x22, 0, 0x20, 0x64, 0, 1,
+            0x90, 0, 2, 0x26, 0x40, 0, 0x19, 0, 0, 0xe0,
+        ];
+        let mut reversed = ordered;
+        // PCEとチャンネル数を保ち、CPEのタグ順を1→0にする。
+        reversed[14] = 0x22;
+        reversed[21] = 0x06;
+
+        let ordered_fact = frame_presentation_dto(&ordered);
+        assert_eq!(ordered_fact.dual_mono, Some(false));
+        assert_eq!(ordered_fact.element_order, Some(0x1011));
+        let reversed_fact = frame_presentation_dto(&reversed);
+        assert_eq!(reversed_fact.dual_mono, None);
+        assert_eq!(reversed_fact.element_order, None);
+        assert!(ordered_fact.has_program_config && reversed_fact.has_program_config);
+
+        for frame in [&ordered, &reversed] {
+            let AacConfigurationProbe::Ready { configuration } =
+                probe_adts_configuration(frame, None, false)
+            else {
+                panic!("通常の構成取得は帯域内PCEを使用する");
+            };
+            assert_eq!(
+                configuration.audio_specific_config_hex,
+                "118004c40400211000"
+            );
+        }
+    }
 
     #[test]
     fn fixed_configuration_requires_audio_elements_in_transmission_order() {
