@@ -303,8 +303,9 @@ class NativeAribSiParser : AutoCloseable {
         internal fun probeAacConfiguration(
             adts: ByteArray,
             ascHex: String?,
+            inferMultichannelLayout: Boolean = false,
         ): AribAacConfiguration? {
-            val result = nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) })
+            val result = nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) }, inferMultichannelLayout)
             return when (result.status) {
                 com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Pending -> {
                     null
@@ -384,6 +385,7 @@ class NativeAribSiParser : AutoCloseable {
         @JvmStatic private external fun nativeProbeAacConfiguration(
             adts: ByteArray,
             asc: ByteArray?,
+            inferMultichannelLayout: Boolean,
         ): com.maleicacid.tvinput.aribsi.generated.AacConfigurationProbeDto
 
         init {

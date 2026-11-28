@@ -669,6 +669,7 @@ class PlaybackPipeline(
         channel: TunerController.ResolvedChannel,
         selection: TunerController.AvStreamSelection,
         restartAacFormat: MediaFormat? = null,
+        inferMultichannelLayout: Boolean = true,
     ): StartResult {
         // 障害後の停止完了通知から来た通常startでは、旧世代を二重に停止しない。
         if (hasActivePlaybackResources()) stopOnPlaybackExecutor()
@@ -746,6 +747,7 @@ class PlaybackPipeline(
                     selection.dualMonoPresentation,
                     streamVolume,
                     startGeneration,
+                    inferMultichannelLayout,
                 ) { reason, detail ->
                     if (startGeneration == playbackGeneration) handleAudioFailure(reason, detail, audioOnly)
                 }.apply { setStartupAacFormat(restartAacFormat) }
@@ -1554,7 +1556,8 @@ class PlaybackPipeline(
         val channel = activeChannel ?: return false
         val selection = activeSelection ?: return false
         completePlaybackFailureAction(originGeneration, onVideoUnavailable) {
-            val restarted = startOnPlaybackExecutor(tuner, channel, selection, restartAacFormat)
+            val restarted =
+                startOnPlaybackExecutor(tuner, channel, selection, restartAacFormat, inferMultichannelLayout = false)
             onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted))
         }
         return true
@@ -2573,6 +2576,7 @@ class PlaybackPipeline(
         initialDualMonoPresentation: DualMonoPresentation,
         initialVolume: Float,
         override val generation: Long,
+        private val inferMultichannelLayout: Boolean,
         private val errorSink: (PlaybackUnavailableReason, String) -> Unit,
     ) : DecoderPipeline() {
         private var volume: Float = initialVolume
@@ -2800,7 +2804,13 @@ class PlaybackPipeline(
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? =
             when (kind) {
                 AudioCodecKind.AAC_ADTS -> {
-                    val detected = CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
+                    val detected =
+                        CodecFormatPolicy.adtsAudioFormat(
+                            bytes,
+                            stream.codecFacts,
+                            stream.codec,
+                            inferMultichannelLayout,
+                        )
                     val inherited = startupAacFormat
                     if (detected != null || inherited == null) {
                         startupAacFormat = null

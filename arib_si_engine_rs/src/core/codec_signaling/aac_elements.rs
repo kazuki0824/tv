@@ -1,4 +1,4 @@
-//! MPEG-2 AAC LCの構文要素を終端まで読む。係数・PCMは展開しない。
+//! MPEG-2 AAC LCの構文要素を終端まで読む。伝送CRCの照合や係数・PCMの展開は行わない。
 use super::{aac_tables::*, parse_program_config, AudioConfigBits};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -399,7 +399,8 @@ mod tests {
         ];
         assert_eq!(adts_presentation(dual), Some(AacPresentation::DualMono));
         assert_eq!(adts_presentation(stereo), Some(AacPresentation::Other));
-        let AacConfigurationProbe::Ready { configuration } = probe_adts_configuration(dual, None)
+        let AacConfigurationProbe::Ready { configuration } =
+            probe_adts_configuration(dual, None, false)
         else {
             panic!("2 SCEの構成が必要");
         };
@@ -422,7 +423,7 @@ mod tests {
             crate::codec_signaling::configured_front_pair(&reversed)
         );
         assert!(matches!(
-            probe_adts_configuration(dual, Some(&asc)),
+            probe_adts_configuration(dual, Some(&asc), false),
             AacConfigurationProbe::Ready { .. }
         ));
         for end in 0..dual.len() {
@@ -455,7 +456,7 @@ mod tests {
         for &(single, pair) in vectors {
             assert_eq!(adts_presentation(single), None);
             assert!(matches!(
-                probe_adts_configuration(single, None),
+                probe_adts_configuration(single, None, false),
                 AacConfigurationProbe::Pending
             ));
             assert_eq!(adts_presentation(pair), Some(AacPresentation::Other));
@@ -467,7 +468,7 @@ mod tests {
         other[3] = 0;
         assert_eq!(adts_presentation(&other), None);
         assert!(matches!(
-            probe_adts_configuration(&other, None),
+            probe_adts_configuration(&other, None, false),
             AacConfigurationProbe::Pending
         ));
     }
@@ -495,7 +496,7 @@ mod tests {
             Some(AacPresentation::DualMono)
         );
         let AacConfigurationProbe::Ready { configuration } =
-            probe_adts_configuration(&with_pce, None)
+            probe_adts_configuration(&with_pce, None, false)
         else {
             panic!("帯域内PCEを取得できません");
         };

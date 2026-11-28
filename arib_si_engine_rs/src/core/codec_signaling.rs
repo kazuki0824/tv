@@ -375,6 +375,7 @@ pub struct AacAdtsConfiguration {
 pub fn probe_adts_configuration(
     bytes: &[u8],
     supplied_asc: Option<&[u8]>,
+    infer_multichannel_layout: bool,
 ) -> AacConfigurationProbe {
     let mut cursor = 0usize;
     while let Some(header) = bytes.get(cursor..).and_then(|tail| tail.get(..7)) {
@@ -458,28 +459,37 @@ pub fn probe_adts_configuration(
                         return AacConfigurationProbe::Pending;
                     }
                     if let Some(aac_elements::ParsedAacFrame {
-                        presentation: AacPresentation::DualMono,
+                        presentation,
                         first_elements,
+                        has_program_config: false,
                         ..
-                    }) = aac_elements::parse_frame(&bytes[cursor..frame_end])
-                    {
-                        let tags = first_elements.map(|(_, tag)| tag);
-                        // 確認した順序の2 SCEを前方要素としてPCEに記録する。
+                    }) = aac_elements::parse_frame(&bytes[cursor..frame_end]).filter(|parsed| {
+                        parsed.presentation == AacPresentation::DualMono
+                            || (infer_multichannel_layout && configuration == 0)
+                    }) {
+                        // STD-B32 5.2.3(2): 2 SCEは両方前方、CPE→SCE/CPEは前方と後方。
+                        let (front, back) = if presentation == AacPresentation::DualMono {
+                            (2, 0)
+                        } else {
+                            (1, 1)
+                        };
+                        let elements = first_elements.map(|(kind, tag)| (kind << 4) | tag);
+                        let channel_count = 2 + first_elements[0].0 + first_elements[1].0;
                         let mut config = prefix.to_vec();
                         let mut index = 0;
                         for (value, width) in [
                             (0, 4),
                             (1, 2),
                             (frequency_index, 4),
-                            (2, 4),
+                            (front, 4),
                             (0, 4),
-                            (0, 4),
+                            (back, 4),
                             (0, 2),
                             (0, 3),
                             (0, 4),
                             (0, 3),
-                            (tags[0], 5),
-                            (tags[1], 5),
+                            (elements[0], 5),
+                            (elements[1], 5),
                         ] {
                             for bit in (0..width).rev() {
                                 if index % 8 == 0 {
@@ -496,7 +506,7 @@ pub fn probe_adts_configuration(
                                 sampling_frequency: frequency,
                                 extension_sampling_frequency: None,
                                 channel_configuration: 0,
-                                channel_count: 2,
+                                channel_count,
                                 audio_specific_config_hex: hex(&config),
                             },
                         };
@@ -760,7 +770,7 @@ mod tests {
         assert_eq!(presentation.dual_mono, None);
         assert!(presentation.has_program_config);
         let AacConfigurationProbe::Ready { configuration } =
-            probe_adts_configuration(DUAL_MONO_ADTS, None)
+            probe_adts_configuration(DUAL_MONO_ADTS, None, false)
         else {
             panic!("PCEの構成を取得できません");
         };
@@ -785,21 +795,21 @@ mod tests {
     fn adts_waits_for_pce_and_accepts_out_of_band_config_without_inventing_channels() {
         let absent = &[0xff, 0xf1, 0x4c, 0, 1, 0x1f, 0xfc, 0xe0];
         assert!(matches!(
-            probe_adts_configuration(absent, None),
+            probe_adts_configuration(absent, None, false),
             AacConfigurationProbe::Pending
         ));
         let mut later = absent.to_vec();
         later.extend_from_slice(DUAL_MONO_ADTS);
         assert!(matches!(
-            probe_adts_configuration(&later, None),
+            probe_adts_configuration(&later, None, false),
             AacConfigurationProbe::Ready { .. }
         ));
         assert!(matches!(
-            probe_adts_configuration(&DUAL_MONO_ADTS[..13], None),
+            probe_adts_configuration(&DUAL_MONO_ADTS[..13], None, false),
             AacConfigurationProbe::Pending
         ));
         let AacConfigurationProbe::Ready { configuration } =
-            probe_adts_configuration(absent, Some(DUAL_MONO_ASC))
+            probe_adts_configuration(absent, Some(DUAL_MONO_ASC), false)
         else {
             panic!("帯域外PCEの構成を取得できません");
         };
@@ -872,20 +882,20 @@ mod tests {
         let mut malformed = DUAL_MONO_ADTS.to_vec();
         malformed[8] ^= 0x08;
         assert!(matches!(
-            probe_adts_configuration(&malformed, None),
+            probe_adts_configuration(&malformed, None, false),
             AacConfigurationProbe::Invalid { .. }
         ));
         let mut duplicate = DUAL_MONO_ADTS.to_vec();
         duplicate[12] = 0;
         assert!(matches!(
-            probe_adts_configuration(&duplicate, None),
+            probe_adts_configuration(&duplicate, None, false),
             AacConfigurationProbe::Invalid { .. }
         ));
         let mut truncated = DUAL_MONO_ADTS[..13].to_vec();
         truncated[4] = 1;
         truncated[5] = 0xbf;
         assert!(matches!(
-            probe_adts_configuration(&truncated, None),
+            probe_adts_configuration(&truncated, None, false),
             AacConfigurationProbe::Invalid { .. }
         ));
     }

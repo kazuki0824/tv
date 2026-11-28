@@ -1209,12 +1209,17 @@ mod tests {
         let frame = vec![
             255, 248, 76, 0, 2, 32, 4, 94, 87, 0, 200, 0, 0, 22, 64, 0, 56,
         ];
-        let mut association = AudioTimestampAssociation::default();
-        let delivered = association
-            .extract(packet(frame.clone(), Some(90_000)), ORIGIN)
-            .unwrap();
-        assert_eq!(pts(&delivered), vec![90_000]);
-        assert_eq!(delivered[0].payload, frame);
+        // FDKで確認したCRCと、CRCの1ビットだけを変えた対照を同じ範囲・PTSで配送する。
+        let mut wrong_crc = frame.clone();
+        wrong_crc[8] ^= 1;
+        for input in [frame, wrong_crc] {
+            let mut association = AudioTimestampAssociation::default();
+            let delivered = association
+                .extract(packet(input.clone(), Some(90_000)), ORIGIN)
+                .unwrap();
+            assert_eq!(pts(&delivered), vec![90_000]);
+            assert_eq!(delivered[0].payload, input);
+        }
     }
 
     #[test]

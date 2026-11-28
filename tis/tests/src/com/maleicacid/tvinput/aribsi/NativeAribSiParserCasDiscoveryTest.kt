@@ -70,8 +70,9 @@ class NativeAribSiParserCasDiscoveryTest {
                     "nativeProbeAacConfiguration",
                     ByteArray::class.java,
                     ByteArray::class.java,
+                    Boolean::class.javaPrimitiveType,
                 ).apply { isAccessible = true }
-        val result = method.invoke(null, ByteArray(0), null)
+        val result = method.invoke(null, ByteArray(0), null, false)
         check(result is com.maleicacid.tvinput.aribsi.generated.AacConfigurationProbeDto)
         check(result.status == com.maleicacid.tvinput.aribsi.generated.AacProbeStatusDto.Pending)
         check(result.reason == null && result.configuration == null)
@@ -85,8 +86,9 @@ class NativeAribSiParserCasDiscoveryTest {
                     "nativeProbeAacConfiguration",
                     ByteArray::class.java,
                     ByteArray::class.java,
+                    Boolean::class.javaPrimitiveType,
                 ).apply { isAccessible = true }
-        val thrown = runCatching { method.invoke(null, null, null) }.exceptionOrNull()
+        val thrown = runCatching { method.invoke(null, null, null, false) }.exceptionOrNull()
         check(thrown is java.lang.reflect.InvocationTargetException)
         val failure = thrown.cause
         check(failure is NativeSiException && failure.reason == NativeSiFailureReason.JNI_INPUT)
